@@ -3,12 +3,14 @@ import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
 import { OpenapiCommands } from "../commands/openapi/OpenapiCommands.js";
+import { CreateTasksCommand } from "../commands/planning/CreateTasksCommand.js";
+import { BacklogCommands } from "../commands/backlog/BacklogCommands.js";
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const [command, ...rest] = argv;
     if (!command) {
-      throw new Error("Usage: mcoda <agent|docs|pdr> [...args]");
+      throw new Error("Usage: mcoda <agent|docs|pdr|create-tasks> [...args]");
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
@@ -32,6 +34,14 @@ export class McodaEntrypoint {
     }
     if (command === "sds" || command === "mcoda:sds") {
       await DocsCommands.run(["sds", "generate", ...rest]);
+      return;
+    }
+    if (command === "create-tasks") {
+      await CreateTasksCommand.run(rest);
+      return;
+    }
+    if (command === "backlog") {
+      await BacklogCommands.run(rest);
       return;
     }
     throw new Error(`Unknown command: ${command}`);

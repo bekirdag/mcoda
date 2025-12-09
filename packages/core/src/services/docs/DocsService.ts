@@ -842,7 +842,14 @@ export class DocsService {
       }
     }
     const commandRun = await this.jobService.startCommandRun("docs-pdr-generate", options.projectKey);
-    const job = await this.jobService.startJob("pdr_generate", commandRun.id, options.projectKey);
+    const job = await this.jobService.startJob("pdr_generate", commandRun.id, options.projectKey, {
+      commandName: commandRun.commandName,
+      payload: {
+        projectKey: options.projectKey,
+        rfpId: options.rfpId,
+        rfpPath: options.rfpPath,
+      },
+    });
     const assembler = new DocContextAssembler(this.docdex, this.workspace);
     try {
       const context = await assembler.buildContext({
@@ -954,11 +961,8 @@ export class DocsService {
         }
       }
 
-      await this.jobService.updateJobStatus(job.id, "succeeded", {
-        outputPath,
-        docdexId,
-        segments,
-        mirrorStatus,
+      await this.jobService.updateJobStatus(job.id, "completed", {
+        payload: { outputPath, docdexId, segments, mirrorStatus },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {
@@ -970,7 +974,7 @@ export class DocsService {
         warnings: context.warnings,
       };
     } catch (error) {
-      await this.jobService.updateJobStatus(job.id, "failed", { error: (error as Error).message });
+      await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });
       await this.jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);
       throw error;
     }
@@ -1086,7 +1090,14 @@ export class DocsService {
       }
     }
     if (!job) {
-      job = await this.jobService.startJob("sds_generate", commandRun.id, options.projectKey);
+      job = await this.jobService.startJob("sds_generate", commandRun.id, options.projectKey, {
+        commandName: commandRun.commandName,
+        payload: {
+          projectKey: options.projectKey,
+          templateName: options.templateName,
+          resumeJobId: options.resumeJobId,
+        },
+      });
     }
     try {
       const context = await assembler.buildSdsContext({ projectKey: options.projectKey });
@@ -1279,13 +1290,15 @@ export class DocsService {
         }
       }
 
-      await this.jobService.updateJobStatus(job.id, "succeeded", {
-        outputPath,
-        docdexId,
-        segments,
-        template: template.name,
-        mirrorStatus,
-        agentMetadata,
+      await this.jobService.updateJobStatus(job.id, "completed", {
+        payload: {
+          outputPath,
+          docdexId,
+          segments,
+          template: template.name,
+          mirrorStatus,
+          agentMetadata,
+        },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {
@@ -1297,7 +1310,7 @@ export class DocsService {
         warnings,
       };
     } catch (error) {
-      await this.jobService.updateJobStatus(job.id, "failed", { error: (error as Error).message });
+      await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });
       await this.jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);
       throw error;
     }

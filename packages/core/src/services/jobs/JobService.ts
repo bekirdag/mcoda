@@ -2,45 +2,56 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { PathHelper } from "@mcoda/shared";
-import { WorkspaceRepository } from "@mcoda/db";
+import {
+  WorkspaceRepository,
+  CommandStatus,
+  JobStatus,
+  TokenUsageInsert,
+} from "@mcoda/db";
 
-export type JobStatus = "running" | "succeeded" | "failed";
+export type JobState = JobStatus;
+export type CommandRunStatus = CommandStatus;
 
 export interface CommandRunRecord {
   id: string;
-  name: string;
+  commandName: string;
   workspaceId: string;
   projectKey?: string;
+  jobId?: string;
+  taskIds?: string[];
+  gitBranch?: string;
+  gitBaseBranch?: string;
   startedAt: string;
-  endedAt?: string;
-  status: JobStatus;
-  error?: string;
+  completedAt?: string;
+  status: CommandRunStatus;
+  errorSummary?: string;
   durationSeconds?: number;
 }
 
 export interface JobRecord {
   id: string;
   type: string;
-  status: JobStatus;
-  commandRunId: string;
+  state: JobState;
+  commandRunId?: string;
+  commandName?: string;
   workspaceId: string;
   projectKey?: string;
+  payload?: Record<string, unknown>;
+  totalItems?: number;
+  processedItems?: number;
+  lastCheckpoint?: string;
   createdAt: string;
   updatedAt: string;
-  metadata?: Record<string, unknown>;
+  completedAt?: string;
+  errorSummary?: string;
   durationSeconds?: number;
 }
 
-export interface TokenUsageRecord {
-  timestamp: string;
-  workspaceId: string;
-  commandName: string;
-  jobId?: string;
-  agentId?: string;
-  modelName?: string;
-  action: string;
-  promptTokens: number;
-  completionTokens: number;
+export interface TokenUsageRecord extends TokenUsageInsert {
+  commandName?: string;
+  action?: string;
+  promptTokens?: number;
+  completionTokens?: number;
   costUsd?: number;
   metadata?: Record<string, unknown>;
 }
@@ -55,6 +66,7 @@ const nowIso = (): string => new Date().toISOString();
 
 export class JobService {
   private checkpointCounters = new Map<string, number>();
+  private workspaceRepoInit = false;
 
   constructor(private workspaceRoot: string, private workspaceRepo?: WorkspaceRepository) {}
 
@@ -92,8 +104,19 @@ export class JobService {
 
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.mcodaDir);
-    if (!this.workspaceRepo) {
-      this.workspaceRepo = await WorkspaceRepository.create(this.workspaceRoot);
+    if (this.workspaceRepoInit) return;
+    this.workspaceRepoInit = true;
+    if (process.env.MCODA_DISABLE_DB === "1") {
+      this.workspaceRepo = undefined;
+      return;
+    }
+    try {
+      if (!this.workspaceRepo) {
+        this.workspaceRepo = await WorkspaceRepository.create(this.workspaceRoot);
+      }
+    } catch {
+      // Fall back to JSON stores if sqlite is unavailable or schema mismatches.
+      this.workspaceRepo = undefined;
     }
   }
 
@@ -120,10 +143,19 @@ export class JobService {
   }
 
   async listJobs(): Promise<JobRecord[]> {
+    await this.ensureMcoda();
+    if (this.workspaceRepo && "listJobs" in this.workspaceRepo) {
+      const rows = await (this.workspaceRepo as any).listJobs();
+      return rows as JobRecord[];
+    }
     return this.readJsonArray<JobRecord>(this.jobsStorePath);
   }
 
   async getJob(jobId: string): Promise<JobRecord | undefined> {
+    await this.ensureMcoda();
+    if (this.workspaceRepo && "getJob" in this.workspaceRepo) {
+      return ((await (this.workspaceRepo as any).getJob(jobId)) as JobRecord | undefined) ?? undefined;
+    }
     const jobs = await this.readJsonArray<JobRecord>(this.jobsStorePath);
     return jobs.find((j) => j.id === jobId);
   }
@@ -152,82 +184,143 @@ export class JobService {
     }
   }
 
-  async startCommandRun(name: string, projectKey?: string): Promise<CommandRunRecord> {
+  async startCommandRun(commandName: string, projectKey?: string, options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[] }): Promise<CommandRunRecord> {
     await this.ensureMcoda();
+    const startedAt = nowIso();
     const record: CommandRunRecord = {
       id: randomUUID(),
-      name,
+      commandName,
       workspaceId: this.workspaceRoot,
       projectKey,
-      startedAt: nowIso(),
+      jobId: undefined,
+      taskIds: options?.taskIds,
+      gitBranch: options?.gitBranch,
+      gitBaseBranch: options?.gitBaseBranch,
+      startedAt,
       status: "running",
     };
     await this.appendJsonArray(this.commandRunsPath, record);
     if (this.workspaceRepo) {
-      await this.workspaceRepo.insertCommandRun(record);
+      await this.workspaceRepo.createCommandRun({
+        workspaceId: this.workspaceRoot,
+        commandName,
+        jobId: record.jobId,
+        taskIds: record.taskIds,
+        gitBranch: record.gitBranch,
+        gitBaseBranch: record.gitBaseBranch,
+        startedAt,
+        status: "running",
+      });
     }
     return record;
   }
 
-  async finishCommandRun(runId: string, status: JobStatus, error?: string): Promise<void> {
+  async finishCommandRun(runId: string, status: CommandRunStatus, errorSummary?: string): Promise<void> {
     const runs = await this.readJsonArray<CommandRunRecord>(this.commandRunsPath);
     const idx = runs.findIndex((r) => r.id === runId);
     if (idx === -1) return;
-    const endedAt = nowIso();
-    const durationSeconds = runs[idx].startedAt ? (Date.parse(endedAt) - Date.parse(runs[idx].startedAt)) / 1000 : undefined;
-    runs[idx] = { ...runs[idx], endedAt, status, error, durationSeconds };
+    const completedAt = nowIso();
+    const durationSeconds =
+      runs[idx].startedAt ? (Date.parse(completedAt) - Date.parse(runs[idx].startedAt)) / 1000 : undefined;
+    runs[idx] = { ...runs[idx], completedAt, status, errorSummary, durationSeconds };
     await this.writeJsonArray(this.commandRunsPath, runs);
     if (this.workspaceRepo) {
-      await this.workspaceRepo.updateCommandRun(runId, { endedAt, status, error, durationSeconds });
+      await this.workspaceRepo.completeCommandRun(runId, { status, completedAt, errorSummary, durationSeconds });
     }
   }
 
-  async startJob(type: string, commandRunId: string, projectKey?: string): Promise<JobRecord> {
+  async startJob(
+    type: string,
+    commandRunId?: string,
+    projectKey?: string,
+    options: { payload?: Record<string, unknown>; commandName?: string; totalItems?: number; processedItems?: number } = {},
+  ): Promise<JobRecord> {
     await this.ensureMcoda();
+    const createdAt = nowIso();
     const record: JobRecord = {
       id: randomUUID(),
       type,
-      status: "running",
+      state: "running",
       commandRunId,
+      commandName: options.commandName ?? type,
       workspaceId: this.workspaceRoot,
       projectKey,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      metadata: {},
+      payload: options.payload,
+      totalItems: options.totalItems,
+      processedItems: options.processedItems,
+      createdAt,
+      updatedAt: createdAt,
     };
+    if (this.workspaceRepo) {
+      await this.workspaceRepo.createJob({
+        workspaceId: this.workspaceRoot,
+        type,
+        state: "running",
+        commandName: record.commandName,
+        payload: options.payload,
+        totalItems: record.totalItems,
+        processedItems: record.processedItems,
+      });
+    }
     const jobs = await this.readJsonArray<JobRecord>(this.jobsStorePath);
     jobs.push(record);
     await this.writeJsonArray(this.jobsStorePath, jobs);
     await this.writeManifest(record);
-    if (this.workspaceRepo) {
-      await this.workspaceRepo.insertJob(record);
-    }
     return record;
   }
 
-  async updateJobStatus(jobId: string, status: JobStatus, metadata?: Record<string, unknown>): Promise<void> {
+  async updateJobStatus(
+    jobId: string,
+    state: JobState,
+    metadata?: {
+      payload?: Record<string, unknown>;
+      totalItems?: number;
+      processedItems?: number;
+      lastCheckpoint?: string;
+      errorSummary?: string;
+      [key: string]: unknown;
+    },
+  ): Promise<void> {
     const jobs = await this.readJsonArray<JobRecord>(this.jobsStorePath);
     const idx = jobs.findIndex((j) => j.id === jobId);
     if (idx === -1) return;
-    const endedAt = status !== "running" ? nowIso() : undefined;
+    const completedAt = state !== "running" && state !== "queued" ? nowIso() : jobs[idx].completedAt;
     const durationSeconds =
-      endedAt && jobs[idx].createdAt ? (Date.parse(endedAt) - Date.parse(jobs[idx].createdAt)) / 1000 : jobs[idx].durationSeconds;
+      completedAt && jobs[idx].createdAt ? (Date.parse(completedAt) - Date.parse(jobs[idx].createdAt)) / 1000 : jobs[idx].durationSeconds;
+    const payloadUpdate =
+      metadata?.payload ??
+      (metadata
+        ? Object.fromEntries(
+            Object.entries(metadata).filter(
+              ([key]) => !["payload", "totalItems", "processedItems", "lastCheckpoint", "errorSummary", "error"].includes(key),
+            ),
+          )
+        : undefined);
     const updated: JobRecord = {
       ...jobs[idx],
-      status,
-      updatedAt: endedAt ?? nowIso(),
+      state,
+      payload: payloadUpdate ? { ...(jobs[idx].payload ?? {}), ...payloadUpdate } : jobs[idx].payload,
+      totalItems: metadata?.totalItems ?? jobs[idx].totalItems,
+      processedItems: metadata?.processedItems ?? jobs[idx].processedItems,
+      lastCheckpoint: metadata?.lastCheckpoint ?? jobs[idx].lastCheckpoint,
+      errorSummary: metadata?.errorSummary ?? (metadata as any)?.error ?? jobs[idx].errorSummary,
+      updatedAt: nowIso(),
+      completedAt,
       durationSeconds,
-      metadata: { ...(jobs[idx].metadata ?? {}), ...(metadata ?? {}) },
     };
     jobs[idx] = updated;
     await this.writeJsonArray(this.jobsStorePath, jobs);
     await this.writeManifest(updated);
     if (this.workspaceRepo) {
-      await this.workspaceRepo.updateJob(jobId, {
-        status,
-        updatedAt: updated.updatedAt,
-        durationSeconds,
-        metadata,
+      await this.workspaceRepo.updateJobState(jobId, {
+        state,
+        commandName: updated.commandName ?? updated.type,
+        totalItems: updated.totalItems,
+        processedItems: updated.processedItems,
+        lastCheckpoint: updated.lastCheckpoint,
+        errorSummary: updated.errorSummary,
+        completedAt: updated.completedAt ?? null,
+        payload: updated.payload,
       });
     }
   }
@@ -241,12 +334,8 @@ export class JobService {
     const target = path.join(this.checkpointDir(jobId), filename);
     await fs.writeFile(target, JSON.stringify(checkpoint, null, 2), "utf8");
     if (this.workspaceRepo) {
-      await this.workspaceRepo.insertCheckpoint({
-        jobId,
-        seq: next,
-        stage: checkpoint.stage,
-        timestamp: checkpoint.timestamp,
-        details: checkpoint.details,
+      await this.workspaceRepo.updateJobState(jobId, {
+        lastCheckpoint: checkpoint.stage,
       });
     }
   }
@@ -259,16 +348,44 @@ export class JobService {
   }
 
   async recordTokenUsage(entry: TokenUsageRecord): Promise<void> {
-    await this.appendJsonArray<TokenUsageRecord>(this.tokenUsagePath, entry);
+    const normalized: TokenUsageInsert = {
+      workspaceId: entry.workspaceId,
+      agentId: entry.agentId ?? null,
+      modelName: entry.modelName ?? null,
+      jobId: entry.jobId ?? null,
+      commandRunId: entry.commandRunId ?? null,
+      taskRunId: entry.taskRunId ?? null,
+      taskId: entry.taskId ?? null,
+      projectId: entry.projectId ?? null,
+      epicId: entry.epicId ?? null,
+      userStoryId: entry.userStoryId ?? null,
+      tokensPrompt: entry.tokensPrompt ?? entry.promptTokens ?? null,
+      tokensCompletion: entry.tokensCompletion ?? entry.completionTokens ?? null,
+      tokensTotal: entry.tokensTotal ?? null,
+      costEstimate: entry.costEstimate ?? entry.costUsd ?? null,
+      durationSeconds: entry.durationSeconds ?? null,
+      timestamp: entry.timestamp,
+      metadata: {
+        ...(entry.metadata ?? {}),
+        ...(entry.commandName ? { commandName: entry.commandName } : {}),
+        ...(entry.action ? { action: entry.action } : {}),
+      },
+    };
+    const fileRecord = {
+      ...normalized,
+      ...(entry.commandName ? { commandName: entry.commandName } : {}),
+      ...(entry.action ? { action: entry.action } : {}),
+    };
+    await this.appendJsonArray(this.tokenUsagePath, fileRecord as any);
     if (this.workspaceRepo) {
-      await this.workspaceRepo.insertTokenUsage(entry);
+      await this.workspaceRepo.recordTokenUsage(normalized);
     }
   }
 
   async writeManifest(job: JobRecord, extras: Record<string, unknown> = {}): Promise<void> {
     await PathHelper.ensureDir(this.jobDir(job.id));
     const manifestPath = this.manifestPath(job.id);
-    const payload = { ...job, ...extras };
+    const payload = { ...job, status: (job as any).status ?? job.state, ...extras };
     await fs.writeFile(manifestPath, JSON.stringify(payload, null, 2), "utf8");
   }
 

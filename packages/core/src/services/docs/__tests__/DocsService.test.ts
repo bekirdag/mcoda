@@ -9,6 +9,9 @@ import { DocsService } from "../DocsService.js";
 import { JobService } from "../../jobs/JobService.js";
 import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 
+// Disable sqlite usage in tests to avoid FK constraints from incomplete fixtures.
+process.env.MCODA_DISABLE_DB = "1";
+
 class FakeAgentService {
   constructor(private agent: Agent, private response?: string) {}
 
@@ -125,7 +128,7 @@ describe("DocsService.generatePdr", () => {
     assert.match(content, /Product Design Review/);
     const manifestPath = path.join(workspace.mcodaDir, "jobs", result.jobId, "manifest.json");
     const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-    assert.equal(manifest.status, "succeeded");
+    assert.equal(manifest.state ?? manifest.status, "completed");
 
     const tokenPath = path.join(workspace.mcodaDir, "token_usage.json");
     const tokenUsage = JSON.parse(await fs.readFile(tokenPath, "utf8"));

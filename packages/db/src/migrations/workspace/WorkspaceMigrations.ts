@@ -174,7 +174,8 @@ export class WorkspaceMigrations {
         tokens_total INTEGER,
         cost_estimate REAL,
         duration_seconds REAL,
-        timestamp TEXT NOT NULL
+        timestamp TEXT NOT NULL,
+        metadata_json TEXT
       );
     `);
   }

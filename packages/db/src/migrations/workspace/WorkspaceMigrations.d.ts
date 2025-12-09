@@ -1,9 +1,9 @@
 import { Database } from "sqlite";
 /**
- * Placeholder workspace migrations. For this task we only need workspace DB
- * path helpers, but providing a hook keeps the API symmetrical.
+ * Workspace database migrations for the local `.mcoda/mcoda.db` file.
+ * The schema matches the planning/task model defined in the SDS.
  */
 export declare class WorkspaceMigrations {
-    static run(_db: Database): Promise<void>;
+    static run(db: Database): Promise<void>;
 }
 //# sourceMappingURL=WorkspaceMigrations.d.ts.map

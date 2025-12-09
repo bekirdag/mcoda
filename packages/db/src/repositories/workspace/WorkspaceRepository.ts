@@ -164,6 +164,7 @@ export interface TokenUsageInsert {
   costEstimate?: number | null;
   durationSeconds?: number | null;
   timestamp: string;
+  metadata?: Record<string, unknown>;
 }
 
 export class WorkspaceRepository {
@@ -235,10 +236,10 @@ export class WorkspaceRepository {
     };
   }
 
-  async insertEpics(epics: EpicInsert[]): Promise<EpicRow[]> {
+  async insertEpics(epics: EpicInsert[], useTransaction = true): Promise<EpicRow[]> {
     const now = new Date().toISOString();
     const rows: EpicRow[] = [];
-    await this.withTransaction(async () => {
+    const run = async () => {
       for (const epic of epics) {
         const id = randomUUID();
         await this.db.run(
@@ -257,14 +258,19 @@ export class WorkspaceRepository {
         );
         rows.push({ ...epic, id, createdAt: now, updatedAt: now });
       }
-    });
+    };
+    if (useTransaction) {
+      await this.withTransaction(run);
+    } else {
+      await run();
+    }
     return rows;
   }
 
-  async insertStories(stories: StoryInsert[]): Promise<StoryRow[]> {
+  async insertStories(stories: StoryInsert[], useTransaction = true): Promise<StoryRow[]> {
     const now = new Date().toISOString();
     const rows: StoryRow[] = [];
-    await this.withTransaction(async () => {
+    const run = async () => {
       for (const story of stories) {
         const id = randomUUID();
         await this.db.run(
@@ -285,14 +291,19 @@ export class WorkspaceRepository {
         );
         rows.push({ ...story, id, createdAt: now, updatedAt: now });
       }
-    });
+    };
+    if (useTransaction) {
+      await this.withTransaction(run);
+    } else {
+      await run();
+    }
     return rows;
   }
 
-  async insertTasks(tasks: TaskInsert[]): Promise<TaskRow[]> {
+  async insertTasks(tasks: TaskInsert[], useTransaction = true): Promise<TaskRow[]> {
     const now = new Date().toISOString();
     const rows: TaskRow[] = [];
-    await this.withTransaction(async () => {
+    const run = async () => {
       for (const task of tasks) {
         const id = randomUUID();
         await this.db.run(
@@ -321,14 +332,27 @@ export class WorkspaceRepository {
         );
         rows.push({ ...task, id, createdAt: now, updatedAt: now });
       }
-    });
+    };
+    if (useTransaction) {
+      await this.withTransaction(run);
+    } else {
+      await run();
+    }
     return rows;
   }
 
-  async insertTaskDependencies(deps: TaskDependencyInsert[]): Promise<TaskDependencyRow[]> {
+  async updateStoryPointsTotal(storyId: string, total: number | null): Promise<void> {
+    await this.db.run(`UPDATE user_stories SET story_points_total = ?, updated_at = ? WHERE id = ?`, total, new Date().toISOString(), storyId);
+  }
+
+  async updateEpicStoryPointsTotal(epicId: string, total: number | null): Promise<void> {
+    await this.db.run(`UPDATE epics SET story_points_total = ?, updated_at = ? WHERE id = ?`, total, new Date().toISOString(), epicId);
+  }
+
+  async insertTaskDependencies(deps: TaskDependencyInsert[], useTransaction = true): Promise<TaskDependencyRow[]> {
     const now = new Date().toISOString();
     const rows: TaskDependencyRow[] = [];
-    await this.withTransaction(async () => {
+    const run = async () => {
       for (const dep of deps) {
         const id = randomUUID();
         await this.db.run(
@@ -343,7 +367,12 @@ export class WorkspaceRepository {
         );
         rows.push({ ...dep, id, createdAt: now, updatedAt: now });
       }
-    });
+    };
+    if (useTransaction) {
+      await this.withTransaction(run);
+    } else {
+      await run();
+    }
     return rows;
   }
 
@@ -387,6 +416,52 @@ export class WorkspaceRepository {
       updatedAt: now,
       completedAt: null,
       errorSummary: null,
+    };
+  }
+
+  async listJobs(): Promise<JobRow[]> {
+    const rows = await this.db.all(
+      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+       FROM jobs ORDER BY updated_at DESC`,
+    );
+    return rows.map((row: any) => ({
+      id: row.id,
+      workspaceId: row.workspace_id,
+      type: row.type,
+      state: row.state,
+      commandName: row.command_name ?? undefined,
+      payload: row.payload_json ? JSON.parse(row.payload_json) : undefined,
+      totalItems: row.total_items ?? undefined,
+      processedItems: row.processed_items ?? undefined,
+      lastCheckpoint: row.last_checkpoint ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      completedAt: row.completed_at ?? undefined,
+      errorSummary: row.error_summary ?? undefined,
+    }));
+  }
+
+  async getJob(id: string): Promise<JobRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+       FROM jobs WHERE id = ?`,
+      id,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      type: row.type,
+      state: row.state,
+      commandName: row.command_name ?? undefined,
+      payload: row.payload_json ? JSON.parse(row.payload_json) : undefined,
+      totalItems: row.total_items ?? undefined,
+      processedItems: row.processed_items ?? undefined,
+      lastCheckpoint: row.last_checkpoint ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      completedAt: row.completed_at ?? undefined,
+      errorSummary: row.error_summary ?? undefined,
     };
   }
 
@@ -496,8 +571,8 @@ export class WorkspaceRepository {
   async recordTokenUsage(entry: TokenUsageInsert): Promise<void> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO token_usage (id, workspace_id, agent_id, model_name, job_id, command_run_id, task_run_id, task_id, project_id, epic_id, user_story_id, tokens_prompt, tokens_completion, tokens_total, cost_estimate, duration_seconds, timestamp)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO token_usage (id, workspace_id, agent_id, model_name, job_id, command_run_id, task_run_id, task_id, project_id, epic_id, user_story_id, tokens_prompt, tokens_completion, tokens_total, cost_estimate, duration_seconds, timestamp, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       entry.workspaceId,
       entry.agentId ?? null,
@@ -515,6 +590,7 @@ export class WorkspaceRepository {
       entry.costEstimate ?? null,
       entry.durationSeconds ?? null,
       entry.timestamp,
+      entry.metadata ? JSON.stringify(entry.metadata) : null,
     );
   }
 }

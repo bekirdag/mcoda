@@ -65,15 +65,16 @@ const parseArgs = (argv: string[]): ParsedArgs => {
 };
 
 const formatJob = (job: any): string => {
+  const payload = job.payload ?? job.metadata ?? {};
   return [
     `ID: ${job.id}`,
     `Type: ${job.type}`,
-    `Status: ${job.status}`,
+    `State: ${job.state ?? job.status}`,
     `Created: ${job.createdAt}`,
     `Updated: ${job.updatedAt}`,
     `Duration(s): ${job.durationSeconds ?? "-"}`,
-    `Output: ${job.metadata?.outputPath ?? "-"}`,
-    `Docdex: ${job.metadata?.docdexId ?? "-"}`,
+    `Output: ${payload.outputPath ?? "-"}`,
+    `Docdex: ${payload.docdexId ?? "-"}`,
   ].join("\n");
 };
 
@@ -99,19 +100,20 @@ export class JobsCommands {
           return;
         }
         for (const job of records) {
+          const state = (job as any).state ?? (job as any).status;
           // eslint-disable-next-line no-console
-          console.log(`${job.id}\t${job.type}\t${job.status}\t${job.updatedAt}`);
+          console.log(`${job.id}\t${job.type}\t${state as string}\t${job.updatedAt}`);
         }
         return;
       }
 
-      const job = parsed.jobId ? await jobs.getJob(parsed.jobId) : undefined;
+      let job = parsed.jobId ? await jobs.getJob(parsed.jobId) : undefined;
       if (!job) throw new Error(`Job not found: ${parsed.jobId}`);
 
-      const printStatus = async () => {
+      const printStatus = async (current: any) => {
         // eslint-disable-next-line no-console
-        console.log(formatJob(job));
-        const checkpoints = await jobs.readCheckpoints(job.id);
+        console.log(formatJob(current));
+        const checkpoints = await jobs.readCheckpoints(current.id);
         if (checkpoints.length) {
           // eslint-disable-next-line no-console
           console.log("Checkpoints:");
@@ -120,7 +122,7 @@ export class JobsCommands {
             console.log(formatCheckpoint(ckpt));
           });
         }
-        const log = await jobs.readLog(job.id);
+        const log = await jobs.readLog(current.id);
         if (log) {
           // eslint-disable-next-line no-console
           console.log("---- logs ----");
@@ -130,7 +132,7 @@ export class JobsCommands {
       };
 
       if (parsed.subcommand === "status") {
-        await printStatus();
+        await printStatus(job);
         return;
       }
 
@@ -143,8 +145,10 @@ export class JobsCommands {
           if (current) {
             // eslint-disable-next-line no-console
             console.log("\n=== Job Update ===");
-            await printStatus();
-            if (current.status !== "running") break;
+            await printStatus(current);
+            job = current;
+            const state = (current as any).state ?? (current as any).status;
+            if (state !== "running") break;
           }
           iterations += 1;
           await new Promise((r) => setTimeout(r, parsed.intervalMs));
@@ -156,7 +160,7 @@ export class JobsCommands {
         // Placeholder for resumable engine: currently just surfaces latest status/logs.
         // eslint-disable-next-line no-console
         console.log(`Resume not implemented; showing latest status for ${job.id}`);
-        await printStatus();
+        await printStatus(job);
         return;
       }
     } finally {

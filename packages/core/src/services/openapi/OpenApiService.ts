@@ -461,7 +461,10 @@ export class OpenApiService {
 
   async generateFromDocs(options: GenerateOpenapiOptions): Promise<GenerateOpenapiResult> {
     const commandRun = await this.jobService.startCommandRun("openapi-from-docs", undefined);
-    const job = await this.jobService.startJob("openapi_change", commandRun.id, undefined);
+    const job = await this.jobService.startJob("openapi_change", commandRun.id, undefined, {
+      commandName: commandRun.commandName,
+      payload: { workspaceRoot: this.workspace.workspaceRoot },
+    });
     const warnings: string[] = [];
     try {
       const assembler = new OpenapiContextAssembler(this.docdex, this.workspace);
@@ -492,9 +495,10 @@ export class OpenApiService {
         const { spec, issues } = await this.validateExistingSpec(outputPath);
         const validationNote = issues.length ? `Validation issues:\n${issues.join("\n")}` : "Validation passed.";
         await this.jobService.appendLog(job.id, `${validationNote}\n`);
-        const status = issues.length ? "failed" : "succeeded";
-        await this.jobService.updateJobStatus(job.id, status, { validation: validationNote });
-        await this.jobService.finishCommandRun(commandRun.id, status, issues.join("; "));
+        const jobState = issues.length ? "failed" : "completed";
+        const commandState = issues.length ? "failed" : "succeeded";
+        await this.jobService.updateJobStatus(job.id, jobState, { payload: { validation: validationNote } });
+        await this.jobService.finishCommandRun(commandRun.id, commandState, issues.join("; "));
         return {
           jobId: job.id,
           commandRunId: commandRun.id,
@@ -583,12 +587,14 @@ export class OpenApiService {
         }
       }
 
-      await this.jobService.updateJobStatus(job.id, "succeeded", {
-        outputPath,
-        backupPath: backup,
-        docdexId,
-        adapter,
-        agentMetadata,
+      await this.jobService.updateJobStatus(job.id, "completed", {
+        payload: {
+          outputPath,
+          backupPath: backup,
+          docdexId,
+          adapter,
+          agentMetadata,
+        },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {
@@ -600,7 +606,7 @@ export class OpenApiService {
         warnings,
       };
     } catch (error) {
-      await this.jobService.updateJobStatus(job.id, "failed", { error: (error as Error).message });
+      await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });
       await this.jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);
       throw error;
     }
