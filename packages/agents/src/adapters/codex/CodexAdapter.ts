@@ -1,0 +1,48 @@
+import { AgentHealth } from "@mcoda/shared";
+import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
+
+export class CodexAdapter implements AgentAdapter {
+  constructor(private config: AdapterConfig) {}
+
+  async getCapabilities(): Promise<string[]> {
+    return this.config.capabilities;
+  }
+
+  async healthCheck(): Promise<AgentHealth> {
+    // CLI-based adapter can operate without stored secrets.
+    return {
+      agentId: this.config.agent.id,
+      status: "healthy",
+      lastCheckedAt: new Date().toISOString(),
+      latencyMs: 0,
+      details: { adapter: "codex-cli" },
+    };
+  }
+
+  async invoke(request: InvocationRequest): Promise<InvocationResult> {
+    const authMode = this.config.apiKey ? "api" : "cli";
+    return {
+      output: `codex-stub:${request.input}`,
+      adapter: this.config.adapter ?? "codex-cli",
+      model: this.config.model,
+      metadata: {
+        mode: authMode,
+        capabilities: this.config.capabilities,
+        adapterType: this.config.adapter ?? "codex-cli",
+        authMode,
+      },
+    };
+  }
+
+  async *invokeStream(request: InvocationRequest): AsyncGenerator<InvocationResult, void, unknown> {
+    yield {
+      output: `codex-stream:${request.input}`,
+      adapter: this.config.adapter ?? "codex-cli",
+      model: this.config.model,
+      metadata: {
+        mode: this.config.apiKey ? "api" : "cli",
+        streaming: true,
+      },
+    };
+  }
+}

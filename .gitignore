@@ -4,3 +4,10 @@ node_modules
 gpt-creator
 artifacts
 .mcoda-package
+dist
+coverage
+.DS_Store
+*.log
+pnpm-lock.yaml
+*.tsbuildinfo
+.turbo

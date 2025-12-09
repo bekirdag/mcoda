@@ -1,0 +1,20 @@
+{
+  "name": "@mcoda/agents",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "pnpm run build && node --test dist/__tests__/**/*.js"
+  },
+  "dependencies": {
+    "@mcoda/shared": "workspace:*",
+    "@mcoda/db": "workspace:*"
+  },
+  "license": "MIT"
+}

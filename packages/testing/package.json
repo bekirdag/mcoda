@@ -1,0 +1,24 @@
+{
+  "name": "@mcoda/testing",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "echo \"no tests yet\""
+  },
+  "dependencies": {
+    "@mcoda/agents": "workspace:*",
+    "@mcoda/cli": "workspace:*",
+    "@mcoda/core": "workspace:*",
+    "@mcoda/db": "workspace:*",
+    "@mcoda/integrations": "workspace:*",
+    "@mcoda/shared": "workspace:*"
+  },
+  "license": "MIT"
+}

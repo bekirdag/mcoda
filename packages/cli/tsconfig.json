@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "paths": {
+      "@mcoda/shared": ["packages/shared/dist/index.d.ts"],
+      "@mcoda/core": ["packages/core/dist/index.d.ts"]
+    }
+  },
+  "include": ["src"]
+}

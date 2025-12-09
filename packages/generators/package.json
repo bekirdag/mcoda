@@ -1,0 +1,19 @@
+{
+  "name": "@mcoda/generators",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "echo \"no tests yet\""
+  },
+  "dependencies": {
+    "@mcoda/shared": "workspace:*"
+  },
+  "license": "MIT"
+}

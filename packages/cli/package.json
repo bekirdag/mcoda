@@ -1,0 +1,23 @@
+{
+  "name": "@mcoda/cli",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mcoda": "dist/bin/mcoda.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "pnpm run build && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@mcoda/core": "workspace:*",
+    "@mcoda/shared": "workspace:*"
+  },
+  "license": "MIT"
+}

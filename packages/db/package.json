@@ -1,0 +1,21 @@
+{
+  "name": "@mcoda/db",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "node --test --loader ts-node/esm src/__tests__/**/*.ts"
+  },
+  "dependencies": {
+    "@mcoda/shared": "workspace:*",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  },
+  "license": "MIT"
+}

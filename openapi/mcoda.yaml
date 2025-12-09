@@ -1,0 +1,1174 @@
+openapi: 3.1.0
+info:
+  title: mcoda API
+  version: 0.0.0
+tags:
+  - name: Agents
+    description: Global agent registry and credentials
+  - name: Routing
+    description: Workspace routing defaults and previews
+  - name: Tasks
+    description: Task detail, comments, dependency ordering
+  - name: Work
+    description: Planning and execution flows
+  - name: Review
+    description: Code review workflows
+  - name: QA
+    description: QA orchestration and verification
+  - name: Backlog
+    description: Backlog visibility and ordering
+  - name: Estimate
+    description: Estimation and velocity reporting
+  - name: Telemetry
+    description: Token usage and aggregated telemetry
+  - name: Jobs
+    description: Job engine and command runs
+  - name: Docdex
+    description: Documentation retrieval and indexing
+  - name: Config
+    description: Workspace configuration
+  - name: System
+    description: System health and metadata
+paths:
+  /agents:
+    get:
+      summary: List configured agents
+      operationId: listAgents
+      tags: [Agents]
+      responses:
+        "200":
+          description: Agents list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Agent"
+      x-mcoda-cli.name: agent
+      x-mcoda-cli.output-shape: table
+      x-mcoda-tools:
+        - docdex
+      x-mcoda-docdex-profile: sds
+    post:
+      summary: Create a new agent
+      operationId: createAgent
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Agent"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+      x-mcoda-cli.name: agent
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-prompts:
+        - agent_manage
+  /agents/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Agent id or slug
+    get:
+      summary: Get an agent
+      operationId: getAgent
+      tags: [Agents]
+      responses:
+        "200":
+          description: Agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+      x-mcoda-cli.name: agent
+      x-mcoda-cli.output-shape: scalar
+    put:
+      summary: Update an agent
+      operationId: updateAgent
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Agent"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+      x-mcoda-cli.name: agent
+      x-mcoda-cli.output-shape: scalar
+    delete:
+      summary: Delete an agent
+      operationId: deleteAgent
+      tags: [Agents]
+      responses:
+        "204":
+          description: Deleted
+      x-mcoda-cli.name: agent
+      x-mcoda-cli.output-shape: scalar
+  /agents/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Test an agent connection
+      operationId: testAgent
+      tags: [Agents]
+      responses:
+        "200":
+          description: Health result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  latencyMs:
+                    type: number
+                  lastCheckedAt:
+                    type: string
+                    format: date-time
+      x-mcoda-cli.name: test-agent
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-agent-roles:
+        - reviewer
+  /workspaces/{id}/defaults:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Get routing defaults for a workspace
+      operationId: getRoutingDefaults
+      tags: [Routing]
+      responses:
+        "200":
+          description: Routing defaults
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutingDefaults"
+      x-mcoda-cli.name: routing
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-docdex-profile: sds
+    put:
+      summary: Update routing defaults for a workspace
+      operationId: updateRoutingDefaults
+      tags: [Routing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoutingDefaults"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutingDefaults"
+      x-mcoda-cli.name: routing
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-prompts:
+        - routing_defaults
+  /routing/preview:
+    post:
+      summary: Preview routing for a command
+      operationId: routingPreview
+      tags: [Routing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspaceId:
+                  type: string
+                commandName:
+                  type: string
+                agentOverride:
+                  type: string
+      responses:
+        "200":
+          description: Preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutingPreview"
+      x-mcoda-cli.name: routing
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-docdex-profile: sds
+  /tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Get task detail
+      operationId: getTask
+      tags: [Tasks]
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+      x-mcoda-cli.name: task-detail
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-db-table: tasks
+  /tasks/{id}/comments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: List task comments
+      operationId: listTaskComments
+      tags: [Tasks]
+      responses:
+        "200":
+          description: Comments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskComment"
+      x-mcoda-cli.name: task-detail
+      x-mcoda-cli.output-shape: table
+    post:
+      summary: Add a task comment
+      operationId: createTaskComment
+      tags: [Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskComment"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskComment"
+      x-mcoda-cli.name: task-detail
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-db-table: task_comments
+  /workspaces/{id}/backlog:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: status
+        in: query
+        schema:
+          type: string
+      - name: epicId
+        in: query
+        schema:
+          type: string
+      - name: storyId
+        in: query
+        schema:
+          type: string
+      - name: priority
+        in: query
+        schema:
+          type: string
+    get:
+      summary: Backlog view for a workspace
+      operationId: backlog
+      tags: [Backlog, Tasks]
+      responses:
+        "200":
+          description: Backlog items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskSummary"
+      x-mcoda-cli.name: backlog
+      x-mcoda-cli.output-shape: table
+      x-mcoda-db-table: tasks
+  /workspaces/{id}/estimate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Estimate velocity and SP/h
+      operationId: estimate
+      tags: [Estimate, Telemetry]
+      responses:
+        "200":
+          description: Estimate summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EstimateView"
+      x-mcoda-cli.name: estimate
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-docdex-profile: workspace-code
+  /workspaces/{id}/create-tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Create tasks from requirements
+      operationId: createTasks
+      tags: [Work, Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                storyId:
+                  type: string
+                instructions:
+                  type: string
+      responses:
+        "202":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: create-tasks
+      x-mcoda-cli.output-shape: job
+      x-mcoda-job-type: create_tasks
+      x-mcoda-agent-roles:
+        - planner
+      x-mcoda-prompts:
+        - create_tasks
+      x-mcoda-tools:
+        - docdex
+        - vcs
+      x-mcoda-docdex-profile: sds
+  /workspaces/{id}/refine-tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Refine existing tasks
+      operationId: refineTasks
+      tags: [Work, Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taskIds:
+                  type: array
+                  items:
+                    type: string
+                guidance:
+                  type: string
+      responses:
+        "202":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: refine-tasks
+      x-mcoda-cli.output-shape: job
+      x-mcoda-job-type: task_refinement
+      x-mcoda-agent-roles:
+        - planner
+      x-mcoda-prompts:
+        - refine_tasks
+      x-mcoda-tools:
+        - docdex
+        - vcs
+      x-mcoda-docdex-profile: sds
+  /workspaces/{id}/work-on-tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Execute work on selected tasks
+      operationId: workOnTasks
+      tags: [Work, Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taskIds:
+                  type: array
+                  items:
+                    type: string
+                branch:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        "202":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: work-on-tasks
+      x-mcoda-cli.output-shape: job
+      x-mcoda-job-type: work
+      x-mcoda-agent-roles:
+        - worker
+      x-mcoda-prompts:
+        - work_on_tasks
+      x-mcoda-tools:
+        - vcs
+        - docdex
+      x-mcoda-docdex-profile: workspace-code
+  /workspaces/{id}/code-review:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Run code review on tasks
+      operationId: codeReview
+      tags: [Review, Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taskIds:
+                  type: array
+                  items:
+                    type: string
+                baseRef:
+                  type: string
+      responses:
+        "202":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: code-review
+      x-mcoda-cli.output-shape: job
+      x-mcoda-job-type: review
+      x-mcoda-agent-roles:
+        - reviewer
+      x-mcoda-prompts:
+        - code_review
+      x-mcoda-tools:
+        - vcs
+        - docdex
+      x-mcoda-docdex-profile: workspace-code
+  /workspaces/{id}/qa-tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Run QA on tasks
+      operationId: qaTasks
+      tags: [QA, Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                taskIds:
+                  type: array
+                  items:
+                    type: string
+                profile:
+                  type: string
+      responses:
+        "202":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: qa-tasks
+      x-mcoda-cli.output-shape: job
+      x-mcoda-job-type: qa
+      x-mcoda-agent-roles:
+        - qa
+      x-mcoda-prompts:
+        - qa_tasks
+      x-mcoda-tools:
+        - qa_runner
+        - vcs
+      x-mcoda-docdex-profile: workspace-code
+  /workspaces/{id}/order-tasks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: strategy
+        in: query
+        schema:
+          type: string
+          enum: [dependencies, priority]
+    get:
+      summary: Order tasks by dependency/priority
+      operationId: orderTasks
+      tags: [Tasks, Backlog]
+      responses:
+        "200":
+          description: Ordered tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskSummary"
+      x-mcoda-cli.name: order-tasks
+      x-mcoda-cli.output-shape: list
+      x-mcoda-prompts:
+        - order_tasks
+  /jobs:
+    get:
+      summary: List jobs
+      operationId: listJobs
+      tags: [Jobs]
+      responses:
+        "200":
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: job
+      x-mcoda-cli.output-shape: table
+      x-mcoda-db-table: jobs
+  /jobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Get a job
+      operationId: getJob
+      tags: [Jobs]
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: job
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-db-table: jobs
+  /jobs/{id}/resume:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Resume a job
+      operationId: resumeJob
+      tags: [Jobs]
+      responses:
+        "200":
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+      x-mcoda-cli.name: job
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-job-type: openapi_change
+  /workspaces/{id}/telemetry:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: command
+        in: query
+        schema:
+          type: string
+      - name: since
+        in: query
+        schema:
+          type: string
+    get:
+      summary: Telemetry aggregates for a workspace
+      operationId: telemetry
+      tags: [Telemetry]
+      responses:
+        "200":
+          description: Telemetry view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CommandRun"
+                  usage:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TokenUsage"
+      x-mcoda-cli.name: telemetry
+      x-mcoda-cli.output-shape: table
+      x-mcoda-docdex-profile: workspace-code
+  /workspaces/{id}/tokens:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: command
+        in: query
+        schema:
+          type: string
+    get:
+      summary: Token usage for a workspace
+      operationId: tokens
+      tags: [Telemetry]
+      responses:
+        "200":
+          description: Token usage
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TokenUsage"
+      x-mcoda-cli.name: tokens
+      x-mcoda-cli.output-shape: table
+      x-mcoda-db-table: token_usage
+  /docdex/search:
+    parameters:
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: doc_type
+        in: query
+        schema:
+          type: string
+    get:
+      summary: Search docdex
+      operationId: searchDocdex
+      tags: [Docdex]
+      responses:
+        "200":
+          description: Documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocdexDocument"
+      x-mcoda-cli.name: docs
+      x-mcoda-cli.output-shape: table
+      x-mcoda-docdex-profile: sds
+  /config:
+    get:
+      summary: Get workspace config
+      operationId: getConfig
+      tags: [Config]
+      responses:
+        "200":
+          description: Config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mirrorDocs:
+                    type: boolean
+                  branch:
+                    type: string
+                  docdexUrl:
+                    type: string
+      x-mcoda-cli.name: config
+      x-mcoda-cli.output-shape: scalar
+  /system/ping:
+    get:
+      summary: Health check
+      operationId: ping
+      tags: [System]
+      responses:
+        "200":
+          description: Pong
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  version:
+                    type: string
+      x-mcoda-cli.name: system
+      x-mcoda-cli.output-shape: scalar
+components:
+  schemas:
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        adapter:
+          type: string
+        defaultModel:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, slug, adapter, createdAt, updatedAt]
+      x-mcoda-db-table: agents
+    AgentAuth:
+      type: object
+      properties:
+        agentId:
+          type: string
+        configured:
+          type: boolean
+        lastUpdatedAt:
+          type: string
+          format: date-time
+        lastVerifiedAt:
+          type: string
+          format: date-time
+      required: [agentId, configured]
+      x-mcoda-db-table: agent_auth
+    AgentPromptManifest:
+      type: object
+      properties:
+        agentId:
+          type: string
+        jobPrompt:
+          type: string
+        characterPrompt:
+          type: string
+        commandPrompts:
+          type: object
+          additionalProperties:
+            type: string
+        jobPath:
+          type: string
+        characterPath:
+          type: string
+      x-mcoda-db-table: agent_prompts
+    RoutingDefaults:
+      type: object
+      properties:
+        workspaceId:
+          type: string
+        commandName:
+          type: string
+        agentId:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+      required: [workspaceId, commandName, agentId]
+      x-mcoda-db-table: workspace_defaults
+    RoutingPreview:
+      type: object
+      properties:
+        workspaceId:
+          type: string
+        commandName:
+          type: string
+        resolvedAgent:
+          $ref: "#/components/schemas/Agent"
+        provenance:
+          type: string
+        notes:
+          type: string
+      x-mcoda-cli.output-shape: scalar
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+        name:
+          type: string
+      required: [id, key, name]
+      x-mcoda-db-table: projects
+    Epic:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        key:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+      required: [id, projectId, key, title]
+      x-mcoda-db-table: epics
+    UserStory:
+      type: object
+      properties:
+        id:
+          type: string
+        epicId:
+          type: string
+        key:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+      required: [id, epicId, key, title]
+      x-mcoda-db-table: user_stories
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        epicId:
+          type: string
+        storyId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        assignee:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          items:
+            type: string
+      required: [id, title, status]
+      x-mcoda-db-table: tasks
+    TaskSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        epicId:
+          type: string
+        storyId:
+          type: string
+      required: [id, title, status]
+      x-mcoda-db-table: tasks
+    TaskHistoryEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        changeType:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, taskId, changeType, createdAt]
+      x-mcoda-db-table: task_history
+    TaskComment:
+      type: object
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        author:
+          type: string
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        commentType:
+          type: string
+      required: [id, taskId, body, createdAt]
+      x-mcoda-db-table: task_comments
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        commandRunId:
+          type: string
+        workspaceId:
+          type: string
+        projectKey:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        durationSeconds:
+          type: number
+        metadata:
+          type: object
+      required: [id, type, status, createdAt, updatedAt]
+      x-mcoda-db-table: jobs
+    CommandRun:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        workspaceId:
+          type: string
+        projectKey:
+          type: string
+        status:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        durationSeconds:
+          type: number
+      required: [id, name, workspaceId, status, startedAt]
+      x-mcoda-db-table: command_runs
+    TaskRun:
+      type: object
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        jobId:
+          type: string
+        status:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+      required: [id, taskId, status]
+      x-mcoda-db-table: task_runs
+    TaskQaRun:
+      type: object
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        jobId:
+          type: string
+        profile:
+          type: string
+        status:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        outcome:
+          type: string
+      required: [id, taskId, profile, status]
+      x-mcoda-db-table: task_qa_runs
+    TokenUsage:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        workspaceId:
+          type: string
+        commandName:
+          type: string
+        jobId:
+          type: string
+        taskId:
+          type: string
+        action:
+          type: string
+        promptTokens:
+          type: number
+        completionTokens:
+          type: number
+        costUsd:
+          type: number
+        modelName:
+          type: string
+        agentId:
+          type: string
+      required: [timestamp, workspaceId, commandName, action, promptTokens, completionTokens]
+      x-mcoda-db-table: token_usage
+    TaskLog:
+      type: object
+      properties:
+        taskId:
+          type: string
+        runId:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogEntry"
+      required: [taskId, runId]
+      x-mcoda-db-table: task_logs
+    LogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        level:
+          type: string
+        message:
+          type: string
+        metadata:
+          type: object
+      required: [timestamp, level, message]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: string
+      required: [error, message]
+    EstimateView:
+      type: object
+      properties:
+        workspaceId:
+          type: string
+        averageSpPerHour:
+          type: number
+        sampleSize:
+          type: number
+        basis:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenUsage"
+    DocdexDocument:
+      type: object
+      properties:
+        id:
+          type: string
+        docType:
+          type: string
+        path:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required: [id, docType, createdAt, updatedAt]
