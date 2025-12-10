@@ -108,3 +108,17 @@ mcoda code-review --workspace . --project WEB --status ready_to_review --limit 5
 - Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_review` (override with `--status ...`), optional `--limit <N>`.
 - Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default true), `--json`.
 - Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_review → ready_to_qa/in_progress/blocked` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `.mcoda/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
+
+## QA tasks (QA pipeline)
+
+Run automated or manual QA on tasks in the workspace DB:
+
+```sh
+mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --agent qa
+```
+
+- Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_qa` (override for regression runs).
+- Modes: `--mode auto` (default; runs CLI/Chromium/Maestro via QA profiles) or `--mode manual --result pass|fail|blocked [--notes "..."] [--evidence-url "..."]`.
+- Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`.
+- Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
+- Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.

@@ -28,6 +28,13 @@ export class TaskStateService {
     });
   }
 
+  async markCompleted(task: TaskRow, metadataPatch?: Record<string, unknown>): Promise<void> {
+    await this.workspaceRepo.updateTask(task.id, {
+      status: "completed",
+      metadata: mergeMetadata(task.metadata, metadataPatch ?? undefined) ?? undefined,
+    });
+  }
+
   async returnToInProgress(task: TaskRow, metadataPatch?: Record<string, unknown>): Promise<void> {
     await this.workspaceRepo.updateTask(task.id, {
       status: "in_progress",

@@ -22,4 +22,5 @@ export interface QaContext {
   taskKey: string;
   env: NodeJS.ProcessEnv;
   testCommandOverride?: string;
+  artifactDir?: string;
 }

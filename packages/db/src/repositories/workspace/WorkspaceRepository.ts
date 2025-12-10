@@ -148,6 +148,32 @@ export interface TaskRunRow extends TaskRunInsert {
   id: string;
 }
 
+export interface TaskQaRunInsert {
+  taskId: string;
+  taskRunId?: string | null;
+  jobId?: string | null;
+  commandRunId?: string | null;
+  agentId?: string | null;
+  modelName?: string | null;
+  source: string;
+  mode?: string | null;
+  profileName?: string | null;
+  runner?: string | null;
+  rawOutcome?: string | null;
+  recommendation?: string | null;
+  evidenceUrl?: string | null;
+  artifacts?: string[] | null;
+  rawResult?: Record<string, unknown> | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt?: string;
+}
+
+export interface TaskQaRunRow extends TaskQaRunInsert {
+  id: string;
+}
+
 export interface TokenUsageInsert {
   workspaceId: string;
   agentId?: string | null;
@@ -896,6 +922,103 @@ export class WorkspaceRepository {
     return { id, ...record };
   }
 
+  async createTaskQaRun(record: TaskQaRunInsert): Promise<TaskQaRunRow> {
+    const id = randomUUID();
+    const createdAt = record.createdAt ?? new Date().toISOString();
+    await this.db.run(
+      `INSERT INTO task_qa_runs (id, task_id, task_run_id, job_id, command_run_id, agent_id, model_name, source, mode, profile_name, runner, raw_outcome, recommendation, evidence_url, artifacts_json, raw_result_json, started_at, finished_at, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      record.taskId,
+      record.taskRunId ?? null,
+      record.jobId ?? null,
+      record.commandRunId ?? null,
+      record.agentId ?? null,
+      record.modelName ?? null,
+      record.source,
+      record.mode ?? null,
+      record.profileName ?? null,
+      record.runner ?? null,
+      record.rawOutcome ?? null,
+      record.recommendation ?? null,
+      record.evidenceUrl ?? null,
+      record.artifacts ? JSON.stringify(record.artifacts) : null,
+      record.rawResult ? JSON.stringify(record.rawResult) : null,
+      record.startedAt ?? null,
+      record.finishedAt ?? null,
+      record.metadata ? JSON.stringify(record.metadata) : null,
+      createdAt,
+    );
+    return { id, ...record, createdAt };
+  }
+
+  async listTaskQaRuns(taskId: string): Promise<TaskQaRunRow[]> {
+    const rows = await this.db.all(
+      `SELECT id, task_id, task_run_id, job_id, command_run_id, agent_id, model_name, source, mode, profile_name, runner, raw_outcome, recommendation, evidence_url, artifacts_json, raw_result_json, started_at, finished_at, metadata_json, created_at
+       FROM task_qa_runs
+       WHERE task_id = ?
+       ORDER BY created_at DESC`,
+      taskId,
+    );
+    return rows.map((row: any) => ({
+      id: row.id,
+      taskId: row.task_id,
+      taskRunId: row.task_run_id ?? undefined,
+      jobId: row.job_id ?? undefined,
+      commandRunId: row.command_run_id ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      modelName: row.model_name ?? undefined,
+      source: row.source,
+      mode: row.mode ?? undefined,
+      profileName: row.profile_name ?? undefined,
+      runner: row.runner ?? undefined,
+      rawOutcome: row.raw_outcome ?? undefined,
+      recommendation: row.recommendation ?? undefined,
+      evidenceUrl: row.evidence_url ?? undefined,
+      artifacts: row.artifacts_json ? JSON.parse(row.artifacts_json) : undefined,
+      rawResult: row.raw_result_json ? JSON.parse(row.raw_result_json) : undefined,
+      startedAt: row.started_at ?? undefined,
+      finishedAt: row.finished_at ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listTaskQaRunsForJob(taskIds: string[], jobId: string): Promise<TaskQaRunRow[]> {
+    if (!taskIds.length) return [];
+    const placeholders = taskIds.map(() => '?').join(', ');
+    const rows = await this.db.all(
+      `SELECT id, task_id, task_run_id, job_id, command_run_id, agent_id, model_name, source, mode, profile_name, runner, raw_outcome, recommendation, evidence_url, artifacts_json, raw_result_json, started_at, finished_at, metadata_json, created_at
+       FROM task_qa_runs
+       WHERE job_id = ? AND task_id IN (${placeholders})
+       ORDER BY created_at DESC`,
+      jobId,
+      ...taskIds,
+    );
+    return rows.map((row: any) => ({
+      id: row.id,
+      taskId: row.task_id,
+      taskRunId: row.task_run_id ?? undefined,
+      jobId: row.job_id ?? undefined,
+      commandRunId: row.command_run_id ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      modelName: row.model_name ?? undefined,
+      source: row.source,
+      mode: row.mode ?? undefined,
+      profileName: row.profile_name ?? undefined,
+      runner: row.runner ?? undefined,
+      rawOutcome: row.raw_outcome ?? undefined,
+      recommendation: row.recommendation ?? undefined,
+      evidenceUrl: row.evidence_url ?? undefined,
+      artifacts: row.artifacts_json ? JSON.parse(row.artifacts_json) : undefined,
+      rawResult: row.raw_result_json ? JSON.parse(row.raw_result_json) : undefined,
+      startedAt: row.started_at ?? undefined,
+      finishedAt: row.finished_at ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+    }));
+  }
+
   async insertTaskLog(entry: {
     taskRunId: string;
     sequence: number;
@@ -1167,6 +1290,29 @@ export class WorkspaceRepository {
     const row = await this.db.get(
       `SELECT id, project_id, epic_id, key, title, description, acceptance_criteria, story_points_total, priority, metadata_json, created_at, updated_at FROM user_stories WHERE epic_id = ? AND key = ?`,
       epicId,
+      key,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      key: row.key,
+      title: row.title,
+      description: row.description ?? undefined,
+      acceptanceCriteria: row.acceptance_criteria ?? undefined,
+      storyPointsTotal: row.story_points_total ?? undefined,
+      priority: row.priority ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getStoryByProjectAndKey(projectId: string, key: string): Promise<StoryRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, project_id, epic_id, key, title, description, acceptance_criteria, story_points_total, priority, metadata_json, created_at, updated_at FROM user_stories WHERE project_id = ? AND key = ?`,
+      projectId,
       key,
     );
     if (!row) return undefined;

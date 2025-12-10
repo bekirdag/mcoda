@@ -17,6 +17,7 @@ export class WorkspaceMigrations {
       DROP TABLE IF EXISTS task_dependencies;
       DROP TABLE IF EXISTS task_comments;
       DROP TABLE IF EXISTS task_reviews;
+      DROP TABLE IF EXISTS task_qa_runs;
       DROP TABLE IF EXISTS task_logs;
       DROP TABLE IF EXISTS task_runs;
       DROP TABLE IF EXISTS tasks;
@@ -146,6 +147,29 @@ export class WorkspaceMigrations {
         git_base_branch TEXT,
         git_commit_sha TEXT,
         run_context_json TEXT
+      );
+
+      CREATE TABLE task_qa_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        task_run_id TEXT REFERENCES task_runs(id) ON DELETE SET NULL,
+        job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        command_run_id TEXT REFERENCES command_runs(id) ON DELETE SET NULL,
+        agent_id TEXT,
+        model_name TEXT,
+        source TEXT NOT NULL,
+        mode TEXT,
+        profile_name TEXT,
+        runner TEXT,
+        raw_outcome TEXT,
+        recommendation TEXT,
+        evidence_url TEXT,
+        artifacts_json TEXT,
+        raw_result_json TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL
       );
 
       CREATE TABLE task_logs (

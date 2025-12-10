@@ -7,8 +7,10 @@ import { QaContext, QaEnsureResult, QaRunResult } from './QaTypes.js';
 import fs from 'node:fs/promises';
 
 const exec = promisify(execCb);
+const shouldSkipInstall = (ctx: QaContext) =>
+  process.env.MCODA_QA_SKIP_INSTALL === '1' || ctx.env?.MCODA_QA_SKIP_INSTALL === '1';
 
-export class CliQaAdapter implements QaAdapter {
+export class MaestroQaAdapter implements QaAdapter {
   private resolveCwd(profile: QaProfile, ctx: QaContext): string {
     if (profile.working_dir) {
       return path.isAbsolute(profile.working_dir)
@@ -19,15 +21,21 @@ export class CliQaAdapter implements QaAdapter {
   }
 
   async ensureInstalled(profile: QaProfile, ctx: QaContext): Promise<QaEnsureResult> {
-    if (!profile.install_command) return { ok: true };
+    if (shouldSkipInstall(ctx)) return { ok: true, details: { skipped: true } };
+    const cwd = this.resolveCwd(profile, ctx);
     try {
-      await exec(profile.install_command, {
-        cwd: this.resolveCwd(profile, ctx),
-        env: { ...process.env, ...profile.env, ...ctx.env },
-      });
+      await exec('maestro --version', { cwd, env: { ...process.env, ...profile.env, ...ctx.env } });
       return { ok: true };
-    } catch (error: any) {
-      return { ok: false, message: error?.message ?? 'QA install failed' };
+    } catch (versionError: any) {
+      if (!profile.install_command) {
+        return { ok: false, message: versionError?.message ?? 'Maestro not available' };
+      }
+      try {
+        await exec(profile.install_command, { cwd, env: { ...process.env, ...profile.env, ...ctx.env } });
+        return { ok: true, details: { installedVia: profile.install_command } };
+      } catch (error: any) {
+        return { ok: false, message: error?.message ?? versionError?.message ?? 'Maestro install failed' };
+      }
     }
   }
 
@@ -44,20 +52,8 @@ export class CliQaAdapter implements QaAdapter {
   }
 
   async invoke(profile: QaProfile, ctx: QaContext): Promise<QaRunResult> {
-    const command = ctx.testCommandOverride ?? profile.test_command;
+    const command = ctx.testCommandOverride ?? profile.test_command ?? 'maestro test';
     const startedAt = new Date().toISOString();
-    if (!command) {
-      const finishedAt = new Date().toISOString();
-      return {
-        outcome: 'infra_issue',
-        exitCode: null,
-        stdout: '',
-        stderr: 'No test_command configured for QA profile',
-        artifacts: [],
-        startedAt,
-        finishedAt,
-      };
-    }
     const cwd = this.resolveCwd(profile, ctx);
     try {
       const { stdout, stderr } = await exec(command, {

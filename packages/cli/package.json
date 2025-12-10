@@ -17,7 +17,11 @@
   },
   "dependencies": {
     "@mcoda/core": "workspace:*",
-    "@mcoda/shared": "workspace:*"
+    "@mcoda/shared": "workspace:*",
+    "yaml": "^2.4.2"
+  },
+  "devDependencies": {
+    "@mcoda/db": "workspace:*"
   },
   "license": "MIT"
 }

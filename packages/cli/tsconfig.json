@@ -7,7 +7,11 @@
     "declarationMap": true,
     "paths": {
       "@mcoda/shared": ["packages/shared/dist/index.d.ts"],
-      "@mcoda/core": ["packages/core/dist/index.d.ts"]
+      "@mcoda/shared/*": ["packages/shared/dist/*"],
+      "@mcoda/core": ["packages/core/dist/index.d.ts"],
+      "@mcoda/core/*": ["packages/core/dist/*"],
+      "@mcoda/db": ["packages/db/dist/index.d.ts"],
+      "@mcoda/db/*": ["packages/db/dist/*"]
     }
   },
   "include": ["src"]

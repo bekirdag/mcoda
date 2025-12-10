@@ -107,6 +107,14 @@ export class VcsClient {
       .map((line) => line.replace(/^[\?MADRCU!\s]+/, "").trim());
   }
 
+  async ensureClean(cwd: string, ignoreDotMcoda = true): Promise<void> {
+    const dirty = await this.dirtyPaths(cwd);
+    const filtered = ignoreDotMcoda ? dirty.filter((p) => !p.startsWith(".mcoda")) : dirty;
+    if (filtered.length) {
+      throw new Error(`Working tree dirty: ${filtered.join(", ")}`);
+    }
+  }
+
   async lastCommitSha(cwd: string): Promise<string> {
     const { stdout } = await this.runGit(cwd, ["rev-parse", "HEAD"]);
     return stdout.trim();

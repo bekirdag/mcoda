@@ -4,7 +4,11 @@
     "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
-    "declarationMap": true
+    "declarationMap": true,
+    "paths": {
+      "@mcoda/shared": ["packages/shared/dist/index.d.ts"],
+      "@mcoda/shared/*": ["packages/shared/dist/*"]
+    }
   },
   "include": ["src"]
 }

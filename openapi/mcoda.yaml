@@ -588,12 +588,61 @@ paths:
             schema:
               type: object
               properties:
-                taskIds:
+                projectKey:
+                  type: string
+                  description: Key of the project to scope QA runs.
+                epicKey:
+                  type: string
+                  description: Optional epic key filter.
+                storyKey:
+                  type: string
+                  description: Optional user story key filter.
+                taskKeys:
                   type: array
+                  description: Explicit list of task keys to QA.
                   items:
                     type: string
+                statusFilter:
+                  type: array
+                  description: Status filter, defaults to ready_to_qa.
+                  items:
+                    type: string
+                mode:
+                  type: string
+                  enum: [auto, manual]
+                  default: auto
                 profile:
                   type: string
+                  description: Explicit QA profile name to use.
+                level:
+                  type: string
+                  description: Level hint (unit|integration|acceptance) for profile selection.
+                testCommand:
+                  type: string
+                  description: Override CLI test command when runner=cli.
+                agent:
+                  type: string
+                  description: QA agent to interpret results.
+                agentStream:
+                  type: boolean
+                  default: true
+                createFollowupTasks:
+                  type: string
+                  enum: [auto, none, prompt]
+                  default: auto
+                dryRun:
+                  type: boolean
+                  default: false
+                result:
+                  type: string
+                  enum: [pass, fail, blocked]
+                  description: Manual result when mode=manual.
+                notes:
+                  type: string
+                  description: Optional manual QA notes.
+                evidenceUrl:
+                  type: string
+                  description: Optional manual QA evidence URL.
       responses:
         "202":
           description: Job created

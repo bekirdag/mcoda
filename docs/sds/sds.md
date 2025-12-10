@@ -6591,11 +6591,13 @@ mcoda qa-tasks \
   [--level unit|integration|acceptance] \
   [--test-command "<CMD>"] \
   [--agent <NAME>] \
+  [--agent-stream true|false] \
+  [--resume <JOB_ID>] \
   [--dry-run] \
   [--json]
 ```
 
-*   
+*  
   `--mode auto` (default) – run tests via a QA adapter, then use a QA agent to interpret logs and map to a canonical outcome.
 
 * `--mode manual` – accept a human‑provided result per task (pass/fail/blocked), optionally with notes and evidence URLs.
@@ -6607,6 +6609,16 @@ mcoda qa-tasks \
 * `--test-command` – one‑off override of the profile’s default CLI command.
 
 * `--agent` – override the workspace/global QA agent for this run.
+
+* `--agent-stream` – defaults to **true**; stream agent interpretation output while persisting full text. Set to false to suppress streaming.
+
+* `--resume <JOB_ID>` – continue a previously started QA job; tasks with recorded outcomes for that job are skipped.
+
+Example automated QA run (Chromium profile) with explicit profile and streaming enabled by default:
+
+```shell
+mcoda qa-tasks --workspace-root ~/workspaces/web --project WEB --profile ui --mode auto --task web-01-us-01-t01
+```
 
 OpenAPI exposes a `POST /tasks/qa` or equivalent operation that mirrors this surface; the CLI is a thin wrapper over that operation.
 
@@ -6710,7 +6722,7 @@ mcoda qa-tasks \
   [--evidence-url "https://ci.example/testrun/123"]
 ```
 
-*   
+*  
   Expected starting state is usually `ready_to_qa` (see 16.3).
 
 * The command:
@@ -6726,6 +6738,12 @@ mcoda qa-tasks \
 Manual results can also come via API (e.g. from external test systems); the manual flow is still surfaced through the same OpenAPI operation, with the CLI as one client.
 
 Optionally, a QA agent can be invoked purely to **summarize** external reports (JUnit/Allure URLs, CI logs) into human‑readable comments without affecting the state transition logic.
+
+Quick example:
+
+```shell
+mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url "https://ci.example/run/123"
+```
 
 #### **16.2.4 Job & resumability** {#16.2.4-job-&-resumability}
 

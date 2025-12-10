@@ -7,9 +7,13 @@
     "declarationMap": true,
     "paths": {
       "@mcoda/shared": ["packages/shared/dist/index.d.ts"],
+      "@mcoda/shared/*": ["packages/shared/dist/*"],
       "@mcoda/db": ["packages/db/dist/index.d.ts"],
+      "@mcoda/db/*": ["packages/db/dist/*"],
       "@mcoda/agents": ["packages/agents/dist/index.d.ts"],
-      "@mcoda/integrations": ["packages/integrations/dist/index.d.ts"]
+      "@mcoda/agents/*": ["packages/agents/dist/*"],
+      "@mcoda/integrations": ["packages/integrations/dist/index.d.ts"],
+      "@mcoda/integrations/*": ["packages/integrations/dist/*"]
     }
   },
   "include": ["src"]

@@ -1,21 +1,66 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { TaskRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
+import fs from 'node:fs/promises';
 
 export interface QaProfileResolutionOptions {
   profileName?: string;
   level?: string;
+  defaultLevel?: string;
 }
 
 export class QaProfileService {
   private cache?: QaProfile[];
+  private routingCache?: {
+    defaultProfile?: string;
+    levels?: Record<string, string>;
+    taskTypes?: Record<string, string>;
+    tags?: Record<string, string>;
+  };
 
   constructor(private workspaceRoot: string) {}
 
   private get profilePath(): string {
     return path.join(this.workspaceRoot, '.mcoda', 'qa-profiles.json');
+  }
+
+  private get workspaceConfigPath(): string {
+    return path.join(this.workspaceRoot, '.mcoda', 'config.json');
+  }
+
+  private async getConfiguredDefaultProfileName(): Promise<string | undefined> {
+    try {
+      const raw = await fs.readFile(this.workspaceConfigPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      return parsed?.qa?.defaultProfile ?? parsed?.qa?.default_profile ?? parsed?.qaDefaultProfile;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async getRoutingConfig(): Promise<{
+    defaultProfile?: string;
+    levels?: Record<string, string>;
+    taskTypes?: Record<string, string>;
+    tags?: Record<string, string>;
+  }> {
+    if (this.routingCache) return this.routingCache;
+    try {
+      const raw = await fs.readFile(this.workspaceConfigPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const qa = parsed?.qa ?? {};
+      this.routingCache = {
+        defaultProfile: qa.defaultProfile ?? qa.default_profile ?? qa.default,
+        levels: qa.routing?.levels ?? qa.routing?.level ?? qa.levelRouting ?? undefined,
+        taskTypes: qa.routing?.taskTypes ?? qa.routing?.types ?? qa.typeRouting ?? undefined,
+        tags: qa.routing?.tags ?? undefined,
+      };
+      return this.routingCache;
+    } catch {
+      this.routingCache = {};
+      return this.routingCache;
+    }
   }
 
   async loadProfiles(): Promise<QaProfile[]> {
@@ -46,17 +91,25 @@ export class QaProfileService {
   async resolveProfileForTask(task: TaskRow & { metadata?: any }, options: QaProfileResolutionOptions = {}): Promise<QaProfile | undefined> {
     const profiles = await this.loadProfiles();
     if (!profiles.length) return undefined;
-    if (options.profileName) {
-      const match = profiles.find((p) => p.name === options.profileName);
+    const envProfile = process.env.MCODA_QA_PROFILE;
+    const routing = await this.getRoutingConfig();
+    const configuredDefault = options.profileName ?? envProfile ?? (await this.getConfiguredDefaultProfileName()) ?? routing.defaultProfile;
+    const pickByName = (name: string | undefined): QaProfile | undefined => {
+      if (!name) return undefined;
+      const match = profiles.find((p) => p.name === name);
       if (!match) {
-        throw new Error(`QA profile not found: ${options.profileName}`);
+        throw new Error(`QA profile not found: ${name}`);
       }
       return match;
+    };
+    const explicit = pickByName(configuredDefault);
+    if (explicit) {
+      return explicit;
     }
     const taskTags: string[] = Array.isArray((task.metadata as any)?.tags)
       ? ((task.metadata as any).tags as string[]).map((t) => t.toLowerCase())
       : [];
-    const candidates = profiles.filter((profile) => {
+    let candidates = profiles.filter((profile) => {
       const typeMatch =
         !profile.matcher?.task_types ||
         profile.matcher.task_types.length === 0 ||
@@ -67,15 +120,35 @@ export class QaProfileService {
         profile.matcher.tags.some((tag) => taskTags.includes(tag.toLowerCase()));
       return typeMatch && tagMatch;
     });
+    if (routing) {
+      const levelRoute = options.level && routing.levels ? routing.levels[options.level] : undefined;
+      const typeRoute = task.type && routing.taskTypes ? routing.taskTypes[task.type] : undefined;
+      const tagRoute =
+        routing.tags && taskTags.length
+          ? taskTags.map((tag) => routing.tags?.[tag]).find((name): name is string => Boolean(name))
+          : undefined;
+      const routedName = levelRoute ?? typeRoute ?? tagRoute;
+      const routed = pickByName(routedName);
+      if (routed) return routed;
+    }
+    const targetLevel = options.level ?? options.defaultLevel;
+    if (targetLevel) {
+      const levelMatches = candidates.filter((p) => (p.level ?? (p as any).qa_level) === targetLevel);
+      if (levelMatches.length === 1) return levelMatches[0];
+      if (levelMatches.length > 1) candidates = levelMatches;
+    }
     if (candidates.length === 1) return candidates[0];
     if (candidates.length > 1) {
-      if (options.level) {
-        const levelMatches = candidates.filter((p) => (p as any).level === options.level);
-        if (levelMatches.length === 1) return levelMatches[0];
-      }
       const defaults = candidates.filter((p) => p.default);
       if (defaults.length === 1) return defaults[0];
-      return candidates[0];
+      if (defaults.length > 1) {
+        throw new Error('Multiple default QA profiles configured; specify --profile.');
+      }
+      throw new Error(
+        `Multiple QA profiles match task (${task.key}); please specify --profile. Candidates: ${candidates
+          .map((p) => p.name)
+          .join(', ')}`,
+      );
     }
     const defaults = profiles.filter((p) => p.default);
     if (defaults.length === 1) return defaults[0];

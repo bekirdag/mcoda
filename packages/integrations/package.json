@@ -4,13 +4,20 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./qa/*": "./dist/qa/*",
+    "./docdex/*": "./dist/docdex/*",
+    "./vcs/*": "./dist/vcs/*",
+    "./telemetry/*": "./dist/telemetry/*"
+  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
-    "test": "echo \"no tests yet\""
+    "test": "pnpm run build && node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
     "@mcoda/shared": "workspace:*"
