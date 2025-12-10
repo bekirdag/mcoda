@@ -5,3 +5,7 @@ export * from "./commands/jobs/JobsCommands.js";
 export * from "./commands/openapi/OpenapiCommands.js";
 export * from "./commands/planning/CreateTasksCommand.js";
 export * from "./commands/backlog/BacklogCommands.js";
+export * from "./commands/estimate/EstimateCommands.js";
+export * from "./commands/telemetry/TelemetryCommands.js";
+export * from "./commands/planning/RefineTasksCommand.js";
+export * from "./commands/work/WorkOnTasksCommand.js";

@@ -117,6 +117,7 @@ export interface CommandRunInsert {
   gitBaseBranch?: string | null;
   startedAt: string;
   status: CommandStatus;
+  spProcessed?: number | null;
 }
 
 export interface CommandRunRow extends CommandRunInsert {
@@ -167,6 +168,15 @@ export interface TokenUsageInsert {
   metadata?: Record<string, unknown>;
 }
 
+export interface TaskRevisionInsert {
+  taskId: string;
+  jobId?: string | null;
+  commandRunId?: string | null;
+  snapshotBefore?: Record<string, unknown> | null;
+  snapshotAfter?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
 export class WorkspaceRepository {
   constructor(private db: Database, private connection?: Connection) {}
 
@@ -180,6 +190,10 @@ export class WorkspaceRepository {
     if (this.connection) {
       await this.connection.close();
     }
+  }
+
+  getDb(): Database {
+    return this.db;
   }
 
   async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
@@ -376,6 +390,182 @@ export class WorkspaceRepository {
     return rows;
   }
 
+  async deleteTaskDependenciesForTask(taskId: string): Promise<void> {
+    await this.db.run(
+      `DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?`,
+      taskId,
+      taskId,
+    );
+  }
+
+  async updateTask(
+    taskId: string,
+    updates: {
+      title?: string;
+      description?: string | null;
+      type?: string | null;
+      status?: string;
+      storyPoints?: number | null;
+      priority?: number | null;
+      metadata?: Record<string, unknown> | null;
+      assignedAgentId?: string | null;
+      assigneeHuman?: string | null;
+      vcsBranch?: string | null;
+      vcsBaseBranch?: string | null;
+      vcsLastCommitSha?: string | null;
+    },
+  ): Promise<void> {
+    const fields: string[] = [];
+    const params: any[] = [];
+    if (updates.title !== undefined) {
+      fields.push("title = ?");
+      params.push(updates.title);
+    }
+    if (updates.description !== undefined) {
+      fields.push("description = ?");
+      params.push(updates.description);
+    }
+    if (updates.type !== undefined) {
+      fields.push("type = ?");
+      params.push(updates.type);
+    }
+    if (updates.status !== undefined) {
+      fields.push("status = ?");
+      params.push(updates.status);
+    }
+    if (updates.storyPoints !== undefined) {
+      fields.push("story_points = ?");
+      params.push(updates.storyPoints);
+    }
+    if (updates.priority !== undefined) {
+      fields.push("priority = ?");
+      params.push(updates.priority);
+    }
+    if (updates.metadata !== undefined) {
+      fields.push("metadata_json = ?");
+      params.push(updates.metadata ? JSON.stringify(updates.metadata) : null);
+    }
+    if (updates.assignedAgentId !== undefined) {
+      fields.push("assigned_agent_id = ?");
+      params.push(updates.assignedAgentId);
+    }
+    if (updates.assigneeHuman !== undefined) {
+      fields.push("assignee_human = ?");
+      params.push(updates.assigneeHuman);
+    }
+    if (updates.vcsBranch !== undefined) {
+      fields.push("vcs_branch = ?");
+      params.push(updates.vcsBranch);
+    }
+    if (updates.vcsBaseBranch !== undefined) {
+      fields.push("vcs_base_branch = ?");
+      params.push(updates.vcsBaseBranch);
+    }
+    if (updates.vcsLastCommitSha !== undefined) {
+      fields.push("vcs_last_commit_sha = ?");
+      params.push(updates.vcsLastCommitSha);
+    }
+    if (fields.length === 0) return;
+    fields.push("updated_at = ?");
+    params.push(new Date().toISOString());
+    params.push(taskId);
+    await this.db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, ...params);
+  }
+
+  async getTaskById(taskId: string): Promise<TaskRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
+       FROM tasks WHERE id = ?`,
+      taskId,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      userStoryId: row.user_story_id,
+      key: row.key,
+      title: row.title,
+      description: row.description ?? undefined,
+      type: row.type ?? undefined,
+      status: row.status,
+      storyPoints: row.story_points ?? undefined,
+      priority: row.priority ?? undefined,
+      assignedAgentId: row.assigned_agent_id ?? undefined,
+      assigneeHuman: row.assignee_human ?? undefined,
+      vcsBranch: row.vcs_branch ?? undefined,
+      vcsBaseBranch: row.vcs_base_branch ?? undefined,
+      vcsLastCommitSha: row.vcs_last_commit_sha ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      openapiVersionAtCreation: row.openapi_version_at_creation ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getTaskByKey(taskKey: string): Promise<TaskRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
+       FROM tasks WHERE key = ?`,
+      taskKey,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      userStoryId: row.user_story_id,
+      key: row.key,
+      title: row.title,
+      description: row.description ?? undefined,
+      type: row.type ?? undefined,
+      status: row.status,
+      storyPoints: row.story_points ?? undefined,
+      priority: row.priority ?? undefined,
+      assignedAgentId: row.assigned_agent_id ?? undefined,
+      assigneeHuman: row.assignee_human ?? undefined,
+      vcsBranch: row.vcs_branch ?? undefined,
+      vcsBaseBranch: row.vcs_base_branch ?? undefined,
+      vcsLastCommitSha: row.vcs_last_commit_sha ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      openapiVersionAtCreation: row.openapi_version_at_creation ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getTasksByIds(taskIds: string[]): Promise<TaskRow[]> {
+    if (!taskIds.length) return [];
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const rows = await this.db.all(
+      `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
+       FROM tasks WHERE id IN (${placeholders})`,
+      ...taskIds,
+    );
+    return rows.map((row: any) => ({
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      userStoryId: row.user_story_id,
+      key: row.key,
+      title: row.title,
+      description: row.description ?? undefined,
+      type: row.type ?? undefined,
+      status: row.status,
+      storyPoints: row.story_points ?? undefined,
+      priority: row.priority ?? undefined,
+      assignedAgentId: row.assigned_agent_id ?? undefined,
+      assigneeHuman: row.assignee_human ?? undefined,
+      vcsBranch: row.vcs_branch ?? undefined,
+      vcsBaseBranch: row.vcs_base_branch ?? undefined,
+      vcsLastCommitSha: row.vcs_last_commit_sha ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      openapiVersionAtCreation: row.openapi_version_at_creation ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   async listEpicKeys(projectId: string): Promise<string[]> {
     const rows = await this.db.all(`SELECT key FROM epics WHERE project_id = ? ORDER BY key`, projectId);
     return rows.map((r: any) => r.key as string);
@@ -513,8 +703,8 @@ export class WorkspaceRepository {
   async createCommandRun(record: CommandRunInsert): Promise<CommandRunRow> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO command_runs (id, workspace_id, command_name, job_id, task_ids_json, git_branch, git_base_branch, started_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO command_runs (id, workspace_id, command_name, job_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.workspaceId,
       record.commandName,
@@ -524,22 +714,30 @@ export class WorkspaceRepository {
       record.gitBaseBranch ?? null,
       record.startedAt,
       record.status,
+      record.spProcessed ?? null,
     );
     return { id, ...record, completedAt: null, errorSummary: null, durationSeconds: null };
   }
 
   async completeCommandRun(
     id: string,
-    update: { status: CommandStatus; completedAt: string; errorSummary?: string | null; durationSeconds?: number | null },
+    update: {
+      status: CommandStatus;
+      completedAt: string;
+      errorSummary?: string | null;
+      durationSeconds?: number | null;
+      spProcessed?: number | null;
+    },
   ): Promise<void> {
     await this.db.run(
       `UPDATE command_runs
-       SET status = ?, completed_at = ?, error_summary = ?, duration_seconds = ?
+       SET status = ?, completed_at = ?, error_summary = ?, duration_seconds = ?, sp_processed = ?
        WHERE id = ?`,
       update.status,
       update.completedAt,
       update.errorSummary ?? null,
       update.durationSeconds ?? null,
+      update.spProcessed ?? null,
       id,
     );
   }
@@ -568,6 +766,102 @@ export class WorkspaceRepository {
     return { id, ...record };
   }
 
+  async insertTaskLog(entry: {
+    taskRunId: string;
+    sequence: number;
+    timestamp: string;
+    level?: string | null;
+    source?: string | null;
+    message?: string | null;
+    details?: Record<string, unknown> | null;
+  }): Promise<void> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO task_logs (id, task_run_id, sequence, timestamp, level, source, message, details_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      entry.taskRunId,
+      entry.sequence,
+      entry.timestamp,
+      entry.level ?? null,
+      entry.source ?? null,
+      entry.message ?? null,
+      entry.details ? JSON.stringify(entry.details) : null,
+    );
+  }
+
+  async updateTaskRun(
+    id: string,
+    update: {
+      status?: TaskRunStatus;
+      finishedAt?: string | null;
+      gitBranch?: string | null;
+      gitBaseBranch?: string | null;
+      gitCommitSha?: string | null;
+      storyPointsAtRun?: number | null;
+      spPerHourEffective?: number | null;
+      runContext?: Record<string, unknown> | null;
+    },
+  ): Promise<void> {
+    const fields: string[] = [];
+    const params: any[] = [];
+    if (update.status !== undefined) {
+      fields.push("status = ?");
+      params.push(update.status);
+    }
+    if (update.finishedAt !== undefined) {
+      fields.push("finished_at = ?");
+      params.push(update.finishedAt);
+    }
+    if (update.gitBranch !== undefined) {
+      fields.push("git_branch = ?");
+      params.push(update.gitBranch);
+    }
+    if (update.gitBaseBranch !== undefined) {
+      fields.push("git_base_branch = ?");
+      params.push(update.gitBaseBranch);
+    }
+    if (update.gitCommitSha !== undefined) {
+      fields.push("git_commit_sha = ?");
+      params.push(update.gitCommitSha);
+    }
+    if (update.storyPointsAtRun !== undefined) {
+      fields.push("story_points_at_run = ?");
+      params.push(update.storyPointsAtRun);
+    }
+    if (update.spPerHourEffective !== undefined) {
+      fields.push("sp_per_hour_effective = ?");
+      params.push(update.spPerHourEffective);
+    }
+    if (update.runContext !== undefined) {
+      fields.push("run_context_json = ?");
+      params.push(update.runContext ? JSON.stringify(update.runContext) : null);
+    }
+    if (!fields.length) return;
+    const clauses = fields.join(", ");
+    params.push(id);
+    await this.db.run(`UPDATE task_runs SET ${clauses} WHERE id = ?`, ...params);
+  }
+
+  async getTaskDependencies(taskIds: string[]): Promise<TaskDependencyRow[]> {
+    if (!taskIds.length) return [];
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const rows = await this.db.all(
+      `SELECT id, task_id, depends_on_task_id, relation_type, created_at, updated_at
+       FROM task_dependencies
+       WHERE task_id IN (${placeholders})`,
+      ...taskIds,
+    );
+    return rows.map((row: any) => ({
+      id: row.id,
+      taskId: row.task_id,
+      dependsOnTaskId: row.depends_on_task_id,
+      relationType: row.relation_type,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   async recordTokenUsage(entry: TokenUsageInsert): Promise<void> {
     const id = randomUUID();
     await this.db.run(
@@ -591,6 +885,21 @@ export class WorkspaceRepository {
       entry.durationSeconds ?? null,
       entry.timestamp,
       entry.metadata ? JSON.stringify(entry.metadata) : null,
+    );
+  }
+
+  async insertTaskRevision(record: TaskRevisionInsert): Promise<void> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO task_revisions (id, task_id, job_id, command_run_id, snapshot_before_json, snapshot_after_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      record.taskId,
+      record.jobId ?? null,
+      record.commandRunId ?? null,
+      record.snapshotBefore ? JSON.stringify(record.snapshotBefore) : null,
+      record.snapshotAfter ? JSON.stringify(record.snapshotAfter) : null,
+      record.createdAt,
     );
   }
 }

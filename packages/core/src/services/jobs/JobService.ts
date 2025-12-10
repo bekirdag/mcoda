@@ -26,6 +26,7 @@ export interface CommandRunRecord {
   status: CommandRunStatus;
   errorSummary?: string;
   durationSeconds?: number;
+  spProcessed?: number | null;
 }
 
 export interface JobRecord {
@@ -67,8 +68,16 @@ const nowIso = (): string => new Date().toISOString();
 export class JobService {
   private checkpointCounters = new Map<string, number>();
   private workspaceRepoInit = false;
+  private telemetryConfig?: { optOut?: boolean; strict?: boolean };
+  private telemetryWarningShown = false;
+  private telemetryRemoteWarningShown = false;
+  private perRunTelemetryDisabled: boolean;
+  private envTelemetryDisabled: boolean;
 
-  constructor(private workspaceRoot: string, private workspaceRepo?: WorkspaceRepository) {}
+  constructor(private workspaceRoot: string, private workspaceRepo?: WorkspaceRepository, options: { noTelemetry?: boolean } = {}) {
+    this.perRunTelemetryDisabled = options.noTelemetry ?? false;
+    this.envTelemetryDisabled = (process.env.MCODA_TELEMETRY ?? "").toLowerCase() === "off";
+  }
 
   private get mcodaDir(): string {
     return path.join(this.workspaceRoot, ".mcoda");
@@ -187,7 +196,7 @@ export class JobService {
   async startCommandRun(commandName: string, projectKey?: string, options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[] }): Promise<CommandRunRecord> {
     await this.ensureMcoda();
     const startedAt = nowIso();
-    const record: CommandRunRecord = {
+    let record: CommandRunRecord = {
       id: randomUUID(),
       commandName,
       workspaceId: this.workspaceRoot,
@@ -198,10 +207,10 @@ export class JobService {
       gitBaseBranch: options?.gitBaseBranch,
       startedAt,
       status: "running",
+      spProcessed: null,
     };
-    await this.appendJsonArray(this.commandRunsPath, record);
     if (this.workspaceRepo) {
-      await this.workspaceRepo.createCommandRun({
+      const row = await this.workspaceRepo.createCommandRun({
         workspaceId: this.workspaceRoot,
         commandName,
         jobId: record.jobId,
@@ -211,21 +220,29 @@ export class JobService {
         startedAt,
         status: "running",
       });
+      record = { ...record, id: row.id };
     }
+    await this.appendJsonArray(this.commandRunsPath, record);
     return record;
   }
 
-  async finishCommandRun(runId: string, status: CommandRunStatus, errorSummary?: string): Promise<void> {
+  async finishCommandRun(runId: string, status: CommandRunStatus, errorSummary?: string, spProcessed?: number): Promise<void> {
     const runs = await this.readJsonArray<CommandRunRecord>(this.commandRunsPath);
     const idx = runs.findIndex((r) => r.id === runId);
     if (idx === -1) return;
     const completedAt = nowIso();
     const durationSeconds =
       runs[idx].startedAt ? (Date.parse(completedAt) - Date.parse(runs[idx].startedAt)) / 1000 : undefined;
-    runs[idx] = { ...runs[idx], completedAt, status, errorSummary, durationSeconds };
+    runs[idx] = { ...runs[idx], completedAt, status, errorSummary, durationSeconds, spProcessed: spProcessed ?? runs[idx].spProcessed };
     await this.writeJsonArray(this.commandRunsPath, runs);
     if (this.workspaceRepo) {
-      await this.workspaceRepo.completeCommandRun(runId, { status, completedAt, errorSummary, durationSeconds });
+      await this.workspaceRepo.completeCommandRun(runId, {
+        status,
+        completedAt,
+        errorSummary,
+        durationSeconds,
+        spProcessed: spProcessed ?? runs[idx].spProcessed ?? null,
+      });
     }
   }
 
@@ -237,7 +254,7 @@ export class JobService {
   ): Promise<JobRecord> {
     await this.ensureMcoda();
     const createdAt = nowIso();
-    const record: JobRecord = {
+    let record: JobRecord = {
       id: randomUUID(),
       type,
       state: "running",
@@ -252,7 +269,7 @@ export class JobService {
       updatedAt: createdAt,
     };
     if (this.workspaceRepo) {
-      await this.workspaceRepo.createJob({
+      const row = await this.workspaceRepo.createJob({
         workspaceId: this.workspaceRoot,
         type,
         state: "running",
@@ -261,6 +278,7 @@ export class JobService {
         totalItems: record.totalItems,
         processedItems: record.processedItems,
       });
+      record = { ...record, id: row.id, createdAt: row.createdAt, updatedAt: row.updatedAt };
     }
     const jobs = await this.readJsonArray<JobRecord>(this.jobsStorePath);
     jobs.push(record);
@@ -347,7 +365,40 @@ export class JobService {
     await fs.appendFile(logPath, content, "utf8");
   }
 
+  private async readTelemetryConfig(): Promise<{ optOut?: boolean; strict?: boolean } | undefined> {
+    const configPath = path.join(this.mcodaDir, "config.json");
+    try {
+      const raw = await fs.readFile(configPath, "utf8");
+      const parsed = JSON.parse(raw) as { telemetry?: { optOut?: boolean; strict?: boolean } };
+      return parsed.telemetry;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async shouldRecordTokenUsage(): Promise<boolean> {
+    if (this.telemetryConfig === undefined) {
+      this.telemetryConfig = await this.readTelemetryConfig();
+    }
+    if (this.telemetryConfig?.strict) {
+      if (!this.telemetryWarningShown) {
+        // eslint-disable-next-line no-console
+        console.warn("Telemetry strict mode is enabled; token usage will not be recorded locally.");
+        this.telemetryWarningShown = true;
+      }
+      return false;
+    }
+    if ((this.perRunTelemetryDisabled || this.envTelemetryDisabled || this.telemetryConfig?.optOut) && !this.telemetryRemoteWarningShown) {
+      // eslint-disable-next-line no-console
+      console.warn("Remote telemetry export disabled for this run (--no-telemetry/MCODA_TELEMETRY=off or opt-out). Local logging still enabled.");
+      this.telemetryRemoteWarningShown = true;
+    }
+    return true;
+  }
+
   async recordTokenUsage(entry: TokenUsageRecord): Promise<void> {
+    const recordTelemetry = await this.shouldRecordTokenUsage();
+    if (!recordTelemetry) return;
     const normalized: TokenUsageInsert = {
       workspaceId: entry.workspaceId,
       agentId: entry.agentId ?? null,

@@ -164,7 +164,7 @@ class StubJobService {
     const idx = this.jobs.findIndex((j) => j.id === jobId);
     if (idx >= 0) this.jobs[idx] = { ...this.jobs[idx], state, meta };
   }
-  async finishCommandRun(id: string, status: string) {
+  async finishCommandRun(id: string, status: string, _error?: string, _spProcessed?: number) {
     const idx = this.commandRuns.findIndex((c) => c.id === id);
     if (idx >= 0) this.commandRuns[idx] = { ...this.commandRuns[idx], status };
   }

@@ -46,3 +46,38 @@ mcoda openapi-from-docs --workspace-root . --agent codex --force
 - Streams agent output by default; pass `--agent-stream false` to disable streaming.
 - Writes to `openapi/mcoda.yaml` (backs up an existing file to `.bak` when `--force` is used).
 - Use `--dry-run` to print the generated YAML without writing, or `--validate-only` to parse/validate the current spec without invoking an agent.
+
+## Inspect the backlog (DB-only)
+
+List SP buckets and tasks already stored in the workspace SQLite DB:
+
+```sh
+mcoda backlog --project WEB --order dependencies --verbose
+```
+
+- Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--status <STATUS[,STATUS...]>`, `--order dependencies`, `--json`, `--verbose`, `--workspace-root <path>`.
+- No agents or docdex are called; output comes purely from `.mcoda/mcoda.db`.
+
+## Telemetry: tokens and config
+
+Summarize token usage (aggregated via the Telemetry API):
+
+```sh
+mcoda tokens --group-by project,command,agent --since 7d --format table
+```
+
+- Filters: `--project`, `--agent`, `--command`, `--job`, `--since/--until`, `--group-by <project|agent|command|day|model|job|action>`, `--format <table|json>`.
+
+Inspect or toggle telemetry settings:
+
+```sh
+mcoda telemetry show
+mcoda telemetry opt-out --strict   # disable remote export; strict also disables local logging
+mcoda telemetry opt-in
+```
+
+Debug a specific job’s token usage:
+
+```sh
+mcoda job tokens <JOB_ID> --since 24h --format table
+```

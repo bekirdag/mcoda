@@ -9,10 +9,24 @@ export interface WorkspaceResolution {
   config?: WorkspaceConfig;
 }
 
+export interface TelemetryPreferences {
+  optOut?: boolean;
+  strict?: boolean;
+  endpoint?: string;
+  authToken?: string;
+}
+
 export interface WorkspaceConfig {
   mirrorDocs?: boolean;
   branch?: string;
   docdexUrl?: string;
+  velocity?: {
+    implementationSpPerHour?: number;
+    reviewSpPerHour?: number;
+    qaSpPerHour?: number;
+    alpha?: number;
+  };
+  telemetry?: TelemetryPreferences;
 }
 
 const fileExists = async (candidate: string): Promise<boolean> => {

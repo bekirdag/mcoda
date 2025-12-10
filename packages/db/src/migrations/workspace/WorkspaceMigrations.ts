@@ -124,7 +124,8 @@ export class WorkspaceMigrations {
         completed_at TEXT,
         status TEXT NOT NULL,
         error_summary TEXT,
-        duration_seconds REAL
+        duration_seconds REAL,
+        sp_processed REAL
       );
 
       CREATE TABLE task_runs (
@@ -155,6 +156,16 @@ export class WorkspaceMigrations {
         message TEXT,
         details_json TEXT,
         UNIQUE(task_run_id, sequence)
+      );
+
+      CREATE TABLE task_revisions (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        job_id TEXT,
+        command_run_id TEXT,
+        snapshot_before_json TEXT,
+        snapshot_after_json TEXT,
+        created_at TEXT NOT NULL
       );
 
       CREATE TABLE token_usage (

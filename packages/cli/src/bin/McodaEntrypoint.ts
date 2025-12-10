@@ -4,13 +4,17 @@ import { DocsCommands } from "../commands/docs/DocsCommands.js";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
 import { OpenapiCommands } from "../commands/openapi/OpenapiCommands.js";
 import { CreateTasksCommand } from "../commands/planning/CreateTasksCommand.js";
+import { RefineTasksCommand } from "../commands/planning/RefineTasksCommand.js";
 import { BacklogCommands } from "../commands/backlog/BacklogCommands.js";
+import { EstimateCommands } from "../commands/estimate/EstimateCommands.js";
+import { TelemetryCommands } from "../commands/telemetry/TelemetryCommands.js";
+import { WorkOnTasksCommand } from "../commands/work/WorkOnTasksCommand.js";
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const [command, ...rest] = argv;
     if (!command) {
-      throw new Error("Usage: mcoda <agent|docs|pdr|create-tasks> [...args]");
+      throw new Error("Usage: mcoda <agent|docs|openapi|jobs|tokens|telemetry|create-tasks|refine-tasks|work-on-tasks|backlog|estimate|pdr|sds> [...args]");
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
@@ -28,6 +32,14 @@ export class McodaEntrypoint {
       await JobsCommands.run(rest);
       return;
     }
+    if (command === "tokens") {
+      await TelemetryCommands.runTokens(rest);
+      return;
+    }
+    if (command === "telemetry") {
+      await TelemetryCommands.runTelemetry(rest);
+      return;
+    }
     if (command === "pdr" || command === "mcoda:pdr") {
       await DocsCommands.run(["pdr", "generate", ...rest]);
       return;
@@ -40,8 +52,20 @@ export class McodaEntrypoint {
       await CreateTasksCommand.run(rest);
       return;
     }
+    if (command === "refine-tasks") {
+      await RefineTasksCommand.run(rest);
+      return;
+    }
+    if (command === "work-on-tasks") {
+      await WorkOnTasksCommand.run(rest);
+      return;
+    }
     if (command === "backlog") {
       await BacklogCommands.run(rest);
+      return;
+    }
+    if (command === "estimate") {
+      await EstimateCommands.run(rest);
       return;
     }
     throw new Error(`Unknown command: ${command}`);

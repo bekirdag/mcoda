@@ -1,0 +1,1160 @@
+import path from "node:path";
+import { promises as fs } from "node:fs";
+import { AgentService } from "@mcoda/agents";
+import { DocdexClient } from "@mcoda/integrations";
+import { GlobalRepository, TaskDependencyInsert, TaskInsert, TaskRow, WorkspaceRepository } from "@mcoda/db";
+import {
+  RefineOperation,
+  RefineStrategy,
+  RefineTasksPlan,
+  RefineTasksRequest,
+  RefineTasksResult,
+  SplitTaskOp,
+  UpdateTaskOp,
+} from "@mcoda/shared";
+import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
+import { JobService } from "../jobs/JobService.js";
+import { createTaskKeyGenerator } from "./KeyHelpers.js";
+
+interface RefineTasksOptions extends RefineTasksRequest {
+  workspace: WorkspaceResolution;
+  storyKey?: string;
+  agentName?: string;
+  agentStream?: boolean;
+  fromDb?: boolean;
+  planInPath?: string;
+  planOutPath?: string;
+  jobId?: string;
+  outputJson?: boolean;
+}
+
+interface CandidateTask extends TaskRow {
+  storyKey: string;
+  epicKey: string;
+  dependencies: string[];
+}
+
+interface StoryGroup {
+  epic: {
+    id: string;
+    key: string;
+    title: string;
+    description?: string;
+  };
+  story: {
+    id: string;
+    key: string;
+    title: string;
+    description?: string;
+    acceptance?: string[];
+  };
+  tasks: CandidateTask[];
+  docSummary?: string;
+  historySummary?: string;
+}
+
+const DEFAULT_STRATEGY: RefineStrategy = "auto";
+const FORBIDDEN_TARGET_STATUSES = new Set(["ready_to_review", "ready_to_qa", "completed"]);
+
+const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
+
+const extractJson = (raw: string): any | undefined => {
+  try {
+    const fenced = raw.match(/```json([\s\S]*?)```/);
+    const candidate = fenced ? fenced[1] : raw;
+    const start = candidate.indexOf("{");
+    const end = candidate.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) return JSON.parse(raw);
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+};
+
+const safeParsePlan = (content: string): RefineTasksPlan | undefined => {
+  try {
+    const parsed = JSON.parse(content) as RefineTasksPlan;
+    if (parsed && Array.isArray(parsed.operations)) return parsed;
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+};
+
+const formatTaskSummary = (task: CandidateTask): string => {
+  return [
+    `- ${task.key}: ${task.title} [${task.status}${task.type ? `/${task.type}` : ""}]`,
+    task.storyPoints !== null && task.storyPoints !== undefined ? `  SP: ${task.storyPoints}` : "",
+    task.dependencies.length ? `  Depends on: ${task.dependencies.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+export class RefineTasksService {
+  private docdex: DocdexClient;
+  private jobService: JobService;
+  private agentService: AgentService;
+  private repo: GlobalRepository;
+  private workspaceRepo: WorkspaceRepository;
+  private workspace: WorkspaceResolution;
+
+  constructor(
+    workspace: WorkspaceResolution,
+    deps: {
+      docdex: DocdexClient;
+      jobService: JobService;
+      agentService: AgentService;
+      repo: GlobalRepository;
+      workspaceRepo: WorkspaceRepository;
+    },
+  ) {
+    this.workspace = workspace;
+    this.docdex = deps.docdex;
+    this.jobService = deps.jobService;
+    this.agentService = deps.agentService;
+    this.repo = deps.repo;
+    this.workspaceRepo = deps.workspaceRepo;
+  }
+
+  static async create(workspace: WorkspaceResolution): Promise<RefineTasksService> {
+    const repo = await GlobalRepository.create();
+    const agentService = new AgentService(repo);
+    const docdex = new DocdexClient({
+      workspaceRoot: workspace.workspaceRoot,
+      baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+    });
+    const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
+    const jobService = new JobService(workspace.workspaceRoot, workspaceRepo);
+    return new RefineTasksService(workspace, { docdex, jobService, agentService, repo, workspaceRepo });
+  }
+
+  async close(): Promise<void> {
+    const tryClose = async (target: unknown) => {
+      try {
+        if ((target as any)?.close) {
+          await (target as any).close();
+        }
+      } catch {
+        // ignore close errors
+      }
+    };
+    await tryClose(this.agentService);
+    await tryClose(this.repo);
+    await tryClose(this.jobService);
+    await tryClose(this.workspaceRepo);
+  }
+
+  private async resolveAgent(agentName?: string) {
+    if (agentName) return this.agentService.resolveAgent(agentName);
+    const defaults = await this.repo.getWorkspaceDefaults(this.workspace.workspaceId);
+    const commandDefault =
+      defaults.find((d) => d.commandName === "refine-tasks") ??
+      defaults.find((d) => d.commandName === "default");
+    if (commandDefault) {
+      return this.agentService.resolveAgent(commandDefault.agentId);
+    }
+    return this.agentService.resolveAgent("codex");
+  }
+
+  private async selectTasks(
+    projectKey: string,
+    filters: {
+      epicKey?: string;
+      storyKey?: string;
+      taskKeys?: string[];
+      statusFilter?: string[];
+      maxTasks?: number;
+    },
+  ): Promise<{ projectId: string; groups: StoryGroup[]; warnings: string[] }> {
+    const db = this.workspaceRepo.getDb();
+    const warnings: string[] = [];
+    const project = await this.workspaceRepo.getProjectByKey(projectKey);
+    if (!project) {
+      throw new Error(`Unknown project key: ${projectKey}`);
+    }
+
+    const epicRow = filters.epicKey
+      ? await db.get<{ id: string; key: string; title: string; description?: string }>(
+          `SELECT id, key, title, description FROM epics WHERE key = ? AND project_id = ?`,
+          filters.epicKey,
+          project.id,
+        )
+      : undefined;
+    if (filters.epicKey && !epicRow) {
+      throw new Error(`Unknown epic key ${filters.epicKey} under project ${projectKey}`);
+    }
+
+    const storyRow = filters.storyKey
+      ? await db.get<{ id: string; key: string; epic_id: string; title: string; description?: string; acceptance_criteria?: string | null }>(
+          `SELECT id, key, epic_id, title, description, acceptance_criteria FROM user_stories WHERE key = ?`,
+          filters.storyKey,
+        )
+      : undefined;
+    if (filters.storyKey && !storyRow) {
+      throw new Error(`Unknown user story key ${filters.storyKey}`);
+    }
+    if (filters.storyKey && epicRow && storyRow && storyRow.epic_id !== epicRow.id) {
+      throw new Error(`Story ${filters.storyKey} is not under epic ${filters.epicKey}`);
+    }
+
+    const clauses: string[] = ["t.project_id = ?"];
+    const params: any[] = [project.id];
+    if (epicRow) {
+      clauses.push("t.epic_id = ?");
+      params.push(epicRow.id);
+    }
+    if (storyRow) {
+      clauses.push("t.user_story_id = ?");
+      params.push(storyRow.id);
+    }
+    if (filters.taskKeys && filters.taskKeys.length > 0) {
+      clauses.push(`t.key IN (${filters.taskKeys.map(() => "?").join(", ")})`);
+      params.push(...filters.taskKeys);
+    }
+    if (filters.statusFilter && filters.statusFilter.length > 0) {
+      clauses.push(`LOWER(t.status) IN (${filters.statusFilter.map(() => "?").join(", ")})`);
+      params.push(...filters.statusFilter.map((s) => s.toLowerCase()));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limit = filters.maxTasks ? `LIMIT ${filters.maxTasks}` : "";
+    const rows = await db.all<any[]>(
+      `
+      SELECT
+        t.id AS task_id,
+        t.key AS task_key,
+        t.project_id AS project_id,
+        t.epic_id AS epic_id,
+        t.user_story_id AS story_id,
+        t.title AS task_title,
+        t.description AS task_description,
+        t.type AS task_type,
+        t.status AS task_status,
+        t.story_points AS task_story_points,
+        t.priority AS task_priority,
+        t.metadata_json AS task_metadata,
+        e.key AS epic_key,
+        e.title AS epic_title,
+        e.description AS epic_description,
+        s.key AS story_key,
+        s.title AS story_title,
+        s.description AS story_description,
+        s.acceptance_criteria AS story_acceptance
+      FROM tasks t
+      INNER JOIN epics e ON e.id = t.epic_id
+      INNER JOIN user_stories s ON s.id = t.user_story_id
+      ${where}
+      ORDER BY s.priority IS NULL, s.priority, t.priority IS NULL, t.priority, t.created_at
+      ${limit}
+    `,
+      params,
+    );
+
+    const taskIds = rows.map((r) => r.task_id);
+    const depMap = new Map<string, string[]>();
+    if (taskIds.length > 0) {
+      const depRows = await db.all<{ task_id: string; dep_key: string }[]>(
+        `
+        SELECT td.task_id, dep.key AS dep_key
+        FROM task_dependencies td
+        INNER JOIN tasks dep ON dep.id = td.depends_on_task_id
+        WHERE td.task_id IN (${taskIds.map(() => "?").join(", ")})
+      `,
+        taskIds,
+      );
+      for (const dep of depRows) {
+        const list = depMap.get(dep.task_id) ?? [];
+        list.push(dep.dep_key);
+        depMap.set(dep.task_id, list);
+      }
+    }
+
+    const groups = new Map<string, StoryGroup>();
+    for (const row of rows) {
+      const acceptance = row.story_acceptance ? String(row.story_acceptance).split(/\r?\n/).filter(Boolean) : [];
+      const groupKey = row.story_id;
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          epic: { id: row.epic_id, key: row.epic_key, title: row.epic_title, description: row.epic_description ?? undefined },
+          story: { id: row.story_id, key: row.story_key, title: row.story_title, description: row.story_description ?? undefined, acceptance },
+          tasks: [],
+        });
+      }
+      const group = groups.get(groupKey)!;
+      const task: CandidateTask = {
+        id: row.task_id,
+        projectId: row.project_id,
+        epicId: row.epic_id,
+        userStoryId: row.story_id,
+        key: row.task_key,
+        title: row.task_title,
+        description: row.task_description ?? undefined,
+        type: row.task_type ?? undefined,
+        status: row.task_status,
+        storyPoints: row.task_story_points ?? null,
+        priority: row.task_priority ?? null,
+        assignedAgentId: null,
+        assigneeHuman: null,
+        vcsBranch: null,
+        vcsBaseBranch: null,
+        vcsLastCommitSha: null,
+        metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
+        openapiVersionAtCreation: null,
+        createdAt: "",
+        updatedAt: "",
+        storyKey: row.story_key,
+        epicKey: row.epic_key,
+        dependencies: depMap.get(row.task_id) ?? [],
+      };
+      group.tasks.push(task);
+    }
+
+    if (filters.maxTasks && rows.length > filters.maxTasks) {
+      warnings.push(`max-tasks=${filters.maxTasks} truncated selection to ${filters.maxTasks} tasks.`);
+    }
+
+    return { projectId: project.id, groups: Array.from(groups.values()), warnings };
+  }
+
+  private buildStoryPrompt(group: StoryGroup, strategy: RefineStrategy, docSummary?: string): string {
+    const taskList = group.tasks.map((t) => formatTaskSummary(t)).join("\n");
+    const constraints = [
+      "- Immutable: project_id, epic_id, user_story_id, task keys.",
+      "- Allowed edits: title, description, acceptanceCriteria, metadata/labels, type, priority, storyPoints, status (but NOT ready_to_review/qa/completed).",
+      "- Splits: children stay under same story; keep parent unless keepParent=false; child dependsOn must reference existing tasks or siblings.",
+      "- Merges: target and sources must be in same story; prefer cancelling redundant sources (status=cancelled) and preserve useful details in target updates.",
+      "- Dependencies: maintain DAG; do not introduce cycles or cross-story edges.",
+      "- Story points: non-negative, keep within typical agile range (0-13).",
+      "- Do not invent new epics/stories or change parentage.",
+    ].join("\n");
+    return [
+      `You are refining tasks for epic ${group.epic.key} "${group.epic.title}" and story ${group.story.key} "${group.story.title}".`,
+      `Strategy: ${strategy}`,
+      "Story acceptance criteria:",
+      group.story.acceptance?.length ? group.story.acceptance.map((c) => `- ${c}`).join("\n") : "- (none provided)",
+      "Current tasks:",
+      taskList || "- (no tasks selected)",
+      "Doc context (summaries only):",
+      docSummary || "(none)",
+      "Recent task history (logs/comments):",
+      group.historySummary || "(none)",
+      "Constraints:",
+      constraints,
+      "Return JSON ONLY matching: { \"operations\": [UpdateTaskOp | SplitTaskOp | MergeTasksOp | UpdateEstimateOp] } where each item has an `op` discriminator (update_task|split_task|merge_tasks|update_estimate).",
+    ].join("\n\n");
+  }
+
+  private async summarizeDocs(projectKey: string, epicKey?: string, storyKey?: string): Promise<{ summary: string; warnings: string[] }> {
+    const warnings: string[] = [];
+    const startedAt = Date.now();
+    try {
+      const docs = await this.docdex.search({
+        projectKey,
+        profile: "sds",
+        query: [epicKey, storyKey].filter(Boolean).join(" "),
+      });
+      if (!docs || docs.length === 0) {
+        return { summary: "(no relevant docdex entries)", warnings: [] };
+      }
+      const top = docs
+        .filter((doc) => {
+          const type = (doc.docType ?? "").toLowerCase();
+          return type.includes("sds") || type.includes("pdr") || type.includes("rfp");
+        })
+        .slice(0, 5);
+      const summary = top
+        .map((doc) => {
+          const segments = (doc.segments ?? []).slice(0, 3);
+          const segText = segments
+            .map((seg, idx) => {
+              const snippet = seg.content.length > 180 ? `${seg.content.slice(0, 180)}...` : seg.content;
+              return `    (${idx + 1}) ${seg.heading ? `${seg.heading}: ` : ""}${snippet}`;
+            })
+            .join("\n");
+          const head = doc.content ? doc.content.split(/\r?\n/).slice(0, 2).join(" ").slice(0, 160) : "";
+          return [`- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}${head ? ` — ${head}` : ""}`, segText].filter(Boolean).join("\n");
+        })
+        .join("\n");
+      const durationSeconds = (Date.now() - startedAt) / 1000;
+      await this.jobService.recordTokenUsage({
+        workspaceId: this.workspace.workspaceId,
+        jobId: undefined,
+        commandRunId: undefined,
+        agentId: undefined,
+        modelName: "docdex",
+        tokensPrompt: null,
+        tokensCompletion: null,
+        tokensTotal: null,
+        durationSeconds,
+        timestamp: new Date().toISOString(),
+        metadata: { command: "refine-tasks", action: "docdex_search", projectKey, epicKey, storyKey },
+      });
+      return { summary: summary || "(no doc segments found)", warnings };
+    } catch (error) {
+      warnings.push(`Docdex lookup failed: ${(error as Error).message}`);
+      return { summary: "(docdex unavailable)", warnings };
+    }
+  }
+
+  private async summarizeHistory(taskIds: string[]): Promise<string> {
+    if (taskIds.length === 0) return "(none)";
+    const db = this.workspaceRepo.getDb();
+    const placeholders = taskIds.map(() => "?").join(", ");
+    try {
+      const rows = await db.all<
+        { task_id: string; timestamp: string; level: string | null; message: string | null; source: string | null }[]
+      >(
+        `
+        SELECT r.task_id, l.timestamp, l.level, l.message, l.source
+        FROM task_logs l
+        INNER JOIN task_runs r ON r.id = l.task_run_id
+        WHERE r.task_id IN (${placeholders})
+        ORDER BY l.timestamp DESC
+        LIMIT 15
+      `,
+        taskIds,
+      );
+      if (!rows || rows.length === 0) return "(none)";
+      return rows
+        .map((row) => {
+          const level = row.level ? row.level.toUpperCase() : "INFO";
+          const msg = row.message ?? "";
+          return `- ${row.task_id}: [${level}] ${msg} (${row.source ?? "run"})`;
+        })
+        .join("\n");
+    } catch {
+      return "(unavailable)";
+    }
+  }
+
+  private async logWarningsToTasks(
+    taskIds: string[],
+    jobId: string,
+    commandRunId: string,
+    message: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    for (const taskId of taskIds) {
+      try {
+        const run = await this.workspaceRepo.createTaskRun({
+          taskId,
+          command: "refine-tasks",
+          status: "succeeded",
+          jobId,
+          commandRunId,
+          startedAt: now,
+          finishedAt: now,
+          runContext: { warning: true },
+        });
+        await this.workspaceRepo.insertTaskLog({
+          taskRunId: run.id,
+          sequence: 0,
+          timestamp: now,
+          level: "warn",
+          source: "refine-tasks",
+          message,
+          details: { warning: true },
+        });
+      } catch {
+        // Best-effort logging only.
+      }
+    }
+  }
+
+  private mergeMetadata(existing: Record<string, unknown> | undefined, updates?: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (!updates) return existing;
+    return { ...(existing ?? {}), ...updates };
+  }
+
+  private validateOperation(group: StoryGroup, op: RefineOperation): { valid: boolean; reason?: string } {
+    const allowedOps = new Set(["update_task", "split_task", "merge_tasks", "update_estimate"]);
+    if (!op || typeof (op as any).op !== "string" || !allowedOps.has((op as any).op)) {
+      return { valid: false, reason: "Unknown op type" };
+    }
+    if (op.op === "update_task") {
+      if (!op.taskKey || typeof op.updates !== "object") {
+        return { valid: false, reason: "update_task missing taskKey or updates" };
+      }
+    }
+    if (op.op === "split_task") {
+      const split = op as SplitTaskOp;
+      if (!split.taskKey || !Array.isArray(split.children) || split.children.length === 0) {
+        return { valid: false, reason: "split_task missing taskKey or children" };
+      }
+    }
+    if (op.op === "merge_tasks") {
+      if (!op.targetTaskKey || !Array.isArray(op.sourceTaskKeys) || op.sourceTaskKeys.length === 0) {
+        return { valid: false, reason: "merge_tasks missing targets" };
+      }
+    }
+    if (op.op === "update_estimate") {
+      if (!op.taskKey) return { valid: false, reason: "update_estimate missing taskKey" };
+    }
+    const keySet = new Set(group.tasks.map((t) => t.key));
+    if ((op as any).taskKey && !keySet.has((op as any).taskKey)) {
+      return { valid: false, reason: `Unknown task key ${(op as any).taskKey} for story ${group.story.key}` };
+    }
+    if ((op as any).targetTaskKey && !keySet.has((op as any).targetTaskKey)) {
+      return { valid: false, reason: `Unknown merge target ${(op as any).targetTaskKey}` };
+    }
+    if ((op as any).sourceTaskKeys) {
+      const missing = (op as any).sourceTaskKeys.filter((k: string) => !keySet.has(k));
+      if (missing.length) {
+        return { valid: false, reason: `Merge sources not in story ${group.story.key}: ${missing.join(", ")}` };
+      }
+    }
+    if (op.op === "update_task" && op.updates.status && FORBIDDEN_TARGET_STATUSES.has(op.updates.status.toLowerCase())) {
+      return { valid: false, reason: `Status ${op.updates.status} not allowed in refine-tasks` };
+    }
+    if (op.op === "update_task" && op.updates.storyPoints !== undefined) {
+      const sp = op.updates.storyPoints;
+      if (sp !== null && (typeof sp !== "number" || sp < 0 || sp > 13)) {
+        return { valid: false, reason: `Story points out of bounds for ${op.taskKey}` };
+      }
+    }
+    if (op.op === "split_task") {
+      const split = op as SplitTaskOp;
+      const invalidDep = split.children.some((child) => child.dependsOn?.some((dep) => !keySet.has(dep)));
+      if (invalidDep) {
+        return { valid: false, reason: "Split child references unknown dependency" };
+      }
+      if (split.children.some((child) => child.storyPoints !== undefined && child.storyPoints !== null && (child.storyPoints < 0 || child.storyPoints > 13))) {
+        return { valid: false, reason: "Child story points out of bounds" };
+      }
+      const crossStory = split.children.some((child) => (child as any).storyKey && (child as any).storyKey !== group.story.key);
+      if (crossStory) {
+        return { valid: false, reason: "Split children must stay within the same story" };
+      }
+    }
+    if (op.op === "merge_tasks") {
+      const crossStory =
+        op.sourceTaskKeys.some((k) => !keySet.has(k)) ||
+        (op.targetTaskKey && !keySet.has(op.targetTaskKey));
+      if (crossStory) {
+        return { valid: false, reason: "Merge must stay within the same story" };
+      }
+      const uniqueSources = new Set(op.sourceTaskKeys.filter(Boolean));
+      if (uniqueSources.size !== op.sourceTaskKeys.length) {
+        return { valid: false, reason: "Duplicate source task keys in merge" };
+      }
+      if (uniqueSources.has(op.targetTaskKey)) {
+        return { valid: false, reason: "Merge sources cannot include target" };
+      }
+    }
+    return { valid: true };
+  }
+
+  private detectCycle(edges: Array<{ from: string; to: string }>): boolean {
+    const adj = new Map<string, string[]>();
+    for (const edge of edges) {
+      const list = adj.get(edge.from) ?? [];
+      list.push(edge.to);
+      adj.set(edge.from, list);
+    }
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const dfs = (node: string): boolean => {
+      if (visiting.has(node)) return true;
+      if (visited.has(node)) return false;
+      visiting.add(node);
+      for (const nxt of adj.get(node) ?? []) {
+        if (dfs(nxt)) return true;
+      }
+      visiting.delete(node);
+      visited.add(node);
+      return false;
+    };
+    for (const node of adj.keys()) {
+      if (dfs(node)) return true;
+    }
+    return false;
+  }
+
+  private async applyOperations(
+    projectId: string,
+    jobId: string,
+    commandRunId: string,
+    group: StoryGroup,
+    operations: RefineOperation[],
+  ): Promise<{ created: string[]; updated: string[]; cancelled: string[]; storyPointsDelta: number; warnings: string[] }> {
+    const created: string[] = [];
+    const updated: string[] = [];
+    const cancelled: string[] = [];
+    let storyPointsDelta = 0;
+    const warnings: string[] = [];
+    const taskByKey = new Map(group.tasks.map((t) => [t.key, t]));
+    const existingKeys = group.tasks.map((t) => t.key);
+    const keyGen = createTaskKeyGenerator(group.story.key, existingKeys);
+
+    await this.workspaceRepo.withTransaction(async () => {
+      let stage = "start";
+      const newTasks: TaskInsert[] = [];
+      const pendingDeps: { childKey: string; dependsOnId: string; relationType: string }[] = [];
+      const dependencyEdges: Array<{ from: string; to: string }> = [];
+
+      try {
+        for (const op of operations) {
+          stage = `op:${op.op}`;
+          if (op.op === "update_task") {
+            const target = taskByKey.get(op.taskKey);
+            if (!target) continue;
+            const before = { ...target };
+            const metadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+            const beforeSp = target.storyPoints ?? 0;
+            const afterSp = op.updates.storyPoints ?? target.storyPoints ?? null;
+            storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
+            await this.workspaceRepo.updateTask(target.id, {
+              title: op.updates.title ?? target.title,
+              description: op.updates.description ?? target.description ?? null,
+              type: op.updates.type ?? target.type ?? null,
+              storyPoints: afterSp,
+              priority: op.updates.priority ?? target.priority ?? null,
+              status: op.updates.status ?? target.status,
+              metadata,
+            });
+            updated.push(target.key);
+            await this.workspaceRepo.insertTaskRevision({
+              taskId: target.id,
+              jobId,
+              commandRunId,
+              snapshotBefore: before,
+              snapshotAfter: { ...before, ...op.updates, storyPoints: afterSp, metadata },
+              createdAt: new Date().toISOString(),
+            });
+          } else if (op.op === "split_task") {
+            const target = taskByKey.get(op.taskKey);
+            if (!target) continue;
+            if (op.parentUpdates) {
+              const before = { ...target };
+              await this.workspaceRepo.updateTask(target.id, {
+                title: op.parentUpdates.title ?? target.title,
+                description: op.parentUpdates.description ?? target.description ?? null,
+                type: op.parentUpdates.type ?? target.type ?? null,
+                storyPoints: op.parentUpdates.storyPoints ?? target.storyPoints ?? null,
+                priority: op.parentUpdates.priority ?? target.priority ?? null,
+                metadata: this.mergeMetadata(target.metadata, op.parentUpdates.metadata),
+              });
+              updated.push(target.key);
+              await this.workspaceRepo.insertTaskRevision({
+                taskId: target.id,
+                jobId,
+                commandRunId,
+                snapshotBefore: before,
+                snapshotAfter: {
+                  ...before,
+                  ...op.parentUpdates,
+                  storyPoints: op.parentUpdates.storyPoints ?? before.storyPoints,
+                  metadata: this.mergeMetadata(before.metadata, op.parentUpdates.metadata),
+                },
+                createdAt: new Date().toISOString(),
+              });
+            }
+            for (const child of op.children) {
+              const childKey = keyGen();
+              const childSp = child.storyPoints ?? null;
+              if (childSp) {
+                storyPointsDelta += childSp;
+              }
+              const childInsert: TaskInsert = {
+                projectId,
+                epicId: target.epicId,
+                userStoryId: target.userStoryId,
+                key: childKey,
+                title: child.title,
+                description: child.description ?? target.description ?? "",
+                type: child.type ?? target.type ?? "feature",
+                status: "not_started",
+                storyPoints: childSp,
+                priority: child.priority ?? target.priority ?? null,
+                metadata: this.mergeMetadata({}, child.metadata),
+                assignedAgentId: target.assignedAgentId ?? null,
+                assigneeHuman: target.assigneeHuman ?? null,
+                vcsBranch: null,
+                vcsBaseBranch: null,
+                vcsLastCommitSha: null,
+                openapiVersionAtCreation: target.openapiVersionAtCreation ?? null,
+              };
+              newTasks.push(childInsert);
+              const dependsOn = child.dependsOn ?? [];
+              for (const depKey of dependsOn) {
+                const depTask = taskByKey.get(depKey);
+              if (depTask) {
+                pendingDeps.push({ childKey, dependsOnId: depTask.id, relationType: "blocks" });
+                dependencyEdges.push({ from: childKey, to: depTask.key });
+              }
+            }
+              taskByKey.set(childKey, {
+                ...childInsert,
+                id: "",
+                createdAt: "",
+                updatedAt: "",
+                storyKey: group.story.key,
+                epicKey: group.epic.key,
+                dependencies: child.dependsOn ?? [],
+              });
+              created.push(childKey);
+            }
+          } else if (op.op === "merge_tasks") {
+            const target = taskByKey.get(op.targetTaskKey);
+            if (!target) continue;
+            if (op.updates) {
+              const before = { ...target };
+              await this.workspaceRepo.updateTask(target.id, {
+                title: op.updates.title ?? target.title,
+                description: op.updates.description ?? target.description ?? null,
+                type: op.updates.type ?? target.type ?? null,
+                storyPoints: op.updates.storyPoints ?? target.storyPoints ?? null,
+                priority: op.updates.priority ?? target.priority ?? null,
+                metadata: this.mergeMetadata(target.metadata, op.updates.metadata),
+              });
+              updated.push(target.key);
+              await this.workspaceRepo.insertTaskRevision({
+                taskId: target.id,
+                jobId,
+                commandRunId,
+                snapshotBefore: before,
+                snapshotAfter: {
+                  ...before,
+                  ...op.updates,
+                  storyPoints: op.updates.storyPoints ?? before.storyPoints,
+                  metadata: this.mergeMetadata(before.metadata, op.updates.metadata),
+                },
+                createdAt: new Date().toISOString(),
+              });
+            }
+            for (const sourceKey of op.sourceTaskKeys) {
+              const source = taskByKey.get(sourceKey);
+              if (!source || source.key === target.key) continue;
+              const before = { ...source };
+              await this.workspaceRepo.updateTask(source.id, {
+                status: op.cancelSources === false ? source.status : "cancelled",
+                metadata: this.mergeMetadata(source.metadata, { merged_into: target.key }),
+              });
+              cancelled.push(source.key);
+              await this.workspaceRepo.insertTaskRevision({
+                taskId: source.id,
+                jobId,
+                commandRunId,
+                snapshotBefore: before,
+                snapshotAfter: { ...before, status: op.cancelSources === false ? source.status : "cancelled" },
+                createdAt: new Date().toISOString(),
+              });
+              if (op.cancelSources !== false) {
+                await this.workspaceRepo.deleteTaskDependenciesForTask(source.id);
+              }
+            }
+          } else if (op.op === "update_estimate") {
+            const target = taskByKey.get(op.taskKey);
+            if (!target) continue;
+            const beforeSp = target.storyPoints ?? 0;
+            const afterSp = op.storyPoints ?? target.storyPoints ?? null;
+            storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
+            await this.workspaceRepo.updateTask(target.id, {
+              storyPoints: afterSp,
+              type: op.type ?? target.type ?? null,
+              priority: op.priority ?? target.priority ?? null,
+            });
+            updated.push(target.key);
+            await this.workspaceRepo.insertTaskRevision({
+              taskId: target.id,
+              jobId,
+              commandRunId,
+              snapshotBefore: { ...target },
+              snapshotAfter: { ...target, storyPoints: afterSp, type: op.type ?? target.type ?? null, priority: op.priority ?? target.priority ?? null },
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
+
+        if (newTasks.length > 0) {
+          stage = "insert:newTasks";
+          const inserted = await this.workspaceRepo.insertTasks(newTasks, false);
+          const idByKey = new Map(inserted.map((t) => [t.key, t.id]));
+          for (const row of inserted) {
+            const current = taskByKey.get(row.key);
+            if (current) {
+              current.id = row.id;
+              current.createdAt = row.createdAt;
+              current.updatedAt = row.updatedAt;
+            }
+          }
+          const deps: TaskDependencyInsert[] = [];
+          for (const dep of pendingDeps) {
+            const childId = idByKey.get(dep.childKey);
+            if (childId) {
+              deps.push({ taskId: childId, dependsOnTaskId: dep.dependsOnId, relationType: dep.relationType });
+            }
+          }
+          if (deps.length > 0) {
+            stage = "insert:deps";
+            await this.workspaceRepo.insertTaskDependencies(deps, false);
+          }
+        }
+
+        // cycle detection on current + new dependencies (by key)
+        const edgeSet: Array<{ from: string; to: string }> = [];
+        for (const task of group.tasks) {
+          for (const dep of task.dependencies) {
+            edgeSet.push({ from: task.key, to: dep });
+          }
+        }
+        edgeSet.push(...dependencyEdges);
+        const hasCycle = this.detectCycle(edgeSet);
+        if (hasCycle) {
+          throw new Error("Dependency cycle detected after refinement; aborting apply.");
+        }
+
+        stage = "rollup:story";
+        const storyTotalRow = await this.workspaceRepo.getDb().get<{ total: number }>(
+          `SELECT SUM(story_points) AS total FROM tasks WHERE user_story_id = ?`,
+          group.story.id,
+        );
+        await this.workspaceRepo.updateStoryPointsTotal(group.story.id, storyTotalRow?.total ?? null);
+        stage = "rollup:epic";
+        const epicTotalRow = await this.workspaceRepo.getDb().get<{ total: number }>(
+          `SELECT SUM(story_points_total) AS total FROM user_stories WHERE epic_id = ?`,
+          group.epic.id,
+        );
+        await this.workspaceRepo.updateEpicStoryPointsTotal(group.epic.id, epicTotalRow?.total ?? null);
+
+        stage = "task-runs";
+        const allTouched = [...new Set([...created, ...updated, ...cancelled])];
+        const now = new Date().toISOString();
+        for (const key of allTouched) {
+          try {
+            const task =
+              group.tasks.find((t) => t.key === key) ??
+              (await this.workspaceRepo.getDb().get<{ id: string }>(`SELECT id FROM tasks WHERE key = ?`, key));
+            if (task && task.id) {
+              const run = await this.workspaceRepo.createTaskRun({
+                taskId: task.id,
+                command: "refine-tasks",
+                status: "succeeded",
+                jobId,
+                commandRunId,
+                startedAt: now,
+                finishedAt: now,
+                runContext: { key },
+              });
+              await this.workspaceRepo.insertTaskLog({
+                taskRunId: run.id,
+                sequence: 0,
+                timestamp: now,
+                level: "info",
+                source: "refine-tasks",
+                message: `Applied refine operation for ${key}`,
+                details: { opCount: operations.length },
+              });
+            }
+          } catch (error) {
+            warnings.push(`Logging failed for ${key}: ${(error as Error).message}`);
+          }
+        }
+      } catch (error) {
+        throw new Error(`refine apply failed at ${stage}: ${(error as Error).message}`);
+      }
+    });
+
+    return { created, updated, cancelled, storyPointsDelta, warnings };
+  }
+
+  private async invokeAgent(
+    agentName: string,
+    prompt: string,
+    stream: boolean,
+    jobId: string,
+    commandRunId: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<{ raw: string; promptTokens: number; completionTokens: number }> {
+    let output = "";
+    const startedAt = Date.now();
+    const agent = await this.resolveAgent(agentName);
+    const logChunk = async (chunk?: string) => {
+      if (!chunk) return;
+      await this.jobService.appendLog(jobId, chunk);
+      if (stream) process.stdout.write(chunk);
+    };
+    if (stream) {
+      const gen = await this.agentService.invokeStream(agent.id, { input: prompt });
+      for await (const chunk of gen) {
+        output += chunk.output ?? "";
+        await logChunk(chunk.output);
+      }
+    } else {
+      const result = await this.agentService.invoke(agent.id, { input: prompt });
+      output = result.output ?? "";
+      await logChunk(output);
+    }
+    const promptTokens = estimateTokens(prompt);
+    const completionTokens = estimateTokens(output);
+    const durationSeconds = (Date.now() - startedAt) / 1000;
+    await this.jobService.recordTokenUsage({
+      workspaceId: this.workspace.workspaceId,
+      agentId: agent.id,
+      modelName: agent.defaultModel,
+      jobId,
+      commandRunId,
+      projectId: undefined,
+      epicId: undefined,
+      userStoryId: undefined,
+      tokensPrompt: promptTokens,
+      tokensCompletion: completionTokens,
+      tokensTotal: promptTokens + completionTokens,
+      durationSeconds,
+      timestamp: new Date().toISOString(),
+      metadata: { command: "refine-tasks", action: "agent_refine", ...(metadata ?? {}) },
+    });
+    return { raw: output, promptTokens, completionTokens };
+  }
+
+  async refineTasks(options: RefineTasksOptions): Promise<RefineTasksResult> {
+    const strategy = options.strategy ?? DEFAULT_STRATEGY;
+    const agentStream = options.agentStream !== false;
+    const commandRun = await this.jobService.startCommandRun("refine-tasks", options.projectKey, {
+      taskIds: options.taskKeys,
+    });
+    const job = await this.jobService.startJob("task_refinement", commandRun.id, options.projectKey, {
+      commandName: "refine-tasks",
+      payload: {
+        projectKey: options.projectKey,
+        epicKey: options.epicKey,
+        storyKey: options.userStoryKey ?? options.storyKey,
+        taskKeys: options.taskKeys,
+        statusFilter: options.statusFilter,
+        strategy,
+        maxTasks: options.maxTasks,
+        dryRun: options.dryRun,
+        fromDb: options.fromDb !== false,
+        planIn: options.planInPath,
+        planOut: options.planOutPath,
+      },
+    });
+
+    try {
+      if (options.fromDb === false) {
+        throw new Error("refine-tasks currently only supports DB-backed selection; set --from-db true");
+      }
+      const selection = await this.selectTasks(options.projectKey, {
+        epicKey: options.epicKey,
+        storyKey: options.userStoryKey ?? options.storyKey,
+        taskKeys: options.taskKeys,
+        statusFilter: options.statusFilter,
+        maxTasks: options.maxTasks,
+      });
+
+      if (selection.groups.length === 0) {
+        throw new Error("No tasks matched the provided filters.");
+      }
+
+      const plan: RefineTasksPlan = {
+        strategy,
+        operations: [],
+        warnings: [...selection.warnings],
+        metadata: {
+          generatedAt: new Date().toISOString(),
+          projectKey: options.projectKey,
+          epicKeys: selection.groups.map((g) => g.epic.key),
+          storyKeys: selection.groups.map((g) => g.story.key),
+          strategy,
+          jobId: job.id,
+          commandRunId: commandRun.id,
+        },
+      };
+
+      let planInput: RefineTasksPlan | undefined;
+      if (options.planInPath) {
+        const raw = await fs.readFile(options.planInPath, "utf8");
+        planInput = safeParsePlan(raw);
+        if (!planInput) {
+          throw new Error(`Failed to parse plan from ${options.planInPath}`);
+        }
+        if (planInput.metadata?.projectKey && planInput.metadata.projectKey !== options.projectKey) {
+          throw new Error(`Plan project mismatch: ${planInput.metadata.projectKey} !== ${options.projectKey}`);
+        }
+        if (planInput.metadata?.jobId && options.jobId && planInput.metadata.jobId !== options.jobId) {
+          throw new Error(`Plan was generated for job ${planInput.metadata.jobId}, mismatch with --job-id ${options.jobId}`);
+        }
+        const mergedMeta = {
+          generatedAt: planInput.metadata?.generatedAt ?? plan.metadata?.generatedAt ?? new Date().toISOString(),
+          projectKey: planInput.metadata?.projectKey ?? plan.metadata?.projectKey ?? options.projectKey,
+          epicKeys: planInput.metadata?.epicKeys ?? plan.metadata?.epicKeys,
+          storyKeys: planInput.metadata?.storyKeys ?? plan.metadata?.storyKeys,
+          jobId: planInput.metadata?.jobId ?? plan.metadata?.jobId,
+          commandRunId: planInput.metadata?.commandRunId ?? plan.metadata?.commandRunId,
+          strategy: planInput.metadata?.strategy ?? plan.metadata?.strategy ?? strategy,
+        };
+        plan.metadata = mergedMeta;
+        if (planInput.warnings) plan.warnings?.push(...planInput.warnings);
+        // Validate ops against current selection and group membership.
+        const taskToGroup = new Map<string, StoryGroup>();
+        selection.groups.forEach((g) => g.tasks.forEach((t) => taskToGroup.set(t.key, g)));
+        for (const op of planInput.operations) {
+          const keyCandidate = (op as any).taskKey ?? (op as any).targetTaskKey ?? null;
+          const group = keyCandidate ? taskToGroup.get(keyCandidate) : undefined;
+          if (!group) {
+            plan.warnings?.push(`Skipped plan-in op because task key not in selection: ${keyCandidate ?? op.op}`);
+            continue;
+          }
+          const { valid, reason } = this.validateOperation(group, op);
+          if (!valid) {
+            if (reason) plan.warnings?.push(`Skipped plan-in op: ${reason}`);
+            continue;
+          }
+          plan.operations.push(op);
+        }
+      }
+
+      if (!planInput) {
+        for (const group of selection.groups) {
+          const { summary: docSummary, warnings: docWarnings } = await this.summarizeDocs(
+            options.projectKey,
+            group.epic.key,
+            group.story.key,
+          );
+          group.docSummary = docSummary;
+          const historySummary = await this.summarizeHistory(group.tasks.map((t) => t.id));
+          group.historySummary = historySummary;
+          await this.jobService.writeCheckpoint(job.id, {
+            stage: "context_built",
+            timestamp: new Date().toISOString(),
+            details: { epic: group.epic.key, story: group.story.key, tasks: group.tasks.length },
+          });
+          if (docWarnings.length) {
+            plan.warnings?.push(...docWarnings);
+            // eslint-disable-next-line no-console
+            console.warn(docWarnings.join("; "));
+            await this.jobService.appendLog(job.id, docWarnings.join("\n"));
+            await this.logWarningsToTasks(
+              group.tasks.map((t) => t.id),
+              job.id,
+              commandRun.id,
+              docWarnings.join("; "),
+            );
+          }
+          const prompt = this.buildStoryPrompt(group, strategy, docSummary);
+          const { raw } = await this.invokeAgent(
+            options.agentName ?? "codex",
+            prompt,
+            agentStream,
+            job.id,
+            commandRun.id,
+            { epicKey: group.epic.key, storyKey: group.story.key },
+          );
+          const parsed = extractJson(raw);
+          const ops = parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
+          const filtered = ops.filter((op) => {
+            const { valid, reason } = this.validateOperation(group, op);
+            if (!valid && reason) {
+              plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);
+            }
+            return valid;
+          });
+          plan.operations.push(...filtered);
+        }
+      }
+
+      if (options.planOutPath) {
+        const outPath = path.resolve(options.planOutPath);
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+        await fs.writeFile(outPath, JSON.stringify(plan, null, 2), "utf8");
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "plan_written",
+          timestamp: new Date().toISOString(),
+          details: { path: outPath, ops: plan.operations.length },
+        });
+      }
+
+      if (options.dryRun) {
+        await this.jobService.updateJobStatus(job.id, "completed", {
+          payload: { dryRun: true, operations: plan.operations.length },
+          processedItems: plan.operations.length,
+          totalItems: plan.operations.length,
+          lastCheckpoint: "dry_run",
+        });
+        await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+        return {
+          jobId: job.id,
+          commandRunId: commandRun.id,
+          plan,
+          applied: false,
+          createdTasks: [],
+          updatedTasks: [],
+          cancelledTasks: [],
+          summary: { tasksProcessed: selection.groups.reduce((acc, g) => acc + g.tasks.length, 0), tasksAffected: 0 },
+        };
+      }
+
+      const created: string[] = [];
+      const updated: string[] = [];
+      const cancelled: string[] = [];
+      let storyPointsDelta = 0;
+      const operationsByStory = new Map<string, RefineOperation[]>();
+      for (const op of plan.operations) {
+        const key = (op as any).taskKey ?? (op as any).targetTaskKey ?? null;
+        if (!key) continue;
+        const group = selection.groups.find((g) => g.tasks.some((t) => t.key === key));
+        if (!group) continue;
+        const list = operationsByStory.get(group.story.id) ?? [];
+        list.push(op);
+        operationsByStory.set(group.story.id, list);
+      }
+
+      for (const group of selection.groups) {
+        const ops = operationsByStory.get(group.story.id) ?? [];
+        if (ops.length === 0) continue;
+        const { created: c, updated: u, cancelled: x, storyPointsDelta: delta, warnings: opWarnings } = await this.applyOperations(
+          selection.projectId,
+          job.id,
+          commandRun.id,
+          group,
+          ops,
+        );
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "story_applied",
+          timestamp: new Date().toISOString(),
+          details: { epic: group.epic.key, story: group.story.key, ops: ops.length, created: c.length, updated: u.length, cancelled: x.length },
+        });
+        if (opWarnings.length) {
+          plan.warnings?.push(...opWarnings);
+        }
+        created.push(...c);
+        updated.push(...u);
+        cancelled.push(...x);
+        storyPointsDelta += delta;
+      }
+
+      await this.jobService.updateJobStatus(job.id, "completed", {
+        payload: {
+          created: created.length,
+          updated: updated.length,
+          cancelled: cancelled.length,
+          storyPointsDelta,
+        },
+        processedItems: created.length + updated.length + cancelled.length,
+        totalItems: plan.operations.length,
+        lastCheckpoint: "completed",
+      });
+      await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+
+      return {
+        jobId: job.id,
+        commandRunId: commandRun.id,
+        plan,
+        applied: true,
+        createdTasks: created,
+        updatedTasks: updated,
+        cancelledTasks: cancelled,
+        summary: {
+          tasksProcessed: selection.groups.reduce((acc, g) => acc + g.tasks.length, 0),
+          tasksAffected: created.length + updated.length + cancelled.length,
+          storyPointsDelta,
+        },
+      };
+    } catch (error) {
+      const message = (error as Error).message;
+      await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: message });
+      await this.jobService.finishCommandRun(commandRun.id, "failed", message);
+      throw error;
+    }
+  }
+}

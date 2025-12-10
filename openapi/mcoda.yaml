@@ -289,19 +289,23 @@ paths:
         required: true
         schema:
           type: string
+      - name: project
+        in: query
+        schema:
+          type: string
+      - name: epic
+        in: query
+        schema:
+          type: string
+      - name: story
+        in: query
+        schema:
+          type: string
+      - name: assignee
+        in: query
+        schema:
+          type: string
       - name: status
-        in: query
-        schema:
-          type: string
-      - name: epicId
-        in: query
-        schema:
-          type: string
-      - name: storyId
-        in: query
-        schema:
-          type: string
-      - name: priority
         in: query
         schema:
           type: string
@@ -311,13 +315,11 @@ paths:
       tags: [Backlog, Tasks]
       responses:
         "200":
-          description: Backlog items
+          description: Backlog summary
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/TaskSummary"
+                $ref: "#/components/schemas/BacklogSummary"
       x-mcoda-cli.name: backlog
       x-mcoda-cli.output-shape: table
       x-mcoda-db-table: tasks
@@ -328,8 +330,46 @@ paths:
         required: true
         schema:
           type: string
+      - name: project
+        in: query
+        schema:
+          type: string
+      - name: epic
+        in: query
+        schema:
+          type: string
+      - name: story
+        in: query
+        schema:
+          type: string
+      - name: assignee
+        in: query
+        schema:
+          type: string
+      - name: spPerHour
+        in: query
+        schema:
+          type: number
+      - name: spPerHourReview
+        in: query
+        schema:
+          type: number
+      - name: spPerHourQa
+        in: query
+        schema:
+          type: number
+      - name: velocityMode
+        in: query
+        schema:
+          type: string
+          enum: [config, empirical, mixed]
+      - name: velocityWindow
+        in: query
+        schema:
+          type: number
+          enum: [10, 20, 50]
     get:
-      summary: Estimate velocity and SP/h
+      summary: Estimate backlog durations and ETAs
       operationId: estimate
       tags: [Estimate, Telemetry]
       responses:
@@ -338,7 +378,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/EstimateView"
+                $ref: "#/components/schemas/EstimateResult"
       x-mcoda-cli.name: estimate
       x-mcoda-cli.output-shape: scalar
       x-mcoda-docdex-profile: workspace-code
@@ -384,15 +424,9 @@ paths:
         - docdex
         - vcs
       x-mcoda-docdex-profile: sds
-  /workspaces/{id}/refine-tasks:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
+  /tasks/refine:
     post:
-      summary: Refine existing tasks
+      summary: Refine existing tasks in a workspace project
       operationId: refineTasks
       tags: [Work, Tasks]
       requestBody:
@@ -400,21 +434,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                taskIds:
-                  type: array
-                  items:
-                    type: string
-                guidance:
-                  type: string
+              $ref: "#/components/schemas/RefineTasksRequest"
       responses:
-        "202":
-          description: Job created
+        "200":
+          description: Planned or executed refinement
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Job"
+                $ref: "#/components/schemas/RefineTasksResult"
       x-mcoda-cli.name: refine-tasks
       x-mcoda-cli.output-shape: job
       x-mcoda-job-type: task_refinement
@@ -424,7 +451,6 @@ paths:
         - refine_tasks
       x-mcoda-tools:
         - docdex
-        - vcs
       x-mcoda-docdex-profile: sds
   /workspaces/{id}/work-on-tasks:
     parameters:
@@ -951,6 +977,334 @@ components:
           type: string
       required: [id, title, status]
       x-mcoda-db-table: tasks
+    BacklogLaneTotals:
+      type: object
+      properties:
+        tasks:
+          type: integer
+        story_points:
+          type: number
+      required: [tasks, story_points]
+    BacklogTotals:
+      type: object
+      properties:
+        implementation:
+          $ref: "#/components/schemas/BacklogLaneTotals"
+        review:
+          $ref: "#/components/schemas/BacklogLaneTotals"
+        qa:
+          $ref: "#/components/schemas/BacklogLaneTotals"
+        done:
+          $ref: "#/components/schemas/BacklogLaneTotals"
+      required: [implementation, review, qa, done]
+    BacklogSummary:
+      type: object
+      properties:
+        scope:
+          type: object
+          properties:
+            project:
+              type: string
+            epic:
+              type: string
+            story:
+              type: string
+            assignee:
+              type: string
+        totals:
+          $ref: "#/components/schemas/BacklogTotals"
+      required: [scope, totals]
+    EffectiveVelocity:
+      type: object
+      properties:
+        implementationSpPerHour:
+          type: number
+        reviewSpPerHour:
+          type: number
+        qaSpPerHour:
+          type: number
+        source:
+          type: string
+          enum: [config, empirical, mixed]
+        windowTasks:
+          type: number
+          enum: [10, 20, 50]
+      required: [implementationSpPerHour, reviewSpPerHour, qaSpPerHour, source]
+    EstimateDurations:
+      type: object
+      properties:
+        implementationHours:
+          type: number
+          nullable: true
+        reviewHours:
+          type: number
+          nullable: true
+        qaHours:
+          type: number
+          nullable: true
+        totalHours:
+          type: number
+          nullable: true
+      required: [implementationHours, reviewHours, qaHours, totalHours]
+    EstimateEtas:
+      type: object
+      properties:
+        readyToReviewEta:
+          type: string
+          format: date-time
+        readyToQaEta:
+          type: string
+          format: date-time
+        completeEta:
+          type: string
+          format: date-time
+    EstimateResult:
+      type: object
+      properties:
+        scope:
+          type: object
+          properties:
+            workspaceId:
+              type: string
+            project:
+              type: string
+            epic:
+              type: string
+            story:
+              type: string
+            assignee:
+              type: string
+        backlogTotals:
+          $ref: "#/components/schemas/BacklogTotals"
+        effectiveVelocity:
+          $ref: "#/components/schemas/EffectiveVelocity"
+        durationsHours:
+          $ref: "#/components/schemas/EstimateDurations"
+        etas:
+          $ref: "#/components/schemas/EstimateEtas"
+      required: [scope, backlogTotals, effectiveVelocity, durationsHours, etas]
+    RefineTasksRequest:
+      type: object
+      properties:
+        projectKey:
+          type: string
+        epicKey:
+          type: string
+        userStoryKey:
+          type: string
+        taskKeys:
+          type: array
+          items:
+            type: string
+        statusFilter:
+          type: array
+          items:
+            type: string
+        strategy:
+          type: string
+          enum: [split, merge, enrich, estimate, auto]
+          default: auto
+        maxTasks:
+          type: integer
+        dryRun:
+          type: boolean
+        agentIdOverride:
+          type: string
+        planInPath:
+          type: string
+        planOutPath:
+          type: string
+      required: [projectKey]
+    TaskUpdateFields:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        acceptanceCriteria:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+        storyPoints:
+          type: number
+          nullable: true
+        priority:
+          type: number
+          nullable: true
+        metadata:
+          type: object
+        status:
+          type: string
+      additionalProperties: false
+    UpdateTaskOp:
+      type: object
+      properties:
+        op:
+          type: string
+          enum: [update_task]
+        taskKey:
+          type: string
+        updates:
+          $ref: "#/components/schemas/TaskUpdateFields"
+      required: [op, taskKey, updates]
+    SplitChildTask:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        acceptanceCriteria:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+        storyPoints:
+          type: number
+          nullable: true
+        priority:
+          type: number
+          nullable: true
+        metadata:
+          type: object
+        dependsOn:
+          type: array
+          items:
+            type: string
+      required: [title]
+    SplitTaskOp:
+      type: object
+      properties:
+        op:
+          type: string
+          enum: [split_task]
+        taskKey:
+          type: string
+        keepParent:
+          type: boolean
+        parentUpdates:
+          $ref: "#/components/schemas/TaskUpdateFields"
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/SplitChildTask"
+      required: [op, taskKey, children]
+    MergeTasksOp:
+      type: object
+      properties:
+        op:
+          type: string
+          enum: [merge_tasks]
+        targetTaskKey:
+          type: string
+        sourceTaskKeys:
+          type: array
+          items:
+            type: string
+        updates:
+          $ref: "#/components/schemas/TaskUpdateFields"
+        cancelSources:
+          type: boolean
+      required: [op, targetTaskKey, sourceTaskKeys]
+    UpdateEstimateOp:
+      type: object
+      properties:
+        op:
+          type: string
+          enum: [update_estimate]
+        taskKey:
+          type: string
+        storyPoints:
+          type: number
+          nullable: true
+        type:
+          type: string
+        priority:
+          type: number
+          nullable: true
+      required: [op, taskKey]
+    RefineOperation:
+      oneOf:
+        - $ref: "#/components/schemas/UpdateTaskOp"
+        - $ref: "#/components/schemas/SplitTaskOp"
+        - $ref: "#/components/schemas/MergeTasksOp"
+        - $ref: "#/components/schemas/UpdateEstimateOp"
+      discriminator:
+        propertyName: op
+    RefineTasksPlan:
+      type: object
+      properties:
+        strategy:
+          type: string
+          enum: [split, merge, enrich, estimate, auto]
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RefineOperation"
+        warnings:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          properties:
+            generatedAt:
+              type: string
+            projectKey:
+              type: string
+            epicKeys:
+              type: array
+              items:
+                type: string
+            storyKeys:
+              type: array
+              items:
+                type: string
+            jobId:
+              type: string
+            commandRunId:
+              type: string
+            strategy:
+              type: string
+      required: [operations]
+    RefineTasksResult:
+      type: object
+      properties:
+        jobId:
+          type: string
+        commandRunId:
+          type: string
+        plan:
+          $ref: "#/components/schemas/RefineTasksPlan"
+        applied:
+          type: boolean
+        createdTasks:
+          type: array
+          items:
+            type: string
+        updatedTasks:
+          type: array
+          items:
+            type: string
+        cancelledTasks:
+          type: array
+          items:
+            type: string
+        summary:
+          type: object
+          properties:
+            tasksProcessed:
+              type: integer
+            tasksAffected:
+              type: integer
+            storyPointsDelta:
+              type: number
+              nullable: true
+      required: [jobId, commandRunId, plan, applied]
     TaskHistoryEntry:
       type: object
       properties:
