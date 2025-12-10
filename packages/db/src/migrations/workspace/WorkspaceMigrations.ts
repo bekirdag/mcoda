@@ -15,6 +15,8 @@ export class WorkspaceMigrations {
       DROP TABLE IF EXISTS command_runs;
       DROP TABLE IF EXISTS token_usage;
       DROP TABLE IF EXISTS task_dependencies;
+      DROP TABLE IF EXISTS task_comments;
+      DROP TABLE IF EXISTS task_reviews;
       DROP TABLE IF EXISTS task_logs;
       DROP TABLE IF EXISTS task_runs;
       DROP TABLE IF EXISTS tasks;
@@ -166,6 +168,40 @@ export class WorkspaceMigrations {
         snapshot_before_json TEXT,
         snapshot_after_json TEXT,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE task_comments (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        task_run_id TEXT REFERENCES task_runs(id) ON DELETE SET NULL,
+        job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        source_command TEXT NOT NULL,
+        author_type TEXT NOT NULL,
+        author_agent_id TEXT,
+        category TEXT,
+        file TEXT,
+        line INTEGER,
+        path_hint TEXT,
+        body TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by TEXT
+      );
+
+      CREATE TABLE task_reviews (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        agent_id TEXT,
+        model_name TEXT,
+        decision TEXT NOT NULL,
+        summary TEXT,
+        findings_json TEXT,
+        test_recommendations_json TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT
       );
 
       CREATE TABLE token_usage (

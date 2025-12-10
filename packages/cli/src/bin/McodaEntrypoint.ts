@@ -9,12 +9,15 @@ import { BacklogCommands } from "../commands/backlog/BacklogCommands.js";
 import { EstimateCommands } from "../commands/estimate/EstimateCommands.js";
 import { TelemetryCommands } from "../commands/telemetry/TelemetryCommands.js";
 import { WorkOnTasksCommand } from "../commands/work/WorkOnTasksCommand.js";
+import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const [command, ...rest] = argv;
     if (!command) {
-      throw new Error("Usage: mcoda <agent|docs|openapi|jobs|tokens|telemetry|create-tasks|refine-tasks|work-on-tasks|backlog|estimate|pdr|sds> [...args]");
+      throw new Error(
+        "Usage: mcoda <agent|docs|openapi|jobs|tokens|telemetry|create-tasks|refine-tasks|work-on-tasks|code-review|backlog|estimate|pdr|sds> [...args]",
+      );
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
@@ -58,6 +61,10 @@ export class McodaEntrypoint {
     }
     if (command === "work-on-tasks") {
       await WorkOnTasksCommand.run(rest);
+      return;
+    }
+    if (command === "code-review") {
+      await CodeReviewCommand.run(rest);
       return;
     }
     if (command === "backlog") {

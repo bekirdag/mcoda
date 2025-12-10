@@ -4563,52 +4563,53 @@ mcoda work-on-tasks \
 
 ---
 
-#### **11.3.4 `mcoda code-review`** {#11.3.4-mcoda-code-review}
+#### **#### **11.3.4 `mcoda code-review`** {#11.3.4-mcoda-code-review}
 
 **Purpose**
 
-Run AI‑assisted code review on task branches, capturing structured comments and advancing tasks to QA.
+Run AI-assisted code review on task branches, capturing structured comments, follow-up tasks, and advancing tasks to QA.
 
 **Usage**
 
 ```shell
 mcoda code-review \
+  [--workspace-root <PATH>] \
   [--project <PROJECT_KEY>] \
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \
-  [--agent <NAME>]
+  [--status ready_to_review] \
+  [--base <BRANCH>] \
+  [--dry-run] \
+  [--resume <JOB_ID>] \
+  [--limit N] \
+  [--agent <NAME>] \
+  [--agent-stream <true|false>] \
+  [--json]
 ```
 
 **Behavior**
 
-* For each task, identify its branch and diff (from `tasks.vcs_branch` / repo).
-
+* Starts a `review` job (`command_name = "code-review"`) and a `command_run`, writes checkpoints under `.mcoda/jobs/<job_id>/review/` (tasks_selected, context_built, review_applied), and records `token_usage` per agent call.
+* Task selection via Tasks/Backlog API filters (`project/epic/story/task`, default `status=ready_to_review`, optional `limit`); the task set is persisted in job payload/checkpoints for resume.
+* For each task, identify its branch and diff (from `tasks.vcs_branch` / repo), scoped to `tasks.metadata.files` when present, and store both raw diff and structured `ReviewDiff` JSON.
 * Build review prompts including:
-
-  * SDS/PDR/API docs (via docdex).
-
+  * SDS/PDR/API docs (via docdex) for changed components and acceptance criteria.
   * Task description & acceptance criteria.
-
   * Prior `task_comments` and `task_run_logs`.
+  * OpenAPI slices relevant to changed paths/criteria.
+  * Command runbook/checklists for code-review.
+* Agent produces structured JSON (decision, summary, findings, testRecommendations).
+* CLI writes findings into `task_comments` (`source_command = "code-review"`), inserts `task_reviews`, may auto-create follow-up tasks for critical/blocking findings, updates `task_runs`, and (unless `--dry-run`) transitions tasks:
+  * `ready_to_review → ready_to_qa` on approve,
+  * `ready_to_review → in_progress` on changes_requested,
+  * `ready_to_review → blocked` on block (with reason),
+  * transitions are skipped when `--dry-run` is set.
 
-* Agent produces:
+**State & side-effects**
 
-  * Summary of changes.
-
-  * Inline findings with file/path, location, severity, and suggestion.
-
-* CLI writes these as `task_comments` (`comment_type = code_review_issue`) and updates `task_runs`.
-
-**State & side‑effects**
-
-* New `task_comments` rows.
-
-* `task_run_logs` and `token_usage` for each review phase.
-
-* Status transitions:
-
-  * `ready_to_review → ready_to_qa` on clean review.
-
-  * `ready_to_review → in_progress` when changes are requested.
+* New `task_comments` rows and `task_reviews` rows; optional follow-up tasks for review findings (generic `epic-bugs/us-bugs` used when no story fits).
+* `task_run_logs` and `token_usage` for each review phase (`review_main`/`review_retry`), plus job/command/task runs.
+* Checkpoints and artifacts (diffs/context) under `.mcoda/jobs/<job_id>/review/`.
+* Output: human table (task, status before/after, decision, finding severity counts, job dir hint) or `--json` with `{ job: { id, commandRunId }, tasks: [...], errors: [...], warnings: [...] }`.
 
 ---
 
@@ -6113,7 +6114,10 @@ mcoda code-review \
   [--status ready_to_review] \
   [--base <BRANCH>] \
   [--dry-run] \
+  [--resume <JOB_ID>] \
+  [--limit N] \
   [--agent <NAME>] \
+  [--agent-stream <true|false>] \
   [--json]
 ```
 
@@ -6135,7 +6139,9 @@ mcoda code-review \
 
      * project/epic/story/task filters,
 
-     * default `status_filter = ["ready_to_review"]` unless overridden.
+     * default `status_filter = ["ready_to_review"]` unless overridden,
+     * optional `--limit` to cap the selection,
+     * deterministic ordering from the Tasks/Backlog API (priority/story points/updated_at).
 
    * Persist the resolved task set in the job payload/checkpoints so re‑runs see the same scope.
 
@@ -6183,11 +6189,11 @@ For each task in the job:
 
      * “which comments are still unresolved”.
 
-3. **docdex \+ SDS/RFP/PDR**
+3. **docdex + SDS/RFP/PDR**
 
    * Query docdex for:
 
-     * SDS and PDR sections relevant to changed components/modules.
+     * SDS and PDR sections relevant to changed components/modules and acceptance criteria.
 
      * RFP fragments for requirement‑driven tasks.
 
@@ -6201,7 +6207,7 @@ For each task in the job:
 
    * Extract only:
 
-     * endpoints, operations, and schemas referenced by changed files,
+     * endpoints, operations, and schemas referenced by changed files or acceptance criteria,
 
      * any security/validation rules that may be impacted.
 

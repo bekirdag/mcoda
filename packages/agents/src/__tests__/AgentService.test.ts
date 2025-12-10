@@ -104,7 +104,7 @@ test("falls back to local adapter when no secret and no CLI configured", async (
   assert.equal(result.metadata?.authMode, "local");
 });
 
-test("fails fast when required prompts are missing", async () => {
+test("fills defaults when prompts are missing", async () => {
   const agent = await repo.createAgent({
     slug: "missing-prompts",
     adapter: "openai-api",
@@ -112,13 +112,9 @@ test("fails fast when required prompts are missing", async () => {
   });
   const encrypted = await CryptoHelper.encryptSecret("secret");
   await repo.setAgentAuth(agent.id, encrypted);
-  let threw = false;
-  try {
-    await service.invoke(agent.id, { input: "ping" });
-  } catch (err: any) {
-    threw = /MISSING_PROMPT/.test(String(err?.message));
-  }
-  assert.equal(threw, true);
+  const result = await service.invoke(agent.id, { input: "ping" });
+  const prompts = result.metadata?.prompts as any;
+  assert.equal(prompts?.jobPrompt?.length > 0, true);
 });
 
 test("service does not open workspace DB (global-only guardrail)", async () => {

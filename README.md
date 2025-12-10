@@ -81,3 +81,30 @@ Debug a specific job’s token usage:
 ```sh
 mcoda job tokens <JOB_ID> --since 24h --format table
 ```
+
+## Work on tasks (implementation pipeline)
+
+Drive tasks from the workspace DB through the agent-powered implementation loop:
+
+```sh
+mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress --limit 3
+```
+
+- Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, or `--story <KEY>`. Default statuses: `not_started,in_progress` (override with `--status ...`).
+- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--json`.
+- Selection & ordering: dependency-aware (skips/reroutes blocked tasks), topo + priority + SP + created_at, with in-progress tie-breaks. Blocked tasks are listed in JSON output (`blocked`).
+- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `.mcoda/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_review`. Checkpoints live under `.mcoda/jobs/<jobId>/work/state.json` for resume/debug.
+- Scope & safety: enforces allowed files/tests from task metadata; scope violations are blocked and logged.
+- VCS: ensures `.mcoda` exists and is gitignored, creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (default `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit` or `--dry-run`.
+
+## Code review (review pipeline)
+
+Run AI-assisted review on task branches and write findings to the workspace DB:
+
+```sh
+mcoda code-review --workspace . --project WEB --status ready_to_review --limit 5 --base mcoda-dev --agent reviewer
+```
+
+- Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_review` (override with `--status ...`), optional `--limit <N>`.
+- Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default true), `--json`.
+- Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_review → ready_to_qa/in_progress/blocked` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `.mcoda/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.

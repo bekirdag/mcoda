@@ -282,6 +282,47 @@ paths:
       x-mcoda-cli.name: task-detail
       x-mcoda-cli.output-shape: scalar
       x-mcoda-db-table: task_comments
+  /tasks/{id}/reviews:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: List task reviews
+      operationId: listTaskReviews
+      tags: [Tasks]
+      responses:
+        "200":
+          description: Reviews
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskReview"
+      x-mcoda-cli.output-shape: table
+      x-mcoda-db-table: task_reviews
+    post:
+      summary: Add a task review decision
+      operationId: createTaskReview
+      tags: [Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskReview"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskReview"
+      x-mcoda-cli.output-shape: scalar
+      x-mcoda-db-table: task_reviews
   /workspaces/{id}/backlog:
     parameters:
       - name: id
@@ -468,25 +509,16 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                taskIds:
-                  type: array
-                  items:
-                    type: string
-                branch:
-                  type: string
-                notes:
-                  type: string
+              $ref: "#/components/schemas/WorkOnTasksRequest"
       responses:
-        "202":
-          description: Job created
+        "200":
+          description: Work execution summary
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Job"
+                $ref: "#/components/schemas/WorkOnTasksResult"
       x-mcoda-cli.name: work-on-tasks
-      x-mcoda-cli.output-shape: job
+      x-mcoda-cli.output-shape: work_on_tasks_result
       x-mcoda-job-type: work
       x-mcoda-agent-roles:
         - worker
@@ -1328,17 +1360,91 @@ components:
           type: string
         taskId:
           type: string
-        author:
+        taskRunId:
           type: string
+          nullable: true
+        jobId:
+          type: string
+          nullable: true
+        sourceCommand:
+          type: string
+        authorType:
+          type: string
+          enum: [agent, human]
+        authorAgentId:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        file:
+          type: string
+          nullable: true
+        line:
+          type: integer
+          nullable: true
+        pathHint:
+          type: string
+          nullable: true
         body:
           type: string
+        metadata:
+          type: object
+          additionalProperties: true
         createdAt:
           type: string
           format: date-time
-        commentType:
+        resolvedAt:
           type: string
-      required: [id, taskId, body, createdAt]
+          format: date-time
+          nullable: true
+        resolvedBy:
+          type: string
+          nullable: true
+      required: [id, taskId, sourceCommand, authorType, body, createdAt]
       x-mcoda-db-table: task_comments
+    TaskReview:
+      type: object
+      properties:
+        id:
+          type: string
+        taskId:
+          type: string
+        jobId:
+          type: string
+          nullable: true
+        agentId:
+          type: string
+          nullable: true
+        modelName:
+          type: string
+          nullable: true
+        decision:
+          type: string
+          enum: [approve, changes_requested, block, info_only]
+        summary:
+          type: string
+          nullable: true
+        findingsJson:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        testRecommendationsJson:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          nullable: true
+      required: [id, taskId, decision, createdAt]
+      x-mcoda-db-table: task_reviews
     Job:
       type: object
       properties:
@@ -1431,6 +1537,61 @@ components:
           type: string
       required: [id, taskId, profile, status]
       x-mcoda-db-table: task_qa_runs
+    WorkOnTasksRequest:
+      type: object
+      description: Filters and options for executing work-on-tasks
+      properties:
+        projectKey:
+          type: string
+        epicKey:
+          type: string
+        storyKey:
+          type: string
+        taskKeys:
+          type: array
+          items:
+            type: string
+        statusFilter:
+          type: array
+          items:
+            type: string
+        limit:
+          type: integer
+        parallel:
+          type: integer
+        noCommit:
+          type: boolean
+        dryRun:
+          type: boolean
+        agent:
+          type: string
+        agentStream:
+          type: boolean
+    WorkOnTasksResult:
+      type: object
+      description: Summary of a work-on-tasks run
+      properties:
+        jobId:
+          type: string
+        commandRunId:
+          type: string
+        processed:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+        blocked:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+      required: [jobId, commandRunId]
     TokenUsage:
       type: object
       properties:

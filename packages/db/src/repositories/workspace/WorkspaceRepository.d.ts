@@ -1,6 +1,6 @@
 import { Database } from "sqlite";
 import { Connection } from "../../sqlite/connection.js";
-export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "partial";
 export type CommandStatus = "running" | "succeeded" | "failed";
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export interface ProjectRow {
@@ -147,6 +147,50 @@ export interface TokenUsageInsert {
     timestamp: string;
     metadata?: Record<string, unknown>;
 }
+export interface TaskRevisionInsert {
+    taskId: string;
+    jobId?: string | null;
+    commandRunId?: string | null;
+    snapshotBefore?: Record<string, unknown> | null;
+    snapshotAfter?: Record<string, unknown> | null;
+    createdAt: string;
+}
+export interface TaskCommentInsert {
+    taskId: string;
+    taskRunId?: string | null;
+    jobId?: string | null;
+    sourceCommand: string;
+    authorType: "agent" | "human";
+    authorAgentId?: string | null;
+    category?: string | null;
+    file?: string | null;
+    line?: number | null;
+    pathHint?: string | null;
+    body: string;
+    metadata?: Record<string, unknown> | null;
+    createdAt: string;
+    resolvedAt?: string | null;
+    resolvedBy?: string | null;
+}
+export interface TaskCommentRow extends TaskCommentInsert {
+    id: string;
+}
+export interface TaskReviewInsert {
+    taskId: string;
+    jobId?: string | null;
+    agentId?: string | null;
+    modelName?: string | null;
+    decision: string;
+    summary?: string | null;
+    findingsJson?: Record<string, unknown> | unknown[] | null;
+    testRecommendationsJson?: string[] | null;
+    metadata?: Record<string, unknown> | null;
+    createdAt: string;
+    createdBy?: string | null;
+}
+export interface TaskReviewRow extends TaskReviewInsert {
+    id: string;
+}
 export declare class WorkspaceRepository {
     private db;
     private connection?;
@@ -167,6 +211,30 @@ export declare class WorkspaceRepository {
     listEpicKeys(projectId: string): Promise<string[]>;
     listStoryKeys(epicId: string): Promise<string[]>;
     listTaskKeys(userStoryId: string): Promise<string[]>;
+    updateTask(taskId: string, updates: {
+        title?: string;
+        description?: string | null;
+        type?: string | null;
+        status?: string;
+        storyPoints?: number | null;
+        priority?: number | null;
+        metadata?: Record<string, unknown> | null;
+        assignedAgentId?: string | null;
+        assigneeHuman?: string | null;
+        vcsBranch?: string | null;
+        vcsBaseBranch?: string | null;
+        vcsLastCommitSha?: string | null;
+    }): Promise<void>;
+    getTaskById(taskId: string): Promise<TaskRow | undefined>;
+    getTasksWithRelations(taskIds: string[]): Promise<Array<TaskRow & {
+        epicKey: string;
+        storyKey: string;
+        epicTitle?: string;
+        storyTitle?: string;
+        storyDescription?: string;
+        acceptanceCriteria?: string[];
+    }>>;
+    getTaskDependencies(taskIds: string[]): Promise<TaskDependencyRow[]>;
     createJob(record: JobInsert): Promise<JobRow>;
     updateJobState(id: string, update: Partial<JobInsert> & {
         state?: JobStatus;
@@ -174,6 +242,7 @@ export declare class WorkspaceRepository {
         completedAt?: string | null;
     }): Promise<void>;
     createCommandRun(record: CommandRunInsert): Promise<CommandRunRow>;
+    setCommandRunJobId(id: string, jobId: string): Promise<void>;
     completeCommandRun(id: string, update: {
         status: CommandStatus;
         completedAt: string;
@@ -181,6 +250,33 @@ export declare class WorkspaceRepository {
         durationSeconds?: number | null;
     }): Promise<void>;
     createTaskRun(record: TaskRunInsert): Promise<TaskRunRow>;
+    insertTaskLog(entry: {
+        taskRunId: string;
+        sequence: number;
+        timestamp: string;
+        level?: string | null;
+        source?: string | null;
+        message?: string | null;
+        details?: Record<string, unknown> | null;
+    }): Promise<void>;
+    updateTaskRun(id: string, update: {
+        status?: TaskRunStatus;
+        finishedAt?: string | null;
+        gitBranch?: string | null;
+        gitBaseBranch?: string | null;
+        gitCommitSha?: string | null;
+        storyPointsAtRun?: number | null;
+        spPerHourEffective?: number | null;
+        runContext?: Record<string, unknown> | null;
+    }): Promise<void>;
     recordTokenUsage(entry: TokenUsageInsert): Promise<void>;
+    insertTaskRevision(record: TaskRevisionInsert): Promise<void>;
+    createTaskComment(record: TaskCommentInsert): Promise<TaskCommentRow>;
+    listTaskComments(taskId: string, options?: {
+        sourceCommands?: string[];
+        limit?: number;
+    }): Promise<TaskCommentRow[]>;
+    createTaskReview(record: TaskReviewInsert): Promise<TaskReviewRow>;
+    getLatestTaskReview(taskId: string): Promise<TaskReviewRow | undefined>;
 }
 //# sourceMappingURL=WorkspaceRepository.d.ts.map

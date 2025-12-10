@@ -129,3 +129,51 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
   assert.ok(plan.blocked.some((b) => b.task.key === "proj-epic-us-01-t02"));
   await cleanupWorkspace(dir, repo);
 });
+
+test("selectTasks surfaces cycles in dependencies", async () => {
+  const ctx = await setupWorkspace();
+  const { repo, story, project, dir, workspace } = ctx;
+
+  const tasks = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t10",
+        title: "Cycle A",
+        description: "",
+        status: "not_started",
+      },
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t11",
+        title: "Cycle B",
+        description: "",
+        status: "not_started",
+      },
+    ],
+    false,
+  );
+
+  await repo.insertTaskDependencies(
+    [
+      { taskId: tasks[0].id, dependsOnTaskId: tasks[1].id, relationType: "blocks" },
+      { taskId: tasks[1].id, dependsOnTaskId: tasks[0].id, relationType: "blocks" },
+    ],
+    false,
+  );
+
+  const selection = new TaskSelectionService(workspace, repo);
+  const plan = await selection.selectTasks({
+    projectKey: "proj",
+    taskKeys: ["proj-epic-us-01-t10", "proj-epic-us-01-t11"],
+  });
+  assert.equal(plan.ordered.length, 2);
+  assert.equal(plan.blocked.length, 0);
+  assert.ok(plan.ordered.every((t) => t.blockedReason === "dependency_not_ready"));
+  assert.ok(plan.warnings.some((w) => w.toLowerCase().includes("cycle")));
+  await cleanupWorkspace(dir, repo);
+});

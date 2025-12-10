@@ -8,6 +8,7 @@ export * from "./services/planning/KeyHelpers.js";
 export * from "./services/execution/TaskSelectionService.js";
 export * from "./services/execution/TaskStateService.js";
 export * from "./services/execution/WorkOnTasksService.js";
+export * from "./services/review/CodeReviewService.js";
 export * from "./api/TasksApi.js";
 export * from "./services/backlog/BacklogService.js";
 export * from "./services/estimate/EstimateService.js";

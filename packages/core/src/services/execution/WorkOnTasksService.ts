@@ -46,6 +46,8 @@ const extractPatches = (output: string): string[] => {
   return matches.map((m) => m[0].replace(/```(?:patch|diff)/, "").replace(/```$/, "").trim()).filter(Boolean);
 };
 
+type TaskPhase = "selection" | "context" | "prompt" | "agent" | "apply" | "tests" | "vcs" | "finalize";
+
 const touchedFilesFromPatch = (patch: string): string[] => {
   const files = new Set<string>();
   const regex = /^\+\+\+\s+b\/([^\s]+)/gm;
@@ -59,6 +61,7 @@ const touchedFilesFromPatch = (patch: string): string[] => {
 const normalizePaths = (workspaceRoot: string, files: string[]): string[] =>
   files.map((f) => path.relative(workspaceRoot, path.isAbsolute(f) ? f : path.join(workspaceRoot, f))).map((f) => f.replace(/\\/g, "/"));
 const MCODA_GITIGNORE_ENTRY = ".mcoda/\n";
+const WORK_DIR = (jobId: string, workspaceRoot: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "work");
 
 export class WorkOnTasksService {
   private selectionService: TaskSelectionService;
@@ -84,6 +87,20 @@ export class WorkOnTasksService {
     this.vcs = deps.vcsClient ?? new VcsClient();
   }
 
+  private async loadPrompts(agentId: string): Promise<{
+    jobPrompt?: string;
+    characterPrompt?: string;
+    commandPrompt?: string;
+  }> {
+    if (!("getPrompts" in this.deps.agentService)) return {};
+    const prompts = await (this.deps.agentService as any).getPrompts(agentId);
+    return {
+      jobPrompt: prompts?.jobPrompt,
+      characterPrompt: prompts?.characterPrompt,
+      commandPrompt: prompts?.commandPrompts?.["work-on-tasks"],
+    };
+  }
+
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
     const gitignorePath = path.join(this.workspace.workspaceRoot, ".gitignore");
@@ -95,6 +112,23 @@ export class WorkOnTasksService {
     } catch {
       await fs.promises.writeFile(gitignorePath, MCODA_GITIGNORE_ENTRY, "utf8");
     }
+  }
+
+  private async writeWorkCheckpoint(jobId: string, data: Record<string, unknown>): Promise<void> {
+    const dir = WORK_DIR(jobId, this.workspace.workspaceRoot);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const target = path.join(dir, "state.json");
+    await fs.promises.writeFile(target, JSON.stringify({ ...data, updatedAt: new Date().toISOString() }, null, 2), "utf8");
+  }
+
+  private async checkpoint(jobId: string, stage: string, details?: Record<string, unknown>): Promise<void> {
+    const timestamp = new Date().toISOString();
+    await this.deps.jobService.writeCheckpoint(jobId, {
+      stage,
+      timestamp,
+      details,
+    });
+    await this.writeWorkCheckpoint(jobId, { stage, details, timestamp });
   }
 
   static async create(workspace: WorkspaceResolution): Promise<WorkOnTasksService> {
@@ -173,6 +207,8 @@ export class WorkOnTasksService {
     projectId?: string;
     tokensPrompt: number;
     tokensCompletion: number;
+    phase?: string;
+    durationSeconds?: number;
   }) {
     const total = params.tokensPrompt + params.tokensCompletion;
     await this.deps.jobService.recordTokenUsage({
@@ -187,24 +223,50 @@ export class WorkOnTasksService {
       tokensPrompt: params.tokensPrompt,
       tokensCompletion: params.tokensCompletion,
       tokensTotal: total,
+      durationSeconds: params.durationSeconds ?? null,
       timestamp: new Date().toISOString(),
-      metadata: { commandName: "work-on-tasks" },
+      metadata: { commandName: "work-on-tasks", phase: params.phase ?? "agent", action: params.phase ?? "agent" },
     });
   }
 
-  private async gatherDocContext(projectKey?: string): Promise<{ summary: string; warnings: string[] }> {
+  private async updateTaskPhase(
+    jobId: string,
+    taskRunId: string,
+    taskKey: string,
+    phase: TaskPhase,
+    status: "start" | "end" | "error",
+    details?: Record<string, unknown>,
+  ) {
+    const payload = { taskKey, phase, status, ...(details ?? {}) };
+    await this.deps.workspaceRepo.updateTaskRun(taskRunId, { runContext: { phase, status } });
+    await this.logTask(taskRunId, `${phase}:${status}`, phase, payload);
+    await this.checkpoint(jobId, `task:${taskKey}:${phase}:${status}`, payload);
+  }
+
+  private async gatherDocContext(projectKey?: string, docLinks: string[] = []): Promise<{ summary: string; warnings: string[] }> {
     const warnings: string[] = [];
+    const parts: string[] = [];
     try {
       const docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code" });
-      const summary = docs
-        .slice(0, 5)
-        .map((doc) => `- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}`)
-        .join("\n");
-      return { summary, warnings };
+      parts.push(
+        ...docs
+          .slice(0, 5)
+          .map((doc) => `- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}`),
+      );
     } catch (error) {
       warnings.push(`docdex search failed: ${(error as Error).message}`);
-      return { summary: "", warnings };
     }
+    for (const link of docLinks) {
+      try {
+        const doc = await this.deps.docdex.fetchDocumentById(link);
+        const excerpt = doc.segments?.[0]?.content?.slice(0, 240);
+        parts.push(`- [linked:${doc.docType}] ${doc.title ?? doc.id}${excerpt ? ` — ${excerpt}` : ""}`);
+      } catch (error) {
+        warnings.push(`docdex fetch failed for ${link}: ${(error as Error).message}`);
+      }
+    }
+    const summary = parts.join("\n");
+    return { summary, warnings };
   }
 
   private buildPrompt(task: TaskSelectionPlan["ordered"][number], docSummary: string, fileScope: string[]): string {
@@ -308,37 +370,40 @@ export class WorkOnTasksService {
       },
     });
 
-    const selection = await this.selectionService.selectTasks({
-      projectKey: request.projectKey,
-      epicKey: request.epicKey,
-      storyKey: request.storyKey,
-      taskKeys: request.taskKeys,
-      statusFilter: request.statusFilter,
-      limit: request.limit,
-      parallel: request.parallel,
-    });
+    let selection: TaskSelectionPlan;
+    let storyPointsProcessed = 0;
+    try {
+      selection = await this.selectionService.selectTasks({
+        projectKey: request.projectKey,
+        epicKey: request.epicKey,
+        storyKey: request.storyKey,
+        taskKeys: request.taskKeys,
+        statusFilter: request.statusFilter,
+        limit: request.limit,
+        parallel: request.parallel,
+      });
 
-    await this.deps.jobService.writeCheckpoint(job.id, {
-      stage: "selection",
-      timestamp: new Date().toISOString(),
-      details: { ordered: selection.ordered.map((t) => t.task.key), blocked: selection.blocked.map((t) => t.task.key) },
-    });
-
-    await this.deps.jobService.updateJobStatus(job.id, "running", {
-      payload: {
-        ...(job.payload ?? {}),
-        selection: selection.ordered.map((t) => t.task.key),
+      await this.checkpoint(job.id, "selection", {
+        ordered: selection.ordered.map((t) => t.task.key),
         blocked: selection.blocked.map((t) => t.task.key),
-      },
-      totalItems: selection.ordered.length,
-      processedItems: 0,
-    });
+      });
 
-    const results: TaskExecutionResult[] = [];
-    const warnings: string[] = [...selection.warnings];
-    const agent = await this.resolveAgent(request.agentName);
+      await this.deps.jobService.updateJobStatus(job.id, "running", {
+        payload: {
+          ...(job.payload ?? {}),
+          selection: selection.ordered.map((t) => t.task.key),
+          blocked: selection.blocked.map((t) => t.task.key),
+        },
+        totalItems: selection.ordered.length,
+        processedItems: 0,
+      });
 
-    for (const [index, task] of selection.ordered.entries()) {
+      const results: TaskExecutionResult[] = [];
+      const warnings: string[] = [...selection.warnings];
+      const agent = await this.resolveAgent(request.agentName);
+      const prompts = await this.loadPrompts(agent.id);
+
+      for (const [index, task] of selection.ordered.entries()) {
       const startedAt = new Date().toISOString();
       const taskRun = await this.deps.workspaceRepo.createTaskRun({
         taskId: task.task.id,
@@ -354,12 +419,33 @@ export class WorkOnTasksService {
         gitCommitSha: task.task.vcsLastCommitSha ?? null,
       });
 
+      const phaseTimers: Partial<Record<TaskPhase, number>> = {};
+      const startPhase = async (phase: TaskPhase, details?: Record<string, unknown>) => {
+        phaseTimers[phase] = Date.now();
+        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, phase, "start", details);
+      };
+      const endPhase = async (phase: TaskPhase, details?: Record<string, unknown>) => {
+        const started = phaseTimers[phase];
+        const durationSeconds = started ? Math.round(((Date.now() - started) / 1000) * 1000) / 1000 : undefined;
+        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, phase, "end", {
+          ...(details ?? {}),
+          durationSeconds,
+        });
+      };
+
+      await startPhase("selection", {
+        dependencies: task.dependencies.keys,
+        blockedReason: task.blockedReason,
+      });
       await this.logTask(taskRun.id, `Selected task ${task.task.key}`, "selection", {
         dependencies: task.dependencies.keys,
         blockedReason: task.blockedReason,
       });
 
       if (task.blockedReason && !request.dryRun) {
+        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "selection", "error", {
+          blockedReason: task.blockedReason,
+        });
         await this.stateService.markBlocked(task.task, task.blockedReason);
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
           status: "failed",
@@ -370,20 +456,25 @@ export class WorkOnTasksService {
         continue;
       }
 
+      await endPhase("selection");
       const metadata = (task.task.metadata as any) ?? {};
       const allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
       const testCommands = Array.isArray(metadata.tests) ? (metadata.tests as string[]) : [];
 
-      const { summary: docSummary, warnings: docWarnings } = await this.gatherDocContext(request.projectKey);
+      await startPhase("context", { allowedFiles, tests: testCommands });
+      const docLinks = Array.isArray((metadata as any).doc_links) ? (metadata as any).doc_links : [];
+      const { summary: docSummary, warnings: docWarnings } = await this.gatherDocContext(request.projectKey, docLinks);
       if (docWarnings.length) {
         warnings.push(...docWarnings);
         await this.logTask(taskRun.id, docWarnings.join("; "), "docdex");
       }
+      await endPhase("context", { docWarnings });
 
+      await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
       const prompt = this.buildPrompt(task, docSummary, allowedFiles);
-      const prompts = await this.deps.agentService.getPrompts(agent.id);
-      const commandPrompt = prompts?.commandPrompts?.["work-on-tasks"] ?? "";
-      const systemPrompt = [prompts?.jobPrompt, prompts?.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
+      const commandPrompt = prompts.commandPrompt ?? "";
+      const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
+      await endPhase("prompt", { hasSystemPrompt: Boolean(systemPrompt) });
 
       if (request.dryRun) {
         await this.logTask(taskRun.id, "Dry-run enabled; skipping execution.", "execution");
@@ -403,7 +494,10 @@ export class WorkOnTasksService {
       }
 
       let agentOutput = "";
+      let agentDuration = 0;
       try {
+        await startPhase("agent", { agent: agent.id, stream: agentStream });
+        const agentStarted = Date.now();
         if (agentStream && this.deps.agentService.invokeStream) {
           const stream = await this.deps.agentService.invokeStream(agent.id, {
             input: `${systemPrompt}\n\n${prompt}`,
@@ -418,9 +512,11 @@ export class WorkOnTasksService {
           agentOutput = result.output ?? "";
           await this.logTask(taskRun.id, agentOutput, "agent");
         }
+        agentDuration = (Date.now() - agentStarted) / 1000;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await this.logTask(taskRun.id, `Agent invocation failed: ${message}`, "agent");
+        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "agent", "error", { error: message });
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
           status: "failed",
           finishedAt: new Date().toISOString(),
@@ -429,6 +525,23 @@ export class WorkOnTasksService {
         await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
         continue;
       }
+      await endPhase("agent", { agentDurationSeconds: agentDuration });
+
+      const promptTokens = estimateTokens(systemPrompt + prompt);
+      const completionTokens = estimateTokens(agentOutput);
+      await this.recordTokenUsage({
+        agentId: agent.id,
+        model: agent.defaultModel,
+        jobId: job.id,
+        commandRunId: commandRun.id,
+        taskRunId: taskRun.id,
+        taskId: task.task.id,
+        projectId: selection.project?.id,
+        tokensPrompt: promptTokens,
+        tokensCompletion: completionTokens,
+        phase: "agent",
+        durationSeconds: agentDuration,
+      });
 
       const patches = extractPatches(agentOutput);
       if (patches.length === 0) {
@@ -457,15 +570,18 @@ export class WorkOnTasksService {
         }
       }
 
+      await startPhase("apply", { patchCount: patches.length });
       const { touched, error: applyError } = await this.applyPatches(patches, this.workspace.workspaceRoot, request.dryRun ?? false);
       if (applyError) {
         await this.logTask(taskRun.id, `Patch apply failed: ${applyError}`, "patch");
+        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applyError });
         await this.stateService.markBlocked(task.task, "patch_failed");
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
         results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
         await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
         continue;
       }
+      await endPhase("apply", { touched });
 
       const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, touched));
       if (!scopeCheck.ok) {
@@ -478,18 +594,22 @@ export class WorkOnTasksService {
       }
 
       if (!request.dryRun && testCommands.length) {
+        await startPhase("tests", { commands: testCommands });
         const testResult = await this.runTests(testCommands, this.workspace.workspaceRoot);
         await this.logTask(taskRun.id, "Test results", "tests", { results: testResult.results });
         if (!testResult.ok) {
+          await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "tests", "error", { results: testResult.results });
           await this.stateService.markBlocked(task.task, "tests_failed");
           await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
           results.push({ taskKey: task.task.key, status: "failed", notes: "tests_failed" });
           await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
           continue;
         }
+        await endPhase("tests", { results: testResult.results });
       }
 
       if (!request.dryRun && request.noCommit !== true) {
+        await startPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
         try {
           const toStage = touched.length ? touched : ["."];
           await this.vcs.stage(this.workspace.workspaceRoot, toStage);
@@ -512,18 +632,21 @@ export class WorkOnTasksService {
           }
         } catch (error) {
           await this.logTask(taskRun.id, `VCS commit/push failed: ${(error as Error).message}`, "vcs");
+          await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: (error as Error).message });
           await this.stateService.markBlocked(task.task, "vcs_failed");
           await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
           results.push({ taskKey: task.task.key, status: "failed", notes: "vcs_failed" });
           await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
           continue;
         }
+        await endPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
       } else if (request.dryRun) {
         await this.logTask(taskRun.id, "Dry-run: skipped commit/push.", "vcs");
       } else if (request.noCommit) {
         await this.logTask(taskRun.id, "no-commit set: skipped commit/push.", "vcs");
       }
 
+      await startPhase("finalize");
       const finishedAt = new Date().toISOString();
       const elapsedSeconds = Math.max(1, (Date.parse(finishedAt) - Date.parse(startedAt)) / 1000);
       const spPerHour =
@@ -538,17 +661,8 @@ export class WorkOnTasksService {
         gitBaseBranch: branchInfo.base,
       });
 
-      await this.recordTokenUsage({
-        agentId: agent.id,
-        model: agent.defaultModel,
-        jobId: job.id,
-        commandRunId: commandRun.id,
-        taskRunId: taskRun.id,
-        taskId: task.task.id,
-        projectId: selection.project?.id,
-        tokensPrompt: estimateTokens(systemPrompt + prompt),
-        tokensCompletion: estimateTokens(agentOutput),
-      });
+      storyPointsProcessed += task.task.storyPoints ?? 0;
+      await endPhase("finalize", { spPerHour: spPerHour ?? undefined });
 
       results.push({
         taskKey: task.task.key,
@@ -557,20 +671,23 @@ export class WorkOnTasksService {
         branch: branchInfo.branch,
       });
       await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-      await this.deps.jobService.writeCheckpoint(job.id, {
-        stage: "task_completed",
-        timestamp: finishedAt,
-        details: { taskKey: task.task.key },
-      });
+      await this.checkpoint(job.id, "task_completed", { taskKey: task.task.key });
     }
 
     const failureCount = results.filter((r) => r.status === "failed" || r.status === "blocked").length;
-    const state: JobState = failureCount > 0 ? "failed" : "completed";
+    const state: JobState =
+      failureCount === 0 ? "completed" : failureCount === results.length ? "failed" : ("partial" as JobState);
+    const errorSummary = failureCount ? `${failureCount} task(s) failed or blocked` : undefined;
     await this.deps.jobService.updateJobStatus(job.id, state, {
       processedItems: results.length,
-      errorSummary: failureCount ? `${failureCount} task(s) failed or blocked` : undefined,
+      errorSummary,
     });
-    await this.deps.jobService.finishCommandRun(commandRun.id, state === "completed" ? "succeeded" : "failed");
+    await this.deps.jobService.finishCommandRun(
+      commandRun.id,
+      state === "completed" ? "succeeded" : "failed",
+      errorSummary,
+      storyPointsProcessed || undefined,
+    );
 
     return {
       jobId: job.id,
@@ -579,5 +696,14 @@ export class WorkOnTasksService {
       results,
       warnings,
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.deps.jobService.updateJobStatus(job.id, "failed", {
+      processedItems: undefined,
+      errorSummary: message,
+    });
+    await this.deps.jobService.finishCommandRun(commandRun.id, "failed", message, storyPointsProcessed || undefined);
+    throw error;
+  }
   }
 }

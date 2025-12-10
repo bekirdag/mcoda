@@ -111,4 +111,13 @@ export class VcsClient {
     const { stdout } = await this.runGit(cwd, ["rev-parse", "HEAD"]);
     return stdout.trim();
   }
+
+  async diff(cwd: string, base: string, head: string, paths?: string[]): Promise<string> {
+    const args = ["diff", `${base}...${head}`];
+    if (paths && paths.length) {
+      args.push("--", ...paths);
+    }
+    const { stdout } = await this.runGit(cwd, args);
+    return stdout;
+  }
 }

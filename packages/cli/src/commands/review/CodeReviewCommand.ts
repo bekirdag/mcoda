@@ -1,5 +1,5 @@
 import path from "node:path";
-import { WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
+import { CodeReviewService, WorkspaceResolver } from "@mcoda/core";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -8,27 +8,29 @@ interface ParsedArgs {
   storyKey?: string;
   taskKeys: string[];
   statusFilter: string[];
-  limit?: number;
-  parallel?: number;
-  noCommit: boolean;
+  baseRef?: string;
   dryRun: boolean;
+  resumeJobId?: string;
+  limit?: number;
   agentName?: string;
   agentStream?: boolean;
   json: boolean;
 }
 
-const usage = `mcoda work-on-tasks \\
-  [--workspace <PATH>] \\
+const usage = `mcoda code-review \\
+  [--workspace-root <PATH>] \\
   [--project <PROJECT_KEY>] \\
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
-  [--status not_started,in_progress] \\
-  [--limit N] \\
-  [--parallel N] \\
-  [--no-commit] \\
+  [--status ready_to_review] \\
+  [--base <BRANCH>] \\
   [--dry-run] \\
+  [--resume <JOB_ID>] \\
+  [--limit N] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
-  [--json]`;
+  [--json]
+
+Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks for critical findings, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under .mcoda/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -46,17 +48,17 @@ const parseCsv = (value: string | undefined): string[] => {
     .filter(Boolean);
 };
 
-export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
+export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
   let workspaceRoot: string | undefined;
   let projectKey: string | undefined;
   let epicKey: string | undefined;
   let storyKey: string | undefined;
   const taskKeys: string[] = [];
   const statusFilter: string[] = [];
-  let limit: number | undefined;
-  let parallel: number | undefined;
-  let noCommit = false;
+  let baseRef: string | undefined;
   let dryRun = false;
+  let resumeJobId: string | undefined;
+  let limit: number | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
   let json = false;
@@ -89,10 +91,6 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
         projectKey = argv[i + 1];
         i += 1;
         break;
-      case "--status":
-        statusFilter.push(...parseCsv(argv[i + 1]));
-        i += 1;
-        break;
       case "--epic":
         epicKey = argv[i + 1];
         i += 1;
@@ -107,19 +105,24 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
           i += 1;
         }
         break;
-      case "--limit":
-        limit = Number(argv[i + 1]);
+      case "--status":
+        statusFilter.push(...parseCsv(argv[i + 1]));
         i += 1;
         break;
-      case "--parallel":
-        parallel = Number(argv[i + 1]);
+      case "--base":
+        baseRef = argv[i + 1];
         i += 1;
-        break;
-      case "--no-commit":
-        noCommit = true;
         break;
       case "--dry-run":
         dryRun = true;
+        break;
+      case "--resume":
+        resumeJobId = argv[i + 1];
+        i += 1;
+        break;
+      case "--limit":
+        limit = Number(argv[i + 1]);
+        i += 1;
         break;
       case "--agent":
         agentName = argv[i + 1];
@@ -150,7 +153,7 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   }
 
   if (statusFilter.length === 0) {
-    statusFilter.push("not_started", "in_progress");
+    statusFilter.push("ready_to_review");
   }
 
   return {
@@ -160,69 +163,57 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     storyKey,
     taskKeys,
     statusFilter,
-    limit: Number.isFinite(limit) ? limit : undefined,
-    parallel: Number.isFinite(parallel) ? parallel : undefined,
-    noCommit,
+    baseRef,
     dryRun,
+    resumeJobId,
+    limit: Number.isFinite(limit) ? limit : undefined,
     agentName,
     agentStream: agentStream ?? true,
     json,
   };
 };
 
-export class WorkOnTasksCommand {
+export class CodeReviewCommand {
   static async run(argv: string[]): Promise<void> {
-    const parsed = parseWorkOnTasksArgs(argv);
+    const parsed = parseCodeReviewArgs(argv);
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
-    if (!parsed.projectKey) {
-      // eslint-disable-next-line no-console
-      console.error("work-on-tasks requires --project <PROJECT_KEY>");
-      process.exitCode = 1;
-      return;
-    }
-    const service = await WorkOnTasksService.create(workspace);
+    const service = await CodeReviewService.create(workspace);
     try {
-      const result = await service.workOnTasks({
+      const result = await service.reviewTasks({
         workspace,
         projectKey: parsed.projectKey,
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
         statusFilter: parsed.statusFilter,
-        limit: parsed.limit,
-        parallel: parsed.parallel,
-        noCommit: parsed.noCommit,
+        baseRef: parsed.baseRef,
         dryRun: parsed.dryRun,
+        resumeJobId: parsed.resumeJobId,
+        limit: parsed.limit,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
       });
-
-      const success = result.results.filter((r) => r.status === "succeeded").length;
-      const failed = result.results.filter((r) => r.status === "failed" || r.status === "blocked").length;
-      const skipped = result.results.filter((r) => r.status === "skipped").length;
-      const blockedKeys = [
-        ...result.selection.blocked.map((t) => t.task.key),
-        ...result.results.filter((r) => r.status === "blocked").map((r) => r.taskKey),
-      ];
-      if (failed > 0) {
-        process.exitCode = 1;
-      }
 
       if (parsed.json) {
         // eslint-disable-next-line no-console
         console.log(
           JSON.stringify(
             {
-              jobId: result.jobId,
-              commandRunId: result.commandRunId,
-              processed: result.results.length,
-              succeeded: success,
-              failed,
-              skipped,
-              blocked: blockedKeys,
+              job: { id: result.jobId, commandRunId: result.commandRunId },
+              tasks: result.tasks.map((t) => ({
+                taskId: t.taskId,
+                taskKey: t.taskKey,
+                decision: t.decision,
+                statusBefore: t.statusBefore,
+                statusAfter: t.statusAfter,
+                findings: t.findings,
+                error: t.error,
+                followupTasks: t.followupTasks,
+              })),
+              errors: result.tasks.filter((t) => t.error).map((t) => ({ taskId: t.taskId, taskKey: t.taskKey, error: t.error })),
               warnings: result.warnings,
             },
             null,
@@ -232,24 +223,37 @@ export class WorkOnTasksCommand {
         return;
       }
 
+      const lines = result.tasks.map((t) => {
+        const decision = t.decision ?? "error";
+        const severityCounts = (t.findings ?? []).reduce<Record<string, number>>((acc, f) => {
+          const sev = (f.severity ?? "unknown").toUpperCase();
+          acc[sev] = (acc[sev] ?? 0) + 1;
+          return acc;
+        }, {});
+        const severitySummary = Object.entries(severityCounts)
+          .map(([s, c]) => `${s}:${c}`)
+          .join(" ");
+        const findingsCount = t.findings?.length ?? 0;
+        const followups = t.followupTasks && t.followupTasks.length ? `, followups=[${t.followupTasks.map((f) => f.taskKey).join(", ")}]` : "";
+        const statusChange = t.statusAfter ? `${t.statusBefore} -> ${t.statusAfter}` : t.statusBefore;
+        return `${t.taskKey}: ${decision} (${statusChange}), findings=${findingsCount}${severitySummary ? ` (${severitySummary})` : ""}${
+          t.error ? `, error=${t.error}` : ""
+        }${followups}`;
+      });
       const summary = [
-        `Job: ${result.jobId}, Command Run: ${result.commandRunId}`,
-        `Tasks processed: ${result.results.length} (succeeded=${success}, failed=${failed}, skipped=${skipped})`,
-        blockedKeys.length ? `Blocked: ${blockedKeys.join(", ")}` : undefined,
-      ]
-        .filter(Boolean)
-        .join("\n");
-
-      // eslint-disable-next-line no-console
-      console.log(summary);
+        `Job: ${result.jobId}`,
+        `Artifacts: ${path.join(workspace.mcodaDir, "jobs", result.jobId, "review")}`,
+        ...lines,
+      ];
       if (result.warnings.length) {
-        // eslint-disable-next-line no-console
-        console.warn(result.warnings.map((w) => `! ${w}`).join("\n"));
+        summary.push(`Warnings: ${result.warnings.join("; ")}`);
       }
+      // eslint-disable-next-line no-console
+      console.log(summary.join("\n"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // eslint-disable-next-line no-console
-      console.error(`work-on-tasks failed: ${message}`);
+      console.error(`code-review failed: ${message}`);
       process.exitCode = 1;
     } finally {
       await service.close();

@@ -99,7 +99,7 @@ export class AgentService {
       } else if (localAdapter) {
         adapterType = localAdapter;
       } else {
-        throw new Error(`AUTH_REQUIRED: API credentials missing for adapter ${adapterType}`);
+        adapterType = "local-model";
       }
     }
     return adapterType;

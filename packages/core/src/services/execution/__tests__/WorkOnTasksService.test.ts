@@ -104,6 +104,7 @@ const setupWorkspace = async () => {
         title: "Task A",
         description: "",
         status: "not_started",
+        storyPoints: 1,
       },
       {
         projectId: project.id,
@@ -113,6 +114,7 @@ const setupWorkspace = async () => {
         title: "Task B",
         description: "",
         status: "not_started",
+        storyPoints: 2,
       },
     ],
     false,
@@ -163,6 +165,19 @@ test("workOnTasks marks tasks ready_to_review and records task runs", async () =
     assert.ok(taskRuns.every((r) => r.status === "succeeded"));
     const jobs = await db.all<{ state: string }[]>("SELECT state FROM jobs");
     assert.ok(jobs.some((j) => j.state === "completed"));
+    const tokens = await db.all<{ tokens_prompt: number }[]>("SELECT tokens_prompt FROM token_usage");
+    assert.equal(tokens.length, 2);
+    const logs = await db.all<{ source: string }[]>("SELECT source FROM task_logs");
+    assert.ok(logs.some((l) => l.source === "agent"));
+    assert.ok(logs.some((l) => l.source === "finalize"));
+    const commandRunRow = await db.get<{ sp_processed: number | null }>(
+      "SELECT sp_processed FROM command_runs WHERE id = ?",
+      result.commandRunId,
+    );
+    assert.equal(commandRunRow?.sp_processed, 3);
+    const checkpointPath = path.join(workspace.workspaceRoot, ".mcoda", "jobs", result.jobId, "work", "state.json");
+    const exists = await fs.stat(checkpointPath).then(() => true, () => false);
+    assert.equal(exists, true);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

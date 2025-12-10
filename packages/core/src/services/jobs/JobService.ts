@@ -193,7 +193,11 @@ export class JobService {
     }
   }
 
-  async startCommandRun(commandName: string, projectKey?: string, options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[] }): Promise<CommandRunRecord> {
+  async startCommandRun(
+    commandName: string,
+    projectKey?: string,
+    options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[]; jobId?: string },
+  ): Promise<CommandRunRecord> {
     await this.ensureMcoda();
     const startedAt = nowIso();
     let record: CommandRunRecord = {
@@ -201,7 +205,7 @@ export class JobService {
       commandName,
       workspaceId: this.workspaceRoot,
       projectKey,
-      jobId: undefined,
+      jobId: options?.jobId,
       taskIds: options?.taskIds,
       gitBranch: options?.gitBranch,
       gitBaseBranch: options?.gitBaseBranch,
@@ -284,7 +288,26 @@ export class JobService {
     jobs.push(record);
     await this.writeJsonArray(this.jobsStorePath, jobs);
     await this.writeManifest(record);
+    if (commandRunId) {
+      await this.attachCommandRunToJob(commandRunId, record.id);
+    }
     return record;
+  }
+
+  private async attachCommandRunToJob(commandRunId: string, jobId: string): Promise<void> {
+    const runs = await this.readJsonArray<CommandRunRecord>(this.commandRunsPath);
+    const idx = runs.findIndex((r) => r.id === commandRunId);
+    if (idx !== -1) {
+      runs[idx] = { ...runs[idx], jobId };
+      await this.writeJsonArray(this.commandRunsPath, runs);
+    }
+    if (this.workspaceRepo && "setCommandRunJobId" in this.workspaceRepo) {
+      try {
+        await (this.workspaceRepo as any).setCommandRunJobId(commandRunId, jobId);
+      } catch {
+        // ignore linking failures
+      }
+    }
   }
 
   async updateJobStatus(
@@ -344,13 +367,43 @@ export class JobService {
   }
 
   async writeCheckpoint(jobId: string, checkpoint: JobCheckpoint): Promise<void> {
-    await PathHelper.ensureDir(this.checkpointDir(jobId));
-    const current = this.checkpointCounters.get(jobId) ?? 0;
-    const next = current + 1;
+    const dir = this.checkpointDir(jobId);
+    await PathHelper.ensureDir(dir);
+    let current = this.checkpointCounters.get(jobId);
+    if (current === undefined) {
+      try {
+        const entries = await fs.readdir(dir);
+        const nums = entries
+          .map((e) => Number.parseInt(e.replace(/\.ckpt\.json$/, ""), 10))
+          .filter((n) => Number.isFinite(n));
+        current = nums.length ? Math.max(...nums) : 0;
+      } catch {
+        current = 0;
+      }
+    }
+    const next = (current ?? 0) + 1;
     this.checkpointCounters.set(jobId, next);
     const filename = `${String(next).padStart(6, "0")}.ckpt.json`;
-    const target = path.join(this.checkpointDir(jobId), filename);
-    await fs.writeFile(target, JSON.stringify(checkpoint, null, 2), "utf8");
+    const target = path.join(dir, filename);
+    const job = await this.getJob(jobId);
+    const createdAt = nowIso();
+    const payload = {
+      schema_version: 1,
+      job_id: jobId,
+      checkpoint_seq: next,
+      checkpoint_id: randomUUID(),
+      created_at: createdAt,
+      status: job?.state ?? "running",
+      stage: checkpoint.stage,
+      timestamp: checkpoint.timestamp ?? createdAt,
+      reason: checkpoint.details?.reason,
+      progress: {
+        total: job?.totalItems ?? (checkpoint.details as any)?.totalItems ?? null,
+        completed: job?.processedItems ?? (checkpoint.details as any)?.processedItems ?? null,
+      },
+      details: checkpoint.details,
+    };
+    await fs.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
     if (this.workspaceRepo) {
       await this.workspaceRepo.updateJobState(jobId, {
         lastCheckpoint: checkpoint.stage,
@@ -436,7 +489,15 @@ export class JobService {
   async writeManifest(job: JobRecord, extras: Record<string, unknown> = {}): Promise<void> {
     await PathHelper.ensureDir(this.jobDir(job.id));
     const manifestPath = this.manifestPath(job.id);
-    const payload = { ...job, status: (job as any).status ?? job.state, ...extras };
+    const payload = {
+      schema_version: 1,
+      job_id: job.id,
+      updated_at: new Date().toISOString(),
+      status: (job as any).status ?? job.state,
+      progress: { total: job.totalItems ?? null, completed: job.processedItems ?? null },
+      ...job,
+      ...extras,
+    };
     await fs.writeFile(manifestPath, JSON.stringify(payload, null, 2), "utf8");
   }
 

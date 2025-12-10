@@ -3,7 +3,7 @@ import { Database } from "sqlite";
 import { Connection } from "../../sqlite/connection.js";
 import { WorkspaceMigrations } from "../../migrations/workspace/WorkspaceMigrations.js";
 
-export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
+export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "partial";
 export type CommandStatus = "running" | "succeeded" | "failed";
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
@@ -175,6 +175,46 @@ export interface TaskRevisionInsert {
   snapshotBefore?: Record<string, unknown> | null;
   snapshotAfter?: Record<string, unknown> | null;
   createdAt: string;
+}
+
+export interface TaskCommentInsert {
+  taskId: string;
+  taskRunId?: string | null;
+  jobId?: string | null;
+  sourceCommand: string;
+  authorType: "agent" | "human";
+  authorAgentId?: string | null;
+  category?: string | null;
+  file?: string | null;
+  line?: number | null;
+  pathHint?: string | null;
+  body: string;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+}
+
+export interface TaskCommentRow extends TaskCommentInsert {
+  id: string;
+}
+
+export interface TaskReviewInsert {
+  taskId: string;
+  jobId?: string | null;
+  agentId?: string | null;
+  modelName?: string | null;
+  decision: string;
+  summary?: string | null;
+  findingsJson?: Record<string, unknown> | unknown[] | null;
+  testRecommendationsJson?: string[] | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+  createdBy?: string | null;
+}
+
+export interface TaskReviewRow extends TaskReviewInsert {
+  id: string;
 }
 
 export class WorkspaceRepository {
@@ -719,6 +759,10 @@ export class WorkspaceRepository {
     return { id, ...record, completedAt: null, errorSummary: null, durationSeconds: null };
   }
 
+  async setCommandRunJobId(id: string, jobId: string): Promise<void> {
+    await this.db.run(`UPDATE command_runs SET job_id = ? WHERE id = ?`, jobId, id);
+  }
+
   async completeCommandRun(
     id: string,
     update: {
@@ -740,6 +784,92 @@ export class WorkspaceRepository {
       update.spProcessed ?? null,
       id,
     );
+  }
+
+  async getTasksWithRelations(taskIds: string[]): Promise<
+    Array<
+      TaskRow & {
+        epicKey: string;
+        storyKey: string;
+        epicTitle?: string;
+        storyTitle?: string;
+        storyDescription?: string;
+        acceptanceCriteria?: string[];
+      }
+    >
+  > {
+    if (!taskIds.length) return [];
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const rows = await this.db.all<any[]>(
+      `
+        SELECT
+          t.id as task_id,
+          t.project_id as project_id,
+          t.key as task_key,
+          t.status as task_status,
+          t.priority as task_priority,
+          t.story_points as task_story_points,
+          t.created_at as task_created_at,
+          t.updated_at as task_updated_at,
+          t.description as task_description,
+          t.title as task_title,
+          t.type as task_type,
+          t.metadata_json as task_metadata,
+          t.assigned_agent_id as task_assigned_agent_id,
+          t.assignee_human as task_assignee_human,
+          t.vcs_branch as task_vcs_branch,
+          t.vcs_base_branch as task_vcs_base_branch,
+          t.vcs_last_commit_sha as task_vcs_last_commit_sha,
+          e.id as epic_id,
+          e.key as epic_key,
+          e.title as epic_title,
+          e.description as epic_description,
+          us.id as story_id,
+          us.key as story_key,
+          us.title as story_title,
+          us.description as story_description,
+          us.acceptance_criteria as story_acceptance
+        FROM tasks t
+        JOIN epics e ON e.id = t.epic_id
+        JOIN user_stories us ON us.id = t.user_story_id
+        WHERE t.id IN (${placeholders})
+      `,
+      ...taskIds,
+    );
+
+    return rows.map((row) => ({
+      id: row.task_id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      userStoryId: row.story_id,
+      key: row.task_key,
+      title: row.task_title,
+      description: row.task_description ?? "",
+      type: row.task_type ?? undefined,
+      status: row.task_status,
+      storyPoints: row.task_story_points ?? undefined,
+      priority: row.task_priority ?? undefined,
+      assignedAgentId: row.task_assigned_agent_id ?? undefined,
+      assigneeHuman: row.task_assignee_human ?? undefined,
+      vcsBranch: row.task_vcs_branch ?? undefined,
+      vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
+      vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
+      metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
+      openapiVersionAtCreation: undefined,
+      createdAt: row.task_created_at,
+      updatedAt: row.task_updated_at,
+      epicKey: row.epic_key,
+      storyKey: row.story_key,
+      epicTitle: row.epic_title ?? undefined,
+      storyTitle: row.story_title ?? undefined,
+      storyDescription: row.story_description ?? undefined,
+      acceptanceCriteria: row.story_acceptance
+        ? (row.story_acceptance as string)
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined,
+    }));
   }
 
   async createTaskRun(record: TaskRunInsert): Promise<TaskRunRow> {
@@ -862,6 +992,115 @@ export class WorkspaceRepository {
     }));
   }
 
+  async createTaskComment(record: TaskCommentInsert): Promise<TaskCommentRow> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      record.taskId,
+      record.taskRunId ?? null,
+      record.jobId ?? null,
+      record.sourceCommand,
+      record.authorType,
+      record.authorAgentId ?? null,
+      record.category ?? null,
+      record.file ?? null,
+      record.line ?? null,
+      record.pathHint ?? null,
+      record.body,
+      record.metadata ? JSON.stringify(record.metadata) : null,
+      record.createdAt,
+      record.resolvedAt ?? null,
+      record.resolvedBy ?? null,
+    );
+    return { ...record, id };
+  }
+
+  async listTaskComments(taskId: string, options: { sourceCommands?: string[]; limit?: number } = {}): Promise<TaskCommentRow[]> {
+    const clauses = ["task_id = ?"];
+    const params: any[] = [taskId];
+    if (options.sourceCommands && options.sourceCommands.length) {
+      clauses.push(`source_command IN (${options.sourceCommands.map(() => "?").join(", ")})`);
+      params.push(...options.sourceCommands);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limitClause = options.limit ? `LIMIT ${options.limit}` : "";
+    const rows = await this.db.all<any[]>(
+      `SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
+       FROM task_comments
+       ${where}
+       ORDER BY datetime(created_at) DESC
+       ${limitClause}`,
+      ...params,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: row.task_id,
+      taskRunId: row.task_run_id ?? undefined,
+      jobId: row.job_id ?? undefined,
+      sourceCommand: row.source_command,
+      authorType: row.author_type,
+      authorAgentId: row.author_agent_id ?? undefined,
+      category: row.category ?? undefined,
+      file: row.file ?? undefined,
+      line: row.line ?? undefined,
+      pathHint: row.path_hint ?? undefined,
+      body: row.body,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      resolvedAt: row.resolved_at ?? undefined,
+      resolvedBy: row.resolved_by ?? undefined,
+    }));
+  }
+
+  async createTaskReview(record: TaskReviewInsert): Promise<TaskReviewRow> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO task_reviews (id, task_id, job_id, agent_id, model_name, decision, summary, findings_json, test_recommendations_json, metadata_json, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      record.taskId,
+      record.jobId ?? null,
+      record.agentId ?? null,
+      record.modelName ?? null,
+      record.decision,
+      record.summary ?? null,
+      record.findingsJson ? JSON.stringify(record.findingsJson) : null,
+      record.testRecommendationsJson ? JSON.stringify(record.testRecommendationsJson) : null,
+      record.metadata ? JSON.stringify(record.metadata) : null,
+      record.createdAt,
+      record.createdBy ?? null,
+    );
+    return { ...record, id };
+  }
+
+  async getLatestTaskReview(taskId: string): Promise<TaskReviewRow | undefined> {
+    const row = await this.db.get<any>(
+      `SELECT id, task_id, job_id, agent_id, model_name, decision, summary, findings_json, test_recommendations_json, metadata_json, created_at, created_by
+       FROM task_reviews
+       WHERE task_id = ?
+       ORDER BY datetime(created_at) DESC
+       LIMIT 1`,
+      taskId,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      taskId: row.task_id,
+      jobId: row.job_id ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      modelName: row.model_name ?? undefined,
+      decision: row.decision,
+      summary: row.summary ?? undefined,
+      findingsJson: row.findings_json ? JSON.parse(row.findings_json) : undefined,
+      testRecommendationsJson: row.test_recommendations_json ? JSON.parse(row.test_recommendations_json) : undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      createdBy: row.created_by ?? undefined,
+    };
+  }
+
   async recordTokenUsage(entry: TokenUsageInsert): Promise<void> {
     const id = randomUUID();
     await this.db.run(
@@ -902,4 +1141,49 @@ export class WorkspaceRepository {
       record.createdAt,
     );
   }
+
+  async getEpicByKey(projectId: string, key: string): Promise<EpicRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, project_id, key, title, description, story_points_total, priority, metadata_json, created_at, updated_at FROM epics WHERE project_id = ? AND key = ?`,
+      projectId,
+      key,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      key: row.key,
+      title: row.title,
+      description: row.description ?? undefined,
+      storyPointsTotal: row.story_points_total ?? undefined,
+      priority: row.priority ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getStoryByKey(epicId: string, key: string): Promise<StoryRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, project_id, epic_id, key, title, description, acceptance_criteria, story_points_total, priority, metadata_json, created_at, updated_at FROM user_stories WHERE epic_id = ? AND key = ?`,
+      epicId,
+      key,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      key: row.key,
+      title: row.title,
+      description: row.description ?? undefined,
+      acceptanceCriteria: row.acceptance_criteria ?? undefined,
+      storyPointsTotal: row.story_points_total ?? undefined,
+      priority: row.priority ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
 }
