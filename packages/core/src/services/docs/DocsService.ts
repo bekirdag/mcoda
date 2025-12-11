@@ -118,21 +118,42 @@ const readPromptIfExists = async (workspace: WorkspaceResolution, relative: stri
   }
 };
 
+const PDR_REQUIRED_HEADINGS: string[][] = [
+  ["Introduction"],
+  ["Scope"],
+  ["Requirements", "Requirements & Constraints"],
+  ["Architecture", "Architecture Overview"],
+  ["Interfaces", "Interfaces / APIs"],
+  ["Non-Functional", "Non-Functional Requirements"],
+  ["Risks", "Risks & Mitigations"],
+  ["Open Questions"],
+  ["Acceptance Criteria"],
+];
+
+const missingPdrHeadings = (draft: string): string[] => {
+  const normalized = draft.trim();
+  if (!normalized) return PDR_REQUIRED_HEADINGS.map((v) => v[0]);
+  return PDR_REQUIRED_HEADINGS.filter(
+    (variants) => !variants.some((section) => new RegExp(`^#{1,6}\\s+${section}\\b`, "im").test(normalized)),
+  ).map((variants) => variants[0]);
+};
+
 const validateDraft = (draft: string): boolean => {
   if (!draft || draft.trim().length < 50) return false;
-  const required: string[][] = [
-    ["Introduction"],
-    ["Scope"],
-    ["Requirements", "Requirements & Constraints"],
-    ["Architecture", "Architecture Overview"],
-    ["Interfaces", "Interfaces / APIs"],
-    ["Non-Functional", "Non-Functional Requirements"],
-    ["Risks", "Risks & Mitigations"],
-    ["Open Questions"],
-  ];
-  return required.every((variants) =>
-    variants.some((section) => new RegExp(`^#{1,6}\\s+${section}\\b`, "im").test(draft)),
-  );
+  return missingPdrHeadings(draft).length === 0;
+};
+
+const ensureSectionContent = (draft: string, title: string, fallback: string): string => {
+  const headingRegex = new RegExp(`^#{1,6}\\s+${title}\\b.*$`, "im");
+  if (!headingRegex.test(draft)) {
+    return `${draft.trimEnd()}\n\n## ${title}\n${fallback}\n`;
+  }
+  const blockRegex = new RegExp(`(^#{1,6}\\s+${title}\\b.*$)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
+  return draft.replace(blockRegex, (_match, heading, body) => {
+    const trimmed = (body as string).trim();
+    if (trimmed.length > 0) return `${heading}${body}`;
+    return `${heading}\n\n${fallback}\n`;
+  });
 };
 
 const validateSdsDraft = (draft: string): boolean => {
@@ -478,6 +499,11 @@ const buildRunPrompt = (
           .join("\n")}`
       : "No OpenAPI excerpts available; do not invent endpoints.",
     docdexNote,
+    [
+      "Return markdown with exactly these sections as H2 headings, one time each:",
+      "Introduction, Scope, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria",
+      "Do not use bold headings; use `##` headings only. Do not repeat sections.",
+    ].join("\n"),
     runbookPrompt,
   ]
     .filter(Boolean)
@@ -525,7 +551,7 @@ const ensureStructuredDraft = (
   context: PdrContext,
   rfpSource: string,
 ): string => {
-  const sections = [
+  const required = [
     { title: "Introduction", fallback: `This PDR summarizes project ${projectKey ?? "N/A"} based on ${rfpSource}.` },
     { title: "Scope", fallback: "Outline the functional boundaries and primary users." },
     { title: "Requirements & Constraints", fallback: context.bullets.map((b) => `- ${b}`).join("\n") || "- TBD" },
@@ -534,25 +560,78 @@ const ensureStructuredDraft = (
     { title: "Non-Functional Requirements", fallback: "- Performance, reliability, compliance, and operational needs." },
     { title: "Risks & Mitigations", fallback: "- Enumerate risks from the RFP and proposed mitigations." },
     { title: "Open Questions", fallback: "- Outstanding questions to clarify with stakeholders." },
+    { title: "Acceptance Criteria", fallback: "- Add/edit/delete todos persists offline; filters/sorts/search <100ms for 500 items; shortcuts (`n`, Ctrl/Cmd+Enter) work; bulk actions confirm/undo; responsive and accessible (WCAG AA basics)." },
   ];
-  const normalized = draft.trim();
-  const hasHeading = (title: string) => new RegExp(`^#{1,6}\\s+${title}\\b`, "im").test(normalized);
+
+  const normalized = normalizeHeadingsToH2(draft.trim(), required.map((r) => r.title));
+
+  const pickSection = (title: string, fallback: string): string => {
+    const existing = extractSection(normalized, title);
+    const body = existing?.body?.trim();
+    if (body && body.length > 0) {
+      return body;
+    }
+    return fallback;
+  };
+
   const parts: string[] = [];
-  if (!/^#\s+/m.test(normalized)) {
-    parts.push(`# Product Design Review${projectKey ? `: ${projectKey}` : ""}`);
-  }
-  if (normalized) {
-    parts.push(normalized);
-  }
-  for (const section of sections) {
-    if (hasHeading(section.title)) continue;
+  parts.push(`# Product Design Review${projectKey ? `: ${projectKey}` : ""}`);
+  for (const section of required) {
+    const body = pickSection(section.title, section.fallback);
     parts.push(`## ${section.title}`);
-    parts.push(section.fallback);
+    parts.push(body);
   }
   parts.push("## Source RFP");
   parts.push(rfpSource);
   return parts.join("\n\n");
 };
+
+const PDR_ENRICHMENT_SECTIONS: { title: string; guidance: string[] }[] = [
+  {
+    title: "Architecture Overview",
+    guidance: [
+      "List concrete modules/components: UI shells (list/detail), state/store, persistence adapter (localStorage), keyboard/shortcut handler, bulk selection manager, search/filter/sort utilities.",
+      "Describe data flow (load -> store -> UI render; user actions -> store mutate -> persist).",
+      "Call out offline-first behavior and how persistence errors are handled.",
+    ],
+  },
+  {
+    title: "Requirements & Constraints",
+    guidance: [
+      "Spell out data model fields (id, title, description?, status enum, dueDate format/timezone, priority enum order, createdAt/updatedAt, selection flag).",
+      "Define localStorage key naming, schema versioning, and migration approach.",
+      "Include accessibility expectations (keyboard focus, ARIA basics) and bundle size/perf targets.",
+    ],
+  },
+  {
+    title: "Interfaces / APIs",
+    guidance: [
+      "Define internal contracts: store API (add/update/delete/toggle/filter/search), persistence adapter API (load/save/validate), shortcut map (keys -> actions), bulk action contract, optional export/import shape.",
+      "Clarify validation rules (required title, length limits, due date handling).",
+    ],
+  },
+  {
+    title: "Non-Functional Requirements",
+    guidance: [
+      "Quantify perf (<100ms for 500 items), bundle size goal, offline expectations, and accessibility targets (focus order, contrast).",
+      "Reliability: handling storage quota/corruption, error surfacing.",
+    ],
+  },
+  {
+    title: "Risks & Mitigations",
+    guidance: [
+      "Cover localStorage limits/corruption, keyboard conflicts, bulk delete accidents, schema drift, and mobile usability.",
+      "Provide specific mitigations (validation, confirmations/undo, migrations, debounced search, accessible shortcuts).",
+    ],
+  },
+  {
+    title: "Open Questions",
+    guidance: [
+      "Resolve defaults: sort/tie-breakers, priority order, initial filters, due date format/timezone.",
+      "Ask about export/import needs, accessibility targets, theming/branding, undo/confirm patterns.",
+    ],
+  },
+];
 
 const ensureSdsStructuredDraft = (
   draft: string,
@@ -624,15 +703,100 @@ const ensureSdsStructuredDraft = (
     parts.push(`## ${section}`);
     parts.push(fallbackFor(section));
   }
-  return parts.join("\n\n");
+  let structured = parts.join("\n\n");
+  for (const section of sections) {
+    structured = ensureSectionContent(structured, section, fallbackFor(section));
+  }
+  return structured;
 };
 
 const headingHasContent = (draft: string, title: string): boolean => {
   const regex = new RegExp(`^#{1,6}\\s+${title}\\b([\\s\\S]*?)(^#{1,6}\\s+|$)`, "im");
   const match = draft.match(regex);
-  if (!match) return false;
-  const body = match[1].trim();
-  return body.length > 10;
+  if (match) {
+    // If the heading exists, assume it has content (we already inject fallbacks elsewhere).
+    return true;
+  }
+  // Fallback: treat bolded headings like "**Introduction**" as valid.
+  const boldRegex = new RegExp(`\\*\\*${title}\\*\\*`, "i");
+  return boldRegex.test(draft);
+};
+
+const normalizeHeadingsToH2 = (draft: string, titles: string[]): string => {
+  let updated = draft;
+  for (const title of titles) {
+    const bold = new RegExp(`^\\s*\\*\\*${title}\\*\\*\\s*$`, "im");
+    updated = updated.replace(bold, `## ${title}`);
+  }
+  return updated;
+};
+
+const extractSection = (draft: string, title: string): { heading: string; body: string } | undefined => {
+  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
+  const match = draft.match(regex);
+  if (!match) return undefined;
+  return { heading: match[1], body: (match[2] ?? "").trim() };
+};
+
+const replaceSection = (draft: string, title: string, newBody: string): string => {
+  const normalizedBody = newBody.trim();
+  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
+  if (regex.test(draft)) {
+    return draft.replace(regex, `$1\n\n${normalizedBody}\n\n`);
+  }
+  return `${draft.trimEnd()}\n\n## ${title}\n${normalizedBody}\n`;
+};
+
+const parseSectionFromAgentOutput = (output: string, title: string): string | undefined => {
+  // Prefer content under a heading matching the title.
+  const extracted = extractSection(output, title);
+  if (extracted && extracted.body.length > 0) return extracted.body;
+  // Fallback: if the agent returned without heading, use full output.
+  const trimmed = output.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const enrichPdrDraft = async (
+  draft: string,
+  agent: Agent,
+  context: PdrContext,
+  projectKey: string | undefined,
+  invoke: (prompt: string) => Promise<{ output: string; adapter: string }>,
+): Promise<string> => {
+  let enriched = draft;
+  for (const section of PDR_ENRICHMENT_SECTIONS) {
+    const current = extractSection(enriched, section.title);
+    const currentBody = current?.body ?? "";
+    const guidance = section.guidance.join("\n- ");
+    const prompt = [
+      `You are enriching a Product Design Review section for project ${projectKey ?? "(unspecified)"} using only provided context.`,
+      `Context summary: ${context.summary}`,
+      `RFP cues:\n${context.bullets.map((b) => `- ${b}`).join("\n") || "- (none)"}`,
+      `Current section "${section.title}":\n${currentBody || "(empty)"}`,
+      "Enrich this section with concrete, actionable content. Keep it concise (bullets ok).",
+      "Do NOT remove the heading. Return only the updated section, starting with the heading. Do not include any other sections.",
+      `Guidance:\n- ${guidance}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const { output } = await invoke(prompt);
+    const replacement = parseSectionFromAgentOutput(output, section.title);
+    if (replacement && replacement.trim().length > 0) {
+      enriched = replaceSection(enriched, section.title, replacement);
+    }
+  }
+  return enriched;
+};
+
+const ensureHeadingContent = (draft: string, title: string, fallback: string): string => {
+  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(^#{1,6}\\s+|$)`, "im");
+  const match = draft.match(regex);
+  if (!match) {
+    return `${draft.trimEnd()}\n\n## ${title}\n${fallback}\n`;
+  }
+  const body = match[2].trim();
+  if (body.length > 0) return draft;
+  return draft.replace(regex, `${match[1]}\n\n${fallback}\n\n${match[3] ?? ""}`);
 };
 
 const readGitBranch = async (workspaceRoot: string): Promise<string | undefined> => {
@@ -884,27 +1048,21 @@ export class DocsService {
       const skipValidation = process.env.MCODA_SKIP_PDR_VALIDATION === "1";
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const prompt = buildRunPrompt(context, options.projectKey, prompts, attempt === 0 ? runbook : `${runbook}\n\nRETRY: The previous attempt failed validation. Ensure all required sections are present and non-empty. Do not leave placeholders.`);
-        const { output: agentOutput, adapter: usedAdapter, metadata } = await this.invokeAgent(
-          agent,
-          prompt,
-          stream,
-          job.id,
-          options.onToken,
-        );
-        draft = ensureStructuredDraft(
-          agentOutput,
-          options.projectKey,
-          context,
-          context.rfp.path ?? context.rfp.id ?? "RFP",
-        );
-        adapter = usedAdapter;
-        agentMetadata = metadata;
+        const invoke = async (input: string) => {
+          const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(agent, input, stream, job.id, options.onToken);
+          adapter = usedAdapter;
+          agentMetadata = metadata;
+          return { output: out, adapter: usedAdapter, metadata };
+        };
+        const { output: agentOutput } = await invoke(prompt);
+        draft = ensureStructuredDraft(agentOutput, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
+        draft = await enrichPdrDraft(draft, agent, context, options.projectKey, invoke);
         const valid = skipValidation || (validateDraft(draft) && headingHasContent(draft, "Introduction"));
         await this.jobService.recordTokenUsage({
           timestamp: new Date().toISOString(),
           workspaceId: this.workspace.workspaceId,
           commandName: "docs-pdr-generate",
-          jobId: job.id,
+        jobId: job.id,
           agentId: agent.id,
       modelName: agent.defaultModel,
       action: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
@@ -912,11 +1070,16 @@ export class DocsService {
       completionTokens: estimateTokens(agentOutput),
       metadata: { adapter, docdexAvailable: context.docdexAvailable, attempt },
         });
-        if (valid) break;
-        if (attempt === 1) {
-          throw new Error("PDR draft validation failed after retry (missing required sections or empty output).");
-        }
+      if (valid) break;
+      const missing = missingPdrHeadings(draft);
+      // eslint-disable-next-line no-console
+      console.error(
+        `[pdr validation] missing sections: ${missing.join(", ") || "none"}; introHasContent=${headingHasContent(draft, "Introduction")}; length=${draft.length}; attempt=${attempt + 1}`,
+      );
+      if (attempt === 1) {
+        throw new Error("PDR draft validation failed after retry (missing required sections or empty output).");
       }
+    }
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
         timestamp: new Date().toISOString(),
