@@ -252,4 +252,51 @@ describe("RoutingCommands", () => {
       });
     });
   });
+
+  it("prints explain table with provenance", async () => {
+    const stubRouting: any = {
+      normalizeCommand: (c: string) => c,
+      resolveAgentForCommand: async () => ({
+        agentId: "a3",
+        agentSlug: "agent-three",
+        agent: { id: "a3", slug: "agent-three" },
+        model: "stub",
+        capabilities: ["plan"],
+        healthStatus: "degraded",
+        source: "override",
+        routingPreview: {
+          workspaceId: workspace.workspaceId,
+          commandName: "create-tasks",
+          resolvedAgent: { id: "a3" },
+          provenance: "override",
+          candidates: [
+            { agentId: "a3", agentSlug: "agent-three", source: "override", health: { status: "degraded" } as any },
+          ],
+          notes: "override used",
+        },
+        requiredCapabilities: ["plan"],
+      }),
+      close: async () => {},
+    };
+    await withPatched(RoutingService as any, "create", async () => stubRouting, async () => {
+      await withPatched(WorkspaceResolver as any, "resolveWorkspace", async () => workspace, async () => {
+        await withPatched(JobService.prototype as any, "startCommandRun", async () => ({ id: "cmd-6" }), async () => {
+          await withPatched(JobService.prototype as any, "finishCommandRun", async () => {}, async () => {
+            await withPatched(JobService.prototype as any, "recordTokenUsage", async () => {}, async () => {
+              await withPatched(JobService.prototype as any, "close", async () => {}, async () => {
+                const logs = await captureLogs(async () =>
+                  RoutingCommands.run(["explain", "--command", "create-tasks", "--agent", "agent-three"]),
+                );
+                const output = logs.join("\n");
+                assert.ok(output.includes("override"));
+                assert.ok(output.includes("agent-three"));
+                assert.ok(output.includes("degraded"));
+                assert.ok(output.includes("Required capabilities: plan"));
+              });
+            });
+          });
+        });
+      });
+    });
+  });
 });
