@@ -6,7 +6,8 @@ import { Database } from "sqlite";
  */
 export class GlobalMigrations {
   static async run(db: Database): Promise<void> {
-    await db.exec(`
+    const createSchema = async (): Promise<void> => {
+      await db.exec(`
       CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
         slug TEXT UNIQUE NOT NULL,
@@ -96,15 +97,93 @@ export class GlobalMigrations {
 
       CREATE INDEX IF NOT EXISTS idx_token_usage_command_run_id ON token_usage(command_run_id);
     `);
+    };
+
+    await createSchema();
+
+    const agentsInfo = await db.all<any[]>("PRAGMA table_info(agents)");
+    const hasAgentId = agentsInfo.some((col) => col.name === "id");
+    const hasAgentSlug = agentsInfo.some((col) => col.name === "slug");
+
+    // If the agents table is from a legacy schema (name/provider/model), reset the global DB schema.
+    if (!hasAgentId || !hasAgentSlug) {
+      await db.exec(`
+        DROP TABLE IF EXISTS agent_auth;
+        DROP TABLE IF EXISTS agent_capabilities;
+        DROP TABLE IF EXISTS agent_prompts;
+        DROP TABLE IF EXISTS agent_health;
+        DROP TABLE IF EXISTS agent_models;
+        DROP TABLE IF EXISTS workspace_defaults;
+        DROP TABLE IF EXISTS command_runs;
+        DROP TABLE IF EXISTS token_usage;
+        DROP TABLE IF EXISTS routing_rules;
+        DROP TABLE IF EXISTS agent_secrets;
+        DROP TABLE IF EXISTS releases;
+        DROP TABLE IF EXISTS schema_migrations;
+        DROP TABLE IF EXISTS agents;
+      `);
+      await createSchema();
+    }
 
     const workspaceDefaultsInfo = await db.all<any[]>("PRAGMA table_info(workspace_defaults)");
+    const hasWorkspaceId = workspaceDefaultsInfo.some((col) => col.name === "workspace_id");
+    const hasWorkspace = workspaceDefaultsInfo.some((col) => col.name === "workspace");
     const hasQaProfile = workspaceDefaultsInfo.some((col) => col.name === "qa_profile");
     const hasDocdexScope = workspaceDefaultsInfo.some((col) => col.name === "docdex_scope");
-    if (!hasQaProfile) {
-      await db.exec("ALTER TABLE workspace_defaults ADD COLUMN qa_profile TEXT");
-    }
-    if (!hasDocdexScope) {
-      await db.exec("ALTER TABLE workspace_defaults ADD COLUMN docdex_scope TEXT");
+
+    // Migrate legacy workspace_defaults schema: workspace -> workspace_id, default_agent -> agent_id, add command_name.
+    if (!hasWorkspaceId) {
+      if (hasWorkspace) {
+        await db.exec("ALTER TABLE workspace_defaults RENAME TO workspace_defaults_legacy");
+        await db.exec(`
+          CREATE TABLE workspace_defaults (
+            workspace_id TEXT NOT NULL,
+            command_name TEXT NOT NULL,
+            agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            qa_profile TEXT,
+            docdex_scope TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, command_name)
+          );
+        `);
+        const legacyRows = await db.all<any[]>(
+          "SELECT workspace, default_agent, qa_profile, docdex_scope, updated_at FROM workspace_defaults_legacy",
+        );
+        for (const row of legacyRows) {
+          await db.run(
+            `INSERT OR IGNORE INTO workspace_defaults (workspace_id, command_name, agent_id, qa_profile, docdex_scope, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            row.workspace,
+            "default",
+            row.default_agent,
+            row.qa_profile ?? null,
+            row.docdex_scope ?? null,
+            row.updated_at ?? new Date().toISOString(),
+          );
+        }
+        await db.exec("DROP TABLE workspace_defaults_legacy");
+      } else {
+        // If the table exists but has an unknown shape, reset to the expected schema.
+        await db.exec("DROP TABLE IF EXISTS workspace_defaults");
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS workspace_defaults (
+            workspace_id TEXT NOT NULL,
+            command_name TEXT NOT NULL,
+            agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            qa_profile TEXT,
+            docdex_scope TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, command_name)
+          );
+        `);
+      }
+    } else {
+      if (!hasQaProfile) {
+        await db.exec("ALTER TABLE workspace_defaults ADD COLUMN qa_profile TEXT");
+      }
+      if (!hasDocdexScope) {
+        await db.exec("ALTER TABLE workspace_defaults ADD COLUMN docdex_scope TEXT");
+      }
     }
   }
 }

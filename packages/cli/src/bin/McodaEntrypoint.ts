@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json" with { type: "json" };
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
@@ -134,7 +136,20 @@ export class McodaEntrypoint {
   }
 }
 
-if (process.argv[1] && process.argv[1].endsWith("mcoda.js")) {
+const isDirectRun = (() => {
+  if (typeof process.argv[1] !== "string") {
+    return false;
+  }
+  try {
+    const invokedPath = realpathSync(process.argv[1]);
+    const modulePath = realpathSync(fileURLToPath(import.meta.url));
+    return invokedPath === modulePath;
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
   McodaEntrypoint.run().catch((error) => {
     // eslint-disable-next-line no-console
     console.error(error instanceof Error ? error.message : error);

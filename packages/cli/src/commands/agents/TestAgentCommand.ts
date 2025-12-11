@@ -1,6 +1,6 @@
 import { AgentsApi } from "@mcoda/core";
 
-const USAGE = "Usage: mcoda test-agent <NAME> [--json]";
+const USAGE = "Usage: mcoda test-agent <NAME> [--prompt \"<text>\"] [--json]";
 
 const parseArgs = (argv: string[]): { flags: Record<string, string | boolean>; positionals: string[] } => {
   const flags: Record<string, string | boolean> = {};
@@ -30,18 +30,31 @@ export class TestAgentCommand {
     if (!name || parsed.flags.help) {
       throw new Error(USAGE);
     }
+    const prompt = typeof parsed.flags.prompt === "string" ? parsed.flags.prompt : undefined;
 
     const api = await AgentsApi.create();
     try {
-      const health = await api.testAgent(name);
+      const { health, response, prompt: usedPrompt } = await api.probeAgent(name, prompt);
       if (parsed.flags.json) {
         // eslint-disable-next-line no-console
-        console.log(JSON.stringify(health, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              health,
+              prompt: usedPrompt,
+              response,
+            },
+            null,
+            2,
+          ),
+        );
       } else {
         // eslint-disable-next-line no-console
-        console.log(
-          `Agent ${name} health=${health.status} lastCheckedAt=${health.lastCheckedAt ?? ""} latencyMs=${health.latencyMs ?? ""}`,
-        );
+        console.log(`Agent ${name} health=${health.status} lastCheckedAt=${health.lastCheckedAt ?? ""} latencyMs=${health.latencyMs ?? ""}`);
+        // eslint-disable-next-line no-console
+        console.log(`Prompt: ${usedPrompt}`);
+        // eslint-disable-next-line no-console
+        console.log(`Response (${response.adapter}${response.model ? `:${response.model}` : ""}):\n${response.output}`);
       }
     } finally {
       await api.close();

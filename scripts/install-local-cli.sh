@@ -20,5 +20,9 @@ echo "Building all packages (includes CLI dependencies)..."
 echo "Linking mcoda CLI globally..."
 "${PNPM_BIN}" -C "${ROOT}/packages/cli" link --global
 
+GLOBAL_BIN_DIR="$("${PNPM_BIN}" root -g)/.bin"
+
 echo
-echo "mcoda is now linked globally. Verify with: mcoda --version"
+echo "mcoda is now linked globally via pnpm."
+echo "Add to PATH if needed: export PATH=\"${GLOBAL_BIN_DIR}:\$PATH\""
+echo "Verify: ${GLOBAL_BIN_DIR}/mcoda --version"

@@ -8,7 +8,7 @@ import {
   CryptoHelper,
 } from "@mcoda/shared";
 import { GlobalCommandRun, GlobalRepository } from "@mcoda/db";
-import { AgentService } from "@mcoda/agents";
+import { AgentService, InvocationResult } from "@mcoda/agents";
 import { RoutingService } from "../services/agents/RoutingService.js";
 
 export interface AgentResponse extends Agent {
@@ -174,6 +174,36 @@ export class AgentsApi {
       });
       return health;
     });
+  }
+
+  async probeAgent(
+    idOrSlug: string,
+    prompt = "Hello from mcoda test-agent. Please reply with a short acknowledgement.",
+  ): Promise<{ health: AgentHealth; response: InvocationResult; prompt: string }> {
+    const agent = await this.resolveAgent(idOrSlug);
+    const trimmedPrompt = prompt.trim() || "Hello from mcoda test-agent. Please reply with a short acknowledgement.";
+    return this.withCommandRun(
+      "agent.test",
+      { id: agent.id, slug: agent.slug, prompt: trimmedPrompt },
+      async (run) => {
+        const health = await this.agentService.healthCheck(agent.id);
+        const response = await this.agentService.invoke(agent.id, {
+          input: trimmedPrompt,
+          metadata: { command: "test-agent" },
+        });
+        await this.repo.recordTokenUsage({
+          agentId: agent.id,
+          commandRunId: run.id,
+          modelName: agent.defaultModel,
+          tokensPrompt: 0,
+          tokensCompletion: 0,
+          tokensTotal: 0,
+          timestamp: new Date().toISOString(),
+          metadata: { reason: "agent.test", healthStatus: health.status, adapter: response.adapter },
+        });
+        return { health, response, prompt: trimmedPrompt };
+      },
+    );
   }
 
   async setDefaultAgent(
