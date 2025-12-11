@@ -855,7 +855,7 @@ const parseTocEntries = (
   for (const line of lines) {
     const stripped = line.replace(/^[-*+]\s*/, "");
     const match = stripped.match(/^(\d+(?:\.\d+)*)[.)]?\s+(.*)$/);
-    const label = match?.[1];
+    const label = match?.[1] ? `${match[1]}.` : undefined;
     const title = (match?.[2] ?? stripped).replace(/^#+\s*/, "").trim();
     if (!title) continue;
     const key = `${(label ?? "").toLowerCase()}|${title.toLowerCase()}`;
@@ -864,7 +864,15 @@ const parseTocEntries = (
     entries.push({ title, label });
   }
   if (entries.length === 0) {
-    return fallback.map((title) => ({ title }));
+    return fallback.map((title, idx) => ({ title, label: `${idx + 1}.` }));
+  }
+  // Ensure every entry has a label for numbering; fill gaps sequentially.
+  let counter = 1;
+  for (const entry of entries) {
+    if (!entry.label) {
+      entry.label = `${counter}.`;
+    }
+    counter += 1;
   }
   return entries;
 };
@@ -937,7 +945,7 @@ const buildIterativeSds = async (
   await ensureDir(outputPath);
   const tocPrompt = [
     "Generate ONLY a concise table of contents for the Software Design Specification using the provided context and first draft. Do not include section content.",
-    "Return bullets or numbered lines that represent the H2 sections in order.",
+    "Return numbered lines that represent the H2 sections in order (e.g., '1. Introduction', '2. Goals & Scope'). Include numbers so they can be mirrored in section headings.",
     `Context summary: ${context.summary}`,
     "Existing SDS draft:",
     firstDraft,
