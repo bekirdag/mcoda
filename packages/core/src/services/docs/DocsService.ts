@@ -551,10 +551,21 @@ const ensureStructuredDraft = (
   context: PdrContext,
   rfpSource: string,
 ): string => {
+  const canonicalTitles = PDR_REQUIRED_HEADINGS.map((variants) => variants[0]);
+  const normalized = normalizeHeadingsToH2(draft, canonicalTitles);
   const required = [
     { title: "Introduction", fallback: `This PDR summarizes project ${projectKey ?? "N/A"} based on ${rfpSource}.` },
-    { title: "Scope", fallback: "Outline the functional boundaries and primary users." },
-    { title: "Requirements & Constraints", fallback: context.bullets.map((b) => `- ${b}`).join("\n") || "- TBD" },
+    {
+      title: "Scope",
+      fallback:
+        "In-scope: todo CRUD (title required; optional description, due date, priority), status toggle, filters/sort/search, bulk complete/delete, keyboard shortcuts, responsive UI, offline/localStorage. Out-of-scope: multi-user/auth/sync/backends, notifications/reminders, team features, heavy UI kits.",
+    },
+    {
+      title: "Requirements & Constraints",
+      fallback:
+        context.bullets.map((b) => `- ${b}`).join("\n") ||
+        "- Data model, UX flows, keyboard shortcuts, and offline localStorage persistence per RFP.",
+    },
     { title: "Architecture Overview", fallback: "Describe the system architecture, components, and interactions." },
     { title: "Interfaces / APIs", fallback: "List key interfaces and constraints. Do not invent endpoints." },
     { title: "Non-Functional Requirements", fallback: "- Performance, reliability, compliance, and operational needs." },
@@ -563,27 +574,38 @@ const ensureStructuredDraft = (
     { title: "Acceptance Criteria", fallback: "- Add/edit/delete todos persists offline; filters/sorts/search <100ms for 500 items; shortcuts (`n`, Ctrl/Cmd+Enter) work; bulk actions confirm/undo; responsive and accessible (WCAG AA basics)." },
   ];
 
-  const normalized = normalizeHeadingsToH2(draft.trim(), required.map((r) => r.title));
-
-  const pickSection = (title: string, fallback: string): string => {
-    const existing = extractSection(normalized, title);
-    const body = existing?.body?.trim();
-    if (body && body.length > 0) {
-      return body;
-    }
-    return fallback;
-  };
-
   const parts: string[] = [];
   parts.push(`# Product Design Review${projectKey ? `: ${projectKey}` : ""}`);
   for (const section of required) {
-    const body = pickSection(section.title, section.fallback);
+    const best = getBestSectionBody(normalized, section.title);
+    const cleaned = cleanBody(best ?? "");
+    const body = cleaned && cleaned.length > 0 ? cleaned : cleanBody(section.fallback);
     parts.push(`## ${section.title}`);
     parts.push(body);
   }
   parts.push("## Source RFP");
   parts.push(rfpSource);
   return parts.join("\n\n");
+};
+
+const tidyPdrDraft = async (
+  draft: string,
+  agent: Agent,
+  invoke: (prompt: string) => Promise<{ output: string; adapter: string }>,
+): Promise<string> => {
+  const prompt = [
+    "Tidy the following Product Design Review markdown:",
+    draft,
+    "",
+    "Requirements:",
+    "- Keep exactly one instance of each H2 section: Introduction, Scope, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria, Source RFP.",
+    "- Remove duplicate sections, bold headings posing as sections, placeholder sentences, and repeated bullet blocks. If the same idea appears twice, keep the richer/longer version and drop the restatement.",
+    "- Do not add new sections or reorder the required outline.",
+    "- Keep content concise and aligned to the headings. Do not alter semantics.",
+    "- Return only the cleaned markdown.",
+  ].join("\n");
+  const { output } = await invoke(prompt);
+  return output.trim();
 };
 
 const PDR_ENRICHMENT_SECTIONS: { title: string; guidance: string[] }[] = [
@@ -710,6 +732,260 @@ const ensureSdsStructuredDraft = (
   return structured;
 };
 
+const getSdsSections = (template: string): string[] => {
+  const templateHeadings = template
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,6}\s+/.test(line))
+    .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
+
+  const defaultSections = [
+    "Introduction",
+    "Goals & Scope",
+    "Architecture Overview",
+    "Components & Responsibilities",
+    "Data Model & Persistence",
+    "Interfaces & Contracts",
+    "Non-Functional Requirements",
+    "Security & Compliance",
+    "Failure Modes & Resilience",
+    "Risks & Mitigations",
+    "Assumptions",
+    "Open Questions",
+    "Acceptance Criteria",
+  ];
+
+  const sections = templateHeadings.length ? templateHeadings : defaultSections;
+  const seen = new Set<string>();
+  const unique = sections.filter((title) => {
+    const key = title.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return unique;
+};
+
+const tidySdsDraft = async (
+  draft: string,
+  sections: string[],
+  agent: Agent,
+  invoke: (prompt: string) => Promise<{ output: string; adapter: string }>,
+): Promise<string> => {
+  const prompt = [
+    "Tidy the following Software Design Specification markdown:",
+    draft,
+    "",
+    "Requirements:",
+    `- Keep exactly one instance of each H2 section in this order: ${sections.join(", ")}.`,
+    "- Remove duplicate sections, bold headings pretending to be sections, placeholder sentences, and repeated bullet blocks. If content is duplicated, keep the richer/longer version.",
+    "- Do not add new sections or reorder the required outline.",
+    "- Keep content concise and aligned to the headings. Do not alter semantics.",
+    "- Return only the cleaned markdown.",
+  ].join("\n");
+  const { output } = await invoke(prompt);
+  return output.trim();
+};
+
+const enrichSdsDraft = async (
+  draft: string,
+  sections: string[],
+  agent: Agent,
+  context: SdsContext,
+  projectKey: string | undefined,
+  invoke: (prompt: string) => Promise<{ output: string; adapter: string }>,
+): Promise<string> => {
+  let enriched = draft;
+  const contextLines = context.blocks.map((b) => `- ${b.label}: ${b.summary}`).join("\n") || "- (no additional context)";
+  for (const sectionTitle of sections) {
+    const current = extractSection(enriched, sectionTitle);
+    const currentBody = current?.body ?? "";
+    const prompt = [
+      `You are enriching an SDS section "${sectionTitle}" for project ${projectKey ?? "(unspecified)"} using only provided context.`,
+      `Context summary: ${context.summary}`,
+      `Context blocks:\n${contextLines}`,
+      `Current section "${sectionTitle}":\n${currentBody || "(empty)"}`,
+      "Enrich this section with concrete, actionable content. Keep it concise (bullets acceptable).",
+      "Do NOT remove the heading. Return only the updated section, starting with the heading. Do not include any other sections.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const { output } = await invoke(prompt);
+    const replacement = parseSectionFromAgentOutput(output, sectionTitle);
+    if (replacement && replacement.trim().length > 0) {
+      enriched = replaceSection(enriched, sectionTitle, replacement);
+    }
+  }
+  return enriched;
+};
+
+const parseTocHeadings = (toc: string, fallback: string[]): string[] => {
+  const lines = toc
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const headings: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const stripped = line
+      .replace(/^[\d]+\.\s*/, "")
+      .replace(/^[-*+]\s*/, "")
+      .replace(/^#+\s*/, "")
+      .trim();
+    if (!stripped) continue;
+    const key = stripped.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    headings.push(stripped);
+  }
+  if (headings.length === 0) return fallback;
+  return headings;
+};
+
+const parseTocEntries = (
+  toc: string,
+  fallback: string[],
+): { title: string; label?: string }[] => {
+  const lines = toc
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const entries: { title: string; label?: string }[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const stripped = line.replace(/^[-*+]\s*/, "");
+    const match = stripped.match(/^(\d+(?:\.\d+)*)[.)]?\s+(.*)$/);
+    const label = match?.[1];
+    const title = (match?.[2] ?? stripped).replace(/^#+\s*/, "").trim();
+    if (!title) continue;
+    const key = `${(label ?? "").toLowerCase()}|${title.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push({ title, label });
+  }
+  if (entries.length === 0) {
+    return fallback.map((title) => ({ title }));
+  }
+  return entries;
+};
+
+const buildIterativePdr = async (
+  projectKey: string | undefined,
+  context: PdrContext,
+  firstDraft: string,
+  outputPath: string,
+  invoke: (prompt: string) => Promise<{ output: string; adapter: string }>,
+): Promise<string> => {
+  const header = `# Product Design Review${projectKey ? `: ${projectKey}` : ""}`;
+  await ensureDir(outputPath);
+  const tocPrompt = [
+    "Generate ONLY a concise table of contents for the Product Design Review using the provided RFP and first draft. Do not include any section content.",
+    "Return bullets or numbered lines that represent the H2 sections in order.",
+    `RFP path: ${context.rfp.path ?? context.rfp.id ?? "RFP"}`,
+    "RFP excerpt:",
+    (context.rfp.content ?? "").slice(0, 4000),
+    "Current PDR draft:",
+    firstDraft,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const { output: tocOutput } = await invoke(tocPrompt);
+  const tocHeadings = parseTocHeadings(tocOutput, PDR_REQUIRED_HEADINGS.map((variants) => variants[0]));
+  let currentDoc = [header, "## Table of Contents", cleanBody(tocOutput)].join("\n\n");
+  await fs.writeFile(outputPath, currentDoc, "utf8");
+  for (const heading of tocHeadings) {
+    const sectionPrompt = [
+      `Generate the section "${heading}" for a Product Design Review.`,
+      `Project: ${projectKey ?? "(unspecified)"}`,
+      `RFP path: ${context.rfp.path ?? context.rfp.id ?? "RFP"}`,
+      "RFP excerpt:",
+      (context.rfp.content ?? "").slice(0, 4000),
+      "First PDR draft (saved as first-draft):",
+      firstDraft.slice(0, 8000),
+      "Current improved document so far:",
+      currentDoc.slice(0, 8000),
+      "Other available docs: none beyond RFP and first draft (no SDS exists yet).",
+      "Table of contents:",
+      tocHeadings.map((h) => `- ${h}`).join("\n"),
+      "Requirements:",
+      "- Return only this section starting with the proper H2 heading.",
+      "- Be concrete, avoid placeholders, and align with the TOC heading text.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const { output: sectionOutput } = await invoke(sectionPrompt);
+    const parsed = parseSectionFromAgentOutput(sectionOutput, heading) ?? cleanBody(sectionOutput);
+    currentDoc = `${currentDoc}\n\n## ${heading}\n${parsed}`;
+    await fs.writeFile(outputPath, currentDoc, "utf8");
+  }
+  if (!/^\s*##\s+Source RFP\b/im.test(currentDoc)) {
+    currentDoc = `${currentDoc}\n\n## Source RFP\n${context.rfp.path ?? context.rfp.id ?? "RFP"}`;
+    await fs.writeFile(outputPath, currentDoc, "utf8");
+  }
+  return currentDoc;
+};
+
+const buildIterativeSds = async (
+  projectKey: string | undefined,
+  context: SdsContext,
+  firstDraft: string,
+  sections: string[],
+  outputPath: string,
+  invoke: (prompt: string) => Promise<{ output: string; adapter: string }>,
+): Promise<string> => {
+  const header = `# Software Design Specification${projectKey ? `: ${projectKey}` : ""}`;
+  await ensureDir(outputPath);
+  const tocPrompt = [
+    "Generate ONLY a concise table of contents for the Software Design Specification using the provided context and first draft. Do not include section content.",
+    "Return bullets or numbered lines that represent the H2 sections in order.",
+    `Context summary: ${context.summary}`,
+    "Existing SDS draft:",
+    firstDraft,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const { output: tocOutput } = await invoke(tocPrompt);
+  const tocEntries = parseTocEntries(tocOutput, sections);
+  const tocHeadings = tocEntries.map((e) => (e.label ? `${e.label} ${e.title}` : e.title));
+  let currentDoc = [header, "## Table of Contents", cleanBody(tocOutput)].join("\n\n");
+  await fs.writeFile(outputPath, currentDoc, "utf8");
+  const referenceDocs = [
+    context.rfp?.content ?? "",
+    ...context.pdrs.map((p) => p.content ?? ""),
+    ...context.existingSds.map((s) => s.content ?? ""),
+  ]
+    .filter(Boolean)
+    .map((c) => c.slice(0, 4000))
+    .join("\n\n---\n\n");
+  for (const entry of tocEntries) {
+    const heading = entry.label ? `${entry.label} ${entry.title}` : entry.title;
+    const sectionPrompt = [
+      `Generate the section "${heading}" for a Software Design Specification.`,
+      `Project: ${projectKey ?? "(unspecified)"}`,
+      `Context summary: ${context.summary}`,
+      "Reference materials:",
+      referenceDocs || "(no additional docs)",
+      "First SDS draft (saved as first-draft):",
+      firstDraft.slice(0, 8000),
+      "Current improved document so far:",
+      currentDoc.slice(0, 8000),
+      "PDR and RFP content have been provided above as reference.",
+      "Table of contents:",
+      tocHeadings.map((h) => `- ${h}`).join("\n"),
+      "Requirements:",
+      "- Return only this section starting with the proper H2 heading.",
+      "- Be concrete, avoid placeholders, and align with the TOC heading text.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const { output: sectionOutput } = await invoke(sectionPrompt);
+    const parsed = parseSectionFromAgentOutput(sectionOutput, heading) ?? cleanBody(sectionOutput);
+    currentDoc = `${currentDoc}\n\n## ${heading}\n${parsed}`;
+    await fs.writeFile(outputPath, currentDoc, "utf8");
+  }
+  return currentDoc;
+};
+
 const headingHasContent = (draft: string, title: string): boolean => {
   const regex = new RegExp(`^#{1,6}\\s+${title}\\b([\\s\\S]*?)(^#{1,6}\\s+|$)`, "im");
   const match = draft.match(regex);
@@ -731,15 +1007,75 @@ const normalizeHeadingsToH2 = (draft: string, titles: string[]): string => {
   return updated;
 };
 
+const PLACEHOLDER_PATTERNS = [
+  /^[-*+.]?\s*Describe the system architecture/i,
+  /^[-*+.]?\s*List key interfaces/i,
+  /^[-*+.]?\s*Outline the functional boundaries/i,
+  /^[-*+.]?\s*Outstanding questions/i,
+  /^[-*+.]?\s*Performance, reliability, compliance/i,
+  /^[-*+.]?\s*Enumerate risks from the RFP/i,
+];
+
+const cleanBody = (body: string): string => {
+  const requiredTitles = PDR_REQUIRED_HEADINGS.flat().map((t) => t.toLowerCase());
+  const normalizeLine = (line: string) =>
+    line
+      .toLowerCase()
+      .replace(/[`*_]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const lines = body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (!l) return false;
+      if (/^#{1,6}\s+/.test(l)) return false; // strip stray headings
+      if (/^\*{2}.+?\*{2}$/.test(l) && requiredTitles.includes(l.replace(/\*/g, "").toLowerCase())) return false;
+      if (PLACEHOLDER_PATTERNS.some((p) => p.test(l))) return false;
+      if (requiredTitles.includes(l.toLowerCase())) return false; // drop stray title text
+      return true;
+    });
+  const deduped: string[] = [];
+  const seen: string[] = [];
+  for (const line of lines) {
+    if (!line) continue;
+    const key = normalizeLine(line);
+    if (!key) continue;
+    const isDuplicate = seen.some((prev) => prev === key || prev.includes(key) || key.includes(prev));
+    if (isDuplicate) continue;
+    seen.push(key);
+    deduped.push(line);
+  }
+  return deduped.join("\n").trim();
+};
+
 const extractSection = (draft: string, title: string): { heading: string; body: string } | undefined => {
-  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
+  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|(?![\\s\\S]))`, "im");
   const match = draft.match(regex);
   if (!match) return undefined;
   return { heading: match[1], body: (match[2] ?? "").trim() };
 };
 
+const getBestSectionBody = (draft: string, title: string): string | undefined => {
+  const variants: string[] = [];
+  const headingPattern = `(^#{1,6}\\s+${title}\\b[^\\n]*$|^\\*\\*${title}\\*\\*\\s*$)`;
+  const regex = new RegExp(
+    `${headingPattern}([\\s\\S]*?)(?=^#{1,6}\\s+|^\\*\\*[^\\n]+\\*\\*\\s*$|(?![\\s\\S]))`,
+    "gim",
+  );
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(draft)) !== null) {
+    variants.push(match[2] ?? "");
+  }
+  const cleaned = variants
+    .map((body) => cleanBody(body))
+    .filter((body) => body.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+  return cleaned[0];
+};
+
 const replaceSection = (draft: string, title: string, newBody: string): string => {
-  const normalizedBody = newBody.trim();
+  const normalizedBody = cleanBody(newBody);
   const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
   if (regex.test(draft)) {
     return draft.replace(regex, `$1\n\n${normalizedBody}\n\n`);
@@ -750,10 +1086,12 @@ const replaceSection = (draft: string, title: string, newBody: string): string =
 const parseSectionFromAgentOutput = (output: string, title: string): string | undefined => {
   // Prefer content under a heading matching the title.
   const extracted = extractSection(output, title);
-  if (extracted && extracted.body.length > 0) return extracted.body;
-  // Fallback: if the agent returned without heading, use full output.
+  if (extracted && extracted.body.length > 0) return cleanBody(extracted.body);
+  // Fallback: if the agent returned without heading, use text before any other heading.
+  const preHeading = output.split(/^#{1,6}\s+/m)[0]?.trim();
+  if (preHeading && preHeading.length > 0) return cleanBody(preHeading);
   const trimmed = output.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  return trimmed.length > 0 ? cleanBody(trimmed) : undefined;
 };
 
 const enrichPdrDraft = async (
@@ -1046,6 +1384,9 @@ export class DocsService {
       let adapter = agent.adapter;
       const stream = options.agentStream ?? true;
       const skipValidation = process.env.MCODA_SKIP_PDR_VALIDATION === "1";
+      let lastInvoke:
+        | ((input: string) => Promise<{ output: string; adapter: string; metadata?: Record<string, unknown> }>)
+        | undefined;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const prompt = buildRunPrompt(context, options.projectKey, prompts, attempt === 0 ? runbook : `${runbook}\n\nRETRY: The previous attempt failed validation. Ensure all required sections are present and non-empty. Do not leave placeholders.`);
         const invoke = async (input: string) => {
@@ -1054,39 +1395,89 @@ export class DocsService {
           agentMetadata = metadata;
           return { output: out, adapter: usedAdapter, metadata };
         };
+        lastInvoke = invoke;
         const { output: agentOutput } = await invoke(prompt);
-        draft = ensureStructuredDraft(agentOutput, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
-        draft = await enrichPdrDraft(draft, agent, context, options.projectKey, invoke);
-        const valid = skipValidation || (validateDraft(draft) && headingHasContent(draft, "Introduction"));
+        const structured = ensureStructuredDraft(
+          agentOutput,
+          options.projectKey,
+          context,
+          context.rfp.path ?? context.rfp.id ?? "RFP",
+        );
+        const valid = skipValidation || (validateDraft(structured) && headingHasContent(structured, "Introduction"));
         await this.jobService.recordTokenUsage({
           timestamp: new Date().toISOString(),
           workspaceId: this.workspace.workspaceId,
           commandName: "docs-pdr-generate",
-        jobId: job.id,
+          jobId: job.id,
           agentId: agent.id,
-      modelName: agent.defaultModel,
-      action: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
-      promptTokens: estimateTokens(prompt),
-      completionTokens: estimateTokens(agentOutput),
-      metadata: { adapter, docdexAvailable: context.docdexAvailable, attempt },
+          modelName: agent.defaultModel,
+          action: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
+          promptTokens: estimateTokens(prompt),
+          completionTokens: estimateTokens(agentOutput),
+          metadata: { adapter, docdexAvailable: context.docdexAvailable, attempt },
         });
-      if (valid) break;
-      const missing = missingPdrHeadings(draft);
-      // eslint-disable-next-line no-console
-      console.error(
-        `[pdr validation] missing sections: ${missing.join(", ") || "none"}; introHasContent=${headingHasContent(draft, "Introduction")}; length=${draft.length}; attempt=${attempt + 1}`,
+        if (valid) {
+          draft = structured;
+          break;
+        }
+        if (valid) break;
+        const missing = missingPdrHeadings(draft);
+        // eslint-disable-next-line no-console
+        console.error(
+          `[pdr validation] missing sections: ${missing.join(", ") || "none"}; introHasContent=${headingHasContent(draft, "Introduction")}; length=${draft.length}; attempt=${attempt + 1}`,
       );
-      if (attempt === 1) {
-        throw new Error("PDR draft validation failed after retry (missing required sections or empty output).");
+        if (attempt === 1) {
+          throw new Error("PDR draft validation failed after retry (missing required sections or empty output).");
+        }
       }
-    }
+      if (!draft) {
+        throw new Error("PDR draft generation failed; no valid draft produced.");
+      }
+
+      if (lastInvoke) {
+        draft = await enrichPdrDraft(draft, agent, context, options.projectKey, lastInvoke);
+        draft = ensureStructuredDraft(draft, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
+      }
+      if (lastInvoke) {
+        try {
+          const tidiedRaw = await tidyPdrDraft(draft, agent, lastInvoke);
+          const tidied = ensureStructuredDraft(tidiedRaw, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
+          const tidiedValid = validateDraft(tidied) && headingHasContent(tidied, "Introduction");
+          const keepTidied = tidiedValid && tidied.length >= draft.length * 0.6;
+          if (keepTidied) {
+            draft = tidied;
+          }
+        } catch (error) {
+          context.warnings.push(`Tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
+        }
+      }
+      const outputPath = options.outPath ?? this.defaultPdrOutputPath(options.projectKey, context.rfp.path);
+      const firstDraftPath = path.join(
+        this.workspace.mcodaDir,
+        "docs",
+        "pdr",
+        `${path.basename(outputPath, path.extname(outputPath))}-first-draft.md`,
+      );
+      await ensureDir(firstDraftPath);
+      await fs.writeFile(firstDraftPath, draft, "utf8");
+      try {
+        const iterativeDraft = await buildIterativePdr(
+          options.projectKey,
+          context,
+          draft,
+          outputPath,
+          lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
+        );
+        draft = iterativeDraft;
+      } catch (error) {
+        context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+      }
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
         timestamp: new Date().toISOString(),
         details: { length: draft.length },
       });
 
-      const outputPath = options.outPath ?? this.defaultPdrOutputPath(options.projectKey, context.rfp.path);
       let docdexId: string | undefined;
       let segments: string[] | undefined;
       let mirrorStatus = "skipped";
@@ -1304,6 +1695,7 @@ export class DocsService {
       const agent = await this.resolveAgent(options.agentName, ["docs-sds-generate", "docs:sds:generate", "sds"]);
       const prompts = await this.agentService.getPrompts(agent.id);
       const template = await this.loadSdsTemplate(options.templateName);
+      const sdsSections = getSdsSections(template.content);
       const runbook =
         (await readPromptIfExists(this.workspace, path.join("prompts", "commands", "sds-generate.md"))) ||
         (await readPromptIfExists(this.workspace, path.join("prompts", "sds", "generate.md"))) ||
@@ -1314,6 +1706,18 @@ export class DocsService {
       let adapter = agent.adapter;
       const stream = options.agentStream ?? true;
       const skipValidation = process.env.MCODA_SKIP_SDS_VALIDATION === "1";
+      const invoke = async (input: string) => {
+        const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(
+          agent,
+          input,
+          stream,
+          job.id,
+          options.onToken,
+        );
+        adapter = usedAdapter;
+        if (metadata) agentMetadata = metadata;
+        return { output: out, adapter: usedAdapter, metadata };
+      };
       if (!resumeDraft) {
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const prompt = buildSdsRunPrompt(
@@ -1325,16 +1729,8 @@ export class DocsService {
               : `${runbook}\n\nRETRY: The previous attempt failed validation. Ensure all required sections are present and non-empty.`,
             template.content,
           );
-          const { output: agentOutput, adapter: usedAdapter, metadata } = await this.invokeAgent(
-            agent,
-            prompt,
-            stream,
-            job.id,
-            options.onToken,
-          );
+          const { output: agentOutput, adapter: usedAdapter } = await invoke(prompt);
           draft = ensureSdsStructuredDraft(agentOutput, options.projectKey, context, template.content);
-          adapter = usedAdapter;
-          agentMetadata = metadata;
           const valid = skipValidation || (validateSdsDraft(draft) && headingHasContent(draft, "Architecture"));
           await this.jobService.recordTokenUsage({
             timestamp: new Date().toISOString(),
@@ -1386,16 +1782,8 @@ export class DocsService {
       if (!draft) {
         // regenerated draft in case resume draft was invalid
         const prompt = buildSdsRunPrompt(context, options.projectKey, prompts, runbook, template.content);
-        const { output: agentOutput, adapter: usedAdapter, metadata } = await this.invokeAgent(
-          agent,
-          prompt,
-          stream,
-          job.id,
-          options.onToken,
-        );
+        const { output: agentOutput, adapter: usedAdapter } = await invoke(prompt);
         draft = ensureSdsStructuredDraft(agentOutput, options.projectKey, context, template.content);
-        adapter = usedAdapter;
-        agentMetadata = metadata;
         await this.jobService.recordTokenUsage({
           timestamp: new Date().toISOString(),
           workspaceId: this.workspace.workspaceId,
@@ -1409,8 +1797,45 @@ export class DocsService {
           metadata: { adapter, provider: adapter, docdexAvailable: context.docdexAvailable, template: template.name },
         });
       }
+      // Enrich each section sequentially after a valid base draft exists.
+      draft = await enrichSdsDraft(draft, sdsSections, agent, context, options.projectKey, invoke);
+      draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
+      if (!skipValidation && !(validateSdsDraft(draft) && headingHasContent(draft, "Architecture"))) {
+        warnings.push("Enriched SDS draft failed validation; using structured fallback.");
+        draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
+      }
+      try {
+        const tidiedRaw = await tidySdsDraft(draft, sdsSections, agent, invoke);
+        const tidied = ensureSdsStructuredDraft(tidiedRaw, options.projectKey, context, template.content);
+        if (skipValidation || (validateSdsDraft(tidied) && headingHasContent(tidied, "Architecture"))) {
+          draft = tidied;
+        }
+      } catch (error) {
+        warnings.push(`SDS tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
+      }
       await fs.mkdir(path.dirname(draftPath), { recursive: true });
       await fs.writeFile(draftPath, draft, "utf8");
+      const firstDraftPath = path.join(
+        this.workspace.mcodaDir,
+        "docs",
+        "sds",
+        `${path.basename(outputPath, path.extname(outputPath))}-first-draft.md`,
+      );
+      await ensureDir(firstDraftPath);
+      await fs.writeFile(firstDraftPath, draft, "utf8");
+      try {
+        const iterativeDraft = await buildIterativeSds(
+          options.projectKey,
+          context,
+          draft,
+          sdsSections,
+          outputPath,
+          invoke,
+        );
+        draft = iterativeDraft;
+      } catch (error) {
+        warnings.push(`Iterative SDS refinement failed; keeping first draft. ${String(error)}`);
+      }
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
         timestamp: new Date().toISOString(),
