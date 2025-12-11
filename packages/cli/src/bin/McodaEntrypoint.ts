@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import packageJson from "../../package.json" with { type: "json" };
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
@@ -20,6 +21,12 @@ import { TestAgentCommand } from "../commands/agents/TestAgentCommand.js";
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const [command, ...rest] = argv;
+    if (command === "--version" || command === "-v" || command === "version") {
+      // Keep this simple so `mcoda --version` works even in thin installs.
+      // eslint-disable-next-line no-console
+      console.log((packageJson as { version?: string }).version ?? "dev");
+      return;
+    }
     if (!command) {
       throw new Error(
         "Usage: mcoda <agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|update|pdr|sds> [...args]\n" +
