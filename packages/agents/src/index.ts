@@ -1,6 +1,7 @@
 export * from "./AgentService/AgentService.js";
 export * from "./adapters/AdapterTypes.js";
 export * from "./adapters/openai/OpenAiAdapter.js";
+export * from "./adapters/openai/OpenAiCliAdapter.js";
 export * from "./adapters/codex/CodexAdapter.js";
 export * from "./adapters/gemini/GeminiAdapter.js";
 export * from "./adapters/local/LocalAdapter.js";

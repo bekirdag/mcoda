@@ -1,8 +1,8 @@
 import { AgentHealth } from "@mcoda/shared";
 import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
-import { cliHealthy, runCodexExec } from "./CodexCliRunner.js";
+import { cliHealthy as codexCliHealthy, runCodexExec } from "../codex/CodexCliRunner.js";
 
-export class CodexAdapter implements AgentAdapter {
+export class OpenAiCliAdapter implements AgentAdapter {
   constructor(private config: AdapterConfig) {}
 
   async getCapabilities(): Promise<string[]> {
@@ -11,7 +11,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async healthCheck(): Promise<AgentHealth> {
     const started = Date.now();
-    const result = cliHealthy();
+    const result = codexCliHealthy();
     return {
       agentId: this.config.agent.id,
       status: result.ok ? "healthy" : "unreachable",
@@ -22,8 +22,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async invoke(request: InvocationRequest): Promise<InvocationResult> {
-    const health = cliHealthy(true);
-    const cliDetails = health.details;
+    const cliDetails = codexCliHealthy(true);
     const result = runCodexExec(request.input, this.config.model);
     return {
       output: result.output,
@@ -32,9 +31,9 @@ export class CodexAdapter implements AgentAdapter {
       metadata: {
         mode: "cli",
         capabilities: this.config.capabilities,
+        prompts: this.config.prompts,
         adapterType: this.config.adapter ?? "codex-cli",
-        authMode: "cli",
-        cli: cliDetails,
+        cli: cliDetails.details,
         raw: result.raw,
       },
     };

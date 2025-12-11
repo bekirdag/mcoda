@@ -4,10 +4,11 @@ import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
 import { GeminiAdapter } from "../adapters/gemini/GeminiAdapter.js";
 import { LocalAdapter } from "../adapters/local/LocalAdapter.js";
 import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
+import { OpenAiCliAdapter } from "../adapters/openai/OpenAiCliAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
 
-const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli"]);
+const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
 
 const DEFAULT_JOB_PROMPT =
@@ -91,7 +92,8 @@ export class AgentService {
 
     if (adapterType.endsWith("-api")) {
       if (hasSecret) return adapterType;
-      if (adapterType === "codex-api") {
+      if (adapterType === "codex-api" || adapterType === "openai-api") {
+        // Default to the codex CLI when API creds are missing.
         adapterType = "codex-cli";
       } else if (adapterType === "gemini-api") {
         adapterType = "gemini-cli";
@@ -121,6 +123,9 @@ export class AgentService {
     }
     if (adapterType === "gemini-cli") {
       return new GeminiAdapter(configWithAdapter);
+    }
+    if (adapterType === "openai-cli") {
+      return new OpenAiCliAdapter(configWithAdapter);
     }
     if (adapterType === "local-model" || LOCAL_ADAPTERS.has(adapterType)) {
       return new LocalAdapter(configWithAdapter);
