@@ -19,6 +19,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { AgentService } from '@mcoda/agents';
 import { GlobalRepository } from '@mcoda/db';
 import { DocdexClient } from '@mcoda/integrations';
+import { RoutingService } from '../agents/RoutingService.js';
 
 export interface QaTasksRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -97,6 +98,7 @@ export class QaTasksService {
   private agentService?: AgentService;
   private docdex?: DocdexClient;
   private repo?: GlobalRepository;
+  private routingService?: RoutingService;
   private dryRunGuard = false;
 
   constructor(
@@ -112,6 +114,7 @@ export class QaTasksService {
       agentService?: AgentService;
       docdex?: DocdexClient;
       repo?: GlobalRepository;
+      routingService?: RoutingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
@@ -123,6 +126,7 @@ export class QaTasksService {
     this.agentService = deps.agentService;
     this.docdex = deps.docdex;
     this.repo = deps.repo;
+    this.routingService = deps.routingService;
   }
 
   static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<QaTasksService> {
@@ -132,8 +136,9 @@ export class QaTasksService {
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
+    const routingService = await RoutingService.create();
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
-    const jobService = new JobService(workspace.workspaceRoot, workspaceRepo, {
+    const jobService = new JobService(workspace, workspaceRepo, {
       noTelemetry: options.noTelemetry ?? false,
     });
     const selectionService = new TaskSelectionService(workspace, workspaceRepo);
@@ -152,6 +157,7 @@ export class QaTasksService {
       agentService,
       docdex,
       repo,
+      routingService,
     });
   }
 
@@ -280,22 +286,15 @@ export class QaTasksService {
   }
 
   private async resolveAgent(agentName?: string) {
-    if (!this.agentService) throw new Error('AgentService not available');
-    if (agentName) return this.agentService.resolveAgent(agentName);
-    if (this.repo) {
-      try {
-        const defaults = await this.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-        const qaDefault =
-          defaults.find((d) => d.commandName === 'qa-tasks') ??
-          defaults.find((d) => d.commandName === 'default');
-        if (qaDefault) {
-          return this.agentService.resolveAgent(qaDefault.agentId);
-        }
-      } catch {
-        // ignore and fall back
-      }
+    if (!this.routingService || !this.agentService) {
+      throw new Error('RoutingService not available for QA routing');
     }
-    return this.agentService.resolveAgent('codex');
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName: 'qa-tasks',
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private estimateTokens(text: string): number {

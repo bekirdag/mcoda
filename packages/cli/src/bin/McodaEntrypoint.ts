@@ -7,22 +7,32 @@ import { CreateTasksCommand } from "../commands/planning/CreateTasksCommand.js";
 import { RefineTasksCommand } from "../commands/planning/RefineTasksCommand.js";
 import { BacklogCommands } from "../commands/backlog/BacklogCommands.js";
 import { TaskShowCommands } from "../commands/backlog/TaskShowCommands.js";
+import { OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
 import { EstimateCommands } from "../commands/estimate/EstimateCommands.js";
 import { TelemetryCommands } from "../commands/telemetry/TelemetryCommands.js";
 import { WorkOnTasksCommand } from "../commands/work/WorkOnTasksCommand.js";
 import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
 import { QaTasksCommand } from "../commands/planning/QaTasksCommand.js";
+import { UpdateCommands } from "../commands/update/UpdateCommands.js";
+import { RoutingCommands } from "../commands/routing/RoutingCommands.js";
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const [command, ...rest] = argv;
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|docs|openapi|jobs|tokens|telemetry|create-tasks|refine-tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|pdr|sds> [...args]",
+        "Usage: mcoda <agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|update|pdr|sds> [...args]\n" +
+          "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
+          "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
+          "Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.",
       );
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
+      return;
+    }
+    if (command === "routing") {
+      await RoutingCommands.run(rest);
       return;
     }
     if (command === "docs") {
@@ -72,6 +82,17 @@ export class McodaEntrypoint {
       await QaTasksCommand.run(rest);
       return;
     }
+    if (command === "order-tasks") {
+      await OrderTasksCommand.run(rest);
+      return;
+    }
+    if (command === "tasks") {
+      const [sub, ...tail] = rest;
+      if (sub === "order-by-deps" || sub === "order-by-dependencies") {
+        await OrderTasksCommand.run(tail);
+        return;
+      }
+    }
     if (command === "work-on-tasks") {
       await WorkOnTasksCommand.run(rest);
       return;
@@ -90,6 +111,10 @@ export class McodaEntrypoint {
     }
     if (command === "estimate") {
       await EstimateCommands.run(rest);
+      return;
+    }
+    if (command === "update") {
+      await UpdateCommands.run(rest);
       return;
     }
     throw new Error(`Unknown command: ${command}`);

@@ -8,6 +8,8 @@ export interface Agent {
   config?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  capabilities?: string[];
+  health?: AgentHealth;
 }
 
 export interface CreateAgentInput {
@@ -52,6 +54,21 @@ export interface AgentAuthSecret extends AgentAuthMetadata {
   encryptedSecret: string;
 }
 
+export type UpdateChannel = "stable" | "beta" | "nightly";
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  channel: UpdateChannel;
+  updateAvailable: boolean;
+  notes?: string | null;
+}
+
+export interface ApplyUpdateResponse {
+  status: "started" | "already_up_to_date" | "completed";
+  logFile?: string | null;
+}
+
 export interface AgentHealth {
   agentId: string;
   status: AgentHealthStatus;
@@ -64,7 +81,44 @@ export interface WorkspaceDefault {
   workspaceId: string;
   commandName: string;
   agentId: string;
-  updatedAt: string;
+  qaProfile?: string;
+  docdexScope?: string;
+  updatedAt?: string;
+}
+
+export type RoutingDefault = WorkspaceDefault;
+export type RoutingDefaults = RoutingDefault[];
+
+export type RoutingProvenance = "override" | "workspace_default" | "global_default";
+
+export interface RoutingCandidate {
+  agent: Agent;
+  agentId: string;
+  agentSlug?: string;
+  source: RoutingProvenance;
+  capabilities?: string[];
+  health?: AgentHealth;
+  missingCapabilities?: string[];
+  notes?: string;
+}
+
+export interface RoutingPreview {
+  workspaceId: string;
+  commandName: string;
+  resolvedAgent: Agent;
+  provenance?: RoutingProvenance;
+  requiredCapabilities?: string[];
+  qaProfile?: string;
+  docdexScope?: string;
+  notes?: string;
+  candidates?: RoutingCandidate[];
+}
+
+export interface RoutingDefaultsUpdate {
+  set?: Record<string, string>;
+  reset?: string[];
+  qaProfile?: string;
+  docdexScope?: string;
 }
 
 export type VelocitySource = "config" | "empirical" | "mixed";

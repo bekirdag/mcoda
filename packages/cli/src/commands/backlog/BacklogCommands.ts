@@ -20,7 +20,7 @@ const usage = `mcoda backlog \\
   [--story <STORY_KEY>] \\
   [--assignee <USER>] \\
   [--status <STATUS_FILTER>] \\
-  [--order dependencies] \\
+  [--order dependencies]   # dependency-aware ordering (topological, most depended-on first) \\
   [--json] \\
   [--verbose]`;
 

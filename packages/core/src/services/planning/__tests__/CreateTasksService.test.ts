@@ -1,13 +1,19 @@
 import test from "node:test";
 import assert from "node:assert";
+import path from "node:path";
+import os from "node:os";
 import { CreateTasksService } from "../CreateTasksService.js";
 import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 import { createEpicKeyGenerator, createStoryKeyGenerator, createTaskKeyGenerator } from "../KeyHelpers.js";
 
+const workspaceRoot = "/tmp/mcoda-test";
 const workspace: WorkspaceResolution = {
-  workspaceRoot: "/tmp/mcoda-test",
-  workspaceId: "/tmp/mcoda-test",
-  mcodaDir: "/tmp/mcoda-test/.mcoda",
+  workspaceRoot,
+  workspaceId: workspaceRoot,
+  mcodaDir: path.join(workspaceRoot, ".mcoda"),
+  id: workspaceRoot,
+  workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
+  globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
 };
 
 const fakeDoc = {
@@ -38,6 +44,22 @@ class StubAgentService {
   }
   async invoke() {
     return { output: this.queue.shift() ?? "" };
+  }
+}
+
+class StubRoutingService {
+  private agent = { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  async resolveAgentForCommand() {
+    return {
+      agent: this.agent,
+      agentId: this.agent.id,
+      agentSlug: this.agent.slug,
+      model: this.agent.defaultModel,
+      capabilities: [],
+      healthStatus: "healthy",
+      source: "workspace_default",
+      routingPreview: { workspaceId: workspace.workspaceId, commandName: "create-tasks" } as any,
+    };
   }
 }
 
@@ -221,6 +243,7 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
     docdex: new StubDocdex() as any,
     jobService: new StubJobService() as any,
     agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
     repo: new StubRepo() as any,
     workspaceRepo: new StubWorkspaceRepo() as any,
   });
@@ -247,6 +270,7 @@ test("createTasks fails on invalid agent output", async () => {
     docdex: new StubDocdex() as any,
     jobService: jobService as any,
     agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
     repo: new StubRepo() as any,
     workspaceRepo: new StubWorkspaceRepo() as any,
   });

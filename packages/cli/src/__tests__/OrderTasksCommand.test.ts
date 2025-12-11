@@ -1,0 +1,150 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { Connection, WorkspaceMigrations, WorkspaceRepository } from "@mcoda/db";
+import { PathHelper } from "@mcoda/shared";
+import { parseOrderTasksArgs, OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
+
+const setupWorkspace = async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-order-"));
+  const mcodaDir = path.join(dir, ".mcoda");
+  await fs.mkdir(mcodaDir, { recursive: true });
+  const dbPath = PathHelper.getWorkspaceDbPath(dir);
+  const connection = await Connection.open(dbPath);
+  await WorkspaceMigrations.run(connection.db);
+  const repo = new WorkspaceRepository(connection.db, connection);
+
+  const project = await repo.createProjectIfMissing({ key: "CLI", name: "CLI" });
+  const [epic] = await repo.insertEpics(
+    [
+      {
+        projectId: project.id,
+        key: "cli-01",
+        title: "Epic",
+        description: "",
+      },
+    ],
+    true,
+  );
+  const [story] = await repo.insertStories(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        key: "cli-01-us-01",
+        title: "Story",
+        description: "",
+      },
+    ],
+    true,
+  );
+  const [t1, t2, t3] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "CLI-01-T01",
+        title: "Root complete",
+        description: "",
+        status: "completed",
+      },
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "CLI-01-T02",
+        title: "Next",
+        description: "",
+        status: "not_started",
+      },
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "CLI-01-T03",
+        title: "Blocked child",
+        description: "",
+        status: "not_started",
+      },
+    ],
+    true,
+  );
+  await repo.insertTaskDependencies(
+    [
+      { taskId: t2.id, dependsOnTaskId: t1.id, relationType: "blocks" },
+      { taskId: t3.id, dependsOnTaskId: t2.id, relationType: "blocks" },
+    ],
+    true,
+  );
+
+  return { dir, repo, project };
+};
+
+const cleanupWorkspace = async (dir: string, repo: WorkspaceRepository) => {
+  try {
+    await repo.close();
+  } catch {
+    /* ignore */
+  }
+  await fs.rm(dir, { recursive: true, force: true });
+};
+
+test("parseOrderTasksArgs respects defaults and flags", () => {
+  const parsed = parseOrderTasksArgs([
+    "--workspace-root",
+    "/tmp/ws",
+    "--project",
+    "CLI",
+    "--epic",
+    "E1",
+    "--status",
+    "not_started,in_progress",
+    "--include-blocked",
+    "--agent",
+    "codex",
+    "--agent-stream",
+    "false",
+    "--json",
+  ]);
+  assert.equal(parsed.workspaceRoot, path.resolve("/tmp/ws"));
+  assert.equal(parsed.project, "CLI");
+  assert.equal(parsed.epic, "E1");
+  assert.deepEqual(parsed.status, ["not_started", "in_progress"]);
+  assert.equal(parsed.includeBlocked, true);
+  assert.equal(parsed.agentName, "codex");
+  assert.equal(parsed.agentStream, false);
+  assert.equal(parsed.json, true);
+});
+
+test("order-tasks command prints ordering and records telemetry", async () => {
+  const ctx = await setupWorkspace();
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    await OrderTasksCommand.run([
+      "--workspace-root",
+      ctx.dir,
+      "--project",
+      ctx.project.key,
+      "--status",
+      "not_started,completed",
+    ]);
+  } finally {
+    console.log = origLog;
+  }
+
+  const output = logs.join("\n");
+  assert.ok(output.includes("CLI-01-T01"));
+  assert.ok(output.includes("CLI-01-T02"));
+
+  const commandRuns = await ctx.repo
+    .getDb()
+    .all<{ command_name: string }[]>("SELECT command_name FROM command_runs WHERE command_name = 'order-tasks'");
+  assert.ok(commandRuns.length >= 1);
+
+  await cleanupWorkspace(ctx.dir, ctx.repo);
+});

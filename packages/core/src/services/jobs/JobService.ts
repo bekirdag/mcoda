@@ -33,6 +33,8 @@ export interface JobRecord {
   id: string;
   type: string;
   state: JobState;
+  jobState?: JobState;
+  jobStateDetail?: string;
   commandRunId?: string;
   commandName?: string;
   workspaceId: string;
@@ -40,6 +42,8 @@ export interface JobRecord {
   payload?: Record<string, unknown>;
   totalItems?: number;
   processedItems?: number;
+  totalUnits?: number;
+  completedUnits?: number;
   lastCheckpoint?: string;
   createdAt: string;
   updatedAt: string;
@@ -63,6 +67,27 @@ export interface JobCheckpoint {
   details?: Record<string, unknown>;
 }
 
+export interface JobLogRow {
+  timestamp: string;
+  sequence?: number | null;
+  level?: string | null;
+  source?: string | null;
+  message?: string | null;
+  taskId?: string | null;
+  taskKey?: string | null;
+  phase?: string | null;
+  details?: Record<string, unknown> | null;
+}
+
+export interface TaskRunSnapshotRow {
+  taskId?: string | null;
+  taskKey?: string | null;
+  status?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  command?: string | null;
+}
+
 const nowIso = (): string => new Date().toISOString();
 
 export class JobService {
@@ -73,10 +98,21 @@ export class JobService {
   private telemetryRemoteWarningShown = false;
   private perRunTelemetryDisabled: boolean;
   private envTelemetryDisabled: boolean;
+  private requireRepo: boolean;
+  private workspaceRoot: string;
+  private workspaceId: string;
 
-  constructor(private workspaceRoot: string, private workspaceRepo?: WorkspaceRepository, options: { noTelemetry?: boolean } = {}) {
+  constructor(
+    workspace: string | { workspaceRoot: string; workspaceId?: string },
+    private workspaceRepo?: WorkspaceRepository,
+    options: { noTelemetry?: boolean; requireRepo?: boolean } = {},
+  ) {
+    const resolvedRoot = typeof workspace === "string" ? workspace : workspace.workspaceRoot;
+    this.workspaceRoot = resolvedRoot;
+    this.workspaceId = typeof workspace === "string" ? resolvedRoot : workspace.workspaceId ?? resolvedRoot;
     this.perRunTelemetryDisabled = options.noTelemetry ?? false;
     this.envTelemetryDisabled = (process.env.MCODA_TELEMETRY ?? "").toLowerCase() === "off";
+    this.requireRepo = options.requireRepo ?? false;
   }
 
   private get mcodaDir(): string {
@@ -116,6 +152,9 @@ export class JobService {
     if (this.workspaceRepoInit) return;
     this.workspaceRepoInit = true;
     if (process.env.MCODA_DISABLE_DB === "1") {
+      if (this.requireRepo) {
+        throw new Error("Workspace DB disabled via MCODA_DISABLE_DB; job operations require the workspace DB per SDS.");
+      }
       this.workspaceRepo = undefined;
       return;
     }
@@ -123,7 +162,12 @@ export class JobService {
       if (!this.workspaceRepo) {
         this.workspaceRepo = await WorkspaceRepository.create(this.workspaceRoot);
       }
-    } catch {
+    } catch (error) {
+      if (this.requireRepo) {
+        throw new Error(
+          `Workspace DB could not be opened for jobs (${(error as Error).message}); run mcoda init/create-tasks to initialize the workspace.`,
+        );
+      }
       // Fall back to JSON stores if sqlite is unavailable or schema mismatches.
       this.workspaceRepo = undefined;
     }
@@ -193,6 +237,87 @@ export class JobService {
     }
   }
 
+  async listJobLogs(
+    jobId: string,
+    options: { since?: string; after?: { timestamp: string; sequence?: number | null } } = {},
+  ): Promise<JobLogRow[]> {
+    await this.ensureMcoda();
+    if (this.workspaceRepo && "getDb" in this.workspaceRepo) {
+      const db = (this.workspaceRepo as any).getDb();
+      const clauses = ["tr.job_id = ?"];
+      const params: any[] = [jobId];
+      if (options.since) {
+        clauses.push("datetime(tl.timestamp) >= datetime(?)");
+        params.push(options.since);
+      }
+      if (options.after?.timestamp) {
+        clauses.push("(datetime(tl.timestamp) > datetime(?) OR (tl.timestamp = ? AND COALESCE(tl.sequence,0) > COALESCE(?,0)))");
+        params.push(options.after.timestamp, options.after.timestamp, options.after.sequence ?? 0);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      const rows = (await db.all(
+        `
+        SELECT tl.timestamp, tl.sequence, tl.level, tl.source, tl.message, tl.details_json, tr.task_id, tr.command, t.key as task_key
+        FROM task_logs tl
+        JOIN task_runs tr ON tr.id = tl.task_run_id
+        LEFT JOIN tasks t ON t.id = tr.task_id
+        ${where}
+        ORDER BY datetime(tl.timestamp) ASC, tl.sequence ASC
+        LIMIT 500
+        `,
+        ...params
+      )) as any[];
+      return rows.map((row: any) => {
+        const details = row.details_json ? JSON.parse(row.details_json) : null;
+        return {
+          timestamp: row.timestamp,
+          sequence: row.sequence ?? null,
+          level: row.level ?? null,
+          source: row.source ?? null,
+          message: row.message ?? null,
+          taskId: row.task_id ?? null,
+          taskKey: row.task_key ?? null,
+          phase: (details as any)?.phase ?? row.command ?? null,
+          details,
+        };
+      });
+    }
+    // Fallback to file-based stream log when DB access is not available.
+    const raw = await this.readLog(jobId);
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    return lines.map((line, idx) => ({
+      timestamp: nowIso(),
+      sequence: idx,
+      message: line,
+    }));
+  }
+
+  async summarizeTaskRuns(jobId: string): Promise<TaskRunSnapshotRow[]> {
+    await this.ensureMcoda();
+    if (this.workspaceRepo && "getDb" in this.workspaceRepo) {
+      const db = (this.workspaceRepo as any).getDb();
+      const rows = (await db.all(
+        `
+        SELECT tr.task_id, tr.status, tr.started_at, tr.finished_at, tr.command, t.key as task_key
+        FROM task_runs tr
+        LEFT JOIN tasks t ON t.id = tr.task_id
+        WHERE tr.job_id = ?
+        ORDER BY datetime(tr.started_at) ASC, datetime(tr.finished_at) ASC
+        `,
+        jobId
+      )) as any[];
+      return rows.map((row: any) => ({
+        taskId: row.task_id ?? null,
+        taskKey: row.task_key ?? null,
+        status: row.status ?? null,
+        startedAt: row.started_at ?? null,
+        finishedAt: row.finished_at ?? null,
+        command: row.command ?? null,
+      }));
+    }
+    return [];
+  }
+
   async startCommandRun(
     commandName: string,
     projectKey?: string,
@@ -203,7 +328,7 @@ export class JobService {
     let record: CommandRunRecord = {
       id: randomUUID(),
       commandName,
-      workspaceId: this.workspaceRoot,
+      workspaceId: this.workspaceId,
       projectKey,
       jobId: options?.jobId,
       taskIds: options?.taskIds,
@@ -215,7 +340,7 @@ export class JobService {
     };
     if (this.workspaceRepo) {
       const row = await this.workspaceRepo.createCommandRun({
-        workspaceId: this.workspaceRoot,
+        workspaceId: this.workspaceId,
         commandName,
         jobId: record.jobId,
         taskIds: record.taskIds,
@@ -264,17 +389,19 @@ export class JobService {
       state: "running",
       commandRunId,
       commandName: options.commandName ?? type,
-      workspaceId: this.workspaceRoot,
+      workspaceId: this.workspaceId,
       projectKey,
       payload: options.payload,
       totalItems: options.totalItems,
       processedItems: options.processedItems,
+      totalUnits: options.totalItems,
+      completedUnits: options.processedItems,
       createdAt,
       updatedAt: createdAt,
     };
     if (this.workspaceRepo) {
       const row = await this.workspaceRepo.createJob({
-        workspaceId: this.workspaceRoot,
+        workspaceId: this.workspaceId,
         type,
         state: "running",
         commandName: record.commandName,
@@ -317,6 +444,8 @@ export class JobService {
       payload?: Record<string, unknown>;
       totalItems?: number;
       processedItems?: number;
+      totalUnits?: number;
+      completedUnits?: number;
       lastCheckpoint?: string;
       errorSummary?: string;
       [key: string]: unknown;
@@ -328,6 +457,7 @@ export class JobService {
     const completedAt = state !== "running" && state !== "queued" ? nowIso() : jobs[idx].completedAt;
     const durationSeconds =
       completedAt && jobs[idx].createdAt ? (Date.parse(completedAt) - Date.parse(jobs[idx].createdAt)) / 1000 : jobs[idx].durationSeconds;
+    const jobStateDetail = (metadata as any)?.job_state_detail ?? (metadata as any)?.jobStateDetail ?? jobs[idx].jobStateDetail;
     const payloadUpdate =
       metadata?.payload ??
       (metadata
@@ -340,9 +470,13 @@ export class JobService {
     const updated: JobRecord = {
       ...jobs[idx],
       state,
+      jobState: state,
+      jobStateDetail,
       payload: payloadUpdate ? { ...(jobs[idx].payload ?? {}), ...payloadUpdate } : jobs[idx].payload,
       totalItems: metadata?.totalItems ?? jobs[idx].totalItems,
       processedItems: metadata?.processedItems ?? jobs[idx].processedItems,
+      totalUnits: metadata?.totalUnits ?? metadata?.totalItems ?? jobs[idx].totalUnits ?? jobs[idx].totalItems,
+      completedUnits: metadata?.completedUnits ?? metadata?.processedItems ?? jobs[idx].completedUnits ?? jobs[idx].processedItems,
       lastCheckpoint: metadata?.lastCheckpoint ?? jobs[idx].lastCheckpoint,
       errorSummary: metadata?.errorSummary ?? (metadata as any)?.error ?? jobs[idx].errorSummary,
       updatedAt: nowIso(),
@@ -453,7 +587,7 @@ export class JobService {
     const recordTelemetry = await this.shouldRecordTokenUsage();
     if (!recordTelemetry) return;
     const normalized: TokenUsageInsert = {
-      workspaceId: entry.workspaceId,
+      workspaceId: entry.workspaceId ?? this.workspaceId,
       agentId: entry.agentId ?? null,
       modelName: entry.modelName ?? null,
       jobId: entry.jobId ?? null,

@@ -229,7 +229,7 @@ export class EstimateCommands {
     });
 
     const service = await EstimateService.create(workspace);
-    const jobService = new JobService(workspace.workspaceRoot, undefined, { noTelemetry: parsed.noTelemetry });
+    const jobService = new JobService(workspace, undefined, { noTelemetry: parsed.noTelemetry });
     const commandRun = await jobService.startCommandRun("estimate", parsed.project);
 
     try {

@@ -17,6 +17,7 @@ import {
 } from "../../prompts/SdsPrompts.js";
 import { JobService, JobCheckpoint } from "../jobs/JobService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
+import { RoutingService } from "../agents/RoutingService.js";
 
 export interface GeneratePdrOptions {
   workspace: WorkspaceResolution;
@@ -29,6 +30,7 @@ export interface GeneratePdrOptions {
   dryRun?: boolean;
   json?: boolean;
   onToken?: (token: string) => void;
+  resumeJobId?: string;
 }
 
 export interface GeneratePdrResult {
@@ -647,26 +649,35 @@ export class DocsService {
   private jobService: JobService;
   private agentService: AgentService;
   private repo: GlobalRepository;
+  private routingService: RoutingService;
 
   constructor(
     private workspace: WorkspaceResolution,
-    deps: { docdex?: DocdexClient; jobService?: JobService; agentService: AgentService; repo: GlobalRepository },
+    deps: {
+      docdex?: DocdexClient;
+      jobService?: JobService;
+      agentService: AgentService;
+      repo: GlobalRepository;
+      routingService: RoutingService;
+    },
   ) {
     this.docdex = deps?.docdex ?? new DocdexClient({ workspaceRoot: workspace.workspaceRoot });
-    this.jobService = deps?.jobService ?? new JobService(workspace.workspaceRoot);
+    this.jobService = deps?.jobService ?? new JobService(workspace);
     this.repo = deps.repo;
     this.agentService = deps.agentService;
+    this.routingService = deps.routingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<DocsService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const routingService = await RoutingService.create();
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
-    const jobService = new JobService(workspace.workspaceRoot);
-    return new DocsService(workspace, { repo, agentService, docdex, jobService });
+    const jobService = new JobService(workspace);
+    return new DocsService(workspace, { repo, agentService, routingService, docdex, jobService });
   }
 
   async close(): Promise<void> {
@@ -717,30 +728,13 @@ export class DocsService {
     agentName: string | undefined,
     commandAliases: string[] = ["docs-pdr-generate", "docs:pdr:generate", "pdr"],
   ): Promise<Agent> {
-    const required = ["docdex_query", "doc_generation"];
-    if (agentName) {
-      const agent = await this.agentService.resolveAgent(agentName);
-      const capabilities = await this.agentService.getCapabilities(agent.id);
-      for (const cap of required) {
-        if (!capabilities.includes(cap)) {
-          throw new Error(`Agent ${agent.slug} missing required capability ${cap}`);
-        }
-      }
-      return agent;
-    }
-    const defaults = await this.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-    const preferred = defaults.find((d) => commandAliases.includes(d.commandName)) ?? defaults.find((d) => d.commandName === "default");
-    if (preferred) {
-      return this.agentService.resolveAgent(preferred.agentId);
-    }
-    const agents = await this.repo.listAgents();
-    for (const agent of agents) {
-      const caps = await this.repo.getAgentCapabilities(agent.id);
-      if (required.every((cap) => caps.includes(cap))) {
-        return agent;
-      }
-    }
-    throw new Error("No agent configured with docdex_query capability. Create or update an agent first.");
+    const commandName = commandAliases[commandAliases.length - 1] ?? "pdr";
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName,
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private async writePdrFile(outPath: string, content: string): Promise<void> {

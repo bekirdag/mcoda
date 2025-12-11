@@ -134,11 +134,19 @@ export class TelemetryService {
     this.client = deps.client;
   }
 
-  static async create(workspace: WorkspaceResolution, options: { allowMissingTelemetry?: boolean } = {}): Promise<TelemetryService> {
+  static async create(
+    workspace: WorkspaceResolution,
+    options: { allowMissingTelemetry?: boolean; requireApi?: boolean } = {},
+  ): Promise<TelemetryService> {
     const baseUrl = workspace.config?.telemetry?.endpoint ?? process.env.MCODA_TELEMETRY_API;
     const authToken = workspace.config?.telemetry?.authToken ?? process.env.MCODA_TELEMETRY_TOKEN;
     if (baseUrl) {
       return new TelemetryService(workspace, { client: new TelemetryClient({ baseUrl, authToken }) });
+    }
+    if (options.requireApi) {
+      throw new Error(
+        "Telemetry API is not configured (set MCODA_TELEMETRY_API/MCODA_TELEMETRY_TOKEN or telemetry.endpoint in workspace config).",
+      );
     }
 
     const dbPath = PathHelper.getWorkspaceDbPath(workspace.workspaceRoot);

@@ -41,6 +41,21 @@ class StubRepo {
   async close() {}
 }
 
+class StubRoutingService {
+  async resolveAgentForCommand() {
+    return {
+      agent: { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any,
+      agentId: "agent-1",
+      agentSlug: "agent-1",
+      model: "stub",
+      capabilities: [],
+      healthStatus: "healthy",
+      source: "override",
+      routingPreview: { workspaceId: "ws", commandName: "work-on-tasks" } as any,
+    };
+  }
+}
+
 class StubVcs {
   async ensureRepo() {}
   async ensureBaseBranch() {}
@@ -144,6 +159,7 @@ test("workOnTasks marks tasks ready_to_review and records task runs", async () =
     selectionService,
     stateService,
     repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
     vcsClient: new StubVcs() as any,
   });
 

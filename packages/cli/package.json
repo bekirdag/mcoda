@@ -21,7 +21,8 @@
     "yaml": "^2.4.2"
   },
   "devDependencies": {
-    "@mcoda/db": "workspace:*"
+    "@mcoda/db": "workspace:*",
+    "@mcoda/integrations": "workspace:*"
   },
   "license": "MIT"
 }

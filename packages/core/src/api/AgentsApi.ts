@@ -9,6 +9,7 @@ import {
 } from "@mcoda/shared";
 import { GlobalRepository } from "@mcoda/db";
 import { AgentService } from "@mcoda/agents";
+import { RoutingService } from "../services/agents/RoutingService.js";
 
 export interface AgentResponse extends Agent {
   capabilities: string[];
@@ -18,16 +19,20 @@ export interface AgentResponse extends Agent {
 }
 
 export class AgentsApi {
-  constructor(private repo: GlobalRepository, private agentService: AgentService) {}
+  constructor(private repo: GlobalRepository, private agentService: AgentService, private routingService: RoutingService) {}
 
   static async create(): Promise<AgentsApi> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
-    return new AgentsApi(repo, agentService);
+    const routingService = await RoutingService.create();
+    return new AgentsApi(repo, agentService, routingService);
   }
 
   async close(): Promise<void> {
     await this.repo.close();
+    if ((this.routingService as any)?.close) {
+      await (this.routingService as any).close();
+    }
   }
 
   private async resolveAgent(idOrSlug: string): Promise<Agent> {
@@ -111,6 +116,6 @@ export class AgentsApi {
     commandName = "default",
   ): Promise<void> {
     const agent = await this.resolveAgent(idOrSlug);
-    await this.repo.setWorkspaceDefault(workspaceId, commandName, agent.id);
+    await this.routingService.updateWorkspaceDefaults(workspaceId, { set: { [commandName]: agent.slug } });
   }
 }

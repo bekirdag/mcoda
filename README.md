@@ -58,6 +58,56 @@ mcoda backlog --project WEB --order dependencies --verbose
 - Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--status <STATUS[,STATUS...]>`, `--order dependencies`, `--json`, `--verbose`, `--workspace-root <path>`.
 - No agents or docdex are called; output comes purely from `.mcoda/mcoda.db`.
 
+## Dependency-aware ordering
+
+Compute a deterministic, dependency-aware order (most depended-on first, topo-safe) and persist global priorities:
+
+```sh
+mcoda order-tasks --project WEB --epic web-01 --include-blocked --json
+mcoda tasks order-by-deps --project WEB --status not_started,in_progress
+mcoda backlog --project WEB --order dependencies       # same core ordering
+```
+
+- Flags: `--workspace-root <path>`, `--project <KEY>` (required), `--epic <KEY>`, `--status <STATUS_FILTER>`, `--include-blocked`, `--agent <NAME>`, `--agent-stream <true|false>`, `--json`.
+- Behavior: topo order over `task_dependencies`, ties by dependency impact → priority → SP → age → status; blocked tasks are listed separately unless `--include-blocked` is set. Updates `priority` across tasks, stories, and epics in the scoped project.
+
+### Command list (partial)
+
+- Agents & routing: `mcoda agent ...`, `mcoda routing ...`
+- Planning: `mcoda create-tasks`, `mcoda refine-tasks`
+- Ordering & backlog: `mcoda order-tasks`, `mcoda tasks order-by-deps`, `mcoda backlog --order dependencies`
+- Execution: `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
+- Docs/spec: `mcoda docs pdr generate`, `mcoda docs sds generate`, `mcoda openapi-from-docs`
+- Telemetry: `mcoda tokens`, `mcoda telemetry`, `mcoda job ...`
+
+## Update the CLI
+
+Check for updates without applying:
+
+```sh
+mcoda update --check --json
+```
+
+Apply the latest release on the chosen channel (defaults to stable):
+
+```sh
+mcoda update --force --channel beta   # stable|beta|nightly
+```
+
+Use `--version <SEMVER>` to pin to a specific published version; `--json` emits machine-readable output, and `--quiet` suppresses non-essential logs. In CI or other non-interactive shells, pass `--force` to skip the confirmation prompt.
+
+## Inspect a single task (DB + OpenAPI lookup)
+
+Inspect a task with hierarchy, VCS, dependencies, comments, and optional logs/history:
+
+```sh
+mcoda task show web-01-us-01-t01 --project WEB --include-logs --include-history --format table
+```
+
+- Aliases: `mcoda task <KEY>`, `mcoda task-detail --project <KEY> --task <KEY>`.
+- Flags: `--project <KEY>`, `--include-logs`, `--include-history`, `--format <table|json|yaml>` (YAML is experimental), `--no-telemetry`, `--workspace-root <path>`.
+- Lookup: prefers the workspace DB; if `MCODA_API_BASE_URL` (or legacy `MCODA_TASKS_API_URL`) is set, the task key is first resolved via `GET /tasks?key=...` to align with the OpenAPI surface, then hydrated from the local DB for details.
+
 ## Telemetry: tokens and config
 
 Summarize token usage (aggregated via the Telemetry API):
@@ -80,6 +130,28 @@ Debug a specific job’s token usage:
 
 ```sh
 mcoda job tokens <JOB_ID> --since 24h --format table
+```
+
+## Jobs: list, status, logs, resume
+
+Keep long-running commands observable and resumable:
+
+```sh
+mcoda job list [--project <KEY>] [--status <STATE>] [--type <TYPE>] [--since <DURATION|TS>] [--limit <N>] [--json]
+mcoda job status <JOB_ID> [--json]
+mcoda job watch <JOB_ID> [--interval <SECONDS>] [--no-logs]
+mcoda job logs <JOB_ID> [--since <TIMESTAMP|DURATION>] [--follow]
+mcoda job inspect <JOB_ID> [--json]
+mcoda job resume <JOB_ID> [--agent <NAME>] [--no-telemetry]
+mcoda job cancel <JOB_ID> [--force]
+mcoda job tokens <JOB_ID> [--since <TIMESTAMP|DURATION>] [--format table|json]
+
+# Examples
+mcoda job list --status running
+mcoda job watch <JOB_ID> --interval 2 --no-logs
+mcoda job inspect <JOB_ID> --json
+mcoda job resume <JOB_ID> --agent codex
+mcoda job logs <JOB_ID> --since 10m --follow
 ```
 
 ## Work on tasks (implementation pipeline)
@@ -122,3 +194,24 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`.
 - Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
 - Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.
+
+## Routing defaults and previews
+
+Manage which agent runs each command in a workspace:
+
+```sh
+# Show effective defaults (workspace + global fallbacks)
+mcoda routing defaults
+
+# Set default agent for create-tasks in the current workspace
+mcoda routing defaults --set-command create-tasks=codex
+
+# Set QA/docdex defaults for the workspace routing layer
+mcoda routing defaults --set-qa-profile integration --set-docdex-scope sds
+
+# Preview the agent chosen for work-on-tasks (with optional override)
+mcoda routing preview --command work-on-tasks --agent gemini
+
+# Explain routing decisions with candidates and provenance
+mcoda routing explain --command create-tasks --json
+```

@@ -11,6 +11,7 @@ import { TaskStateService } from "../execution/TaskStateService.js";
 import { BacklogService } from "../backlog/BacklogService.js";
 import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
+import { RoutingService } from "../agents/RoutingService.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
@@ -120,6 +121,7 @@ export class CodeReviewService {
   private stateService: TaskStateService;
   private vcs: VcsClient;
   private taskLogSeq = new Map<string, number>();
+  private routingService: RoutingService;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -132,22 +134,25 @@ export class CodeReviewService {
       stateService?: TaskStateService;
       repo: GlobalRepository;
       vcsClient?: VcsClient;
+      routingService: RoutingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
     this.stateService = deps.stateService ?? new TaskStateService(deps.workspaceRepo);
     this.vcs = deps.vcsClient ?? new VcsClient();
+    this.routingService = deps.routingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CodeReviewService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const routingService = await RoutingService.create();
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
-    const jobService = new JobService(workspace.workspaceRoot, workspaceRepo);
+    const jobService = new JobService(workspace, workspaceRepo);
     const selectionService = new TaskSelectionService(workspace, workspaceRepo);
     const stateService = new TaskStateService(workspaceRepo);
     const vcsClient = new VcsClient();
@@ -160,6 +165,7 @@ export class CodeReviewService {
       stateService,
       repo,
       vcsClient,
+      routingService,
     });
   }
 
@@ -227,31 +233,12 @@ export class CodeReviewService {
   }
 
   private async resolveAgent(agentName?: string) {
-    const resolve = async (): Promise<{ agent: any; capabilities: string[] }> => {
-      const pick = async (idOrSlug: string) => {
-        const agent = await this.deps.agentService.resolveAgent(idOrSlug);
-        const capabilities = this.deps.agentService.getCapabilities ? await this.deps.agentService.getCapabilities(agent.id) : [];
-        return { agent, capabilities };
-      };
-      if (agentName) return pick(agentName);
-      const defaults = await this.deps.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-      const commandDefault =
-        defaults.find((d) => d.commandName === "code-review") ?? defaults.find((d) => d.commandName === "default");
-      if (commandDefault) return pick(commandDefault.agentId);
-      return pick("codex");
-    };
-
-    const { agent, capabilities } = await resolve();
-    const normalizedCaps = new Set((capabilities ?? []).map((c) => c.toLowerCase()));
-    if (
-      normalizedCaps.size &&
-      !normalizedCaps.has("code_review") &&
-      !normalizedCaps.has("review") &&
-      !normalizedCaps.has("code-review")
-    ) {
-      throw new Error(`Agent ${agent.id} lacks code review capability (expected capability: code_review)`);
-    }
-    return agent;
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName: "code-review",
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private async selectTasksViaApi(filters: {

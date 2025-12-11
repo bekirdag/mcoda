@@ -8,6 +8,7 @@ import { GlobalRepository } from "@mcoda/db";
 import { Agent } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
+import { RoutingService } from "../agents/RoutingService.js";
 
 export interface GenerateOpenapiOptions {
   workspace: WorkspaceResolution;
@@ -236,25 +237,31 @@ export class OpenApiService {
   private jobService: JobService;
   private agentService: AgentService;
   private repo: GlobalRepository;
+  private routingService: RoutingService;
   private workspace: WorkspaceResolution;
 
-  constructor(workspace: WorkspaceResolution, deps: { docdex?: DocdexClient; jobService?: JobService; agentService: AgentService; repo: GlobalRepository }) {
+  constructor(
+    workspace: WorkspaceResolution,
+    deps: { docdex?: DocdexClient; jobService?: JobService; agentService: AgentService; repo: GlobalRepository; routingService: RoutingService },
+  ) {
     this.workspace = workspace;
     this.docdex = deps?.docdex ?? new DocdexClient({ workspaceRoot: workspace.workspaceRoot });
-    this.jobService = deps?.jobService ?? new JobService(workspace.workspaceRoot);
+    this.jobService = deps?.jobService ?? new JobService(workspace);
     this.agentService = deps.agentService;
     this.repo = deps.repo;
+    this.routingService = deps.routingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<OpenApiService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const routingService = await RoutingService.create();
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
-    const jobService = new JobService(workspace.workspaceRoot);
-    return new OpenApiService(workspace, { repo, agentService, docdex, jobService });
+    const jobService = new JobService(workspace);
+    return new OpenApiService(workspace, { repo, agentService, routingService, docdex, jobService });
   }
 
   async close(): Promise<void> {
@@ -264,32 +271,12 @@ export class OpenApiService {
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {
-    const required = ["docdex_query", "doc_generation"];
-    if (agentName) {
-      const agent = await this.agentService.resolveAgent(agentName);
-      const capabilities = await this.agentService.getCapabilities(agent.id);
-      for (const cap of required) {
-        if (!capabilities.includes(cap)) {
-          throw new Error(`Agent ${agent.slug} missing required capability ${cap}`);
-        }
-      }
-      return agent;
-    }
-    const defaults = await this.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-    const preferred =
-      defaults.find((d) => ["openapi-from-docs", "openapi_from_docs", "openapi"].includes(d.commandName)) ??
-      defaults.find((d) => d.commandName === "default");
-    if (preferred) {
-      return this.agentService.resolveAgent(preferred.agentId);
-    }
-    const agents = await this.repo.listAgents();
-    for (const agent of agents) {
-      const caps = await this.repo.getAgentCapabilities(agent.id);
-      if (required.every((cap) => caps.includes(cap))) {
-        return agent;
-      }
-    }
-    throw new Error("No agent configured with docdex_query capability. Create or update an agent first.");
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName: "openapi-from-docs",
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private async invokeAgent(

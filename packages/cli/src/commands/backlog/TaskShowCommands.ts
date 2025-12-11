@@ -1,6 +1,6 @@
 import path from "node:path";
 import YAML from "yaml";
-import { TaskDetailService, WorkspaceResolver } from "@mcoda/core";
+import { JobService, TaskDetailService, WorkspaceResolver } from "@mcoda/core";
 
 type OutputFormat = "table" | "json" | "yaml";
 
@@ -11,13 +11,15 @@ export interface ParsedTaskShowArgs {
   includeLogs: boolean;
   includeHistory: boolean;
   format: OutputFormat;
+  noTelemetry: boolean;
 }
 
 const usage = `mcoda task show <TASK_KEY> \\
   [--project <PROJECT_KEY>] \\
   [--include-logs] \\
   [--include-history] \\
-  [--format <table|json|yaml>] \\
+  [--format <table|json|yaml>] (yaml output is experimental) \\
+  [--no-telemetry] \\
   [--workspace-root <PATH>]
 
 Aliases:
@@ -47,6 +49,7 @@ export const parseTaskShowArgs = (argv: string[]): ParsedTaskShowArgs => {
     includeLogs: false,
     includeHistory: false,
     format: "table",
+    noTelemetry: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -75,6 +78,9 @@ export const parseTaskShowArgs = (argv: string[]): ParsedTaskShowArgs => {
       case "--include-history":
         parsed.includeHistory = true;
         break;
+      case "--no-telemetry":
+        parsed.noTelemetry = true;
+        break;
       case "--format":
         parsed.format = parseFormat(argv[i + 1]);
         i += 1;
@@ -100,6 +106,8 @@ export const parseTaskShowArgs = (argv: string[]): ParsedTaskShowArgs => {
           parsed.includeLogs = true;
         } else if (arg === "--include-history=true") {
           parsed.includeHistory = true;
+        } else if (arg === "--no-telemetry") {
+          parsed.noTelemetry = true;
         }
         break;
     }
@@ -108,20 +116,30 @@ export const parseTaskShowArgs = (argv: string[]): ParsedTaskShowArgs => {
   return parsed;
 };
 
-const renderDependencies = (label: string, deps: { key: string; status: string }[]): string => {
+const renderDependencies = (label: string, deps: { key: string; status: string; relationType: string }[]): string => {
   if (!deps.length) return `${label}: none`;
-  const items = deps.map((dep) => `${dep.key} (${dep.status})`);
+  const items = deps.map((dep) => `${dep.key} (${dep.status}; ${dep.relationType || "relation"})`);
   return `${label}: ${items.join(", ")}`;
 };
 
 const renderTable = (detail: Awaited<ReturnType<TaskDetailService["getTaskDetail"]>>): void => {
   const { task, dependencies, comments, logs, history } = detail;
+  const metadata = task.metadata as Record<string, unknown> | null | undefined;
+  const prUrl = typeof metadata?.pr_url === "string" ? metadata.pr_url : undefined;
   const lines = [
-    `[${task.key}] ${task.title} — ${task.status} (SP: ${task.storyPoints ?? "-"}, Priority: ${task.priority ?? "-"})`,
+    `[${task.key}] ${task.title} — ${task.status} (Type: ${task.type ?? "-"}, SP: ${task.storyPoints ?? "-"}, Priority: ${task.priority ?? "-"})`,
     `Project: ${task.project.key}${task.project.name ? ` – ${task.project.name}` : ""}`,
     `Epic: ${task.epic.key} – ${task.epic.title}`,
     `Story: ${task.story.key} – ${task.story.title}`,
-    `Assignee: ${task.assigneeHuman ?? task.assignedAgentId ?? "-"}`,
+    `Assignee: ${
+      task.assigneeHuman
+        ? `human:${task.assigneeHuman}`
+        : task.assignedAgentSlug
+          ? `agent:${task.assignedAgentSlug}`
+          : task.assignedAgentId
+            ? `agent-id:${task.assignedAgentId}`
+            : "-"
+    }`,
     "",
     "Description:",
     task.description ?? "(none)",
@@ -130,6 +148,7 @@ const renderTable = (detail: Awaited<ReturnType<TaskDetailService["getTaskDetail
     `  Branch: ${task.vcsBranch ?? "-"}`,
     `  Base: ${task.vcsBaseBranch ?? "-"}`,
     `  Last commit: ${shortSha(task.vcsLastCommitSha)}`,
+    prUrl ? `  PR: ${prUrl}` : "",
     "",
     "Dependencies:",
     dependencies.upstream.length === 0 && dependencies.downstream.length === 0
@@ -218,18 +237,27 @@ export class TaskShowCommands {
       return;
     }
     let service: TaskDetailService | undefined;
+    let jobService: JobService | undefined;
+    let commandRunId: string | undefined;
     try {
       const workspace = await WorkspaceResolver.resolveWorkspace({
         cwd: process.cwd(),
         explicitWorkspace: parsed.workspaceRoot,
       });
       service = await TaskDetailService.create(workspace);
+      jobService = new JobService(workspace, service.getRepository(), { noTelemetry: parsed.noTelemetry });
+      const commandRun = await jobService.startCommandRun("task-show", parsed.project);
+      commandRunId = commandRun.id;
       const detail = await service.getTaskDetail({
         taskKey: parsed.taskKey,
         projectKey: parsed.project,
         includeLogs: parsed.includeLogs,
         includeHistory: parsed.includeHistory,
       });
+
+      if (commandRunId) {
+        await jobService.finishCommandRun(commandRunId, "succeeded");
+      }
 
       if (parsed.format === "json") {
         // eslint-disable-next-line no-console
@@ -238,12 +266,17 @@ export class TaskShowCommands {
       }
       if (parsed.format === "yaml") {
         // eslint-disable-next-line no-console
+        console.error("Note: YAML output is experimental; table/json are the primary supported formats.");
+        // eslint-disable-next-line no-console
         console.log(YAML.stringify(detail));
         return;
       }
 
       renderTable(detail);
     } catch (error) {
+      if (jobService && commandRunId) {
+        await jobService.finishCommandRun(commandRunId, "failed", (error as Error).message);
+      }
       // eslint-disable-next-line no-console
       console.error(`task show failed: ${(error as Error).message}`);
       process.exitCode = 1;

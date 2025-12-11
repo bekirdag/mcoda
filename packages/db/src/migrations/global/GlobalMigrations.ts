@@ -62,9 +62,33 @@ export class GlobalMigrations {
         workspace_id TEXT NOT NULL,
         command_name TEXT NOT NULL,
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        qa_profile TEXT,
+        docdex_scope TEXT,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (workspace_id, command_name)
       );
+
+      CREATE TABLE IF NOT EXISTS command_runs (
+        id TEXT PRIMARY KEY,
+        command_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        status TEXT NOT NULL,
+        exit_code INTEGER,
+        error_summary TEXT,
+        payload_json TEXT,
+        result_json TEXT
+      );
     `);
+
+    const workspaceDefaultsInfo = await db.all<any[]>("PRAGMA table_info(workspace_defaults)");
+    const hasQaProfile = workspaceDefaultsInfo.some((col) => col.name === "qa_profile");
+    const hasDocdexScope = workspaceDefaultsInfo.some((col) => col.name === "docdex_scope");
+    if (!hasQaProfile) {
+      await db.exec("ALTER TABLE workspace_defaults ADD COLUMN qa_profile TEXT");
+    }
+    if (!hasDocdexScope) {
+      await db.exec("ALTER TABLE workspace_defaults ADD COLUMN docdex_scope TEXT");
+    }
   }
 }

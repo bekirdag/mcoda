@@ -11,7 +11,9 @@
       "@mcoda/core": ["packages/core/dist/index.d.ts"],
       "@mcoda/core/*": ["packages/core/dist/*"],
       "@mcoda/db": ["packages/db/dist/index.d.ts"],
-      "@mcoda/db/*": ["packages/db/dist/*"]
+      "@mcoda/db/*": ["packages/db/dist/*"],
+      "@mcoda/integrations": ["packages/integrations/dist/index.d.ts"],
+      "@mcoda/integrations/*": ["packages/integrations/dist/*"]
     }
   },
   "include": ["src"]

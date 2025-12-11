@@ -179,7 +179,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RoutingDefaults"
+              $ref: "#/components/schemas/RoutingDefaultsUpdate"
       responses:
         "200":
           description: Updated
@@ -209,6 +209,14 @@ paths:
                   type: string
                 agentOverride:
                   type: string
+                taskType:
+                  type: string
+                projectKey:
+                  type: string
+                requiredCapabilities:
+                  type: array
+                  items:
+                    type: string
       responses:
         "200":
           description: Preview
@@ -881,6 +889,55 @@ paths:
                     type: string
       x-mcoda-cli.name: system
       x-mcoda-cli.output-shape: scalar
+  /system/update:
+    get:
+      summary: Check for available mcoda updates
+      operationId: checkUpdate
+      tags: [System]
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [stable, beta, nightly]
+      responses:
+        "200":
+          description: Update information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateInfo"
+      x-mcoda-cli.name: update
+      x-mcoda-cli.output-shape: scalar
+    post:
+      summary: Apply a pending mcoda update
+      operationId: applyUpdate
+      tags: [System]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  type: string
+                  enum: [stable, beta, nightly]
+      responses:
+        "202":
+          description: Update started or completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [started, already_up_to_date, completed]
+                  logFile:
+                    type: string
+                    nullable: true
 components:
   schemas:
     Agent:
@@ -894,6 +951,8 @@ components:
           type: string
         defaultModel:
           type: string
+        health:
+          $ref: "#/components/schemas/AgentHealth"
         capabilities:
           type: array
           items:
@@ -906,6 +965,23 @@ components:
           format: date-time
       required: [id, slug, adapter, createdAt, updatedAt]
       x-mcoda-db-table: agents
+    AgentHealth:
+      type: object
+      properties:
+        agentId:
+          type: string
+        status:
+          type: string
+          enum: [healthy, degraded, unreachable]
+        lastCheckedAt:
+          type: string
+          format: date-time
+        latencyMs:
+          type: number
+        details:
+          type: object
+      required: [agentId, status, lastCheckedAt]
+      x-mcoda-db-table: agent_health
     AgentAuth:
       type: object
       properties:
@@ -939,7 +1015,7 @@ components:
         characterPath:
           type: string
       x-mcoda-db-table: agent_prompts
-    RoutingDefaults:
+    RoutingDefault:
       type: object
       properties:
         workspaceId:
@@ -948,11 +1024,21 @@ components:
           type: string
         agentId:
           type: string
+        qaProfile:
+          type: string
+          nullable: true
+        docdexScope:
+          type: string
+          nullable: true
         updatedAt:
           type: string
           format: date-time
       required: [workspaceId, commandName, agentId]
       x-mcoda-db-table: workspace_defaults
+    RoutingDefaults:
+      type: array
+      items:
+        $ref: "#/components/schemas/RoutingDefault"
     RoutingPreview:
       type: object
       properties:
@@ -964,9 +1050,66 @@ components:
           $ref: "#/components/schemas/Agent"
         provenance:
           type: string
+          enum: [override, workspace_default, global_default]
+        requiredCapabilities:
+          type: array
+          items:
+            type: string
+        qaProfile:
+          type: string
+          nullable: true
+        docdexScope:
+          type: string
+          nullable: true
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoutingCandidate"
         notes:
           type: string
+      required: [workspaceId, commandName, resolvedAgent]
       x-mcoda-cli.output-shape: scalar
+    RoutingCandidate:
+      type: object
+      properties:
+        agent:
+          $ref: "#/components/schemas/Agent"
+        agentId:
+          type: string
+        agentSlug:
+          type: string
+        source:
+          type: string
+          enum: [override, workspace_default, global_default]
+        capabilities:
+          type: array
+          items:
+            type: string
+        health:
+          $ref: "#/components/schemas/AgentHealth"
+        missingCapabilities:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+    RoutingDefaultsUpdate:
+      type: object
+      properties:
+        set:
+          type: object
+          additionalProperties:
+            type: string
+        reset:
+          type: array
+          items:
+            type: string
+        qaProfile:
+          type: string
+          nullable: true
+        docdexScope:
+          type: string
+          nullable: true
     Project:
       type: object
       properties:
@@ -1736,3 +1879,19 @@ components:
         updatedAt:
           type: string
       required: [id, docType, createdAt, updatedAt]
+    UpdateInfo:
+      type: object
+      required: [currentVersion, latestVersion, updateAvailable, channel]
+      properties:
+        currentVersion:
+          type: string
+        latestVersion:
+          type: string
+        channel:
+          type: string
+          enum: [stable, beta, nightly]
+        updateAvailable:
+          type: boolean
+        notes:
+          type: string
+          nullable: true

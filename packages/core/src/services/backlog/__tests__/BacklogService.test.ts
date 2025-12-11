@@ -191,10 +191,10 @@ describe("BacklogService", () => {
     const orderedKeys = summary.tasks.map((t) => t.task_key);
     assert.deepEqual(orderedKeys, [
       "web-01-us-01-t01",
-      "web-01-us-01-t02",
-      "web-01-us-01-t03",
-      "web-01-us-02-t01",
       "web-02-us-01-t01",
+      "web-01-us-01-t02",
+      "web-01-us-02-t01",
+      "web-01-us-01-t03",
       "web-02-us-01-t02",
     ]);
 

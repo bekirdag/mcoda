@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
-import { Connection, WorkspaceRepository, type TaskCommentRow, type Database } from "@mcoda/db";
+import { Connection, WorkspaceRepository, GlobalRepository, type TaskCommentRow, type Database } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import type { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
+import { TaskApiResolver } from "./TaskApiResolver.js";
 
 const hasTables = async (db: Database, required: string[]): Promise<boolean> => {
   const placeholders = required.map(() => "?").join(", ");
@@ -54,6 +55,7 @@ export interface TaskDetailRecord {
   storyPoints?: number | null;
   priority?: number | null;
   assignedAgentId?: string | null;
+  assignedAgentSlug?: string | null;
   assigneeHuman?: string | null;
   vcsBranch?: string | null;
   vcsBaseBranch?: string | null;
@@ -117,6 +119,8 @@ export class TaskDetailService {
     private workspace: WorkspaceResolution,
     private db: Database,
     private repo: WorkspaceRepository,
+    private globalRepo?: GlobalRepository,
+    private apiResolver: TaskApiResolver = new TaskApiResolver(),
   ) {}
 
   static async create(workspace: WorkspaceResolution): Promise<TaskDetailService> {
@@ -133,11 +137,18 @@ export class TaskDetailService {
       throw new Error(`Workspace DB at ${dbPath} is missing required tables. Re-run create-tasks to seed it.`);
     }
     const repo = new WorkspaceRepository(connection.db, connection);
-    return new TaskDetailService(workspace, connection.db, repo);
+    return new TaskDetailService(workspace, connection.db, repo, undefined, new TaskApiResolver());
   }
 
   async close(): Promise<void> {
     await this.repo.close();
+    if (this.globalRepo) {
+      await this.globalRepo.close();
+    }
+  }
+
+  getRepository(): WorkspaceRepository {
+    return this.repo;
   }
 
   async getTaskDetail(options: TaskDetailOptions): Promise<TaskDetailResult> {
@@ -160,6 +171,11 @@ export class TaskDetailService {
   }
 
   private async resolveTask(taskKey: string, projectKey?: string): Promise<TaskDetailRecord> {
+    const openApiTaskId = await this.apiResolver.resolveTaskId(taskKey, projectKey);
+    if (openApiTaskId) {
+      return this.resolveTaskById(openApiTaskId);
+    }
+
     const clauses = ["t.key = ?"];
     const params: any[] = [taskKey];
     if (projectKey) {
@@ -212,6 +228,7 @@ export class TaskDetailService {
       throw new Error(`Multiple tasks found with key "${taskKey}"; please specify --project.`);
     }
     const row = rows[0];
+    const assignedAgentSlug = await this.resolveAgentSlug(row.assigned_agent_id);
     return {
       id: row.task_id,
       key: row.task_key,
@@ -222,6 +239,7 @@ export class TaskDetailService {
       storyPoints: row.task_story_points,
       priority: row.task_priority,
       assignedAgentId: row.assigned_agent_id,
+      assignedAgentSlug: assignedAgentSlug ?? null,
       assigneeHuman: row.assignee_human,
       vcsBranch: row.vcs_branch,
       vcsBaseBranch: row.vcs_base_branch,
@@ -271,6 +289,84 @@ export class TaskDetailService {
     return { upstream: upstream ?? [], downstream: downstream ?? [] };
   }
 
+  private async resolveTaskById(taskId: string): Promise<TaskDetailRecord> {
+    const rows = await this.db.all<TaskRowWithRelations[]>(
+      `
+      SELECT
+        t.id AS task_id,
+        t.key AS task_key,
+        t.title AS task_title,
+        t.description AS task_description,
+        t.type AS task_type,
+        t.status AS task_status,
+        t.story_points AS task_story_points,
+        t.priority AS task_priority,
+        t.assigned_agent_id AS assigned_agent_id,
+        t.assignee_human AS assignee_human,
+        t.vcs_branch AS vcs_branch,
+        t.vcs_base_branch AS vcs_base_branch,
+        t.vcs_last_commit_sha AS vcs_last_commit_sha,
+        t.metadata_json AS metadata_json,
+        t.created_at AS created_at,
+        t.updated_at AS updated_at,
+        p.id AS project_id,
+        p.key AS project_key,
+        p.name AS project_name,
+        e.id AS epic_id,
+        e.key AS epic_key,
+        e.title AS epic_title,
+        us.id AS story_id,
+        us.key AS story_key,
+        us.title AS story_title
+      FROM tasks t
+      INNER JOIN projects p ON p.id = t.project_id
+      INNER JOIN epics e ON e.id = t.epic_id
+      INNER JOIN user_stories us ON us.id = t.user_story_id
+      WHERE t.id = ?
+    `,
+      [taskId],
+    );
+    if (!rows || rows.length === 0) {
+      throw new Error(`Task with id "${taskId}" not found in local DB.`);
+    }
+    const row = rows[0];
+    const assignedAgentSlug = await this.resolveAgentSlug(row.assigned_agent_id);
+    return {
+      id: row.task_id,
+      key: row.task_key,
+      title: row.task_title,
+      description: row.task_description,
+      type: row.task_type,
+      status: row.task_status,
+      storyPoints: row.task_story_points,
+      priority: row.task_priority,
+      assignedAgentId: row.assigned_agent_id,
+      assignedAgentSlug: assignedAgentSlug ?? null,
+      assigneeHuman: row.assignee_human,
+      vcsBranch: row.vcs_branch,
+      vcsBaseBranch: row.vcs_base_branch,
+      vcsLastCommitSha: row.vcs_last_commit_sha,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
+      project: {
+        id: row.project_id,
+        key: row.project_key,
+        name: row.project_name,
+      },
+      epic: {
+        id: row.epic_id,
+        key: row.epic_key,
+        title: row.epic_title,
+      },
+      story: {
+        id: row.story_id,
+        key: row.story_key,
+        title: row.story_title,
+      },
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
   private async getLogs(taskId: string, limit: number): Promise<TaskLogSummary[]> {
     const rows = await this.db.all<
       {
@@ -305,6 +401,15 @@ export class TaskDetailService {
       status: row.status,
       details: row.details_json ? (JSON.parse(row.details_json) as Record<string, unknown>) : null,
     }));
+  }
+
+  private async resolveAgentSlug(agentId: string | null): Promise<string | undefined> {
+    if (!agentId) return undefined;
+    if (!this.globalRepo) {
+      this.globalRepo = await GlobalRepository.create();
+    }
+    const agent = await this.globalRepo.getAgentById(agentId);
+    return agent?.slug ?? undefined;
   }
 
   private async getHistory(taskId: string, limit: number): Promise<TaskRevisionSummary[]> {
@@ -385,4 +490,5 @@ export class TaskDetailService {
     }
     return changed.length ? changed : undefined;
   }
+
 }

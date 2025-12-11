@@ -14,6 +14,7 @@ import {
 } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
+import { RoutingService } from "../agents/RoutingService.js";
 import { createTaskKeyGenerator } from "./KeyHelpers.js";
 
 interface RefineTasksOptions extends RefineTasksRequest {
@@ -97,6 +98,7 @@ export class RefineTasksService {
   private agentService: AgentService;
   private repo: GlobalRepository;
   private workspaceRepo: WorkspaceRepository;
+  private routingService: RoutingService;
   private workspace: WorkspaceResolution;
 
   constructor(
@@ -107,6 +109,7 @@ export class RefineTasksService {
       agentService: AgentService;
       repo: GlobalRepository;
       workspaceRepo: WorkspaceRepository;
+      routingService: RoutingService;
     },
   ) {
     this.workspace = workspace;
@@ -115,18 +118,27 @@ export class RefineTasksService {
     this.agentService = deps.agentService;
     this.repo = deps.repo;
     this.workspaceRepo = deps.workspaceRepo;
+    this.routingService = deps.routingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<RefineTasksService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const routingService = await RoutingService.create();
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
-    const jobService = new JobService(workspace.workspaceRoot, workspaceRepo);
-    return new RefineTasksService(workspace, { docdex, jobService, agentService, repo, workspaceRepo });
+    const jobService = new JobService(workspace, workspaceRepo);
+    return new RefineTasksService(workspace, {
+      docdex,
+      jobService,
+      agentService,
+      repo,
+      workspaceRepo,
+      routingService,
+    });
   }
 
   async close(): Promise<void> {
@@ -146,15 +158,12 @@ export class RefineTasksService {
   }
 
   private async resolveAgent(agentName?: string) {
-    if (agentName) return this.agentService.resolveAgent(agentName);
-    const defaults = await this.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-    const commandDefault =
-      defaults.find((d) => d.commandName === "refine-tasks") ??
-      defaults.find((d) => d.commandName === "default");
-    if (commandDefault) {
-      return this.agentService.resolveAgent(commandDefault.agentId);
-    }
-    return this.agentService.resolveAgent("codex");
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName: "refine-tasks",
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private async selectTasks(

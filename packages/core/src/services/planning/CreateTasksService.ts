@@ -17,6 +17,7 @@ import { Agent } from "@mcoda/shared";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
+import { RoutingService } from "../agents/RoutingService.js";
 import {
   createEpicKeyGenerator,
   createStoryKeyGenerator,
@@ -294,6 +295,7 @@ export class CreateTasksService {
   private agentService: AgentService;
   private repo: GlobalRepository;
   private workspaceRepo: WorkspaceRepository;
+  private routingService: RoutingService;
   private workspace: WorkspaceResolution;
 
   constructor(
@@ -304,6 +306,7 @@ export class CreateTasksService {
       agentService: AgentService;
       repo: GlobalRepository;
       workspaceRepo: WorkspaceRepository;
+      routingService: RoutingService;
     },
   ) {
     this.workspace = workspace;
@@ -312,18 +315,27 @@ export class CreateTasksService {
     this.agentService = deps.agentService;
     this.repo = deps.repo;
     this.workspaceRepo = deps.workspaceRepo;
+    this.routingService = deps.routingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CreateTasksService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const routingService = await RoutingService.create();
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
-    const jobService = new JobService(workspace.workspaceRoot);
+    const jobService = new JobService(workspace);
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
-    return new CreateTasksService(workspace, { docdex, jobService, agentService, repo, workspaceRepo });
+    return new CreateTasksService(workspace, {
+      docdex,
+      jobService,
+      agentService,
+      repo,
+      workspaceRepo,
+      routingService,
+    });
   }
 
   async close(): Promise<void> {
@@ -334,15 +346,12 @@ export class CreateTasksService {
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {
-    if (agentName) return this.agentService.resolveAgent(agentName);
-    const defaults = await this.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-    const commandDefault =
-      defaults.find((d) => d.commandName === "create-tasks") ??
-      defaults.find((d) => d.commandName === "default");
-    if (commandDefault) {
-      return this.agentService.resolveAgent(commandDefault.agentId);
-    }
-    return this.agentService.resolveAgent("codex");
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName: "create-tasks",
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private async prepareDocs(inputs: string[]): Promise<DocdexDocument[]> {

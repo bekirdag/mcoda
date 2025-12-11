@@ -44,6 +44,18 @@ export interface AgentAuthMetadata {
 export interface AgentAuthSecret extends AgentAuthMetadata {
     encryptedSecret: string;
 }
+export type UpdateChannel = "stable" | "beta" | "nightly";
+export interface UpdateInfo {
+    currentVersion: string;
+    latestVersion: string;
+    channel: UpdateChannel;
+    updateAvailable: boolean;
+    notes?: string | null;
+}
+export interface ApplyUpdateResponse {
+    status: "started" | "already_up_to_date" | "completed";
+    logFile?: string | null;
+}
 export interface AgentHealth {
     agentId: string;
     status: AgentHealthStatus;

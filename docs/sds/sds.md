@@ -4965,11 +4965,15 @@ mcoda update \
 
 **Behavior**
 
-* Calls the update‑check API (which in turn inspects published npm metadata).
+* Calls the update-check API (which in turn inspects published npm metadata).
 
 * With `--check`, prints whether an update is available and exits without changes.
 
-* Without `--check`, runs an npm‑based self‑update (e.g. `npm install -g mcoda@<version>` or equivalent), respecting the chosen channel.
+* Without `--check`, runs an npm-based self-update (e.g. `npm install -g mcoda@<version>` or equivalent), respecting the chosen channel (`stable|beta|nightly`).
+
+* `--force` skips interactive confirmation and is required when the terminal is non-interactive/CI.
+
+* `--version` pins the npm version installed; `--channel` is also accepted as a query param for the check API.
 
 * Records last update check time in local/global config so future runs can decide whether to prompt again.
 
@@ -4980,6 +4984,8 @@ mcoda update \
 * Updates the installed CLI version.
 
 * May update global config (e.g. channel, last check timestamp).
+
+* Records a `command_runs` row in the **global** DB (`~/.mcoda/mcoda.db`) for each invocation (status, exit code, error summary).
 
 * Does not touch workspace DBs or tasks.
 
@@ -11867,7 +11873,7 @@ components:
           type: string
         channel:
           type: string
-          enum: [stable, beta]
+          enum: [stable, beta, nightly]
         updateAvailable:
           type: boolean
         notes:
@@ -11880,6 +11886,13 @@ paths:
       tags: [System]
       operationId: checkUpdate
       summary: "Check for available mcoda updates"
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [stable, beta, nightly]
       responses:
         '200':
           description: "Update information"

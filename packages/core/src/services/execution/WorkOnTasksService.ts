@@ -10,6 +10,7 @@ import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from "./TaskSelectionService.js";
 import { TaskStateService } from "./TaskStateService.js";
+import { RoutingService } from "../agents/RoutingService.js";
 
 const exec = promisify(execCb);
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
@@ -68,6 +69,7 @@ export class WorkOnTasksService {
   private stateService: TaskStateService;
   private taskLogSeq = new Map<string, number>();
   private vcs: VcsClient;
+  private routingService: RoutingService;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -80,11 +82,13 @@ export class WorkOnTasksService {
       stateService?: TaskStateService;
       repo: GlobalRepository;
       vcsClient?: VcsClient;
+      routingService: RoutingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
     this.stateService = deps.stateService ?? new TaskStateService(deps.workspaceRepo);
     this.vcs = deps.vcsClient ?? new VcsClient();
+    this.routingService = deps.routingService;
   }
 
   private async loadPrompts(agentId: string): Promise<{
@@ -134,12 +138,13 @@ export class WorkOnTasksService {
   static async create(workspace: WorkspaceResolution): Promise<WorkOnTasksService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const routingService = await RoutingService.create();
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
-    const jobService = new JobService(workspace.workspaceRoot, workspaceRepo);
+    const jobService = new JobService(workspace, workspaceRepo);
     const selectionService = new TaskSelectionService(workspace, workspaceRepo);
     const stateService = new TaskStateService(workspaceRepo);
     const vcsClient = new VcsClient();
@@ -152,6 +157,7 @@ export class WorkOnTasksService {
       stateService,
       repo,
       vcsClient,
+      routingService,
     });
   }
 
@@ -172,12 +178,12 @@ export class WorkOnTasksService {
   }
 
   private async resolveAgent(agentName?: string) {
-    if (agentName) return this.deps.agentService.resolveAgent(agentName);
-    const defaults = await this.deps.repo.getWorkspaceDefaults(this.workspace.workspaceId);
-    const commandDefault =
-      defaults.find((d) => d.commandName === "work-on-tasks") ?? defaults.find((d) => d.commandName === "default");
-    if (commandDefault) return this.deps.agentService.resolveAgent(commandDefault.agentId);
-    return this.deps.agentService.resolveAgent("codex");
+    const resolved = await this.routingService.resolveAgentForCommand({
+      workspace: this.workspace,
+      commandName: "work-on-tasks",
+      overrideAgentSlug: agentName,
+    });
+    return resolved.agent;
   }
 
   private nextLogSeq(taskRunId: string): number {

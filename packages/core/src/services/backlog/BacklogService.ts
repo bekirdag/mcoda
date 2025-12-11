@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { Connection, type Database } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
+import { TaskOrderingService } from "./TaskOrderingService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 
 type BacklogLane = "implementation" | "review" | "qa" | "done";
@@ -264,9 +265,44 @@ export class BacklogService {
       });
     }
 
-    const orderedTasks = options.orderByDependencies
-      ? this.orderTasks(tasksRows, options.verbose === true)
-      : this.defaultOrder(tasksRows);
+    let orderedTasks: TaskBacklogRow[];
+    if (options.orderByDependencies) {
+      if (!project) {
+        this.warnings.push("Dependency ordering requires a project scope; using default ordering.");
+        orderedTasks = this.orderTasks(tasksRows, options.verbose === true);
+      } else {
+        const orderingService = await TaskOrderingService.create(this.workspace, { recordTelemetry: false });
+        try {
+          const ordering = await orderingService.orderTasks({
+            projectKey: project.key,
+            epicKey: epic?.key,
+            storyKey: story?.key,
+            assignee: options.assignee,
+            statusFilter: options.statuses,
+            includeBlocked: true,
+          });
+          const orderMap = new Map<string, number>(ordering.ordered.map((t, idx) => [t.taskId, idx]));
+          orderedTasks = tasksRows
+            .slice()
+            .sort((a, b) => {
+              const ai = orderMap.get(a.task_id) ?? Number.MAX_SAFE_INTEGER;
+              const bi = orderMap.get(b.task_id) ?? Number.MAX_SAFE_INTEGER;
+              if (ai !== bi) return ai - bi;
+              return a.task_key.localeCompare(b.task_key);
+            });
+          this.warnings.push(...ordering.warnings);
+        } catch (error) {
+          if (options.verbose) {
+            this.warnings.push(`Dependency ordering failed; falling back to heuristic ordering. ${(error as Error).message}`);
+          }
+          orderedTasks = this.orderTasks(tasksRows, options.verbose === true);
+        } finally {
+          await orderingService.close();
+        }
+      }
+    } else {
+      orderedTasks = this.defaultOrder(tasksRows);
+    }
 
     const epicSummaries = Array.from(epics.values()).map((e) => {
       const stories = Array.from(e.storiesMap.values()).map((s) => ({

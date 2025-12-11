@@ -241,7 +241,7 @@ export class TelemetryCommands {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
-    const jobService = new JobService(workspace.workspaceRoot, undefined, { noTelemetry: true });
+    const jobService = new JobService(workspace, undefined, { noTelemetry: true });
     const commandRun = await jobService.startCommandRun("tokens", parsed.project);
     const telemetry = await TelemetryService.create(workspace);
     try {
@@ -297,7 +297,7 @@ export class TelemetryCommands {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
-    const jobService = new JobService(workspace.workspaceRoot, undefined, { noTelemetry: true });
+    const jobService = new JobService(workspace, undefined, { noTelemetry: true });
     const commandRun = await jobService.startCommandRun(`telemetry-${parsed.subcommand}`, undefined);
     const telemetry = await TelemetryService.create(workspace, { allowMissingTelemetry: true });
     try {

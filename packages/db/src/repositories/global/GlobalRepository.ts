@@ -23,6 +23,23 @@ const mapAgentRow = (row: any): Agent => ({
   updatedAt: row.updated_at,
 });
 
+export type GlobalCommandStatus = "running" | "succeeded" | "failed";
+
+export interface GlobalCommandRunInsert {
+  commandName: string;
+  startedAt: string;
+  status: GlobalCommandStatus;
+  exitCode?: number | null;
+  errorSummary?: string | null;
+  payload?: Record<string, unknown>;
+}
+
+export interface GlobalCommandRun extends GlobalCommandRunInsert {
+  id: string;
+  completedAt?: string | null;
+  result?: Record<string, unknown>;
+}
+
 export class GlobalRepository {
   constructor(private db: Database, private connection?: Connection) {}
 
@@ -271,24 +288,33 @@ export class GlobalRepository {
     );
   }
 
-  async setWorkspaceDefault(workspaceId: string, commandName: string, agentId: string): Promise<void> {
+  async setWorkspaceDefault(
+    workspaceId: string,
+    commandName: string,
+    agentId: string,
+    options: { qaProfile?: string; docdexScope?: string } = {},
+  ): Promise<void> {
     const now = new Date().toISOString();
     await this.db.run(
-      `INSERT INTO workspace_defaults (workspace_id, command_name, agent_id, updated_at)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO workspace_defaults (workspace_id, command_name, agent_id, qa_profile, docdex_scope, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(workspace_id, command_name) DO UPDATE SET
          agent_id=excluded.agent_id,
+         qa_profile=excluded.qa_profile,
+         docdex_scope=excluded.docdex_scope,
          updated_at=excluded.updated_at`,
       workspaceId,
       commandName,
       agentId,
+      options.qaProfile ?? null,
+      options.docdexScope ?? null,
       now,
     );
   }
 
   async getWorkspaceDefaults(workspaceId: string): Promise<WorkspaceDefault[]> {
     const rows = await this.db.all(
-      "SELECT workspace_id, command_name, agent_id, updated_at FROM workspace_defaults WHERE workspace_id = ?",
+      "SELECT workspace_id, command_name, agent_id, qa_profile, docdex_scope, updated_at FROM workspace_defaults WHERE workspace_id = ?",
       workspaceId,
     );
     return rows.map(
@@ -296,14 +322,24 @@ export class GlobalRepository {
         workspaceId: row.workspace_id,
         commandName: row.command_name,
         agentId: row.agent_id,
+        qaProfile: row.qa_profile ?? undefined,
+        docdexScope: row.docdex_scope ?? undefined,
         updatedAt: row.updated_at,
       }),
     );
   }
 
+  async removeWorkspaceDefault(workspaceId: string, commandName: string): Promise<void> {
+    await this.db.run(
+      "DELETE FROM workspace_defaults WHERE workspace_id = ? AND command_name = ?",
+      workspaceId,
+      commandName,
+    );
+  }
+
   async findWorkspaceReferences(agentId: string): Promise<WorkspaceDefault[]> {
     const rows = await this.db.all(
-      "SELECT workspace_id, command_name, agent_id, updated_at FROM workspace_defaults WHERE agent_id = ?",
+      "SELECT workspace_id, command_name, agent_id, qa_profile, docdex_scope, updated_at FROM workspace_defaults WHERE agent_id = ?",
       agentId,
     );
     return rows.map(
@@ -311,8 +347,53 @@ export class GlobalRepository {
         workspaceId: row.workspace_id,
         commandName: row.command_name,
         agentId: row.agent_id,
+        qaProfile: row.qa_profile ?? undefined,
+        docdexScope: row.docdex_scope ?? undefined,
         updatedAt: row.updated_at,
       }),
+    );
+  }
+
+  async createCommandRun(record: GlobalCommandRunInsert): Promise<GlobalCommandRun> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO command_runs (id, command_name, started_at, status, exit_code, error_summary, payload_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      record.commandName,
+      record.startedAt,
+      record.status,
+      record.exitCode ?? null,
+      record.errorSummary ?? null,
+      record.payload ? JSON.stringify(record.payload) : null,
+    );
+    return {
+      id,
+      ...record,
+      completedAt: null,
+    };
+  }
+
+  async completeCommandRun(
+    id: string,
+    update: {
+      status: GlobalCommandStatus;
+      completedAt: string;
+      exitCode?: number | null;
+      errorSummary?: string | null;
+      result?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    await this.db.run(
+      `UPDATE command_runs
+       SET status = ?, completed_at = ?, exit_code = ?, error_summary = ?, result_json = ?
+       WHERE id = ?`,
+      update.status,
+      update.completedAt,
+      update.exitCode ?? null,
+      update.errorSummary ?? null,
+      update.result ? JSON.stringify(update.result) : null,
+      id,
     );
   }
 }

@@ -43,6 +43,21 @@ class StubAgentService {
   }
 }
 
+class StubRoutingService {
+  async resolveAgentForCommand() {
+    return {
+      agent: { id: "qa-agent", defaultModel: "stub" } as any,
+      agentId: "qa-agent",
+      agentSlug: "qa-agent",
+      model: "stub",
+      capabilities: [],
+      healthStatus: "healthy",
+      source: "workspace_default",
+      routingPreview: { workspaceId: "ws", commandName: "qa-tasks" } as any,
+    };
+  }
+}
+
 class StubDocdex {
   async search() {
     return [];
@@ -102,6 +117,7 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
     vcsClient: new StubVcs() as any,
     agentService: new StubAgentService() as any,
     docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
   });
   // Override adapter selection to use stubbed adapter.
   (service as any).adapterForProfile = () => new StubQaAdapter();
