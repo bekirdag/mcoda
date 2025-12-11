@@ -659,16 +659,17 @@ export class DocsService {
       agentService: AgentService;
       repo: GlobalRepository;
       routingService: RoutingService;
+      noTelemetry?: boolean;
     },
   ) {
     this.docdex = deps?.docdex ?? new DocdexClient({ workspaceRoot: workspace.workspaceRoot });
-    this.jobService = deps?.jobService ?? new JobService(workspace);
+    this.jobService = deps?.jobService ?? new JobService(workspace, undefined, { noTelemetry: deps?.noTelemetry });
     this.repo = deps.repo;
     this.agentService = deps.agentService;
     this.routingService = deps.routingService;
   }
 
-  static async create(workspace: WorkspaceResolution): Promise<DocsService> {
+  static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<DocsService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
     const routingService = await RoutingService.create();
@@ -676,8 +677,8 @@ export class DocsService {
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
-    const jobService = new JobService(workspace);
-    return new DocsService(workspace, { repo, agentService, routingService, docdex, jobService });
+    const jobService = new JobService(workspace, undefined, { noTelemetry: options.noTelemetry });
+    return new DocsService(workspace, { repo, agentService, routingService, docdex, jobService, noTelemetry: options.noTelemetry });
   }
 
   async close(): Promise<void> {

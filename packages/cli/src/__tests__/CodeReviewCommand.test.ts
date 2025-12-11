@@ -48,6 +48,29 @@ class FakeDocdex {
   }
 }
 
+class FakeRoutingService {
+  async resolveAgentForCommand() {
+    const agent = {
+      id: "agent-1",
+      slug: "agent-1",
+      adapter: "local-model",
+      defaultModel: "stub-model",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    return {
+      agent,
+      agentId: agent.id,
+      agentSlug: agent.slug,
+      model: agent.defaultModel,
+      capabilities: ["code_review"],
+      healthStatus: "healthy",
+      source: "workspace_default",
+      routingPreview: { workspaceId: "ws", commandName: "code-review", resolvedAgent: agent },
+    };
+  }
+}
+
 class FakeSelectionService {
   lastFilters?: any;
   constructor(private task: any) {}
@@ -329,6 +352,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
 
     const result = await service.reviewTasks({
@@ -357,6 +381,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
     const result = await service.reviewTasks({
       workspace,
@@ -392,6 +417,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
     const result = await service.reviewTasks({
       workspace,
@@ -436,6 +462,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
     const beforeCount = fakeWorkspaceRepo.tasks.length;
     const result = await service.reviewTasks({
@@ -460,6 +487,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
     await service.reviewTasks({
       workspace,
@@ -492,6 +520,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
     const result = await service.reviewTasks({
       workspace,
@@ -513,6 +542,7 @@ describe("code-review service flow", () => {
       stateService: fakeStateService as any,
       repo: new FakeGlobalRepo() as any,
       vcsClient: new FakeVcs() as any,
+      routingService: new FakeRoutingService() as any,
     });
 
     await service.reviewTasks({

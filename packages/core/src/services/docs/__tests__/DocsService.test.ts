@@ -109,6 +109,7 @@ describe("DocsService.generatePdr", () => {
       workspaceId: workspaceRoot,
       mcodaDir: path.join(workspaceRoot, ".mcoda"),
       id: workspaceRoot,
+      legacyWorkspaceIds: [],
       workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
       globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
     };
@@ -122,7 +123,7 @@ describe("DocsService.generatePdr", () => {
     const agentService = new FakeAgentService(agent);
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
-    const jobService = new JobService(workspaceRoot);
+    const jobService = new JobService(workspace);
     const docdex = new DocdexClient({ workspaceRoot });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
@@ -168,6 +169,7 @@ describe("DocsService.generatePdr", () => {
       workspaceId: workspaceRoot,
       mcodaDir: path.join(workspaceRoot, ".mcoda"),
       id: workspaceRoot,
+      legacyWorkspaceIds: [],
       workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
       globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
     };
@@ -181,7 +183,7 @@ describe("DocsService.generatePdr", () => {
     const agentService = new FakeAgentService(agent);
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
-    const jobService = new JobService(workspaceRoot);
+    const jobService = new JobService(workspace);
     const docdex = new DocdexClient({ workspaceRoot });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
@@ -217,6 +219,7 @@ describe("DocsService.generatePdr", () => {
       workspaceId: workspaceRoot,
       mcodaDir: path.join(workspaceRoot, ".mcoda"),
       id: workspaceRoot,
+      legacyWorkspaceIds: [],
       workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
       globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
     };
@@ -230,7 +233,7 @@ describe("DocsService.generatePdr", () => {
     const agentService = new FakeAgentService(agent);
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
-    const jobService = new JobService(workspaceRoot);
+    const jobService = new JobService(workspace);
     const service = new DocsService(workspace, {
       agentService: agentService as any,
       repo: repo as any,
@@ -262,6 +265,7 @@ describe("DocsService.generatePdr", () => {
       workspaceId: workspaceRoot,
       mcodaDir: path.join(workspaceRoot, ".mcoda"),
       id: workspaceRoot,
+      legacyWorkspaceIds: [],
       workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
       globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
     };
@@ -304,7 +308,7 @@ describe("DocsService.generatePdr", () => {
     const agentService = new FakeAgentService(agent, sdsDraft);
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
-    const jobService = new JobService(workspaceRoot);
+    const jobService = new JobService(workspace);
     const docdex = new DocdexClient({ workspaceRoot });
     await docdex.registerDocument({
       docType: "PDR",

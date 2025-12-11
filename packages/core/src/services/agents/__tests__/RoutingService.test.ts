@@ -28,6 +28,8 @@ class StubAgentService {
 class StubRoutingApi {
   defaults = new Map<string, Map<string, string>>();
   previews: RoutingPreview[] = [];
+  agents = new Map<string, Agent>();
+  health = new Map<string, any>();
 
   constructor(private capabilityLookup: (agentId: string) => Promise<string[]>) {}
 
@@ -51,7 +53,20 @@ class StubRoutingApi {
     return defaults;
   }
 
-  async routingPreview(request: any) {
+  async listAgents(): Promise<Agent[]> {
+    return Array.from(this.agents.values()).map((a) => ({
+      ...a,
+      capabilities: a.capabilities,
+      health: this.health.get(a.id),
+    }));
+  }
+
+  async getAgent(idOrSlug: string): Promise<Agent | undefined> {
+    const agent = this.agents.get(idOrSlug);
+    return agent ? { ...agent, health: this.health.get(agent.id) } : undefined;
+  }
+
+  async preview(request: any) {
     const map = this.defaults.get(request.workspaceId) ?? new Map<string, string>();
     const global = this.defaults.get("__GLOBAL__") ?? new Map<string, string>();
     const agentId = request.agentOverride ?? map.get(request.commandName) ?? global.get(request.commandName);
@@ -91,6 +106,7 @@ const workspace = {
   workspaceDbPath: "/tmp/ws-1/.mcoda/mcoda.db",
   globalDbPath: "/tmp/global/mcoda.db",
   mcodaDir: "/tmp/ws-1/.mcoda",
+  legacyWorkspaceIds: [],
 };
 
 const agent = (id: string, slug: string): Agent => ({
@@ -104,6 +120,9 @@ const agent = (id: string, slug: string): Agent => ({
 test("resolves override before workspace and global defaults", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a-global", agent("a-global", "global"));
+  routingApi.agents.set("a-workspace", agent("a-workspace", "workspace"));
+  routingApi.agents.set("a-override", agent("a-override", "override"));
   agents.register(agent("a-global", "global"));
   agents.register(agent("a-workspace", "workspace"));
   agents.register(agent("a-override", "override"));
@@ -133,6 +152,8 @@ test("resolves override before workspace and global defaults", async () => {
 test("falls back when workspace default lacks required capabilities", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a-global", agent("a-global", "global"));
+  routingApi.agents.set("a-workspace", agent("a-workspace", "workspace"));
   agents.register(agent("a-global", "global"));
   agents.register(agent("a-workspace", "workspace"));
   agents.capabilities.set("a-global", ["code_write"]);
@@ -153,8 +174,11 @@ test("falls back when workspace default lacks required capabilities", async () =
 test("skips unhealthy or incapable agents and falls back", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a1", agent("a1", "agent1"));
+  routingApi.agents.set("a2", agent("a2", "agent2"));
   agents.register(agent("a1", "agent1"));
   agents.register(agent("a2", "agent2"));
+  routingApi.health.set("a2", { agentId: "a2", status: "healthy", lastCheckedAt: "t" } as any);
   routingApi.defaults.set("__GLOBAL__", new Map([["code-review", "a2"]]));
   agents.capabilities.set("a2", ["code_review"]);
   const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
@@ -165,13 +189,16 @@ test("skips unhealthy or incapable agents and falls back", async () => {
   });
   assert.equal(resolved.agentId, "a2");
   assert.equal(resolved.source, "global_default");
+  assert.equal(resolved.healthStatus, "healthy");
 });
 
 test("throws when no defaults are configured", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a1", agent("a1", "agent1"));
   agents.register(agent("a1", "agent1"));
   agents.capabilities.set("a1", ["plan"]);
+  // ensure QA/docdex profiles are optional and validated upstream
   const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
   await assert.rejects(
     () =>
@@ -181,4 +208,36 @@ test("throws when no defaults are configured", async () => {
       }),
     /No routing defaults/,
   );
+});
+
+test("updateWorkspaceDefaults validates capabilities and profiles", async () => {
+  const agents = new StubAgentService();
+  const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("codex", agent("codex", "codex"));
+  agents.register(agent("codex", "codex"));
+  agents.capabilities.set("codex", ["plan", "docdex_query"]);
+  const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
+
+  await assert.rejects(
+    () => service.updateWorkspaceDefaults("ws", { set: { "qa-tasks": "codex" } }),
+    /missing required capabilities/i,
+  );
+
+  await service.updateWorkspaceDefaults("ws", { set: { "create-tasks": "codex" }, qaProfile: "integration" });
+});
+
+test("uses API agent capabilities when present", async () => {
+  const routingApi = new StubRoutingApi(async () => []);
+  const apiAgent = agent("api-agent", "api-agent");
+  apiAgent.capabilities = ["code_write"];
+  routingApi.agents.set(apiAgent.id, apiAgent);
+  routingApi.defaults.set("__GLOBAL__", new Map([["work-on-tasks", apiAgent.id]]));
+  const service = new RoutingService({ routingApi: routingApi as any });
+
+  const resolved = await service.resolveAgentForCommand({
+    workspace: workspace as any,
+    commandName: "work-on-tasks",
+  });
+  assert.equal(resolved.agentId, apiAgent.id);
+  assert.deepEqual(resolved.capabilities, ["code_write"]);
 });

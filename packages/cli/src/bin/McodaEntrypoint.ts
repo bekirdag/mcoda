@@ -22,6 +22,7 @@ export class McodaEntrypoint {
     if (!command) {
       throw new Error(
         "Usage: mcoda <agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|update|pdr|sds> [...args]\n" +
+          "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
           "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
           "Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.",

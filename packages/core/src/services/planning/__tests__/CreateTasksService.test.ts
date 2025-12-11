@@ -12,6 +12,7 @@ const workspace: WorkspaceResolution = {
   workspaceId: workspaceRoot,
   mcodaDir: path.join(workspaceRoot, ".mcoda"),
   id: workspaceRoot,
+  legacyWorkspaceIds: [],
   workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
   globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
 };

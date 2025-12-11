@@ -12,6 +12,10 @@ const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
   workspaceRoot,
   workspaceId: workspaceRoot,
   mcodaDir: path.join(workspaceRoot, ".mcoda"),
+  id: workspaceRoot,
+  legacyWorkspaceIds: [],
+  workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+  globalDbPath: PathHelper.getGlobalDbPath(),
 });
 
 describe("TaskDetailService", () => {

@@ -7,6 +7,7 @@ export interface WorkspaceResolution {
   workspaceRoot: string;
   workspaceId: string;
   id: string;
+  legacyWorkspaceIds: string[];
   mcodaDir: string;
   workspaceDbPath: string;
   globalDbPath: string;
@@ -90,12 +91,14 @@ const readWorkspaceConfig = async (mcodaDir: string): Promise<WorkspaceConfig | 
   }
 };
 
-const readWorkspaceIdentity = async (mcodaDir: string): Promise<{ id: string; name?: string; createdAt?: string } | undefined> => {
+type WorkspaceIdentity = { id: string; name?: string; createdAt?: string; legacyIds?: string[] };
+
+const readWorkspaceIdentity = async (mcodaDir: string): Promise<WorkspaceIdentity | undefined> => {
   const workspacePath = path.join(mcodaDir, "workspace.json");
   try {
     const raw = await fs.readFile(workspacePath, "utf8");
-    const parsed = JSON.parse(raw) as { id?: string; name?: string; createdAt?: string };
-    if (parsed?.id) return parsed as { id: string; name?: string; createdAt?: string };
+    const parsed = JSON.parse(raw) as WorkspaceIdentity;
+    if (parsed?.id) return parsed;
     return undefined;
   } catch {
     return undefined;
@@ -104,7 +107,7 @@ const readWorkspaceIdentity = async (mcodaDir: string): Promise<{ id: string; na
 
 const writeWorkspaceIdentity = async (
   mcodaDir: string,
-  identity: { id: string; name?: string; createdAt?: string },
+  identity: WorkspaceIdentity,
 ): Promise<void> => {
   const workspacePath = path.join(mcodaDir, "workspace.json");
   await fs.writeFile(workspacePath, JSON.stringify(identity, null, 2), "utf8");
@@ -112,6 +115,47 @@ const writeWorkspaceIdentity = async (
 
 const looksLikeWorkspaceId = (value: string): boolean =>
   /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value.trim());
+
+const migrateWorkspaceDbIds = async (workspace: WorkspaceResolution, legacyIds: string[]): Promise<void> => {
+  if (!legacyIds.length) return;
+  try {
+    const { WorkspaceRepository } = await import("@mcoda/db");
+    const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+    const db = repo.getDb();
+    const placeholders = legacyIds.map(() => "?").join(",");
+    const params = [workspace.workspaceId, ...legacyIds];
+    const tables = ["jobs", "command_runs", "token_usage"];
+    for (const table of tables) {
+      await db.run(`UPDATE ${table} SET workspace_id = ? WHERE workspace_id IN (${placeholders})`, params);
+    }
+    await repo.close();
+  } catch {
+    /* best effort */
+  }
+
+  const updateJsonArray = async (filePath: string) => {
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw) as any[];
+      if (!Array.isArray(parsed) || !parsed.length) return;
+      let changed = false;
+      const updated = parsed.map((row) => {
+        if (row?.workspaceId && legacyIds.includes(row.workspaceId)) {
+          changed = true;
+          return { ...row, workspaceId: workspace.workspaceId };
+        }
+        return row;
+      });
+      if (changed) {
+        await fs.writeFile(filePath, JSON.stringify(updated, null, 2), "utf8");
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+  await updateJsonArray(path.join(workspace.workspaceRoot, ".mcoda", "command_runs.json"));
+  await updateJsonArray(path.join(workspace.workspaceRoot, ".mcoda", "token_usage.json"));
+};
 
 export class WorkspaceResolver {
   static async resolveWorkspace(input: { cwd?: string; explicitWorkspace?: string }): Promise<WorkspaceResolution> {
@@ -140,25 +184,59 @@ export class WorkspaceResolver {
     await PathHelper.ensureDir(mcodaDir);
     await ensureGitignore(workspaceRoot);
     const existingIdentity = await readWorkspaceIdentity(mcodaDir);
-    const identity =
-      existingIdentity ??
-      {
+    let identity: WorkspaceIdentity;
+    let legacyIds: string[] = [];
+    if (existingIdentity) {
+      const existingLegacy = new Set<string>(existingIdentity.legacyIds ?? []);
+      let updatedIdentity = false;
+      legacyIds = [...(existingIdentity.legacyIds ?? [])];
+      if (existingIdentity.id && existingIdentity.id !== workspaceRoot) {
+        legacyIds.push(workspaceRoot);
+        updatedIdentity = true;
+      }
+      if (!looksLikeWorkspaceId(existingIdentity.id)) {
+        legacyIds.push(existingIdentity.id);
+        identity = {
+          ...existingIdentity,
+          id: randomUUID(),
+          legacyIds: Array.from(new Set(legacyIds)),
+        };
+        await writeWorkspaceIdentity(mcodaDir, identity);
+      } else {
+        identity = {
+          ...existingIdentity,
+          legacyIds: Array.from(new Set(legacyIds)),
+        };
+        if ((identity.legacyIds?.length ?? 0) !== existingLegacy.size) {
+          updatedIdentity = true;
+        }
+        if (updatedIdentity) {
+          await writeWorkspaceIdentity(mcodaDir, identity);
+        }
+      }
+    } else {
+      identity = {
         id: randomUUID(),
         name: path.basename(workspaceRoot),
         createdAt: new Date().toISOString(),
+        legacyIds: [workspaceRoot],
       };
-    if (!existingIdentity) {
       await writeWorkspaceIdentity(mcodaDir, identity);
     }
+    const legacyWorkspaceIds = Array.from(new Set([...(identity.legacyIds ?? []), workspaceRoot].filter(Boolean)));
     const config = await readWorkspaceConfig(mcodaDir);
-    return {
+    const resolution: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: identity.id,
       id: identity.id,
+      legacyWorkspaceIds,
       mcodaDir,
       workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
       globalDbPath: PathHelper.getGlobalDbPath(),
       config,
     };
+    // Best-effort migration of workspace_id columns and JSON logs from legacy IDs.
+    await migrateWorkspaceDbIds(resolution, legacyWorkspaceIds.filter((id) => id !== identity.id));
+    return resolution;
   }
 }

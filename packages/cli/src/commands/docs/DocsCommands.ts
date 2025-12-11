@@ -1,8 +1,8 @@
 import path from "node:path";
 import { DocsService, WorkspaceResolver } from "@mcoda/core";
 
-const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rfp-id <ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet]`;
-const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet]`;
+const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rfp-id <ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
+const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
 
 export interface ParsedPdrArgs {
   workspaceRoot?: string;
@@ -17,6 +17,7 @@ export interface ParsedPdrArgs {
   quiet: boolean;
   debug: boolean;
   noColor: boolean;
+  noTelemetry: boolean;
 }
 
 export interface ParsedSdsArgs {
@@ -33,6 +34,7 @@ export interface ParsedSdsArgs {
   quiet: boolean;
   debug: boolean;
   noColor: boolean;
+  noTelemetry: boolean;
 }
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -56,6 +58,7 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
   let quiet = false;
   let debug = false;
   let noColor = false;
+  let noTelemetry = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -109,6 +112,12 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
       case "--no-color":
         noColor = true;
         break;
+      case "--no-telemetry":
+        noTelemetry = true;
+        break;
+      case "--no-telemetry":
+        noTelemetry = true;
+        break;
       case "--help":
       case "-h":
         // eslint-disable-next-line no-console
@@ -125,13 +134,14 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
     rfpId,
     rfpPath,
     outPath,
-      agentName,
-      agentStream: agentStream ?? true,
-      dryRun,
-      json,
-      quiet,
-      debug,
-      noColor,
+    agentName,
+    agentStream: agentStream ?? true,
+    dryRun,
+    json,
+    quiet,
+    debug,
+    noColor,
+    noTelemetry,
   };
 };
 
@@ -149,6 +159,7 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
   let quiet = false;
   let debug = false;
   let noColor = false;
+  let noTelemetry = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -230,6 +241,7 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
     quiet,
     debug,
     noColor,
+    noTelemetry,
   };
 };
 
@@ -257,7 +269,7 @@ export class DocsCommands {
           // eslint-disable-next-line no-console
           console.error(`[debug] workspace resolved: ${workspace.workspaceRoot}`);
         }
-        service = await DocsService.create(workspace);
+        service = await DocsService.create(workspace, { noTelemetry: parsed.noTelemetry });
         const shouldStream = parsed.agentStream && !parsed.json && !parsed.quiet;
         const onToken = shouldStream ? (token: string) => process.stdout.write(token) : undefined;
         const result = await service.generateSds({
@@ -331,7 +343,7 @@ export class DocsCommands {
         // eslint-disable-next-line no-console
         console.error(`[debug] workspace resolved: ${workspace.workspaceRoot}`);
       }
-      service = await DocsService.create(workspace);
+        service = await DocsService.create(workspace, { noTelemetry: parsed.noTelemetry });
       const shouldStream = parsed.agentStream && !parsed.json && !parsed.quiet;
       const onToken = shouldStream ? (token: string) => process.stdout.write(token) : undefined;
       const result = await service.generatePdr({

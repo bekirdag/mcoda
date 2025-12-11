@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { OpenApiService, WorkspaceResolver } from "@mcoda/core";
 
 const usage =
-  "mcoda openapi-from-docs [--workspace-root <PATH>] [--agent <NAME>] [--agent-stream <true|false>] [--force] [--dry-run] [--validate-only]";
+  "mcoda openapi-from-docs [--workspace-root <PATH>] [--agent <NAME>] [--agent-stream <true|false>] [--force] [--dry-run] [--validate-only] [--no-telemetry]";
 
 export interface ParsedOpenapiArgs {
   workspaceRoot?: string;
@@ -12,6 +12,7 @@ export interface ParsedOpenapiArgs {
   force: boolean;
   dryRun: boolean;
   validateOnly: boolean;
+  noTelemetry: boolean;
 }
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -29,6 +30,7 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
   let force = false;
   let dryRun = false;
   let validateOnly = false;
+  let noTelemetry = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -65,6 +67,9 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
       case "--validate-only":
         validateOnly = true;
         break;
+      case "--no-telemetry":
+        noTelemetry = true;
+        break;
       case "--help":
       case "-h":
         // eslint-disable-next-line no-console
@@ -83,6 +88,7 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
     force,
     dryRun,
     validateOnly,
+    noTelemetry,
   };
 };
 
@@ -105,7 +111,7 @@ export class OpenapiCommands {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
-    const service = await OpenApiService.create(workspace);
+    const service = await OpenApiService.create(workspace, { noTelemetry: parsed.noTelemetry });
     try {
       const cliVersion = readCliVersion();
       const shouldStream = parsed.agentStream;

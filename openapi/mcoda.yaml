@@ -29,6 +29,25 @@ tags:
     description: Workspace configuration
   - name: System
     description: System health and metadata
+x-mcoda-command-capabilities:
+  create-tasks:
+    required: [plan]
+  refine-tasks:
+    required: [plan]
+  work-on-tasks:
+    required: [code_write]
+  code-review:
+    required: [code_review]
+  qa-tasks:
+    required: [qa_interpretation]
+  pdr:
+    required: [docdex_query]
+  sds:
+    required: [docdex_query]
+  openapi-from-docs:
+    required: [docdex_query]
+  order-tasks:
+    required: [plan]
 paths:
   /agents:
     get:

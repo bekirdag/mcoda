@@ -10,28 +10,24 @@ const withPatched = async <T, K extends keyof T>(
   fn: () => Promise<void>,
 ) => {
   const original = target[key];
-  // @ts-expect-error override for testing
-  target[key] = impl;
+  (target as any)[key] = impl;
   try {
     await fn();
   } finally {
-    // @ts-expect-error restore
-    target[key] = original;
+    (target as any)[key] = original;
   }
 };
 
 const captureLogs = async (fn: () => Promise<void>): Promise<string[]> => {
   const logs: string[] = [];
   const original = console.log;
-  // @ts-expect-error override
-  console.log = (...args: any[]) => {
+  (console as any).log = (...args: any[]) => {
     logs.push(args.join(" "));
   };
   try {
     await fn();
   } finally {
-    // @ts-expect-error restore
-    console.log = original;
+    (console as any).log = original;
   }
   return logs;
 };
@@ -40,12 +36,18 @@ const workspace = {
   workspaceRoot: "/tmp/ws-routing",
   workspaceId: "ws-routing",
   id: "ws-routing",
+  legacyWorkspaceIds: [],
   mcodaDir: "/tmp/ws-routing/.mcoda",
   workspaceDbPath: "/tmp/ws-routing/.mcoda/mcoda.db",
   globalDbPath: "/tmp/global/mcoda.db",
 };
 
 describe("RoutingCommands", () => {
+  it("shows help for defaults", async () => {
+    const logs = await captureLogs(async () => RoutingCommands.run(["defaults", "--help"]));
+    assert.ok(logs.join("\n").includes("Manage per-workspace routing defaults"));
+  });
+
   it("lists defaults in json", async () => {
     const stubRouting: any = {
       normalizeCommand: (c: string) => c,
@@ -143,6 +145,7 @@ describe("RoutingCommands", () => {
         healthStatus: "healthy",
         source: "workspace_default",
         routingPreview: { workspaceId: workspace.workspaceId, commandName: "work-on-tasks" },
+        requiredCapabilities: ["code_write"],
       }),
       close: async () => {},
     };
@@ -184,7 +187,9 @@ describe("RoutingCommands", () => {
           commandName: "code-review",
           resolvedAgent: { id: "a1" },
           candidates: [{ agentId: "a1", agentSlug: "agent-one", source: "workspace_default" }],
+          provenance: "workspace_default",
         },
+        requiredCapabilities: ["code_review"],
       }),
       close: async () => {},
     };
@@ -199,6 +204,47 @@ describe("RoutingCommands", () => {
                 );
                 const parsed = JSON.parse(logs.join("\n"));
                 assert.equal(parsed.commandName ?? parsed.command_name, "code-review");
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  it("prints preview json with provenance", async () => {
+    const stubRouting: any = {
+      normalizeCommand: (c: string) => c,
+      resolveAgentForCommand: async () => ({
+        agentId: "a2",
+        agentSlug: "agent-two",
+        agent: { id: "a2", slug: "agent-two" },
+        model: "stub",
+        capabilities: ["plan"],
+        healthStatus: "healthy",
+        source: "global_default",
+        routingPreview: {
+          workspaceId: workspace.workspaceId,
+          commandName: "create-tasks",
+          resolvedAgent: { id: "a2" },
+          provenance: "global_default",
+        },
+        requiredCapabilities: ["plan"],
+      }),
+      close: async () => {},
+    };
+    await withPatched(RoutingService as any, "create", async () => stubRouting, async () => {
+      await withPatched(WorkspaceResolver as any, "resolveWorkspace", async () => workspace, async () => {
+        await withPatched(JobService.prototype as any, "startCommandRun", async () => ({ id: "cmd-5" }), async () => {
+          await withPatched(JobService.prototype as any, "finishCommandRun", async () => {}, async () => {
+            await withPatched(JobService.prototype as any, "recordTokenUsage", async () => {}, async () => {
+              await withPatched(JobService.prototype as any, "close", async () => {}, async () => {
+                const logs = await captureLogs(async () =>
+                  RoutingCommands.run(["preview", "--command", "create-tasks", "--json"]),
+                );
+                const parsed = JSON.parse(logs.join("\n"));
+                assert.equal(parsed.provenance, "global_default");
+                assert.equal(parsed.commandName ?? parsed.command_name, "create-tasks");
               });
             });
           });

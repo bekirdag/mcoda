@@ -195,23 +195,42 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
 - Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.
 
-## Routing defaults and previews
+## Routing defaults, preview, and explain
 
-Manage which agent runs each command in a workspace:
+Use the OpenAPI-backed router to inspect or update workspace defaults:
 
 ```sh
-# Show effective defaults (workspace + global fallbacks)
-mcoda routing defaults
+# Show effective defaults (workspace + __GLOBAL__ fallback)
+mcoda routing defaults [--workspace <PATH>] [--json]
 
-# Set default agent for create-tasks in the current workspace
-mcoda routing defaults --set-command create-tasks=codex
+# Update defaults (only the provided flags are changed)
+mcoda routing defaults \
+  --set-command create-tasks=codex \
+  --set-qa-profile integration \
+  --set-docdex-scope sds
 
-# Set QA/docdex defaults for the workspace routing layer
-mcoda routing defaults --set-qa-profile integration --set-docdex-scope sds
+# Reset a command to inherit from __GLOBAL__
+mcoda routing defaults --reset-command work-on-tasks
 
-# Preview the agent chosen for work-on-tasks (with optional override)
-mcoda routing preview --command work-on-tasks --agent gemini
+# Preview which agent would run a command (honors --agent override)
+mcoda routing preview \
+  --command work-on-tasks \
+  [--agent <SLUG>] \
+  [--task-type <TYPE>] \
+  [--project <KEY>] \
+  [--json]
 
-# Explain routing decisions with candidates and provenance
-mcoda routing explain --command create-tasks --json
+# Explain the routing decision with candidates/health/capabilities
+mcoda routing explain \
+  --command create-tasks \
+  [--agent <SLUG>] \
+  [--task-type <TYPE>] \
+  [--debug] \
+  [--json]
 ```
+
+Flags & behavior:
+- `--workspace <PATH>` resolves workspace_id + DB paths via WorkspaceResolver; omitted uses CWD.
+- Defaults: `--set-command <cmd>=<agent>` (validates against global agents + required capabilities), `--reset-command <cmd>`, `--set-qa-profile <NAME>`, `--set-docdex-scope <NAME>`. With no setters, `--list` is implied.
+- Preview/explain: validate command names via OpenAPI `x-mcoda-cli.name`; source shows `override|workspace_default|global_default`; explain prints candidate agents with health/capabilities/missing caps.
+- Output: human-friendly tables by default; `--json` emits raw `RoutingDefaults` or `RoutingPreview` DTOs. `--debug` surfaces extra trace fields when available.

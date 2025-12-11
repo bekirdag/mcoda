@@ -1,4 +1,10 @@
 import { JobService, RoutingService, WorkspaceResolver } from "@mcoda/core";
+import {
+  canonicalizeCommandName,
+  getKnownCommands,
+  getKnownDocdexScopes,
+  getKnownQaProfiles,
+} from "@mcoda/shared";
 
 type Subcommand = "defaults" | "preview" | "explain";
 
@@ -34,6 +40,21 @@ const DEFAULTS_USAGE = `mcoda routing defaults \\
   [--no-telemetry] \\
   [--json]`;
 
+const DEFAULTS_HELP = `${DEFAULTS_USAGE}
+
+Manage per-workspace routing defaults backed by the global DB (~/.mcoda/mcoda.db).
+
+Flags:
+  --list                      List workspace + __GLOBAL__ defaults (default if no setters are passed)
+  --set-command c=a           Set default agent for command c (validates capabilities)
+  --reset-command c           Remove workspace override so __GLOBAL__ applies
+  --set-qa-profile name       Set workspace QA profile override (validated against OpenAPI profiles)
+  --set-docdex-scope name     Set docdex scope override (validated against OpenAPI scopes)
+  --workspace PATH            Resolve workspace via PATH (otherwise uses CWD)
+  --json                      Emit raw RoutingDefaults DTOs
+  --no-telemetry              Skip local token usage recording for this run
+`;
+
 const PREVIEW_USAGE = `mcoda routing preview \\
   [--workspace <PATH>] \\
   --command <COMMAND_NAME> \\
@@ -42,6 +63,20 @@ const PREVIEW_USAGE = `mcoda routing preview \\
   [--project <PROJECT_KEY>] \\
   [--no-telemetry] \\
   [--json]`;
+
+const PREVIEW_HELP = `${PREVIEW_USAGE}
+
+Preview which agent would be selected for a command using full routing (override → workspace default → global default).
+
+Flags:
+  --command NAME              CLI command to preview (validated against OpenAPI x-mcoda-cli.name)
+  --agent SLUG                Force a specific agent (capability-validated)
+  --task-type TYPE            Optional task type hint (adds QA-required capabilities)
+  --project KEY               Optional project key for context
+  --workspace PATH            Resolve workspace via PATH (otherwise uses CWD)
+  --json                      Emit raw RoutingPreview DTO
+  --no-telemetry              Skip local token usage recording for this run
+`;
 
 const EXPLAIN_USAGE = `mcoda routing explain \\
   [--workspace <PATH>] \\
@@ -52,17 +87,11 @@ const EXPLAIN_USAGE = `mcoda routing explain \\
   [--json] \\
   [--debug]`;
 
-const KNOWN_COMMANDS = [
-  "create-tasks",
-  "refine-tasks",
-  "work-on-tasks",
-  "code-review",
-  "qa-tasks",
-  "pdr",
-  "sds",
-  "openapi-from-docs",
-  "order-tasks",
-];
+const EXPLAIN_HELP = `${EXPLAIN_USAGE}
+
+Explain routing decisions with candidates, health, capabilities, and provenance.
+Same flags as preview; add --debug to surface extra trace fields when available.
+`;
 
 const pad = (value: string, width: number): string => value.padEnd(width, " ");
 
@@ -76,14 +105,14 @@ const formatTable = (headers: string[], rows: string[][]): string => {
 };
 
 const parseDefaultsArgs = (argv: string[]): DefaultsArgs => {
-  const args: DefaultsArgs = { workspace: undefined, set: {}, reset: [], list: false, json: false };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === "--help" || arg === "-h") {
-      // eslint-disable-next-line no-console
-      console.log(DEFAULTS_USAGE);
-      process.exit(0);
-    }
+    const args: DefaultsArgs = { workspace: undefined, set: {}, reset: [], list: false, json: false };
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i];
+      if (arg === "--help" || arg === "-h") {
+        // eslint-disable-next-line no-console
+        console.log(DEFAULTS_HELP);
+        process.exit(0);
+      }
     if (arg === "--workspace") {
       args.workspace = argv[i + 1];
       i += 1;
@@ -154,7 +183,7 @@ const parsePreviewArgs = (argv: string[]): PreviewArgs => {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       // eslint-disable-next-line no-console
-      console.log(PREVIEW_USAGE);
+      console.log(PREVIEW_HELP);
       process.exit(0);
     }
     if (arg === "--workspace") {
@@ -217,8 +246,8 @@ const validateCommandName = (routing: RoutingService, name?: string): string => 
   if (!name) {
     throw new Error("routing preview/explain requires --command.\n\n" + PREVIEW_USAGE);
   }
-  const normalized = routing.normalizeCommand(name);
-  const allowed = new Set(KNOWN_COMMANDS.map((c) => routing.normalizeCommand(c)));
+  const normalized = canonicalizeCommandName(name);
+  const allowed = new Set(getKnownCommands().map((c) => routing.normalizeCommand(c)));
   if (!allowed.has(normalized)) {
     throw new Error(
       `Unknown command ${name}; must be one of: ${Array.from(allowed)
@@ -229,12 +258,31 @@ const validateCommandName = (routing: RoutingService, name?: string): string => 
   return normalized;
 };
 
+const normalizeValue = (value?: string): string | undefined =>
+  value ? value.trim().toLowerCase().replace(/[_\s]+/g, "-") : undefined;
+
 export class RoutingCommands {
   static async run(argv: string[]): Promise<void> {
     try {
       const [maybeSub, ...rest] = argv;
       let subcommand: Subcommand = "defaults";
       let tail = rest;
+      if (maybeSub === "--help" || maybeSub === "-h") {
+        // eslint-disable-next-line no-console
+        console.log(
+          [
+            "mcoda routing <defaults|preview|explain> [flags]",
+            "",
+            "Subcommands:",
+            "  defaults   List/update routing defaults (workspace + global)",
+            "  preview    Preview agent selection with routing provenance",
+            "  explain    Explain routing decision with candidates/health",
+            "",
+            "Use --help with each subcommand for detailed flags.",
+          ].join("\n"),
+        );
+        return;
+      }
       if (maybeSub && !maybeSub.startsWith("--")) {
         if (!["defaults", "preview", "explain"].includes(maybeSub)) {
           throw new Error(
@@ -277,8 +325,20 @@ export class RoutingCommands {
     const jobService = new JobService(workspace, undefined, { noTelemetry: args.noTelemetry });
     const commandRun = await jobService.startCommandRun("routing defaults");
     try {
+      const knownQa = getKnownQaProfiles().map((p) => normalizeValue(p));
+      const knownDocdex = getKnownDocdexScopes().map((p) => normalizeValue(p));
+      if (args.qaProfile && knownQa.length && !knownQa.includes(normalizeValue(args.qaProfile))) {
+        throw new Error(
+          `Unknown QA profile ${args.qaProfile}; allowed values: ${knownQa.filter(Boolean).join(", ")}`,
+        );
+      }
+      if (args.docdexScope && knownDocdex.length && !knownDocdex.includes(normalizeValue(args.docdexScope))) {
+        throw new Error(
+          `Unknown docdex scope ${args.docdexScope}; allowed values: ${knownDocdex.filter(Boolean).join(", ")}`,
+        );
+      }
       if (args.list) {
-        const defaults = await routing.getWorkspaceDefaults(workspace.workspaceId);
+        const defaults = await routing.getWorkspaceDefaults(workspace);
         const globalDefaults = await routing.getWorkspaceDefaults("__GLOBAL__");
         if (args.json) {
           // eslint-disable-next-line no-console
@@ -370,6 +430,11 @@ export class RoutingCommands {
 
   private static async runPreview(argv: string[], explain: boolean): Promise<void> {
     const args = parsePreviewArgs(argv);
+    if (argv.includes("--help") || argv.includes("-h")) {
+      // eslint-disable-next-line no-console
+      console.log(explain ? EXPLAIN_HELP : PREVIEW_HELP);
+      return;
+    }
     const routing = await RoutingService.create();
     const workspace = await this.resolveWorkspace(args.workspace);
     const commandName = validateCommandName(routing, args.command);
@@ -454,17 +519,29 @@ export class RoutingCommands {
           console.log(`Notes: ${resolved.routingPreview.notes}`);
         }
       }
-      await jobService.recordTokenUsage({
-        workspaceId: workspace.workspaceId,
-        commandRunId: commandRun.id,
-        commandName: explain ? "routing explain" : "routing preview",
-        agentId: resolved.agentId,
-        modelName: resolved.model,
-        tokensPrompt: 0,
-        tokensCompletion: 0,
-        timestamp: new Date().toISOString(),
-        metadata: { routing: resolved.routingPreview },
-      });
+      if (!args.noTelemetry) {
+        await jobService.recordTokenUsage({
+          workspaceId: workspace.workspaceId,
+          commandRunId: commandRun.id,
+          commandName: explain ? "routing explain" : "routing preview",
+          agentId: resolved.agentId,
+          modelName: resolved.model,
+          tokensPrompt: 0,
+          tokensCompletion: 0,
+          tokensTotal: 0,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            routing: resolved.routingPreview,
+            provenance: resolved.source,
+            requiredCapabilities: resolved.requiredCapabilities,
+            overrideAgent: args.agent,
+            qaProfile: resolved.qaProfile,
+            docdexScope: resolved.docdexScope,
+            taskType: args.taskType,
+            projectKey: args.project,
+          },
+        });
+      }
       await jobService.finishCommandRun(commandRun.id, "succeeded");
     } catch (error) {
       await jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);

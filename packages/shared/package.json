@@ -12,5 +12,8 @@
     "lint": "echo \"lint not configured\"",
     "test": "echo \"no tests yet\""
   },
+  "dependencies": {
+    "yaml": "^2.4.2"
+  },
   "license": "MIT"
 }

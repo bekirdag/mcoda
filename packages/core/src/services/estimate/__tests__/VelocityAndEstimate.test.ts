@@ -16,6 +16,7 @@ const createWorkspace = async () => {
     workspaceId: dir,
     mcodaDir: path.join(dir, ".mcoda"),
     id: dir,
+    legacyWorkspaceIds: [],
     workspaceDbPath: path.join(dir, ".mcoda", "mcoda.db"),
     globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
     config: {

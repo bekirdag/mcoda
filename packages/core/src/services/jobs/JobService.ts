@@ -575,9 +575,14 @@ export class JobService {
       }
       return false;
     }
-    if ((this.perRunTelemetryDisabled || this.envTelemetryDisabled || this.telemetryConfig?.optOut) && !this.telemetryRemoteWarningShown) {
+    if (
+      (this.perRunTelemetryDisabled || this.envTelemetryDisabled || this.telemetryConfig?.optOut) &&
+      !this.telemetryRemoteWarningShown
+    ) {
       // eslint-disable-next-line no-console
-      console.warn("Remote telemetry export disabled for this run (--no-telemetry/MCODA_TELEMETRY=off or opt-out). Local logging still enabled.");
+      console.warn(
+        "Remote telemetry export disabled for this run (--no-telemetry/MCODA_TELEMETRY=off or opt-out). Local logging still enabled unless telemetry.strict is set.",
+      );
       this.telemetryRemoteWarningShown = true;
     }
     return true;
