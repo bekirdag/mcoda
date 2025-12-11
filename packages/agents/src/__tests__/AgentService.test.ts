@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { beforeEach, afterEach, test } from "node:test";
+import { beforeEach, after, afterEach, test } from "node:test";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -10,6 +10,8 @@ import { CryptoHelper } from "@mcoda/shared";
 let repo: GlobalRepository;
 let service: AgentService;
 let dbPath: string;
+const originalSkipCliChecks = process.env.MCODA_SKIP_CLI_CHECKS;
+process.env.MCODA_SKIP_CLI_CHECKS = "1";
 
 beforeEach(async () => {
   dbPath = path.join(os.tmpdir(), `mcoda-agents-${Date.now()}-${Math.random()}.db`);
@@ -22,6 +24,10 @@ beforeEach(async () => {
 afterEach(async () => {
   await service.close();
   await fs.promises.unlink(dbPath).catch(() => {});
+});
+
+after(() => {
+  process.env.MCODA_SKIP_CLI_CHECKS = originalSkipCliChecks;
 });
 
 test("uses API adapter when secret is present", async () => {
@@ -66,6 +72,27 @@ test("CLI adapter works without stored secret", async () => {
   assert.equal(result.metadata?.mode, "cli");
 });
 
+test("CLI adapter reports unreachable health when binary is missing", async () => {
+  const agent = await repo.createAgent({
+    slug: "cli-health",
+    adapter: "codex-cli",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  const originalPath = process.env.PATH;
+  const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
+  process.env.MCODA_SKIP_CLI_CHECKS = "0";
+  process.env.PATH = "";
+  try {
+    const health = await service.healthCheck(agent.id);
+    assert.equal(health.status, "unreachable");
+    assert.match(String((health.details as any)?.reason ?? ""), /missing_cli|cli_error/);
+  } finally {
+    process.env.PATH = originalPath;
+    process.env.MCODA_SKIP_CLI_CHECKS = originalSkip;
+  }
+});
+
 test("local adapter is used when specified", async () => {
   const agent = await repo.createAgent({
     slug: "local",
@@ -99,9 +126,7 @@ test("falls back to local adapter when no secret and no CLI configured", async (
     capabilities: ["chat"],
     prompts: { jobPrompt: "job", characterPrompt: "character" },
   });
-  const result = await service.invoke(agent.id, { input: "hello" });
-  assert.equal(result.adapter, "local-model");
-  assert.equal(result.metadata?.authMode, "local");
+  await assert.rejects(() => service.invoke(agent.id, { input: "hello" }), /AUTH_REQUIRED/);
 });
 
 test("fills defaults when prompts are missing", async () => {

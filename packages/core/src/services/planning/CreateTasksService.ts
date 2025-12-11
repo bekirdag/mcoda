@@ -343,6 +343,9 @@ export class CreateTasksService {
     if ((this.repo as any).close) await this.repo.close();
     if ((this.jobService as any).close) await this.jobService.close();
     if ((this.workspaceRepo as any).close) await this.workspaceRepo.close();
+    if ((this.routingService as any).close) await this.routingService.close();
+    const docdex = this.docdex as any;
+    if (docdex?.close) await docdex.close();
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {

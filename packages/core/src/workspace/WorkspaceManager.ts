@@ -119,16 +119,16 @@ const looksLikeWorkspaceId = (value: string): boolean =>
 const migrateWorkspaceDbIds = async (workspace: WorkspaceResolution, legacyIds: string[]): Promise<void> => {
   if (!legacyIds.length) return;
   try {
-    const { WorkspaceRepository } = await import("@mcoda/db");
-    const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
-    const db = repo.getDb();
+    const { Connection } = await import("@mcoda/db");
+    const conn = await Connection.open(workspace.workspaceDbPath);
+    const db = conn.db;
     const placeholders = legacyIds.map(() => "?").join(",");
     const params = [workspace.workspaceId, ...legacyIds];
     const tables = ["jobs", "command_runs", "token_usage"];
     for (const table of tables) {
       await db.run(`UPDATE ${table} SET workspace_id = ? WHERE workspace_id IN (${placeholders})`, params);
     }
-    await repo.close();
+    await conn.close();
   } catch {
     /* best effort */
   }

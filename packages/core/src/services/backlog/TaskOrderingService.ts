@@ -242,6 +242,7 @@ export class TaskOrderingService {
     await maybeClose(this.agentService);
     await maybeClose(this.globalRepo);
     await maybeClose(this.docdex);
+    await maybeClose(this.routingService);
   }
 
   private async getProject(projectKey: string): Promise<ProjectRow | undefined> {

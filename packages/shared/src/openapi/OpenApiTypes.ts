@@ -10,6 +10,9 @@ export interface Agent {
   updatedAt: string;
   capabilities?: string[];
   health?: AgentHealth;
+  models?: AgentModel[];
+  prompts?: AgentPromptManifest;
+  auth?: AgentAuthMetadata;
 }
 
 export interface CreateAgentInput {
@@ -19,6 +22,7 @@ export interface CreateAgentInput {
   config?: Record<string, unknown>;
   capabilities?: string[];
   prompts?: AgentPromptManifest;
+  models?: AgentModel[];
 }
 
 export interface UpdateAgentInput {
@@ -27,11 +31,19 @@ export interface UpdateAgentInput {
   config?: Record<string, unknown>;
   capabilities?: string[];
   prompts?: AgentPromptManifest;
+  models?: AgentModel[];
 }
 
 export interface AgentCapability {
   agentId: string;
   capability: string;
+}
+
+export interface AgentModel {
+  agentId: string;
+  modelName: string;
+  isDefault?: boolean;
+  config?: Record<string, unknown>;
 }
 
 export interface AgentPromptManifest {
@@ -52,6 +64,10 @@ export interface AgentAuthMetadata {
 
 export interface AgentAuthSecret extends AgentAuthMetadata {
   encryptedSecret: string;
+}
+
+export interface AgentAuthRequest {
+  secret: string;
 }
 
 export type UpdateChannel = "stable" | "beta" | "nightly";

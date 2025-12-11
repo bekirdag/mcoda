@@ -89,7 +89,8 @@ export class AgentService {
     const localAdapter = config?.localAdapter as string | undefined;
     let adapterType = agent.adapter;
 
-    if (adapterType.endsWith("-api") && !hasSecret) {
+    if (adapterType.endsWith("-api")) {
+      if (hasSecret) return adapterType;
       if (adapterType === "codex-api") {
         adapterType = "codex-cli";
       } else if (adapterType === "gemini-api") {
@@ -97,9 +98,11 @@ export class AgentService {
       } else if (cliAdapter && CLI_BASED_ADAPTERS.has(cliAdapter)) {
         adapterType = cliAdapter;
       } else if (localAdapter) {
-        adapterType = localAdapter;
+        throw new Error(
+          `AUTH_REQUIRED: API credentials missing for adapter ${adapterType}; configure cliAdapter (${localAdapter}) or provide credentials.`,
+        );
       } else {
-        adapterType = "local-model";
+        throw new Error(`AUTH_REQUIRED: API credentials missing for adapter ${adapterType}`);
       }
     }
     return adapterType;
@@ -130,10 +133,21 @@ export class AgentService {
 
   async healthCheck(agentId: string): Promise<AgentHealth> {
     const agent = await this.resolveAgent(agentId);
-    const adapter = await this.getAdapter(agent);
-    const result = await adapter.healthCheck();
-    await this.repo.setAgentHealth(result);
-    return result;
+    try {
+      const adapter = await this.getAdapter(agent);
+      const result = await adapter.healthCheck();
+      await this.repo.setAgentHealth(result);
+      return result;
+    } catch (error) {
+      const failure: AgentHealth = {
+        agentId: agent.id,
+        status: "unreachable",
+        lastCheckedAt: new Date().toISOString(),
+        details: { error: (error as Error).message },
+      };
+      await this.repo.setAgentHealth(failure);
+      return failure;
+    }
   }
 
   async invoke(agentId: string, request: InvocationRequest): Promise<InvocationResult> {

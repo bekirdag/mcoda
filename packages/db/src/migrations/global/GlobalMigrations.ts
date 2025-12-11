@@ -79,6 +79,22 @@ export class GlobalMigrations {
         payload_json TEXT,
         result_json TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS token_usage (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        command_run_id TEXT REFERENCES command_runs(id) ON DELETE SET NULL,
+        model_name TEXT,
+        tokens_prompt INTEGER,
+        tokens_completion INTEGER,
+        tokens_total INTEGER,
+        cost_estimate REAL,
+        duration_seconds REAL,
+        timestamp TEXT NOT NULL,
+        metadata_json TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_token_usage_command_run_id ON token_usage(command_run_id);
     `);
 
     const workspaceDefaultsInfo = await db.all<any[]>("PRAGMA table_info(workspace_defaults)");

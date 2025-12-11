@@ -5,6 +5,7 @@ import {
   AgentAuthMetadata,
   AgentAuthSecret,
   AgentHealth,
+  AgentModel,
   AgentPromptManifest,
   CreateAgentInput,
   UpdateAgentInput,
@@ -38,6 +39,19 @@ export interface GlobalCommandRun extends GlobalCommandRunInsert {
   id: string;
   completedAt?: string | null;
   result?: Record<string, unknown>;
+}
+
+export interface GlobalTokenUsageInsert {
+  agentId?: string | null;
+  commandRunId?: string | null;
+  modelName?: string | null;
+  tokensPrompt?: number | null;
+  tokensCompletion?: number | null;
+  tokensTotal?: number | null;
+  costEstimate?: number | null;
+  durationSeconds?: number | null;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
 }
 
 export class GlobalRepository {
@@ -96,6 +110,9 @@ export class GlobalRepository {
     if (input.capabilities) {
       await this.setAgentCapabilities(id, input.capabilities);
     }
+    if (input.models) {
+      await this.setAgentModels(id, input.models);
+    }
     if (input.prompts) {
       await this.setAgentPrompts(id, { ...input.prompts, agentId: id });
     }
@@ -126,6 +143,9 @@ export class GlobalRepository {
     if (patch.capabilities) {
       await this.setAgentCapabilities(id, patch.capabilities);
     }
+    if (patch.models) {
+      await this.setAgentModels(id, patch.models);
+    }
     if (patch.prompts) {
       await this.setAgentPrompts(id, { ...patch.prompts, agentId: id });
     }
@@ -153,6 +173,34 @@ export class GlobalRepository {
       agentId,
     );
     return rows.map((r: any) => r.capability as string);
+  }
+
+  async setAgentModels(agentId: string, models: AgentModel[]): Promise<void> {
+    await this.db.run("DELETE FROM agent_models WHERE agent_id = ?", agentId);
+    for (const model of models) {
+      await this.db.run(
+        "INSERT INTO agent_models (agent_id, model_name, is_default, config_json) VALUES (?, ?, ?, ?)",
+        agentId,
+        model.modelName,
+        model.isDefault ? 1 : 0,
+        model.config ? JSON.stringify(model.config) : null,
+      );
+    }
+  }
+
+  async getAgentModels(agentId: string): Promise<AgentModel[]> {
+    const rows = await this.db.all(
+      "SELECT agent_id, model_name, is_default, config_json FROM agent_models WHERE agent_id = ? ORDER BY model_name ASC",
+      agentId,
+    );
+    return rows.map(
+      (row: any): AgentModel => ({
+        agentId: row.agent_id,
+        modelName: row.model_name,
+        isDefault: Boolean(row.is_default),
+        config: row.config_json ? (JSON.parse(row.config_json) as Record<string, unknown>) : undefined,
+      }),
+    );
   }
 
   async setAgentPrompts(agentId: string, prompts: AgentPromptManifest): Promise<void> {
@@ -394,6 +442,27 @@ export class GlobalRepository {
       update.errorSummary ?? null,
       update.result ? JSON.stringify(update.result) : null,
       id,
+    );
+  }
+
+  async recordTokenUsage(entry: GlobalTokenUsageInsert): Promise<void> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO token_usage (
+        id, agent_id, command_run_id, model_name, tokens_prompt, tokens_completion, tokens_total,
+        cost_estimate, duration_seconds, timestamp, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      entry.agentId ?? null,
+      entry.commandRunId ?? null,
+      entry.modelName ?? null,
+      entry.tokensPrompt ?? null,
+      entry.tokensCompletion ?? null,
+      entry.tokensTotal ?? null,
+      entry.costEstimate ?? null,
+      entry.durationSeconds ?? null,
+      entry.timestamp,
+      entry.metadata ? JSON.stringify(entry.metadata) : null,
     );
   }
 }

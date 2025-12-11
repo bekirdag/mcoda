@@ -28,6 +28,10 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
     adapter: "openai-api",
     defaultModel: "gpt-4o",
     capabilities: ["plan", "code_write"],
+    models: [
+      { agentId: "ignored", modelName: "gpt-4o", isDefault: true },
+      { agentId: "ignored", modelName: "gpt-4.1-mini", isDefault: false },
+    ],
     prompts: { jobPrompt: "job", characterPrompt: "character" },
   });
   assert.equal(created.slug, "test-agent");
@@ -41,6 +45,10 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
 
   const prompts = await repo.getAgentPrompts(created.id);
   assert.equal(prompts?.jobPrompt, "job");
+
+  const models = await repo.getAgentModels(created.id);
+  assert.equal(models.length, 2);
+  assert.equal(models[0]?.agentId, created.id);
 
   await repo.updateAgent(created.id, { defaultModel: "gpt-4.1-mini" });
   const updated = await repo.getAgentById(created.id);
@@ -69,4 +77,33 @@ test("stores auth metadata and health records", async () => {
   await repo.setAgentHealth(health);
   const storedHealth = await repo.getAgentHealth(created.id);
   assert.equal(storedHealth?.status, "healthy");
+});
+
+test("records command runs and token usage", async () => {
+  const created = await repo.createAgent({ slug: "telemetry-agent", adapter: "codex-cli" });
+  const run = await repo.createCommandRun({
+    commandName: "agent.test",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    payload: { agentId: created.id },
+  });
+  await repo.recordTokenUsage({
+    agentId: created.id,
+    commandRunId: run.id,
+    modelName: "test-model",
+    tokensPrompt: 0,
+    tokensCompletion: 0,
+    tokensTotal: 0,
+    timestamp: new Date().toISOString(),
+    metadata: { reason: "test" },
+  });
+  await repo.completeCommandRun(run.id, {
+    status: "succeeded",
+    completedAt: new Date().toISOString(),
+  });
+
+  const runs = await (repo as any).db.all("SELECT command_name FROM command_runs WHERE id = ?", run.id);
+  assert.equal(runs.length, 1);
+  const usage = await (repo as any).db.all("SELECT agent_id FROM token_usage WHERE command_run_id = ?", run.id);
+  assert.equal(usage.length, 1);
 });

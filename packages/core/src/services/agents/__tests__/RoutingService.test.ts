@@ -46,9 +46,15 @@ class StubRoutingApi {
 
   async updateWorkspaceDefaults(workspaceId: string, defaults: any) {
     const map = new Map<string, string>();
-    (defaults as any[]).forEach((d) => {
-      if (d.agentId) map.set(d.commandName, d.agentId);
-    });
+    if (Array.isArray(defaults)) {
+      defaults.forEach((d) => {
+        if (d.agentId) map.set(d.commandName, d.agentId);
+      });
+    } else if (defaults?.set) {
+      Object.entries(defaults.set as Record<string, string>).forEach(([commandName, agentId]) => {
+        map.set(commandName, agentId);
+      });
+    }
     this.defaults.set(workspaceId, map);
     return defaults;
   }
@@ -178,16 +184,18 @@ test("skips unhealthy or incapable agents and falls back", async () => {
   routingApi.agents.set("a2", agent("a2", "agent2"));
   agents.register(agent("a1", "agent1"));
   agents.register(agent("a2", "agent2"));
-  routingApi.health.set("a2", { agentId: "a2", status: "healthy", lastCheckedAt: "t" } as any);
-  routingApi.defaults.set("__GLOBAL__", new Map([["code-review", "a2"]]));
+  routingApi.health.set("a2", { agentId: "a2", status: "unreachable", lastCheckedAt: "t" } as any);
+  routingApi.health.set("a1", { agentId: "a1", status: "healthy", lastCheckedAt: "t" } as any);
+  routingApi.defaults.set("__GLOBAL__", new Map([["code-review", "a2"], ["default", "a1"]]));
   agents.capabilities.set("a2", ["code_review"]);
+  agents.capabilities.set("a1", ["code_review"]);
   const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
 
   const resolved = await service.resolveAgentForCommand({
     workspace: workspace as any,
     commandName: "code-review",
   });
-  assert.equal(resolved.agentId, "a2");
+  assert.equal(resolved.agentId, "a1");
   assert.equal(resolved.source, "global_default");
   assert.equal(resolved.healthStatus, "healthy");
 });

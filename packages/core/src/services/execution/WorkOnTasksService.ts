@@ -175,6 +175,8 @@ export class WorkOnTasksService {
     await maybeClose(this.deps.jobService);
     await maybeClose(this.deps.repo);
     await maybeClose(this.deps.workspaceRepo);
+    await maybeClose(this.deps.routingService);
+    await maybeClose(this.deps.docdex);
   }
 
   private async resolveAgent(agentName?: string) {

@@ -176,6 +176,7 @@ export class QaTasksService {
     await maybeClose(this.agentService);
     await maybeClose(this.repo);
     await maybeClose(this.docdex);
+    await maybeClose(this.deps.routingService);
   }
 
   private async checkpoint(jobId: string, stage: string, details?: Record<string, unknown>): Promise<void> {

@@ -7,7 +7,7 @@ import {
   UpdateAgentInput,
   CryptoHelper,
 } from "@mcoda/shared";
-import { GlobalRepository } from "@mcoda/db";
+import { GlobalCommandRun, GlobalRepository } from "@mcoda/db";
 import { AgentService } from "@mcoda/agents";
 import { RoutingService } from "../services/agents/RoutingService.js";
 
@@ -16,6 +16,7 @@ export interface AgentResponse extends Agent {
   prompts?: AgentPromptManifest;
   health?: AgentHealth;
   auth?: AgentAuthMetadata;
+  models?: Agent["models"];
 }
 
 export class AgentsApi {
@@ -39,16 +40,51 @@ export class AgentsApi {
     return this.agentService.resolveAgent(idOrSlug);
   }
 
+  private async withCommandRun<T>(
+    commandName: string,
+    payload: Record<string, unknown> | undefined,
+    fn: (run: GlobalCommandRun) => Promise<T>,
+  ): Promise<T> {
+    const run = await this.repo.createCommandRun({
+      commandName,
+      startedAt: new Date().toISOString(),
+      status: "running",
+      payload,
+    });
+    try {
+      const result = await fn(run);
+      await this.repo.completeCommandRun(run.id, {
+        status: "succeeded",
+        completedAt: new Date().toISOString(),
+        exitCode: 0,
+        result: payload ? { payload, output: result } : { output: result },
+      });
+      return result;
+    } catch (error) {
+      await this.repo.completeCommandRun(run.id, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        exitCode: 1,
+        errorSummary: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
   async listAgents(): Promise<AgentResponse[]> {
     const agents = await this.repo.listAgents();
     const health = await this.repo.listAgentHealthSummary();
     const healthById = new Map(health.map((h) => [h.agentId, h]));
     const results: AgentResponse[] = [];
     for (const agent of agents) {
-      const capabilities = await this.repo.getAgentCapabilities(agent.id);
+      const [capabilities, models] = await Promise.all([
+        this.repo.getAgentCapabilities(agent.id),
+        this.repo.getAgentModels(agent.id),
+      ]);
       results.push({
         ...agent,
         capabilities,
+        models,
         health: healthById.get(agent.id),
       });
     }
@@ -56,27 +92,38 @@ export class AgentsApi {
   }
 
   async createAgent(input: CreateAgentInput): Promise<AgentResponse> {
-    const agent = await this.repo.createAgent(input);
-    const capabilities = await this.repo.getAgentCapabilities(agent.id);
-    return { ...agent, capabilities };
+    return this.withCommandRun("agent.add", { slug: input.slug, adapter: input.adapter }, async () => {
+      const agent = await this.repo.createAgent(input);
+      const [capabilities, models] = await Promise.all([
+        this.repo.getAgentCapabilities(agent.id),
+        this.repo.getAgentModels(agent.id),
+      ]);
+      return { ...agent, capabilities, models };
+    });
   }
 
   async getAgent(idOrSlug: string): Promise<AgentResponse> {
     const agent = await this.resolveAgent(idOrSlug);
-    const [capabilities, prompts, health, auth] = await Promise.all([
+    const [capabilities, prompts, health, auth, models] = await Promise.all([
       this.repo.getAgentCapabilities(agent.id),
       this.repo.getAgentPrompts(agent.id),
       this.repo.getAgentHealth(agent.id),
       this.repo.getAgentAuthMetadata(agent.id),
+      this.repo.getAgentModels(agent.id),
     ]);
-    return { ...agent, capabilities, prompts, health, auth };
+    return { ...agent, capabilities, prompts, health, auth, models };
   }
 
   async updateAgent(idOrSlug: string, patch: UpdateAgentInput): Promise<AgentResponse> {
     const agent = await this.resolveAgent(idOrSlug);
-    const updated = await this.repo.updateAgent(agent.id, patch);
-    const capabilities = await this.repo.getAgentCapabilities(agent.id);
-    return { ...(updated as Agent), capabilities };
+    return this.withCommandRun("agent.update", { id: agent.id, patch }, async () => {
+      const updated = await this.repo.updateAgent(agent.id, patch);
+      const [capabilities, models] = await Promise.all([
+        this.repo.getAgentCapabilities(agent.id),
+        this.repo.getAgentModels(agent.id),
+      ]);
+      return { ...(updated as Agent), capabilities, models };
+    });
   }
 
   async deleteAgent(idOrSlug: string, force = false): Promise<void> {
@@ -84,20 +131,26 @@ export class AgentsApi {
     if (!force) {
       const refs = await this.repo.findWorkspaceReferences(agent.id);
       if (refs.length > 0) {
-        const details = refs.map((r) => `${r.workspaceId}:${r.commandName}`).join(", ");
+        const details = refs
+          .map((r) => `${r.workspaceId === "__GLOBAL__" ? "global" : r.workspaceId}:${r.commandName}`)
+          .join(", ");
         throw new Error(
-          `Agent is referenced by workspace defaults (${details}); re-run with --force to delete`,
+          `Agent is referenced by routing defaults (${details}); re-run with --force to delete`,
         );
       }
     }
-    await this.repo.deleteAgent(agent.id);
+    await this.withCommandRun("agent.delete", { id: agent.id, slug: agent.slug }, async () => {
+      await this.repo.deleteAgent(agent.id);
+    });
   }
 
   async setAgentAuth(idOrSlug: string, secret: string): Promise<AgentAuthMetadata> {
     const agent = await this.resolveAgent(idOrSlug);
-    const encrypted = await CryptoHelper.encryptSecret(secret);
-    await this.repo.setAgentAuth(agent.id, encrypted);
-    return this.repo.getAgentAuthMetadata(agent.id);
+    return this.withCommandRun("agent.auth.set", { id: agent.id }, async () => {
+      const encrypted = await CryptoHelper.encryptSecret(secret);
+      await this.repo.setAgentAuth(agent.id, encrypted);
+      return this.repo.getAgentAuthMetadata(agent.id);
+    });
   }
 
   async getAgentPrompts(idOrSlug: string): Promise<AgentPromptManifest | undefined> {
@@ -107,7 +160,20 @@ export class AgentsApi {
 
   async testAgent(idOrSlug: string): Promise<AgentHealth> {
     const agent = await this.resolveAgent(idOrSlug);
-    return this.agentService.healthCheck(agent.id);
+    return this.withCommandRun("agent.test", { id: agent.id, slug: agent.slug }, async (run) => {
+      const health = await this.agentService.healthCheck(agent.id);
+      await this.repo.recordTokenUsage({
+        agentId: agent.id,
+        commandRunId: run.id,
+        modelName: agent.defaultModel,
+        tokensPrompt: 0,
+        tokensCompletion: 0,
+        tokensTotal: 0,
+        timestamp: new Date().toISOString(),
+        metadata: { reason: "agent.test", healthStatus: health.status },
+      });
+      return health;
+    });
   }
 
   async setDefaultAgent(
@@ -116,6 +182,8 @@ export class AgentsApi {
     commandName = "default",
   ): Promise<void> {
     const agent = await this.resolveAgent(idOrSlug);
-    await this.routingService.updateWorkspaceDefaults(workspaceId, { set: { [commandName]: agent.slug } });
+    await this.withCommandRun("agent.set-default", { workspaceId, commandName, agent: agent.slug }, async () => {
+      await this.routingService.updateWorkspaceDefaults(workspaceId, { set: { [commandName]: agent.slug } });
+    });
   }
 }

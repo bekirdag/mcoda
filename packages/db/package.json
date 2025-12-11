@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
-    "test": "node --test --loader ts-node/esm src/__tests__/**/*.ts"
+    "test": "pnpm run build && node --test dist/__tests__/**/*.js"
   },
   "dependencies": {
     "@mcoda/shared": "workspace:*",

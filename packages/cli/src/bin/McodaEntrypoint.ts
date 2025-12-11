@@ -15,6 +15,7 @@ import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
 import { QaTasksCommand } from "../commands/planning/QaTasksCommand.js";
 import { UpdateCommands } from "../commands/update/UpdateCommands.js";
 import { RoutingCommands } from "../commands/routing/RoutingCommands.js";
+import { TestAgentCommand } from "../commands/agents/TestAgentCommand.js";
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -30,6 +31,10 @@ export class McodaEntrypoint {
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
+      return;
+    }
+    if (command === "test-agent") {
+      await TestAgentCommand.run(rest);
       return;
     }
     if (command === "routing") {

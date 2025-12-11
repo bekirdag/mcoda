@@ -155,6 +155,8 @@ export class RefineTasksService {
     await tryClose(this.repo);
     await tryClose(this.jobService);
     await tryClose(this.workspaceRepo);
+    await tryClose(this.routingService);
+    await tryClose(this.docdex);
   }
 
   private async resolveAgent(agentName?: string) {

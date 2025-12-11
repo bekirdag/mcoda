@@ -1,4 +1,4 @@
-import { AgentsApi, AgentResponse } from "@mcoda/core";
+import { AgentsApi, AgentResponse, WorkspaceResolver } from "@mcoda/core";
 import readline from "node:readline";
 
 interface ParsedArgs {
@@ -31,29 +31,6 @@ const parseArgs = (argv: string[]): ParsedArgs => {
   return { flags, positionals };
 };
 
-const printAgentsTable = (agents: AgentResponse[]): void => {
-  if (agents.length === 0) {
-    // eslint-disable-next-line no-console
-    console.log("No agents found.");
-    return;
-  }
-  // eslint-disable-next-line no-console
-  console.log(
-    "| slug | adapter | default_model | capabilities | health_status | last_checked_at |",
-  );
-  // eslint-disable-next-line no-console
-  console.log("| --- | --- | --- | --- | --- | --- |");
-  for (const agent of agents) {
-    const capabilities = agent.capabilities.join(",");
-    const health = agent.health?.status ?? "unknown";
-    const checked = agent.health?.lastCheckedAt ?? "";
-    // eslint-disable-next-line no-console
-    console.log(
-      `| ${agent.slug} | ${agent.adapter} | ${agent.defaultModel ?? ""} | ${capabilities} | ${health} | ${checked} |`,
-    );
-  }
-};
-
 const readSecret = async (promptText: string): Promise<string> =>
   new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -66,11 +43,59 @@ const readSecret = async (promptText: string): Promise<string> =>
     });
   });
 
+const USAGE = `
+Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|use> ...
+
+Subcommands:
+  list                       List agents (supports --json)
+  add <NAME>                 Create a global agent
+    --adapter <TYPE>         Adapter slug (openai-api|codex-cli|gemini-cli|local-model|qa-cli)
+    --model <MODEL>          Default model name
+    --capability <CAP>       Repeatable capabilities to attach
+    --job-path <PATH>        Optional job prompt path
+    --character-path <PATH>  Optional character prompt path
+  update <NAME>              Update adapter/model/capabilities/prompts for an agent
+  delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
+    --force                  Force deletion even if referenced
+  auth set <NAME>            Store credentials (use --api-key or interactive prompt)
+    --api-key <KEY>          API key/token
+  auth-status <NAME>         Show redacted auth status (supports --json)
+  set-default|use <NAME>     Set workspace default agent (use --workspace to override detection)
+    --workspace <PATH>       Workspace root to bind defaults
+  --json                     Emit JSON for supported commands
+  --help                     Show this help
+`.trim();
+
+const parseCapabilities = (value: string | string[] | boolean | undefined): string[] | undefined => {
+  if (value === undefined) return undefined;
+  const arr = Array.isArray(value) ? value : [value];
+  return arr.filter((item): item is string => typeof item === "string");
+};
+
+const parsePrompts = (flags: Record<string, any>) => {
+  const prompts: Record<string, string> = {};
+  if (flags["job-path"]) prompts.jobPath = String(flags["job-path"]);
+  if (flags["character-path"]) prompts.characterPath = String(flags["character-path"]);
+  return Object.keys(prompts).length ? prompts : undefined;
+};
+
+const formatAgentRow = (agent: AgentResponse): string =>
+  [
+    agent.slug,
+    agent.adapter,
+    agent.defaultModel ?? "",
+    (agent.capabilities ?? []).join(","),
+    agent.health?.status ?? "unknown",
+    agent.health?.lastCheckedAt ?? "",
+  ].join(" | ");
+
 export class AgentsCommands {
   static async run(argv: string[]): Promise<void> {
-    const [subcommand, ...rest] = argv;
-    if (!subcommand) {
-      throw new Error("Usage: mcoda agent <list|add|update|delete|auth|auth-status|set-default> ...");
+    const [rawSubcommand, ...rest] = argv;
+    const subcommand =
+      rawSubcommand === "use" ? "set-default" : rawSubcommand === "remove" ? "delete" : rawSubcommand;
+    if (!subcommand || rest.includes("--help")) {
+      throw new Error(USAGE);
     }
 
     const api = await AgentsApi.create();
@@ -83,24 +108,33 @@ export class AgentsCommands {
             // eslint-disable-next-line no-console
             console.log(JSON.stringify(agents, null, 2));
           } else {
-            printAgentsTable(agents);
+            if (agents.length === 0) {
+              // eslint-disable-next-line no-console
+              console.log("No agents found.");
+            } else {
+              // eslint-disable-next-line no-console
+              console.log("| slug | adapter | default_model | capabilities | health | last_checked_at |");
+              // eslint-disable-next-line no-console
+              console.log("| --- | --- | --- | --- | --- | --- |");
+              agents.forEach((agent) => {
+                // eslint-disable-next-line no-console
+                console.log(`| ${formatAgentRow(agent)} |`);
+              });
+            }
           }
           break;
         }
         case "add": {
           const name = parsed.positionals[0];
-          if (!name) throw new Error("agent add requires a slug/name");
-          const capabilities = parsed.flags.capability
-            ? (Array.isArray(parsed.flags.capability)
-                ? parsed.flags.capability
-                : [parsed.flags.capability]
-              ).filter((value): value is string => typeof value === "string")
-            : [];
+          if (!name) throw new Error("agent add requires a slug/name\n\n" + USAGE);
+          const capabilities = parseCapabilities(parsed.flags.capability) ?? [];
+          const prompts = parsePrompts(parsed.flags);
           const agent = await api.createAgent({
             slug: name,
             adapter: String(parsed.flags.adapter ?? "openai-api"),
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             capabilities,
+            prompts,
           });
           // eslint-disable-next-line no-console
           console.log(`Created agent ${agent.slug}`);
@@ -108,17 +142,14 @@ export class AgentsCommands {
         }
         case "update": {
           const name = parsed.positionals[0];
-          if (!name) throw new Error("agent update requires a slug/name");
-          const capabilities = parsed.flags.capability
-            ? (Array.isArray(parsed.flags.capability)
-                ? parsed.flags.capability
-                : [parsed.flags.capability]
-              ).filter((value): value is string => typeof value === "string")
-            : undefined;
+          if (!name) throw new Error("agent update requires a slug/name\n\n" + USAGE);
+          const capabilities = parseCapabilities(parsed.flags.capability);
+          const prompts = parsePrompts(parsed.flags);
           const agent = await api.updateAgent(name, {
             adapter: parsed.flags.adapter ? String(parsed.flags.adapter) : undefined,
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             capabilities,
+            prompts,
           });
           // eslint-disable-next-line no-console
           console.log(`Updated agent ${agent.slug}`);
@@ -126,7 +157,7 @@ export class AgentsCommands {
         }
         case "delete": {
           const name = parsed.positionals[0];
-          if (!name) throw new Error("agent delete requires a slug/name");
+          if (!name) throw new Error("agent delete requires a slug/name\n\n" + USAGE);
           const force = Boolean(parsed.flags.force);
           await api.deleteAgent(name, force);
           // eslint-disable-next-line no-console
@@ -153,30 +184,38 @@ export class AgentsCommands {
           const name = parsed.positionals[0];
           if (!name) throw new Error("Usage: mcoda agent auth-status <NAME>");
           const agent = await api.getAgent(name);
-          // eslint-disable-next-line no-console
-          console.log(
-            JSON.stringify(
-              {
-                slug: agent.slug,
-                configured: agent.auth?.configured ?? false,
-                lastUpdatedAt: agent.auth?.lastUpdatedAt,
-                lastVerifiedAt: agent.auth?.lastVerifiedAt,
-              },
-              null,
-              2,
-            ),
-          );
+          const payload = {
+            slug: agent.slug,
+            adapter: agent.adapter,
+            configured: agent.auth?.configured ?? false,
+            lastUpdatedAt: agent.auth?.lastUpdatedAt,
+            lastVerifiedAt: agent.auth?.lastVerifiedAt,
+          };
+          if (parsed.flags.json) {
+            // eslint-disable-next-line no-console
+            console.log(JSON.stringify(payload, null, 2));
+          } else {
+            // eslint-disable-next-line no-console
+            console.log("| slug | adapter | configured | lastUpdatedAt | lastVerifiedAt |");
+            // eslint-disable-next-line no-console
+            console.log("| --- | --- | --- | --- | --- |");
+            // eslint-disable-next-line no-console
+            console.log(
+              `| ${payload.slug} | ${payload.adapter} | ${payload.configured} | ${payload.lastUpdatedAt ?? ""} | ${payload.lastVerifiedAt ?? ""} |`,
+            );
+          }
           break;
         }
         case "set-default": {
           const name = parsed.positionals[0];
           if (!name) throw new Error("Usage: mcoda agent set-default <NAME> [--workspace <path>]");
-          const workspace = parsed.flags.workspace
-            ? String(parsed.flags.workspace)
-            : "__GLOBAL__";
-          await api.setDefaultAgent(name, workspace);
+          const workspace = await WorkspaceResolver.resolveWorkspace({
+            cwd: process.cwd(),
+            explicitWorkspace: parsed.flags.workspace ? String(parsed.flags.workspace) : undefined,
+          });
+          await api.setDefaultAgent(name, workspace.workspaceId);
           // eslint-disable-next-line no-console
-          console.log(`Default agent set to ${name} for workspace ${workspace}`);
+          console.log(`Default agent set to ${name} for workspace ${workspace.workspaceRoot}`);
           break;
         }
         default:
