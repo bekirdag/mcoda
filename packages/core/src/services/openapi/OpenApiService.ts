@@ -19,6 +19,7 @@ export interface GenerateOpenapiOptions {
   validateOnly?: boolean;
   cliVersion: string;
   onToken?: (token: string) => void;
+  projectKey?: string;
 }
 
 export interface GenerateOpenapiResult {
@@ -108,7 +109,7 @@ const readGitBranch = async (workspaceRoot: string): Promise<string | undefined>
 };
 
 class OpenapiContextAssembler {
-  constructor(private docdex: DocdexClient, private workspace: WorkspaceResolution) {}
+  constructor(private docdex: DocdexClient, private workspace: WorkspaceResolution, private projectKey?: string) {}
 
   private summarize(doc: DocdexDocument): string {
     const text = doc.content ?? "";
@@ -190,11 +191,11 @@ class OpenapiContextAssembler {
     let docdexAvailable = true;
     try {
       const [sdsDocs, pdrDocs, rfpDocs, openapiDocs, schemaDocs] = await Promise.all([
-        this.docdex.search({ docType: "SDS", profile: "openapi" }),
-        this.docdex.search({ docType: "PDR", profile: "openapi" }),
-        this.docdex.search({ docType: "RFP", profile: "openapi" }),
-        this.docdex.search({ docType: "OPENAPI", profile: "openapi" }),
-        this.docdex.search({ docType: "Architecture", profile: "openapi" }),
+        this.docdex.search({ docType: "SDS", profile: "openapi", projectKey: this.projectKey }),
+        this.docdex.search({ docType: "PDR", profile: "openapi", projectKey: this.projectKey }),
+        this.docdex.search({ docType: "RFP", profile: "openapi", projectKey: this.projectKey }),
+        this.docdex.search({ docType: "OPENAPI", profile: "openapi", projectKey: this.projectKey }),
+        this.docdex.search({ docType: "Architecture", profile: "openapi", projectKey: this.projectKey }),
       ]);
       if (sdsDocs.length > 0) {
         blocks.push(this.formatBlock(sdsDocs[0], "SDS OpenAPI contract", 1, 8));
@@ -433,6 +434,7 @@ export class OpenApiService {
         workspace: this.workspace.workspaceId,
         branch,
         status: "canonical",
+        projectKey: (this.workspace.config as any)?.projectKey,
       },
     });
   }
@@ -454,7 +456,8 @@ export class OpenApiService {
     });
     const warnings: string[] = [];
     try {
-      const assembler = new OpenapiContextAssembler(this.docdex, this.workspace);
+      const projectKey = options.projectKey ?? (this.workspace.config as any)?.projectKey;
+      const assembler = new OpenapiContextAssembler(this.docdex, this.workspace, projectKey);
       const context = await assembler.build();
       warnings.push(...context.warnings);
       await this.jobService.writeCheckpoint(job.id, {
