@@ -20,6 +20,7 @@ export class WorkspaceMigrations {
       DROP TABLE IF EXISTS task_qa_runs;
       DROP TABLE IF EXISTS task_logs;
       DROP TABLE IF EXISTS task_runs;
+      DROP TABLE IF EXISTS task_revisions;
       DROP TABLE IF EXISTS tasks;
       DROP TABLE IF EXISTS user_stories;
       DROP TABLE IF EXISTS epics;

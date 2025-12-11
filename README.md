@@ -79,6 +79,7 @@ mcoda backlog --project WEB --order dependencies       # same core ordering
 - Execution: `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
 - Docs/spec: `mcoda docs pdr generate`, `mcoda docs sds generate`, `mcoda openapi-from-docs`
 - Telemetry: `mcoda tokens`, `mcoda telemetry`, `mcoda job ...`
+- Workspace bootstrap: `mcoda set-workspace [--workspace-root <path>] [--no-git] [--no-docdex]` (creates `.mcoda`, seeds the SQLite DB, trusts codex CLI, optional git init, and initializes docdex index when available)
 
 ## Update the CLI
 

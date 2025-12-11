@@ -44,28 +44,20 @@ const fileExists = async (candidate: string): Promise<boolean> => {
 };
 
 const findGitRoot = async (start: string): Promise<string | undefined> => {
-  let current = path.resolve(start);
-  while (true) {
-    const gitPath = path.join(current, ".git");
-    if (await fileExists(gitPath)) return current;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
+  // Only consider the provided directory; do not walk upward.
+  const current = path.resolve(start);
+  const gitPath = path.join(current, ".git");
+  if (await fileExists(gitPath)) return current;
   return undefined;
 };
 
 const findWorkspaceMarker = async (start: string): Promise<string | undefined> => {
-  let current = path.resolve(start);
-  while (true) {
-    const marker = path.join(current, ".mcoda", "workspace.json");
-    const mcoda = path.join(current, ".mcoda");
-    if (await fileExists(marker)) return current;
-    if (await fileExists(mcoda)) return current;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
+  // Only consider the provided directory; do not walk upward.
+  const current = path.resolve(start);
+  const marker = path.join(current, ".mcoda", "workspace.json");
+  const mcoda = path.join(current, ".mcoda");
+  if (await fileExists(marker)) return current;
+  if (await fileExists(mcoda)) return current;
   return undefined;
 };
 

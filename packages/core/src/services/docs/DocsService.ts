@@ -120,17 +120,19 @@ const readPromptIfExists = async (workspace: WorkspaceResolution, relative: stri
 
 const validateDraft = (draft: string): boolean => {
   if (!draft || draft.trim().length < 50) return false;
-  const required = [
-    "Introduction",
-    "Scope",
-    "Requirements",
-    "Architecture",
-    "Interfaces",
-    "Non-Functional",
-    "Risks",
-    "Open Questions",
+  const required: string[][] = [
+    ["Introduction"],
+    ["Scope"],
+    ["Requirements", "Requirements & Constraints"],
+    ["Architecture", "Architecture Overview"],
+    ["Interfaces", "Interfaces / APIs"],
+    ["Non-Functional", "Non-Functional Requirements"],
+    ["Risks", "Risks & Mitigations"],
+    ["Open Questions"],
   ];
-  return required.every((section) => new RegExp(`^#{1,6}\\s+${section}\\b`, "im").test(draft));
+  return required.every((variants) =>
+    variants.some((section) => new RegExp(`^#{1,6}\\s+${section}\\b`, "im").test(draft)),
+  );
 };
 
 const validateSdsDraft = (draft: string): boolean => {
