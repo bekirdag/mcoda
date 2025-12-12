@@ -227,7 +227,11 @@ export class OrderTasksCommand {
       console.error(`order-tasks failed: ${(error as Error).message}`);
       process.exitCode = 1;
     } finally {
-      await service.close();
+      try {
+        await service.close();
+      } catch {
+        // ignore close errors (e.g., database already closed)
+      }
     }
   }
 }

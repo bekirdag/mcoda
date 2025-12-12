@@ -5,7 +5,7 @@ import { Pragmas } from "./pragmas.js";
 import path from "node:path";
 
 export class Connection {
-  constructor(private database: Database) {}
+  constructor(private database: Database, public readonly dbPath: string) {}
 
   get db(): Database {
     return this.database;
@@ -18,7 +18,7 @@ export class Connection {
       driver: sqlite3.Database,
     });
     await Pragmas.apply(database);
-    return new Connection(database);
+    return new Connection(database, dbPath);
   }
 
   static async openGlobal(): Promise<Connection> {

@@ -272,7 +272,11 @@ export class RefineTasksCommand {
       console.error(`refine-tasks failed: ${message}`);
       process.exitCode = 1;
     } finally {
-      await service.close();
+      try {
+        await service.close();
+      } catch {
+        // ignore close-time errors (e.g., db already closed)
+      }
     }
   }
 }

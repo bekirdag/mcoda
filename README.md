@@ -71,6 +71,30 @@ mcoda backlog --project WEB --order dependencies       # same core ordering
 - Flags: `--workspace-root <path>`, `--project <KEY>` (required), `--epic <KEY>`, `--status <STATUS_FILTER>`, `--include-blocked`, `--agent <NAME>`, `--agent-stream <true|false>`, `--json`.
 - Behavior: topo order over `task_dependencies`, ties by dependency impact → priority → SP → age → status; blocked tasks are listed separately unless `--include-blocked` is set. Updates `priority` across tasks, stories, and epics in the scoped project.
 
+## Create tasks (plan files + DB), then migrate
+
+- Generate epics/stories/tasks from SDS/OpenAPI into JSON plan files (and attempt DB insert):
+
+```sh
+mcoda create-tasks \
+  --workspace-root . \
+  --project TODO \
+  --agent openai \
+  --doc .mcoda/docs/sds/todo.md \
+  --openapi openapi/mcoda.yaml
+```
+
+Writes plan artifacts to `.mcoda/tasks/<PROJECT>/plan.json` plus `epics.json`, `stories.json`, `tasks.json`. If the DB is busy, the files still persist for later import.
+
+- Import (or re-import) the plan into the workspace DB:
+
+```sh
+mcoda migrate-tasks --workspace-root . --project TODO --plan-dir .mcoda/tasks/TODO
+mcoda migrate-tasks --workspace-root . --project TODO --plan-dir .mcoda/tasks/TODO --force  # wipes and replaces epics/stories/tasks
+```
+
+`--force` deletes the project backlog (deps/runs/tasks/stories/epics) before inserting to avoid duplicates.
+
 ### Command list (partial)
 
 - Agents & routing: `mcoda agent ...`, `mcoda routing ...`

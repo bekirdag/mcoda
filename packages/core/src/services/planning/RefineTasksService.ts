@@ -737,22 +737,20 @@ export class RefineTasksService {
               const source = taskByKey.get(sourceKey);
               if (!source || source.key === target.key) continue;
               const before = { ...source };
+              const mergedMetadata = this.mergeMetadata(source.metadata, { merged_into: target.key });
               await this.workspaceRepo.updateTask(source.id, {
-                status: op.cancelSources === false ? source.status : "cancelled",
-                metadata: this.mergeMetadata(source.metadata, { merged_into: target.key }),
+                status: source.status, // do not cancel; requirement: no deletes/cancels
+                metadata: mergedMetadata,
               });
-              cancelled.push(source.key);
+              updated.push(source.key);
               await this.workspaceRepo.insertTaskRevision({
                 taskId: source.id,
                 jobId,
                 commandRunId,
                 snapshotBefore: before,
-                snapshotAfter: { ...before, status: op.cancelSources === false ? source.status : "cancelled" },
+                snapshotAfter: { ...before, metadata: mergedMetadata },
                 createdAt: new Date().toISOString(),
               });
-              if (op.cancelSources !== false) {
-                await this.workspaceRepo.deleteTaskDependenciesForTask(source.id);
-              }
             }
           } else if (op.op === "update_estimate") {
             const target = taskByKey.get(op.taskKey);
@@ -921,6 +919,11 @@ export class RefineTasksService {
   async refineTasks(options: RefineTasksOptions): Promise<RefineTasksResult> {
     const strategy = options.strategy ?? DEFAULT_STRATEGY;
     const agentStream = options.agentStream !== false;
+    await this.workspaceRepo.createProjectIfMissing({
+      key: options.projectKey,
+      name: options.projectKey,
+      description: `Workspace project ${options.projectKey}`,
+    });
     const commandRun = await this.jobService.startCommandRun("refine-tasks", options.projectKey, {
       taskIds: options.taskKeys,
     });

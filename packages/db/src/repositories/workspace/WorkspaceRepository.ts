@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { Database } from "sqlite";
 import { Connection } from "../../sqlite/connection.js";
 import { WorkspaceMigrations } from "../../migrations/workspace/WorkspaceMigrations.js";
@@ -244,7 +245,12 @@ export interface TaskReviewRow extends TaskReviewInsert {
 }
 
 export class WorkspaceRepository {
-  constructor(private db: Database, private connection?: Connection) {}
+  private static txLocks = new Map<string, Promise<void>>();
+  private workspaceKey: string;
+
+  constructor(private db: Database, private connection?: Connection) {
+    this.workspaceKey = connection?.dbPath ?? "workspace";
+  }
 
   static async create(cwd?: string): Promise<WorkspaceRepository> {
     const connection = await Connection.openWorkspace(cwd);
@@ -262,16 +268,64 @@ export class WorkspaceRepository {
     return this.db;
   }
 
-  async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
-    await this.db.exec("BEGIN IMMEDIATE");
+  private async serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const key = this.workspaceKey;
+    const prev = WorkspaceRepository.txLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    WorkspaceRepository.txLocks.set(
+      key,
+      prev
+        .catch(() => {
+          /* ignore */
+        })
+        .then(() => next),
+    );
     try {
       const result = await fn();
-      await this.db.exec("COMMIT");
       return result;
-    } catch (error) {
-      await this.db.exec("ROLLBACK");
-      throw error;
+    } finally {
+      release();
     }
+  }
+
+  async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    const MAX_RETRIES = 5;
+    const BASE_BACKOFF_MS = 200;
+    const run = async () => {
+      await this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const result = await fn();
+        await this.db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        await this.db.exec("ROLLBACK");
+        throw error;
+      }
+    };
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await this.serialize(run);
+      } catch (error) {
+        const message = (error as Error).message ?? "";
+        const isBusy = message.includes("SQLITE_BUSY") || message.includes("database is locked") || message.includes("busy");
+        if (!isBusy || attempt === MAX_RETRIES) {
+          if (isBusy && attempt === MAX_RETRIES) {
+            console.warn(
+              `Workspace DB is busy/locked after ${MAX_RETRIES} attempts for ${this.workspaceKey}. ` +
+                `If another mcoda command is running, please wait and retry.`,
+            );
+          }
+          throw error;
+        }
+        const backoff = BASE_BACKOFF_MS * attempt;
+        await delay(backoff);
+      }
+    }
+    // Should never reach here
+    return this.serialize(run);
   }
 
   async getProjectByKey(key: string): Promise<ProjectRow | undefined> {
@@ -462,6 +516,46 @@ export class WorkspaceRepository {
       taskId,
       taskId,
     );
+  }
+
+  async deleteProjectBacklog(projectId: string, useTransaction = true): Promise<void> {
+    const run = async () => {
+      // Remove task-related rows first to satisfy foreign keys.
+      await this.db.run(
+        `DELETE FROM task_dependencies WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+           OR depends_on_task_id IN (SELECT id FROM tasks WHERE project_id = ?)`,
+        projectId,
+        projectId,
+      );
+      await this.db.run(
+        `DELETE FROM task_runs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`,
+        projectId,
+      );
+      await this.db.run(
+        `DELETE FROM task_qa_runs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`,
+        projectId,
+      );
+      await this.db.run(
+        `DELETE FROM task_revisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`,
+        projectId,
+      );
+      await this.db.run(
+        `DELETE FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`,
+        projectId,
+      );
+      await this.db.run(
+        `DELETE FROM task_reviews WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`,
+        projectId,
+      );
+      await this.db.run(`DELETE FROM tasks WHERE project_id = ?`, projectId);
+      await this.db.run(`DELETE FROM user_stories WHERE project_id = ?`, projectId);
+      await this.db.run(`DELETE FROM epics WHERE project_id = ?`, projectId);
+    };
+    if (useTransaction) {
+      await this.withTransaction(run);
+    } else {
+      await run();
+    }
   }
 
   async updateTask(
