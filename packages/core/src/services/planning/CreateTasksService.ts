@@ -795,9 +795,10 @@ export class CreateTasksService {
     plan: GeneratedPlan,
     jobId: string,
     commandRunId: string,
-    options?: { force?: boolean },
+    options?: { force?: boolean; resetKeys?: boolean },
   ): Promise<{ epics: EpicRow[]; stories: StoryRow[]; tasks: TaskRow[]; dependencies: TaskDependencyRow[] }> {
-    const existingEpicKeys = await this.workspaceRepo.listEpicKeys(projectId);
+    const resetKeys = options?.resetKeys ?? false;
+    const existingEpicKeys = resetKeys ? [] : await this.workspaceRepo.listEpicKeys(projectId);
     const epicKeyGen = createEpicKeyGenerator(projectKey, existingEpicKeys);
 
     const epicInserts: EpicInsert[] = [];
@@ -1075,9 +1076,10 @@ export class CreateTasksService {
           details: { folder },
         });
 
-    const { epics: epicRows, stories: storyRows, tasks: taskRows, dependencies: dependencyRows } =
+        const { epics: epicRows, stories: storyRows, tasks: taskRows, dependencies: dependencyRows } =
         await this.persistPlanToDb(project.id, options.projectKey, plan, job.id, commandRun.id, {
           force: options.force,
+          resetKeys: options.force,
         });
 
         await this.jobService.updateJobStatus(job.id, "completed", {
@@ -1190,7 +1192,10 @@ export class CreateTasksService {
       });
 
       const { epics: epicRows, stories: storyRows, tasks: taskRows, dependencies: dependencyRows } =
-        await this.persistPlanToDb(project.id, projectKey, plan, job.id, commandRun.id, { force: forceBacklogReset });
+        await this.persistPlanToDb(project.id, projectKey, plan, job.id, commandRun.id, {
+          force: forceBacklogReset,
+          resetKeys: forceBacklogReset,
+        });
 
       await this.jobService.updateJobStatus(job.id, "completed", {
         payload: {

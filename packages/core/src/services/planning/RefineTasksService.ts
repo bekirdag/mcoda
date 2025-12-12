@@ -347,6 +347,174 @@ export class RefineTasksService {
     return { projectId: project.id, groups: Array.from(groups.values()), warnings };
   }
 
+  private parseTaskKeyParts(taskKey: string): { storyKey: string; epicKey: string } | null {
+    const match = taskKey.match(/^(.*-us-\d+)-t\d+$/);
+    if (!match) return null;
+    const storyKey = match[1];
+    const epicMatch = storyKey.match(/^(.*)-us-\d+$/);
+    const epicKey = epicMatch ? epicMatch[1] : storyKey.split("-us-")[0];
+    return { storyKey, epicKey };
+  }
+
+  private async ensureTaskExists(
+    projectId: string,
+    projectKey: string,
+    taskKey: string,
+    seed?: { fields?: Record<string, unknown>; updates?: Record<string, unknown> },
+  ): Promise<{ task: CandidateTask; epic: StoryGroup["epic"]; story: StoryGroup["story"] } | undefined> {
+    const parts = this.parseTaskKeyParts(taskKey);
+    if (!parts) return undefined;
+    const db = this.workspaceRepo.getDb();
+    const existing = await this.workspaceRepo.getTaskByKey(taskKey);
+    const loadDeps = async (taskId: string): Promise<string[]> => {
+      const depRows = await db.all<{ dep_key: string }[]>(
+        `SELECT dep.key AS dep_key
+         FROM task_dependencies td
+         INNER JOIN tasks dep ON dep.id = td.depends_on_task_id
+         WHERE td.task_id = ?`,
+        taskId,
+      );
+      return depRows.map((d) => d.dep_key);
+    };
+
+    const ensureEpic = async (): Promise<StoryGroup["epic"]> => {
+      const row = await db.get<{ id: string; key: string; title: string; description?: string }>(
+        `SELECT id, key, title, description FROM epics WHERE key = ? AND project_id = ?`,
+        parts.epicKey,
+        projectId,
+      );
+      if (row) return { id: row.id, key: row.key, title: row.title, description: row.description ?? undefined };
+      const [inserted] = await this.workspaceRepo.insertEpics(
+        [
+          {
+            projectId,
+            key: parts.epicKey,
+            title: `Epic ${parts.epicKey}`,
+            description: `Auto-created while applying refine plan for ${projectKey}`,
+            storyPointsTotal: null,
+            priority: null,
+          },
+        ],
+        false,
+      );
+      return { id: inserted.id, key: inserted.key, title: inserted.title, description: inserted.description ?? undefined };
+    };
+
+    const ensureStory = async (epicId: string): Promise<StoryGroup["story"]> => {
+      const row = await db.get<{
+        id: string;
+        key: string;
+        title: string;
+        description?: string;
+        acceptance_criteria?: string | null;
+      }>(`SELECT id, key, title, description, acceptance_criteria FROM user_stories WHERE key = ?`, parts.storyKey);
+      if (row) {
+        const acceptance = row.acceptance_criteria ? String(row.acceptance_criteria).split(/\r?\n/).filter(Boolean) : [];
+        return {
+          id: row.id,
+          key: row.key,
+          title: row.title,
+          description: row.description ?? undefined,
+          acceptance,
+        };
+      }
+      const [inserted] = await this.workspaceRepo.insertStories(
+        [
+          {
+            projectId,
+            epicId,
+            key: parts.storyKey,
+            title: `Story ${parts.storyKey}`,
+            description: `Auto-created while applying refine plan for ${projectKey}`,
+            acceptanceCriteria: undefined,
+            storyPointsTotal: null,
+            priority: null,
+          },
+        ],
+        false,
+      );
+      return {
+        id: inserted.id,
+        key: inserted.key,
+        title: inserted.title,
+        description: inserted.description ?? undefined,
+        acceptance: [],
+      };
+    };
+
+    if (existing) {
+      const epicRow = await db.get<{ id: string; key: string; title: string; description?: string }>(
+        `SELECT id, key, title, description FROM epics WHERE id = ?`,
+        existing.epicId,
+      );
+      const storyRow = await db.get<{
+        id: string;
+        key: string;
+        title: string;
+        description?: string;
+        acceptance_criteria?: string | null;
+      }>(`SELECT id, key, title, description, acceptance_criteria FROM user_stories WHERE id = ?`, existing.userStoryId);
+      const acceptance = storyRow?.acceptance_criteria
+        ? String(storyRow.acceptance_criteria).split(/\r?\n/).filter(Boolean)
+        : [];
+      return {
+        task: {
+          ...existing,
+          storyKey: storyRow?.key ?? parts.storyKey,
+          epicKey: epicRow?.key ?? parts.epicKey,
+          dependencies: await loadDeps(existing.id),
+        },
+        epic: {
+          id: epicRow?.id ?? existing.epicId,
+          key: epicRow?.key ?? parts.epicKey,
+          title: epicRow?.title ?? `Epic ${parts.epicKey}`,
+          description: epicRow?.description ?? undefined,
+        },
+        story: {
+          id: storyRow?.id ?? existing.userStoryId,
+          key: storyRow?.key ?? parts.storyKey,
+          title: storyRow?.title ?? `Story ${parts.storyKey}`,
+          description: storyRow?.description ?? undefined,
+          acceptance,
+        },
+      };
+    }
+
+    const updates = (seed?.updates as Record<string, unknown>) ?? (seed?.fields as Record<string, unknown>) ?? {};
+    const epic = await ensureEpic();
+    const story = await ensureStory(epic.id);
+
+    const [task] = await this.workspaceRepo.insertTasks(
+      [
+        {
+          projectId,
+          epicId: epic.id,
+          userStoryId: story.id,
+          key: taskKey,
+          title: (updates.title as string | undefined) ?? `Task ${taskKey}`,
+          description: (updates.description as string | undefined) ?? "",
+          type: (updates.type as string | undefined) ?? "feature",
+          status: (updates.status as string | undefined) ?? "not_started",
+          storyPoints: (updates.storyPoints as number | undefined) ?? null,
+          priority: (updates.priority as number | undefined) ?? null,
+          metadata: (updates.metadata as Record<string, unknown> | undefined) ?? undefined,
+        },
+      ],
+      false,
+    );
+
+    return {
+      task: {
+        ...task,
+        storyKey: story.key,
+        epicKey: epic.key,
+        dependencies: [],
+      },
+      epic,
+      story,
+    };
+  }
+
   private buildStoryPrompt(group: StoryGroup, strategy: RefineStrategy, docSummary?: string): string {
     const taskList = group.tasks.map((t) => formatTaskSummary(t)).join("\n");
     const constraints = [
@@ -977,7 +1145,7 @@ export class RefineTasksService {
         maxTasks: options.maxTasks,
       });
 
-      if (selection.groups.length === 0) {
+      if (selection.groups.length === 0 && !options.planInPath) {
         throw new Error("No tasks matched the provided filters.");
       }
 
@@ -1023,10 +1191,29 @@ export class RefineTasksService {
         // Validate ops against current selection and group membership.
         const taskToGroup = new Map<string, StoryGroup>();
         selection.groups.forEach((g) => g.tasks.forEach((t) => taskToGroup.set(t.key, g)));
+        const allowCreateMissingPlanIn = applyChanges && !!options.planInPath;
         for (const rawOp of planInput.operations) {
           const op = normalizeOperation(rawOp);
           const keyCandidate = (op as any).taskKey ?? (op as any).targetTaskKey ?? null;
-          const group = keyCandidate ? taskToGroup.get(keyCandidate) : undefined;
+          let group = keyCandidate ? taskToGroup.get(keyCandidate) : undefined;
+          if (!group && allowCreateMissingPlanIn && keyCandidate) {
+            const ensured = await this.ensureTaskExists(selection.projectId, options.projectKey, keyCandidate, op as any);
+            if (ensured) {
+              group =
+                selection.groups.find((g) => g.story.key === ensured.story.key) ??
+                (() => {
+                  const newGroup: StoryGroup = {
+                    epic: ensured.epic,
+                    story: ensured.story,
+                    tasks: [],
+                  };
+                  selection.groups.push(newGroup);
+                  return newGroup;
+                })();
+              group.tasks.push(ensured.task);
+              taskToGroup.set(keyCandidate, group);
+            }
+          }
           if (!group) {
             plan.warnings?.push(`Skipped plan-in op because task key not in selection: ${keyCandidate ?? op.op}`);
             continue;
