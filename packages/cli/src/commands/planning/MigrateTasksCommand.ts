@@ -1,7 +1,7 @@
 import path from "node:path";
 import { CreateTasksService, WorkspaceResolver } from "@mcoda/core";
 
-const usage = `mcoda migrate-tasks [--workspace-root <path>] [--project-key <key>] [--plan-dir <path>] [--quiet]`;
+const usage = `mcoda migrate-tasks [--workspace-root <path>] [--project-key <key>] [--plan-dir <path>] [--refine-plan <path>] [--quiet]`;
 
 export class MigrateTasksCommand {
   static async run(argv: string[]): Promise<void> {
@@ -14,6 +14,8 @@ export class MigrateTasksCommand {
         args.projectKey = argv[++i];
       } else if (arg === "--plan-dir" && argv[i + 1]) {
         args.planDir = argv[++i];
+      } else if (arg === "--refine-plan" && argv[i + 1]) {
+        args.refinePlan = argv[++i];
       } else if (arg === "--force") {
         args.force = true;
       } else if (arg === "--quiet") {
@@ -42,7 +44,12 @@ export class MigrateTasksCommand {
     const service = await CreateTasksService.create(workspace);
 
     try {
-      const result = await service.migratePlanFromFolder({ projectKey, planDir, force: !!args.force });
+      const result = await service.migratePlanFromFolder({
+        projectKey,
+        planDir,
+        force: !!args.force,
+        refinePlanPath: args.refinePlan as string | undefined,
+      });
       if (!args.quiet) {
         console.log(
           [

@@ -229,6 +229,7 @@ export class RefineTasksCommand {
         planInPath: parsed.planIn,
         planOutPath: parsed.planOut,
         jobId: parsed.jobId,
+        apply: false,
         outputJson: parsed.json,
       });
 

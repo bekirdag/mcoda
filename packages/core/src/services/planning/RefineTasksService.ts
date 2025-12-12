@@ -26,6 +26,7 @@ interface RefineTasksOptions extends RefineTasksRequest {
   planInPath?: string;
   planOutPath?: string;
   jobId?: string;
+  apply?: boolean;
   outputJson?: boolean;
 }
 
@@ -919,6 +920,7 @@ export class RefineTasksService {
   async refineTasks(options: RefineTasksOptions): Promise<RefineTasksResult> {
     const strategy = options.strategy ?? DEFAULT_STRATEGY;
     const agentStream = options.agentStream !== false;
+    const applyChanges = options.apply === true; // default to no DB writes unless explicitly requested
     await this.workspaceRepo.createProjectIfMissing({
       key: options.projectKey,
       name: options.projectKey,
@@ -1067,20 +1069,56 @@ export class RefineTasksService {
         }
       }
 
-      if (options.planOutPath) {
-        const outPath = path.resolve(options.planOutPath);
-        await fs.mkdir(path.dirname(outPath), { recursive: true });
-        await fs.writeFile(outPath, JSON.stringify(plan, null, 2), "utf8");
-        await this.jobService.writeCheckpoint(job.id, {
-          stage: "plan_written",
-          timestamp: new Date().toISOString(),
-          details: { path: outPath, ops: plan.operations.length },
-        });
+      // Always persist the plan to disk in a unique folder (similar to create-tasks)
+      const ensureUniquePath = async (candidate: string): Promise<string> => {
+        try {
+          await fs.access(candidate);
+          const dir = path.dirname(candidate);
+          const base = path.basename(candidate, path.extname(candidate));
+          const ext = path.extname(candidate) || ".json";
+          const suffix = new Date().toISOString().replace(/[:.]/g, "-");
+          return path.join(dir, `${base}-${suffix}${ext}`);
+        } catch {
+          return candidate;
+        }
+      };
+
+      const defaultPlanPath = path.join(
+        this.workspace.workspaceRoot,
+        ".mcoda",
+        "tasks",
+        options.projectKey,
+        "refinements",
+        job.id,
+        "plan.json",
+      );
+      const requestedOutPath = options.planOutPath ? path.resolve(options.planOutPath) : defaultPlanPath;
+      const outPath = await ensureUniquePath(requestedOutPath);
+      await fs.mkdir(path.dirname(outPath), { recursive: true });
+      await fs.writeFile(outPath, JSON.stringify(plan, null, 2), "utf8");
+      await this.jobService.writeCheckpoint(job.id, {
+        stage: "plan_written",
+        timestamp: new Date().toISOString(),
+        details: { path: outPath, ops: plan.operations.length },
+      });
+
+      if (plan.operations.length === 0) {
+        const lastWarnings = (plan.warnings ?? []).slice(-5);
+        throw new Error(
+          `No valid refine operations generated; nothing to apply. Last warnings: ${
+            lastWarnings.length ? lastWarnings.join("; ") : "none"
+          }`,
+        );
       }
 
-      if (options.dryRun) {
+      if (options.dryRun || !applyChanges) {
         await this.jobService.updateJobStatus(job.id, "completed", {
-          payload: { dryRun: true, operations: plan.operations.length },
+          payload: {
+            dryRun: options.dryRun ?? true,
+            operations: plan.operations.length,
+            planPath: outPath,
+            applied: false,
+          },
           processedItems: plan.operations.length,
           totalItems: plan.operations.length,
           lastCheckpoint: "dry_run",

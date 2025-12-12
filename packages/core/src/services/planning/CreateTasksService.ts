@@ -1131,6 +1131,7 @@ export class CreateTasksService {
     projectKey: string;
     planDir?: string;
     force?: boolean;
+    refinePlanPath?: string;
   }): Promise<CreateTasksResult> {
     const projectKey = options.projectKey;
     const commandRun = await this.jobService.startCommandRun("migrate-tasks", projectKey);
@@ -1179,6 +1180,9 @@ export class CreateTasksService {
         tasks: tasks as PlanTask[],
       };
 
+      // If a refinement plan is provided, default to wiping existing backlog to avoid mixing old tasks.
+      const forceBacklogReset = options.refinePlanPath ? true : !!options.force;
+
       await this.jobService.writeCheckpoint(job.id, {
         stage: "plan_loaded",
         timestamp: new Date().toISOString(),
@@ -1186,7 +1190,7 @@ export class CreateTasksService {
       });
 
       const { epics: epicRows, stories: storyRows, tasks: taskRows, dependencies: dependencyRows } =
-        await this.persistPlanToDb(project.id, projectKey, plan, job.id, commandRun.id, { force: options.force });
+        await this.persistPlanToDb(project.id, projectKey, plan, job.id, commandRun.id, { force: forceBacklogReset });
 
       await this.jobService.updateJobStatus(job.id, "completed", {
         payload: {
@@ -1199,6 +1203,25 @@ export class CreateTasksService {
         },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+
+      // Optionally apply a refinement plan from disk after seeding the backlog.
+      if (options.refinePlanPath) {
+        const { RefineTasksService } = await import("./RefineTasksService.js");
+        const refineService = await RefineTasksService.create(this.workspace);
+        try {
+          await refineService.refineTasks({
+            workspace: this.workspace,
+            projectKey,
+            planInPath: path.resolve(options.refinePlanPath),
+            fromDb: true,
+            apply: true,
+            agentStream: false,
+            dryRun: false,
+          });
+        } finally {
+          await refineService.close();
+        }
+      }
 
       return {
         jobId: job.id,
