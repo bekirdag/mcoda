@@ -9,24 +9,8 @@ export class WorkspaceMigrations {
     await db.exec(`
       PRAGMA foreign_keys = ON;
 
-      -- Drop legacy placeholder tables so the new schema is applied consistently.
-      DROP TABLE IF EXISTS job_checkpoints;
-      DROP TABLE IF EXISTS jobs;
-      DROP TABLE IF EXISTS command_runs;
-      DROP TABLE IF EXISTS token_usage;
-      DROP TABLE IF EXISTS task_dependencies;
-      DROP TABLE IF EXISTS task_comments;
-      DROP TABLE IF EXISTS task_reviews;
-      DROP TABLE IF EXISTS task_qa_runs;
-      DROP TABLE IF EXISTS task_logs;
-      DROP TABLE IF EXISTS task_runs;
-      DROP TABLE IF EXISTS task_revisions;
-      DROP TABLE IF EXISTS tasks;
-      DROP TABLE IF EXISTS user_stories;
-      DROP TABLE IF EXISTS epics;
-      DROP TABLE IF EXISTS projects;
-
-      CREATE TABLE projects (
+      -- Create tables idempotently to avoid wiping existing workspace data.
+      CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         key TEXT NOT NULL UNIQUE,
         name TEXT,
@@ -36,7 +20,7 @@ export class WorkspaceMigrations {
         updated_at TEXT NOT NULL
       );
 
-      CREATE TABLE epics (
+      CREATE TABLE IF NOT EXISTS epics (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         key TEXT NOT NULL,
@@ -50,7 +34,7 @@ export class WorkspaceMigrations {
         UNIQUE(project_id, key)
       );
 
-      CREATE TABLE user_stories (
+      CREATE TABLE IF NOT EXISTS user_stories (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE,
@@ -66,7 +50,7 @@ export class WorkspaceMigrations {
         UNIQUE(epic_id, key)
       );
 
-      CREATE TABLE tasks (
+      CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         epic_id TEXT NOT NULL REFERENCES epics(id) ON DELETE CASCADE,
@@ -90,7 +74,7 @@ export class WorkspaceMigrations {
         UNIQUE(user_story_id, key)
       );
 
-      CREATE TABLE task_dependencies (
+      CREATE TABLE IF NOT EXISTS task_dependencies (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         depends_on_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -100,7 +84,7 @@ export class WorkspaceMigrations {
         UNIQUE(task_id, depends_on_task_id, relation_type)
       );
 
-      CREATE TABLE jobs (
+      CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         type TEXT NOT NULL,
@@ -116,7 +100,7 @@ export class WorkspaceMigrations {
         error_summary TEXT
       );
 
-      CREATE TABLE command_runs (
+      CREATE TABLE IF NOT EXISTS command_runs (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         command_name TEXT NOT NULL,
@@ -132,7 +116,7 @@ export class WorkspaceMigrations {
         sp_processed REAL
       );
 
-      CREATE TABLE task_runs (
+      CREATE TABLE IF NOT EXISTS task_runs (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         command TEXT NOT NULL,
@@ -150,7 +134,7 @@ export class WorkspaceMigrations {
         run_context_json TEXT
       );
 
-      CREATE TABLE task_qa_runs (
+      CREATE TABLE IF NOT EXISTS task_qa_runs (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         task_run_id TEXT REFERENCES task_runs(id) ON DELETE SET NULL,
@@ -173,7 +157,7 @@ export class WorkspaceMigrations {
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE task_logs (
+      CREATE TABLE IF NOT EXISTS task_logs (
         id TEXT PRIMARY KEY,
         task_run_id TEXT NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
         sequence INTEGER NOT NULL,
@@ -185,7 +169,7 @@ export class WorkspaceMigrations {
         UNIQUE(task_run_id, sequence)
       );
 
-      CREATE TABLE task_revisions (
+      CREATE TABLE IF NOT EXISTS task_revisions (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         job_id TEXT,
@@ -195,7 +179,7 @@ export class WorkspaceMigrations {
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE task_comments (
+      CREATE TABLE IF NOT EXISTS task_comments (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         task_run_id TEXT REFERENCES task_runs(id) ON DELETE SET NULL,
@@ -214,7 +198,7 @@ export class WorkspaceMigrations {
         resolved_by TEXT
       );
 
-      CREATE TABLE task_reviews (
+      CREATE TABLE IF NOT EXISTS task_reviews (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
@@ -229,7 +213,7 @@ export class WorkspaceMigrations {
         created_by TEXT
       );
 
-      CREATE TABLE token_usage (
+      CREATE TABLE IF NOT EXISTS token_usage (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         agent_id TEXT,
