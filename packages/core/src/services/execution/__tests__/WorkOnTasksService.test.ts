@@ -27,6 +27,30 @@ class StubAgentService {
   }
 }
 
+class StubAgentServiceNoPlus {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    const patch = [
+      "```patch",
+      "*** Begin Patch",
+      "*** Add File: hello.txt",
+      "hello world",
+      "*** End Patch",
+      "```",
+    ].join("\n");
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubDocdex {
   async search() {
     return [];
@@ -57,27 +81,40 @@ class StubRoutingService {
 }
 
 class StubVcs {
-  async ensureRepo() {}
-  async ensureBaseBranch() {}
-  async checkoutBranch() {}
-  async createOrCheckoutBranch() {}
-  async applyPatch() {}
-  async dirtyPaths() {
+  async ensureRepo(_cwd: string) {}
+  async ensureBaseBranch(_cwd: string, _base: string) {}
+  async checkoutBranch(_cwd: string, _branch: string) {}
+  async createOrCheckoutBranch(_cwd: string, _branch: string, _base: string) {}
+  async applyPatch(_cwd: string, _patch: string) {}
+  async dirtyPaths(_cwd?: string) {
     return [];
   }
-  async stage() {}
-  async status() {
+  async stage(_cwd: string, _paths: string[]) {}
+  async status(_cwd?: string) {
     return " M tmp.txt";
   }
-  async commit() {}
-  async lastCommitSha() {
+  async commit(_cwd: string, _message: string) {}
+  async lastCommitSha(_cwd?: string) {
     return "abc123";
   }
-  async hasRemote() {
+  async hasRemote(_cwd?: string) {
     return false;
   }
-  async push() {}
-  async merge() {}
+  async push(_cwd: string, _remote: string, _branch: string) {}
+  async merge(_cwd: string, _source: string, _target: string) {}
+}
+
+class RecordingVcs extends StubVcs {
+  patches: string[] = [];
+  override async applyPatch(_cwd: string, patch: string) {
+    this.patches.push(patch);
+    if (!patch.includes("+hello world")) {
+      throw new Error("patch missing content");
+    }
+  }
+  override async status() {
+    return "";
+  }
 }
 
 const setupWorkspace = async () => {
@@ -194,6 +231,42 @@ test("workOnTasks marks tasks ready_to_review and records task runs", async () =
     const checkpointPath = path.join(workspace.workspaceRoot, ".mcoda", "jobs", result.jobId, "work", "state.json");
     const exists = await fs.stat(checkpointPath).then(() => true, () => false);
     assert.equal(exists, true);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks handles apply_patch add-file output without leading '+' lines", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new RecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoPlus() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.ok(vcs.patches.some((p) => p.includes("+hello world")));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

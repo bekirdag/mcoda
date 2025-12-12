@@ -5,5 +5,6 @@ export * from "./adapters/openai/OpenAiCliAdapter.js";
 export * from "./adapters/codex/CodexAdapter.js";
 export * from "./adapters/gemini/GeminiAdapter.js";
 export * from "./adapters/local/LocalAdapter.js";
+export * from "./adapters/ollama/OllamaCliAdapter.js";
 export * from "./adapters/ollama/OllamaRemoteAdapter.js";
 export * from "./adapters/qa/QaAdapter.js";

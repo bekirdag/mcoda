@@ -4,12 +4,13 @@ import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
 import { GeminiAdapter } from "../adapters/gemini/GeminiAdapter.js";
 import { LocalAdapter } from "../adapters/local/LocalAdapter.js";
 import { OllamaRemoteAdapter } from "../adapters/ollama/OllamaRemoteAdapter.js";
+import { OllamaCliAdapter } from "../adapters/ollama/OllamaCliAdapter.js";
 import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
 import { OpenAiCliAdapter } from "../adapters/openai/OpenAiCliAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
 
-const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli"]);
+const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
 const SUPPORTED_ADAPTERS = new Set([
   "openai-api",
@@ -19,6 +20,7 @@ const SUPPORTED_ADAPTERS = new Set([
   "local-model",
   "qa-cli",
   "ollama-remote",
+  "ollama-cli",
 ]);
 
 const DEFAULT_JOB_PROMPT =
@@ -148,6 +150,12 @@ export class AgentService {
     }
     if (adapterType === "ollama-remote") {
       return new OllamaRemoteAdapter(configWithAdapter);
+    }
+    if (adapterType === "ollama-cli") {
+      return new OllamaCliAdapter(configWithAdapter);
+    }
+    if (adapterType === "gemini-cli") {
+      return new GeminiAdapter(configWithAdapter);
     }
     if (adapterType === "qa-cli") {
       return new QaAdapter(configWithAdapter);

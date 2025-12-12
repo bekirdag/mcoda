@@ -185,6 +185,11 @@ export class WorkOnTasksCommand {
     }
     const service = await WorkOnTasksService.create(workspace);
     try {
+      const streamSink = (chunk: string) => {
+        const target = parsed.json ? process.stderr : process.stdout;
+        target.write(chunk);
+      };
+      const onAgentChunk = parsed.agentStream !== false ? streamSink : undefined;
       const result = await service.workOnTasks({
         workspace,
         projectKey: parsed.projectKey,
@@ -198,6 +203,7 @@ export class WorkOnTasksCommand {
         dryRun: parsed.dryRun,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        onAgentChunk,
       });
 
       const success = result.results.filter((r) => r.status === "succeeded").length;

@@ -174,6 +174,7 @@ export class OllamaRemoteAdapter implements AgentAdapter {
                 capabilities: this.config.capabilities,
                 streaming: true,
                 metrics,
+                raw: line,
               },
             };
           }
@@ -196,6 +197,7 @@ export class OllamaRemoteAdapter implements AgentAdapter {
           baseUrl: url,
           capabilities: this.config.capabilities,
           streaming: true,
+          raw: tail,
         },
       };
     }

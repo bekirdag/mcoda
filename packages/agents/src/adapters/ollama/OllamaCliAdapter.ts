@@ -1,8 +1,8 @@
 import { AgentHealth } from "@mcoda/shared";
 import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
-import { cliHealthy, runCodexExec, runCodexExecStream } from "./CodexCliRunner.js";
+import { ollamaHealthy, runOllamaExec, runOllamaExecStream } from "./OllamaCliRunner.js";
 
-export class CodexAdapter implements AgentAdapter {
+export class OllamaCliAdapter implements AgentAdapter {
   constructor(private config: AdapterConfig) {}
 
   async getCapabilities(): Promise<string[]> {
@@ -11,49 +11,44 @@ export class CodexAdapter implements AgentAdapter {
 
   async healthCheck(): Promise<AgentHealth> {
     const started = Date.now();
-    const result = cliHealthy();
+    const health = ollamaHealthy();
+    const status: AgentHealth["status"] = health.ok ? "healthy" : "unreachable";
     return {
       agentId: this.config.agent.id,
-      status: result.ok ? "healthy" : "unreachable",
+      status,
       lastCheckedAt: new Date().toISOString(),
       latencyMs: Date.now() - started,
-      details: { adapter: "codex-cli", ...result.details },
+      details: { adapter: "ollama-cli", ...(health.details ?? {}) },
     };
   }
 
   async invoke(request: InvocationRequest): Promise<InvocationResult> {
-    const health = cliHealthy(true);
-    const cliDetails = health.details;
-    const result = runCodexExec(request.input, this.config.model);
+    const result = runOllamaExec(request.input, this.config.model);
     return {
       output: result.output,
-      adapter: this.config.adapter ?? "codex-cli",
+      adapter: this.config.adapter ?? "ollama-cli",
       model: this.config.model,
       metadata: {
         mode: "cli",
         capabilities: this.config.capabilities,
-        adapterType: this.config.adapter ?? "codex-cli",
+        adapterType: this.config.adapter ?? "ollama-cli",
         authMode: "cli",
-        cli: cliDetails,
         raw: result.raw,
       },
     };
   }
 
   async *invokeStream(request: InvocationRequest): AsyncGenerator<InvocationResult, void, unknown> {
-    const health = cliHealthy(true);
-    const cliDetails = health.details;
-    for await (const chunk of runCodexExecStream(request.input, this.config.model)) {
+    for await (const chunk of runOllamaExecStream(request.input, this.config.model)) {
       yield {
         output: chunk.output,
-        adapter: this.config.adapter ?? "codex-cli",
+        adapter: this.config.adapter ?? "ollama-cli",
         model: this.config.model,
         metadata: {
           mode: "cli",
           capabilities: this.config.capabilities,
-          adapterType: this.config.adapter ?? "codex-cli",
+          adapterType: this.config.adapter ?? "ollama-cli",
           authMode: "cli",
-          cli: cliDetails,
           raw: chunk.raw,
           streaming: true,
         },
