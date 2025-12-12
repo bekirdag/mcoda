@@ -73,6 +73,25 @@ const extractJson = (raw: string): any | undefined => {
   }
 };
 
+const normalizeOperation = (op: any): RefineOperation => {
+  if (!op || typeof op !== "object") return op as RefineOperation;
+  if (op.op !== "update_task") return op as RefineOperation;
+  const taskKey =
+    (op as any).taskKey ?? (op as any).key ?? (op as any).task ?? (op as any).targetTaskKey ?? null;
+  const updates = { ...(op as any).updates };
+  const inlineFields = ["title", "description", "acceptanceCriteria", "type", "status", "storyPoints", "priority", "dependsOn", "metadata"];
+  for (const field of inlineFields) {
+    if (op[field] !== undefined && updates[field] === undefined) {
+      updates[field] = op[field];
+    }
+  }
+  return {
+    ...(op as any),
+    taskKey,
+    updates,
+  } as RefineOperation;
+};
+
 const safeParsePlan = (content: string): RefineTasksPlan | undefined => {
   try {
     const parsed = JSON.parse(content) as RefineTasksPlan;
@@ -1004,7 +1023,8 @@ export class RefineTasksService {
         // Validate ops against current selection and group membership.
         const taskToGroup = new Map<string, StoryGroup>();
         selection.groups.forEach((g) => g.tasks.forEach((t) => taskToGroup.set(t.key, g)));
-        for (const op of planInput.operations) {
+        for (const rawOp of planInput.operations) {
+          const op = normalizeOperation(rawOp);
           const keyCandidate = (op as any).taskKey ?? (op as any).targetTaskKey ?? null;
           const group = keyCandidate ? taskToGroup.get(keyCandidate) : undefined;
           if (!group) {
@@ -1016,7 +1036,7 @@ export class RefineTasksService {
             if (reason) plan.warnings?.push(`Skipped plan-in op: ${reason}`);
             continue;
           }
-          plan.operations.push(op);
+          plan.operations.push(op as RefineOperation);
         }
       }
 
@@ -1058,7 +1078,8 @@ export class RefineTasksService {
           );
           const parsed = extractJson(raw);
           const ops = parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
-          const filtered = ops.filter((op) => {
+          const normalized = ops.map(normalizeOperation);
+          const filtered = normalized.filter((op) => {
             const { valid, reason } = this.validateOperation(group, op);
             if (!valid && reason) {
               plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);

@@ -113,3 +113,25 @@ test("agent set-default resolves workspace via WorkspaceResolver", { concurrency
     assert.equal(mapping.agentId, agent.id);
   });
 });
+
+test("agent add stores config for ollama-remote", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "suku-ollama",
+      "--adapter",
+      "ollama-remote",
+      "--model",
+      "gpt-oss:20b",
+      "--config-base-url",
+      "http://192.168.1.115:11434",
+      "--capability",
+      "plan",
+    ]);
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("suku-ollama");
+    assert.ok(agent);
+    assert.equal((agent.config as any)?.baseUrl, "http://192.168.1.115:11434");
+    await repo.close();
+  });
+});

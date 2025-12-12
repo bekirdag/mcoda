@@ -194,6 +194,23 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 - Scope & safety: enforces allowed files/tests from task metadata; scope violations are blocked and logged.
 - VCS: ensures `.mcoda` exists and is gitignored, creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (default `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit` or `--dry-run`.
 
+## Use a remote Ollama agent (GPU offload)
+
+Point mcoda at a remote Ollama host (e.g., `sukunahikona` on your LAN/VPN):
+
+```sh
+mcoda agent add suku-ollama \
+  --adapter ollama-remote \
+  --model gpt-oss:20b \
+  --config-base-url http://192.168.1.115:11434 \
+  --capability plan --capability code_write --capability code_review
+
+mcoda test-agent suku-ollama   # quick health check
+mcoda agent use suku-ollama    # set as default for workspace
+```
+
+Firewall guidance: Ollama has no auth; keep it bound to localhost or LAN IP and allowlist only trusted IPs (VPN/LAN). If exposing via the internet, use a reverse proxy with auth/TLS and open port 11434 only to trusted sources.
+
 ## Code review (review pipeline)
 
 Run AI-assisted review on task branches and write findings to the workspace DB:

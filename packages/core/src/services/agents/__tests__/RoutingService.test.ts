@@ -249,3 +249,18 @@ test("uses API agent capabilities when present", async () => {
   assert.equal(resolved.agentId, apiAgent.id);
   assert.deepEqual(resolved.capabilities, ["code_write"]);
 });
+
+test("accepts ollama-remote agents in routing", async () => {
+  const routingApi = new StubRoutingApi(async (id) => (id === "ollama" ? ["plan", "code_write"] : []));
+  const remoteAgent = { ...agent("ollama", "ollama"), adapter: "ollama-remote", capabilities: ["plan", "code_write"] };
+  routingApi.agents.set(remoteAgent.id, remoteAgent);
+  routingApi.defaults.set("__GLOBAL__", new Map([["create-tasks", remoteAgent.id]]));
+  const service = new RoutingService({ routingApi: routingApi as any });
+
+  const resolved = await service.resolveAgentForCommand({
+    workspace: workspace as any,
+    commandName: "create-tasks",
+  });
+  assert.equal(resolved.agentId, remoteAgent.id);
+  assert.equal(resolved.agent.adapter, "ollama-remote");
+});

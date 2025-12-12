@@ -12,6 +12,7 @@ let service: AgentService;
 let dbPath: string;
 const originalSkipCliChecks = process.env.MCODA_SKIP_CLI_CHECKS;
 process.env.MCODA_SKIP_CLI_CHECKS = "1";
+const originalFetch = global.fetch;
 
 beforeEach(async () => {
   dbPath = path.join(os.tmpdir(), `mcoda-agents-${Date.now()}-${Math.random()}.db`);
@@ -22,6 +23,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  global.fetch = originalFetch;
   await service.close();
   await fs.promises.unlink(dbPath).catch(() => {});
 });
@@ -152,4 +154,53 @@ test("service does not open workspace DB (global-only guardrail)", async () => {
   });
   const result = await service.invoke(agent.id, { input: "guard" });
   assert.equal(result.adapter, "local-model");
+});
+
+test("ollama-remote invokes with configured baseUrl and model", async () => {
+  const agent = await repo.createAgent({
+    slug: "remote",
+    adapter: "ollama-remote",
+    defaultModel: "gpt-oss:20b",
+    capabilities: ["plan", "code_write"],
+    config: { baseUrl: "http://localhost:11434" },
+  });
+  global.fetch = async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
+    assert.match(url, /api\/generate/);
+    assert.equal(init?.method, "POST");
+    return new Response(JSON.stringify({ response: "hi there" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const result = await service.invoke(agent.id, { input: "ping" });
+  assert.equal(result.adapter, "ollama-remote");
+  assert.equal(result.output, "hi there");
+  assert.equal(result.model, "gpt-oss:20b");
+});
+
+test("ollama-remote health returns unreachable on network error", async () => {
+  const agent = await repo.createAgent({
+    slug: "remote-health",
+    adapter: "ollama-remote",
+    defaultModel: "gpt-oss:20b",
+    capabilities: ["plan"],
+    config: { baseUrl: "http://bad-host" },
+  });
+  global.fetch = async () => {
+    throw new Error("network down");
+  };
+  const health = await service.healthCheck(agent.id);
+  assert.equal(health.status, "unreachable");
+  assert.equal((health.details as any)?.baseUrl, "http://bad-host");
+});
+
+test("ollama-remote rejects when baseUrl is missing", async () => {
+  const agent = await repo.createAgent({
+    slug: "remote-missing",
+    adapter: "ollama-remote",
+    defaultModel: "gpt-oss:20b",
+    capabilities: ["plan"],
+  });
+  await assert.rejects(() => service.invoke(agent.id, { input: "ping" }), /baseUrl/i);
 });

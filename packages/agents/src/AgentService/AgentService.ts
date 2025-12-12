@@ -3,6 +3,7 @@ import { GlobalRepository } from "@mcoda/db";
 import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
 import { GeminiAdapter } from "../adapters/gemini/GeminiAdapter.js";
 import { LocalAdapter } from "../adapters/local/LocalAdapter.js";
+import { OllamaRemoteAdapter } from "../adapters/ollama/OllamaRemoteAdapter.js";
 import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
 import { OpenAiCliAdapter } from "../adapters/openai/OpenAiCliAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
@@ -10,6 +11,15 @@ import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/A
 
 const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
+const SUPPORTED_ADAPTERS = new Set([
+  "openai-api",
+  "codex-cli",
+  "gemini-cli",
+  "openai-cli",
+  "local-model",
+  "qa-cli",
+  "ollama-remote",
+]);
 
 const DEFAULT_JOB_PROMPT =
   "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
@@ -63,6 +73,7 @@ export class AgentService {
       this.getAuthMetadata(agent.id),
     ]);
     const secret = await this.getDecryptedSecret(agent.id);
+    const adapterConfig = (agent.config ?? {}) as Record<string, unknown>;
 
     const mergedPrompts: AgentPromptManifest = {
       agentId: agent.id,
@@ -74,6 +85,7 @@ export class AgentService {
     };
 
     return {
+      ...adapterConfig,
       agent,
       capabilities,
       model: agent.defaultModel,
@@ -89,6 +101,10 @@ export class AgentService {
     const cliAdapter = config?.cliAdapter as string | undefined;
     const localAdapter = config?.localAdapter as string | undefined;
     let adapterType = agent.adapter;
+
+    if (!SUPPORTED_ADAPTERS.has(adapterType)) {
+      throw new Error(`Unsupported adapter type: ${adapterType}`);
+    }
 
     if (adapterType.endsWith("-api")) {
       if (hasSecret) return adapterType;
@@ -129,6 +145,9 @@ export class AgentService {
     }
     if (adapterType === "local-model" || LOCAL_ADAPTERS.has(adapterType)) {
       return new LocalAdapter(configWithAdapter);
+    }
+    if (adapterType === "ollama-remote") {
+      return new OllamaRemoteAdapter(configWithAdapter);
     }
     if (adapterType === "qa-cli") {
       return new QaAdapter(configWithAdapter);

@@ -49,11 +49,12 @@ Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|u
 Subcommands:
   list                       List agents (supports --json)
   add <NAME>                 Create a global agent
-    --adapter <TYPE>         Adapter slug (openai-api|codex-cli|gemini-cli|local-model|qa-cli)
+    --adapter <TYPE>         Adapter slug (openai-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
     --capability <CAP>       Repeatable capabilities to attach
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
+    --config-base-url <URL>  Base URL for remote adapters (e.g., http://host:11434 for ollama-remote)
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
     --force                  Force deletion even if referenced
@@ -78,6 +79,14 @@ const parsePrompts = (flags: Record<string, any>) => {
   if (flags["character-path"]) prompts.characterPath = String(flags["character-path"]);
   return Object.keys(prompts).length ? prompts : undefined;
 };
+
+const parseConfig = (flags: Record<string, any>) => {
+  const config: Record<string, unknown> = {};
+  if (flags["config-base-url"]) config.baseUrl = String(flags["config-base-url"]);
+  return Object.keys(config).length ? config : undefined;
+};
+
+const DEFAULT_OLLAMA_CAPABILITIES = ["plan", "code_write", "code_review"];
 
 const formatAgentRow = (agent: AgentResponse): string =>
   [
@@ -127,14 +136,18 @@ export class AgentsCommands {
         case "add": {
           const name = parsed.positionals[0];
           if (!name) throw new Error("agent add requires a slug/name\n\n" + USAGE);
-          const capabilities = parseCapabilities(parsed.flags.capability) ?? [];
+          const capabilities =
+            parseCapabilities(parsed.flags.capability) ??
+            (String(parsed.flags.adapter ?? "openai-api") === "ollama-remote" ? DEFAULT_OLLAMA_CAPABILITIES : []);
           const prompts = parsePrompts(parsed.flags);
+          const config = parseConfig(parsed.flags);
           const agent = await api.createAgent({
             slug: name,
             adapter: String(parsed.flags.adapter ?? "openai-api"),
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             capabilities,
             prompts,
+            config,
           });
           // eslint-disable-next-line no-console
           console.log(`Created agent ${agent.slug}`);
@@ -145,11 +158,13 @@ export class AgentsCommands {
           if (!name) throw new Error("agent update requires a slug/name\n\n" + USAGE);
           const capabilities = parseCapabilities(parsed.flags.capability);
           const prompts = parsePrompts(parsed.flags);
+          const config = parseConfig(parsed.flags);
           const agent = await api.updateAgent(name, {
             adapter: parsed.flags.adapter ? String(parsed.flags.adapter) : undefined,
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             capabilities,
             prompts,
+            config,
           });
           // eslint-disable-next-line no-console
           console.log(`Updated agent ${agent.slug}`);
