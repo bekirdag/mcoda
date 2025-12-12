@@ -14,6 +14,7 @@ import {
   WorkspaceRepository,
 } from "@mcoda/db";
 import { Agent } from "@mcoda/shared";
+import { setTimeout as delay } from "node:timers/promises";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
@@ -290,6 +291,8 @@ const TASK_SCHEMA_SNIPPET = `{
 }`;
 
 export class CreateTasksService {
+  private static readonly MAX_BUSY_RETRIES = 3;
+  private static readonly BUSY_BACKOFF_MS = 250;
   private docdex: DocdexClient;
   private jobService: JobService;
   private agentService: AgentService;
@@ -700,274 +703,300 @@ export class CreateTasksService {
       },
     );
 
-    try {
-      const project = await this.workspaceRepo.createProjectIfMissing({
-        key: options.projectKey,
-        name: options.projectKey,
-        description: `Workspace project ${options.projectKey}`,
-      });
-
-      const docs = await this.prepareDocs(options.inputs);
-      const { docSummary, warnings: docWarnings } = this.buildDocContext(docs);
-      const { prompt } = this.buildPrompt(options.projectKey, docs, options);
-      await this.jobService.writeCheckpoint(job.id, {
-        stage: "docs_indexed",
-        timestamp: new Date().toISOString(),
-        details: { count: docs.length, warnings: docWarnings },
-      });
-
-      const agent = await this.resolveAgent(options.agentName);
-      const { output: epicOutput } = await this.invokeAgentWithRetry(
-        agent,
-        prompt,
-        "epics",
-        agentStream,
-        job.id,
-        commandRun.id,
-        { docWarnings },
-      );
-      const epics = this.parseEpics(epicOutput, docs, options.projectKey).slice(
-        0,
-        options.maxEpics ?? Number.MAX_SAFE_INTEGER,
-      );
-
-      await this.jobService.writeCheckpoint(job.id, {
-        stage: "epics_generated",
-        timestamp: new Date().toISOString(),
-        details: { epics: epics.length },
-      });
-
-      const existingEpicKeys = await this.workspaceRepo.listEpicKeys(project.id);
-      const epicKeyGen = createEpicKeyGenerator(options.projectKey, existingEpicKeys);
-
-      const epicInserts: EpicInsert[] = [];
-      const epicMeta: { key: string; node: AgentEpicNode & { key?: string } }[] = [];
-
-      for (const epic of epics) {
-        const key = epicKeyGen(epic.area);
-        epicInserts.push({
-          projectId: project.id,
-          key,
-          title: epic.title || `Epic ${key}`,
-          description: buildEpicDescription(key, epic.title || `Epic ${key}`, epic.description, epic.acceptanceCriteria, epic.relatedDocs),
-          storyPointsTotal: null,
-          priority: epic.priorityHint ?? (epicInserts.length + 1),
-          metadata: epic.relatedDocs ? { doc_links: epic.relatedDocs } : undefined,
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= CreateTasksService.MAX_BUSY_RETRIES; attempt++) {
+      try {
+        const project = await this.workspaceRepo.createProjectIfMissing({
+          key: options.projectKey,
+          name: options.projectKey,
+          description: `Workspace project ${options.projectKey}`,
         });
-        epicMeta.push({ key, node: epic });
-      }
 
-      let epicRows: EpicRow[] = [];
-      let storyRows: StoryRow[] = [];
-      let taskRows: TaskRow[] = [];
-      let dependencyRows: TaskDependencyRow[] = [];
+        const docs = await this.prepareDocs(options.inputs);
+        const { docSummary, warnings: docWarnings } = this.buildDocContext(docs);
+        const { prompt } = this.buildPrompt(options.projectKey, docs, options);
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "docs_indexed",
+          timestamp: new Date().toISOString(),
+          details: { count: docs.length, warnings: docWarnings },
+        });
 
-      await this.workspaceRepo.withTransaction(async () => {
-        epicRows = await this.workspaceRepo.insertEpics(epicInserts, false);
+        const agent = await this.resolveAgent(options.agentName);
+        const { output: epicOutput } = await this.invokeAgentWithRetry(
+          agent,
+          prompt,
+          "epics",
+          agentStream,
+          job.id,
+          commandRun.id,
+          { docWarnings },
+        );
+        const epics = this.parseEpics(epicOutput, docs, options.projectKey).slice(
+          0,
+          options.maxEpics ?? Number.MAX_SAFE_INTEGER,
+        );
 
-        const storyInserts: StoryInsert[] = [];
-        const storyMeta: { storyKey: string; epicKey: string; node: AgentStoryNode }[] = [];
-        for (const epic of epicMeta) {
-          const epicRow = epicRows.find((row) => row.key === epic.key);
-          if (!epicRow) continue;
-          epic.node.key = epicRow.key;
-          const stories = await this.generateStoriesForEpic(
-            agent,
-            { ...epic.node, key: epicRow.key },
-            docSummary,
-            agentStream,
-            job.id,
-            commandRun.id,
-          );
-          await this.jobService.writeCheckpoint(job.id, {
-            stage: "stories_generated",
-            timestamp: new Date().toISOString(),
-            details: { epicKey: epicRow.key, stories: stories.length },
-          });
-          const existingStoryKeys = await this.workspaceRepo.listStoryKeys(epicRow.id);
-          const storyKeyGen = createStoryKeyGenerator(epicRow.key, existingStoryKeys);
-          for (const story of stories.slice(0, options.maxStoriesPerEpic ?? stories.length)) {
-            const storyKey = storyKeyGen();
-            storyInserts.push({
-              projectId: project.id,
-              epicId: epicRow.id,
-              key: storyKey,
-              title: story.title || `Story ${storyKey}`,
-              description: buildStoryDescription(
-                storyKey,
-                story.title || `Story ${storyKey}`,
-                story.userStory,
-                story.description,
-                story.acceptanceCriteria,
-                story.relatedDocs,
-              ),
-              acceptanceCriteria: story.acceptanceCriteria?.join("\n") ?? undefined,
-              storyPointsTotal: null,
-              priority: story.priorityHint ?? (storyInserts.length + 1),
-              metadata: story.relatedDocs ? { doc_links: story.relatedDocs } : undefined,
-            });
-            storyMeta.push({ storyKey, epicKey: epicRow.key, node: story });
-          }
-        }
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "epics_generated",
+          timestamp: new Date().toISOString(),
+          details: { epics: epics.length },
+        });
 
-        storyRows = await this.workspaceRepo.insertStories(storyInserts, false);
-        const storyIdByKey = new Map(storyRows.map((row) => [row.key, row.id]));
-        const epicIdByKey = new Map(epicRows.map((row) => [row.key, row.id]));
+        const existingEpicKeys = await this.workspaceRepo.listEpicKeys(project.id);
+        const epicKeyGen = createEpicKeyGenerator(options.projectKey, existingEpicKeys);
 
-        type TaskDetail = { localId: string; key: string; storyKey: string; epicKey: string; plan: AgentTaskNode };
-        const taskDetails: TaskDetail[] = [];
-        for (const story of storyMeta) {
-          const storyId = storyIdByKey.get(story.storyKey);
-          const existingTaskKeys = storyId ? await this.workspaceRepo.listTaskKeys(storyId) : [];
-          const tasks = await this.generateTasksForStory(
-            agent,
-            { key: story.epicKey, title: epicRows.find((e) => e.key === story.epicKey)?.title ?? story.epicKey },
-            story.node,
-            docSummary,
-            agentStream,
-            job.id,
-            commandRun.id,
-          );
-          await this.jobService.writeCheckpoint(job.id, {
-            stage: "tasks_generated",
-            timestamp: new Date().toISOString(),
-            details: { storyKey: story.storyKey, tasks: tasks.length },
-          });
-          const limitedTasks = tasks.slice(0, options.maxTasksPerStory ?? tasks.length);
-          const taskKeyGen = createTaskKeyGenerator(story.storyKey, existingTaskKeys);
-          for (const task of limitedTasks) {
-            const key = taskKeyGen();
-            const localId = task.localId ?? key;
-            taskDetails.push({
-              localId,
-              key,
-              storyKey: story.storyKey,
-              epicKey: story.epicKey,
-              plan: task,
-            });
-          }
-        }
+        const epicInserts: EpicInsert[] = [];
+        const epicMeta: { key: string; node: AgentEpicNode & { key?: string } }[] = [];
 
-        const localToKey = new Map(taskDetails.map((t) => [t.localId, t.key]));
-        const taskInserts: TaskInsert[] = [];
-        for (const task of taskDetails) {
-          const storyId = storyIdByKey.get(task.storyKey);
-          const epicId = epicIdByKey.get(task.epicKey);
-          if (!storyId || !epicId) continue;
-          const depSlugs = (task.plan.dependsOnKeys ?? [])
-            .map((dep) => localToKey.get(dep))
-            .filter((value): value is string => Boolean(value));
-          taskInserts.push({
+        for (const epic of epics) {
+          const key = epicKeyGen(epic.area);
+          epicInserts.push({
             projectId: project.id,
-            epicId,
-            userStoryId: storyId,
-            key: task.key,
-            title: task.plan.title ?? `Task ${task.key}`,
-            description: buildTaskDescription(
-              task.key,
-              task.plan.title ?? `Task ${task.key}`,
-              task.plan.description,
-              task.storyKey,
-              task.epicKey,
-              task.plan.relatedDocs,
-              depSlugs,
+            key,
+            title: epic.title || `Epic ${key}`,
+            description: buildEpicDescription(
+              key,
+              epic.title || `Epic ${key}`,
+              epic.description,
+              epic.acceptanceCriteria,
+              epic.relatedDocs,
             ),
-            type: task.plan.type ?? "feature",
-            status: "not_started",
-            storyPoints: task.plan.estimatedStoryPoints ?? null,
-            priority: task.plan.priorityHint ?? (taskInserts.length + 1),
-            metadata: task.plan.relatedDocs ? { doc_links: task.plan.relatedDocs } : undefined,
+            storyPointsTotal: null,
+            priority: epic.priorityHint ?? (epicInserts.length + 1),
+            metadata: epic.relatedDocs ? { doc_links: epic.relatedDocs } : undefined,
           });
+          epicMeta.push({ key, node: epic });
         }
 
-        taskRows = await this.workspaceRepo.insertTasks(taskInserts, false);
-        const taskByLocal = new Map<string, TaskRow>();
-        for (const detail of taskDetails) {
-          const row = taskRows.find((t) => t.key === detail.key);
-          if (row) {
-            taskByLocal.set(detail.localId, row);
+        let epicRows: EpicRow[] = [];
+        let storyRows: StoryRow[] = [];
+        let taskRows: TaskRow[] = [];
+        let dependencyRows: TaskDependencyRow[] = [];
+
+        await this.workspaceRepo.withTransaction(async () => {
+          epicRows = await this.workspaceRepo.insertEpics(epicInserts, false);
+
+          const storyInserts: StoryInsert[] = [];
+          const storyMeta: { storyKey: string; epicKey: string; node: AgentStoryNode }[] = [];
+          for (const epic of epicMeta) {
+            const epicRow = epicRows.find((row) => row.key === epic.key);
+            if (!epicRow) continue;
+            epic.node.key = epicRow.key;
+            const stories = await this.generateStoriesForEpic(
+              agent,
+              { ...epic.node, key: epicRow.key },
+              docSummary,
+              agentStream,
+              job.id,
+              commandRun.id,
+            );
+            await this.jobService.writeCheckpoint(job.id, {
+              stage: "stories_generated",
+              timestamp: new Date().toISOString(),
+              details: { epicKey: epicRow.key, stories: stories.length },
+            });
+            const existingStoryKeys = await this.workspaceRepo.listStoryKeys(epicRow.id);
+            const storyKeyGen = createStoryKeyGenerator(epicRow.key, existingStoryKeys);
+            for (const story of stories.slice(0, options.maxStoriesPerEpic ?? stories.length)) {
+              const storyKey = storyKeyGen();
+              storyInserts.push({
+                projectId: project.id,
+                epicId: epicRow.id,
+                key: storyKey,
+                title: story.title || `Story ${storyKey}`,
+                description: buildStoryDescription(
+                  storyKey,
+                  story.title || `Story ${storyKey}`,
+                  story.userStory,
+                  story.description,
+                  story.acceptanceCriteria,
+                  story.relatedDocs,
+                ),
+                acceptanceCriteria: story.acceptanceCriteria?.join("\n") ?? undefined,
+                storyPointsTotal: null,
+                priority: story.priorityHint ?? (storyInserts.length + 1),
+                metadata: story.relatedDocs ? { doc_links: story.relatedDocs } : undefined,
+              });
+              storyMeta.push({ storyKey, epicKey: epicRow.key, node: story });
+            }
           }
-        }
 
-        const dependencies: TaskDependencyInsert[] = [];
-        for (const detail of taskDetails) {
-          const current = taskByLocal.get(detail.localId);
-          if (!current) continue;
-          for (const dep of detail.plan.dependsOnKeys ?? []) {
-            const target = taskByLocal.get(dep);
-            if (target && target.id !== current.id) {
-              dependencies.push({
-                taskId: current.id,
-                dependsOnTaskId: target.id,
-                relationType: "blocks",
+          storyRows = await this.workspaceRepo.insertStories(storyInserts, false);
+          const storyIdByKey = new Map(storyRows.map((row) => [row.key, row.id]));
+          const epicIdByKey = new Map(epicRows.map((row) => [row.key, row.id]));
+
+          type TaskDetail = { localId: string; key: string; storyKey: string; epicKey: string; plan: AgentTaskNode };
+          const taskDetails: TaskDetail[] = [];
+          for (const story of storyMeta) {
+            const storyId = storyIdByKey.get(story.storyKey);
+            const existingTaskKeys = storyId ? await this.workspaceRepo.listTaskKeys(storyId) : [];
+            const tasks = await this.generateTasksForStory(
+              agent,
+              { key: story.epicKey, title: epicRows.find((e) => e.key === story.epicKey)?.title ?? story.epicKey },
+              story.node,
+              docSummary,
+              agentStream,
+              job.id,
+              commandRun.id,
+            );
+            await this.jobService.writeCheckpoint(job.id, {
+              stage: "tasks_generated",
+              timestamp: new Date().toISOString(),
+              details: { storyKey: story.storyKey, tasks: tasks.length },
+            });
+            const limitedTasks = tasks.slice(0, options.maxTasksPerStory ?? tasks.length);
+            const taskKeyGen = createTaskKeyGenerator(story.storyKey, existingTaskKeys);
+            for (const task of limitedTasks) {
+              const key = taskKeyGen();
+              const localId = task.localId ?? key;
+              taskDetails.push({
+                localId,
+                key,
+                storyKey: story.storyKey,
+                epicKey: story.epicKey,
+                plan: task,
               });
             }
           }
-        }
 
-        if (dependencies.length > 0) {
-          dependencyRows = await this.workspaceRepo.insertTaskDependencies(dependencies, false);
-        }
-
-        // Roll up story and epic story point totals.
-        const storySpTotals = new Map<string, number>();
-        for (const task of taskRows) {
-          if (typeof task.storyPoints === "number") {
-            storySpTotals.set(task.userStoryId, (storySpTotals.get(task.userStoryId) ?? 0) + task.storyPoints);
+          const localToKey = new Map(taskDetails.map((t) => [t.localId, t.key]));
+          const taskInserts: TaskInsert[] = [];
+          for (const task of taskDetails) {
+            const storyId = storyIdByKey.get(task.storyKey);
+            const epicId = epicIdByKey.get(task.epicKey);
+            if (!storyId || !epicId) continue;
+            const depSlugs = (task.plan.dependsOnKeys ?? [])
+              .map((dep) => localToKey.get(dep))
+              .filter((value): value is string => Boolean(value));
+            taskInserts.push({
+              projectId: project.id,
+              epicId,
+              userStoryId: storyId,
+              key: task.key,
+              title: task.plan.title ?? `Task ${task.key}`,
+              description: buildTaskDescription(
+                task.key,
+                task.plan.title ?? `Task ${task.key}`,
+                task.plan.description,
+                task.storyKey,
+                task.epicKey,
+                task.plan.relatedDocs,
+                depSlugs,
+              ),
+              type: task.plan.type ?? "feature",
+              status: "not_started",
+              storyPoints: task.plan.estimatedStoryPoints ?? null,
+              priority: task.plan.priorityHint ?? (taskInserts.length + 1),
+              metadata: task.plan.relatedDocs ? { doc_links: task.plan.relatedDocs } : undefined,
+            });
           }
-        }
-        for (const [storyId, total] of storySpTotals.entries()) {
-          await this.workspaceRepo.updateStoryPointsTotal(storyId, total);
-        }
-        const epicSpTotals = new Map<string, number>();
-        for (const story of storyRows) {
-          if (typeof story.storyPointsTotal === "number") {
-            epicSpTotals.set(story.epicId, (epicSpTotals.get(story.epicId) ?? 0) + (story.storyPointsTotal ?? 0));
+
+          taskRows = await this.workspaceRepo.insertTasks(taskInserts, false);
+          const taskByLocal = new Map<string, TaskRow>();
+          for (const detail of taskDetails) {
+            const row = taskRows.find((t) => t.key === detail.key);
+            if (row) {
+              taskByLocal.set(detail.localId, row);
+            }
           }
-        }
-        for (const [epicId, total] of epicSpTotals.entries()) {
-          await this.workspaceRepo.updateEpicStoryPointsTotal(epicId, total);
-        }
 
-        const now = new Date().toISOString();
-        for (const task of taskRows) {
-          await this.workspaceRepo.createTaskRun({
-            taskId: task.id,
-            command: "create-tasks",
-            status: "succeeded",
-            jobId: job.id,
-            commandRunId: commandRun.id,
-            startedAt: now,
-            finishedAt: now,
-            runContext: { key: task.key },
-          });
+          const dependencies: TaskDependencyInsert[] = [];
+          for (const detail of taskDetails) {
+            const current = taskByLocal.get(detail.localId);
+            if (!current) continue;
+            for (const dep of detail.plan.dependsOnKeys ?? []) {
+              const target = taskByLocal.get(dep);
+              if (target && target.id !== current.id) {
+                dependencies.push({
+                  taskId: current.id,
+                  dependsOnTaskId: target.id,
+                  relationType: "blocks",
+                });
+              }
+            }
+          }
+
+          if (dependencies.length > 0) {
+            dependencyRows = await this.workspaceRepo.insertTaskDependencies(dependencies, false);
+          }
+
+          // Roll up story and epic story point totals.
+          const storySpTotals = new Map<string, number>();
+          for (const task of taskRows) {
+            if (typeof task.storyPoints === "number") {
+              storySpTotals.set(task.userStoryId, (storySpTotals.get(task.userStoryId) ?? 0) + task.storyPoints);
+            }
+          }
+          for (const [storyId, total] of storySpTotals.entries()) {
+            await this.workspaceRepo.updateStoryPointsTotal(storyId, total);
+          }
+          const epicSpTotals = new Map<string, number>();
+          for (const story of storyRows) {
+            if (typeof story.storyPointsTotal === "number") {
+              epicSpTotals.set(story.epicId, (epicSpTotals.get(story.epicId) ?? 0) + (story.storyPointsTotal ?? 0));
+            }
+          }
+          for (const [epicId, total] of epicSpTotals.entries()) {
+            await this.workspaceRepo.updateEpicStoryPointsTotal(epicId, total);
+          }
+
+          const now = new Date().toISOString();
+          for (const task of taskRows) {
+            await this.workspaceRepo.createTaskRun({
+              taskId: task.id,
+              command: "create-tasks",
+              status: "succeeded",
+              jobId: job.id,
+              commandRunId: commandRun.id,
+              startedAt: now,
+              finishedAt: now,
+              runContext: { key: task.key },
+            });
+          }
+        });
+
+        await this.jobService.updateJobStatus(job.id, "completed", {
+          payload: {
+            epicsCreated: epicRows.length,
+            storiesCreated: storyRows.length,
+            tasksCreated: taskRows.length,
+            dependenciesCreated: dependencyRows.length,
+            docs: docSummary,
+          },
+        });
+        await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+
+        return {
+          jobId: job.id,
+          commandRunId: commandRun.id,
+          epics: epicRows,
+          stories: storyRows,
+          tasks: taskRows,
+          dependencies: dependencyRows,
+        };
+      } catch (error) {
+        lastError = error;
+        const message = (error as Error).message;
+        const isBusy =
+          message?.includes("SQLITE_BUSY") ||
+          message?.includes("database is locked");
+        const remaining = CreateTasksService.MAX_BUSY_RETRIES - attempt;
+        if (isBusy && remaining > 0) {
+          const backoff = CreateTasksService.BUSY_BACKOFF_MS * attempt;
+          await this.jobService.appendLog(
+            job.id,
+            `Encountered SQLITE_BUSY, retrying create-tasks (attempt ${attempt}/${CreateTasksService.MAX_BUSY_RETRIES}) after ${backoff}ms...\n`,
+          );
+          await delay(backoff);
+          continue;
         }
-      });
-
-      await this.jobService.updateJobStatus(job.id, "completed", {
-        payload: {
-          epicsCreated: epicRows.length,
-          storiesCreated: storyRows.length,
-          tasksCreated: taskRows.length,
-          dependenciesCreated: dependencyRows.length,
-          docs: docSummary,
-        },
-      });
-      await this.jobService.finishCommandRun(commandRun.id, "succeeded");
-
-      return {
-        jobId: job.id,
-        commandRunId: commandRun.id,
-        epics: epicRows,
-        stories: storyRows,
-        tasks: taskRows,
-        dependencies: dependencyRows,
-      };
-    } catch (error) {
-      const message = (error as Error).message;
-      await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: message });
-      await this.jobService.finishCommandRun(commandRun.id, "failed", message);
-      throw error;
+        await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: message });
+        await this.jobService.finishCommandRun(commandRun.id, "failed", message);
+        throw error;
+      }
     }
+    await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (lastError as Error)?.message });
+    await this.jobService.finishCommandRun(commandRun.id, "failed", (lastError as Error)?.message);
+    throw lastError ?? new Error("create-tasks failed");
   }
 }

@@ -45,42 +45,7 @@ interface OpenapiContext {
 }
 
 const OPENAPI_TAGS = [
-  "Agents",
-  "Routing",
-  "Tasks",
-  "Work",
-  "Review",
-  "QA",
-  "Backlog",
-  "Estimate",
-  "Telemetry",
-  "Jobs",
-  "Docdex",
-  "Config",
-  "System",
-];
-
-const REQUIRED_SCHEMAS = [
-  "Agent",
-  "AgentAuth",
-  "AgentPromptManifest",
-  "RoutingDefaults",
-  "RoutingPreview",
-  "Project",
-  "Epic",
-  "UserStory",
-  "Task",
-  "TaskSummary",
-  "TaskHistoryEntry",
-  "TaskComment",
-  "Job",
-  "CommandRun",
-  "TaskRun",
-  "TaskQaRun",
-  "TokenUsage",
-  "TaskLog",
-  "LogEntry",
-  "ErrorResponse",
+  // For project-specific specs, tags come from context; this is only a fallback.
 ];
 
 const OPENAPI_VERSION = "3.1.0";
@@ -189,34 +154,67 @@ class OpenapiContextAssembler {
     const warnings: string[] = [];
     const blocks: ContextBlock[] = [];
     let docdexAvailable = true;
+    let sdsDocs: DocdexDocument[] = [];
+    let pdrDocs: DocdexDocument[] = [];
+    let rfpDocs: DocdexDocument[] = [];
+    let openapiDocs: DocdexDocument[] = [];
+    let schemaDocs: DocdexDocument[] = [];
     try {
-      const [sdsDocs, pdrDocs, rfpDocs, openapiDocs, schemaDocs] = await Promise.all([
+      [sdsDocs, pdrDocs, rfpDocs, openapiDocs, schemaDocs] = await Promise.all([
         this.docdex.search({ docType: "SDS", profile: "openapi", projectKey: this.projectKey }),
         this.docdex.search({ docType: "PDR", profile: "openapi", projectKey: this.projectKey }),
         this.docdex.search({ docType: "RFP", profile: "openapi", projectKey: this.projectKey }),
         this.docdex.search({ docType: "OPENAPI", profile: "openapi", projectKey: this.projectKey }),
         this.docdex.search({ docType: "Architecture", profile: "openapi", projectKey: this.projectKey }),
       ]);
-      if (sdsDocs.length > 0) {
-        blocks.push(this.formatBlock(sdsDocs[0], "SDS OpenAPI contract", 1, 8));
-      }
-      if (pdrDocs.length > 0) {
-        blocks.push(this.formatBlock(pdrDocs[0], "PDR context", 2, 6));
-      }
-      if (rfpDocs.length > 0) {
-        blocks.push(this.formatBlock(rfpDocs[0], "RFP alignment", 2, 6));
-      }
-      if (openapiDocs.length > 0) {
-        blocks.push(this.formatBlock(openapiDocs[0], "Existing OpenAPI docdex", 1, 6));
-      }
-      if (schemaDocs.length > 0) {
-        blocks.push(this.formatBlock(schemaDocs[0], "Data model & persistence", 1, 6));
-      }
     } catch (error) {
       docdexAvailable = false;
       warnings.push(
         `Docdex unavailable; falling back to local docs for OpenAPI context (${(error as Error).message ?? "unknown"})`,
       );
+    }
+    // Fallbacks when docdex returns no hits
+    if (sdsDocs.length === 0) {
+      const local = await this.findLatestLocalDoc("SDS");
+      if (local) {
+        blocks.push(this.formatBlock(local, "Local SDS (no docdex)", 1, 8));
+        warnings.push("No SDS found in docdex; using latest local SDS file.");
+        sdsDocs = [local];
+      } else {
+        warnings.push("No SDS found in docdex or local workspace.");
+      }
+    } else {
+      blocks.push(this.formatBlock(sdsDocs[0], "SDS OpenAPI contract", 1, 8));
+    }
+    if (pdrDocs.length === 0) {
+      const local = await this.findLatestLocalDoc("PDR");
+      if (local) {
+        blocks.push(this.formatBlock(local, "Local PDR (no docdex)", 2, 6));
+        warnings.push("No PDR found in docdex; using latest local PDR file.");
+        pdrDocs = [local];
+      } else {
+        warnings.push("No PDR found in docdex or local workspace.");
+      }
+    } else {
+      blocks.push(this.formatBlock(pdrDocs[0], "PDR context", 2, 6));
+    }
+    if (rfpDocs.length === 0) {
+      const local = await this.findLatestLocalDoc("RFP");
+      if (local) {
+        blocks.push(this.formatBlock(local, "Local RFP (no docdex)", 2, 6));
+        warnings.push("No RFP found in docdex; using latest local RFP file.");
+        rfpDocs = [local];
+      } else {
+        warnings.push("No RFP found in docdex or local workspace.");
+      }
+    } else {
+      blocks.push(this.formatBlock(rfpDocs[0], "RFP alignment", 2, 6));
+    }
+    if (openapiDocs.length > 0) {
+      blocks.push(this.formatBlock(openapiDocs[0], "Existing OpenAPI docdex", 1, 6));
+    }
+    if (schemaDocs.length > 0) {
+      blocks.push(this.formatBlock(schemaDocs[0], "Data model & persistence", 1, 6));
     }
 
     if (!blocks.length) {
@@ -328,15 +326,7 @@ export class OpenApiService {
     if (!doc.openapi) errors.push("Missing openapi version");
     if (!doc.info?.title) errors.push("Missing info.title");
     if (!doc.info?.version) errors.push("Missing info.version");
-    if (!doc.paths || Object.keys(doc.paths).length === 0) errors.push("paths section is required");
-    const schemas = doc.components?.schemas;
-    if (!schemas) {
-      errors.push("components.schemas section is required");
-    } else {
-      for (const name of REQUIRED_SCHEMAS) {
-        if (!schemas[name]) errors.push(`Missing schema: ${name}`);
-      }
-    }
+    if (!doc.paths) errors.push("paths section is required (can be empty if no HTTP API)");
     return errors;
   }
 
@@ -354,27 +344,6 @@ export class OpenApiService {
   }
 
   private buildPrompt(context: OpenapiContext, cliVersion: string, retryReasons?: string[]): string {
-    const commands = [
-      "create-tasks",
-      "refine-tasks",
-      "work-on-tasks",
-      "code-review",
-      "qa-tasks",
-      "backlog",
-      "estimate",
-      "task-detail",
-      "order-tasks",
-      "agent",
-      "test-agent",
-      "routing",
-      "tokens",
-      "telemetry",
-      "job",
-      "update",
-      "openapi-from-docs",
-    ];
-    const tagList = OPENAPI_TAGS.map((t) => `- ${t}`).join("\n");
-    const requiredSchemas = REQUIRED_SCHEMAS.map((s) => `- ${s}`).join("\n");
     const contextBlocks = context.blocks
       .map((block) => `### ${block.label}\n${block.content}`)
       .join("\n\n");
@@ -382,32 +351,19 @@ export class OpenApiService {
       ? `\nPrevious attempt issues:\n${retryReasons.map((r) => `- ${r}`).join("\n")}\nFix them in this draft.\n`
       : "";
     return [
-      "You are the mcoda OpenAPI editor. Generate a complete OpenAPI YAML (`openapi/mcoda.yaml`) for the mcoda CLI and system.",
-      `Use OpenAPI version ${OPENAPI_VERSION}, info.title "mcoda API", and info.version ${cliVersion}.`,
+      "You are generating an OpenAPI 3.1 YAML for THIS workspace/project using only the provided PDR/SDS/RFP context.",
+      "Derive resources, schemas, and HTTP endpoints directly from the product requirements (e.g., todos CRUD, filters, search, bulk actions).",
+      "If the documents describe a frontend-only/localStorage app, design a minimal REST API that could back those features (e.g., /todos, /todos/{id}, bulk operations, search/filter params) instead of returning an empty spec.",
+      "Prefer concise tags derived from domain resources (e.g., Todos). Avoid generic mcoda/system endpoints unless explicitly described in the context.",
+      `Use OpenAPI version ${OPENAPI_VERSION}, set info.title to the project name from context (fallback \"mcoda API\"), and info.version ${cliVersion}.`,
       "Return only valid YAML (no Markdown fences, no commentary).",
       retryNote,
-      "Required tags (attach appropriately):",
-      tagList,
-      "Required schemas:",
-      requiredSchemas,
-      "Required vendor extensions: include x-mcoda-cli.name, x-mcoda-cli.output-shape, x-mcoda-db-table where applicable, x-mcoda-job-type for job-creating endpoints, x-mcoda-agent-roles, x-mcoda-prompts, x-mcoda-tools, x-mcoda-docdex-profile.",
-      "Core operation groups to model:",
-      "- Agents: CRUD + test-agent endpoints for global agents",
-      "- Routing: workspace defaults (get/put) and routing preview",
-      "- Tasks/Backlog/Estimate: task detail/comments, backlog listing, estimation over token_usage/command_runs",
-      "- Planning pipeline: create-tasks, refine-tasks, work-on-tasks, code-review, qa-tasks (job-creating)",
-      "- Dependency ordering: order tasks for a workspace",
-      "- Jobs & telemetry: job listing/status/resume and telemetry/token usage views",
-      "- Docdex/Config/System: minimal stubs reflecting CLI and SDS expectations",
-      "CLI commands known to the system:",
-      commands.map((c) => `- ${c}`).join("\n"),
-      "mcoda-specific expectations:",
-      "- Align data shapes with mcoda DB tables when possible.",
-      "- Use x-mcoda-db-table on schemas that map directly to DB tables (tasks, epics, user_stories, jobs, command_runs, task_runs, task_comments, token_usage, task_logs, agents, routing_defaults, etc.).",
-      "- Use x-mcoda-cli.name and x-mcoda-job-type to map endpoints back to mcoda commands and job engine types (create_tasks, task_refinement, work, review, qa, openapi_change).",
-      "- Include x-mcoda-tools (e.g., docdex, vcs, qa_runner) and x-mcoda-docdex-profile (e.g., sds, pdr, workspace-code) where appropriate.",
-      "Context from SDS/PDR/docdex and existing specs:",
-      contextBlocks || "No context available; synthesize from SDS expectations.",
+      "Scope rules:",
+      "- Derive endpoints, schemas, and tags from the provided PDR/SDS/RFP context only.",
+      "- Do NOT emit generic mcoda CLI/system endpoints unless explicitly described.",
+      "- Prefer concise schemas and operations that map to described APIs; omit unused boilerplate.",
+      "Context:",
+      contextBlocks || "No context available; if none, produce a minimal empty spec with paths: {}.",
     ].join("\n\n");
   }
 
@@ -449,10 +405,10 @@ export class OpenApiService {
   }
 
   async generateFromDocs(options: GenerateOpenapiOptions): Promise<GenerateOpenapiResult> {
-    const commandRun = await this.jobService.startCommandRun("openapi-from-docs", undefined);
-    const job = await this.jobService.startJob("openapi_change", commandRun.id, undefined, {
+    const commandRun = await this.jobService.startCommandRun("openapi-from-docs", options.projectKey);
+    const job = await this.jobService.startJob("openapi_change", commandRun.id, options.projectKey, {
       commandName: commandRun.commandName,
-      payload: { workspaceRoot: this.workspace.workspaceRoot },
+      payload: { workspaceRoot: this.workspace.workspaceRoot, projectKey: options.projectKey },
     });
     const warnings: string[] = [];
     try {
@@ -525,7 +481,8 @@ export class OpenApiService {
         try {
           parsed = YAML.parse(specYaml);
           if (!parsed.info) parsed.info = {};
-          parsed.info.title = parsed.info.title ?? "mcoda API";
+          const projectTitle = options.projectKey ?? (this.workspace.config as any)?.projectKey;
+          parsed.info.title = parsed.info.title ?? projectTitle ?? "mcoda API";
           parsed.info.version = options.cliVersion;
           parsed.openapi = parsed.openapi ?? OPENAPI_VERSION;
           const errors = this.validateSpec(parsed);
@@ -573,7 +530,7 @@ export class OpenApiService {
           const registered = await this.registerOpenapi(outputPath, specYaml);
           docdexId = registered.id;
         } catch (error) {
-          warnings.push(`Failed to register OpenAPI in docdex: ${(error as Error).message}`);
+          warnings.push(`Docdex registration skipped: ${(error as Error).message}`);
         }
       }
 
