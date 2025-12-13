@@ -15,6 +15,14 @@ import { RoutingService } from "../agents/RoutingService.js";
 const exec = promisify(execCb);
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const DEFAULT_TASK_BRANCH_PREFIX = "mcoda/task/";
+const DEFAULT_CODE_WRITER_PROMPT = [
+  "You are the code-writing agent. Before coding, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run search. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
+  "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
+  "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
+].join("\n");
+const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
+const DEFAULT_CHARACTER_PROMPT =
+  "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
 
 export interface WorkOnTasksRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -389,16 +397,36 @@ export class WorkOnTasksService {
   }> {
     const agentPrompts =
       "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
+    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-writer.md");
+    const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-writer.md");
+    try {
+      await fs.promises.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
+      await fs.promises.access(mcodaPromptPath);
+    } catch {
+      try {
+        await fs.promises.access(workspacePromptPath);
+        await fs.promises.copyFile(workspacePromptPath, mcodaPromptPath);
+        console.info(`[work-on-tasks] copied code-writer prompt to ${mcodaPromptPath}`);
+      } catch {
+        console.info(`[work-on-tasks] no code-writer prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
+        await fs.promises.writeFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT, "utf8");
+      }
+    }
     const commandPromptFiles = await this.readPromptFiles([
-      path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-writer.md"),
-      path.join(this.workspace.workspaceRoot, "prompts", "code-writer.md"),
+      mcodaPromptPath,
+      workspacePromptPath,
     ]);
-    const mergedCommandPrompt = [...commandPromptFiles, agentPrompts?.commandPrompts?.["work-on-tasks"]]
-      .filter(Boolean)
-      .join("\n\n");
+    const mergedCommandPrompt = (() => {
+      const parts = [...commandPromptFiles];
+      if (agentPrompts?.commandPrompts?.["work-on-tasks"]) {
+        parts.push(agentPrompts.commandPrompts["work-on-tasks"]);
+      }
+      if (!parts.length) parts.push(DEFAULT_CODE_WRITER_PROMPT);
+      return parts.filter(Boolean).join("\n\n");
+    })();
     return {
-      jobPrompt: agentPrompts?.jobPrompt,
-      characterPrompt: agentPrompts?.characterPrompt,
+      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
       commandPrompt: mergedCommandPrompt || undefined,
     };
   }

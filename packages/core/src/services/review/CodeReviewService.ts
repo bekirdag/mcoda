@@ -16,6 +16,13 @@ import { RoutingService } from "../agents/RoutingService.js";
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
 const STATE_PATH = (workspaceRoot: string, jobId: string) => path.join(REVIEW_DIR(workspaceRoot, jobId), "state.json");
+const DEFAULT_CODE_REVIEW_PROMPT = [
+  "You are the code-review agent. Before reviewing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
+  "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
+].join("\n");
+const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
+const DEFAULT_CHARACTER_PROMPT =
+  "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
 
 export interface CodeReviewRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -216,15 +223,35 @@ export class CodeReviewService {
   }
 
   private async loadPrompts(agentId: string): Promise<{ jobPrompt?: string; characterPrompt?: string; commandPrompt?: string }> {
-    const filePrompts = await this.readPromptFiles([
-      path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-reviewer.md"),
-      path.join(this.workspace.workspaceRoot, "prompts", "code-reviewer.md"),
-    ]);
-    const agentPrompts = "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
-    const mergedCommandPrompt = [...filePrompts, agentPrompts?.commandPrompts?.["code-review"]].filter(Boolean).join("\n\n");
+    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-reviewer.md");
+    const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-reviewer.md");
+    try {
+      await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
+      await fs.access(mcodaPromptPath);
+    } catch {
+      try {
+        await fs.access(workspacePromptPath);
+        await fs.copyFile(workspacePromptPath, mcodaPromptPath);
+        console.info(`[code-review] copied code-reviewer prompt to ${mcodaPromptPath}`);
+      } catch {
+        console.info(`[code-review] no code-reviewer prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
+        await fs.writeFile(mcodaPromptPath, DEFAULT_CODE_REVIEW_PROMPT, 'utf8');
+      }
+    }
+    const filePrompts = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath]);
+    const agentPrompts =
+      "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
+    const mergedCommandPrompt = (() => {
+      const parts = [...filePrompts];
+      if (agentPrompts?.commandPrompts?.["code-review"]) {
+        parts.push(agentPrompts.commandPrompts["code-review"]);
+      }
+      if (!parts.length) parts.push(DEFAULT_CODE_REVIEW_PROMPT);
+      return parts.filter(Boolean).join("\n\n");
+    })();
     return {
-      jobPrompt: agentPrompts?.jobPrompt,
-      characterPrompt: agentPrompts?.characterPrompt,
+      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
       commandPrompt: mergedCommandPrompt || undefined,
     };
   }

@@ -3,10 +3,12 @@
 Goal: verify the change meets its acceptance criteria and guard against regressions with clear, reproducible findings.
 
 ## Orient yourself
-- Docdex usage (required): query docdex with the task key and feature keywords before planning tests. Use MCP `docdex_search` (limit ~4–8) or CLI `docdexd query --repo <repo> --query "<term>" --limit 6 --snippets=false`; pull snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for the hits you will test. If results are stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Capture acceptance criteria, data contracts, edge cases, non-functional requirements (performance, accessibility), and environment/setup assumptions. If docdex is unavailable, state that explicitly and fall back to local docs.
+- Docdex usage (required): query docdex with the task key and feature keywords before planning tests. Use MCP `docdex_search` (limit ~4–8) or CLI `docdexd query --repo <repo> --query "<term>" --limit 6 --snippets=false`; pull snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for the hits you will test. If results are stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Capture acceptance criteria, data contracts, edge cases, non-functional requirements (performance, accessibility), and environment/setup assumptions. If docdex is unavailable, state that explicitly and fall back to the task’s documentation catalog helpers instead of opening whole docs.
 - Read the task/request and extract explicit acceptance criteria. If unclear, infer from related docs (`docs/pdr/`, `docs/sds/`, `openapi/mcoda.yaml`) and existing behavior in the relevant package.
 - Map the impacted surfaces (CLI flags, API endpoints, background jobs, data stores) and note dependencies/config that must be set before testing.
 - Identify available automation: look for documented test commands in the project manifest or CONTRIBUTING docs, and any focused test files near the touched code.
+- If the task provides a required response shape or helper scripts (e.g., Plan/Focus/Commands/Notes, catalog/outline/targeted search helpers), follow it exactly and use those helpers instead of broad repo scans; keep file/range reads tight.
+- Treat `gpt-creator` as legacy; do not reference or depend on it in plans, tests, or reporting.
 
 ## Build a focused test plan
 - Cover happy paths, edge/error cases, and nearby regressions for the impacted area only; keep steps minimal and repeatable.

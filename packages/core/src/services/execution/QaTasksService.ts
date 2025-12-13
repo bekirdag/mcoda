@@ -21,6 +21,13 @@ import { AgentService } from '@mcoda/agents';
 import { GlobalRepository } from '@mcoda/db';
 import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
+const DEFAULT_QA_PROMPT = [
+  'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
+  'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
+].join('\n');
+const DEFAULT_JOB_PROMPT = 'You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.';
+const DEFAULT_CHARACTER_PROMPT =
+  'Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.';
 
 export interface QaTasksRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -197,18 +204,35 @@ export class QaTasksService {
   }
 
   private async loadPrompts(agentId: string): Promise<PromptBundle> {
-    const commandPromptFiles = await this.readPromptFiles([
-      path.join(this.workspace.workspaceRoot, '.mcoda', 'prompts', 'qa-agent.md'),
-      path.join(this.workspace.workspaceRoot, 'prompts', 'qa-agent.md'),
-    ]);
+    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, '.mcoda', 'prompts', 'qa-agent.md');
+    const workspacePromptPath = path.join(this.workspace.workspaceRoot, 'prompts', 'qa-agent.md');
+    try {
+      await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
+      await fs.access(mcodaPromptPath);
+    } catch {
+      try {
+        await fs.access(workspacePromptPath);
+        await fs.copyFile(workspacePromptPath, mcodaPromptPath);
+        console.info(`[qa-tasks] copied QA prompt to ${mcodaPromptPath}`);
+      } catch {
+        console.info(`[qa-tasks] no QA prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
+        await fs.writeFile(mcodaPromptPath, DEFAULT_QA_PROMPT, 'utf8');
+      }
+    }
+    const commandPromptFiles = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath]);
     const agentPrompts =
       this.agentService && 'getPrompts' in this.agentService ? await (this.agentService as any).getPrompts(agentId) : undefined;
-    const mergedCommandPrompt = [...commandPromptFiles, agentPrompts?.commandPrompts?.['qa-tasks']]
-      .filter(Boolean)
-      .join('\n\n');
+    const mergedCommandPrompt = (() => {
+      const parts = [...commandPromptFiles];
+      if (agentPrompts?.commandPrompts?.['qa-tasks']) {
+        parts.push(agentPrompts.commandPrompts['qa-tasks']);
+      }
+      if (!parts.length) parts.push(DEFAULT_QA_PROMPT);
+      return parts.filter(Boolean).join('\n\n');
+    })();
     return {
-      jobPrompt: agentPrompts?.jobPrompt,
-      characterPrompt: agentPrompts?.characterPrompt,
+      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
       commandPrompt: mergedCommandPrompt || undefined,
     };
   }

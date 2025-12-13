@@ -9,9 +9,12 @@ Goal: ship the requested change with the smallest, safest diff while matching th
   - MCP client: call `docdex_search` with concise queries (`"bulk complete selection"`), `limit` 4–8; if results are stale, call `docdex_index` (empty `paths` reindexes all) then re-run search. Fetch `docdex_open` only for specific doc_ids to keep payloads small.
   - CLI: `docdexd query --repo <repo> --query "bulk complete selection" --limit 6 --snippets=false` for summaries; call `/snippet/:doc_id?text_only=true` or `docdexd query ... --snippets=true` for a single target doc. If the index is missing/stale, run `docdexd index --repo <repo>` first.
   - Ensure the daemon is running if needed: `docdexd serve --repo <repo> --host 127.0.0.1 --port 46137 --log warn --secure-mode=false` for local use (or use MCP with `docdexd mcp --repo . --log warn --max-results 8`). Keep `.docdex/` out of VCS.
-  - Capture constraints: data model fields/enums, offline/online expectations, bulk rules, accessibility/perf requirements, acceptance criteria. If docdex is unavailable, say so and fall back to local docs.
+  - Capture constraints: data model fields/enums, offline/online expectations, bulk rules, accessibility/perf requirements, acceptance criteria. If docdex is unavailable, say so and fall back to the task’s documentation catalog helpers (FTS/JSON catalog) instead of opening entire doc files.
 - Map the target area: inspect the relevant folder/package, list likely entry points, and open nearby tests/utilities. Favor existing slices/stores/adapters over creating new ones; note the current data shape (fields, enums, persistence model).
 - Search for prior art with the repo’s code search (e.g., ripgrep) to reuse patterns for validation, errors, logging, and tests.
+- If the task provides a response contract (e.g., headings like Plan/Focus/Commands/Notes or required helper scripts), follow it exactly. Use any provided catalog/outline helpers instead of ad-hoc repo-wide searches; keep file/range reads narrow.
+- Prefer task-provided helpers (repo outline, targeted search, doc catalog/show) before manual `ls`/`rg`; avoid repo-wide scans. Preview narrow ranges before `sed`/`cat` to keep context tight.
+- Treat `gpt-creator` as legacy; do not reference or depend on it in plans, prompts, or code paths.
 
 ## Plan, then code
 - Write a brief plan (steps/files) before modifying anything; prefer reuse over new abstractions.
