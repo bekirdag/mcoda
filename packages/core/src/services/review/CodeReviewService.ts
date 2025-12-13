@@ -196,11 +196,15 @@ export class CodeReviewService {
 
   private async readPromptFiles(paths: string[]): Promise<string[]> {
     const contents: string[] = [];
+    const seen = new Set<string>();
     for (const promptPath of paths) {
       try {
         const content = await fs.readFile(promptPath, "utf8");
         const trimmed = content.trim();
-        if (trimmed) contents.push(trimmed);
+        if (trimmed && !seen.has(trimmed)) {
+          contents.push(trimmed);
+          seen.add(trimmed);
+        }
       } catch {
         /* optional prompt */
       }
@@ -228,6 +232,7 @@ export class CodeReviewService {
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.access(mcodaPromptPath);
+      console.info(`[code-review] using existing code-reviewer prompt at ${mcodaPromptPath}`);
     } catch {
       try {
         await fs.access(workspacePromptPath);
@@ -880,6 +885,9 @@ export class CodeReviewService {
       let statusAfter: string | undefined;
       const followupCreated: { taskId: string; taskKey: string; epicId: string; userStoryId: string; generic?: boolean }[] = [];
 
+      // Debug visibility: show prompts/task details for this run
+      const systemPrompt = systemPrompts.join("\n\n");
+
       try {
         if (!task.vcsBranch) {
           throw new Error("Task missing vcs_branch; cannot diff");
@@ -941,6 +949,29 @@ export class CodeReviewService {
           baseRef: state?.baseRef ?? baseRef,
           branch: task.vcsBranch ?? undefined,
         });
+
+        const separator = "============================================================";
+        const deps =
+          Array.isArray((task as any).dependencyKeys) && (task as any).dependencyKeys.length
+            ? (task as any).dependencyKeys
+            : Array.isArray((task.metadata as any)?.depends_on)
+              ? ((task.metadata as any).depends_on as string[])
+              : [];
+        console.info(separator);
+        console.info("[code-review] START OF TASK");
+        console.info(`[code-review] Task key: ${task.key}`);
+        console.info(`[code-review] Title: ${task.title ?? "(none)"}`);
+        console.info(`[code-review] Description: ${task.description ?? "(none)"}`);
+        console.info(
+          `[code-review] Story points: ${typeof task.storyPoints === "number" ? task.storyPoints : "(none)"}`,
+        );
+        console.info(`[code-review] Dependencies: ${deps.length ? deps.join(", ") : "(none available)"}`);
+        if (Array.isArray(task.acceptanceCriteria) && task.acceptanceCriteria.length) {
+          console.info(`[code-review] Acceptance criteria:\n- ${task.acceptanceCriteria.join("\n- ")}`);
+        }
+        console.info(`[code-review] System prompt used:\n${systemPrompt || "(none)"}`);
+        console.info(`[code-review] Task prompt used:\n${prompt}`);
+        console.info(separator);
 
         await this.persistContext(jobId, task.id, {
           historySummary,

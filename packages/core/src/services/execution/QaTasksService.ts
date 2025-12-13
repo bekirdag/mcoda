@@ -191,11 +191,15 @@ export class QaTasksService {
 
   private async readPromptFiles(paths: string[]): Promise<string[]> {
     const contents: string[] = [];
+    const seen = new Set<string>();
     for (const promptPath of paths) {
       try {
         const content = await fs.readFile(promptPath, 'utf8');
         const trimmed = content.trim();
-        if (trimmed) contents.push(trimmed);
+        if (trimmed && !seen.has(trimmed)) {
+          contents.push(trimmed);
+          seen.add(trimmed);
+        }
       } catch {
         /* optional prompt */
       }
@@ -209,6 +213,7 @@ export class QaTasksService {
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.access(mcodaPromptPath);
+      console.info(`[qa-tasks] using existing QA prompt at ${mcodaPromptPath}`);
     } catch {
       try {
         await fs.access(workspacePromptPath);
@@ -439,6 +444,24 @@ export class QaTasksService {
       ]
         .filter(Boolean)
         .join('\n\n');
+      const separator = "============================================================";
+      console.info(separator);
+      console.info("[qa-tasks] START OF TASK");
+      console.info(`[qa-tasks] Task key: ${task.task.key}`);
+      console.info(`[qa-tasks] Title: ${task.task.title ?? '(none)'}`);
+      console.info(`[qa-tasks] Description: ${task.task.description ?? '(none)'}`);
+      console.info(
+        `[qa-tasks] Story points: ${typeof task.task.storyPoints === 'number' ? task.task.storyPoints : '(none)'}`,
+      );
+      console.info(
+        `[qa-tasks] Dependencies: ${
+          task.dependencies.keys.length ? task.dependencies.keys.join(', ') : '(none available)'
+        }`,
+      );
+      if (acceptance) console.info(`[qa-tasks] Acceptance criteria:\n${acceptance}`);
+      console.info(`[qa-tasks] System prompt used:\n${systemPrompt || '(none)'}`);
+      console.info(`[qa-tasks] Task prompt used:\n${prompt}`);
+      console.info(separator);
       let output = '';
       let chunkCount = 0;
       if (stream && this.agentService.invokeStream) {

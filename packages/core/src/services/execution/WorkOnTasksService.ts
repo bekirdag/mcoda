@@ -358,11 +358,15 @@ export class WorkOnTasksService {
   private routingService: RoutingService;
   private async readPromptFiles(paths: string[]): Promise<string[]> {
     const contents: string[] = [];
+    const seen = new Set<string>();
     for (const promptPath of paths) {
       try {
         const content = await fs.promises.readFile(promptPath, "utf8");
         const trimmed = content.trim();
-        if (trimmed) contents.push(trimmed);
+        if (trimmed && !seen.has(trimmed)) {
+          contents.push(trimmed);
+          seen.add(trimmed);
+        }
       } catch {
         /* optional prompt */
       }
@@ -402,6 +406,7 @@ export class WorkOnTasksService {
     try {
       await fs.promises.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.promises.access(mcodaPromptPath);
+      console.info(`[work-on-tasks] using existing code-writer prompt at ${mcodaPromptPath}`);
     } catch {
       try {
         await fs.promises.access(workspacePromptPath);
@@ -949,6 +954,28 @@ export class WorkOnTasksService {
       const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
       await this.logTask(taskRun.id, `System prompt:\n${systemPrompt || "(none)"}`, "prompt");
       await this.logTask(taskRun.id, `Task prompt:\n${prompt}`, "prompt");
+      const separator = "============================================================";
+      console.info(separator);
+      console.info("[work-on-tasks] START OF TASK");
+      console.info(`[work-on-tasks] Task key: ${task.task.key}`);
+      console.info(`[work-on-tasks] Title: ${task.task.title ?? "(none)"}`);
+      console.info(`[work-on-tasks] Description: ${task.task.description ?? "(none)"}`);
+      console.info(
+        `[work-on-tasks] Story points: ${
+          typeof task.task.storyPoints === "number" ? task.task.storyPoints : "(none)"
+        }`,
+      );
+      console.info(
+        `[work-on-tasks] Dependencies: ${
+          task.dependencies.keys.length ? task.dependencies.keys.join(", ") : "(none)"
+        }`,
+      );
+      if (Array.isArray(task.task.acceptanceCriteria) && task.task.acceptanceCriteria.length) {
+        console.info(`[work-on-tasks] Acceptance criteria:\n- ${task.task.acceptanceCriteria.join("\n- ")}`);
+      }
+      console.info(`[work-on-tasks] System prompt used:\n${systemPrompt || "(none)"}`);
+      console.info(`[work-on-tasks] Task prompt used:\n${prompt}`);
+      console.info(separator);
       await endPhase("prompt", { hasSystemPrompt: Boolean(systemPrompt) });
 
         if (request.dryRun) {
