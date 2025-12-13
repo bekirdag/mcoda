@@ -97,6 +97,8 @@ export async function* runCodexExecStream(
     return line;
   };
 
+  const normalizeOutput = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
+
   const stream = child.stdout;
   stream?.setEncoding("utf8");
   let buffer = "";
@@ -104,14 +106,14 @@ export async function* runCodexExecStream(
     buffer += chunk;
     let idx: number;
     while ((idx = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, idx).trim();
+      const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      const output = parseLine(line);
-      yield { output, raw: line };
+      const normalized = line.replace(/\r$/, "");
+      const output = normalizeOutput(parseLine(normalized));
+      yield { output, raw: normalized };
     }
   }
-  const trailing = buffer.trim();
+  const trailing = buffer.replace(/\r$/, "");
   if (trailing) {
     const output = parseLine(trailing);
     yield { output, raw: trailing };

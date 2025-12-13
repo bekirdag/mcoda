@@ -169,12 +169,198 @@ const ensureDiffHeader = (patch: string): string => {
   return result.join("\n");
 };
 
+const stripInvalidIndexLines = (patch: string): string =>
+  patch
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (!line.startsWith("index ")) return true;
+      const value = line.replace(/^index\s+/, "").trim();
+      return /^[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}$/.test(value);
+    })
+    .join("\n");
+
+const isPlaceholderPatch = (patch: string): boolean => /\?\?\?/.test(patch) || /rest of existing code/i.test(patch);
+
+const normalizeHunkHeaders = (patch: string): string => {
+  const lines = patch.split(/\r?\n/);
+  const out: string[] = [];
+  let currentAddFile = false;
+
+  const countLines = (start: number): { minus: number; plus: number } => {
+    let minus = 0;
+    let plus = 0;
+    for (let j = start; j < lines.length; j += 1) {
+      const l = lines[j];
+      if (l.startsWith("@@") || l.startsWith("diff --git ") || l.startsWith("*** End Patch")) break;
+      if (l.startsWith("+++ ") || l.startsWith("--- ")) continue;
+      if (l.startsWith(" ")) {
+        minus += 1;
+        plus += 1;
+      } else if (l.startsWith("-")) {
+        minus += 1;
+      } else if (l.startsWith("+")) {
+        plus += 1;
+      } else if (!l.trim()) {
+        minus += 1;
+        plus += 1;
+      } else {
+        break;
+      }
+    }
+    return { minus, plus };
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+
+    if (line.startsWith("diff --git ")) {
+      currentAddFile = false;
+      out.push(line);
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      currentAddFile = line.includes("/dev/null");
+      out.push(line);
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      out.push(line);
+      continue;
+    }
+
+    const isHunk = line.startsWith("@@");
+    const hasRanges = /^@@\s+-\d+/.test(line);
+    if (isHunk && !hasRanges) {
+      const { minus, plus } = countLines(i + 1);
+      const minusCount = currentAddFile ? 0 : minus;
+      const plusCount = currentAddFile ? Math.max(plus, 0) : plus;
+      out.push(`@@ -0,${minusCount} +1,${plusCount} @@`);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+};
+
+const fixMissingPrefixesInHunks = (patch: string): string => {
+  const lines = patch.split(/\r?\n/);
+  const out: string[] = [];
+  let inHunk = false;
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      out.push(line);
+      continue;
+    }
+    if (inHunk) {
+      if (line.startsWith("diff --git ") || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("*** End Patch")) {
+        inHunk = false;
+        out.push(line);
+        continue;
+      }
+      if (!/^[+\-\s]/.test(line) && line.trim().length) {
+        out.push(`+${line}`);
+        continue;
+      }
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+};
+
+const parseAddedFileContents = (patch: string): Record<string, string> => {
+  const lines = patch.split(/\r?\n/);
+  const additions: Record<string, string[]> = {};
+  let currentFile: string | null = null;
+  let isAdd = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.startsWith("diff --git ")) {
+      currentFile = null;
+      isAdd = false;
+    }
+    if (line.startsWith("--- ")) {
+      const minusPath = line.replace(/^---\s+/, "").trim();
+      isAdd = minusPath === "/dev/null";
+    }
+    if (line.startsWith("+++ ") && isAdd) {
+      const plusPath = line.replace(/^\+\+\+\s+/, "").trim().replace(/^b\//, "");
+      currentFile = plusPath;
+      additions[currentFile] = [];
+    }
+    if (currentFile && isAdd) {
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        additions[currentFile].push(line.slice(1));
+      }
+    }
+  }
+  return Object.fromEntries(Object.entries(additions).map(([file, content]) => [file, content.join("\n")]));
+};
+
+const updateAddPatchForExistingFile = (patch: string, existingFiles: Set<string>, cwd: string): { patch: string; skipped: string[] } => {
+  const additions = parseAddedFileContents(patch);
+  const skipped: string[] = [];
+  let updated = patch;
+  for (const file of Object.keys(additions)) {
+    const absolute = path.join(cwd, file);
+    if (!existingFiles.has(absolute)) continue;
+    try {
+      const content = fs.readFileSync(absolute, "utf8");
+      if (content.trim() === additions[file].trim()) {
+        skipped.push(file);
+        continue;
+      }
+    } catch {
+      // ignore read errors; fall back to converting patch
+    }
+    // Convert add patch to update by removing new file mode and dev/null markers.
+    const lines = updated.split(/\r?\n/);
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.startsWith("diff --git ")) {
+        out.push(line);
+        continue;
+      }
+      if (line.startsWith("new file mode") && lines[i + 1]?.includes(file)) {
+        continue;
+      }
+      if (line.startsWith("--- /dev/null") && lines[i + 1]?.includes(file)) {
+        out.push(`--- a/${file}`);
+        continue;
+      }
+      out.push(line);
+    }
+    updated = out.join("\n");
+  }
+  return { patch: updated, skipped };
+};
+
+const splitPatchIntoDiffs = (patch: string): string[] => {
+  const parts = patch.split(/^diff --git /m).filter(Boolean);
+  if (parts.length <= 1) return [patch];
+  return parts.map((part) => `diff --git ${part}`.trim());
+};
+
 export class WorkOnTasksService {
   private selectionService: TaskSelectionService;
   private stateService: TaskStateService;
   private taskLogSeq = new Map<string, number>();
   private vcs: VcsClient;
   private routingService: RoutingService;
+  private async readPromptFiles(paths: string[]): Promise<string[]> {
+    const contents: string[] = [];
+    for (const promptPath of paths) {
+      try {
+        const content = await fs.promises.readFile(promptPath, "utf8");
+        const trimmed = content.trim();
+        if (trimmed) contents.push(trimmed);
+      } catch {
+        /* optional prompt */
+      }
+    }
+    return contents;
+  }
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -201,12 +387,19 @@ export class WorkOnTasksService {
     characterPrompt?: string;
     commandPrompt?: string;
   }> {
-    if (!("getPrompts" in this.deps.agentService)) return {};
-    const prompts = await (this.deps.agentService as any).getPrompts(agentId);
+    const agentPrompts =
+      "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
+    const commandPromptFiles = await this.readPromptFiles([
+      path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-writer.md"),
+      path.join(this.workspace.workspaceRoot, "prompts", "code-writer.md"),
+    ]);
+    const mergedCommandPrompt = [...commandPromptFiles, agentPrompts?.commandPrompts?.["work-on-tasks"]]
+      .filter(Boolean)
+      .join("\n\n");
     return {
-      jobPrompt: prompts?.jobPrompt,
-      characterPrompt: prompts?.characterPrompt,
-      commandPrompt: prompts?.commandPrompts?.["work-on-tasks"],
+      jobPrompt: agentPrompts?.jobPrompt,
+      characterPrompt: agentPrompts?.characterPrompt,
+      commandPrompt: mergedCommandPrompt || undefined,
     };
   }
 
@@ -471,30 +664,86 @@ export class WorkOnTasksService {
     patches: string[],
     cwd: string,
     dryRun: boolean,
-  ): Promise<{ touched: string[]; error?: string }> {
+  ): Promise<{ touched: string[]; error?: string; warnings?: string[] }> {
     const touched = new Set<string>();
+    const warnings: string[] = [];
+    let applied = 0;
     for (const patch of patches) {
       const normalized = maybeConvertApplyPatch(patch);
       const withHeader = ensureDiffHeader(normalized);
-      const files = touchedFilesFromPatch(withHeader);
-      files.forEach((f) => touched.add(f));
-      if (dryRun) continue;
-      // Ensure target directories exist for new/updated files.
-      for (const file of files) {
-        const dir = path.dirname(path.join(cwd, file));
+      const withHunks = normalizeHunkHeaders(withHeader);
+      const withPrefixes = fixMissingPrefixesInHunks(withHunks);
+      const sanitized = stripInvalidIndexLines(withPrefixes);
+      if (isPlaceholderPatch(sanitized)) {
+        warnings.push("Skipped placeholder patch that contained ??? or 'rest of existing code'.");
+        continue;
+      }
+      const files = touchedFilesFromPatch(sanitized);
+      if (!files.length) {
+        warnings.push("Skipped patch with no recognizable file paths.");
+        continue;
+      }
+      const segments = splitPatchIntoDiffs(sanitized);
+      for (const segment of segments) {
+        const segmentFiles = touchedFilesFromPatch(segment);
+        const existingFiles = new Set(segmentFiles.map((f) => path.join(cwd, f)).filter((f) => fs.existsSync(f)));
+        let patchToApply = segment;
+        if (existingFiles.size > 0) {
+          const { patch: converted, skipped } = updateAddPatchForExistingFile(segment, existingFiles, cwd);
+          patchToApply = converted;
+          if (skipped.length) {
+            warnings.push(`Skipped add patch for existing files: ${skipped.join(", ")}`);
+            continue;
+          }
+        }
+        if (dryRun) {
+          segmentFiles.forEach((f) => touched.add(f));
+          applied += 1;
+          continue;
+        }
+        // Ensure target directories exist for new/updated files.
+        for (const file of segmentFiles) {
+          const dir = path.dirname(path.join(cwd, file));
+          try {
+            await fs.promises.mkdir(dir, { recursive: true });
+          } catch {
+            /* ignore mkdir errors; git apply will surface issues */
+          }
+        }
         try {
-          await fs.promises.mkdir(dir, { recursive: true });
-        } catch {
-          /* ignore mkdir errors; git apply will surface issues */
+          await this.vcs.applyPatch(cwd, patchToApply);
+          segmentFiles.forEach((f) => touched.add(f));
+          applied += 1;
+        } catch (error) {
+          // Fallback: if the segment only adds new files and git apply fails, write the files directly.
+          const additions = parseAddedFileContents(patchToApply);
+          const addTargets = Object.keys(additions);
+          if (addTargets.length && segmentFiles.length === addTargets.length) {
+            try {
+              for (const file of addTargets) {
+                const dest = path.join(cwd, file);
+                await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+                await fs.promises.writeFile(dest, additions[file], "utf8");
+                touched.add(file);
+              }
+              applied += 1;
+              warnings.push(`Applied add-only segment by writing files directly: ${addTargets.join(", ")}`);
+              continue;
+            } catch (writeError) {
+              warnings.push(
+                `Patch segment failed and fallback write failed (${segmentFiles.join(", ") || "unknown files"}): ${(writeError as Error).message}`,
+              );
+              continue;
+            }
+          }
+          warnings.push(`Patch segment failed (${segmentFiles.join(", ") || "unknown files"}): ${(error as Error).message}`);
         }
       }
-      try {
-        await this.vcs.applyPatch(cwd, withHeader);
-      } catch (error) {
-        return { touched: Array.from(touched), error: (error as Error).message };
-      }
     }
-    return { touched: Array.from(touched) };
+    if (!applied && warnings.length) {
+      return { touched: Array.from(touched), warnings, error: "No patches applied; all were skipped as placeholders." };
+    }
+    return { touched: Array.from(touched), warnings };
   }
 
   private async runTests(commands: string[], cwd: string): Promise<{ ok: boolean; results: { command: string; stdout: string; stderr: string; code: number }[] }> {
@@ -666,11 +915,13 @@ export class WorkOnTasksService {
       }
       await endPhase("context", { docWarnings, docSummary: Boolean(docSummary) });
 
-        await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
-        const prompt = this.buildPrompt(task, docSummary, allowedFiles);
-        const commandPrompt = prompts.commandPrompt ?? "";
-        const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
-        await endPhase("prompt", { hasSystemPrompt: Boolean(systemPrompt) });
+      await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
+      const prompt = this.buildPrompt(task, docSummary, allowedFiles);
+      const commandPrompt = prompts.commandPrompt ?? "";
+      const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
+      await this.logTask(taskRun.id, `System prompt:\n${systemPrompt || "(none)"}`, "prompt");
+      await this.logTask(taskRun.id, `Task prompt:\n${prompt}`, "prompt");
+      await endPhase("prompt", { hasSystemPrompt: Boolean(systemPrompt) });
 
         if (request.dryRun) {
           await this.logTask(taskRun.id, "Dry-run enabled; skipping execution.", "execution");
@@ -689,8 +940,6 @@ export class WorkOnTasksService {
           await this.logTask(taskRun.id, `Failed to move task to in_progress: ${(error as Error).message}`, "state");
         }
 
-      let agentOutput = "";
-      let agentDuration = 0;
       const streamChunk = (text?: string) => {
         if (!text) return;
         if (request.onAgentChunk) {
@@ -701,42 +950,50 @@ export class WorkOnTasksService {
           process.stdout.write(text);
         }
       };
-      try {
-        await startPhase("agent", { agent: agent.id, stream: agentStream });
-        const agentStarted = Date.now();
+
+      const invokeAgentOnce = async (input: string, phaseLabel: string) => {
+        let output = "";
+        const started = Date.now();
         if (agentStream && this.deps.agentService.invokeStream) {
-          const stream = await this.deps.agentService.invokeStream(agent.id, {
-            input: `${systemPrompt}\n\n${prompt}`,
-            metadata: { taskKey: task.task.key },
-          });
+          const stream = await this.deps.agentService.invokeStream(agent.id, { input, metadata: { taskKey: task.task.key } });
           for await (const chunk of stream) {
-            agentOutput += chunk.output ?? "";
+            output += chunk.output ?? "";
             streamChunk(chunk.output);
-            await this.logTask(taskRun.id, chunk.output ?? "", "agent");
+            await this.logTask(taskRun.id, chunk.output ?? "", phaseLabel);
           }
         } else {
-          const result = await this.deps.agentService.invoke(agent.id, { input: `${systemPrompt}\n\n${prompt}`, metadata: { taskKey: task.task.key } });
-          agentOutput = result.output ?? "";
-          streamChunk(agentOutput);
-          await this.logTask(taskRun.id, agentOutput, "agent");
+          const result = await this.deps.agentService.invoke(agent.id, { input, metadata: { taskKey: task.task.key } });
+          output = result.output ?? "";
+          streamChunk(output);
+          await this.logTask(taskRun.id, output, phaseLabel);
         }
-          agentDuration = (Date.now() - agentStarted) / 1000;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          await this.logTask(taskRun.id, `Agent invocation failed: ${message}`, "agent");
-          await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "agent", "error", { error: message });
-          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-            status: "failed",
-            finishedAt: new Date().toISOString(),
-          });
-          results.push({ taskKey: task.task.key, status: "failed", notes: message });
-          await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-          continue;
-        }
-        await endPhase("agent", { agentDurationSeconds: agentDuration });
+        return { output, durationSeconds: (Date.now() - started) / 1000 };
+      };
 
-        const promptTokens = estimateTokens(systemPrompt + prompt);
-        const completionTokens = estimateTokens(agentOutput);
+      let agentOutput = "";
+      let agentDuration = 0;
+      let triedRetry = false;
+
+      try {
+        await startPhase("agent", { agent: agent.id, stream: agentStream });
+        const first = await invokeAgentOnce(`${systemPrompt}\n\n${prompt}`, "agent");
+        agentOutput = first.output;
+        agentDuration = first.durationSeconds;
+        await endPhase("agent", { agentDurationSeconds: agentDuration });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.logTask(taskRun.id, `Agent invocation failed: ${message}`, "agent");
+        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "agent", "error", { error: message });
+        await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+        });
+        results.push({ taskKey: task.task.key, status: "failed", notes: message });
+        await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+        continue;
+      }
+
+      const recordUsage = async (phase: "agent" | "agent_retry", output: string, durationSeconds: number) => {
         await this.recordTokenUsage({
           agentId: agent.id,
           model: agent.defaultModel,
@@ -745,25 +1002,53 @@ export class WorkOnTasksService {
           taskRunId: taskRun.id,
           taskId: task.task.id,
           projectId: selection.project?.id,
-          tokensPrompt: promptTokens,
-          tokensCompletion: completionTokens,
-          phase: "agent",
-          durationSeconds: agentDuration,
+          tokensPrompt: estimateTokens(systemPrompt + prompt),
+          tokensCompletion: estimateTokens(output),
+          phase,
+          durationSeconds,
         });
+      };
 
-        const patches = extractPatches(agentOutput);
-        if (patches.length === 0) {
-          const message = "Agent output did not include a patch.";
-          await this.logTask(taskRun.id, message, "agent");
-          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-          await this.stateService.markBlocked(task.task, "missing_patch");
-          results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
-          await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-          continue;
+      await recordUsage("agent", agentOutput, agentDuration);
+
+      let patches = extractPatches(agentOutput);
+      if (patches.length === 0 && !triedRetry) {
+        triedRetry = true;
+        await this.logTask(taskRun.id, "Agent output did not include a patch; retrying with explicit patch-only instruction.", "agent");
+        try {
+          const retry = await invokeAgentOnce(
+            `${systemPrompt}\n\n${prompt}\n\nONLY OUTPUT the code changes as unified diff inside \`\`\`patch\`\`\` fences. Do not include analysis or narration.`,
+            "agent",
+          );
+          agentOutput = retry.output;
+          agentDuration += retry.durationSeconds;
+          await recordUsage("agent_retry", retry.output, retry.durationSeconds);
+          patches = extractPatches(agentOutput);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
         }
+      }
+
+      if (patches.length === 0) {
+        const message = "Agent output did not include a patch.";
+        await this.logTask(taskRun.id, message, "agent");
+        await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+        await this.stateService.markBlocked(task.task, "missing_patch");
+        results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
+        await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+        continue;
+      }
 
         await startPhase("apply", { patchCount: patches.length });
-      const { touched, error: applyError } = await this.applyPatches(patches, this.workspace.workspaceRoot, request.dryRun ?? false);
+      const { touched, error: applyError, warnings: applyWarnings } = await this.applyPatches(
+        patches,
+        this.workspace.workspaceRoot,
+        request.dryRun ?? false,
+      );
+      if (applyWarnings?.length) {
+        await this.logTask(taskRun.id, applyWarnings.join("; "), "patch");
+      }
       if (applyError) {
         await this.logTask(taskRun.id, `Patch apply failed: ${applyError}`, "patch");
         await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applyError });

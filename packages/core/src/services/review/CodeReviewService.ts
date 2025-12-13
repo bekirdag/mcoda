@@ -187,6 +187,20 @@ export class CodeReviewService {
     await maybeClose(this.deps.docdex);
   }
 
+  private async readPromptFiles(paths: string[]): Promise<string[]> {
+    const contents: string[] = [];
+    for (const promptPath of paths) {
+      try {
+        const content = await fs.readFile(promptPath, "utf8");
+        const trimmed = content.trim();
+        if (trimmed) contents.push(trimmed);
+      } catch {
+        /* optional prompt */
+      }
+    }
+    return contents;
+  }
+
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
     const gitignorePath = path.join(this.workspace.workspaceRoot, ".gitignore");
@@ -202,12 +216,16 @@ export class CodeReviewService {
   }
 
   private async loadPrompts(agentId: string): Promise<{ jobPrompt?: string; characterPrompt?: string; commandPrompt?: string }> {
-    if (!("getPrompts" in this.deps.agentService)) return {};
-    const prompts = await (this.deps.agentService as any).getPrompts(agentId);
+    const filePrompts = await this.readPromptFiles([
+      path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-reviewer.md"),
+      path.join(this.workspace.workspaceRoot, "prompts", "code-reviewer.md"),
+    ]);
+    const agentPrompts = "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
+    const mergedCommandPrompt = [...filePrompts, agentPrompts?.commandPrompts?.["code-review"]].filter(Boolean).join("\n\n");
     return {
-      jobPrompt: prompts?.jobPrompt,
-      characterPrompt: prompts?.characterPrompt,
-      commandPrompt: prompts?.commandPrompts?.["code-review"],
+      jobPrompt: agentPrompts?.jobPrompt,
+      characterPrompt: agentPrompts?.characterPrompt,
+      commandPrompt: mergedCommandPrompt || undefined,
     };
   }
 

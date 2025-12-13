@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
@@ -74,6 +75,8 @@ type AgentFollowUp = {
   evidence_url?: string;
   artifacts?: string[];
 };
+
+type PromptBundle = { jobPrompt?: string; characterPrompt?: string; commandPrompt?: string };
 
 interface AgentInterpretation {
   recommendation: 'pass' | 'fix_required' | 'infra_issue' | 'unclear';
@@ -179,6 +182,37 @@ export class QaTasksService {
     await maybeClose(this.deps.routingService);
   }
 
+  private async readPromptFiles(paths: string[]): Promise<string[]> {
+    const contents: string[] = [];
+    for (const promptPath of paths) {
+      try {
+        const content = await fs.readFile(promptPath, 'utf8');
+        const trimmed = content.trim();
+        if (trimmed) contents.push(trimmed);
+      } catch {
+        /* optional prompt */
+      }
+    }
+    return contents;
+  }
+
+  private async loadPrompts(agentId: string): Promise<PromptBundle> {
+    const commandPromptFiles = await this.readPromptFiles([
+      path.join(this.workspace.workspaceRoot, '.mcoda', 'prompts', 'qa-agent.md'),
+      path.join(this.workspace.workspaceRoot, 'prompts', 'qa-agent.md'),
+    ]);
+    const agentPrompts =
+      this.agentService && 'getPrompts' in this.agentService ? await (this.agentService as any).getPrompts(agentId) : undefined;
+    const mergedCommandPrompt = [...commandPromptFiles, agentPrompts?.commandPrompts?.['qa-tasks']]
+      .filter(Boolean)
+      .join('\n\n');
+    return {
+      jobPrompt: agentPrompts?.jobPrompt,
+      characterPrompt: agentPrompts?.characterPrompt,
+      commandPrompt: mergedCommandPrompt || undefined,
+    };
+  }
+
   private async checkpoint(jobId: string, stage: string, details?: Record<string, unknown>): Promise<void> {
     await this.jobService.writeCheckpoint(jobId, {
       stage,
@@ -212,13 +246,11 @@ export class QaTasksService {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
     const gitignorePath = `${this.workspace.workspaceRoot}/.gitignore`;
     try {
-      const fs = await import('node:fs/promises');
       const content = await fs.readFile(gitignorePath, 'utf8');
       if (!content.includes('.mcoda/')) {
         await fs.writeFile(gitignorePath, `${content.trimEnd()}\n${MCODA_GITIGNORE_ENTRY}`, 'utf8');
       }
     } catch {
-      const fs = await import('node:fs/promises');
       await fs.writeFile(gitignorePath, MCODA_GITIGNORE_ENTRY, 'utf8');
     }
   }
@@ -351,9 +383,12 @@ export class QaTasksService {
     }
     try {
       const agent = await this.resolveAgent(agentName);
+      const prompts = await this.loadPrompts(agent.id);
+      const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
       const docCtx = await this.gatherDocContext(task.task, taskRunId);
       const acceptance = (task.task.acceptanceCriteria ?? []).map((line) => `- ${line}`).join('\n');
       const prompt = [
+        systemPrompt,
         'You are the mcoda QA agent. Interpret the QA execution results and return structured JSON.',
         `Task: ${task.task.key} ${task.task.title}`,
         `Task type: ${task.task.type ?? 'n/a'}, status: ${task.task.status}`,
@@ -547,8 +582,11 @@ export class QaTasksService {
   ): Promise<FollowupSuggestion[]> {
     if (!this.agentService) return [];
     const agent = await this.resolveAgent(undefined);
+    const prompts = await this.loadPrompts(agent.id);
+    const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
     const docCtx = await this.gatherDocContext(task.task, taskRunId);
     const prompt = [
+      systemPrompt,
       'You are the mcoda QA agent. Given QA notes/evidence, propose structured follow-up tasks as JSON.',
       `Task: ${task.task.key} ${task.task.title}`,
       task.task.description ? `Task description:\n${task.task.description}` : '',
