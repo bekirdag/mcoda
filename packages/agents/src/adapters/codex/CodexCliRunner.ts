@@ -84,17 +84,21 @@ export async function* runCodexExecStream(
     child.on("close", (code) => resolve(code ?? 0));
   });
 
-  const parseLine = (line: string): string => {
+  const parseLine = (line: string): string | null => {
     try {
       const parsed = JSON.parse(line);
       const item = parsed?.item;
       if (item?.type === "agent_message" && typeof item.text === "string") {
         return item.text;
       }
+      // The codex CLI emits many JSONL event types (thread/turn/task/tool events).
+      // We only want the agent's textual output here.
+      return null;
     } catch {
-      /* ignore parse errors */
+      // `codex exec --json` is expected to emit JSONL, but it can still print non-JSON
+      // preamble lines (e.g., "Reading prompt from stdin..."). Treat those as noise.
+      return null;
     }
-    return line;
   };
 
   const normalizeOutput = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
@@ -109,14 +113,19 @@ export async function* runCodexExecStream(
       const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
       const normalized = line.replace(/\r$/, "");
-      const output = normalizeOutput(parseLine(normalized));
+      const parsed = parseLine(normalized);
+      if (!parsed) continue;
+      const output = normalizeOutput(parsed);
       yield { output, raw: normalized };
     }
   }
   const trailing = buffer.replace(/\r$/, "");
   if (trailing) {
-    const output = parseLine(trailing);
-    yield { output, raw: trailing };
+    const parsed = parseLine(trailing);
+    if (parsed) {
+      const output = normalizeOutput(parsed);
+      yield { output, raw: trailing };
+    }
   }
 
   const exitCode = await closePromise;

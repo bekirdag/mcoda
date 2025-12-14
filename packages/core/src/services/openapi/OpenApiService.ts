@@ -235,19 +235,17 @@ export class OpenApiService {
   private docdex: DocdexClient;
   private jobService: JobService;
   private agentService: AgentService;
-  private repo: GlobalRepository;
   private routingService: RoutingService;
   private workspace: WorkspaceResolution;
 
   constructor(
     workspace: WorkspaceResolution,
-    deps: { docdex?: DocdexClient; jobService?: JobService; agentService: AgentService; repo: GlobalRepository; routingService: RoutingService; noTelemetry?: boolean },
+    deps: { docdex?: DocdexClient; jobService?: JobService; agentService: AgentService; routingService: RoutingService; noTelemetry?: boolean },
   ) {
     this.workspace = workspace;
     this.docdex = deps?.docdex ?? new DocdexClient({ workspaceRoot: workspace.workspaceRoot });
     this.jobService = deps?.jobService ?? new JobService(workspace, undefined, { noTelemetry: deps?.noTelemetry });
     this.agentService = deps.agentService;
-    this.repo = deps.repo;
     this.routingService = deps.routingService;
   }
 
@@ -260,12 +258,11 @@ export class OpenApiService {
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
     const jobService = new JobService(workspace, undefined, { noTelemetry: options.noTelemetry });
-    return new OpenApiService(workspace, { repo, agentService, routingService, docdex, jobService, noTelemetry: options.noTelemetry });
+    return new OpenApiService(workspace, { agentService, routingService, docdex, jobService, noTelemetry: options.noTelemetry });
   }
 
   async close(): Promise<void> {
     if ((this.agentService as any).close) await this.agentService.close();
-    if ((this.repo as any).close) await this.repo.close();
     if ((this.jobService as any).close) await this.jobService.close();
   }
 

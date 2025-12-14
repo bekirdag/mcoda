@@ -121,14 +121,15 @@ test("prompts and capabilities are surfaced to adapters", async () => {
   assert.equal(prompts?.jobPrompt, "do work");
 });
 
-test("falls back to local adapter when no secret and no CLI configured", async () => {
+test("falls back to codex CLI when API secret is missing", async () => {
   const agent = await repo.createAgent({
     slug: "fallback-local",
     adapter: "openai-api",
     capabilities: ["chat"],
     prompts: { jobPrompt: "job", characterPrompt: "character" },
   });
-  await assert.rejects(() => service.invoke(agent.id, { input: "hello" }), /AUTH_REQUIRED/);
+  const result = await service.invoke(agent.id, { input: "hello" });
+  assert.equal(result.adapter, "codex-cli");
 });
 
 test("fills defaults when prompts are missing", async () => {

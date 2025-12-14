@@ -24,11 +24,11 @@ const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> 
 
 test("mcoda test-agent records health, command_runs, and token_usage", { concurrency: false }, async () => {
   await withTempHome(async () => {
-    await AgentsCommands.run(["add", "codex", "--adapter", "codex-cli", "--capability", "chat"]);
-    await TestAgentCommand.run(["codex"]);
+    await AgentsCommands.run(["add", "qa", "--adapter", "qa-cli", "--capability", "chat"]);
+    await TestAgentCommand.run(["qa"]);
 
     const repo = await GlobalRepository.create();
-    const agent = await repo.getAgentBySlug("codex");
+    const agent = await repo.getAgentBySlug("qa");
     assert.ok(agent);
     const health = await repo.getAgentHealth(agent.id);
     assert.equal(health?.status, "healthy");
