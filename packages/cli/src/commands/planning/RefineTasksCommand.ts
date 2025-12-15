@@ -15,13 +15,18 @@ interface ParsedRefineArgs {
   agentStream: boolean;
   fromDb: boolean;
   dryRun: boolean;
+  apply: boolean;
+  resume: boolean;
+  runAll: boolean;
+  batchSize?: number;
+  maxBatches?: number;
   json: boolean;
   planIn?: string;
   planOut?: string;
   jobId?: string;
 }
 
-const usage = `mcoda refine-tasks --project <PROJECT_KEY> [--workspace-root <PATH>] [--epic <EPIC_KEY>] [--story <STORY_KEY>] [--task <TASK_KEY> ...] [--status <STATUS>] [--max-tasks N] [--strategy split|merge|enrich|estimate|auto] [--agent <NAME>] [--agent-stream [true|false]] [--from-db [true|false]] [--dry-run] [--plan-in <PATH>] [--plan-out <PATH>] [--json]`;
+const usage = `mcoda refine-tasks --project <PROJECT_KEY> [--workspace-root <PATH>] [--epic <EPIC_KEY>] [--story <STORY_KEY>] [--task <TASK_KEY> ...] [--status <STATUS>] [--max-tasks N] [--strategy split|merge|enrich|estimate|auto] [--agent <NAME>] [--agent-stream [true|false]] [--from-db [true|false]] [--dry-run] [--apply] [--resume|--skip-refined] [--run-all] [--batch-size N] [--max-batches N] [--plan-in <PATH>] [--plan-out <PATH>] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -62,6 +67,11 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
   let agentStream: boolean | undefined;
   let fromDb: boolean | undefined;
   let dryRun = false;
+  let apply = false;
+  let resume = false;
+  let runAll = false;
+  let batchSize: number | undefined;
+  let maxBatches: number | undefined;
   let json = false;
   let planIn: string | undefined;
   let planOut: string | undefined;
@@ -87,6 +97,26 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
     if (arg.startsWith("--from-db=")) {
       const [, raw] = arg.split("=", 2);
       fromDb = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--apply=")) {
+      const [, raw] = arg.split("=", 2);
+      apply = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--resume=")) {
+      const [, raw] = arg.split("=", 2);
+      resume = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--skip-refined=")) {
+      const [, raw] = arg.split("=", 2);
+      resume = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--run-all=")) {
+      const [, raw] = arg.split("=", 2);
+      runAll = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -152,6 +182,24 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
       case "--dry-run":
         dryRun = true;
         break;
+      case "--apply":
+        apply = true;
+        break;
+      case "--resume":
+      case "--skip-refined":
+        resume = true;
+        break;
+      case "--run-all":
+        runAll = true;
+        break;
+      case "--batch-size":
+        batchSize = Number(argv[i + 1]);
+        i += 1;
+        break;
+      case "--max-batches":
+        maxBatches = Number(argv[i + 1]);
+        i += 1;
+        break;
       case "--json":
         json = true;
         break;
@@ -191,6 +239,11 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
     agentStream: agentStream ?? true,
     fromDb: fromDb ?? true,
     dryRun,
+    apply,
+    resume,
+    runAll,
+    batchSize: Number.isFinite(batchSize) ? batchSize : undefined,
+    maxBatches: Number.isFinite(maxBatches) ? maxBatches : undefined,
     json,
     planIn,
     planOut,
@@ -207,20 +260,31 @@ export class RefineTasksCommand {
       process.exitCode = 1;
       return;
     }
+    if (parsed.apply && parsed.dryRun) {
+      // eslint-disable-next-line no-console
+      console.error("refine-tasks: --apply cannot be used with --dry-run");
+      process.exitCode = 1;
+      return;
+    }
+    if ((parsed.runAll || parsed.resume) && !parsed.apply) {
+      // eslint-disable-next-line no-console
+      console.error("refine-tasks: --run-all/--resume requires --apply (needed for durable progress tracking)");
+      process.exitCode = 1;
+      return;
+    }
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
     const service = await RefineTasksService.create(workspace);
     try {
-      const result = await service.refineTasks({
+      const baseRequest = {
         workspace,
         projectKey: parsed.projectKey,
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
         statusFilter: parsed.statusFilter.length ? parsed.statusFilter : undefined,
-        maxTasks: parsed.maxTasks,
         strategy: parsed.strategy ?? "auto",
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
@@ -229,8 +293,69 @@ export class RefineTasksCommand {
         planInPath: parsed.planIn,
         planOutPath: parsed.planOut,
         jobId: parsed.jobId,
-        apply: false,
-        outputJson: parsed.json,
+        apply: parsed.apply,
+        excludeAlreadyRefined: parsed.runAll || parsed.resume,
+        allowEmptySelection: parsed.runAll || parsed.resume,
+      } as const;
+
+      if (parsed.runAll) {
+        const batchSize = parsed.batchSize ?? parsed.maxTasks ?? 250;
+        const maxBatches = parsed.maxBatches ?? Number.POSITIVE_INFINITY;
+        const batches: Array<{
+          batch: number;
+          jobId: string;
+          commandRunId: string;
+          tasksProcessed: number;
+          tasksAffected: number;
+          operations: number;
+        }> = [];
+        let totalProcessed = 0;
+        let totalAffected = 0;
+
+        for (let batch = 1; batch <= maxBatches; batch += 1) {
+          const result = await service.refineTasks({
+            ...baseRequest,
+            maxTasks: batchSize,
+          });
+          const tasksProcessed = result.summary?.tasksProcessed ?? 0;
+          const tasksAffected = result.summary?.tasksAffected ?? 0;
+          const operations = result.plan.operations.length;
+
+          if (tasksProcessed === 0 || operations === 0) break;
+
+          totalProcessed += tasksProcessed;
+          totalAffected += tasksAffected;
+          batches.push({
+            batch,
+            jobId: result.jobId,
+            commandRunId: result.commandRunId,
+            tasksProcessed,
+            tasksAffected,
+            operations,
+          });
+
+          if (!parsed.json) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `Batch ${batch}: Job ${result.jobId}, Command Run ${result.commandRunId}\n` +
+                `Processed: ${tasksProcessed}, affected: ${tasksAffected}, operations: ${operations}`,
+            );
+          }
+        }
+
+        if (parsed.json) {
+          // eslint-disable-next-line no-console
+          console.log(JSON.stringify({ status: "completed", totalProcessed, totalAffected, batches }, null, 2));
+        } else {
+          // eslint-disable-next-line no-console
+          console.log(`Done. Total processed: ${totalProcessed}, total affected: ${totalAffected}`);
+        }
+        return;
+      }
+
+      const result = await service.refineTasks({
+        ...baseRequest,
+        maxTasks: parsed.maxTasks,
       });
 
       if (parsed.json) {

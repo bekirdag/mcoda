@@ -27,6 +27,8 @@ interface RefineTasksOptions extends RefineTasksRequest {
   planOutPath?: string;
   jobId?: string;
   apply?: boolean;
+  excludeAlreadyRefined?: boolean;
+  allowEmptySelection?: boolean;
   outputJson?: boolean;
 }
 
@@ -57,6 +59,8 @@ interface StoryGroup {
 
 const DEFAULT_STRATEGY: RefineStrategy = "auto";
 const FORBIDDEN_TARGET_STATUSES = new Set(["ready_to_review", "ready_to_qa", "completed"]);
+const DEFAULT_MAX_TASKS = 250;
+const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 
@@ -196,6 +200,7 @@ export class RefineTasksService {
       taskKeys?: string[];
       statusFilter?: string[];
       maxTasks?: number;
+      excludeAlreadyRefined?: boolean;
     },
   ): Promise<{ projectId: string; groups: StoryGroup[]; warnings: string[] }> {
     const db = this.workspaceRepo.getDb();
@@ -246,6 +251,18 @@ export class RefineTasksService {
     if (filters.statusFilter && filters.statusFilter.length > 0) {
       clauses.push(`LOWER(t.status) IN (${filters.statusFilter.map(() => "?").join(", ")})`);
       params.push(...filters.statusFilter.map((s) => s.toLowerCase()));
+    }
+    if (filters.excludeAlreadyRefined) {
+      clauses.push(
+        `NOT EXISTS (
+          SELECT 1
+          FROM task_runs tr
+          WHERE tr.task_id = t.id
+            AND tr.command = ?
+            AND LOWER(tr.status) = 'succeeded'
+        )`,
+      );
+      params.push("refine-tasks");
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const limit = filters.maxTasks ? `LIMIT ${filters.maxTasks}` : "";
@@ -782,8 +799,6 @@ export class RefineTasksService {
     let storyPointsDelta = 0;
     const warnings: string[] = [];
     const taskByKey = new Map(group.tasks.map((t) => [t.key, t]));
-    const existingKeys = group.tasks.map((t) => t.key);
-    const keyGen = createTaskKeyGenerator(group.story.key, existingKeys);
 
     await this.workspaceRepo.withTransaction(async () => {
       let stage = "start";
@@ -792,6 +807,14 @@ export class RefineTasksService {
       const dependencyEdges: Array<{ from: string; to: string }> = [];
 
       try {
+        stage = "load:storyKeys";
+        const storyKeyRows = await this.workspaceRepo.getDb().all<{ key: string }[]>(
+          `SELECT key FROM tasks WHERE user_story_id = ?`,
+          group.story.id,
+        );
+        const existingKeys = storyKeyRows.map((r) => r.key);
+        const keyGen = createTaskKeyGenerator(group.story.key, existingKeys);
+
         for (const op of operations) {
           stage = `op:${op.op}`;
           if (op.op === "update_task") {
@@ -1056,32 +1079,76 @@ export class RefineTasksService {
   }
 
   private async invokeAgent(
-    agentName: string,
+    agentName: string | undefined,
     prompt: string,
     stream: boolean,
     jobId: string,
     commandRunId: string,
     metadata?: Record<string, unknown>,
   ): Promise<{ raw: string; promptTokens: number; completionTokens: number }> {
-    let output = "";
     const startedAt = Date.now();
     const agent = await this.resolveAgent(agentName);
+    const parts: string[] = [];
+    let capturedChars = 0;
+    let truncated = false;
+
     const logChunk = async (chunk?: string) => {
       if (!chunk) return;
       await this.jobService.appendLog(jobId, chunk);
       if (stream) process.stdout.write(chunk);
     };
-    if (stream) {
-      const gen = await this.agentService.invokeStream(agent.id, { input: prompt });
-      for await (const chunk of gen) {
-        output += chunk.output ?? "";
-        await logChunk(chunk.output);
+
+    const capture = (chunk?: string) => {
+      if (!chunk || truncated) return;
+      const next = capturedChars + chunk.length;
+      if (next > MAX_AGENT_OUTPUT_CHARS) {
+        truncated = true;
+        return;
       }
-    } else {
-      const result = await this.agentService.invoke(agent.id, { input: prompt });
-      output = result.output ?? "";
-      await logChunk(output);
+      parts.push(chunk);
+      capturedChars = next;
+    };
+
+    const formatContext = (): string => {
+      const meta = metadata as Record<string, unknown> | undefined;
+      const epic = typeof meta?.epicKey === "string" && meta.epicKey ? ` epic=${meta.epicKey}` : "";
+      const story = typeof meta?.storyKey === "string" && meta.storyKey ? ` story=${meta.storyKey}` : "";
+      return `${epic}${story}`;
+    };
+
+    try {
+      if (stream) {
+        const gen = await this.agentService.invokeStream(agent.id, { input: prompt, metadata: { jobId, commandRunId } });
+        for await (const chunk of gen) {
+          const text = chunk.output ?? "";
+          capture(text);
+          await logChunk(text);
+        }
+      } else {
+        const result = await this.agentService.invoke(agent.id, { input: prompt, metadata: { jobId, commandRunId } });
+        const text = result.output ?? "";
+        capture(text);
+        await logChunk(text);
+      }
+    } catch (error) {
+      const message = (error as Error).message ?? String(error);
+      if (message.includes("Invalid string length")) {
+        throw new Error(
+          `Agent output exceeded runtime limits (Invalid string length) while refining tasks.${formatContext()} ` +
+            `Try rerunning with a smaller scope (e.g. --max-tasks 200, or filter by --epic/--story/--status), or disable streaming (--agent-stream false).`,
+        );
+      }
+      throw error;
     }
+
+    if (truncated) {
+      throw new Error(
+        `Agent output exceeded ${MAX_AGENT_OUTPUT_CHARS.toLocaleString()} characters while refining tasks.${formatContext()} ` +
+          `Rerun with a smaller scope (e.g. --max-tasks 200, or filter by --epic/--story/--status), or disable streaming (--agent-stream false).`,
+      );
+    }
+
+    const output = parts.join("");
     const promptTokens = estimateTokens(prompt);
     const completionTokens = estimateTokens(output);
     const durationSeconds = (Date.now() - startedAt) / 1000;
@@ -1108,6 +1175,13 @@ export class RefineTasksService {
     const strategy = options.strategy ?? DEFAULT_STRATEGY;
     const agentStream = options.agentStream !== false;
     const applyChanges = options.apply === true; // default to no DB writes unless explicitly requested
+    const shouldDefaultMaxTasks =
+      options.planInPath == null &&
+      options.maxTasks == null &&
+      !options.epicKey &&
+      !(options.userStoryKey ?? options.storyKey) &&
+      !(options.taskKeys && options.taskKeys.length) &&
+      !(options.statusFilter && options.statusFilter.length);
     await this.workspaceRepo.createProjectIfMissing({
       key: options.projectKey,
       name: options.projectKey,
@@ -1142,12 +1216,9 @@ export class RefineTasksService {
         storyKey: options.userStoryKey ?? options.storyKey,
         taskKeys: options.taskKeys,
         statusFilter: options.statusFilter,
-        maxTasks: options.maxTasks,
+        maxTasks: shouldDefaultMaxTasks ? DEFAULT_MAX_TASKS : options.maxTasks,
+        excludeAlreadyRefined: options.excludeAlreadyRefined === true,
       });
-
-      if (selection.groups.length === 0 && !options.planInPath) {
-        throw new Error("No tasks matched the provided filters.");
-      }
 
       const plan: RefineTasksPlan = {
         strategy,
@@ -1163,6 +1234,35 @@ export class RefineTasksService {
           commandRunId: commandRun.id,
         },
       };
+
+      if (selection.groups.length === 0 && !options.planInPath) {
+        if (!options.allowEmptySelection) {
+          throw new Error("No tasks matched the provided filters.");
+        }
+        plan.warnings?.push("No tasks matched the provided filters.");
+        await this.jobService.updateJobStatus(job.id, "completed", {
+          payload: {
+            dryRun: options.dryRun ?? true,
+            operations: 0,
+            applied: false,
+            emptySelection: true,
+          },
+          processedItems: 0,
+          totalItems: 0,
+          lastCheckpoint: "empty_selection",
+        });
+        await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+        return {
+          jobId: job.id,
+          commandRunId: commandRun.id,
+          plan,
+          applied: false,
+          createdTasks: [],
+          updatedTasks: [],
+          cancelledTasks: [],
+          summary: { tasksProcessed: 0, tasksAffected: 0, storyPointsDelta: 0 },
+        };
+      }
 
       let planInput: RefineTasksPlan | undefined;
       if (options.planInPath) {
@@ -1228,52 +1328,64 @@ export class RefineTasksService {
       }
 
       if (!planInput) {
-        for (const group of selection.groups) {
-          const { summary: docSummary, warnings: docWarnings } = await this.summarizeDocs(
-            options.projectKey,
-            group.epic.key,
-            group.story.key,
+        if (shouldDefaultMaxTasks) {
+          plan.warnings?.push(
+            `No filters were provided; defaulted --max-tasks to ${DEFAULT_MAX_TASKS} to keep refinement tractable. Pass --max-tasks explicitly to override.`,
           );
-          group.docSummary = docSummary;
-          const historySummary = await this.summarizeHistory(group.tasks.map((t) => t.id));
-          group.historySummary = historySummary;
-          await this.jobService.writeCheckpoint(job.id, {
-            stage: "context_built",
-            timestamp: new Date().toISOString(),
-            details: { epic: group.epic.key, story: group.story.key, tasks: group.tasks.length },
-          });
-          if (docWarnings.length) {
-            plan.warnings?.push(...docWarnings);
-            // eslint-disable-next-line no-console
-            console.warn(docWarnings.join("; "));
-            await this.jobService.appendLog(job.id, docWarnings.join("\n"));
-            await this.logWarningsToTasks(
-              group.tasks.map((t) => t.id),
+        }
+        for (const group of selection.groups) {
+          try {
+            const { summary: docSummary, warnings: docWarnings } = await this.summarizeDocs(
+              options.projectKey,
+              group.epic.key,
+              group.story.key,
+            );
+            group.docSummary = docSummary;
+            const historySummary = await this.summarizeHistory(group.tasks.map((t) => t.id));
+            group.historySummary = historySummary;
+            await this.jobService.writeCheckpoint(job.id, {
+              stage: "context_built",
+              timestamp: new Date().toISOString(),
+              details: { epic: group.epic.key, story: group.story.key, tasks: group.tasks.length },
+            });
+            if (docWarnings.length) {
+              plan.warnings?.push(...docWarnings);
+              // eslint-disable-next-line no-console
+              console.warn(docWarnings.join("; "));
+              await this.jobService.appendLog(job.id, docWarnings.join("\n"));
+              await this.logWarningsToTasks(
+                group.tasks.map((t) => t.id),
+                job.id,
+                commandRun.id,
+                docWarnings.join("; "),
+              );
+            }
+            const prompt = this.buildStoryPrompt(group, strategy, docSummary);
+            const { raw } = await this.invokeAgent(
+              options.agentName,
+              prompt,
+              agentStream,
               job.id,
               commandRun.id,
-              docWarnings.join("; "),
+              { epicKey: group.epic.key, storyKey: group.story.key },
+            );
+            const parsed = extractJson(raw);
+            const ops =
+              parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
+            const normalized = ops.map(normalizeOperation);
+            const filtered = normalized.filter((op) => {
+              const { valid, reason } = this.validateOperation(group, op);
+              if (!valid && reason) {
+                plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);
+              }
+              return valid;
+            });
+            plan.operations.push(...filtered);
+          } catch (error) {
+            throw new Error(
+              `Failed while refining epic ${group.epic.key} story ${group.story.key}: ${(error as Error).message}`,
             );
           }
-          const prompt = this.buildStoryPrompt(group, strategy, docSummary);
-          const { raw } = await this.invokeAgent(
-            options.agentName ?? "codex",
-            prompt,
-            agentStream,
-            job.id,
-            commandRun.id,
-            { epicKey: group.epic.key, storyKey: group.story.key },
-          );
-          const parsed = extractJson(raw);
-          const ops = parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
-          const normalized = ops.map(normalizeOperation);
-          const filtered = normalized.filter((op) => {
-            const { valid, reason } = this.validateOperation(group, op);
-            if (!valid && reason) {
-              plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);
-            }
-            return valid;
-          });
-          plan.operations.push(...filtered);
         }
       }
 

@@ -95,6 +95,16 @@ mcoda migrate-tasks --workspace-root . --project TODO --plan-dir .mcoda/tasks/TO
 
 `--force` deletes the project backlog (deps/runs/tasks/stories/epics) before inserting to avoid duplicates.
 
+- Optionally apply all saved refinement plans after migrating the base backlog:
+
+```sh
+mcoda migrate-tasks \
+  --workspace-root . \
+  --project TODO \
+  --plan-dir .mcoda/tasks/TODO \
+  --refine-plans-dir .mcoda/tasks/TODO/refinements
+```
+
 ### Command list (partial)
 
 - Agents & routing: `mcoda agent ...`, `mcoda routing ...`

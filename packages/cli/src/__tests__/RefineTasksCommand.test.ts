@@ -9,6 +9,9 @@ describe("refine-tasks argument parsing", () => {
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.fromDb, true);
     assert.equal(parsed.dryRun, false);
+    assert.equal(parsed.apply, false);
+    assert.equal(parsed.resume, false);
+    assert.equal(parsed.runAll, false);
     assert.equal(parsed.json, false);
   });
 
@@ -47,5 +50,14 @@ describe("refine-tasks argument parsing", () => {
     assert.equal(parsed.projectKey, "demo");
     assert.equal(parsed.strategy, "estimate");
     assert.equal(parsed.maxTasks, 5);
+  });
+
+  it("parses apply/resume/run-all controls", () => {
+    const parsed = parseRefineTasksArgs(["--apply", "--resume", "--run-all", "--batch-size", "50", "--max-batches", "3"]);
+    assert.equal(parsed.apply, true);
+    assert.equal(parsed.resume, true);
+    assert.equal(parsed.runAll, true);
+    assert.equal(parsed.batchSize, 50);
+    assert.equal(parsed.maxBatches, 3);
   });
 });

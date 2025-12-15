@@ -1,11 +1,12 @@
 import path from "node:path";
 import { CreateTasksService, WorkspaceResolver } from "@mcoda/core";
 
-const usage = `mcoda migrate-tasks [--workspace-root <path>] [--project-key <key>] [--plan-dir <path>] [--refine-plan <path>] [--quiet]`;
+const usage = `mcoda migrate-tasks [--workspace-root <path>] [--project-key <key>] [--plan-dir <path>] [--refine-plan <path>] [--refine-plans-dir <path>] [--quiet]`;
 
 export class MigrateTasksCommand {
   static async run(argv: string[]): Promise<void> {
     const args: Record<string, string | boolean | undefined> = {};
+    const refinePlans: string[] = [];
     for (let i = 0; i < argv.length; i++) {
       const arg = argv[i];
       if (arg === "--workspace-root" && argv[i + 1]) {
@@ -15,7 +16,9 @@ export class MigrateTasksCommand {
       } else if (arg === "--plan-dir" && argv[i + 1]) {
         args.planDir = argv[++i];
       } else if (arg === "--refine-plan" && argv[i + 1]) {
-        args.refinePlan = argv[++i];
+        refinePlans.push(argv[++i]);
+      } else if (arg === "--refine-plans-dir" && argv[i + 1]) {
+        args.refinePlansDir = argv[++i];
       } else if (arg === "--force") {
         args.force = true;
       } else if (arg === "--quiet") {
@@ -48,7 +51,8 @@ export class MigrateTasksCommand {
         projectKey,
         planDir,
         force: !!args.force,
-        refinePlanPath: args.refinePlan as string | undefined,
+        refinePlanPaths: refinePlans.length ? refinePlans : undefined,
+        refinePlansDir: args.refinePlansDir as string | undefined,
       });
       if (!args.quiet) {
         console.log(
