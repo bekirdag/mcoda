@@ -140,12 +140,25 @@ export class VcsClient {
   }
 
   async dirtyPaths(cwd: string): Promise<string[]> {
-    const status = await this.status(cwd);
-    return status
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => line.replace(/^[\?MADRCU!\s]+/, "").trim());
+    // Use NUL-terminated porcelain to avoid quoting/escaping issues and to handle renames reliably.
+    // Format: `XY <path>\0` or for renames/copies: `XY <old>\0<new>\0`.
+    const { stdout } = await this.runGit(cwd, ["status", "--porcelain", "-z"]);
+    const entries = stdout.split("\0").filter(Boolean);
+    const paths: string[] = [];
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      if (entry.length < 4) continue;
+      const x = entry[0];
+      const path1 = entry.slice(3);
+      if ((x === "R" || x === "C") && i + 1 < entries.length) {
+        const path2 = entries[i + 1];
+        if (path2) paths.push(path2);
+        i += 1;
+        continue;
+      }
+      if (path1) paths.push(path1);
+    }
+    return paths;
   }
 
   async ensureClean(cwd: string, ignoreDotMcoda = true): Promise<void> {

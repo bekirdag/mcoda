@@ -84,8 +84,9 @@ class StubRoutingApi {
         : "global_default";
     const capabilities = await this.capabilityLookup(agentId);
     const missingCapabilities = (request.requiredCapabilities ?? []).filter((cap: string) => !capabilities.includes(cap));
+    const stored = await this.getAgent(agentId);
     const candidate = {
-      agent: { id: agentId, slug: agentId, adapter: "local-model", createdAt: "t", updatedAt: "t" } as Agent,
+      agent: (stored ?? { id: agentId, slug: agentId, adapter: "local-model", createdAt: "t", updatedAt: "t" }) as Agent,
       agentId,
       agentSlug: agentId,
       source: provenance as any,

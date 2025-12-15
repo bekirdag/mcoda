@@ -377,6 +377,7 @@ export class RefineTasksService {
     projectId: string,
     projectKey: string,
     taskKey: string,
+    createIfMissing: boolean,
     seed?: { fields?: Record<string, unknown>; updates?: Record<string, unknown> },
   ): Promise<{ task: CandidateTask; epic: StoryGroup["epic"]; story: StoryGroup["story"] } | undefined> {
     const parts = this.parseTaskKeyParts(taskKey);
@@ -496,6 +497,8 @@ export class RefineTasksService {
         },
       };
     }
+
+    if (!createIfMissing) return undefined;
 
     const updates = (seed?.updates as Record<string, unknown>) ?? (seed?.fields as Record<string, unknown>) ?? {};
     const epic = await ensureEpic();
@@ -1291,13 +1294,13 @@ export class RefineTasksService {
         // Validate ops against current selection and group membership.
         const taskToGroup = new Map<string, StoryGroup>();
         selection.groups.forEach((g) => g.tasks.forEach((t) => taskToGroup.set(t.key, g)));
-        const allowCreateMissingPlanIn = applyChanges && !!options.planInPath;
+        const allowCreateMissingPlanIn = false;
         for (const rawOp of planInput.operations) {
           const op = normalizeOperation(rawOp);
           const keyCandidate = (op as any).taskKey ?? (op as any).targetTaskKey ?? null;
           let group = keyCandidate ? taskToGroup.get(keyCandidate) : undefined;
           if (!group && allowCreateMissingPlanIn && keyCandidate) {
-            const ensured = await this.ensureTaskExists(selection.projectId, options.projectKey, keyCandidate, op as any);
+            const ensured = await this.ensureTaskExists(selection.projectId, options.projectKey, keyCandidate, true, op as any);
             if (ensured) {
               group =
                 selection.groups.find((g) => g.story.key === ensured.story.key) ??
@@ -1423,12 +1426,29 @@ export class RefineTasksService {
       });
 
       if (plan.operations.length === 0) {
-        const lastWarnings = (plan.warnings ?? []).slice(-5);
-        throw new Error(
-          `No valid refine operations generated; nothing to apply. Last warnings: ${
-            lastWarnings.length ? lastWarnings.join("; ") : "none"
-          }`,
-        );
+        await this.jobService.updateJobStatus(job.id, "completed", {
+          payload: {
+            dryRun: options.dryRun ?? !applyChanges,
+            operations: 0,
+            planPath: outPath,
+            applied: false,
+            reason: "no_operations",
+          },
+          processedItems: 0,
+          totalItems: 0,
+          lastCheckpoint: "no_operations",
+        });
+        await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+        return {
+          jobId: job.id,
+          commandRunId: commandRun.id,
+          plan,
+          applied: false,
+          createdTasks: [],
+          updatedTasks: [],
+          cancelledTasks: [],
+          summary: { tasksProcessed: selection.groups.reduce((acc, g) => acc + g.tasks.length, 0), tasksAffected: 0, storyPointsDelta: 0 },
+        };
       }
 
       if (options.dryRun || !applyChanges) {

@@ -69,6 +69,8 @@ describe("RefineTasksService", () => {
       strategy: "estimate",
       agentStream: false,
       fromDb: true,
+      apply: true,
+      dryRun: false,
     });
 
     assert.equal(result.applied, true);
@@ -92,6 +94,8 @@ describe("RefineTasksService", () => {
       strategy: "estimate",
       agentStream: false,
       fromDb: true,
+      apply: true,
+      dryRun: false,
     });
     const storyRow = await repo.getDb().get<{ total: number }>(
       `SELECT story_points_total as total FROM user_stories WHERE id = ?`,

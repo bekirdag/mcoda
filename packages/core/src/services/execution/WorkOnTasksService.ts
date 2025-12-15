@@ -1119,17 +1119,20 @@ export class WorkOnTasksService {
       patchApplied = true;
       await endPhase("apply", { touched });
 
-        const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, touched));
-      if (!scopeCheck.ok) {
-        await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
-        await this.stateService.markBlocked(task.task, "scope_violation");
-        await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-        results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
-        if (!request.dryRun && request.noCommit !== true && patchApplied) {
-          await this.commitPendingChanges(branchInfo, task.task.key, task.task.title, "auto-save (scope_violation)", task.task.id, taskRun.id);
+      if (allowedFiles.length) {
+        const dirtyAfterApply = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
+        const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, dirtyAfterApply));
+        if (!scopeCheck.ok) {
+          await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
+          await this.stateService.markBlocked(task.task, "scope_violation");
+          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+          results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
+          if (!request.dryRun && request.noCommit !== true && patchApplied) {
+            await this.commitPendingChanges(branchInfo, task.task.key, task.task.title, "auto-save (scope_violation)", task.task.id, taskRun.id);
+          }
+          await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+          continue;
         }
-        await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-        continue;
       }
 
       if (!request.dryRun && testCommands.length) {
@@ -1153,7 +1156,8 @@ export class WorkOnTasksService {
       if (!request.dryRun && request.noCommit !== true) {
         await startPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
         try {
-          const toStage = touched.length ? touched : ["."];
+          const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
+          const toStage = dirty.length ? dirty : touched.length ? touched : ["."];
           await this.vcs.stage(this.workspace.workspaceRoot, toStage);
           const status = await this.vcs.status(this.workspace.workspaceRoot);
           const hasChanges = status.trim().length > 0;

@@ -1460,25 +1460,27 @@ export class DocsService {
         }
       }
       const outputPath = options.outPath ?? this.defaultPdrOutputPath(options.projectKey, context.rfp.path);
-      const firstDraftPath = path.join(
-        this.workspace.mcodaDir,
-        "docs",
-        "pdr",
-        `${path.basename(outputPath, path.extname(outputPath))}-first-draft.md`,
-      );
-      await ensureDir(firstDraftPath);
-      await fs.writeFile(firstDraftPath, draft, "utf8");
-      try {
-        const iterativeDraft = await buildIterativePdr(
-          options.projectKey,
-          context,
-          draft,
-          outputPath,
-          lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
+      if (!options.dryRun) {
+        const firstDraftPath = path.join(
+          this.workspace.mcodaDir,
+          "docs",
+          "pdr",
+          `${path.basename(outputPath, path.extname(outputPath))}-first-draft.md`,
         );
-        draft = iterativeDraft;
-      } catch (error) {
-        context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+        await ensureDir(firstDraftPath);
+        await fs.writeFile(firstDraftPath, draft, "utf8");
+        try {
+          const iterativeDraft = await buildIterativePdr(
+            options.projectKey,
+            context,
+            draft,
+            outputPath,
+            lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
+          );
+          draft = iterativeDraft;
+        } catch (error) {
+          context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+        }
       }
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
