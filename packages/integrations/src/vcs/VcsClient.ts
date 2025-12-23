@@ -121,17 +121,34 @@ export class VcsClient {
     await this.runGit(cwd, ["add", ...paths]);
   }
 
-  async commit(cwd: string, message: string): Promise<void> {
-    await this.runGit(cwd, ["commit", "-m", message]);
+  async commit(
+    cwd: string,
+    message: string,
+    options: { noVerify?: boolean; noGpgSign?: boolean } = {},
+  ): Promise<void> {
+    const args = ["commit", "-m", message];
+    if (options.noVerify) args.push("--no-verify");
+    if (options.noGpgSign) args.push("--no-gpg-sign");
+    await this.runGit(cwd, args);
   }
 
-  async merge(cwd: string, source: string, target: string): Promise<void> {
+  async merge(cwd: string, source: string, target: string, ensureClean = false): Promise<void> {
     await this.checkoutBranch(cwd, target);
+    if (ensureClean) {
+      await this.ensureClean(cwd);
+    }
     await this.runGit(cwd, ["merge", "--no-edit", source]);
   }
 
   async push(cwd: string, remote: string, branch: string): Promise<void> {
     await this.runGit(cwd, ["push", remote, branch]);
+  }
+
+  async pull(cwd: string, remote: string, branch: string, ffOnly = true): Promise<void> {
+    const args = ["pull"];
+    if (ffOnly) args.push("--ff-only");
+    args.push(remote, branch);
+    await this.runGit(cwd, args);
   }
 
   async status(cwd: string): Promise<string> {
@@ -159,6 +176,15 @@ export class VcsClient {
       if (path1) paths.push(path1);
     }
     return paths;
+  }
+
+  async conflictPaths(cwd: string): Promise<string[]> {
+    try {
+      const { stdout } = await this.runGit(cwd, ["diff", "--name-only", "--diff-filter=U"]);
+      return stdout.split(/\r?\n/).filter(Boolean);
+    } catch {
+      return [];
+    }
   }
 
   async ensureClean(cwd: string, ignoreDotMcoda = true): Promise<void> {

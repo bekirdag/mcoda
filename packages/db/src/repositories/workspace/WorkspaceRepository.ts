@@ -149,6 +149,14 @@ export interface TaskRunRow extends TaskRunInsert {
   id: string;
 }
 
+export interface TaskLockRow {
+  taskId: string;
+  taskRunId: string;
+  jobId?: string;
+  acquiredAt: string;
+  expiresAt: string;
+}
+
 export interface TaskQaRunInsert {
   taskId: string;
   taskRunId?: string | null;
@@ -1014,6 +1022,78 @@ export class WorkspaceRepository {
       record.runContext ? JSON.stringify(record.runContext) : null,
     );
     return { id, ...record };
+  }
+
+  async getTaskLock(taskId: string): Promise<TaskLockRow | undefined> {
+    const row = await this.db.get(
+      `SELECT task_id, task_run_id, job_id, acquired_at, expires_at FROM task_locks WHERE task_id = ?`,
+      taskId,
+    );
+    if (!row) return undefined;
+    return {
+      taskId: row.task_id,
+      taskRunId: row.task_run_id,
+      jobId: row.job_id ?? undefined,
+      acquiredAt: row.acquired_at,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  async tryAcquireTaskLock(
+    taskId: string,
+    taskRunId: string,
+    jobId?: string | null,
+    ttlSeconds = 3600,
+  ): Promise<{ acquired: boolean; lock?: TaskLockRow }> {
+    const nowIso = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    return this.withTransaction(async () => {
+      const result = await this.db.run(
+        `INSERT INTO task_locks (task_id, task_run_id, job_id, acquired_at, expires_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           task_run_id = excluded.task_run_id,
+           job_id = excluded.job_id,
+           acquired_at = excluded.acquired_at,
+           expires_at = excluded.expires_at
+         WHERE task_locks.expires_at < ?`,
+        taskId,
+        taskRunId,
+        jobId ?? null,
+        nowIso,
+        expiresAt,
+        nowIso,
+      );
+      if (result?.changes && result.changes > 0) {
+        return {
+          acquired: true,
+          lock: {
+            taskId,
+            taskRunId,
+            jobId: jobId ?? undefined,
+            acquiredAt: nowIso,
+            expiresAt,
+          },
+        };
+      }
+      const existing = await this.getTaskLock(taskId);
+      return { acquired: false, lock: existing };
+    });
+  }
+
+  async releaseTaskLock(taskId: string, taskRunId: string): Promise<void> {
+    await this.db.run(`DELETE FROM task_locks WHERE task_id = ? AND task_run_id = ?`, taskId, taskRunId);
+  }
+
+  async refreshTaskLock(taskId: string, taskRunId: string, ttlSeconds = 3600): Promise<boolean> {
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    const result = await this.db.run(
+      `UPDATE task_locks SET expires_at = ? WHERE task_id = ? AND task_run_id = ?`,
+      expiresAt,
+      taskId,
+      taskRunId,
+    );
+    return Boolean(result?.changes && result.changes > 0);
   }
 
   async createTaskQaRun(record: TaskQaRunInsert): Promise<TaskQaRunRow> {

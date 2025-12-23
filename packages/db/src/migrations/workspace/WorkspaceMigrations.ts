@@ -134,6 +134,16 @@ export class WorkspaceMigrations {
         run_context_json TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS task_locks (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        task_run_id TEXT NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+        job_id TEXT,
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_task_locks_expires_at ON task_locks(expires_at);
+
       CREATE TABLE IF NOT EXISTS task_qa_runs (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
