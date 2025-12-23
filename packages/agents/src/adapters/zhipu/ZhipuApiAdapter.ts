@@ -14,6 +14,33 @@ const normalizeBaseUrl = (value?: unknown): string | undefined => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const extractUsage = (usage: any) => {
+  if (!usage || typeof usage !== "object") return undefined;
+  const tokensPrompt =
+    typeof usage.prompt_tokens === "number"
+      ? usage.prompt_tokens
+      : typeof usage.promptTokens === "number"
+        ? usage.promptTokens
+        : undefined;
+  const tokensCompletion =
+    typeof usage.completion_tokens === "number"
+      ? usage.completion_tokens
+      : typeof usage.completionTokens === "number"
+        ? usage.completionTokens
+        : undefined;
+  let tokensTotal =
+    typeof usage.total_tokens === "number"
+      ? usage.total_tokens
+      : typeof usage.totalTokens === "number"
+        ? usage.totalTokens
+        : undefined;
+  if (tokensTotal === undefined && typeof tokensPrompt === "number" && typeof tokensCompletion === "number") {
+    tokensTotal = tokensPrompt + tokensCompletion;
+  }
+  if (tokensPrompt === undefined && tokensCompletion === undefined && tokensTotal === undefined) return undefined;
+  return { tokensPrompt, tokensCompletion, tokensTotal };
+};
+
 type ZhipuConfig = AdapterConfig & {
   baseUrl?: string;
   headers?: Record<string, string>;
@@ -80,6 +107,7 @@ export class ZhipuApiAdapter implements AgentAdapter {
     const content = typeof message?.content === "string" ? message.content : undefined;
     const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content : undefined;
     const output = content ?? reasoning ?? (typeof data?.output_text === "string" ? data.output_text : JSON.stringify(data));
+    const usage = extractUsage(data?.usage);
 
     return {
       output: output.trim(),
@@ -91,6 +119,12 @@ export class ZhipuApiAdapter implements AgentAdapter {
         baseUrl: url,
         capabilities: this.config.capabilities,
         usage: data?.usage,
+        tokensPrompt: usage?.tokensPrompt,
+        tokensCompletion: usage?.tokensCompletion,
+        tokensTotal: usage?.tokensTotal,
+        tokens_prompt: usage?.tokensPrompt,
+        tokens_completion: usage?.tokensCompletion,
+        tokens_total: usage?.tokensTotal,
         reasoning,
       },
     };
@@ -114,6 +148,41 @@ export class ZhipuApiAdapter implements AgentAdapter {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let latestUsage: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number } | undefined;
+    const buildChunk = (payload: string): InvocationResult | null => {
+      const data = JSON.parse(payload);
+      const choice = data?.choices?.[0];
+      const delta = choice?.delta ?? choice?.message ?? {};
+      const content = typeof delta?.content === "string" ? delta.content : "";
+      const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : undefined;
+      const usage = extractUsage(data?.usage);
+      if (usage) latestUsage = usage;
+      const output = content || reasoning || "";
+      const shouldEmit = Boolean(output) || Boolean(usage);
+      if (!shouldEmit) return null;
+      return {
+        output,
+        adapter: this.config.adapter ?? "zhipu-api",
+        model,
+        metadata: {
+          mode: "api",
+          adapterType: this.config.adapter ?? "zhipu-api",
+          baseUrl: url,
+          capabilities: this.config.capabilities,
+          streaming: true,
+          reasoning,
+          usage: data?.usage,
+          tokensPrompt: latestUsage?.tokensPrompt,
+          tokensCompletion: latestUsage?.tokensCompletion,
+          tokensTotal: latestUsage?.tokensTotal,
+          tokens_prompt: latestUsage?.tokensPrompt,
+          tokens_completion: latestUsage?.tokensCompletion,
+          tokens_total: latestUsage?.tokensTotal,
+          raw: payload,
+        },
+      };
+    };
+
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -127,26 +196,24 @@ export class ZhipuApiAdapter implements AgentAdapter {
         if (!payload) continue;
         if (payload === "[DONE]") return;
         try {
-          const data = JSON.parse(payload);
-          const choice = data?.choices?.[0];
-          const delta = choice?.delta ?? choice?.message ?? {};
-          const content = typeof delta?.content === "string" ? delta.content : "";
-          const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : undefined;
-          if (!content) continue;
-          yield {
-            output: content,
-            adapter: this.config.adapter ?? "zhipu-api",
-            model,
-            metadata: {
-              mode: "api",
-              adapterType: this.config.adapter ?? "zhipu-api",
-              baseUrl: url,
-              capabilities: this.config.capabilities,
-              streaming: true,
-              reasoning,
-              raw: payload,
-            },
-          };
+          const chunk = buildChunk(payload);
+          if (chunk) yield chunk;
+        } catch {
+          // Ignore malformed lines; keep streaming.
+        }
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) {
+      const lines = tail.split(/\r?\n/).filter((line) => line.trim().length > 0);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const chunk = buildChunk(payload);
+          if (chunk) yield chunk;
         } catch {
           // Ignore malformed lines; keep streaming.
         }
