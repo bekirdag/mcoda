@@ -23,6 +23,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Extend the current store/state modules instead of bolting on parallel action/reducer files; wire bulk/selection flows through existing selectors/slices and persistence hooks. Use existing action creators/selectors rather than ad-hoc action type strings.
 - Keep data shapes consistent with the documented model and current store (e.g., status enums vs. boolean flags); don’t assume fields that aren’t in the schema.
 - Avoid writing partial/placeholder files—ensure every file has its imports, exports, and compiles in isolation before moving on.
+- If a target file does not exist, create it by emitting a new-file unified diff with full content (no placeholder edits to missing paths).
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
 - Add or update tests alongside code, following the existing style and fixtures.
 - Align tests with the project’s test runner and dependencies; avoid introducing libraries that aren’t already in use or declared, and target real components/modules (not missing files). Update docs/config only when behavior or contracts change (command help, README snippets, specs, runbooks).
