@@ -180,6 +180,40 @@ test("ollama-remote invokes with configured baseUrl and model", async () => {
   assert.equal(result.model, "gpt-oss:20b");
 });
 
+test("zhipu-api invokes with configured baseUrl, model, and thinking", async () => {
+  const agent = await repo.createAgent({
+    slug: "zhipu",
+    adapter: "zhipu-api",
+    defaultModel: "glm-4.7",
+    capabilities: ["chat"],
+    config: { baseUrl: "https://api.z.ai/api/coding/paas/v4", thinking: true, temperature: 0.1 },
+  });
+  const encrypted = await CryptoHelper.encryptSecret("secret");
+  await repo.setAgentAuth(agent.id, encrypted);
+  global.fetch = async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
+    assert.match(url, /https:\/\/api\.z\.ai\/api\/coding\/paas\/v4\/chat\/completions/);
+    assert.equal(init?.method, "POST");
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers?.Authorization, "Bearer secret");
+    const body = JSON.parse(String(init?.body ?? ""));
+    assert.equal(body.model, "glm-4.7");
+    assert.equal(body.thinking, true);
+    assert.equal(body.temperature, 0.1);
+    assert.equal(body.stream, false);
+    assert.equal(body.messages?.[0]?.content, "ping");
+    return new Response(JSON.stringify({ choices: [{ message: { content: "pong" } }], usage: { total_tokens: 5 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const result = await service.invoke(agent.id, { input: "ping" });
+  assert.equal(result.adapter, "zhipu-api");
+  assert.equal(result.output, "pong");
+  assert.equal(result.model, "glm-4.7");
+  assert.equal((result.metadata as any)?.usage?.total_tokens, 5);
+});
+
 test("ollama-remote health returns unreachable on network error", async () => {
   const agent = await repo.createAgent({
     slug: "remote-health",

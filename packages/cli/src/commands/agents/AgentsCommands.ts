@@ -49,12 +49,14 @@ Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|u
 Subcommands:
   list                       List agents (supports --json)
   add <NAME>                 Create a global agent
-    --adapter <TYPE>         Adapter slug (openai-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
+    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
     --capability <CAP>       Repeatable capabilities to attach
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
     --config-base-url <URL>  Base URL for remote adapters (e.g., http://host:11434 for ollama-remote)
+    --config-temperature <N> Temperature override for supported adapters
+    --config-thinking <BOOL> Enable thinking mode for supported adapters
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
     --force                  Force deletion even if referenced
@@ -83,6 +85,29 @@ const parsePrompts = (flags: Record<string, any>) => {
 const parseConfig = (flags: Record<string, any>) => {
   const config: Record<string, unknown> = {};
   if (flags["config-base-url"]) config.baseUrl = String(flags["config-base-url"]);
+  if (flags["config-temperature"] !== undefined) {
+    const raw = flags["config-temperature"];
+    const parsed = typeof raw === "number" ? raw : Number.parseFloat(String(raw));
+    if (!Number.isFinite(parsed)) {
+      throw new Error("Invalid --config-temperature; expected a number");
+    }
+    config.temperature = parsed;
+  }
+  if (flags["config-thinking"] !== undefined) {
+    const raw = flags["config-thinking"];
+    if (typeof raw === "boolean") {
+      config.thinking = raw;
+    } else {
+      const normalized = String(raw).trim().toLowerCase();
+      if (["true", "1", "yes", "y"].includes(normalized)) {
+        config.thinking = true;
+      } else if (["false", "0", "no", "n"].includes(normalized)) {
+        config.thinking = false;
+      } else {
+        throw new Error("Invalid --config-thinking; expected true/false");
+      }
+    }
+  }
   return Object.keys(config).length ? config : undefined;
 };
 

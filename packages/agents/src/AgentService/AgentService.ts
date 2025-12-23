@@ -7,6 +7,7 @@ import { OllamaRemoteAdapter } from "../adapters/ollama/OllamaRemoteAdapter.js";
 import { OllamaCliAdapter } from "../adapters/ollama/OllamaCliAdapter.js";
 import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
 import { OpenAiCliAdapter } from "../adapters/openai/OpenAiCliAdapter.js";
+import { ZhipuApiAdapter } from "../adapters/zhipu/ZhipuApiAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
 
@@ -17,6 +18,7 @@ const SUPPORTED_ADAPTERS = new Set([
   "codex-cli",
   "gemini-cli",
   "openai-cli",
+  "zhipu-api",
   "local-model",
   "qa-cli",
   "ollama-remote",
@@ -135,6 +137,9 @@ export class AgentService {
 
     if (adapterType === "openai-api") {
       return new OpenAiAdapter(configWithAdapter);
+    }
+    if (adapterType === "zhipu-api") {
+      return new ZhipuApiAdapter(configWithAdapter);
     }
     if (adapterType === "codex-cli") {
       return new CodexAdapter(configWithAdapter);
