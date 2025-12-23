@@ -51,6 +51,10 @@ Subcommands:
   add <NAME>                 Create a global agent
     --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
+    --rating <N>             Relative capability rating (higher is stronger)
+    --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
+    --best-usage <TEXT>      Primary usage area (e.g., code_write, ui_ux_docs)
+    --cost-per-million <N>   Cost per 1M tokens (0 for local models)
     --capability <CAP>       Repeatable capabilities to attach
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
@@ -80,6 +84,39 @@ const parsePrompts = (flags: Record<string, any>) => {
   if (flags["job-path"]) prompts.jobPath = String(flags["job-path"]);
   if (flags["character-path"]) prompts.characterPath = String(flags["character-path"]);
   return Object.keys(prompts).length ? prompts : undefined;
+};
+
+const parseRating = (value: string | string[] | boolean | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") return undefined;
+  const parsed = Number.parseFloat(String(raw));
+  if (!Number.isFinite(parsed)) {
+    throw new Error("Invalid --rating; expected a number");
+  }
+  return parsed;
+};
+
+const parseReasoningRating = (value: string | string[] | boolean | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") return undefined;
+  const parsed = Number.parseFloat(String(raw));
+  if (!Number.isFinite(parsed)) {
+    throw new Error("Invalid --reasoning-rating; expected a number");
+  }
+  return parsed;
+};
+
+const parseCostPerMillion = (value: string | string[] | boolean | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") return undefined;
+  const parsed = Number.parseFloat(String(raw));
+  if (!Number.isFinite(parsed)) {
+    throw new Error("Invalid --cost-per-million; expected a number");
+  }
+  return parsed;
 };
 
 const parseConfig = (flags: Record<string, any>) => {
@@ -113,15 +150,49 @@ const parseConfig = (flags: Record<string, any>) => {
 
 const DEFAULT_OLLAMA_CAPABILITIES = ["plan", "code_write", "code_review"];
 
-const formatAgentRow = (agent: AgentResponse): string =>
-  [
-    agent.slug,
-    agent.adapter,
-    agent.defaultModel ?? "",
-    (agent.capabilities ?? []).join(","),
-    agent.health?.status ?? "unknown",
-    agent.health?.lastCheckedAt ?? "",
-  ].join(" | ");
+const pad = (value: string, width: number): string => value.padEnd(width, " ");
+
+const truncate = (value: string, max: number): string => {
+  if (value.length <= max) return value;
+  if (max <= 1) return value.slice(0, max);
+  return `${value.slice(0, max - 1)}…`;
+};
+
+const formatDate = (value?: string): string => {
+  if (!value) return "-";
+  if (value.length >= 16) {
+    return value.replace("T", " ").slice(0, 16);
+  }
+  return value;
+};
+
+const formatCost = (value?: number): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  return Number(value).toFixed(2);
+};
+
+const formatCapabilities = (caps: string[] | undefined): string => {
+  const list = (caps ?? []).slice().sort();
+  if (list.length === 0) return "none";
+  const shown = list.slice(0, 4);
+  const suffix = list.length > shown.length ? `, +${list.length - shown.length}` : "";
+  return `${shown.join(", ")}${suffix}`;
+};
+
+const formatBoxTable = (headers: string[], rows: string[][], maxWidths: number[]): string => {
+  if (rows.length === 0) return headers.join(" | ");
+  const rawWidths = headers.map((header, idx) =>
+    Math.max(header.length, ...rows.map((row) => (row[idx] ?? "").length)),
+  );
+  const widths = rawWidths.map((width, idx) => Math.min(width, maxWidths[idx] ?? width));
+  const cell = (value: string, idx: number) => pad(truncate(value, widths[idx]), widths[idx]);
+  const top = `╭${widths.map((w) => "─".repeat(w + 2)).join("┬")}╮`;
+  const mid = `├${widths.map((w) => "─".repeat(w + 2)).join("┼")}┤`;
+  const bottom = `╰${widths.map((w) => "─".repeat(w + 2)).join("┴")}╯`;
+  const headerLine = `│ ${headers.map((h, idx) => cell(h, idx)).join(" │ ")} │`;
+  const body = rows.map((row) => `│ ${row.map((val, idx) => cell(val ?? "", idx)).join(" │ ")} │`).join("\n");
+  return [top, headerLine, mid, body, bottom].join("\n");
+};
 
 export class AgentsCommands {
   static async run(argv: string[]): Promise<void> {
@@ -146,14 +217,33 @@ export class AgentsCommands {
               // eslint-disable-next-line no-console
               console.log("No agents found.");
             } else {
+              const headers = [
+                "SLUG",
+                "ADAPTER",
+                "MODEL",
+                "RATING",
+                "REASON",
+                "USAGE",
+                "COST/1M",
+                "HEALTH",
+                "LAST CHECK",
+                "CAPABILITIES",
+              ];
+              const maxWidths = [14, 14, 24, 6, 9, 10, 12, 10, 16, 36];
+              const rows = agents.map((agent) => [
+                agent.slug,
+                agent.adapter,
+                agent.defaultModel ?? "-",
+                agent.rating !== undefined ? String(agent.rating) : "-",
+                agent.reasoningRating !== undefined ? String(agent.reasoningRating) : "-",
+                agent.bestUsage ?? "-",
+                formatCost(agent.costPerMillion),
+                agent.health?.status ?? "unknown",
+                formatDate(agent.health?.lastCheckedAt),
+                formatCapabilities(agent.capabilities),
+              ]);
               // eslint-disable-next-line no-console
-              console.log("| slug | adapter | default_model | capabilities | health | last_checked_at |");
-              // eslint-disable-next-line no-console
-              console.log("| --- | --- | --- | --- | --- | --- |");
-              agents.forEach((agent) => {
-                // eslint-disable-next-line no-console
-                console.log(`| ${formatAgentRow(agent)} |`);
-              });
+              console.log(formatBoxTable(headers, rows, maxWidths));
             }
           }
           break;
@@ -166,10 +256,18 @@ export class AgentsCommands {
             (String(parsed.flags.adapter ?? "openai-api") === "ollama-remote" ? DEFAULT_OLLAMA_CAPABILITIES : []);
           const prompts = parsePrompts(parsed.flags);
           const config = parseConfig(parsed.flags);
+          const rating = parseRating(parsed.flags.rating);
+          const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
+          const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
+          const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
           const agent = await api.createAgent({
             slug: name,
             adapter: String(parsed.flags.adapter ?? "openai-api"),
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
+            rating,
+            reasoningRating,
+            bestUsage,
+            costPerMillion,
             capabilities,
             prompts,
             config,
@@ -184,9 +282,17 @@ export class AgentsCommands {
           const capabilities = parseCapabilities(parsed.flags.capability);
           const prompts = parsePrompts(parsed.flags);
           const config = parseConfig(parsed.flags);
+          const rating = parseRating(parsed.flags.rating);
+          const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
+          const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
+          const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
           const agent = await api.updateAgent(name, {
             adapter: parsed.flags.adapter ? String(parsed.flags.adapter) : undefined,
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
+            rating,
+            reasoningRating,
+            bestUsage,
+            costPerMillion,
             capabilities,
             prompts,
             config,

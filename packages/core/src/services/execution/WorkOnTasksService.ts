@@ -21,7 +21,7 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
   "If you encounter merge conflicts, resolve them first (clean conflict markers and ensure code compiles) before continuing task work.",
-  "If a target file does not exist, create it by emitting a new-file unified diff with full content (no placeholder edits to missing paths).",
+  "If a target file does not exist, create it by outputting a FILE block (not a diff): `FILE: path/to/file.ext` followed by a fenced code block containing the full file contents.",
 ].join("\n");
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
@@ -57,6 +57,18 @@ const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? 
 const extractPatches = (output: string): string[] => {
   const matches = [...output.matchAll(/```(?:patch|diff)[\s\S]*?```/g)];
   return matches.map((m) => m[0].replace(/```(?:patch|diff)/, "").replace(/```$/, "").trim()).filter(Boolean);
+};
+
+const extractFileBlocks = (output: string): Array<{ path: string; content: string }> => {
+  const files: Array<{ path: string; content: string }> = [];
+  const regex = /(?:^|\r?\n)FILE:\s*([^\r\n]+)\r?\n```[^\r\n]*\r?\n([\s\S]*?)\r?\n```/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(output)) !== null) {
+    const filePath = match[1]?.trim();
+    if (!filePath) continue;
+    files.push({ path: filePath, content: match[2] ?? "" });
+  }
+  return files;
 };
 
 type TaskPhase = "selection" | "context" | "prompt" | "agent" | "apply" | "tests" | "vcs" | "finalize";
@@ -919,6 +931,56 @@ export class WorkOnTasksService {
     return { touched: Array.from(touched), warnings };
   }
 
+  private async applyFileBlocks(
+    files: Array<{ path: string; content: string }>,
+    cwd: string,
+    dryRun: boolean,
+    allowNoop = false,
+  ): Promise<{ touched: string[]; error?: string; warnings?: string[]; appliedCount: number }> {
+    const touched = new Set<string>();
+    const warnings: string[] = [];
+    let applied = 0;
+    for (const file of files) {
+      const relative = file.path.trim();
+      if (!relative) {
+        warnings.push("Skipped file block with empty path.");
+        continue;
+      }
+      const resolved = path.resolve(cwd, relative);
+      const relativePath = path.relative(cwd, resolved).replace(/\\/g, "/");
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        warnings.push(`Skipped file block outside workspace: ${relative}`);
+        continue;
+      }
+      if (fs.existsSync(resolved)) {
+        warnings.push(`Skipped file block for existing file: ${relativePath}`);
+        continue;
+      }
+      if (dryRun) {
+        touched.add(relativePath);
+        applied += 1;
+        continue;
+      }
+      try {
+        await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
+        await fs.promises.writeFile(resolved, file.content ?? "", "utf8");
+        touched.add(relativePath);
+        applied += 1;
+      } catch (error) {
+        warnings.push(`Failed to write file block ${relativePath}: ${(error as Error).message}`);
+      }
+    }
+    if (!applied && !allowNoop) {
+      return {
+        touched: Array.from(touched),
+        warnings,
+        error: "No file blocks were applied.",
+        appliedCount: applied,
+      };
+    }
+    return { touched: Array.from(touched), warnings, appliedCount: applied };
+  }
+
   private async runTests(commands: string[], cwd: string): Promise<{ ok: boolean; results: { command: string; stdout: string; stderr: string; code: number }[] }> {
     const results: { command: string; stdout: string; stderr: string; code: number }[] = [];
     for (const command of commands) {
@@ -1017,6 +1079,14 @@ export class WorkOnTasksService {
         return `${minutes}M ${seconds}S`;
       };
       const formatCount = (value: number): string => value.toLocaleString("en-US");
+      const emitLine = (line: string): void => {
+        if (request.onAgentChunk) {
+          request.onAgentChunk(`${line}\n`);
+          return;
+        }
+        console.info(line);
+      };
+      const emitBlank = (): void => emitLine("");
       const resolveProvider = (adapter?: string): string => {
         if (!adapter) return "n/a";
         const trimmed = adapter.trim();
@@ -1042,24 +1112,24 @@ export class WorkOnTasksService {
         workdir: string;
         sessionId: string;
       }): void => {
-        console.info("╭──────────────────────────────────────────────────────────╮");
-        console.info("│                      START OF TASK                       │");
-        console.info("╰──────────────────────────────────────────────────────────╯");
-        console.info(`  [🪪] Start Task ID:  ${details.taskKey}`);
-        console.info(`  [👹] Alias:          ${details.alias}`);
-        console.info(`  [ℹ️] Summary:        ${details.summary}`);
-        console.info(`  [🤖] Model:          ${details.model}`);
-        console.info(`  [🕹️] Provider:       ${details.provider}`);
-        console.info(`  [🧩] Step:           ${details.step}`);
-        console.info(`  [🧠] Reasoning:      ${details.reasoning}`);
-        console.info(`  [📁] Workdir:        ${details.workdir}`);
-        console.info(`  [🔑] Session:        ${details.sessionId}`);
-        console.info("");
-        console.info("    ░░░░░ START OF A NEW TASK ░░░░░");
-        console.info("");
-        console.info(`    [STEP ${details.step}]  [MODEL ${details.model}]`);
-        console.info("");
-        console.info("");
+        emitLine("╭──────────────────────────────────────────────────────────╮");
+        emitLine("│                      START OF TASK                       │");
+        emitLine("╰──────────────────────────────────────────────────────────╯");
+        emitLine(`  [🪪] Start Task ID:  ${details.taskKey}`);
+        emitLine(`  [👹] Alias:          ${details.alias}`);
+        emitLine(`  [ℹ️] Summary:        ${details.summary}`);
+        emitLine(`  [🤖] Model:          ${details.model}`);
+        emitLine(`  [🕹️] Provider:       ${details.provider}`);
+        emitLine(`  [🧩] Step:           ${details.step}`);
+        emitLine(`  [🧠] Reasoning:      ${details.reasoning}`);
+        emitLine(`  [📁] Workdir:        ${details.workdir}`);
+        emitLine(`  [🔑] Session:        ${details.sessionId}`);
+        emitBlank();
+        emitLine("    ░░░░░ START OF A NEW TASK ░░░░░");
+        emitBlank();
+        emitLine(`    [STEP ${details.step}]  [MODEL ${details.model}]`);
+        emitBlank();
+        emitBlank();
       };
       const emitTaskEnd = async (details: {
         taskKey: string;
@@ -1093,37 +1163,37 @@ export class WorkOnTasksService {
         const tracking = details.taskBranch ? (hasRemote ? `origin/${details.taskBranch}` : "n/a") : "n/a";
         const headSha = details.headSha ?? "n/a";
         const baseLabel = details.baseBranch ?? baseBranch;
-        console.info("╭──────────────────────────────────────────────────────────╮");
-        console.info("│                       END OF TASK                        │");
-        console.info("╰──────────────────────────────────────────────────────────╯");
-        console.info(
+        emitLine("╭──────────────────────────────────────────────────────────╮");
+        emitLine("│                       END OF TASK                        │");
+        emitLine("╰──────────────────────────────────────────────────────────╯");
+        emitLine(
           `  👏🏼 TASK ${details.taskKey} | 📜 STATUS ${statusLabel} | 🏠 TERMINAL ${details.terminal} | ⚡ SP ${
             details.storyPoints ?? 0
           } | ⌛ TIME ${formatDuration(details.elapsedMs)}`,
         );
-        console.info("");
-        console.info(`  [${completionBar}] ${completion.toFixed(1)}% Complete`);
-        console.info(`  Tokens used:  ${formatCount(tokensTotal)}`);
-        console.info(`  ${usagePercent.toFixed(1)}% used vs prompt est (x${(tokensTotal / promptEstimate).toFixed(2)})`);
-        console.info(`  Est. tokens:   ${formatCount(promptEstimate)}`);
-        console.info("");
-        console.info("🌿 Git summary");
-        console.info("────────────────────────────────────────────────────────────");
-        console.info(`  [🎋] Task branch: ${details.taskBranch ?? "n/a"}`);
-        console.info(`  [🗿] Tracking:    ${tracking}`);
-        console.info(`  [🚀] Merge→dev:   ${details.mergeStatus}`);
-        console.info(`  [🐲] HEAD:        ${headSha}`);
-        console.info(`  [♨️] Files:       ${details.touchedFiles}`);
-        console.info(`  [🔑] Base:        ${baseLabel}`);
-        console.info("  [🧾] Git log:    n/a");
-        console.info("");
-        console.info("🗂 Artifacts");
-        console.info("────────────────────────────────────────────────────────────");
-        console.info("  • History:    n/a");
-        console.info("  • Git log:    n/a");
-        console.info("");
-        console.info("    ░░░░░ END OF THE TASK WORK ░░░░░");
-        console.info("");
+        emitBlank();
+        emitLine(`  [${completionBar}] ${completion.toFixed(1)}% Complete`);
+        emitLine(`  Tokens used:  ${formatCount(tokensTotal)}`);
+        emitLine(`  ${usagePercent.toFixed(1)}% used vs prompt est (x${(tokensTotal / promptEstimate).toFixed(2)})`);
+        emitLine(`  Est. tokens:   ${formatCount(promptEstimate)}`);
+        emitBlank();
+        emitLine("🌿 Git summary");
+        emitLine("────────────────────────────────────────────────────────────");
+        emitLine(`  [🎋] Task branch: ${details.taskBranch ?? "n/a"}`);
+        emitLine(`  [🗿] Tracking:    ${tracking}`);
+        emitLine(`  [🚀] Merge→dev:   ${details.mergeStatus}`);
+        emitLine(`  [🐲] HEAD:        ${headSha}`);
+        emitLine(`  [♨️] Files:       ${details.touchedFiles}`);
+        emitLine(`  [🔑] Base:        ${baseLabel}`);
+        emitLine("  [🧾] Git log:    n/a");
+        emitBlank();
+        emitLine("🗂 Artifacts");
+        emitLine("────────────────────────────────────────────────────────────");
+        emitLine("  • History:    n/a");
+        emitLine("  • Git log:    n/a");
+        emitBlank();
+        emitLine("    ░░░░░ END OF THE TASK WORK ░░░░░");
+        emitBlank();
       };
 
       for (const [index, task] of selection.ordered.entries()) {
@@ -1153,7 +1223,8 @@ export class WorkOnTasksService {
         let taskStatus: TaskExecutionResult["status"] | null = null;
         let tokensPromptTotal = 0;
         let tokensCompletionTotal = 0;
-        let promptEstimate = 0;
+        let promptEstimateBase = 0;
+        let promptEstimateTotal = 0;
         let mergeStatus: "merged" | "skipped" | "failed" = "skipped";
         let patchApplied = false;
         let touched: string[] = [];
@@ -1184,7 +1255,7 @@ export class WorkOnTasksService {
           const status = taskStatus ?? "failed";
           const terminal =
             status === "succeeded"
-              ? patchApplied || touched.length
+              ? touched.length
                 ? "COMPLETED_WITH_CHANGES"
                 : "COMPLETED_NO_CHANGES"
               : status === "blocked"
@@ -1208,7 +1279,7 @@ export class WorkOnTasksService {
             elapsedMs: Date.now() - taskStartMs,
             tokensPrompt: tokensPromptTotal,
             tokensCompletion: tokensCompletionTotal,
-            promptEstimate,
+            promptEstimate: promptEstimateTotal || promptEstimateBase,
             taskBranch: taskBranchName || null,
             baseBranch: baseBranchName || baseBranch,
             touchedFiles: touched.length,
@@ -1231,32 +1302,50 @@ export class WorkOnTasksService {
           });
         };
 
-        await startPhase("selection", {
-          dependencies: task.dependencies.keys,
-          blockedReason: task.blockedReason,
-        });
-        await this.logTask(taskRun.id, `Selected task ${task.task.key}`, "selection", {
-          dependencies: task.dependencies.keys,
-          blockedReason: task.blockedReason,
-        });
-
-        if (task.blockedReason && !request.dryRun) {
-          await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "selection", "error", {
+        try {
+          await startPhase("selection", {
+            dependencies: task.dependencies.keys,
             blockedReason: task.blockedReason,
           });
-          await this.stateService.markBlocked(task.task, task.blockedReason);
+          await this.logTask(taskRun.id, `Selected task ${task.task.key}`, "selection", {
+            dependencies: task.dependencies.keys,
+            blockedReason: task.blockedReason,
+          });
+
+          if (task.blockedReason && !request.dryRun) {
+            await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "selection", "error", {
+              blockedReason: task.blockedReason,
+            });
+            await this.stateService.markBlocked(task.task, task.blockedReason);
+            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+              status: "failed",
+              finishedAt: new Date().toISOString(),
+            });
+            results.push({ taskKey: task.task.key, status: "blocked", notes: task.blockedReason });
+            taskStatus = "blocked";
+            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+            await emitTaskEndOnce();
+            continue;
+          }
+
+          await endPhase("selection");
+        } catch (error) {
+          const message = `Selection phase failed: ${(error as Error).message}`;
+          try {
+            await this.logTask(taskRun.id, message, "selection");
+          } catch {
+            /* ignore log failures */
+          }
           await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
             status: "failed",
             finishedAt: new Date().toISOString(),
           });
-          results.push({ taskKey: task.task.key, status: "blocked", notes: task.blockedReason });
-          taskStatus = "blocked";
+          results.push({ taskKey: task.task.key, status: "failed", notes: message });
+          taskStatus = "failed";
           await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
           await emitTaskEndOnce();
           continue;
         }
-
-        await endPhase("selection");
         let lockAcquired = false;
         if (!request.dryRun) {
           const ttlSeconds = Math.max(1, TASK_LOCK_TTL_SECONDS);
@@ -1301,7 +1390,8 @@ export class WorkOnTasksService {
             const now = Date.now();
             if (!force && now - lastLockRefresh < getLockRefreshIntervalMs()) return true;
             try {
-              const refreshed = await this.deps.workspaceRepo.refreshTaskLock(task.task.id, taskRun.id, TASK_LOCK_TTL_SECONDS);
+              const ttlSeconds = Math.max(1, TASK_LOCK_TTL_SECONDS);
+              const refreshed = await this.deps.workspaceRepo.refreshTaskLock(task.task.id, taskRun.id, ttlSeconds);
               if (!refreshed) {
                 await this.logTask(taskRun.id, `Task lock lost during ${label}; another run may have taken it.`, "vcs", {
                   reason: "lock_stolen",
@@ -1367,13 +1457,13 @@ export class WorkOnTasksService {
           const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
           await this.logTask(taskRun.id, `System prompt:\n${systemPrompt || "(none)"}`, "prompt");
           await this.logTask(taskRun.id, `Task prompt:\n${prompt}`, "prompt");
-          promptEstimate = estimateTokens(systemPrompt + prompt);
+          promptEstimateBase = estimateTokens(systemPrompt + prompt);
           await endPhase("prompt", { hasSystemPrompt: Boolean(systemPrompt) });
 
           if (request.dryRun) {
             await this.logTask(taskRun.id, "Dry-run enabled; skipping execution.", "execution");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-              status: "succeeded",
+              status: "cancelled",
               finishedAt: new Date().toISOString(),
             });
             results.push({ taskKey: task.task.key, status: "skipped", notes: "dry_run" });
@@ -1471,9 +1561,10 @@ export class WorkOnTasksService {
       let agentDuration = 0;
       let triedRetry = false;
 
+      const agentInput = `${systemPrompt}\n\n${prompt}`;
       try {
         await startPhase("agent", { agent: agent.id, stream: agentStream });
-        const first = await invokeAgentOnce(`${systemPrompt}\n\n${prompt}`, "agent");
+        const first = await invokeAgentOnce(agentInput, "agent");
         agentOutput = first.output;
         agentDuration = first.durationSeconds;
         await endPhase("agent", { agentDurationSeconds: agentDuration });
@@ -1498,12 +1589,17 @@ export class WorkOnTasksService {
         continue;
       }
 
-      const recordUsage = async (phase: "agent" | "agent_retry", output: string, durationSeconds: number) => {
-        const promptTokens = promptEstimate || estimateTokens(systemPrompt + prompt);
-        if (!promptEstimate) promptEstimate = promptTokens;
+      const recordUsage = async (
+        phase: "agent" | "agent_retry",
+        output: string,
+        durationSeconds: number,
+        promptText: string,
+      ) => {
+        const promptTokens = estimateTokens(promptText);
         const completionTokens = estimateTokens(output);
         tokensPromptTotal += promptTokens;
         tokensCompletionTotal += completionTokens;
+        promptEstimateTotal += promptTokens;
         await this.recordTokenUsage({
           agentId: agent.id,
           model: agent.defaultModel,
@@ -1519,29 +1615,29 @@ export class WorkOnTasksService {
         });
       };
 
-      await recordUsage("agent", agentOutput, agentDuration);
+      await recordUsage("agent", agentOutput, agentDuration, agentInput);
 
       let patches = extractPatches(agentOutput);
-      if (patches.length === 0 && !triedRetry) {
+      let fileBlocks = extractFileBlocks(agentOutput);
+      if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
         triedRetry = true;
-        await this.logTask(taskRun.id, "Agent output did not include a patch; retrying with explicit patch-only instruction.", "agent");
+        await this.logTask(taskRun.id, "Agent output did not include a patch or file blocks; retrying with explicit output instructions.", "agent");
         try {
-          const retry = await invokeAgentOnce(
-            `${systemPrompt}\n\n${prompt}\n\nONLY OUTPUT the code changes as unified diff inside \`\`\`patch\`\`\` fences. Do not include analysis or narration.`,
-            "agent",
-          );
+          const retryInput = `${systemPrompt}\n\n${prompt}\n\nOutput only code changes. If editing existing files, output a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, output FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis or narration.`;
+          const retry = await invokeAgentOnce(retryInput, "agent");
           agentOutput = retry.output;
           agentDuration += retry.durationSeconds;
-          await recordUsage("agent_retry", retry.output, retry.durationSeconds);
+          await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput);
           patches = extractPatches(agentOutput);
+          fileBlocks = extractFileBlocks(agentOutput);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
         }
       }
 
-          if (patches.length === 0) {
-            const message = "Agent output did not include a patch.";
+          if (patches.length === 0 && fileBlocks.length === 0) {
+            const message = "Agent output did not include a patch or file blocks.";
             await this.logTask(taskRun.id, message, "agent");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
             await this.stateService.markBlocked(task.task, "missing_patch");
@@ -1551,24 +1647,92 @@ export class WorkOnTasksService {
             continue;
           }
 
-          if (patches.length) {
+          if (patches.length || fileBlocks.length) {
             if (!(await refreshLock("apply_start", true))) {
               await this.logTask(taskRun.id, "Aborting task: lock lost before apply.", "vcs");
               throw new Error("Task lock lost before apply.");
             }
-            await startPhase("apply", { patchCount: patches.length });
-            const applied = await this.applyPatches(
-              patches,
-              this.workspace.workspaceRoot,
-              request.dryRun ?? false,
-            );
-            touched = applied.touched;
-            if (applied.warnings?.length) {
-              await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+            const applyDetails: Record<string, unknown> = {};
+            if (patches.length) applyDetails.patchCount = patches.length;
+            if (fileBlocks.length) applyDetails.fileCount = fileBlocks.length;
+            if (fileBlocks.length && !patches.length) applyDetails.mode = "direct";
+            await startPhase("apply", applyDetails);
+            let patchApplyError: string | null = null;
+            if (patches.length) {
+              const applied = await this.applyPatches(
+                patches,
+                this.workspace.workspaceRoot,
+                request.dryRun ?? false,
+              );
+              touched = applied.touched;
+              if (applied.warnings?.length) {
+                await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+              }
+              if (applied.error) {
+                patchApplyError = applied.error;
+                await this.logTask(taskRun.id, `Patch apply failed: ${applied.error}`, "patch");
+                if (!fileBlocks.length) {
+                  await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error });
+                  await this.stateService.markBlocked(task.task, "patch_failed");
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                  results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
+                  taskStatus = "failed";
+                  if (!request.dryRun && request.noCommit !== true) {
+                    await this.commitPendingChanges(
+                      branchInfo,
+                      task.task.key,
+                      task.task.title,
+                      "auto-save (patch_failed)",
+                      task.task.id,
+                      taskRun.id,
+                    );
+                  }
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue;
+                }
+              }
             }
-            if (applied.error) {
-              await this.logTask(taskRun.id, `Patch apply failed: ${applied.error}`, "patch");
-              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error });
+            if (fileBlocks.length) {
+              const allowNoop = patchApplyError === null && touched.length > 0;
+              const applied = await this.applyFileBlocks(fileBlocks, this.workspace.workspaceRoot, request.dryRun ?? false, allowNoop);
+              if (applied.touched.length) {
+                const merged = new Set([...touched, ...applied.touched]);
+                touched = Array.from(merged);
+              }
+              if (applied.warnings?.length) {
+                await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+              }
+              if (applied.error) {
+                await this.logTask(taskRun.id, `Direct file apply failed: ${applied.error}`, "patch");
+                await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error });
+                await this.stateService.markBlocked(task.task, "patch_failed");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
+                taskStatus = "failed";
+                if (!request.dryRun && request.noCommit !== true) {
+                  await this.commitPendingChanges(
+                    branchInfo,
+                    task.task.key,
+                    task.task.title,
+                    "auto-save (patch_failed)",
+                    task.task.id,
+                    taskRun.id,
+                  );
+                }
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue;
+              }
+              if (patchApplyError && applied.appliedCount > 0) {
+                await this.logTask(
+                  taskRun.id,
+                  `Patch apply skipped; continued with file blocks. Reason: ${patchApplyError}`,
+                  "patch",
+                );
+                patchApplyError = null;
+              }
+            }
+            if (patchApplyError) {
+              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: patchApplyError });
               await this.stateService.markBlocked(task.task, "patch_failed");
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
               results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
@@ -1586,7 +1750,7 @@ export class WorkOnTasksService {
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
               continue;
             }
-            patchApplied = true;
+            patchApplied = touched.length > 0;
             await endPhase("apply", { touched });
             if (!(await refreshLock("apply"))) {
               await this.logTask(taskRun.id, "Aborting task: lock lost after apply.", "vcs");
@@ -1793,7 +1957,7 @@ export class WorkOnTasksService {
           branch: branchInfo.branch,
         });
         await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-        await this.checkpoint(job.id, "task_completed", { taskKey: task.task.key });
+        await this.checkpoint(job.id, "task_ready_for_review", { taskKey: task.task.key });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (/task lock lost/i.test(message)) {

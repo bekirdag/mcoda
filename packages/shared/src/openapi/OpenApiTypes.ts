@@ -5,6 +5,10 @@ export interface Agent {
   slug: string;
   adapter: string;
   defaultModel?: string;
+  rating?: number;
+  reasoningRating?: number;
+  bestUsage?: string;
+  costPerMillion?: number;
   config?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -19,6 +23,10 @@ export interface CreateAgentInput {
   slug: string;
   adapter: string;
   defaultModel?: string;
+  rating?: number;
+  reasoningRating?: number;
+  bestUsage?: string;
+  costPerMillion?: number;
   config?: Record<string, unknown>;
   capabilities?: string[];
   prompts?: AgentPromptManifest;
@@ -28,6 +36,10 @@ export interface CreateAgentInput {
 export interface UpdateAgentInput {
   adapter?: string;
   defaultModel?: string;
+  rating?: number;
+  reasoningRating?: number;
+  bestUsage?: string;
+  costPerMillion?: number;
   config?: Record<string, unknown>;
   capabilities?: string[];
   prompts?: AgentPromptManifest;

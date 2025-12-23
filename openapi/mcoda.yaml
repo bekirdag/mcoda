@@ -1008,6 +1008,18 @@ components:
           type: string
         defaultModel:
           type: string
+        rating:
+          type: integer
+          description: Relative capability rating (higher is stronger).
+        reasoningRating:
+          type: integer
+          description: Relative reasoning strength rating (higher is stronger).
+        bestUsage:
+          type: string
+          description: Primary usage area or specialization (e.g., code_write, ui_ux_docs).
+        costPerMillion:
+          type: number
+          description: Cost per 1M tokens in configured currency (0 for local models).
         health:
           $ref: "#/components/schemas/AgentHealth"
         capabilities:
@@ -1117,6 +1129,14 @@ components:
           type: string
         defaultModel:
           type: string
+        rating:
+          type: integer
+        reasoningRating:
+          type: integer
+        bestUsage:
+          type: string
+        costPerMillion:
+          type: number
         config:
           type: object
           additionalProperties: true
@@ -1138,6 +1158,14 @@ components:
           type: string
         defaultModel:
           type: string
+        rating:
+          type: integer
+        reasoningRating:
+          type: integer
+        bestUsage:
+          type: string
+        costPerMillion:
+          type: number
         config:
           type: object
           additionalProperties: true

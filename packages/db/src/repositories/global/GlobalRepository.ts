@@ -19,6 +19,10 @@ const mapAgentRow = (row: any): Agent => ({
   slug: row.slug,
   adapter: row.adapter,
   defaultModel: row.default_model ?? undefined,
+  rating: row.rating ?? undefined,
+  reasoningRating: row.reasoning_rating ?? undefined,
+  bestUsage: row.best_usage ?? undefined,
+  costPerMillion: row.cost_per_million ?? undefined,
   config: row.config_json ? (JSON.parse(row.config_json) as Record<string, unknown>) : undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -71,14 +75,14 @@ export class GlobalRepository {
 
   async listAgents(): Promise<Agent[]> {
     const rows = await this.db.all(
-      "SELECT id, slug, adapter, default_model, config_json, created_at, updated_at FROM agents ORDER BY slug ASC",
+      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at FROM agents ORDER BY slug ASC",
     );
     return rows.map(mapAgentRow);
   }
 
   async getAgentById(id: string): Promise<Agent | undefined> {
     const row = await this.db.get(
-      "SELECT id, slug, adapter, default_model, config_json, created_at, updated_at FROM agents WHERE id = ?",
+      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at FROM agents WHERE id = ?",
       id,
     );
     return row ? mapAgentRow(row) : undefined;
@@ -86,7 +90,7 @@ export class GlobalRepository {
 
   async getAgentBySlug(slug: string): Promise<Agent | undefined> {
     const row = await this.db.get(
-      "SELECT id, slug, adapter, default_model, config_json, created_at, updated_at FROM agents WHERE slug = ?",
+      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at FROM agents WHERE slug = ?",
       slug,
     );
     return row ? mapAgentRow(row) : undefined;
@@ -96,12 +100,16 @@ export class GlobalRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.slug,
       input.adapter,
       input.defaultModel ?? null,
+      input.rating ?? null,
+      input.reasoningRating ?? null,
+      input.bestUsage ?? null,
+      input.costPerMillion ?? null,
       input.config ? JSON.stringify(input.config) : null,
       now,
       now,
@@ -129,6 +137,22 @@ export class GlobalRepository {
     if (patch.defaultModel !== undefined) {
       updates.push("default_model = ?");
       params.push(patch.defaultModel);
+    }
+    if (patch.rating !== undefined) {
+      updates.push("rating = ?");
+      params.push(patch.rating);
+    }
+    if (patch.reasoningRating !== undefined) {
+      updates.push("reasoning_rating = ?");
+      params.push(patch.reasoningRating);
+    }
+    if (patch.bestUsage !== undefined) {
+      updates.push("best_usage = ?");
+      params.push(patch.bestUsage);
+    }
+    if (patch.costPerMillion !== undefined) {
+      updates.push("cost_per_million = ?");
+      params.push(patch.costPerMillion);
     }
     if (patch.config !== undefined) {
       updates.push("config_json = ?");

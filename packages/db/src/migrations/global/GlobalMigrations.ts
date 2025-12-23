@@ -13,6 +13,10 @@ export class GlobalMigrations {
         slug TEXT UNIQUE NOT NULL,
         adapter TEXT NOT NULL,
         default_model TEXT,
+        rating INTEGER,
+        reasoning_rating INTEGER,
+        best_usage TEXT,
+        cost_per_million REAL,
         config_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -101,7 +105,7 @@ export class GlobalMigrations {
 
     await createSchema();
 
-    const agentsInfo = await db.all<any[]>("PRAGMA table_info(agents)");
+    let agentsInfo = await db.all<any[]>("PRAGMA table_info(agents)");
     const hasAgentId = agentsInfo.some((col) => col.name === "id");
     const hasAgentSlug = agentsInfo.some((col) => col.name === "slug");
 
@@ -124,6 +128,113 @@ export class GlobalMigrations {
       `);
       await createSchema();
     }
+
+    agentsInfo = await db.all<any[]>("PRAGMA table_info(agents)");
+    const hasAgentRating = agentsInfo.some((col) => col.name === "rating");
+    const hasAgentReasoningRating = agentsInfo.some((col) => col.name === "reasoning_rating");
+    const hasAgentBestUsage = agentsInfo.some((col) => col.name === "best_usage");
+    const hasAgentCost = agentsInfo.some((col) => col.name === "cost_per_million");
+    if (!hasAgentRating) {
+      await db.exec("ALTER TABLE agents ADD COLUMN rating INTEGER");
+    }
+    if (!hasAgentReasoningRating) {
+      await db.exec("ALTER TABLE agents ADD COLUMN reasoning_rating INTEGER");
+    }
+    if (!hasAgentBestUsage) {
+      await db.exec("ALTER TABLE agents ADD COLUMN best_usage TEXT");
+    }
+    if (!hasAgentCost) {
+      await db.exec("ALTER TABLE agents ADD COLUMN cost_per_million REAL");
+    }
+
+    await db.exec(`
+      UPDATE agents
+      SET
+        rating = COALESCE(
+          rating,
+          CASE
+            WHEN lower(slug) = 'gateway-router' THEN 10
+            WHEN lower(slug) = 'codex-architect' THEN 10
+            WHEN lower(slug) = 'glm-worker' THEN 9
+            WHEN lower(slug) = 'gemini-architect' THEN 9
+            WHEN lower(slug) = 'devstral-local' THEN 6
+            WHEN lower(slug) = 'gpt-oss-qa' THEN 9
+            WHEN lower(default_model) LIKE '%gpt-5.2-codex%' OR lower(slug) LIKE '%gpt-5.2-codex%' THEN 10
+            WHEN lower(default_model) LIKE '%gpt-5.1-codex-max%' OR lower(slug) LIKE '%gpt-5.1-codex-max%' THEN 9
+            WHEN lower(default_model) LIKE '%glm-4.7%' OR lower(slug) LIKE '%glm-4.7%' THEN 6
+            WHEN lower(default_model) LIKE '%devstral-small-2%' OR lower(slug) LIKE '%devstral-small-2%' THEN 4
+            WHEN lower(default_model) LIKE '%gpt-oss:20b%' OR lower(slug) LIKE '%gpt-oss:20b%' THEN 3
+            WHEN lower(slug) LIKE '%codex%' OR lower(default_model) LIKE '%codex%' THEN 5
+            WHEN lower(slug) LIKE '%gemini%' OR lower(default_model) LIKE '%gemini%' THEN 4
+            WHEN lower(slug) LIKE '%glm%' OR lower(default_model) LIKE '%glm%' THEN 3
+            WHEN lower(slug) LIKE '%devstral%' OR lower(default_model) LIKE '%devstral%' THEN 2
+            WHEN lower(slug) LIKE '%ollama%' OR lower(adapter) LIKE 'ollama%' THEN 2
+            WHEN lower(adapter) LIKE 'qa%' THEN 3
+            ELSE 3
+          END
+        ),
+        reasoning_rating = COALESCE(
+          reasoning_rating,
+          CASE
+            WHEN lower(slug) = 'gateway-router' THEN 10
+            WHEN lower(slug) = 'codex-architect' THEN 10
+            WHEN lower(slug) = 'glm-worker' THEN 9
+            WHEN lower(slug) = 'gemini-architect' THEN 8
+            WHEN lower(slug) = 'devstral-local' THEN 6
+            WHEN lower(slug) = 'gpt-oss-qa' THEN 8
+            WHEN lower(default_model) LIKE '%gpt-5.2-codex%' OR lower(slug) LIKE '%gpt-5.2-codex%' THEN 10
+            WHEN lower(default_model) LIKE '%gpt-5.1-codex-max%' OR lower(slug) LIKE '%gpt-5.1-codex-max%' THEN 9
+            WHEN lower(default_model) LIKE '%gemini-3-pro%' OR lower(slug) LIKE '%gemini-3-pro%' THEN 8
+            WHEN lower(default_model) LIKE '%glm-4.7%' OR lower(slug) LIKE '%glm-4.7%' THEN 6
+            WHEN lower(default_model) LIKE '%devstral-small-2%' OR lower(slug) LIKE '%devstral-small-2%' THEN 4
+            WHEN lower(default_model) LIKE '%gpt-oss:20b%' OR lower(slug) LIKE '%gpt-oss:20b%' THEN 3
+            WHEN lower(slug) LIKE '%codex%' OR lower(default_model) LIKE '%codex%' THEN 7
+            WHEN lower(slug) LIKE '%gemini%' OR lower(default_model) LIKE '%gemini%' THEN 6
+            WHEN lower(slug) LIKE '%glm%' OR lower(default_model) LIKE '%glm%' THEN 5
+            WHEN lower(slug) LIKE '%devstral%' OR lower(default_model) LIKE '%devstral%' THEN 4
+            WHEN lower(slug) LIKE '%ollama%' OR lower(adapter) LIKE 'ollama%' THEN 3
+            WHEN lower(adapter) LIKE 'qa%' THEN 5
+            ELSE 4
+          END
+        ),
+        best_usage = COALESCE(
+          best_usage,
+          CASE
+            WHEN lower(slug) = 'gateway-router' THEN 'orchestration'
+            WHEN lower(slug) = 'codex-architect' THEN 'architectural_design'
+            WHEN lower(slug) = 'glm-worker' THEN 'code_write'
+            WHEN lower(slug) = 'gemini-architect' THEN 'doc_generation'
+            WHEN lower(slug) = 'devstral-local' THEN 'coding_light'
+            WHEN lower(slug) = 'gpt-oss-qa' THEN 'qa_testing'
+            WHEN lower(slug) LIKE '%devstral%' OR lower(default_model) LIKE '%devstral%' THEN 'coding'
+            WHEN lower(slug) LIKE '%glm%' OR lower(default_model) LIKE '%glm%' THEN 'coding'
+            WHEN lower(slug) LIKE '%codex%' OR lower(default_model) LIKE '%codex%' THEN 'code_write'
+            WHEN lower(slug) LIKE '%gemini%' OR lower(default_model) LIKE '%gemini%' THEN 'ui_ux_docs'
+            WHEN lower(adapter) LIKE 'qa%' THEN 'qa'
+            WHEN lower(slug) LIKE '%ollama%' OR lower(adapter) LIKE 'ollama%' THEN 'coding'
+            ELSE 'general'
+          END
+        ),
+        cost_per_million = COALESCE(
+          cost_per_million,
+          CASE
+            WHEN lower(slug) = 'gemini-architect' THEN 3.0
+            WHEN lower(slug) = 'gateway-router' THEN 14.0
+            WHEN lower(slug) = 'codex-architect' THEN 14.0
+            WHEN lower(slug) = 'glm-worker' THEN 2.2
+            WHEN lower(slug) = 'devstral-local' THEN 0
+            WHEN lower(slug) = 'gpt-oss-qa' THEN 0
+            WHEN lower(adapter) LIKE 'ollama%' OR lower(adapter) = 'local-model' OR lower(adapter) = 'qa-cli' THEN 0
+            WHEN lower(default_model) LIKE '%gpt-5.2%' OR lower(slug) LIKE '%gpt-5.2%' THEN 14.0
+            WHEN lower(default_model) LIKE '%glm-4.7%' OR lower(slug) LIKE '%glm-4.7%' THEN 2.2
+            WHEN lower(default_model) LIKE '%gpt-5.1%' AND (lower(default_model) LIKE '%codex%' OR lower(slug) LIKE '%codex%') THEN 10.0
+            WHEN lower(default_model) LIKE '%gemini-3-pro%' OR lower(slug) LIKE '%gemini-3-pro%' THEN 18.0
+            WHEN lower(default_model) LIKE '%devstral%' OR lower(slug) LIKE '%devstral%' THEN 0
+            ELSE NULL
+          END
+        )
+      WHERE rating IS NULL OR reasoning_rating IS NULL OR best_usage IS NULL OR cost_per_million IS NULL;
+    `);
 
     const workspaceDefaultsInfo = await db.all<any[]>("PRAGMA table_info(workspace_defaults)");
     const hasWorkspaceId = workspaceDefaultsInfo.some((col) => col.name === "workspace_id");
