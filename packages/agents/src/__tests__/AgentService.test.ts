@@ -214,6 +214,35 @@ test("zhipu-api invokes with configured baseUrl, model, and thinking", async () 
   assert.equal((result.metadata as any)?.usage?.total_tokens, 5);
 });
 
+test("gateway handoff is appended to agent input when configured", async () => {
+  const agent = await repo.createAgent({
+    slug: "handoff-agent",
+    adapter: "openai-api",
+    defaultModel: "gpt-4o",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  const encrypted = await CryptoHelper.encryptSecret("secret");
+  await repo.setAgentAuth(agent.id, encrypted);
+  const handoffPath = path.join(os.tmpdir(), `mcoda-handoff-${Date.now()}-${Math.random()}.md`);
+  await fs.promises.writeFile(handoffPath, "Use the gateway summary when deciding next steps.", "utf8");
+  const prevPath = process.env.MCODA_GATEWAY_HANDOFF_PATH;
+  delete process.env.MCODA_GATEWAY_HANDOFF;
+  process.env.MCODA_GATEWAY_HANDOFF_PATH = handoffPath;
+  try {
+    const result = await service.invoke(agent.id, { input: "ping", metadata: { command: "work-on-tasks" } });
+    assert.match(result.output, /\[Gateway handoff\]/);
+    assert.match(result.output, /Use the gateway summary/);
+  } finally {
+    if (prevPath === undefined) {
+      delete process.env.MCODA_GATEWAY_HANDOFF_PATH;
+    } else {
+      process.env.MCODA_GATEWAY_HANDOFF_PATH = prevPath;
+    }
+    await fs.promises.unlink(handoffPath).catch(() => {});
+  }
+});
+
 test("ollama-remote health returns unreachable on network error", async () => {
   const agent = await repo.createAgent({
     slug: "remote-health",

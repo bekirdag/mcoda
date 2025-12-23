@@ -22,5 +22,6 @@ export * from "./services/telemetry/TelemetryService.js";
 export * from "./services/tasks/TaskDetailService.js";
 export * from "./services/backlog/TaskOrderingService.js";
 export * from "./services/agents/RoutingService.js";
+export * from "./services/agents/GatewayAgentService.js";
 export * from "./workspace/WorkspaceManager.js";
 export * from "./services/system/SystemUpdateService.js";

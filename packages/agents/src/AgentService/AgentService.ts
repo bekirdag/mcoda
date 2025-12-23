@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import { CryptoHelper, Agent, AgentAuthMetadata, AgentHealth, AgentPromptManifest } from "@mcoda/shared";
 import { GlobalRepository } from "@mcoda/db";
 import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
@@ -29,6 +30,27 @@ const DEFAULT_JOB_PROMPT =
   "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
   "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
+const HANDOFF_ENV_INLINE = "MCODA_GATEWAY_HANDOFF";
+const HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
+const HANDOFF_HEADER = "[Gateway handoff]";
+const MAX_HANDOFF_CHARS = 8000;
+
+const readGatewayHandoff = async (): Promise<string | undefined> => {
+  const inline = process.env[HANDOFF_ENV_INLINE];
+  if (inline && inline.trim()) {
+    return inline.trim().slice(0, MAX_HANDOFF_CHARS);
+  }
+  const filePath = process.env[HANDOFF_ENV_PATH];
+  if (!filePath) return undefined;
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    const trimmed = content.trim();
+    if (!trimmed) return undefined;
+    return trimmed.slice(0, MAX_HANDOFF_CHARS);
+  } catch {
+    return undefined;
+  }
+};
 
 export class AgentService {
   constructor(private repo: GlobalRepository) {}
@@ -193,7 +215,8 @@ export class AgentService {
     if (!adapter.invoke) {
       throw new Error("Adapter does not support invoke");
     }
-    return adapter.invoke(request);
+    const enriched = await this.applyGatewayHandoff(request);
+    return adapter.invoke(enriched);
   }
 
   async invokeStream(agentId: string, request: InvocationRequest): Promise<AsyncGenerator<InvocationResult>> {
@@ -202,6 +225,17 @@ export class AgentService {
     if (!adapter.invokeStream) {
       throw new Error("Adapter does not support streaming");
     }
-    return adapter.invokeStream(request);
+    const enriched = await this.applyGatewayHandoff(request);
+    return adapter.invokeStream(enriched);
+  }
+
+  private async applyGatewayHandoff(request: InvocationRequest): Promise<InvocationRequest> {
+    if ((request.metadata as any)?.command === "gateway-agent") {
+      return request;
+    }
+    const handoff = await readGatewayHandoff();
+    if (!handoff) return request;
+    const suffix = `\n\n${HANDOFF_HEADER}\n${handoff}`;
+    return { ...request, input: `${request.input ?? ""}${suffix}` };
   }
 }

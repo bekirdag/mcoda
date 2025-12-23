@@ -48,6 +48,8 @@ x-mcoda-command-capabilities:
     required: [docdex_query]
   order-tasks:
     required: [plan]
+  gateway-agent:
+    required: [plan, docdex_query]
 paths:
   /agents:
     get:

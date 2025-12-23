@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json" with { type: "json" };
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
+import { GatewayAgentCommand } from "../commands/agents/GatewayAgentCommand.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
 import { OpenapiCommands } from "../commands/openapi/OpenapiCommands.js";
@@ -33,7 +34,7 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|pdr|sds> [...args]\n" +
+        "Usage: mcoda <agent|gateway-agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|pdr|sds> [...args]\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
           "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
@@ -42,6 +43,10 @@ export class McodaEntrypoint {
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
+      return;
+    }
+    if (command === "gateway-agent") {
+      await GatewayAgentCommand.run(rest);
       return;
     }
     if (command === "test-agent") {
