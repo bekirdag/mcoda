@@ -26,6 +26,13 @@ import { SetWorkspaceCommand } from "../commands/workspace/SetWorkspaceCommand.j
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const [command, ...rest] = argv;
+    const wantsJson = argv.some((arg) => arg === "--json" || arg.startsWith("--json="));
+    const wantsQuiet = argv.some((arg) => arg === "--quiet" || arg.startsWith("--quiet="));
+    if (wantsJson || wantsQuiet) {
+      process.env.MCODA_STREAM_IO = "0";
+    } else if (process.env.MCODA_STREAM_IO === undefined) {
+      process.env.MCODA_STREAM_IO = "1";
+    }
     if (command === "--version" || command === "-v" || command === "version") {
       // Keep this simple so `mcoda --version` works even in thin installs.
       // eslint-disable-next-line no-console

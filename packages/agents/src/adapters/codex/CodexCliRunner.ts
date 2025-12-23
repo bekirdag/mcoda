@@ -1,10 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 
+const CODEX_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+
 export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Record<string, unknown> } => {
   if (process.env.MCODA_SKIP_CLI_CHECKS === "1") {
     return { ok: true, details: { skipped: true } };
   }
-  const result = spawnSync("codex", ["--version"], { encoding: "utf8" });
+  const result = spawnSync("codex", ["--version"], { encoding: "utf8", maxBuffer: CODEX_MAX_BUFFER_BYTES });
   if (result.error) {
     const details = { reason: "missing_cli", error: result.error.message };
     if (throwOnError) {
@@ -32,6 +34,7 @@ export const runCodexExec = (prompt: string, model?: string): { output: string; 
   const result = spawnSync("codex", args, {
     input: prompt,
     encoding: "utf8",
+    maxBuffer: CODEX_MAX_BUFFER_BYTES,
   });
   if (result.error) {
     const error = new Error(`AUTH_ERROR: codex CLI failed (${result.error.message})`);

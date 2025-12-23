@@ -21,6 +21,7 @@ interface GatewayArgs {
   inputFile?: string;
   gatewayAgent?: string;
   maxDocs?: number;
+  agentStream?: boolean;
   noOffload: boolean;
   json: boolean;
 }
@@ -41,6 +42,7 @@ const usage = `mcoda gateway-agent <job> \\
   [--input-file <PATH>] \\
   [--gateway-agent <NAME>] \\
   [--max-docs <N>] \\
+  [--agent-stream <true|false>] \\
   [--no-offload] \\
   [--json] \\
   [--] [job args...]`;
@@ -48,6 +50,21 @@ const usage = `mcoda gateway-agent <job> \\
 const HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
 
 const DOC_ONLY_JOBS = new Set(["sds", "openapi-from-docs"]);
+
+const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
+  if (value === undefined) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  return defaultValue;
+};
+
+const isIoEnabled = (): boolean => {
+  const raw = process.env.MCODA_STREAM_IO;
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(normalized);
+};
 
 const buildHandoffContent = (result: Awaited<ReturnType<GatewayAgentService["run"]>>): string => {
   const lines: string[] = [];
@@ -57,8 +74,19 @@ const buildHandoffContent = (result: Awaited<ReturnType<GatewayAgentService["run
   lines.push(`Gateway agent: ${result.gatewayAgent.slug}`);
   lines.push(`Chosen agent: ${result.chosenAgent.agentSlug}`);
   lines.push("");
+  if (result.analysis.reasoningSummary?.trim()) {
+    lines.push("## Reasoning Summary");
+    lines.push(result.analysis.reasoningSummary.trim());
+    lines.push("");
+  }
   lines.push("## Summary");
   lines.push(result.analysis.summary || "(none)");
+  lines.push("");
+  lines.push("## Current State");
+  lines.push(result.analysis.currentState || "(none)");
+  lines.push("");
+  lines.push("## Todo");
+  lines.push(result.analysis.todo || "(none)");
   lines.push("");
   lines.push("## Understanding");
   lines.push(result.analysis.understanding || "(none)");
@@ -66,6 +94,20 @@ const buildHandoffContent = (result: Awaited<ReturnType<GatewayAgentService["run
   lines.push("## Plan");
   if (result.analysis.plan.length) {
     result.analysis.plan.forEach((step, idx) => lines.push(`${idx + 1}. ${step}`));
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+  lines.push("## Files Likely Touched");
+  if (result.analysis.filesLikelyTouched.length) {
+    result.analysis.filesLikelyTouched.forEach((file) => lines.push(`- ${file}`));
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+  lines.push("## Files To Create");
+  if (result.analysis.filesToCreate.length) {
+    result.analysis.filesToCreate.forEach((file) => lines.push(`- ${file}`));
   } else {
     lines.push("(none)");
   }
@@ -85,6 +127,37 @@ const buildHandoffContent = (result: Awaited<ReturnType<GatewayAgentService["run
     result.analysis.docdexNotes.forEach((item) => lines.push(`- ${item}`));
   }
   return lines.join("\n");
+};
+
+const isSameAgent = (result: Awaited<ReturnType<GatewayAgentService["run"]>>): boolean =>
+  result.chosenAgent.agentId === result.gatewayAgent.id || result.chosenAgent.agentSlug === result.gatewayAgent.slug;
+
+const collectOffloadBlockers = (result: Awaited<ReturnType<GatewayAgentService["run"]>>): string[] => {
+  const blockers: string[] = [];
+  const missingFieldsWarning = result.warnings.find((w) => w.startsWith("Gateway analysis missing fields:"));
+  if (missingFieldsWarning) {
+    blockers.push(missingFieldsWarning.replace("Gateway analysis missing fields:", "analysis incomplete:").trim());
+  }
+  const currentState = result.analysis.currentState.trim();
+  const todo = result.analysis.todo.trim();
+  if (!currentState) blockers.push("missing current state");
+  if (currentState.toLowerCase().includes("current state unknown")) blockers.push("current state not digested");
+  if (currentState.toLowerCase().includes("requires investigation")) blockers.push("current state not verified");
+  if (!todo) blockers.push("missing todo");
+  if (todo.toLowerCase().includes("determine remaining work")) blockers.push("todo not digested");
+  if (!result.analysis.understanding.trim()) blockers.push("missing understanding");
+  if (result.analysis.filesLikelyTouched.length === 0 && result.analysis.filesToCreate.length === 0) {
+    blockers.push("no files identified to change/create");
+  }
+  const hasDocdexFailure = result.warnings.some((w) => w.toLowerCase().includes("docdex") && w.toLowerCase().includes("failed"));
+  if (hasDocdexFailure) blockers.push("docdex lookup failed");
+  if (result.analysis.docdexNotes.length === 0 || result.warnings.some((w) => w.includes("missing docdexNotes"))) {
+    blockers.push("docdex not digested");
+  }
+  if (result.warnings.some((w) => w.includes("not valid JSON"))) {
+    blockers.push("gateway response not JSON");
+  }
+  return blockers;
 };
 
 const parseGatewayArgs = (argv: string[]): GatewayArgs => {
@@ -116,6 +189,10 @@ const parseGatewayArgs = (argv: string[]): GatewayArgs => {
       args.maxDocs = Number(arg.split("=", 2)[1]);
       continue;
     }
+    if (arg.startsWith("--agent-stream=")) {
+      args.agentStream = parseBooleanFlag(arg.split("=", 2)[1], true);
+      continue;
+    }
     switch (arg) {
       case "--workspace":
       case "--workspace-root":
@@ -143,6 +220,16 @@ const parseGatewayArgs = (argv: string[]): GatewayArgs => {
         args.maxDocs = Number(argv[i + 1]);
         i += 1;
         break;
+      case "--agent-stream": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          args.agentStream = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          args.agentStream = true;
+        }
+        break;
+      }
       case "--no-offload":
       case "--plan-only":
         args.noOffload = true;
@@ -170,11 +257,17 @@ const stripGatewayOnlyArgs = (argv: string[]): string[] => {
   const stripped: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--input" || arg === "--input-file" || arg === "--gateway-agent" || arg === "--max-docs") {
+    if (arg === "--input" || arg === "--input-file" || arg === "--gateway-agent" || arg === "--max-docs" || arg === "--agent-stream") {
       i += 1;
       continue;
     }
-    if (arg.startsWith("--input=") || arg.startsWith("--input-file=") || arg.startsWith("--gateway-agent=") || arg.startsWith("--max-docs=")) {
+    if (
+      arg.startsWith("--input=") ||
+      arg.startsWith("--input-file=") ||
+      arg.startsWith("--gateway-agent=") ||
+      arg.startsWith("--max-docs=") ||
+      arg.startsWith("--agent-stream=")
+    ) {
       continue;
     }
     if (arg === "--no-offload" || arg === "--plan-only" || arg === "--json") {
@@ -383,6 +476,22 @@ export class GatewayAgentCommand {
 
     const service = await GatewayAgentService.create(workspace);
     try {
+      const streamEnabled = (gatewayArgs.agentStream ?? true) && !gatewayArgs.json;
+      const ioEnabled = isIoEnabled();
+      const shouldPrintStream = streamEnabled && !ioEnabled;
+      let streamStarted = false;
+      let streamEndedWithNewline = true;
+      const onStreamChunk = shouldPrintStream
+        ? (chunk: string) => {
+            if (!streamStarted) {
+              // eslint-disable-next-line no-console
+              console.log("Gateway agent stream:");
+              streamStarted = true;
+            }
+            process.stdout.write(chunk);
+            streamEndedWithNewline = chunk.endsWith("\n");
+          }
+        : undefined;
       const result = await service.run({
         workspace,
         job: normalizedJob,
@@ -395,9 +504,14 @@ export class GatewayAgentCommand {
         inputText,
         gatewayAgentName: gatewayArgs.gatewayAgent,
         maxDocs: gatewayArgs.maxDocs,
+        agentStream: streamEnabled,
+        onStreamChunk,
       });
+      if (shouldPrintStream && streamStarted && !streamEndedWithNewline) {
+        process.stdout.write("\n");
+      }
 
-      const shouldOffload = !gatewayArgs.noOffload && !gatewayArgs.json;
+      const shouldRunJob = !gatewayArgs.noOffload && !gatewayArgs.json;
       if (gatewayArgs.json) {
         // eslint-disable-next-line no-console
         console.log(JSON.stringify(result, null, 2));
@@ -406,11 +520,32 @@ export class GatewayAgentCommand {
 
       // eslint-disable-next-line no-console
       console.log(`Gateway agent: ${result.gatewayAgent.slug} (run: ${result.commandRunId})`);
+      if (result.analysis.reasoningSummary?.trim()) {
+        // eslint-disable-next-line no-console
+        console.log(`Reasoning summary: ${result.analysis.reasoningSummary.trim()}`);
+      }
       // eslint-disable-next-line no-console
       console.log(`Summary: ${result.analysis.summary}`);
+      // eslint-disable-next-line no-console
+      console.log(`Current state: ${result.analysis.currentState}`);
+      // eslint-disable-next-line no-console
+      console.log(`Todo: ${result.analysis.todo}`);
+      if (result.analysis.understanding.trim()) {
+        // eslint-disable-next-line no-console
+        console.log(`Understanding: ${result.analysis.understanding}`);
+      }
       if (result.analysis.plan.length) {
         // eslint-disable-next-line no-console
         console.log(`Plan:\n- ${result.analysis.plan.join("\n- ")}`);
+      }
+      if (result.analysis.filesLikelyTouched.length || result.analysis.filesToCreate.length) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `Files: ${[
+            ...result.analysis.filesLikelyTouched.map((f) => `touch:${f}`),
+            ...result.analysis.filesToCreate.map((f) => `create:${f}`),
+          ].join(", ")}`,
+        );
       }
       // eslint-disable-next-line no-console
       console.log(`Complexity: ${result.analysis.complexity}/10`);
@@ -427,9 +562,17 @@ export class GatewayAgentCommand {
         console.warn(result.warnings.map((w) => `! ${w}`).join("\n"));
       }
 
-      if (!shouldOffload) {
+      if (!shouldRunJob) {
         return;
       }
+      const blockers = collectOffloadBlockers(result);
+      if (blockers.length) {
+        // eslint-disable-next-line no-console
+        console.error(`gateway-agent is not ready to offload: ${blockers.join("; ")}.`);
+        process.exitCode = 1;
+        return;
+      }
+
       const runner = resolveJobRunner(result.job);
       if (!runner) {
         // eslint-disable-next-line no-console
@@ -445,9 +588,18 @@ export class GatewayAgentCommand {
       const previousHandoff = process.env[HANDOFF_ENV_PATH];
       process.env[HANDOFF_ENV_PATH] = handoffPath;
       const forwarded = stripAgentArgs(jobArgs);
-      const argsWithAgent = [...forwarded, "--agent", result.chosenAgent.agentSlug];
+      const hasAgentStream = forwarded.some((arg) => arg === "--agent-stream" || arg.startsWith("--agent-stream="));
+      const argsWithAgent = [...forwarded];
+      if (!hasAgentStream) {
+        argsWithAgent.push("--agent-stream", "true");
+      }
+      argsWithAgent.push("--agent", result.chosenAgent.agentSlug);
+      const sameAgent = isSameAgent(result);
+      const actionLabel = sameAgent
+        ? `Continuing ${result.job} with gateway agent ${result.gatewayAgent.slug}`
+        : `Offloading ${result.job} to ${result.chosenAgent.agentSlug}`;
       // eslint-disable-next-line no-console
-      console.log(`\nOffloading ${result.job} to ${result.chosenAgent.agentSlug}...`);
+      console.log(`\n${actionLabel}...`);
       try {
         await runner(argsWithAgent);
       } finally {

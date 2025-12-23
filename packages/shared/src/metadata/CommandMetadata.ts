@@ -20,7 +20,7 @@ const FALLBACK_CAPABILITIES: Record<string, string[]> = {
 
 const COMMAND_ALIASES: Record<string, string[]> = {
   "create-tasks": ["create_tasks", "create tasks"],
-  "refine-tasks": ["refine_tasks", "refine tasks"],
+  "refine-tasks": ["refine_tasks", "refine tasks", "refine-task"],
   "work-on-tasks": ["work_on_tasks", "work on tasks"],
   "code-review": ["code_review", "code review"],
   "qa-tasks": ["qa_tasks", "qa tasks"],
@@ -29,7 +29,6 @@ const COMMAND_ALIASES: Record<string, string[]> = {
   sds: ["docs:sds:generate", "docs-sds-generate", "sds-generate", "docs-sds"],
   "openapi-from-docs": ["openapi", "openapi_from_docs", "openapi-from-docs"],
   "gateway-agent": ["gateway", "gateway agent", "gateway_agent"],
-  "refine-tasks": ["refine-task"],
 };
 
 type CommandMetadataCache = {

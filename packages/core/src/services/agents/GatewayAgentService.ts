@@ -10,20 +10,45 @@ import { TaskSelectionService, TaskSelectionFilters, SelectedTask } from "../exe
 import { RoutingService } from "./RoutingService.js";
 
 const DEFAULT_GATEWAY_PROMPT = [
-  "You are the gateway agent. Read the task context and docdex snippets, then summarize the task, decide what to do, and plan the work.",
+  "You are the gateway agent. Read the task context and docdex snippets, digest the task, decide what is done vs. remaining, and plan the work.",
+  "You must identify concrete file paths to modify or create before offloading.",
+  "Do not use placeholders like (unknown), TBD, or glob patterns in file paths.",
+  "If docdex returns no results, say so in docdexNotes.",
+  "Do not leave currentState, todo, or understanding blank.",
+  "Put reasoningSummary near the top of the JSON object so it appears early in the stream.",
+  "Do not claim to have read files or performed a repo scan unless explicit file content was provided.",
+  "Do not include fields outside the schema.",
   "Return JSON only with the following schema:",
   "{",
   '  "summary": "1-3 sentence summary of the task and intent",',
+  '  "reasoningSummary": "1-2 sentence high-level rationale (no chain-of-thought)",',
+  '  "currentState": "short statement of what is already implemented or known to exist",',
+  '  "todo": "short statement of what still needs to be done",',
   '  "understanding": "short statement of what success looks like",',
   '  "plan": ["step 1", "step 2", "step 3"],',
   '  "complexity": 1-10,',
   '  "discipline": "backend|frontend|uiux|docs|architecture|qa|planning|ops|other",',
+  '  "filesLikelyTouched": ["path/to/file.ext"],',
+  '  "filesToCreate": ["path/to/new_file.ext"],',
   '  "assumptions": ["assumption 1"],',
   '  "risks": ["risk 1"],',
   '  "docdexNotes": ["notes about docdex coverage/gaps"]',
   "}",
   "If information is missing, keep arrays empty and mention the gap in assumptions or docdexNotes.",
 ].join("\n");
+
+const REQUIRED_PROMPT_MARKERS = [
+  '"summary"',
+  '"reasoningSummary"',
+  '"currentState"',
+  '"todo"',
+  '"understanding"',
+  '"filesLikelyTouched"',
+  '"filesToCreate"',
+];
+
+const hasRequiredPromptMarkers = (content: string): boolean =>
+  REQUIRED_PROMPT_MARKERS.every((marker) => content.includes(marker));
 
 const DEFAULT_JOB_PROMPT =
   "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
@@ -52,6 +77,50 @@ const normalizeList = (value: unknown): string[] => {
   if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
   if (typeof value === "string" && value.trim()) return [value.trim()];
   return [];
+};
+
+const normalizeTextField = (value: unknown): string | undefined => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => String(item).trim()).filter(Boolean);
+    return parts.length ? parts.join("; ") : undefined;
+  }
+  return undefined;
+};
+
+const isPlaceholderPath = (value: string): boolean => {
+  const lower = value.trim().toLowerCase();
+  if (!lower) return true;
+  const hasWord = (word: string) => new RegExp(`\\b${word}\\b`, "i").test(lower);
+  if (lower.includes("(unknown)") || hasWord("unknown") || hasWord("tbd") || hasWord("todo")) return true;
+  if (lower.includes("...") || lower.includes("*") || lower.includes("<") || lower.includes(">")) return true;
+  return false;
+};
+
+const normalizeFileList = (value: unknown): string[] =>
+  normalizeList(value).map((item) => item.trim()).filter((item) => item.length > 0 && !isPlaceholderPath(item));
+
+const listMissingFields = (raw: any): string[] => {
+  const missing: string[] = [];
+  const summary = normalizeTextField(raw?.summary);
+  const reasoningSummary = normalizeTextField(raw?.reasoningSummary);
+  const currentState = normalizeTextField(raw?.currentState);
+  const todo = normalizeTextField(raw?.todo);
+  const understanding = normalizeTextField(raw?.understanding);
+  const plan = normalizeList(raw?.plan);
+  const filesLikelyTouched = normalizeFileList(raw?.filesLikelyTouched);
+  const filesToCreate = normalizeFileList(raw?.filesToCreate);
+  if (!summary) missing.push("summary");
+  if (!reasoningSummary) missing.push("reasoningSummary");
+  if (!currentState) missing.push("currentState");
+  if (!todo) missing.push("todo");
+  if (!understanding) missing.push("understanding");
+  if (plan.length === 0) missing.push("plan");
+  if (filesLikelyTouched.length === 0 && filesToCreate.length === 0) missing.push("files");
+  return missing;
 };
 
 const normalizeDiscipline = (value: string | undefined): string | undefined => {
@@ -183,10 +252,15 @@ export interface GatewayTaskSummary {
 
 export interface GatewayAnalysis {
   summary: string;
+  reasoningSummary?: string;
+  currentState: string;
+  todo: string;
   understanding: string;
   plan: string[];
   complexity: number;
   discipline: string;
+  filesLikelyTouched: string[];
+  filesToCreate: string[];
   assumptions: string[];
   risks: string[];
   docdexNotes: string[];
@@ -219,6 +293,8 @@ export interface GatewayAgentRequest extends TaskSelectionFilters {
   inputText?: string;
   gatewayAgentName?: string;
   maxDocs?: number;
+  agentStream?: boolean;
+  onStreamChunk?: (chunk: string) => void;
 }
 
 type Candidate = {
@@ -319,11 +395,31 @@ export class GatewayAgentService {
         await fs.promises.writeFile(mcodaPromptPath, DEFAULT_GATEWAY_PROMPT, "utf8");
       }
     }
-    const commandPromptFiles = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath]);
+    try {
+      const existing = await fs.promises.readFile(mcodaPromptPath, "utf8");
+      if (!hasRequiredPromptMarkers(existing)) {
+        let nextPrompt = DEFAULT_GATEWAY_PROMPT;
+        try {
+          const workspacePrompt = await fs.promises.readFile(workspacePromptPath, "utf8");
+          if (hasRequiredPromptMarkers(workspacePrompt)) {
+            nextPrompt = workspacePrompt.trim();
+          }
+        } catch {
+          /* ignore */
+        }
+        await fs.promises.writeFile(mcodaPromptPath, nextPrompt, "utf8");
+      }
+    } catch {
+      /* ignore */
+    }
+    const commandPromptFiles = (await this.readPromptFiles([mcodaPromptPath, workspacePromptPath])).filter(
+      hasRequiredPromptMarkers,
+    );
     const mergedCommandPrompt = (() => {
       const parts = [...commandPromptFiles];
-      if (agentPrompts?.commandPrompts?.["gateway-agent"]) {
-        parts.push(agentPrompts.commandPrompts["gateway-agent"]);
+      const agentCommandPrompt = agentPrompts?.commandPrompts?.["gateway-agent"];
+      if (agentCommandPrompt && hasRequiredPromptMarkers(agentCommandPrompt)) {
+        parts.push(agentCommandPrompt);
       }
       if (!parts.length) parts.push(DEFAULT_GATEWAY_PROMPT);
       return parts.filter(Boolean).join("\n\n");
@@ -381,6 +477,44 @@ export class GatewayAgentService {
         });
       return sorted[0].agent;
     }
+  }
+
+  private async invokeGatewayAgent(
+    agent: Agent,
+    prompt: string,
+    job: string,
+    options?: { stream?: boolean; onChunk?: (chunk: string) => void },
+  ): Promise<{ output: string; durationSeconds: number }> {
+    const startedAt = Date.now();
+    const stream = options?.stream !== false;
+    const onChunk = options?.onChunk;
+    try {
+      if (stream) {
+        const generator = await this.deps.agentService.invokeStream(agent.id, {
+          input: prompt,
+          metadata: { command: "gateway-agent", job },
+        });
+        let output = "";
+        for await (const chunk of generator) {
+          const text = chunk.output ?? "";
+          output += text;
+          if (text && onChunk) onChunk(text);
+        }
+        return { output, durationSeconds: (Date.now() - startedAt) / 1000 };
+      }
+    } catch (error) {
+      const message = (error as Error).message ?? "";
+      if (!/does not support streaming/i.test(message)) {
+        throw error;
+      }
+    }
+    const response = await this.deps.agentService.invoke(agent.id, {
+      input: prompt,
+      metadata: { command: "gateway-agent", job },
+    });
+    const output = response.output ?? "";
+    if (output && onChunk) onChunk(output);
+    return { output, durationSeconds: (Date.now() - startedAt) / 1000 };
   }
 
   private async buildTasksSummary(request: GatewayAgentRequest, warnings: string[]): Promise<GatewayTaskSummary[]> {
@@ -496,10 +630,14 @@ export class GatewayAgentService {
   }
 
   private normalizeAnalysis(raw: any, job: string, tasks: GatewayTaskSummary[], inputText?: string): GatewayAnalysis {
-    const summary = typeof raw?.summary === "string" && raw.summary.trim().length ? raw.summary.trim() : undefined;
-    const understanding =
-      typeof raw?.understanding === "string" && raw.understanding.trim().length ? raw.understanding.trim() : "";
+    const summary = normalizeTextField(raw?.summary);
+    const currentState = normalizeTextField(raw?.currentState);
+    const todo = normalizeTextField(raw?.todo);
+    const reasoningSummary = normalizeTextField(raw?.reasoningSummary) ?? "";
+    const understanding = normalizeTextField(raw?.understanding) ?? "";
     const plan = normalizeList(raw?.plan);
+    const filesLikelyTouched = normalizeFileList(raw?.filesLikelyTouched);
+    const filesToCreate = normalizeFileList(raw?.filesToCreate);
     const complexityRaw = Number(raw?.complexity);
     const complexity = Number.isFinite(complexityRaw) ? clamp(Math.round(complexityRaw), 1, 10) : 5;
     const discipline =
@@ -510,15 +648,93 @@ export class GatewayAgentService {
       (tasks.length
         ? `Handle ${tasks.length} task${tasks.length > 1 ? "s" : ""}: ${tasks.map((t) => t.key).join(", ")}.`
         : inputText?.slice(0, 200) ?? "Summarize the requested job.");
+    const fallbackState = currentState
+      ? currentState
+      : tasks.length
+        ? tasks.map((t) => `${t.key} is ${t.status ?? "unknown"} (${t.title})`).join("; ")
+        : "Current state unknown; requires investigation.";
+    const fallbackTodo = todo
+      ? todo
+      : tasks.length
+        ? tasks.map((t) => t.title).join("; ")
+        : "Determine remaining work based on provided input and docs.";
     return {
       summary: fallbackSummary,
+      reasoningSummary,
+      currentState: fallbackState,
+      todo: fallbackTodo,
       understanding,
       plan: plan.length ? plan : ["Review requirements and docs", "Execute the job", "Verify outcomes"],
       complexity,
       discipline,
+      filesLikelyTouched,
+      filesToCreate,
       assumptions: normalizeList(raw?.assumptions),
       risks: normalizeList(raw?.risks),
       docdexNotes: normalizeList(raw?.docdexNotes),
+    };
+  }
+
+  private async validateFilePlan(analysis: GatewayAnalysis, warnings: string[]): Promise<GatewayAnalysis> {
+    const root = this.workspace.workspaceRoot;
+    const normalize = (file: string): { relative: string; resolved: string } => {
+      const resolved = path.resolve(root, file);
+      const relative = path.relative(root, resolved);
+      return { relative, resolved };
+    };
+    const isInside = (relative: string): boolean => !relative.startsWith("..") && !path.isAbsolute(relative);
+    const touched: string[] = [];
+    const created: string[] = [];
+    for (const file of analysis.filesLikelyTouched) {
+      const { relative, resolved } = normalize(file);
+      if (!isInside(relative)) {
+        warnings.push(`Gateway file path outside workspace ignored: ${file}`);
+        continue;
+      }
+      try {
+        const stat = await fs.promises.stat(resolved);
+        if (stat.isFile()) {
+          touched.push(relative.replace(/\\/g, "/"));
+        } else {
+          warnings.push(`Gateway file path is not a file: ${file}`);
+        }
+      } catch {
+        warnings.push(`Gateway file path does not exist: ${file}`);
+      }
+    }
+    for (const file of analysis.filesToCreate) {
+      const { relative, resolved } = normalize(file);
+      if (!isInside(relative)) {
+        warnings.push(`Gateway create path outside workspace ignored: ${file}`);
+        continue;
+      }
+      const parent = path.dirname(resolved);
+      try {
+        const stat = await fs.promises.stat(parent);
+        if (!stat.isDirectory()) {
+          warnings.push(`Gateway create path parent is not a directory: ${file}`);
+          continue;
+        }
+      } catch {
+        warnings.push(`Gateway create path parent does not exist: ${file}`);
+        continue;
+      }
+      try {
+        const stat = await fs.promises.stat(resolved);
+        if (stat.isFile()) {
+          warnings.push(`Gateway create path already exists; treating as touch: ${file}`);
+          touched.push(relative.replace(/\\/g, "/"));
+          continue;
+        }
+      } catch {
+        /* file does not exist; ok */
+      }
+      created.push(relative.replace(/\\/g, "/"));
+    }
+    return {
+      ...analysis,
+      filesLikelyTouched: touched,
+      filesToCreate: created,
     };
   }
 
@@ -644,31 +860,82 @@ export class GatewayAgentService {
       ]
         .filter(Boolean)
         .join("\n\n");
-      const startedAt = Date.now();
-      const response = await this.deps.agentService.invoke(gatewayAgent.id, {
-        input: prompt,
-        metadata: { command: "gateway-agent", job: normalizedJob },
+      const recordUsage = async (promptText: string, outputText: string, durationSeconds: number, action: string) => {
+        const promptTokens = estimateTokens(promptText);
+        const completionTokens = estimateTokens(outputText ?? "");
+        await this.deps.jobService.recordTokenUsage({
+          timestamp: new Date().toISOString(),
+          workspaceId: this.workspace.workspaceId,
+          commandName: "gateway-agent",
+          commandRunId: commandRun.id,
+          agentId: gatewayAgent.id,
+          modelName: gatewayAgent.defaultModel,
+          promptTokens,
+          completionTokens,
+          tokensPrompt: promptTokens,
+          tokensCompletion: completionTokens,
+          tokensTotal: promptTokens + completionTokens,
+          durationSeconds,
+          metadata: { action, job: normalizedJob },
+        });
+      };
+
+      const response = await this.invokeGatewayAgent(gatewayAgent, prompt, normalizedJob, {
+        stream: request.agentStream !== false,
+        onChunk: request.onStreamChunk,
       });
-      const durationSeconds = (Date.now() - startedAt) / 1000;
-      const promptTokens = estimateTokens(prompt);
-      const completionTokens = estimateTokens(response.output ?? "");
-      await this.deps.jobService.recordTokenUsage({
-        timestamp: new Date().toISOString(),
-        workspaceId: this.workspace.workspaceId,
-        commandName: "gateway-agent",
-        commandRunId: commandRun.id,
-        agentId: gatewayAgent.id,
-        modelName: gatewayAgent.defaultModel,
-        promptTokens,
-        completionTokens,
-        tokensPrompt: promptTokens,
-        tokensCompletion: completionTokens,
-        tokensTotal: promptTokens + completionTokens,
-        durationSeconds,
-        metadata: { action: "gateway_summary", job: normalizedJob },
-      });
-      const parsed = extractJson(response.output) ?? {};
-      const analysis = this.normalizeAnalysis(parsed, normalizedJob, tasks, request.inputText);
+      await recordUsage(prompt, response.output ?? "", response.durationSeconds, "gateway_summary");
+
+      let parsed = extractJson(response.output);
+      let missingFields = parsed
+        ? listMissingFields(parsed)
+        : ["summary", "reasoningSummary", "currentState", "todo", "understanding", "plan", "files"];
+      if (!parsed) {
+        warnings.push("Gateway analysis response was not valid JSON; falling back to defaults.");
+      }
+
+      if (missingFields.length) {
+        const repairPrompt = [
+          prompt,
+          "",
+          "Your previous response was incomplete or invalid. Return JSON only with the exact schema.",
+          `Missing fields: ${missingFields.join(", ")}.`,
+          "Ensure reasoningSummary, currentState, todo, understanding, plan, and filesLikelyTouched/filesToCreate are populated.",
+          "Use real file paths only (no placeholders like (unknown), TBD, or glob patterns).",
+          "If docdex returned no results, say so in docdexNotes.",
+        ].join("\n");
+        if (request.onStreamChunk) {
+          request.onStreamChunk("\n[gateway-agent] Retrying for missing fields...\n");
+        }
+        const repairResponse = await this.invokeGatewayAgent(gatewayAgent, repairPrompt, normalizedJob, {
+          stream: request.agentStream !== false,
+          onChunk: request.onStreamChunk,
+        });
+        await recordUsage(repairPrompt, repairResponse.output ?? "", repairResponse.durationSeconds, "gateway_summary_repair");
+        const repaired = extractJson(repairResponse.output);
+        if (repaired) {
+          parsed = repaired;
+          missingFields = listMissingFields(parsed);
+        } else {
+          warnings.push("Gateway repair response was not valid JSON; using fallback analysis.");
+        }
+      }
+
+      if (missingFields.length) {
+        warnings.push(`Gateway analysis missing fields: ${missingFields.join(", ")}.`);
+      }
+
+      let analysis = this.normalizeAnalysis(parsed ?? {}, normalizedJob, tasks, request.inputText);
+      if (analysis.docdexNotes.length === 0) {
+        if (docs.length === 0) {
+          analysis.docdexNotes.push("Docdex: no matching documents found.");
+        } else {
+          warnings.push("Gateway analysis missing docdexNotes for retrieved docdex context.");
+        }
+        const docdexWarnings = warnings.filter((w) => w.toLowerCase().includes("docdex"));
+        analysis.docdexNotes.push(...docdexWarnings);
+      }
+      analysis = await this.validateFilePlan(analysis, warnings);
       const chosenAgent = await this.selectAgentForJob(normalizedJob, analysis);
       await this.deps.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {

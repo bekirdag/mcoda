@@ -34,6 +34,48 @@ const HANDOFF_ENV_INLINE = "MCODA_GATEWAY_HANDOFF";
 const HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
 const HANDOFF_HEADER = "[Gateway handoff]";
 const MAX_HANDOFF_CHARS = 8000;
+const IO_ENV = "MCODA_STREAM_IO";
+const IO_PROMPT_ENV = "MCODA_STREAM_IO_PROMPT";
+const IO_PREFIX = "[agent-io]";
+
+const isIoEnabled = (): boolean => {
+  const raw = process.env[IO_ENV];
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(normalized);
+};
+
+const isIoPromptEnabled = (): boolean => {
+  const raw = process.env[IO_PROMPT_ENV];
+  if (!raw) return true;
+  const normalized = raw.trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(normalized);
+};
+
+const emitIoLine = (line: string): void => {
+  const normalized = line.endsWith("\n") ? line : `${line}\n`;
+  process.stderr.write(normalized);
+};
+
+const renderIoHeader = (agent: Agent, request: InvocationRequest, mode: "invoke" | "stream"): void => {
+  emitIoLine(`${IO_PREFIX} begin agent=${agent.slug ?? agent.id} adapter=${agent.adapter} model=${agent.defaultModel ?? "default"} mode=${mode}`);
+  const command = request.metadata?.command ? ` command=${String(request.metadata.command)}` : "";
+  if (command) emitIoLine(`${IO_PREFIX} meta${command}`);
+  if (isIoPromptEnabled()) {
+    emitIoLine(`${IO_PREFIX} input`);
+    emitIoLine(request.input ?? "");
+  }
+};
+
+const renderIoChunk = (chunk: InvocationResult): void => {
+  if (chunk.output) {
+    emitIoLine(`${IO_PREFIX} output ${chunk.output}`);
+  }
+};
+
+const renderIoEnd = (): void => {
+  emitIoLine(`${IO_PREFIX} end`);
+};
 
 const readGatewayHandoff = async (): Promise<string | undefined> => {
   const inline = process.env[HANDOFF_ENV_INLINE];
@@ -216,7 +258,16 @@ export class AgentService {
       throw new Error("Adapter does not support invoke");
     }
     const enriched = await this.applyGatewayHandoff(request);
-    return adapter.invoke(enriched);
+    const ioEnabled = isIoEnabled();
+    if (ioEnabled) {
+      renderIoHeader(agent, enriched, "invoke");
+    }
+    const result = await adapter.invoke(enriched);
+    if (ioEnabled) {
+      renderIoChunk(result);
+      renderIoEnd();
+    }
+    return result;
   }
 
   async invokeStream(agentId: string, request: InvocationRequest): Promise<AsyncGenerator<InvocationResult>> {
@@ -226,7 +277,23 @@ export class AgentService {
       throw new Error("Adapter does not support streaming");
     }
     const enriched = await this.applyGatewayHandoff(request);
-    return adapter.invokeStream(enriched);
+    const ioEnabled = isIoEnabled();
+    const generator = await adapter.invokeStream(enriched);
+    async function* wrap(): AsyncGenerator<InvocationResult, void, unknown> {
+      if (ioEnabled) {
+        renderIoHeader(agent, enriched, "stream");
+      }
+      for await (const chunk of generator) {
+        if (ioEnabled) {
+          renderIoChunk(chunk);
+        }
+        yield chunk;
+      }
+      if (ioEnabled) {
+        renderIoEnd();
+      }
+    }
+    return wrap();
   }
 
   private async applyGatewayHandoff(request: InvocationRequest): Promise<InvocationRequest> {
