@@ -153,6 +153,15 @@ export class GlobalMigrations {
         rating = COALESCE(
           rating,
           CASE
+            WHEN lower(slug) = 'codex-deputy' THEN 9.2
+            WHEN lower(slug) = 'gemini-junior' THEN 7.0
+            WHEN lower(slug) = 'gemini-deep-read' THEN 9.9
+            WHEN lower(slug) = 'codex-stabilizer' THEN 9.0
+            WHEN lower(slug) = 'gemini-consultant' THEN 7.5
+            WHEN lower(slug) = 'codex-test-lead' THEN 9.0
+            WHEN lower(slug) = 'gemini-scribe' THEN 7.0
+            WHEN lower(slug) = 'gemini-stable' THEN 9.8
+            WHEN lower(slug) = 'glm-hotfix' THEN 9.0
             WHEN lower(slug) = 'gateway-router' THEN 10
             WHEN lower(slug) = 'codex-architect' THEN 10
             WHEN lower(slug) = 'glm-worker' THEN 9
@@ -176,6 +185,15 @@ export class GlobalMigrations {
         reasoning_rating = COALESCE(
           reasoning_rating,
           CASE
+            WHEN lower(slug) = 'codex-deputy' THEN 8.9
+            WHEN lower(slug) = 'gemini-junior' THEN 6.5
+            WHEN lower(slug) = 'gemini-deep-read' THEN 9.0
+            WHEN lower(slug) = 'codex-stabilizer' THEN 8.5
+            WHEN lower(slug) = 'gemini-consultant' THEN 7.0
+            WHEN lower(slug) = 'codex-test-lead' THEN 8.5
+            WHEN lower(slug) = 'gemini-scribe' THEN 6.5
+            WHEN lower(slug) = 'gemini-stable' THEN 8.8
+            WHEN lower(slug) = 'glm-hotfix' THEN 8.5
             WHEN lower(slug) = 'gateway-router' THEN 10
             WHEN lower(slug) = 'codex-architect' THEN 10
             WHEN lower(slug) = 'glm-worker' THEN 9
@@ -200,6 +218,15 @@ export class GlobalMigrations {
         best_usage = COALESCE(
           best_usage,
           CASE
+            WHEN lower(slug) = 'codex-deputy' THEN 'code_review_secondary'
+            WHEN lower(slug) = 'gemini-junior' THEN 'log_analysis'
+            WHEN lower(slug) = 'gemini-deep-read' THEN 'deep_research'
+            WHEN lower(slug) = 'codex-stabilizer' THEN 'legacy_maintenance'
+            WHEN lower(slug) = 'gemini-consultant' THEN 'alternative_solution_generation'
+            WHEN lower(slug) = 'codex-test-lead' THEN 'test_strategy'
+            WHEN lower(slug) = 'gemini-scribe' THEN 'doc_polish'
+            WHEN lower(slug) = 'gemini-stable' THEN 'production_verification'
+            WHEN lower(slug) = 'glm-hotfix' THEN 'rapid_prototyping'
             WHEN lower(slug) = 'gateway-router' THEN 'orchestration'
             WHEN lower(slug) = 'codex-architect' THEN 'architectural_design'
             WHEN lower(slug) = 'glm-worker' THEN 'code_write'
@@ -218,6 +245,15 @@ export class GlobalMigrations {
         cost_per_million = COALESCE(
           cost_per_million,
           CASE
+            WHEN lower(slug) = 'codex-deputy' THEN 10.0
+            WHEN lower(slug) = 'gemini-junior' THEN 2.5
+            WHEN lower(slug) = 'gemini-deep-read' THEN 18.0
+            WHEN lower(slug) = 'codex-stabilizer' THEN 10.0
+            WHEN lower(slug) = 'gemini-consultant' THEN 15.0
+            WHEN lower(slug) = 'codex-test-lead' THEN 10.0
+            WHEN lower(slug) = 'gemini-scribe' THEN 2.5
+            WHEN lower(slug) = 'gemini-stable' THEN 18.0
+            WHEN lower(slug) = 'glm-hotfix' THEN 2.2
             WHEN lower(slug) = 'gemini-architect' THEN 3.0
             WHEN lower(slug) = 'gateway-router' THEN 14.0
             WHEN lower(slug) = 'codex-architect' THEN 14.0
