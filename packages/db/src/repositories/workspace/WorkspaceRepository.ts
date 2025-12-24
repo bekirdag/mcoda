@@ -920,6 +920,7 @@ export class WorkspaceRepository {
         epicKey: string;
         storyKey: string;
         epicTitle?: string;
+        epicDescription?: string;
         storyTitle?: string;
         storyDescription?: string;
         acceptanceCriteria?: string[];
@@ -989,6 +990,7 @@ export class WorkspaceRepository {
       epicKey: row.epic_key,
       storyKey: row.story_key,
       epicTitle: row.epic_title ?? undefined,
+      epicDescription: row.epic_description ?? undefined,
       storyTitle: row.story_title ?? undefined,
       storyDescription: row.story_description ?? undefined,
       acceptanceCriteria: row.story_acceptance

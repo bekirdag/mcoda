@@ -123,6 +123,37 @@ const JSON_CONTRACT = `{
   "testRecommendations": ["Optional test or QA recommendations per task"]
 }`;
 
+const normalizeSingleLine = (value: string | undefined, fallback: string): string => {
+  const trimmed = (value ?? "").replace(/\s+/g, " ").trim();
+  return trimmed || fallback;
+};
+
+const buildStandardReviewComment = (params: {
+  decision?: string;
+  statusBefore: string;
+  statusAfter?: string;
+  findingsCount: number;
+  summary?: string;
+  followupTaskKeys?: string[];
+  error?: string;
+}): string => {
+  const decision = params.decision ?? (params.error ? "error" : "info_only");
+  const statusAfter = params.statusAfter ?? params.statusBefore;
+  const summary = normalizeSingleLine(params.summary, params.error ? "Review failed." : "No summary provided.");
+  const error = normalizeSingleLine(params.error, "none");
+  const followups = params.followupTaskKeys && params.followupTaskKeys.length ? params.followupTaskKeys.join(", ") : "none";
+  return [
+    "[code-review]",
+    `decision: ${decision}`,
+    `status_before: ${params.statusBefore}`,
+    `status_after: ${statusAfter}`,
+    `findings: ${params.findingsCount}`,
+    `summary: ${summary}`,
+    `followups: ${followups}`,
+    `error: ${error}`,
+  ].join("\n");
+};
+
 export class CodeReviewService {
   private selectionService: TaskSelectionService;
   private stateService: TaskStateService;
@@ -300,7 +331,7 @@ export class CodeReviewService {
     taskKeys?: string[];
     statusFilter: string[];
     limit?: number;
-  }): Promise<(TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] })[]> {
+  }): Promise<(TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] })[]> {
     // Prefer the backlog/task OpenAPI surface (via BacklogService) to mirror API filtering semantics.
     const backlog = await BacklogService.create(this.workspace);
     try {
@@ -395,7 +426,7 @@ export class CodeReviewService {
 
   private buildReviewPrompt(params: {
     systemPrompts: string[];
-    task: TaskRow & { epicKey?: string; storyKey?: string; epicTitle?: string; storyTitle?: string; acceptanceCriteria?: string[] };
+    task: TaskRow & { epicKey?: string; storyKey?: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] };
     diff: string;
     docContext: string[];
     openapiSnippet?: string;
@@ -413,8 +444,11 @@ export class CodeReviewService {
       [
         `Task ${params.task.key}: ${params.task.title}`,
         `Epic: ${params.task.epicKey ?? ""} ${params.task.epicTitle ?? ""}`.trim(),
+        `Epic description: ${params.task.epicDescription ? params.task.epicDescription : "none"}`,
         `Story: ${params.task.storyKey ?? ""} ${params.task.storyTitle ?? ""}`.trim(),
+        `Story description: ${params.task.storyDescription ? params.task.storyDescription : "none"}`,
         `Status: ${params.task.status}, Branch: ${params.branch ?? params.task.vcsBranch ?? "n/a"} (base ${params.baseRef})`,
+        `Task description: ${params.task.description ? params.task.description : "none"}`,
         `History:\n${params.historySummary}`,
         `Acceptance criteria: ${acceptance}`,
         params.docContext.length ? `Doc context (docdex excerpts):\n${params.docContext.join("\n")}` : "Doc context: none",
@@ -517,13 +551,70 @@ export class CodeReviewService {
     }
   }
 
-  private async buildDiff(task: TaskRow, baseRef: string, fileScope: string[]): Promise<string> {
+  private async buildDiff(
+    task: TaskRow,
+    baseRef: string,
+    fileScope: string[],
+  ): Promise<{ diff: string; source: "commit" | "branch"; commitSha?: string; warning?: string }> {
     const branch = task.vcsBranch;
-    if (!branch) throw new Error("Task branch missing");
     await this.vcs.ensureRepo(this.workspace.workspaceRoot);
     const paths = fileScope.length ? fileScope : undefined;
+    const commitSha = task.vcsLastCommitSha;
+    if (commitSha) {
+      try {
+        const diff = await this.vcs.diff(this.workspace.workspaceRoot, `${commitSha}^`, commitSha, paths);
+        return { diff, source: "commit", commitSha };
+      } catch (error) {
+        if (!branch) {
+          throw new Error(`Task branch missing and commit diff failed: ${(error as Error).message}`);
+        }
+        const fallback = await this.vcs.diff(this.workspace.workspaceRoot, baseRef, branch, paths);
+        return {
+          diff: fallback,
+          source: "branch",
+          commitSha,
+          warning: `Failed to diff commit ${commitSha}; fell back to branch ${branch}.`,
+        };
+      }
+    }
+    if (!branch) throw new Error("Task branch missing");
     const diff = await this.vcs.diff(this.workspace.workspaceRoot, baseRef, branch, paths);
-    return diff;
+    return { diff, source: "branch" };
+  }
+
+  private async writeReviewSummaryComment(params: {
+    task: TaskRow;
+    taskRunId: string;
+    jobId: string;
+    agentId: string;
+    statusBefore: string;
+    statusAfter?: string;
+    decision?: string;
+    summary?: string;
+    findingsCount: number;
+    followupTaskKeys?: string[];
+    error?: string;
+  }): Promise<void> {
+    const body = buildStandardReviewComment({
+      decision: params.decision,
+      statusBefore: params.statusBefore,
+      statusAfter: params.statusAfter,
+      findingsCount: params.findingsCount,
+      summary: params.summary,
+      followupTaskKeys: params.followupTaskKeys,
+      error: params.error,
+    });
+    await this.deps.workspaceRepo.createTaskComment({
+      taskId: params.task.id,
+      taskRunId: params.taskRunId,
+      jobId: params.jobId,
+      sourceCommand: "code-review",
+      authorType: "agent",
+      authorAgentId: params.agentId,
+      category: "review_summary",
+      body,
+      createdAt: new Date().toISOString(),
+    });
   }
 
   private async persistContext(jobId: string, taskId: string, context: Record<string, unknown>): Promise<void> {
@@ -760,7 +851,7 @@ export class CodeReviewService {
     let jobId = request.resumeJobId;
     let selectedTaskIds: string[] = [];
     let warnings: string[] = [];
-    let selectedTasks: Array<TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] }> =
+    let selectedTasks: Array<TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] }> =
       [];
 
     if (request.resumeJobId) {
@@ -889,13 +980,11 @@ export class CodeReviewService {
       const systemPrompt = systemPrompts.join("\n\n");
 
       try {
-        if (!task.vcsBranch) {
-          throw new Error("Task missing vcs_branch; cannot diff");
-        }
-
         const metadata = (task.metadata as any) ?? {};
         const allowedFiles: string[] = Array.isArray(metadata.files) ? metadata.files : [];
-        const diff = await this.buildDiff(task, state?.baseRef ?? baseRef, allowedFiles);
+        const diffResult = await this.buildDiff(task, state?.baseRef ?? baseRef, allowedFiles);
+        const diff = diffResult.diff;
+        if (diffResult.warning) warnings.push(diffResult.warning);
         await this.persistDiff(jobId, task.id, diff);
         await this.deps.workspaceRepo.insertTaskLog({
           taskRunId: taskRun.id,
@@ -903,7 +992,13 @@ export class CodeReviewService {
           timestamp: new Date().toISOString(),
           source: "context_git_diff",
           message: "Git diff computed",
-          details: { baseRef: state?.baseRef ?? baseRef, branch: task.vcsBranch, allowedFiles },
+          details: {
+            baseRef: state?.baseRef ?? baseRef,
+            branch: task.vcsBranch,
+            commitSha: diffResult.commitSha,
+            diffSource: diffResult.source,
+            allowedFiles,
+          },
         });
 
         const historySummary = await this.buildHistorySummary(task.id);
@@ -1170,6 +1265,19 @@ export class CodeReviewService {
           });
         }
 
+        await this.writeReviewSummaryComment({
+          task,
+          taskRunId: taskRun.id,
+          jobId,
+          agentId: agent.id,
+          statusBefore,
+          statusAfter: statusAfter ?? statusBefore,
+          decision: parsed.decision,
+          summary: parsed.summary,
+          findingsCount: parsed.findings?.length ?? 0,
+          followupTaskKeys: followupCreated.map((t) => t.taskKey),
+        });
+
         await this.deps.workspaceRepo.createTaskReview({
           taskId: task.id,
           jobId,
@@ -1207,6 +1315,26 @@ export class CodeReviewService {
           source: "review_error",
           message,
         });
+        try {
+          await this.writeReviewSummaryComment({
+            task,
+            taskRunId: taskRun.id,
+            jobId,
+            agentId: agent.id,
+            statusBefore,
+            statusAfter: statusBefore,
+            findingsCount: findings.length,
+            error: message,
+          });
+        } catch {
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_error",
+            message: "Failed to write review summary comment.",
+          });
+        }
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
           status: "failed",
           finishedAt: new Date().toISOString(),
