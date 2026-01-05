@@ -11,7 +11,7 @@ test("SystemUpdateService persists channel preferences and update state", async 
     mcodaDir: dir,
     client: {
       checkUpdate: async () => ({
-        currentVersion: "0.1.0",
+        currentVersion: "0.1.1",
         latestVersion: "0.1.1",
         channel: "stable",
         updateAvailable: true,

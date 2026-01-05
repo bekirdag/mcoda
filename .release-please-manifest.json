@@ -1,8 +1,8 @@
 {
-  "packages/cli": "0.1.0",
-  "packages/core": "0.1.0",
-  "packages/shared": "0.1.0",
-  "packages/db": "0.1.0",
-  "packages/integrations": "0.1.0",
-  "packages/agents": "0.1.0"
+  "packages/cli": "0.1.1",
+  "packages/core": "0.1.1",
+  "packages/shared": "0.1.1",
+  "packages/db": "0.1.1",
+  "packages/integrations": "0.1.1",
+  "packages/agents": "0.1.1"
 }
