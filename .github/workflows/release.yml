@@ -75,8 +75,6 @@ jobs:
   publish-npm:
     needs: package
     runs-on: ubuntu-latest
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -135,15 +133,7 @@ jobs:
       - name: Update npm to latest
         run: npm install -g npm@latest
 
-      - name: Publish packages (token)
-        if: ${{ env.NPM_TOKEN != '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "false"
-        run: pnpm -r publish --access public --no-git-checks
-
       - name: Publish packages (OIDC)
-        if: ${{ env.NPM_TOKEN == '' }}
         env:
           NPM_CONFIG_PROVENANCE: "true"
         run: pnpm -r publish --access public --no-git-checks
