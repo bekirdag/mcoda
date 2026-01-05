@@ -58,18 +58,47 @@ const collectTests = (dir) => {
 
 if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
   const shell = process.platform === "win32";
-  let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"], { shell });
-  if (workspace.error) {
-    const fallback = run("workspace-tests-corepack", "corepack", ["pnpm", "-r", "run", "test"], { shell });
-    results.push(workspace, fallback);
-    workspace = fallback;
+  if (process.platform === "win32") {
+    const workspacePackages = [
+      "packages/shared",
+      "packages/generators",
+      "packages/integrations",
+      "packages/db",
+      "packages/agents",
+      "packages/core",
+      "packages/cli",
+      "packages/testing",
+    ];
+    for (const pkg of workspacePackages) {
+      let workspace = run(`workspace-tests:${pkg}`, pnpm, ["--filter", pkg, "run", "test"], { shell });
+      if (workspace.error) {
+        const fallback = run(`workspace-tests-corepack:${pkg}`, "corepack", ["pnpm", "--filter", pkg, "run", "test"], {
+          shell,
+        });
+        results.push(workspace, fallback);
+        workspace = fallback;
+      } else {
+        results.push(workspace);
+      }
+      if (workspace.error) {
+        console.error(`[${workspace.label}] ${workspace.error}`);
+      }
+      if (workspace.status !== 0) failed = true;
+    }
   } else {
-    results.push(workspace);
+    let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"], { shell });
+    if (workspace.error) {
+      const fallback = run("workspace-tests-corepack", "corepack", ["pnpm", "-r", "run", "test"], { shell });
+      results.push(workspace, fallback);
+      workspace = fallback;
+    } else {
+      results.push(workspace);
+    }
+    if (workspace.error) {
+      console.error(`[${workspace.label}] ${workspace.error}`);
+    }
+    if (workspace.status !== 0) failed = true;
   }
-  if (workspace.error) {
-    console.error(`[${workspace.label}] ${workspace.error}`);
-  }
-  if (workspace.status !== 0) failed = true;
 }
 
 const testFiles = collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
