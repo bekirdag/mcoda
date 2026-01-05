@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const run = (label, cmd, args) => {
+const run = (label, cmd, args, options = {}) => {
   const start = Date.now();
   const result = spawnSync(cmd, args, {
     cwd: root,
     stdio: "inherit",
     env: process.env,
+    ...options,
   });
   const durationMs = Date.now() - start;
   const status = typeof result.status === "number" ? result.status : 1;
@@ -25,7 +26,18 @@ const run = (label, cmd, args) => {
 };
 
 const results = [];
-const pnpm = process.env.PNPM_BIN || "pnpm";
+
+const resolvePnpm = () => {
+  if (process.env.PNPM_BIN) return process.env.PNPM_BIN;
+  const pnpmHome = process.env.PNPM_HOME;
+  if (pnpmHome) {
+    const candidate = path.join(pnpmHome, process.platform === "win32" ? "pnpm.cmd" : "pnpm");
+    if (existsSync(candidate)) return candidate;
+  }
+  return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+};
+
+const pnpm = resolvePnpm();
 let failed = false;
 
 const collectTests = (dir) => {
@@ -45,14 +57,56 @@ const collectTests = (dir) => {
 };
 
 if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
-  const workspace = run("workspace-tests", pnpm, ["-r", "run", "test"]);
-  results.push(workspace);
-  if (workspace.status !== 0) failed = true;
+  const shell = process.platform === "win32";
+  if (process.platform === "win32") {
+    const workspacePackages = [
+      "packages/shared",
+      "packages/generators",
+      "packages/integrations",
+      "packages/db",
+      "packages/agents",
+      "packages/core",
+      "packages/cli",
+      "packages/testing",
+    ];
+    for (const pkg of workspacePackages) {
+      let workspace = run(`workspace-tests:${pkg}`, pnpm, ["--filter", pkg, "run", "test"], { shell });
+      if (workspace.error) {
+        const fallback = run(`workspace-tests-corepack:${pkg}`, "corepack", ["pnpm", "--filter", pkg, "run", "test"], {
+          shell,
+        });
+        results.push(workspace, fallback);
+        workspace = fallback;
+      } else {
+        results.push(workspace);
+      }
+      if (workspace.error) {
+        console.error(`[${workspace.label}] ${workspace.error}`);
+      }
+      if (workspace.status !== 0) failed = true;
+    }
+  } else {
+    let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"], { shell });
+    if (workspace.error) {
+      const fallback = run("workspace-tests-corepack", "corepack", ["pnpm", "-r", "run", "test"], { shell });
+      results.push(workspace, fallback);
+      workspace = fallback;
+    } else {
+      results.push(workspace);
+    }
+    if (workspace.error) {
+      console.error(`[${workspace.label}] ${workspace.error}`);
+    }
+    if (workspace.status !== 0) failed = true;
+  }
 }
 
 const testFiles = collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
 const repoTests = run("repo-tests", process.execPath, ["--test", ...testFiles]);
 results.push(repoTests);
+if (repoTests.error) {
+  console.error(`[${repoTests.label}] ${repoTests.error}`);
+}
 if (repoTests.status !== 0) failed = true;
 
 const artifactsDir = path.join(root, "tests", "results");

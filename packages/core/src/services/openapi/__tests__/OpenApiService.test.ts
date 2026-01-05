@@ -17,7 +17,7 @@ test("OpenApiService generates spec with stubbed agent", async () => {
     "openapi: 3.1.0",
     "info:",
     "  title: Demo API",
-    "  version: 0.1.0",
+    "  version: 0.1.7",
     "paths: {}",
     "",
   ].join("\n");
@@ -38,7 +38,7 @@ test("OpenApiService generates spec with stubbed agent", async () => {
   try {
     const result = await service.generateFromDocs({
       workspace,
-      cliVersion: "0.1.0",
+      cliVersion: "0.1.7",
       agentStream: false,
       dryRun: true,
     });

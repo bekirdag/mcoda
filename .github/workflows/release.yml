@@ -15,16 +15,24 @@ env:
 
 jobs:
   package:
-    name: Package (${{ matrix.os }})
+    name: Package (${{ matrix.archive }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-22.04
-          - macos-15
-          - macos-latest
-          - windows-latest
+        include:
+          - os: ubuntu-22.04
+            archive: mcoda-linux-x64-gnu
+          - os: ubuntu-22.04
+            archive: mcoda-linux-x64-musl
+          - os: ubuntu-22.04
+            archive: mcoda-linux-arm64-gnu
+          - os: macos-15
+            archive: mcoda-darwin-x64
+          - os: macos-latest
+            archive: mcoda-darwin-arm64
+          - os: windows-latest
+            archive: mcoda-win32-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,17 +60,22 @@ jobs:
       - name: Pack npm tarballs
         run: node scripts/pack-npm-tarballs.js
 
-      - name: Upload npm packages
+      - name: Bundle release archive
+        shell: bash
+        run: |
+          mkdir -p release
+          tar -czf "release/${{ matrix.archive }}.tar.gz" -C artifacts .
+
+      - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: npm-pack-${{ matrix.os }}
-          path: artifacts/*.tgz
+          name: ${{ matrix.archive }}
+          path: release/${{ matrix.archive }}.tar.gz
 
   publish-npm:
     needs: package
     runs-on: ubuntu-latest
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -121,15 +134,7 @@ jobs:
       - name: Update npm to latest
         run: npm install -g npm@latest
 
-      - name: Publish packages (token)
-        if: ${{ env.NPM_TOKEN != '' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "false"
-        run: pnpm -r publish --access public --no-git-checks
-
       - name: Publish packages (OIDC)
-        if: ${{ env.NPM_TOKEN == '' }}
         env:
           NPM_CONFIG_PROVENANCE: "true"
-        run: pnpm -r publish --access public --no-git-checks
+        run: pnpm -r --filter "./packages/*" publish --access public --no-git-checks

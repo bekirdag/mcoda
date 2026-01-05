@@ -3,6 +3,9 @@ import { spawn, spawnSync } from "node:child_process";
 const CODEX_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
 export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Record<string, unknown> } => {
+  if (process.env.MCODA_CLI_STUB === "1") {
+    return { ok: true, details: { stub: true } };
+  }
   if (process.env.MCODA_SKIP_CLI_CHECKS === "1") {
     return { ok: true, details: { skipped: true } };
   }
@@ -29,6 +32,11 @@ export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Recor
 };
 
 export const runCodexExec = (prompt: string, model?: string): { output: string; raw: string } => {
+  if (process.env.MCODA_CLI_STUB === "1") {
+    const output = `qa-stub:${prompt}`;
+    const raw = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: output } });
+    return { output, raw };
+  }
   const health = cliHealthy(true);
   const args = ["exec", "--model", model ?? "gpt-5.1-codex-max", "--full-auto", "--json"];
   const result = spawnSync("codex", args, {
@@ -70,6 +78,12 @@ export async function* runCodexExecStream(
   prompt: string,
   model?: string,
 ): AsyncGenerator<{ output: string; raw: string }, void, unknown> {
+  if (process.env.MCODA_CLI_STUB === "1") {
+    const output = `qa-stub:${prompt}\n`;
+    const raw = JSON.stringify({ type: "item.delta", item: { type: "agent_message", text: output } });
+    yield { output, raw };
+    return;
+  }
   cliHealthy(true);
   const args = ["exec", "--model", model ?? "gpt-5.1-codex-max", "--full-auto", "--json"];
   const child = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"] });
