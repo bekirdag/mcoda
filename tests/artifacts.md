@@ -22,7 +22,10 @@
 - packages/cli/src/__tests__
 - packages/core/src/**/__tests__
 - packages/db/src/__tests__
+- packages/generators/src/__tests__
 - packages/integrations/src/**/__tests__
+- packages/shared/src/__tests__
+- packages/testing/src/__tests__
 
 ## Packaging guardrails
 - packages/cli/test/packaging_guardrails.test.js

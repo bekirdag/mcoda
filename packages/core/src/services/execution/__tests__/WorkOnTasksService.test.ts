@@ -83,9 +83,20 @@ class StubRoutingService {
 class StubVcs {
   async ensureRepo(_cwd: string) {}
   async ensureBaseBranch(_cwd: string, _base: string) {}
+  async branchExists(_cwd: string, _branch: string) {
+    return false;
+  }
   async checkoutBranch(_cwd: string, _branch: string) {}
   async createOrCheckoutBranch(_cwd: string, _branch: string, _base: string) {}
   async applyPatch(_cwd: string, _patch: string) {}
+  async pull(_cwd: string, _remote: string, _branch: string, _ffOnly = true) {}
+  async conflictPaths(_cwd?: string) {
+    return [];
+  }
+  async currentBranch(_cwd?: string) {
+    return "mcoda-dev";
+  }
+  async ensureClean(_cwd: string, _ignoreDotMcoda = true) {}
   async dirtyPaths(_cwd?: string) {
     return [];
   }
