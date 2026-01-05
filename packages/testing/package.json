@@ -1,7 +1,7 @@
 {
   "name": "@mcoda/testing",
-  "version": "0.1.4",
-  "private": true,
+  "version": "0.1.5",
+  "private": false,
   "description": "Internal testing utilities for mcoda.",
   "type": "module",
   "main": "dist/index.js",
