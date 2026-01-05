@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
-    "test": "pnpm run build && node --test dist/__tests__/**/*.js"
+    "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
   },
   "engines": {
     "node": ">=20"

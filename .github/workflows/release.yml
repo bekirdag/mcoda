@@ -50,7 +50,7 @@ jobs:
         run: node tests/all.js
 
       - name: Pack npm tarballs
-        run: node -e 'const { execFileSync } = require("node:child_process"); const fs = require("node:fs"); const path = require("node:path"); const root = process.cwd(); const dest = path.join(root, "artifacts"); fs.mkdirSync(dest, { recursive: true }); const packages = ["packages/cli","packages/core","packages/shared","packages/db","packages/integrations","packages/agents"]; for (const pkg of packages) { execFileSync("npm", ["pack", "--pack-destination", dest, "--ignore-scripts"], { cwd: pkg, stdio: "inherit" }); }'
+        run: node scripts/pack-npm-tarballs.js
 
       - name: Upload npm packages
         uses: actions/upload-artifact@v4
