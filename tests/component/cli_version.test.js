@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import packageJson from "../../packages/cli/package.json" with { type: "json" };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -23,7 +23,7 @@ test("mcoda --version prints the CLI package version", async (t) => {
     return;
   }
 
-  const { McodaEntrypoint } = await import(entrypointPath);
+  const { McodaEntrypoint } = await import(pathToFileURL(entrypointPath).href);
   const logs = [];
   const originalLog = console.log;
   console.log = (...args) => logs.push(args.join(" "));

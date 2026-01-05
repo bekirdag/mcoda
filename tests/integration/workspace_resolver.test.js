@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workspaceManagerPath = path.join(root, "packages", "core", "dist", "workspace", "WorkspaceManager.js");
@@ -23,7 +23,7 @@ test("WorkspaceResolver initializes mcoda workspace state", async (t) => {
     return;
   }
 
-  const { WorkspaceResolver } = await import(workspaceManagerPath);
+  const { WorkspaceResolver } = await import(pathToFileURL(workspaceManagerPath).href);
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-workspace-"));
 
   const resolved = await WorkspaceResolver.resolveWorkspace({
