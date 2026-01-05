@@ -1,6 +1,7 @@
 {
   "name": "@mcoda/integrations",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "External integrations for mcoda (vcs, QA, telemetry).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,15 +13,33 @@
     "./telemetry/*": "./dist/telemetry/*"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
     "test": "pnpm run build && node --test \"dist/**/*.test.js\""
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@mcoda/shared": "workspace:*"
-  },
-  "license": "MIT"
+  }
 }

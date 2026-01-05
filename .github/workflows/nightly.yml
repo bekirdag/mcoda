@@ -1,0 +1,38 @@
+name: Nightly Quality
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        run: pnpm install
+
+      - name: Build
+        run: pnpm -r run build
+
+      - name: Run tests
+        run: node tests/all.js
+
+      - name: Packaging guardrails
+        run: pnpm --filter mcoda run pack:verify
+
+      - name: Security audit
+        run: pnpm audit --audit-level high

@@ -1,6 +1,8 @@
 {
   "name": "@mcoda/testing",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal testing utilities for mcoda.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +16,7 @@
   },
   "dependencies": {
     "@mcoda/agents": "workspace:*",
-    "@mcoda/cli": "workspace:*",
+    "mcoda": "workspace:*",
     "@mcoda/core": "workspace:*",
     "@mcoda/db": "workspace:*",
     "@mcoda/integrations": "workspace:*",

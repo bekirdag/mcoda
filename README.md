@@ -1,5 +1,20 @@
 # mcoda
 
+mcoda is a local-first CLI for planning, documentation, and execution workflows with agent assistance.
+
+## Install (npm)
+- Requires Node.js >= 20.
+- Install: `npm i -g mcoda`
+- Verify: `mcoda --version`
+- One-off: `npx mcoda --version`
+
+## Build from source
+```sh
+pnpm install
+pnpm -r run build
+pnpm -r run test
+```
+
 ## Generate a PDR from an RFP
 
 Use the docs command to draft a Product Design Review with docdex + an agent:
@@ -286,3 +301,14 @@ Flags & behavior:
 - Defaults: `--set-command <cmd>=<agent>` (validates against global agents + required capabilities), `--reset-command <cmd>`, `--set-qa-profile <NAME>`, `--set-docdex-scope <NAME>`. With no setters, `--list` is implied.
 - Preview/explain: validate command names via OpenAPI `x-mcoda-cli.name`; source shows `override|workspace_default|global_default`; explain prints candidate agents with health/capabilities/missing caps.
 - Output: human-friendly tables by default; `--json` emits raw `RoutingDefaults` or `RoutingPreview` DTOs. `--debug` surfaces extra trace fields when available.
+
+## Documentation
+- Usage guide: `docs/usage.md`
+- Quality gates: `docs/quality_gates.md`
+- Release history: `CHANGELOG.md`
+
+## Contributing
+- `CONTRIBUTING.md`
+
+## License
+MIT - see `LICENSE`.

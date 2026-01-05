@@ -1,19 +1,38 @@
 {
   "name": "@mcoda/shared",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Shared utilities and schemas for mcoda.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
     "test": "echo \"no tests yet\""
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "yaml": "^2.4.2"
-  },
-  "license": "MIT"
+  }
 }

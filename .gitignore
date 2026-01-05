@@ -12,3 +12,4 @@ pnpm-lock.yaml
 *.tsbuildinfo
 .turbo
 logs/
+tests/results/

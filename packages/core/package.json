@@ -1,16 +1,36 @@
 {
   "name": "@mcoda/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Core services and APIs for the mcoda CLI.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
     "test": "pnpm run build && node --test \"dist/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^10.1.0",
@@ -19,6 +39,5 @@
     "@mcoda/agents": "workspace:*",
     "@mcoda/integrations": "workspace:*",
     "yaml": "^2.4.2"
-  },
-  "license": "MIT"
+  }
 }
