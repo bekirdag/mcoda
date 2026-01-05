@@ -10,6 +10,8 @@
   },
   "files": [
     "dist",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
