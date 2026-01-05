@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "pull-request-title-pattern": "chore: release ${version}",
+  "linked-versions": true,
+  "packages": {
+    "packages/cli": {
+      "component": "mcoda",
+      "changelog-path": "packages/cli/CHANGELOG.md",
+      "release-type": "node"
+    },
+    "packages/core": {
+      "component": "@mcoda/core",
+      "changelog-path": "packages/core/CHANGELOG.md",
+      "release-type": "node"
+    },
+    "packages/shared": {
+      "component": "@mcoda/shared",
+      "changelog-path": "packages/shared/CHANGELOG.md",
+      "release-type": "node"
+    },
+    "packages/db": {
+      "component": "@mcoda/db",
+      "changelog-path": "packages/db/CHANGELOG.md",
+      "release-type": "node"
+    },
+    "packages/integrations": {
+      "component": "@mcoda/integrations",
+      "changelog-path": "packages/integrations/CHANGELOG.md",
+      "release-type": "node"
+    },
+    "packages/agents": {
+      "component": "@mcoda/agents",
+      "changelog-path": "packages/agents/CHANGELOG.md",
+      "release-type": "node"
+    }
+  }
+}
