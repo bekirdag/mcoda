@@ -3,5 +3,5 @@
 ## Unreleased
 - Initial public packaging for @mcoda/agents.
 
-## 0.1.6
+## 0.1.7
 - Initial release.
