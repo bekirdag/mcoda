@@ -77,7 +77,7 @@ test("update --check writes releases.json and outputs json", async () => {
       SystemClient.prototype as any,
       "checkUpdate",
       async () => ({
-        currentVersion: "0.1.1",
+        currentVersion: "0.1.2",
         latestVersion: "0.2.0",
         channel: "stable",
         updateAvailable: true,
@@ -108,7 +108,7 @@ test("update apply succeeds and records state", async () => {
       SystemClient.prototype as any,
       "checkUpdate",
       async () => ({
-        currentVersion: "0.1.1",
+        currentVersion: "0.1.2",
         latestVersion: "0.3.0",
         channel: "stable",
         updateAvailable: true,
@@ -144,7 +144,7 @@ test("requires --force when CI is set", async () => {
       SystemClient.prototype as any,
       "checkUpdate",
       async () => ({
-        currentVersion: "0.1.1",
+        currentVersion: "0.1.2",
         latestVersion: "0.3.0",
         channel: "stable",
         updateAvailable: true,
@@ -213,7 +213,7 @@ test("writes command_runs row with exit code 6 on install failure", async () => 
       SystemClient.prototype as any,
       "checkUpdate",
       async () => ({
-        currentVersion: "0.1.1",
+        currentVersion: "0.1.2",
         latestVersion: "0.3.0",
         channel: "stable",
         updateAvailable: true,
@@ -256,7 +256,7 @@ test("falls back to npm on apply failure and succeeds", async () => {
       SystemClient.prototype as any,
       "checkUpdate",
       async () => ({
-        currentVersion: "0.1.1",
+        currentVersion: "0.1.2",
         latestVersion: "0.3.0",
         channel: "beta",
         updateAvailable: true,
