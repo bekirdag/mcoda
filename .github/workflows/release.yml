@@ -75,6 +75,7 @@ jobs:
   publish-npm:
     needs: package
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -136,4 +137,4 @@ jobs:
       - name: Publish packages (OIDC)
         env:
           NPM_CONFIG_PROVENANCE: "true"
-        run: pnpm -r publish --access public --no-git-checks
+        run: pnpm -r --filter "./packages/*" publish --access public --no-git-checks
