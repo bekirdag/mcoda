@@ -1,12 +1,14 @@
 {
   "name": "@mcoda/db",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "description": "SQLite-backed storage layer for mcoda.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

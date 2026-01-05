@@ -1,10 +1,35 @@
 {
-  "name": "mcoda-root",
-  "version": "0.0.0",
+  "name": "mcoda",
+  "version": "0.1.7",
+  "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "keywords": [
+    "mcoda",
+    "cli",
+    "planning",
+    "backlog",
+    "agent",
+    "documentation",
+    "openapi",
+    "pdr",
+    "sds"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "workspaces": [
     "packages/*"

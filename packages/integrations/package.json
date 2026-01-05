@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/integrations",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "description": "External integrations for mcoda (vcs, QA, telemetry).",
   "type": "module",
   "main": "dist/index.js",
@@ -14,6 +14,8 @@
   },
   "files": [
     "dist",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

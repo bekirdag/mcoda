@@ -21,7 +21,9 @@ const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> 
 };
 
 const originalSkipCliChecks = process.env.MCODA_SKIP_CLI_CHECKS;
+const originalCliStub = process.env.MCODA_CLI_STUB;
 process.env.MCODA_SKIP_CLI_CHECKS = "1";
+process.env.MCODA_CLI_STUB = "1";
 
 const makeApi = async () => {
   const conn = await Connection.open(PathHelper.getGlobalDbPath());
@@ -60,6 +62,11 @@ test("setAgentAuth stores encrypted secret and returns redacted metadata", async
 
 after(() => {
   process.env.MCODA_SKIP_CLI_CHECKS = originalSkipCliChecks;
+  if (originalCliStub === undefined) {
+    delete process.env.MCODA_CLI_STUB;
+  } else {
+    process.env.MCODA_CLI_STUB = originalCliStub;
+  }
 });
 
 test("getAgentPrompts returns stored prompt manifest", async () => {

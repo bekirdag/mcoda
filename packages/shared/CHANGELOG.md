@@ -3,5 +3,5 @@
 ## Unreleased
 - Initial public packaging for @mcoda/shared.
 
-## 0.1.0
+## 0.1.7
 - Initial release.
