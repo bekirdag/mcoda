@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo \"lint not configured\"",
-    "test": "pnpm run build && node --test \"dist/**/*.test.js\"",
+    "test": "pnpm run build && node ../../scripts/run-node-tests.js dist",
     "pack:verify": "node --test test/packaging_guardrails.test.js"
   },
   "engines": {
