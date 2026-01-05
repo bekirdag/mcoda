@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
