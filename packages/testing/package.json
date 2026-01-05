@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/testing",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "description": "Internal testing utilities for mcoda.",
   "type": "module",
@@ -14,6 +14,22 @@
     "lint": "echo \"lint not configured\"",
     "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@mcoda/agents": "workspace:*",
     "mcoda": "workspace:*",
@@ -21,6 +37,5 @@
     "@mcoda/db": "workspace:*",
     "@mcoda/integrations": "workspace:*",
     "@mcoda/shared": "workspace:*"
-  },
-  "license": "MIT"
+  }
 }
