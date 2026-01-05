@@ -11,7 +11,9 @@ let repo: GlobalRepository;
 let service: AgentService;
 let dbPath: string;
 const originalSkipCliChecks = process.env.MCODA_SKIP_CLI_CHECKS;
+const originalCliStub = process.env.MCODA_CLI_STUB;
 process.env.MCODA_SKIP_CLI_CHECKS = "1";
+process.env.MCODA_CLI_STUB = "1";
 const originalFetch = global.fetch;
 
 beforeEach(async () => {
@@ -30,6 +32,11 @@ afterEach(async () => {
 
 after(() => {
   process.env.MCODA_SKIP_CLI_CHECKS = originalSkipCliChecks;
+  if (originalCliStub === undefined) {
+    delete process.env.MCODA_CLI_STUB;
+  } else {
+    process.env.MCODA_CLI_STUB = originalCliStub;
+  }
 });
 
 test("uses API adapter when secret is present", async () => {
@@ -83,7 +90,9 @@ test("CLI adapter reports unreachable health when binary is missing", async () =
   });
   const originalPath = process.env.PATH;
   const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
+  const originalStub = process.env.MCODA_CLI_STUB;
   process.env.MCODA_SKIP_CLI_CHECKS = "0";
+  process.env.MCODA_CLI_STUB = "0";
   process.env.PATH = "";
   try {
     const health = await service.healthCheck(agent.id);
@@ -92,6 +101,11 @@ test("CLI adapter reports unreachable health when binary is missing", async () =
   } finally {
     process.env.PATH = originalPath;
     process.env.MCODA_SKIP_CLI_CHECKS = originalSkip;
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
   }
 });
 
