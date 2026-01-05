@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { parseEstimateArgs } from "../commands/estimate/EstimateCommands.js";
 
 describe("estimate argument parsing", () => {
@@ -31,6 +32,7 @@ describe("estimate argument parsing", () => {
   });
 
   it("parses workspace and scope filters", () => {
+    const expectedRoot = path.resolve("/tmp/w");
     const parsed = parseEstimateArgs([
       "--workspace",
       "/tmp/w",
@@ -43,7 +45,7 @@ describe("estimate argument parsing", () => {
       "--assignee",
       "user",
     ]);
-    assert.equal(parsed.workspaceRoot?.endsWith("/tmp/w"), true);
+    assert.equal(parsed.workspaceRoot, expectedRoot);
     assert.equal(parsed.project, "PROJ");
     assert.equal(parsed.epic, "E1");
     assert.equal(parsed.story, "S1");
