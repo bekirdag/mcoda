@@ -11,8 +11,8 @@ test("SystemUpdateService persists channel preferences and update state", async 
     mcodaDir: dir,
     client: {
       checkUpdate: async () => ({
-        currentVersion: "0.1.7",
-        latestVersion: "0.1.7",
+        currentVersion: "0.1.8",
+        latestVersion: "0.1.8",
         channel: "stable",
         updateAvailable: true,
       }),
@@ -27,7 +27,7 @@ test("SystemUpdateService persists channel preferences and update state", async 
     assert.equal(channel, "beta");
 
     const result = await service.checkUpdate("stable");
-    assert.equal(result.info.latestVersion, "0.1.7");
+    assert.equal(result.info.latestVersion, "0.1.8");
 
     const statePath = path.join(dir, "releases.json");
     const state = JSON.parse(await fs.readFile(statePath, "utf8")) as any;

@@ -1,9 +1,28 @@
 # @mcoda/core
 
-Core services and APIs used by the mcoda CLI.
+Core services that power the mcoda CLI (docs, planning, jobs, telemetry, openapi).
 
-## Usage
-This package is primarily an internal dependency of `mcoda`.
+## Install
+- Requires Node.js >= 20.
+- Install: `npm i @mcoda/core`
+
+## What it provides
+- WorkspaceResolver for discovering/initializing `.mcoda` workspaces.
+- Service layer for docs, planning, execution, review, telemetry, and system updates.
+- API wrappers (AgentsApi, TasksApi, QaTasksApi) used by the CLI.
+
+## Example
+```ts
+import { WorkspaceResolver, JobService } from "@mcoda/core";
+
+const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: process.cwd() });
+const jobs = new JobService(workspace);
+// Use jobs to record command runs, token usage, and job state.
+```
+
+## Notes
+- Most services expect a resolved workspace and read/write `.mcoda/` state.
+- Primarily used by the mcoda CLI; APIs may evolve.
 
 ## License
 MIT - see `LICENSE`.
