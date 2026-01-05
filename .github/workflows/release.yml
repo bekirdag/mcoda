@@ -15,16 +15,24 @@ env:
 
 jobs:
   package:
-    name: Package (${{ matrix.os }})
+    name: Package (${{ matrix.archive }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-22.04
-          - macos-15
-          - macos-latest
-          - windows-latest
+        include:
+          - os: ubuntu-22.04
+            archive: mcoda-linux-x64-gnu
+          - os: ubuntu-22.04
+            archive: mcoda-linux-x64-musl
+          - os: ubuntu-22.04
+            archive: mcoda-linux-arm64-gnu
+          - os: macos-15
+            archive: mcoda-darwin-x64
+          - os: macos-latest
+            archive: mcoda-darwin-arm64
+          - os: windows-latest
+            archive: mcoda-win32-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,11 +60,17 @@ jobs:
       - name: Pack npm tarballs
         run: node scripts/pack-npm-tarballs.js
 
-      - name: Upload npm packages
+      - name: Bundle release archive
+        shell: bash
+        run: |
+          mkdir -p release
+          tar -czf "release/${{ matrix.archive }}.tar.gz" -C artifacts .
+
+      - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: npm-pack-${{ matrix.os }}
-          path: artifacts/*.tgz
+          name: ${{ matrix.archive }}
+          path: release/${{ matrix.archive }}.tar.gz
 
   publish-npm:
     needs: package
