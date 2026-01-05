@@ -2,7 +2,7 @@
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/mcoda/ci.yml?branch=main)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/mcoda/nightly.yml?branch=main)
 ![GitHub License](https://img.shields.io/github/license/bekirdag/mcoda)
-![GitHub Release](https://img.shields.io/github/v/release/bekirdag/mcoda)
+![GitHub Tag](https://img.shields.io/github/v/tag/bekirdag/mcoda?sort=semver)
 ![npm](https://img.shields.io/npm/v/mcoda)
 ![npm](https://img.shields.io/npm/dm/mcoda)
 ![Made with TypeScript](https://img.shields.io/badge/Made%20with-TypeScript-3178C6?logo=typescript&logoColor=white)
