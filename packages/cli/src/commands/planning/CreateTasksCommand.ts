@@ -24,7 +24,7 @@ const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boo
   return defaultValue;
 };
 
-const parseArgs = (argv: string[]): ParsedArgs => {
+export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
   const inputs: string[] = [];
   let workspaceRoot: string | undefined;
   let projectKey: string | undefined;
@@ -106,7 +106,7 @@ const parseArgs = (argv: string[]): ParsedArgs => {
 
 export class CreateTasksCommand {
   static async run(argv: string[]): Promise<void> {
-    const parsed = parseArgs(argv);
+    const parsed = parseCreateTasksArgs(argv);
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,

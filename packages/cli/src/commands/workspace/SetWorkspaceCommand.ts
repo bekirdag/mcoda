@@ -6,7 +6,7 @@ import { WorkspaceRepository } from "@mcoda/db";
 
 const USAGE = "Usage: mcoda set-workspace [--workspace-root <path>] [--no-git] [--no-docdex]";
 
-const parseArgs = (argv: string[]): { workspaceRoot?: string; git: boolean; docdex: boolean } => {
+export const parseSetWorkspaceArgs = (argv: string[]): { workspaceRoot?: string; git: boolean; docdex: boolean } => {
   let workspaceRoot: string | undefined;
   let git = true;
   let docdex = true;
@@ -93,7 +93,7 @@ const ensureDocdexIndex = async (workspaceRoot: string): Promise<boolean> => {
 
 export class SetWorkspaceCommand {
   static async run(argv: string[]): Promise<void> {
-    const parsed = parseArgs(argv);
+    const parsed = parseSetWorkspaceArgs(argv);
     const resolution = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,

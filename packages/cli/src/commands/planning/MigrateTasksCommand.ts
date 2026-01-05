@@ -3,40 +3,63 @@ import { CreateTasksService, WorkspaceResolver } from "@mcoda/core";
 
 const usage = `mcoda migrate-tasks [--workspace-root <path>] [--project-key <key>] [--plan-dir <path>] [--refine-plan <path>] [--refine-plans-dir <path>] [--quiet]`;
 
+export interface ParsedMigrateTasksArgs {
+  workspaceRoot?: string;
+  projectKey?: string;
+  planDir?: string;
+  refinePlans: string[];
+  refinePlansDir?: string;
+  force: boolean;
+  quiet: boolean;
+  help: boolean;
+}
+
+export const parseMigrateTasksArgs = (argv: string[]): ParsedMigrateTasksArgs => {
+  const args: ParsedMigrateTasksArgs = {
+    refinePlans: [],
+    force: false,
+    quiet: false,
+    help: false,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--workspace-root" && argv[i + 1]) {
+      args.workspaceRoot = argv[++i];
+    } else if ((arg === "--project" || arg === "--project-key") && argv[i + 1]) {
+      args.projectKey = argv[++i];
+    } else if (arg === "--plan-dir" && argv[i + 1]) {
+      args.planDir = argv[++i];
+    } else if (arg === "--refine-plan" && argv[i + 1]) {
+      args.refinePlans.push(argv[++i]);
+    } else if (arg === "--refine-plans-dir" && argv[i + 1]) {
+      args.refinePlansDir = argv[++i];
+    } else if (arg === "--force") {
+      args.force = true;
+    } else if (arg === "--quiet") {
+      args.quiet = true;
+    } else if (arg === "--help" || arg === "-h") {
+      args.help = true;
+    }
+  }
+  return args;
+};
+
 export class MigrateTasksCommand {
   static async run(argv: string[]): Promise<void> {
-    const args: Record<string, string | boolean | undefined> = {};
-    const refinePlans: string[] = [];
-    for (let i = 0; i < argv.length; i++) {
-      const arg = argv[i];
-      if (arg === "--workspace-root" && argv[i + 1]) {
-        args.workspaceRoot = argv[++i];
-      } else if ((arg === "--project" || arg === "--project-key") && argv[i + 1]) {
-        args.projectKey = argv[++i];
-      } else if (arg === "--plan-dir" && argv[i + 1]) {
-        args.planDir = argv[++i];
-      } else if (arg === "--refine-plan" && argv[i + 1]) {
-        refinePlans.push(argv[++i]);
-      } else if (arg === "--refine-plans-dir" && argv[i + 1]) {
-        args.refinePlansDir = argv[++i];
-      } else if (arg === "--force") {
-        args.force = true;
-      } else if (arg === "--quiet") {
-        args.quiet = true;
-      } else if (arg === "--help" || arg === "-h") {
-        console.log(usage);
-        return;
-      }
+    const args = parseMigrateTasksArgs(argv);
+    if (args.help) {
+      console.log(usage);
+      return;
     }
 
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
-      explicitWorkspace: (args.workspaceRoot as string | undefined) ?? undefined,
+      explicitWorkspace: args.workspaceRoot ?? undefined,
     });
     const workspaceRoot = workspace.workspaceRoot;
     const derivedKey = path.basename(workspaceRoot).replace(/[^a-z0-9]+/gi, "").toLowerCase();
-    const projectKey = (args.projectKey as string | undefined) ?? (derivedKey || "proj");
-    const planDir = args.planDir as string | undefined;
+    const projectKey = args.projectKey ?? (derivedKey || "proj");
+    const planDir = args.planDir;
 
     if (!projectKey) {
       console.error("Project key is required. Use --project-key <key>.");
@@ -50,9 +73,9 @@ export class MigrateTasksCommand {
       const result = await service.migratePlanFromFolder({
         projectKey,
         planDir,
-        force: !!args.force,
-        refinePlanPaths: refinePlans.length ? refinePlans : undefined,
-        refinePlansDir: args.refinePlansDir as string | undefined,
+        force: args.force,
+        refinePlanPaths: args.refinePlans.length ? args.refinePlans : undefined,
+        refinePlansDir: args.refinePlansDir,
       });
       if (!args.quiet) {
         console.log(
