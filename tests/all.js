@@ -6,12 +6,13 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const run = (label, cmd, args) => {
+const run = (label, cmd, args, options = {}) => {
   const start = Date.now();
   const result = spawnSync(cmd, args, {
     cwd: root,
     stdio: "inherit",
     env: process.env,
+    ...options,
   });
   const durationMs = Date.now() - start;
   const status = typeof result.status === "number" ? result.status : 1;
@@ -56,9 +57,10 @@ const collectTests = (dir) => {
 };
 
 if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
-  let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"]);
-  if (workspace.status !== 0 && workspace.error?.includes("ENOENT")) {
-    const fallback = run("workspace-tests-corepack", "corepack", ["pnpm", "-r", "run", "test"]);
+  const shell = process.platform === "win32";
+  let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"], { shell });
+  if (workspace.error) {
+    const fallback = run("workspace-tests-corepack", "corepack", ["pnpm", "-r", "run", "test"], { shell });
     results.push(workspace, fallback);
     workspace = fallback;
   } else {
