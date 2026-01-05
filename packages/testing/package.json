@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/testing",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Internal testing utilities for mcoda.",
   "type": "module",

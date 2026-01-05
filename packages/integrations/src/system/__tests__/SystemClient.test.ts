@@ -13,7 +13,7 @@ describe("SystemClient", () => {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ currentVersion: "0.1.3", latestVersion: "0.1.3", channel: "stable", updateAvailable: true }),
+        json: async () => ({ currentVersion: "0.1.4", latestVersion: "0.1.4", channel: "stable", updateAvailable: true }),
       } as Response;
     }) as typeof fetch;
   });
