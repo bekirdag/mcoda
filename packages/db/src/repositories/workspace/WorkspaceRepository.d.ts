@@ -199,6 +199,7 @@ export declare class WorkspaceRepository {
     close(): Promise<void>;
     withTransaction<T>(fn: () => Promise<T>): Promise<T>;
     getProjectByKey(key: string): Promise<ProjectRow | undefined>;
+    getProjectById(id: string): Promise<ProjectRow | undefined>;
     createProjectIfMissing(input: {
         key: string;
         name?: string;

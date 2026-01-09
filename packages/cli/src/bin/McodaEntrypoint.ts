@@ -15,6 +15,7 @@ import { OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
 import { EstimateCommands } from "../commands/estimate/EstimateCommands.js";
 import { TelemetryCommands } from "../commands/telemetry/TelemetryCommands.js";
 import { WorkOnTasksCommand } from "../commands/work/WorkOnTasksCommand.js";
+import { GatewayTrioCommand } from "../commands/work/GatewayTrioCommand.js";
 import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
 import { QaTasksCommand } from "../commands/planning/QaTasksCommand.js";
 import { MigrateTasksCommand } from "../commands/planning/MigrateTasksCommand.js";
@@ -41,7 +42,7 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|gateway-agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|pdr|sds> [...args]\n" +
+        "Usage: mcoda <agent|gateway-agent|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|pdr|sds> [...args]\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
           "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
@@ -128,6 +129,10 @@ export class McodaEntrypoint {
     }
     if (command === "work-on-tasks") {
       await WorkOnTasksCommand.run(rest);
+      return;
+    }
+    if (command === "gateway-trio") {
+      await GatewayTrioCommand.run(rest);
       return;
     }
     if (command === "code-review") {

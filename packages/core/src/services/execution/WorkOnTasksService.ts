@@ -11,11 +11,14 @@ import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from "./TaskSelectionService.js";
 import { TaskStateService } from "./TaskStateService.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
 
 const exec = promisify(execCb);
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const DEFAULT_TASK_BRANCH_PREFIX = "mcoda/task/";
 const TASK_LOCK_TTL_SECONDS = 60 * 60;
+const MAX_TEST_FIX_ATTEMPTS = 3;
+const DEFAULT_TEST_OUTPUT_CHARS = 1200;
 const DEFAULT_CODE_WRITER_PROMPT = [
   "You are the code-writing agent. Before coding, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run search. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
@@ -72,6 +75,105 @@ const extractFileBlocks = (output: string): Array<{ path: string; content: strin
 };
 
 type TaskPhase = "selection" | "context" | "prompt" | "agent" | "apply" | "tests" | "vcs" | "finalize";
+
+type TestRequirements = {
+  unit: string[];
+  component: string[];
+  integration: string[];
+  api: string[];
+};
+
+type TestRunResult = { command: string; stdout: string; stderr: string; code: number };
+
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const normalizeTestCommands = (value: unknown): string[] => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return normalizeStringArray(value);
+};
+
+const normalizeTestRequirements = (value: unknown): TestRequirements => {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    unit: normalizeStringArray(raw.unit),
+    component: normalizeStringArray(raw.component),
+    integration: normalizeStringArray(raw.integration),
+    api: normalizeStringArray(raw.api),
+  };
+};
+
+const hasTestRequirements = (requirements: TestRequirements): boolean =>
+  requirements.unit.length > 0 ||
+  requirements.component.length > 0 ||
+  requirements.integration.length > 0 ||
+  requirements.api.length > 0;
+
+const formatTestRequirementsNote = (requirements: TestRequirements): string => {
+  const parts: string[] = [];
+  if (requirements.unit.length) parts.push(`Unit: ${requirements.unit.join("; ")}`);
+  if (requirements.component.length) parts.push(`Component: ${requirements.component.join("; ")}`);
+  if (requirements.integration.length) parts.push(`Integration: ${requirements.integration.join("; ")}`);
+  if (requirements.api.length) parts.push(`API: ${requirements.api.join("; ")}`);
+  return parts.length ? `Required tests: ${parts.join(" | ")}` : "";
+};
+
+const truncateText = (value: string, maxChars = DEFAULT_TEST_OUTPUT_CHARS): string => {
+  if (!value) return "";
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}...`;
+};
+
+const formatTestFailureSummary = (results: TestRunResult[]): string => {
+  return results
+    .map((result) => {
+      const stdout = truncateText(result.stdout ?? "");
+      const stderr = truncateText(result.stderr ?? "");
+      const lines = [
+        `Command: ${result.command}`,
+        `Exit code: ${result.code}`,
+        stdout ? `Stdout: ${stdout}` : undefined,
+        stderr ? `Stderr: ${stderr}` : undefined,
+      ].filter(Boolean);
+      return lines.join("\n");
+    })
+    .join("\n\n");
+};
+
+const detectDefaultTestCommand = (workspaceRoot: string): string | undefined => {
+  const hasPnpm =
+    fs.existsSync(path.join(workspaceRoot, "pnpm-lock.yaml")) ||
+    fs.existsSync(path.join(workspaceRoot, "pnpm-workspace.yaml"));
+  const hasYarn = fs.existsSync(path.join(workspaceRoot, "yarn.lock"));
+  const hasNpmLock =
+    fs.existsSync(path.join(workspaceRoot, "package-lock.json")) ||
+    fs.existsSync(path.join(workspaceRoot, "npm-shrinkwrap.json"));
+  const hasPackageJson = fs.existsSync(path.join(workspaceRoot, "package.json"));
+  if (hasPnpm) return "pnpm test";
+  if (hasYarn) return "yarn test";
+  if (hasNpmLock || hasPackageJson) return "npm test";
+  return undefined;
+};
+
+const resolveNodeCommand = (): string => {
+  const execPath = process.execPath;
+  return execPath.includes(" ") ? `"${execPath}"` : execPath;
+};
+
+const detectRunAllTestsCommand = (workspaceRoot: string): string | undefined => {
+  const scriptPath = path.join(workspaceRoot, "tests", "all.js");
+  if (!fs.existsSync(scriptPath)) return undefined;
+  const relative = path.relative(workspaceRoot, scriptPath).split(path.sep).join("/");
+  return `${resolveNodeCommand()} ${relative}`;
+};
 
 const touchedFilesFromPatch = (patch: string): string[] => {
   const files = new Set<string>();
@@ -1196,7 +1298,7 @@ export class WorkOnTasksService {
         emitBlank();
       };
 
-      for (const [index, task] of selection.ordered.entries()) {
+      taskLoop: for (const [index, task] of selection.ordered.entries()) {
         const startedAt = new Date().toISOString();
         const taskRun = await this.deps.workspaceRepo.createTaskRun({
           taskId: task.task.id,
@@ -1325,7 +1427,7 @@ export class WorkOnTasksService {
             taskStatus = "blocked";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
             await emitTaskEndOnce();
-            continue;
+            continue taskLoop;
           }
 
           await endPhase("selection");
@@ -1344,7 +1446,7 @@ export class WorkOnTasksService {
           taskStatus = "failed";
           await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
           await emitTaskEndOnce();
-          continue;
+          continue taskLoop;
         }
         let lockAcquired = false;
         if (!request.dryRun) {
@@ -1367,7 +1469,7 @@ export class WorkOnTasksService {
             taskStatus = "skipped";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
             await emitTaskEndOnce();
-            continue;
+            continue taskLoop;
           }
           lockAcquired = true;
         }
@@ -1375,10 +1477,23 @@ export class WorkOnTasksService {
         try {
           const metadata = (task.task.metadata as any) ?? {};
           let allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
-          const testCommands = Array.isArray(metadata.tests) ? (metadata.tests as string[]) : [];
+          const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
+          const testRequirementsNote = formatTestRequirementsNote(testRequirements);
+          let testCommands = normalizeTestCommands(metadata.tests);
+          if (!testCommands.length && hasTestRequirements(testRequirements)) {
+            const fallbackCommand = detectDefaultTestCommand(this.workspace.workspaceRoot);
+            if (fallbackCommand) testCommands = [fallbackCommand];
+          }
+          const runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+          const runAllTestsNote = request.dryRun
+            ? ""
+            : runAllTestsCommandHint
+              ? `Run-all tests command: ${runAllTestsCommandHint}`
+              : "Run-all tests script missing (tests/all.js). Create it and register new tests.";
+          const shouldRunTests = !request.dryRun;
           let mergeConflicts: string[] = [];
           let remoteSyncNote = "";
-          const softFailures: string[] = [];
+          let testAttemptCount = 0;
           let lastLockRefresh = Date.now();
           const getLockRefreshIntervalMs = () => {
             const ttlSeconds = Math.max(1, TASK_LOCK_TTL_SECONDS);
@@ -1411,6 +1526,22 @@ export class WorkOnTasksService {
             return true;
           };
 
+          if (!request.dryRun && hasTestRequirements(testRequirements) && testCommands.length === 0) {
+            const message = "Task has test requirements but no test command is configured.";
+            await this.logTask(taskRun.id, message, "tests", { testRequirements });
+            await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "tests", "error", { error: "tests_not_configured" });
+            await this.stateService.markBlocked(task.task, "tests_not_configured");
+            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+              status: "failed",
+              finishedAt: new Date().toISOString(),
+            });
+            results.push({ taskKey: task.task.key, status: "failed", notes: "tests_not_configured" });
+            taskStatus = "failed";
+            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+            await emitTaskEndOnce();
+            continue taskLoop;
+          }
+
           if (!request.dryRun) {
             try {
               branchInfo = await this.ensureBranches(task.task.key, baseBranch, taskRun.id);
@@ -1433,11 +1564,11 @@ export class WorkOnTasksService {
               results.push({ taskKey: task.task.key, status: "failed", notes: message });
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-              continue;
+              continue taskLoop;
             }
           }
 
-          await startPhase("context", { allowedFiles, tests: testCommands });
+          await startPhase("context", { allowedFiles, tests: testCommands, testRequirements });
           const docLinks = Array.isArray((metadata as any).doc_links) ? (metadata as any).doc_links : [];
           const { summary: docSummary, warnings: docWarnings } = await this.gatherDocContext(request.projectKey, docLinks);
           if (docWarnings.length) {
@@ -1446,13 +1577,25 @@ export class WorkOnTasksService {
           }
           await endPhase("context", { docWarnings, docSummary: Boolean(docSummary) });
 
+          const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+          if (projectGuidance) {
+            await this.logTask(taskRun.id, `Loaded project guidance from ${projectGuidance.source}`, "project_guidance");
+          }
+
           await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
           const conflictNote = mergeConflicts.length
             ? `Merge conflicts detected in: ${mergeConflicts.join(", ")}. Resolve these conflicts before any other task work. Remove conflict markers and ensure the files are consistent.`
             : "";
           const promptBase = this.buildPrompt(task, docSummary, allowedFiles);
+          const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
+          const testExpectationNote = shouldRunTests
+            ? "Tests must pass before the task can be finalized. Run task-specific tests first, then run-all tests."
+            : "";
+          const promptExtras = [testRequirementsNote, testCommandNote, runAllTestsNote, testExpectationNote].filter(Boolean).join("\n");
+          const promptWithTests = promptExtras ? `${promptBase}\n${promptExtras}` : promptBase;
+          const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : "";
           const notes = [remoteSyncNote, conflictNote].filter(Boolean).join("\n");
-          const prompt = notes ? `${notes}\n\n${promptBase}` : promptBase;
+          const prompt = [guidanceBlock, notes, promptWithTests].filter(Boolean).join("\n\n");
           const commandPrompt = prompts.commandPrompt ?? "";
           const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
           await this.logTask(taskRun.id, `System prompt:\n${systemPrompt || "(none)"}`, "prompt");
@@ -1469,7 +1612,7 @@ export class WorkOnTasksService {
             results.push({ taskKey: task.task.key, status: "skipped", notes: "dry_run" });
             taskStatus = "skipped";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-            continue;
+            continue taskLoop;
           }
 
           try {
@@ -1557,122 +1700,210 @@ export class WorkOnTasksService {
             return { output, durationSeconds: (Date.now() - started) / 1000 };
           };
 
-      let agentOutput = "";
-      let agentDuration = 0;
-      let triedRetry = false;
+          const recordUsage = async (
+            phase: "agent" | "agent_retry",
+            output: string,
+            durationSeconds: number,
+            promptText: string,
+          ) => {
+            const promptTokens = estimateTokens(promptText);
+            const completionTokens = estimateTokens(output);
+            tokensPromptTotal += promptTokens;
+            tokensCompletionTotal += completionTokens;
+            promptEstimateTotal += promptTokens;
+            await this.recordTokenUsage({
+              agentId: agent.id,
+              model: agent.defaultModel,
+              jobId: job.id,
+              commandRunId: commandRun.id,
+              taskRunId: taskRun.id,
+              taskId: task.task.id,
+              projectId: selection.project?.id,
+              tokensPrompt: promptTokens,
+              tokensCompletion: completionTokens,
+              phase,
+              durationSeconds,
+            });
+          };
 
-      const agentInput = `${systemPrompt}\n\n${prompt}`;
-      try {
-        await startPhase("agent", { agent: agent.id, stream: agentStream });
-        const first = await invokeAgentOnce(agentInput, "agent");
-        agentOutput = first.output;
-        agentDuration = first.durationSeconds;
-        await endPhase("agent", { agentDurationSeconds: agentDuration });
-        if (!(await refreshLock("agent"))) {
-          await this.logTask(taskRun.id, "Aborting task: lock lost after agent completion.", "vcs");
-          throw new Error("Task lock lost after agent completion.");
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/task lock lost/i.test(message)) {
-          throw error;
-        }
-        await this.logTask(taskRun.id, `Agent invocation failed: ${message}`, "agent");
-        await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "agent", "error", { error: message });
-        await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-          status: "failed",
-          finishedAt: new Date().toISOString(),
-        });
-        results.push({ taskKey: task.task.key, status: "failed", notes: message });
-        taskStatus = "failed";
-        await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-        continue;
-      }
+          const maxAttempts = shouldRunTests ? MAX_TEST_FIX_ATTEMPTS : 1;
+          let testsPassed = !shouldRunTests;
+          let lastTestFailureSummary = "";
+          let lastTestResults: TestRunResult[] = [];
+          let lastTestErrorType: "tests_failed" | "tests_not_configured" | null = null;
 
-      const recordUsage = async (
-        phase: "agent" | "agent_retry",
-        output: string,
-        durationSeconds: number,
-        promptText: string,
-      ) => {
-        const promptTokens = estimateTokens(promptText);
-        const completionTokens = estimateTokens(output);
-        tokensPromptTotal += promptTokens;
-        tokensCompletionTotal += completionTokens;
-        promptEstimateTotal += promptTokens;
-        await this.recordTokenUsage({
-          agentId: agent.id,
-          model: agent.defaultModel,
-          jobId: job.id,
-          commandRunId: commandRun.id,
-          taskRunId: taskRun.id,
-          taskId: task.task.id,
-          projectId: selection.project?.id,
-          tokensPrompt: promptTokens,
-          tokensCompletion: completionTokens,
-          phase,
-          durationSeconds,
-        });
-      };
-
-      await recordUsage("agent", agentOutput, agentDuration, agentInput);
-
-      let patches = extractPatches(agentOutput);
-      let fileBlocks = extractFileBlocks(agentOutput);
-      if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
-        triedRetry = true;
-        await this.logTask(taskRun.id, "Agent output did not include a patch or file blocks; retrying with explicit output instructions.", "agent");
-        try {
-          const retryInput = `${systemPrompt}\n\n${prompt}\n\nOutput only code changes. If editing existing files, output a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, output FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis or narration.`;
-          const retry = await invokeAgentOnce(retryInput, "agent");
-          agentOutput = retry.output;
-          agentDuration += retry.durationSeconds;
-          await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput);
-          patches = extractPatches(agentOutput);
-          fileBlocks = extractFileBlocks(agentOutput);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
-        }
-      }
-
-          if (patches.length === 0 && fileBlocks.length === 0) {
-            const message = "Agent output did not include a patch or file blocks.";
-            await this.logTask(taskRun.id, message, "agent");
-            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-            await this.stateService.markBlocked(task.task, "missing_patch");
-            results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
-            taskStatus = "failed";
-            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-            continue;
-          }
-
-          if (patches.length || fileBlocks.length) {
-            if (!(await refreshLock("apply_start", true))) {
-              await this.logTask(taskRun.id, "Aborting task: lock lost before apply.", "vcs");
-              throw new Error("Task lock lost before apply.");
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const attemptNotes: string[] = [];
+            if (attempt > 1) {
+              attemptNotes.push(`Retry attempt ${attempt} of ${maxAttempts}.`);
             }
-            const applyDetails: Record<string, unknown> = {};
-            if (patches.length) applyDetails.patchCount = patches.length;
-            if (fileBlocks.length) applyDetails.fileCount = fileBlocks.length;
-            if (fileBlocks.length && !patches.length) applyDetails.mode = "direct";
-            await startPhase("apply", applyDetails);
-            let patchApplyError: string | null = null;
-            if (patches.length) {
-              const applied = await this.applyPatches(
-                patches,
-                this.workspace.workspaceRoot,
-                request.dryRun ?? false,
-              );
-              touched = applied.touched;
-              if (applied.warnings?.length) {
-                await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+            if (lastTestFailureSummary) {
+              attemptNotes.push("Previous test run failed. Fix the issues and update the code/tests.");
+              attemptNotes.push(`Test failure summary:\n${lastTestFailureSummary}`);
+            }
+            const attemptPrompt = attemptNotes.length ? `${prompt}\n\n${attemptNotes.join("\n")}` : prompt;
+            const agentInput = `${systemPrompt}\n\n${attemptPrompt}`;
+            let agentOutput = "";
+            let agentDuration = 0;
+            let triedRetry = false;
+
+            try {
+              await startPhase("agent", { agent: agent.id, stream: agentStream, attempt, maxAttempts });
+              const first = await invokeAgentOnce(agentInput, "agent");
+              agentOutput = first.output;
+              agentDuration = first.durationSeconds;
+              await endPhase("agent", { agentDurationSeconds: agentDuration, attempt });
+              if (!(await refreshLock("agent"))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost after agent completion.", "vcs");
+                throw new Error("Task lock lost after agent completion.");
               }
-              if (applied.error) {
-                patchApplyError = applied.error;
-                await this.logTask(taskRun.id, `Patch apply failed: ${applied.error}`, "patch");
-                if (!fileBlocks.length) {
-                  await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              if (/task lock lost/i.test(message)) {
+                throw error;
+              }
+              await this.logTask(taskRun.id, `Agent invocation failed: ${message}`, "agent");
+              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "agent", "error", { error: message, attempt });
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                status: "failed",
+                finishedAt: new Date().toISOString(),
+              });
+              results.push({ taskKey: task.task.key, status: "failed", notes: message });
+              taskStatus = "failed";
+              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+              continue taskLoop;
+            }
+
+            await recordUsage("agent", agentOutput, agentDuration, agentInput);
+
+            let patches = extractPatches(agentOutput);
+            let fileBlocks = extractFileBlocks(agentOutput);
+            if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
+              triedRetry = true;
+              await this.logTask(
+                taskRun.id,
+                "Agent output did not include a patch or file blocks; retrying with explicit output instructions.",
+                "agent",
+              );
+              try {
+                const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput only code changes. If editing existing files, output a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, output FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis or narration.`;
+                const retry = await invokeAgentOnce(retryInput, "agent");
+                agentOutput = retry.output;
+                agentDuration += retry.durationSeconds;
+                await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput);
+                patches = extractPatches(agentOutput);
+                fileBlocks = extractFileBlocks(agentOutput);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
+              }
+            }
+
+            if (patches.length === 0 && fileBlocks.length === 0) {
+              const message = "Agent output did not include a patch or file blocks.";
+              await this.logTask(taskRun.id, message, "agent");
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+              await this.stateService.markBlocked(task.task, "missing_patch");
+              results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
+              taskStatus = "failed";
+              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+              continue taskLoop;
+            }
+
+            if (patches.length || fileBlocks.length) {
+              if (!(await refreshLock("apply_start", true))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost before apply.", "vcs");
+                throw new Error("Task lock lost before apply.");
+              }
+              const applyDetails: Record<string, unknown> = { attempt };
+              if (patches.length) applyDetails.patchCount = patches.length;
+              if (fileBlocks.length) applyDetails.fileCount = fileBlocks.length;
+              if (fileBlocks.length && !patches.length) applyDetails.mode = "direct";
+              await startPhase("apply", applyDetails);
+              let patchApplyError: string | null = null;
+              if (patches.length) {
+                const applied = await this.applyPatches(
+                  patches,
+                  this.workspace.workspaceRoot,
+                  request.dryRun ?? false,
+                );
+                if (applied.touched.length) {
+                  const merged = new Set([...touched, ...applied.touched]);
+                  touched = Array.from(merged);
+                }
+                if (applied.warnings?.length) {
+                  await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+                }
+                if (applied.error) {
+                  patchApplyError = applied.error;
+                  await this.logTask(taskRun.id, `Patch apply failed: ${applied.error}`, "patch");
+                  if (!fileBlocks.length) {
+                    await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
+                    await this.stateService.markBlocked(task.task, "patch_failed");
+                    await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                    results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
+                    taskStatus = "failed";
+                      if (!request.dryRun && request.noCommit !== true) {
+                        await this.commitPendingChanges(
+                          branchInfo,
+                          task.task.key,
+                          task.task.title,
+                          "auto-save (patch_failed)",
+                          task.task.id,
+                          taskRun.id,
+                        );
+                      }
+                      await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                      continue taskLoop;
+                    }
+                  }
+                }
+                if (fileBlocks.length) {
+                  const allowNoop = patchApplyError === null && touched.length > 0;
+                  const applied = await this.applyFileBlocks(
+                    fileBlocks,
+                    this.workspace.workspaceRoot,
+                    request.dryRun ?? false,
+                    allowNoop,
+                  );
+                  if (applied.touched.length) {
+                    const merged = new Set([...touched, ...applied.touched]);
+                    touched = Array.from(merged);
+                  }
+                  if (applied.warnings?.length) {
+                    await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+                  }
+                  if (applied.error) {
+                    await this.logTask(taskRun.id, `Direct file apply failed: ${applied.error}`, "patch");
+                    await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
+                    await this.stateService.markBlocked(task.task, "patch_failed");
+                    await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                    results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
+                    taskStatus = "failed";
+                    if (!request.dryRun && request.noCommit !== true) {
+                      await this.commitPendingChanges(
+                        branchInfo,
+                        task.task.key,
+                        task.task.title,
+                        "auto-save (patch_failed)",
+                        task.task.id,
+                        taskRun.id,
+                      );
+                    }
+                    await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                    continue taskLoop;
+                  }
+                  if (patchApplyError && applied.appliedCount > 0) {
+                    await this.logTask(
+                      taskRun.id,
+                      `Patch apply skipped; continued with file blocks. Reason: ${patchApplyError}`,
+                      "patch",
+                    );
+                    patchApplyError = null;
+                  }
+                }
+                if (patchApplyError) {
+                  await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: patchApplyError, attempt });
                   await this.stateService.markBlocked(task.task, "patch_failed");
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                   results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
@@ -1688,244 +1919,277 @@ export class WorkOnTasksService {
                     );
                   }
                   await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                  continue;
+                  continue taskLoop;
+                }
+                patchApplied = patchApplied || touched.length > 0;
+                await endPhase("apply", { touched, attempt });
+                if (!(await refreshLock("apply"))) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost after apply.", "vcs");
+                  throw new Error("Task lock lost after apply.");
                 }
               }
-            }
-            if (fileBlocks.length) {
-              const allowNoop = patchApplyError === null && touched.length > 0;
-              const applied = await this.applyFileBlocks(fileBlocks, this.workspace.workspaceRoot, request.dryRun ?? false, allowNoop);
-              if (applied.touched.length) {
-                const merged = new Set([...touched, ...applied.touched]);
-                touched = Array.from(merged);
-              }
-              if (applied.warnings?.length) {
-                await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
-              }
-              if (applied.error) {
-                await this.logTask(taskRun.id, `Direct file apply failed: ${applied.error}`, "patch");
-                await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error });
-                await this.stateService.markBlocked(task.task, "patch_failed");
-                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-                results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
-                taskStatus = "failed";
-                if (!request.dryRun && request.noCommit !== true) {
-                  await this.commitPendingChanges(
-                    branchInfo,
-                    task.task.key,
-                    task.task.title,
-                    "auto-save (patch_failed)",
-                    task.task.id,
-                    taskRun.id,
-                  );
+  
+              if (patchApplied && allowedFiles.length) {
+                const dirtyAfterApply = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
+                const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, dirtyAfterApply));
+                if (!scopeCheck.ok) {
+                  await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
+                  await this.stateService.markBlocked(task.task, "scope_violation");
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                  results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
+                  taskStatus = "failed";
+                  if (!request.dryRun && request.noCommit !== true && patchApplied) {
+                    await this.commitPendingChanges(
+                      branchInfo,
+                      task.task.key,
+                      task.task.title,
+                      "auto-save (scope_violation)",
+                      task.task.id,
+                      taskRun.id,
+                    );
+                  }
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue taskLoop;
                 }
-                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                continue;
               }
-              if (patchApplyError && applied.appliedCount > 0) {
-                await this.logTask(
-                  taskRun.id,
-                  `Patch apply skipped; continued with file blocks. Reason: ${patchApplyError}`,
-                  "patch",
-                );
-                patchApplyError = null;
+  
+              if (shouldRunTests) {
+                testAttemptCount += 1;
+                const runAllTestsCommand = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+                if (!runAllTestsCommand) {
+                  const expectedCommand = `${resolveNodeCommand()} tests/all.js`;
+                  lastTestResults = [
+                    {
+                      command: expectedCommand,
+                      stdout: "",
+                      stderr: "Run-all tests script missing (tests/all.js).",
+                      code: 1,
+                    },
+                  ];
+                  lastTestFailureSummary = formatTestFailureSummary(lastTestResults);
+                  lastTestErrorType = "tests_not_configured";
+                  await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "tests", "error", {
+                    error: "tests_not_configured",
+                    attempt,
+                  });
+                  await this.logTask(taskRun.id, "Run-all tests script missing; retrying with fixes.", "tests", {
+                    attempt,
+                    remainingAttempts: maxAttempts - attempt,
+                  });
+                  await endPhase("tests", { results: lastTestResults, ok: false, attempt, retrying: attempt < maxAttempts });
+                  if (!(await refreshLock("tests"))) {
+                    await this.logTask(taskRun.id, "Aborting task: lock lost after tests.", "vcs");
+                    throw new Error("Task lock lost after tests.");
+                  }
+                  if (attempt < maxAttempts) {
+                    continue;
+                  }
+                  testsPassed = false;
+                  break;
+                }
+                const combinedCommands = [...testCommands, runAllTestsCommand];
+                await startPhase("tests", { commands: combinedCommands, attempt, runAll: true });
+                const testResult = await this.runTests(combinedCommands, this.workspace.workspaceRoot);
+                await this.logTask(taskRun.id, "Test results", "tests", { results: testResult.results, attempt });
+                if (!testResult.ok) {
+                  lastTestResults = testResult.results;
+                  lastTestFailureSummary = formatTestFailureSummary(testResult.results);
+                  lastTestErrorType = "tests_failed";
+                  await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "tests", "error", {
+                    error: "tests_failed",
+                    attempt,
+                  });
+                  await this.logTask(taskRun.id, "Tests failed; retrying with fixes.", "tests", {
+                    attempt,
+                    remainingAttempts: maxAttempts - attempt,
+                  });
+                  await endPhase("tests", { results: testResult.results, ok: false, attempt, retrying: attempt < maxAttempts });
+                  if (!(await refreshLock("tests"))) {
+                    await this.logTask(taskRun.id, "Aborting task: lock lost after tests.", "vcs");
+                    throw new Error("Task lock lost after tests.");
+                  }
+                  if (attempt < maxAttempts) {
+                    continue;
+                  }
+                  testsPassed = false;
+                  break;
+                }
+                await endPhase("tests", { results: testResult.results, ok: true, attempt });
+                testsPassed = true;
+                if (!(await refreshLock("tests"))) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost after tests.", "vcs");
+                  throw new Error("Task lock lost after tests.");
+                }
+              } else {
+                testsPassed = true;
+              }
+  
+              if (testsPassed) {
+                break;
               }
             }
-            if (patchApplyError) {
-              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: patchApplyError });
-              await this.stateService.markBlocked(task.task, "patch_failed");
+  
+            if (!testsPassed) {
+              const failureReason = lastTestErrorType ?? "tests_failed";
+              await this.logTask(taskRun.id, `Tests failed after ${testAttemptCount} attempt(s).`, "tests", {
+                results: lastTestResults,
+              });
+              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "tests", "error", {
+                error: failureReason,
+                attempts: testAttemptCount,
+              });
+              await this.stateService.markBlocked(task.task, failureReason);
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-              results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
+              results.push({ taskKey: task.task.key, status: "failed", notes: failureReason });
               taskStatus = "failed";
               if (!request.dryRun && request.noCommit !== true) {
                 await this.commitPendingChanges(
                   branchInfo,
                   task.task.key,
                   task.task.title,
-                  "auto-save (patch_failed)",
+                  "auto-save (tests_failed)",
                   task.task.id,
                   taskRun.id,
                 );
               }
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-              continue;
+              continue taskLoop;
             }
-            patchApplied = touched.length > 0;
-            await endPhase("apply", { touched });
-            if (!(await refreshLock("apply"))) {
-              await this.logTask(taskRun.id, "Aborting task: lock lost after apply.", "vcs");
-              throw new Error("Task lock lost after apply.");
-            }
+  
+        if (!request.dryRun && request.noCommit !== true) {
+          if (!(await refreshLock("vcs_start", true))) {
+            await this.logTask(taskRun.id, "Aborting task: lock lost before VCS phase.", "vcs");
+            throw new Error("Task lock lost before VCS phase.");
           }
-
-          if (patchApplied && allowedFiles.length) {
-            const dirtyAfterApply = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
-            const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, dirtyAfterApply));
-            if (!scopeCheck.ok) {
-              await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
-              await this.stateService.markBlocked(task.task, "scope_violation");
-              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-              results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
-              taskStatus = "failed";
-              if (!request.dryRun && request.noCommit !== true && patchApplied) {
-                await this.commitPendingChanges(branchInfo, task.task.key, task.task.title, "auto-save (scope_violation)", task.task.id, taskRun.id);
-              }
-              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-              continue;
-            }
-          }
-
-          if (!request.dryRun && testCommands.length && patchApplied) {
-            await startPhase("tests", { commands: testCommands });
-            const testResult = await this.runTests(testCommands, this.workspace.workspaceRoot);
-            await this.logTask(taskRun.id, "Test results", "tests", { results: testResult.results });
-            if (!testResult.ok) {
-              await this.logTask(taskRun.id, "Tests failed; continuing task run with warnings.", "tests");
-              softFailures.push("tests_failed");
-              await endPhase("tests", { results: testResult.results, warning: "tests_failed" });
-            } else {
-              await endPhase("tests", { results: testResult.results });
-            }
-            if (!(await refreshLock("tests"))) {
-              await this.logTask(taskRun.id, "Aborting task: lock lost after tests.", "vcs");
-              throw new Error("Task lock lost after tests.");
-            }
-          }
-
-      if (!request.dryRun && request.noCommit !== true) {
-        if (!(await refreshLock("vcs_start", true))) {
-          await this.logTask(taskRun.id, "Aborting task: lock lost before VCS phase.", "vcs");
-          throw new Error("Task lock lost before VCS phase.");
-        }
-        await startPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
-        try {
-          const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
-          const toStage = dirty.length ? dirty : touched.length ? touched : ["."];
-          await this.vcs.stage(this.workspace.workspaceRoot, toStage);
-          const status = await this.vcs.status(this.workspace.workspaceRoot);
-          const hasChanges = status.trim().length > 0;
-          if (hasChanges) {
-            const commitMessage = `[${task.task.key}] ${task.task.title}`;
-            let committed = false;
-            try {
-              await this.vcs.commit(this.workspace.workspaceRoot, commitMessage);
-              committed = true;
-            } catch (error) {
-              const errorText = this.formatGitError(error);
-              const hookFailure = this.isCommitHookFailure(errorText);
-              const gpgFailure = this.isGpgSignFailure(errorText);
-              if (hookFailure || gpgFailure) {
-                const guidance = [
-                  hookFailure
-                    ? "Commit hook failed; run hooks manually or configure bypass (e.g., HUSKY=0) if policy allows."
-                    : "",
-                  gpgFailure
-                    ? "GPG signing failed; configure signing key or disable commit.gpgsign for this repo."
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ");
-                await this.logTask(taskRun.id, `Commit failed; retrying with bypass flags. ${guidance}`, "vcs", {
-                  error: errorText,
-                });
-                try {
-                  await this.vcs.commit(this.workspace.workspaceRoot, commitMessage, {
-                    noVerify: hookFailure,
-                    noGpgSign: gpgFailure,
-                  });
-                  committed = true;
-                  await this.logTask(taskRun.id, "Commit succeeded after bypassing hook/signing checks.", "vcs");
-                } catch (retryError) {
-                  const retryText = this.formatGitError(retryError);
-                  throw new Error(`Commit failed after retry: ${retryText}`);
-                }
-              } else {
-                throw error;
-              }
-            }
-            if (committed) {
-              const head = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
-              await this.deps.workspaceRepo.updateTask(task.task.id, { vcsLastCommitSha: head });
-              await this.logTask(taskRun.id, `Committed changes (${head})`, "vcs");
-              headSha = head;
-            }
-          } else {
-            await this.logTask(taskRun.id, "No changes to commit.", "vcs");
-          }
-
-          // Always merge back into base and end on base branch.
+          await startPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
           try {
-            await this.vcs.merge(this.workspace.workspaceRoot, branchInfo.branch, branchInfo.base);
-            mergeStatus = "merged";
-            try {
-              headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
-            } catch {
-              // Best-effort head capture.
+            const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
+            const toStage = dirty.length ? dirty : touched.length ? touched : ["."];
+            await this.vcs.stage(this.workspace.workspaceRoot, toStage);
+            const status = await this.vcs.status(this.workspace.workspaceRoot);
+            const hasChanges = status.trim().length > 0;
+            if (hasChanges) {
+              const commitMessage = `[${task.task.key}] ${task.task.title}`;
+              let committed = false;
+              try {
+                await this.vcs.commit(this.workspace.workspaceRoot, commitMessage);
+                committed = true;
+              } catch (error) {
+                const errorText = this.formatGitError(error);
+                const hookFailure = this.isCommitHookFailure(errorText);
+                const gpgFailure = this.isGpgSignFailure(errorText);
+                if (hookFailure || gpgFailure) {
+                  const guidance = [
+                    hookFailure
+                      ? "Commit hook failed; run hooks manually or configure bypass (e.g., HUSKY=0) if policy allows."
+                      : "",
+                    gpgFailure
+                      ? "GPG signing failed; configure signing key or disable commit.gpgsign for this repo."
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
+                  await this.logTask(taskRun.id, `Commit failed; retrying with bypass flags. ${guidance}`, "vcs", {
+                    error: errorText,
+                  });
+                  try {
+                    await this.vcs.commit(this.workspace.workspaceRoot, commitMessage, {
+                      noVerify: hookFailure,
+                      noGpgSign: gpgFailure,
+                    });
+                    committed = true;
+                    await this.logTask(taskRun.id, "Commit succeeded after bypassing hook/signing checks.", "vcs");
+                  } catch (retryError) {
+                    const retryText = this.formatGitError(retryError);
+                    throw new Error(`Commit failed after retry: ${retryText}`);
+                  }
+                } else {
+                  throw error;
+                }
+              }
+              if (committed) {
+                const head = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
+                await this.deps.workspaceRepo.updateTask(task.task.id, { vcsLastCommitSha: head });
+                await this.logTask(taskRun.id, `Committed changes (${head})`, "vcs");
+                headSha = head;
+              }
+            } else {
+              await this.logTask(taskRun.id, "No changes to commit.", "vcs");
             }
-            await this.logTask(taskRun.id, `Merged ${branchInfo.branch} into ${branchInfo.base}`, "vcs");
-            if (!(await refreshLock("vcs_merge"))) {
-              await this.logTask(taskRun.id, "Aborting task: lock lost after merge.", "vcs");
-              throw new Error("Task lock lost after merge.");
+  
+            // Always merge back into base and end on base branch.
+            try {
+              await this.vcs.merge(this.workspace.workspaceRoot, branchInfo.branch, branchInfo.base);
+              mergeStatus = "merged";
+              try {
+                headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
+              } catch {
+                // Best-effort head capture.
+              }
+              await this.logTask(taskRun.id, `Merged ${branchInfo.branch} into ${branchInfo.base}`, "vcs");
+              if (!(await refreshLock("vcs_merge"))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost after merge.", "vcs");
+                throw new Error("Task lock lost after merge.");
+              }
+            } catch (error) {
+              mergeStatus = "failed";
+              const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
+              if (conflicts.length) {
+                await this.logTask(taskRun.id, `Merge conflicts while merging ${branchInfo.branch} into ${branchInfo.base}.`, "vcs", {
+                  conflicts,
+                });
+                throw new Error(
+                  `Merge conflict(s) while merging ${branchInfo.branch} into ${branchInfo.base}: ${conflicts.join(", ")}`,
+                );
+              }
+              throw error;
+            }
+  
+            if (await this.vcs.hasRemote(this.workspace.workspaceRoot)) {
+              const branchPush = await this.pushWithRecovery(taskRun.id, branchInfo.branch);
+              if (branchPush.pushed) {
+                await this.logTask(taskRun.id, "Pushed branch to remote origin", "vcs");
+              } else if (branchPush.skipped) {
+                await this.logTask(taskRun.id, "Skipped pushing branch to remote origin due to permissions/protection.", "vcs");
+              }
+              if (!(await refreshLock("vcs_push_branch"))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
+                throw new Error("Task lock lost after pushing branch.");
+              }
+              const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
+              if (basePush.pushed) {
+                await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
+              } else if (basePush.skipped) {
+                await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`, "vcs");
+              }
+              if (!(await refreshLock("vcs_push_base"))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
+                throw new Error("Task lock lost after pushing base branch.");
+              }
+            } else {
+              await this.logTask(taskRun.id, "No remote configured; merge completed locally.", "vcs");
             }
           } catch (error) {
-            mergeStatus = "failed";
-            const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
-            if (conflicts.length) {
-              await this.logTask(taskRun.id, `Merge conflicts while merging ${branchInfo.branch} into ${branchInfo.base}.`, "vcs", {
-                conflicts,
-              });
-              throw new Error(
-                `Merge conflict(s) while merging ${branchInfo.branch} into ${branchInfo.base}: ${conflicts.join(", ")}`,
-              );
+            const message = error instanceof Error ? error.message : String(error);
+            if (/task lock lost/i.test(message)) {
+              throw error;
             }
-            throw error;
+            await this.logTask(taskRun.id, `VCS commit/push failed: ${message}`, "vcs");
+            await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: message });
+            await this.stateService.markBlocked(task.task, "vcs_failed");
+            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+            results.push({ taskKey: task.task.key, status: "failed", notes: "vcs_failed" });
+            taskStatus = "failed";
+            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+            continue taskLoop;
           }
-
-          if (await this.vcs.hasRemote(this.workspace.workspaceRoot)) {
-            const branchPush = await this.pushWithRecovery(taskRun.id, branchInfo.branch);
-            if (branchPush.pushed) {
-              await this.logTask(taskRun.id, "Pushed branch to remote origin", "vcs");
-            } else if (branchPush.skipped) {
-              await this.logTask(taskRun.id, "Skipped pushing branch to remote origin due to permissions/protection.", "vcs");
-            }
-            if (!(await refreshLock("vcs_push_branch"))) {
-              await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
-              throw new Error("Task lock lost after pushing branch.");
-            }
-            const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
-            if (basePush.pushed) {
-              await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
-            } else if (basePush.skipped) {
-              await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`, "vcs");
-            }
-            if (!(await refreshLock("vcs_push_base"))) {
-              await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
-              throw new Error("Task lock lost after pushing base branch.");
-            }
-          } else {
-            await this.logTask(taskRun.id, "No remote configured; merge completed locally.", "vcs");
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (/task lock lost/i.test(message)) {
-            throw error;
-          }
-          await this.logTask(taskRun.id, `VCS commit/push failed: ${message}`, "vcs");
-          await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: message });
-          await this.stateService.markBlocked(task.task, "vcs_failed");
-          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-          results.push({ taskKey: task.task.key, status: "failed", notes: "vcs_failed" });
-          taskStatus = "failed";
-          await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-          continue;
+          await endPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
+        } else if (request.dryRun) {
+          await this.logTask(taskRun.id, "Dry-run: skipped commit/push.", "vcs");
+        } else if (request.noCommit) {
+          await this.logTask(taskRun.id, "no-commit set: skipped commit/push.", "vcs");
         }
-        await endPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
-      } else if (request.dryRun) {
-        await this.logTask(taskRun.id, "Dry-run: skipped commit/push.", "vcs");
-      } else if (request.noCommit) {
-        await this.logTask(taskRun.id, "no-commit set: skipped commit/push.", "vcs");
-      }
-
+  
         await startPhase("finalize");
         const finishedAt = new Date().toISOString();
         const elapsedSeconds = Math.max(1, (Date.parse(finishedAt) - Date.parse(startedAt)) / 1000);
@@ -1933,8 +2197,12 @@ export class WorkOnTasksService {
           task.task.storyPoints && task.task.storyPoints > 0 ? (task.task.storyPoints / elapsedSeconds) * 3600 : null;
 
         const reviewMetadata: Record<string, unknown> = { last_run: finishedAt };
-        if (softFailures.length) {
-          reviewMetadata.soft_failures = softFailures;
+        if (shouldRunTests) {
+          const runAllTestsCommand = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+          const combinedCommands = [...testCommands, ...(runAllTestsCommand ? [runAllTestsCommand] : [])];
+          reviewMetadata.test_attempts = testAttemptCount;
+          reviewMetadata.test_commands = combinedCommands;
+          reviewMetadata.run_all_tests_command = runAllTestsCommand ?? null;
         }
         await this.stateService.markReadyToReview(task.task, reviewMetadata);
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
@@ -1948,7 +2216,7 @@ export class WorkOnTasksService {
         storyPointsProcessed += task.task.storyPoints ?? 0;
         await endPhase("finalize", { spPerHour: spPerHour ?? undefined });
 
-        const resultNotes = softFailures.length ? `ready_to_review_with_warnings:${softFailures.join(",")}` : "ready_to_review";
+        const resultNotes = "ready_to_review";
         taskStatus = "succeeded";
         results.push({
           taskKey: task.task.key,
@@ -1970,7 +2238,7 @@ export class WorkOnTasksService {
             results.push({ taskKey: task.task.key, status: "failed", notes: "task_lock_lost" });
             taskStatus = "failed";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-            continue;
+            continue taskLoop;
           }
           throw error;
         } finally {

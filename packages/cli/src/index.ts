@@ -11,6 +11,7 @@ export * from "./commands/estimate/EstimateCommands.js";
 export * from "./commands/telemetry/TelemetryCommands.js";
 export * from "./commands/planning/RefineTasksCommand.js";
 export * from "./commands/work/WorkOnTasksCommand.js";
+export * from "./commands/work/GatewayTrioCommand.js";
 export * from "./commands/review/CodeReviewCommand.js";
 export * from "./commands/planning/QaTasksCommand.js";
 export * from "./commands/update/UpdateCommands.js";

@@ -51,6 +51,85 @@ class StubAgentServiceNoPlus {
   }
 }
 
+class StubAgentServiceCapture {
+  lastInput: string | null = null;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, req: any) {
+    this.lastInput = req?.input ?? null;
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceTestFix {
+  invocations = 0;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invocations += 1;
+    const fileName = this.invocations === 1 ? "fail.flag" : "pass.flag";
+    const content = this.invocations === 1 ? "fail" : "ok";
+    const output = [`FILE: ${fileName}`, "```", content, "```"].join("\n");
+    return { output, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceRunAllFix {
+  invocations = 0;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invocations += 1;
+    const fileName = this.invocations === 1 ? "work.txt" : "global.pass";
+    const output = [`FILE: ${fileName}`, "```", "ok", "```"].join("\n");
+    return { output, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceAlwaysFail {
+  invocations = 0;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invocations += 1;
+    const output = ["FILE: fail.flag", "```", "fail", "```"].join("\n");
+    return { output, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubDocdex {
   async search() {
     return [];
@@ -182,6 +261,7 @@ const setupWorkspace = async () => {
     ],
     false,
   );
+  await writeRunAllScript(dir);
   return { dir, workspace, repo, tasks };
 };
 
@@ -192,6 +272,35 @@ const cleanupWorkspace = async (dir: string, repo: WorkspaceRepository) => {
     /* ignore */
   }
   await fs.rm(dir, { recursive: true, force: true });
+};
+
+const resolveNodeCommand = () => {
+  const execPath = process.execPath;
+  return execPath.includes(" ") ? `"${execPath}"` : execPath;
+};
+
+const writeTestCheckScript = async (dir: string) => {
+  const scriptPath = path.join(dir, "test-check.js");
+  const contents = [
+    "const fs = require(\"node:fs\");",
+    "if (!fs.existsSync(\"pass.flag\")) {",
+    "  console.error(\"missing pass.flag\");",
+    "  process.exit(1);",
+    "}",
+    "process.exit(0);",
+    "",
+  ].join("\n");
+  await fs.writeFile(scriptPath, contents, "utf8");
+  return `${resolveNodeCommand()} ./test-check.js`;
+};
+
+const writeRunAllScript = async (dir: string, contents?: string) => {
+  const testsDir = path.join(dir, "tests");
+  await fs.mkdir(testsDir, { recursive: true });
+  const scriptPath = path.join(testsDir, "all.js");
+  const script = contents ?? "process.exit(0);\n";
+  await fs.writeFile(scriptPath, script, "utf8");
+  return scriptPath;
 };
 
 test("workOnTasks marks tasks ready_to_review and records task runs", async () => {
@@ -278,6 +387,209 @@ test("workOnTasks handles apply_patch add-file output without leading '+' lines"
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.status, "succeeded");
     assert.ok(vcs.patches.some((p) => p.includes("+hello world")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks prepends project guidance to agent input", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const guidanceDir = path.join(dir, "docs");
+  await fs.mkdir(guidanceDir, { recursive: true });
+  const guidancePath = path.join(guidanceDir, "project-guidance.md");
+  await fs.writeFile(guidancePath, "GUIDANCE BLOCK", "utf8");
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.ok(agent.lastInput);
+    const input = agent.lastInput ?? "";
+    const guidanceIndex = input.indexOf("GUIDANCE BLOCK");
+    const taskIndex = input.indexOf("Task proj-epic-us-01-t01");
+    assert.ok(guidanceIndex >= 0);
+    assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks retries failing tests until they pass", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceTestFix();
+  const testCommand = await writeTestCheckScript(dir);
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      tests: [testCommand],
+      test_requirements: {
+        unit: ["pass.flag exists"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.ok(agent.invocations >= 2);
+    assert.equal(result.results[0]?.status, "succeeded");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_review");
+    const passExists = await fs.stat(path.join(dir, "pass.flag")).then(
+      () => true,
+      () => false,
+    );
+    assert.equal(passExists, true);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks retries when run-all tests fail", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceRunAllFix();
+  await writeRunAllScript(
+    dir,
+    [
+      "const fs = require(\"node:fs\");",
+      "if (!fs.existsSync(\"global.pass\")) {",
+      "  console.error(\"missing global.pass\");",
+      "  process.exit(1);",
+      "}",
+      "process.exit(0);",
+      "",
+    ].join("\n"),
+  );
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.ok(agent.invocations >= 2);
+    assert.equal(result.results[0]?.status, "succeeded");
+    const globalPassExists = await fs.stat(path.join(dir, "global.pass")).then(
+      () => true,
+      () => false,
+    );
+    assert.equal(globalPassExists, true);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks blocks tasks when tests keep failing", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceAlwaysFail();
+  const testCommand = await writeTestCheckScript(dir);
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      tests: [testCommand],
+      test_requirements: {
+        unit: ["pass.flag exists"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.ok(agent.invocations > 1);
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "tests_failed");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "blocked");
+    assert.equal((updated?.metadata as any)?.blocked_reason, "tests_failed");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

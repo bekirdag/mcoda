@@ -26,10 +26,11 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - If you encounter merge conflicts, resolve them first (clean conflict markers and ensure code compiles) before continuing task work.
 - If a target file does not exist, create it by emitting a new-file unified diff with full content (no placeholder edits to missing paths).
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
-- Add or update tests alongside code, following the existing style and fixtures.
+- Add or update tests alongside code, following the existing style and fixtures. For each task, identify the relevant unit/component/integration/API tests and implement them as part of the change.
+- If you create a new test script or suite entry point, register it in `tests/all.js` so the run-all script stays complete.
 - Align tests with the project’s test runner and dependencies; avoid introducing libraries that aren’t already in use or declared, and target real components/modules (not missing files). Update docs/config only when behavior or contracts change (command help, README snippets, specs, runbooks).
 
 ## Validate and hand off
-- Run the smallest relevant checks using the workspace’s documented scripts or test commands; if you cannot run them, state why and which ones are pending.
+- Run the smallest relevant checks using the workspace’s documented scripts or test commands; then run `node tests/all.js` at the end of the task. If tests fail, fix the issues and re-run until green. If you cannot run them, state why and which ones are pending.
 - Self-review for regressions: data shape changes, async/error handling, backward compatibility for callers, and side effects. Verify imports/resolution and that new code actually uses existing slices/persistence instead of dead helpers.
 - Report back with what changed, files touched, checks run (or needed), and any risks or follow-up items.

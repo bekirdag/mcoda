@@ -353,6 +353,23 @@ export class WorkspaceRepository {
     };
   }
 
+  async getProjectById(id: string): Promise<ProjectRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, key, name, description, metadata_json, created_at, updated_at FROM projects WHERE id = ?`,
+      id,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      key: row.key,
+      name: row.name ?? undefined,
+      description: row.description ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
   async createProjectIfMissing(input: { key: string; name?: string; description?: string }): Promise<ProjectRow> {
     const existing = await this.getProjectByKey(input.key);
     if (existing) return existing;

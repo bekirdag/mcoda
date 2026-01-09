@@ -12,6 +12,7 @@ import { BacklogService } from "../backlog/BacklogService.js";
 import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
@@ -951,7 +952,12 @@ export class CodeReviewService {
     const agent = await this.resolveAgent(request.agentName);
     const prompts = await this.loadPrompts(agent.id);
     const extras = await this.loadRunbookAndChecklists();
-    const systemPrompts = [prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+    if (projectGuidance) {
+      console.info(`[code-review] loaded project guidance from ${projectGuidance.source}`);
+    }
+    const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
+    const systemPrompts = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
 
     const results: TaskReviewResult[] = [];
 

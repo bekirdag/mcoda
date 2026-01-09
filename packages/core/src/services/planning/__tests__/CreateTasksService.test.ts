@@ -236,6 +236,10 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
           estimatedStoryPoints: 3,
           priorityHint: 5,
           dependsOnKeys: [],
+          unitTests: ["Add unit coverage for task path"],
+          componentTests: [],
+          integrationTests: ["Run integration flow A"],
+          apiTests: ["Validate API response contract"],
         },
       ],
     }),
@@ -262,6 +266,17 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.equal(result.dependencies.length, 0);
   assert.equal(result.tasks[0].status, "not_started");
   assert.equal(result.tasks[0].storyPoints, 3);
+  const metadata = result.tasks[0].metadata as any;
+  assert.deepEqual(metadata?.test_requirements, {
+    unit: ["Add unit coverage for task path"],
+    component: [],
+    integration: ["Run integration flow A"],
+    api: ["Validate API response contract"],
+  });
+  assert.ok(result.tasks[0].description.includes("Unit tests: Add unit coverage for task path"));
+  assert.ok(result.tasks[0].description.includes("Component tests: Not applicable"));
+  assert.ok(result.tasks[0].description.includes("Integration tests: Run integration flow A"));
+  assert.ok(result.tasks[0].description.includes("API tests: Validate API response contract"));
 });
 
 test("createTasks fails on invalid agent output", async () => {

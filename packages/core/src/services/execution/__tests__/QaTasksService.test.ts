@@ -155,3 +155,84 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("qa-tasks prepends project guidance to agent prompt", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const guidanceDir = path.join(dir, "docs");
+  await fs.mkdir(guidanceDir, { recursive: true });
+  await fs.writeFile(path.join(guidanceDir, "project-guidance.md"), "GUIDANCE BLOCK", "utf8");
+
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  let lastInput = "";
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: {
+      invoke: async (_id: string, { input }: { input: string }) => {
+        lastInput = input;
+        return { output: '{"recommendation":"pass"}' };
+      },
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "qa-tasks": "QA prompt" },
+      }),
+    } as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.ok(lastInput);
+    const guidanceIndex = lastInput.indexOf("GUIDANCE BLOCK");
+    const taskIndex = lastInput.indexOf("Task: proj-epic-us-01-t01");
+    assert.ok(guidanceIndex >= 0);
+    assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
