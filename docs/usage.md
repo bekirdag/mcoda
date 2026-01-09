@@ -43,6 +43,7 @@ Run the implementation loop and follow with review/QA.
 
 ```sh
 mcoda work-on-tasks --workspace-root . --project WEB --status not_started,in_progress --limit 3
+mcoda gateway-trio --workspace-root . --project WEB --max-iterations 3 --max-cycles 5 --review-base mcoda-dev --qa-profile integration
 mcoda code-review --workspace-root . --project WEB --status ready_to_review --limit 5 --base mcoda-dev
 mcoda qa-tasks --workspace-root . --project WEB --status ready_to_qa --profile integration
 ```
@@ -289,6 +290,17 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`.
 - Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
 - Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.
+
+### Gateway trio (work → review → QA loop)
+Run work, review, and QA in a single loop with gateway routing for each step:
+
+```sh
+mcoda gateway-trio --workspace . --project WEB --max-iterations 3 --max-cycles 5 --review-base mcoda-dev --qa-profile ui --gateway-agent router
+```
+
+- Uses the gateway router to pick specialized agents for work, review, and QA.
+- Loops back to work when review requests changes or QA needs fixes, stopping on QA pass, infra issues, or iteration limits.
+- Key flags: `--gateway-agent`, `--max-docs`, `--review-base`, `--qa-profile`/`--qa-level`/`--qa-test-command`, `--qa-mode`, `--qa-followups`, `--no-commit`, `--dry-run`, `--resume`, `--json`.
 
 ### Routing defaults, preview, and explain
 Use the OpenAPI-backed router to inspect or update workspace defaults:

@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   GatewayAgentService,
+  buildGatewayHandoffContent,
+  withGatewayHandoff,
+  writeGatewayHandoffFile,
   WorkspaceResolver,
 } from "@mcoda/core";
 import { canonicalizeCommandName } from "@mcoda/shared";
@@ -47,8 +50,6 @@ const usage = `mcoda gateway-agent <job> \\
   [--json] \\
   [--] [job args...]`;
 
-const HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
-
 const DOC_ONLY_JOBS = new Set(["sds", "openapi-from-docs"]);
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -64,69 +65,6 @@ const isIoEnabled = (): boolean => {
   if (!raw) return false;
   const normalized = raw.trim().toLowerCase();
   return !["0", "false", "off", "no"].includes(normalized);
-};
-
-const buildHandoffContent = (result: Awaited<ReturnType<GatewayAgentService["run"]>>): string => {
-  const lines: string[] = [];
-  lines.push(`# Gateway Handoff`);
-  lines.push("");
-  lines.push(`Job: ${result.job}`);
-  lines.push(`Gateway agent: ${result.gatewayAgent.slug}`);
-  lines.push(`Chosen agent: ${result.chosenAgent.agentSlug}`);
-  lines.push("");
-  if (result.analysis.reasoningSummary?.trim()) {
-    lines.push("## Reasoning Summary");
-    lines.push(result.analysis.reasoningSummary.trim());
-    lines.push("");
-  }
-  lines.push("## Summary");
-  lines.push(result.analysis.summary || "(none)");
-  lines.push("");
-  lines.push("## Current State");
-  lines.push(result.analysis.currentState || "(none)");
-  lines.push("");
-  lines.push("## Todo");
-  lines.push(result.analysis.todo || "(none)");
-  lines.push("");
-  lines.push("## Understanding");
-  lines.push(result.analysis.understanding || "(none)");
-  lines.push("");
-  lines.push("## Plan");
-  if (result.analysis.plan.length) {
-    result.analysis.plan.forEach((step, idx) => lines.push(`${idx + 1}. ${step}`));
-  } else {
-    lines.push("(none)");
-  }
-  lines.push("");
-  lines.push("## Files Likely Touched");
-  if (result.analysis.filesLikelyTouched.length) {
-    result.analysis.filesLikelyTouched.forEach((file) => lines.push(`- ${file}`));
-  } else {
-    lines.push("(none)");
-  }
-  lines.push("");
-  lines.push("## Files To Create");
-  if (result.analysis.filesToCreate.length) {
-    result.analysis.filesToCreate.forEach((file) => lines.push(`- ${file}`));
-  } else {
-    lines.push("(none)");
-  }
-  if (result.analysis.assumptions.length) {
-    lines.push("");
-    lines.push("## Assumptions");
-    result.analysis.assumptions.forEach((item) => lines.push(`- ${item}`));
-  }
-  if (result.analysis.risks.length) {
-    lines.push("");
-    lines.push("## Risks");
-    result.analysis.risks.forEach((item) => lines.push(`- ${item}`));
-  }
-  if (result.analysis.docdexNotes.length) {
-    lines.push("");
-    lines.push("## Docdex Notes");
-    result.analysis.docdexNotes.forEach((item) => lines.push(`- ${item}`));
-  }
-  return lines.join("\n");
 };
 
 const isSameAgent = (result: Awaited<ReturnType<GatewayAgentService["run"]>>): boolean =>
@@ -580,13 +518,6 @@ export class GatewayAgentCommand {
         process.exitCode = 1;
         return;
       }
-      const handoffContent = buildHandoffContent(result);
-      const handoffDir = path.join(workspace.workspaceRoot, ".mcoda", "handoffs");
-      await fs.mkdir(handoffDir, { recursive: true });
-      const handoffPath = path.join(handoffDir, `gateway-${result.commandRunId}.md`);
-      await fs.writeFile(handoffPath, handoffContent, "utf8");
-      const previousHandoff = process.env[HANDOFF_ENV_PATH];
-      process.env[HANDOFF_ENV_PATH] = handoffPath;
       const forwarded = stripAgentArgs(jobArgs);
       const hasAgentStream = forwarded.some((arg) => arg === "--agent-stream" || arg.startsWith("--agent-stream="));
       const argsWithAgent = [...forwarded];
@@ -595,20 +526,16 @@ export class GatewayAgentCommand {
       }
       argsWithAgent.push("--agent", result.chosenAgent.agentSlug);
       const sameAgent = isSameAgent(result);
+      const handoffContent = buildGatewayHandoffContent(result);
+      const handoffPath = await writeGatewayHandoffFile(workspace.workspaceRoot, result.commandRunId, handoffContent);
       const actionLabel = sameAgent
         ? `Continuing ${result.job} with gateway agent ${result.gatewayAgent.slug}`
         : `Offloading ${result.job} to ${result.chosenAgent.agentSlug}`;
       // eslint-disable-next-line no-console
       console.log(`\n${actionLabel}...`);
-      try {
+      await withGatewayHandoff(handoffPath, async () => {
         await runner(argsWithAgent);
-      } finally {
-        if (previousHandoff === undefined) {
-          delete process.env[HANDOFF_ENV_PATH];
-        } else {
-          process.env[HANDOFF_ENV_PATH] = previousHandoff;
-        }
-      }
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // eslint-disable-next-line no-console

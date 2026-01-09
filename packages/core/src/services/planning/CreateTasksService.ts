@@ -55,6 +55,10 @@ interface AgentTaskNode {
   priorityHint?: number;
   dependsOnKeys?: string[];
   relatedDocs?: string[];
+  unitTests?: string[];
+  componentTests?: string[];
+  integrationTests?: string[];
+  apiTests?: string[];
 }
 
 interface AgentStoryNode {
@@ -107,6 +111,11 @@ interface GeneratedPlan {
 const formatBullets = (items: string[] | undefined, fallback: string): string => {
   if (!items || items.length === 0) return `- ${fallback}`;
   return items.map((item) => `- ${item}`).join("\n");
+};
+
+const formatTestList = (items: string[] | undefined): string => {
+  if (!items || items.length === 0) return "Not applicable";
+  return items.join("; ");
 };
 
 const ensureNonEmpty = (value: string | undefined, fallback: string): string =>
@@ -223,6 +232,12 @@ const buildTaskDescription = (
   epicKey: string,
   relatedDocs: string[] | undefined,
   dependencies: string[],
+  tests: {
+    unitTests?: string[];
+    componentTests?: string[];
+    integrationTests?: string[];
+    apiTests?: string[];
+  },
 ): string => {
   return [
     `* **Task Key**: ${taskKey}`,
@@ -240,7 +255,10 @@ const buildTaskDescription = (
     "* **Definition of Done**",
     "- Tests passing, docs updated, review/QA complete.",
     "* **Testing & QA**",
-    "- Unit/integration coverage for changed areas.",
+    `- Unit tests: ${formatTestList(tests.unitTests)}`,
+    `- Component tests: ${formatTestList(tests.componentTests)}`,
+    `- Integration tests: ${formatTestList(tests.integrationTests)}`,
+    `- API tests: ${formatTestList(tests.apiTests)}`,
     "* **Dependencies**",
     formatBullets(dependencies, "Enumerate prerequisite tasks by key."),
     "* **Risks & Gotchas**",
@@ -307,7 +325,11 @@ const TASK_SCHEMA_SNIPPET = `{
       "estimatedStoryPoints": 3,
       "priorityHint": 50,
       "dependsOnKeys": ["t0"],
-      "relatedDocs": ["docdex:..."]
+      "relatedDocs": ["docdex:..."],
+      "unitTests": ["unit test description"],
+      "componentTests": ["component test description"],
+      "integrationTests": ["integration test description"],
+      "apiTests": ["api test description"]
     }
   ]
 }`;
@@ -518,6 +540,10 @@ export class CreateTasksService {
                   estimatedStoryPoints: 1,
                   priorityHint: 10,
                   relatedDocs: docRefs,
+                  unitTests: [],
+                  componentTests: [],
+                  integrationTests: [],
+                  apiTests: [],
                 },
                 {
                   localId: "task-2",
@@ -528,6 +554,10 @@ export class CreateTasksService {
                   priorityHint: 20,
                   dependsOnKeys: ["task-1"],
                   relatedDocs: docRefs,
+                  unitTests: [],
+                  componentTests: [],
+                  integrationTests: [],
+                  apiTests: [],
                 },
               ],
             },
@@ -678,6 +708,13 @@ export class CreateTasksService {
     jobId: string,
     commandRunId: string,
   ): Promise<AgentTaskNode[]> {
+    const parseTestList = (value: unknown): string[] => {
+      if (!Array.isArray(value)) return [];
+      return value
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    };
     const prompt = [
       `Generate tasks for story "${story.title}" (Epic: ${epic.title}).`,
       "Use the Task template: Objective; Context; Inputs; Implementation Plan; DoD; Testing & QA; Dependencies; Risks; References.",
@@ -685,6 +722,8 @@ export class CreateTasksService {
       TASK_SCHEMA_SNIPPET,
       "Rules:",
       "- Each task must include localId, title, description, type, estimatedStoryPoints, priorityHint.",
+      "- Include test arrays: unitTests, componentTests, integrationTests, apiTests. Use [] when not applicable.",
+      "- Only include tests that are relevant to the task's scope.",
       "- dependsOnKeys must reference localIds in this story.",
       "- Use docdex handles when citing docs.",
       `Story context (key=${story.key ?? story.localId ?? "TBD"}):`,
@@ -710,6 +749,10 @@ export class CreateTasksService {
         priorityHint: typeof task.priorityHint === "number" ? task.priorityHint : undefined,
         dependsOnKeys: Array.isArray(task.dependsOnKeys) ? task.dependsOnKeys : [],
         relatedDocs: Array.isArray(task.relatedDocs) ? task.relatedDocs : [],
+        unitTests: parseTestList(task.unitTests),
+        componentTests: parseTestList(task.componentTests),
+        integrationTests: parseTestList(task.integrationTests),
+        apiTests: parseTestList(task.apiTests),
       }))
       .filter((t: AgentTaskNode) => t.title);
   }
@@ -914,12 +957,26 @@ export class CreateTasksService {
             task.epicKey,
             task.plan.relatedDocs,
             depSlugs,
+            {
+              unitTests: task.plan.unitTests,
+              componentTests: task.plan.componentTests,
+              integrationTests: task.plan.integrationTests,
+              apiTests: task.plan.apiTests,
+            },
           ),
           type: task.plan.type ?? "feature",
           status: "not_started",
           storyPoints: task.plan.estimatedStoryPoints ?? null,
           priority: task.plan.priorityHint ?? (taskInserts.length + 1),
-          metadata: task.plan.relatedDocs ? { doc_links: task.plan.relatedDocs } : undefined,
+          metadata: {
+            doc_links: task.plan.relatedDocs ?? [],
+            test_requirements: {
+              unit: task.plan.unitTests ?? [],
+              component: task.plan.componentTests ?? [],
+              integration: task.plan.integrationTests ?? [],
+              api: task.plan.apiTests ?? [],
+            },
+          },
         });
       }
 

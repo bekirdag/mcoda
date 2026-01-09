@@ -21,6 +21,7 @@ import { AgentService } from '@mcoda/agents';
 import { GlobalRepository } from '@mcoda/db';
 import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
+import { loadProjectGuidance } from '../shared/ProjectGuidance.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
@@ -413,7 +414,12 @@ export class QaTasksService {
     try {
       const agent = await this.resolveAgent(agentName);
       const prompts = await this.loadPrompts(agent.id);
-      const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
+      const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+      if (projectGuidance && taskRunId) {
+        await this.logTask(taskRunId, `Loaded project guidance from ${projectGuidance.source}`, 'project_guidance');
+      }
+      const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
+      const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
       const docCtx = await this.gatherDocContext(task.task, taskRunId);
       const acceptance = (task.task.acceptanceCriteria ?? []).map((line) => `- ${line}`).join('\n');
       const prompt = [
@@ -630,7 +636,12 @@ export class QaTasksService {
     if (!this.agentService) return [];
     const agent = await this.resolveAgent(undefined);
     const prompts = await this.loadPrompts(agent.id);
-    const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+    if (projectGuidance && taskRunId) {
+      await this.logTask(taskRunId, `Loaded project guidance from ${projectGuidance.source}`, 'project_guidance');
+    }
+    const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
+    const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
     const docCtx = await this.gatherDocContext(task.task, taskRunId);
     const prompt = [
       systemPrompt,

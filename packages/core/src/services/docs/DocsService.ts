@@ -121,6 +121,7 @@ const readPromptIfExists = async (workspace: WorkspaceResolution, relative: stri
 const PDR_REQUIRED_HEADINGS: string[][] = [
   ["Introduction"],
   ["Scope"],
+  ["Technology Stack", "Tech Stack"],
   ["Requirements", "Requirements & Constraints"],
   ["Architecture", "Architecture Overview"],
   ["Interfaces", "Interfaces / APIs"],
@@ -193,6 +194,46 @@ const extractBullets = (content: string, limit = 20): string[] => {
     .map((line) => line.replace(/^[-*+]\s+/, "").trim())
     .filter((line) => line.length > 0)
     .slice(0, limit);
+};
+
+const DEFAULT_TECH_STACK_FALLBACK = [
+  "- Frontend: React + TypeScript",
+  "- Backend/services: TypeScript (Node.js)",
+  "- Database: MySQL",
+  "- Cache/queues: Redis",
+  "- Scripting/ops: Bash",
+  "- Override defaults if the RFP specifies a different stack.",
+].join("\n");
+
+const ML_TECH_STACK_FALLBACK = [
+  "- Language: Python",
+  "- ML stack: PyTorch or TensorFlow (pick based on model requirements)",
+  "- Services/API: Python web framework (FastAPI/Flask) as needed",
+  "- Database: MySQL",
+  "- Cache/queues: Redis",
+  "- Scripting/ops: Bash",
+  "- Override defaults if the RFP specifies a different stack.",
+].join("\n");
+
+const contextIndicatesMlStack = (context: PdrContext): boolean => {
+  const sources = [context.rfp?.content, ...context.related.map((doc) => doc.content ?? "")].filter(Boolean);
+  if (!sources.length) return false;
+  const text = sources.join("\n").toLowerCase();
+  const patterns = [
+    /\bmachine learning\b/,
+    /\bdeep learning\b/,
+    /\bneural\b/,
+    /\bmodel training\b/,
+    /\bmodel inference\b/,
+    /\bml\b/,
+    /\bllm\b/,
+    /\bembeddings?\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+};
+
+const resolveTechStackFallback = (context: PdrContext): string => {
+  return contextIndicatesMlStack(context) ? ML_TECH_STACK_FALLBACK : DEFAULT_TECH_STACK_FALLBACK;
 };
 
 class DocContextAssembler {
@@ -501,7 +542,7 @@ const buildRunPrompt = (
     docdexNote,
     [
       "Return markdown with exactly these sections as H2 headings, one time each:",
-      "Introduction, Scope, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria",
+      "Introduction, Scope, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria",
       "Do not use bold headings; use `##` headings only. Do not repeat sections.",
     ].join("\n"),
     runbookPrompt,
@@ -553,6 +594,7 @@ const ensureStructuredDraft = (
 ): string => {
   const canonicalTitles = PDR_REQUIRED_HEADINGS.map((variants) => variants[0]);
   const normalized = normalizeHeadingsToH2(draft, canonicalTitles);
+  const techStackFallback = resolveTechStackFallback(context);
   const required = [
     { title: "Introduction", fallback: `This PDR summarizes project ${projectKey ?? "N/A"} based on ${rfpSource}.` },
     {
@@ -560,6 +602,7 @@ const ensureStructuredDraft = (
       fallback:
         "In-scope: todo CRUD (title required; optional description, due date, priority), status toggle, filters/sort/search, bulk complete/delete, keyboard shortcuts, responsive UI, offline/localStorage. Out-of-scope: multi-user/auth/sync/backends, notifications/reminders, team features, heavy UI kits.",
     },
+    { title: "Technology Stack", fallback: techStackFallback },
     {
       title: "Requirements & Constraints",
       fallback:
@@ -598,7 +641,7 @@ const tidyPdrDraft = async (
     draft,
     "",
     "Requirements:",
-    "- Keep exactly one instance of each H2 section: Introduction, Scope, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria, Source RFP.",
+    "- Keep exactly one instance of each H2 section: Introduction, Scope, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria, Source RFP.",
     "- Remove duplicate sections, bold headings posing as sections, placeholder sentences, and repeated bullet blocks. If the same idea appears twice, keep the richer/longer version and drop the restatement.",
     "- Do not add new sections or reorder the required outline.",
     "- Keep content concise and aligned to the headings. Do not alter semantics.",
@@ -609,6 +652,13 @@ const tidyPdrDraft = async (
 };
 
 const PDR_ENRICHMENT_SECTIONS: { title: string; guidance: string[] }[] = [
+  {
+    title: "Technology Stack",
+    guidance: [
+      "List frontend, backend/services, databases, caches/queues, infra/runtime, and scripting/tooling choices.",
+      "If the RFP omits stack details, state the default stack (TypeScript/React/MySQL/Redis/Bash) or a Python ML stack when neural/ML workloads are explicit.",
+    ],
+  },
   {
     title: "Architecture Overview",
     guidance: [

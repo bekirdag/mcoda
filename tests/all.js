@@ -101,8 +101,27 @@ if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
   }
 }
 
+// NOTE: Register any new standalone test scripts here if they are not discovered automatically.
+const extraTests = [
+  path.join("tests", "gateway-trio-plan.test.js"),
+];
+// NOTE: Add dist test files here when a package test is not covered by the workspace runner or needs explicit inclusion.
+const extraWorkspaceTests = [
+  path.join("packages", "db", "dist", "__tests__", "WorkspaceRepository.test.js"),
+  path.join("packages", "core", "dist", "services", "agents", "__tests__", "GatewayHandoff.test.js"),
+  path.join("packages", "core", "dist", "services", "docs", "__tests__", "DocsService.test.js"),
+  path.join("packages", "core", "dist", "services", "execution", "__tests__", "WorkOnTasksService.test.js"),
+  path.join("packages", "core", "dist", "services", "execution", "__tests__", "QaTasksService.test.js"),
+  path.join("packages", "core", "dist", "services", "review", "__tests__", "CodeReviewService.test.js"),
+  path.join("packages", "core", "dist", "services", "shared", "__tests__", "ProjectGuidance.test.js"),
+  path.join("packages", "core", "dist", "services", "execution", "__tests__", "GatewayTrioService.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "GatewayTrioCommand.test.js"),
+];
+
 const testFiles = collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
-const repoTests = run("repo-tests", process.execPath, ["--test", ...testFiles]);
+const resolvedExtras = [...extraTests, ...extraWorkspaceTests].filter((file) => existsSync(path.join(root, file)));
+const allTests = Array.from(new Set([...testFiles, ...resolvedExtras]));
+const repoTests = run("repo-tests", process.execPath, ["--test", ...allTests]);
 results.push(repoTests);
 if (repoTests.error) {
   console.error(`[${repoTests.label}] ${repoTests.error}`);

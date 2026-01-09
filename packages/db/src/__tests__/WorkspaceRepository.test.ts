@@ -17,3 +17,18 @@ test("WorkspaceRepository createProjectIfMissing is idempotent", async () => {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("WorkspaceRepository getProjectById returns matching row", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-db-"));
+  const repo = await WorkspaceRepository.create(dir);
+  try {
+    const created = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const fetched = await repo.getProjectById(created.id);
+    assert.ok(fetched);
+    assert.equal(fetched?.id, created.id);
+    assert.equal(fetched?.key, created.key);
+  } finally {
+    await repo.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
