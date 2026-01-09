@@ -12,6 +12,9 @@ interface ParsedArgs {
   maxIterations?: number;
   maxCycles?: number;
   gatewayAgentName?: string;
+  workAgentName?: string;
+  reviewAgentName?: string;
+  qaAgentName?: string;
   maxDocs?: number;
   noCommit: boolean;
   dryRun: boolean;
@@ -23,6 +26,7 @@ interface ParsedArgs {
   qaMode: "auto" | "manual";
   qaFollowups: "auto" | "none" | "prompt";
   resumeJobId?: string;
+  rateAgents: boolean;
   json: boolean;
   errors: string[];
 }
@@ -36,6 +40,9 @@ const usage = `mcoda gateway-trio \\
   [--max-iterations N] \\
   [--max-cycles N] \\
   [--gateway-agent <NAME>] \\
+  [--work-agent <NAME>] \\
+  [--review-agent <NAME>] \\
+  [--qa-agent <NAME>] \\
   [--max-docs N] \\
   [--no-commit] \\
   [--dry-run] \\
@@ -46,6 +53,7 @@ const usage = `mcoda gateway-trio \\
   [--qa-mode auto|manual] \\
   [--qa-followups auto|none|prompt] \\
   [--agent-stream <true|false>] \\
+  [--rate-agents] \\
   [--resume <JOB_ID>] \\
   [--json]`;
 
@@ -107,6 +115,9 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let maxIterations: number | undefined;
   let maxCycles: number | undefined;
   let gatewayAgentName: string | undefined;
+  let workAgentName: string | undefined;
+  let reviewAgentName: string | undefined;
+  let qaAgentName: string | undefined;
   let maxDocs: number | undefined;
   let noCommit = false;
   let dryRun = false;
@@ -118,6 +129,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let qaMode: "auto" | "manual" = "auto";
   let qaFollowups: "auto" | "none" | "prompt" = "auto";
   let resumeJobId: string | undefined;
+  let rateAgents = false;
   let json = false;
   const errors: string[] = [];
 
@@ -150,12 +162,44 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
       }
       continue;
     }
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
     if (arg.startsWith("--gateway-agent=")) {
       const value = arg.split("=", 2)[1];
       if (!value) {
         errors.push("gateway-trio: --gateway-agent requires a value");
       } else {
         gatewayAgentName = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--work-agent=")) {
+      const value = arg.split("=", 2)[1];
+      if (!value) {
+        errors.push("gateway-trio: --work-agent requires a value");
+      } else {
+        workAgentName = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--review-agent=")) {
+      const value = arg.split("=", 2)[1];
+      if (!value) {
+        errors.push("gateway-trio: --review-agent requires a value");
+      } else {
+        reviewAgentName = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--qa-agent=")) {
+      const value = arg.split("=", 2)[1];
+      if (!value) {
+        errors.push("gateway-trio: --qa-agent requires a value");
+      } else {
+        qaAgentName = value;
       }
       continue;
     }
@@ -337,6 +381,27 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           if (consumed) i += 1;
         }
         break;
+      case "--work-agent":
+        {
+          const { value, consumed } = takeValue("--work-agent", argv, i, errors);
+          if (value) workAgentName = value;
+          if (consumed) i += 1;
+        }
+        break;
+      case "--review-agent":
+        {
+          const { value, consumed } = takeValue("--review-agent", argv, i, errors);
+          if (value) reviewAgentName = value;
+          if (consumed) i += 1;
+        }
+        break;
+      case "--qa-agent":
+        {
+          const { value, consumed } = takeValue("--qa-agent", argv, i, errors);
+          if (value) qaAgentName = value;
+          if (consumed) i += 1;
+        }
+        break;
       case "--max-docs":
         {
           const { value, consumed } = takeValue("--max-docs", argv, i, errors);
@@ -408,6 +473,16 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
       case "--resume":
         {
           const { value, consumed } = takeValue("--resume", argv, i, errors);
@@ -444,6 +519,9 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     maxIterations: Number.isFinite(maxIterations) ? maxIterations : undefined,
     maxCycles: Number.isFinite(maxCycles) ? maxCycles : undefined,
     gatewayAgentName,
+    workAgentName,
+    reviewAgentName,
+    qaAgentName,
     maxDocs: Number.isFinite(maxDocs) ? maxDocs : undefined,
     noCommit,
     dryRun,
@@ -455,6 +533,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     qaMode,
     qaFollowups,
     resumeJobId,
+    rateAgents,
     json,
     errors,
   };
@@ -502,6 +581,9 @@ export class GatewayTrioCommand {
         maxIterations: parsed.maxIterations,
         maxCycles: parsed.maxCycles,
         gatewayAgentName: parsed.gatewayAgentName,
+        workAgentName: parsed.workAgentName,
+        reviewAgentName: parsed.reviewAgentName,
+        qaAgentName: parsed.qaAgentName,
         maxDocs: parsed.maxDocs,
         noCommit: parsed.noCommit,
         dryRun: parsed.dryRun,
@@ -513,6 +595,7 @@ export class GatewayTrioCommand {
         qaMode: parsed.qaMode,
         qaFollowups: parsed.qaFollowups,
         resumeJobId: parsed.resumeJobId,
+        rateAgents: parsed.rateAgents,
       });
 
       const counts = result.tasks.reduce(

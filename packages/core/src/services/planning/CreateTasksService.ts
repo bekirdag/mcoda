@@ -19,6 +19,7 @@ import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 import {
   createEpicKeyGenerator,
   createStoryKeyGenerator,
@@ -31,6 +32,7 @@ export interface CreateTasksOptions {
   inputs: string[];
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   maxEpics?: number;
   maxStoriesPerEpic?: number;
   maxTasksPerStory?: number;
@@ -123,13 +125,56 @@ const ensureNonEmpty = (value: string | undefined, fallback: string): string =>
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 const DOC_CONTEXT_BUDGET = 8000;
+const DOCDEX_HANDLE = /^docdex:/i;
+const VALID_AREAS = new Set(["web", "adm", "bck", "ops", "infra", "mobile"]);
+const VALID_TASK_TYPES = new Set(["feature", "bug", "chore", "spike"]);
 
 const inferDocType = (filePath: string): string => {
   const name = path.basename(filePath).toLowerCase();
+  if (name.includes("openapi") || name.includes("swagger")) return "OPENAPI";
   if (name.includes("sds")) return "SDS";
   if (name.includes("pdr")) return "PDR";
   if (name.includes("rfp")) return "RFP";
   return "DOC";
+};
+
+const normalizeArea = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const tokens = value
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  for (const token of tokens) {
+    if (VALID_AREAS.has(token)) return token;
+  }
+  return undefined;
+};
+
+const normalizeTaskType = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const tokens = value
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  for (const token of tokens) {
+    if (VALID_TASK_TYPES.has(token)) return token;
+  }
+  return undefined;
+};
+
+const normalizeRelatedDocs = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") return entry;
+      if (entry && typeof entry === "object" && "handle" in entry && typeof entry.handle === "string") {
+        return entry.handle;
+      }
+      return undefined;
+    })
+    .filter((entry): entry is string => Boolean(entry && DOCDEX_HANDLE.test(entry)));
 };
 
 const describeDoc = (doc: DocdexDocument, idx: number): string => {
@@ -142,17 +187,75 @@ const describeDoc = (doc: DocdexDocument, idx: number): string => {
 };
 
 const extractJson = (raw: string): any | undefined => {
-  const fenced = raw.match(/```json([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1] : raw;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return undefined;
-  const body = candidate.slice(start, end + 1);
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
+  const fencedMatches = [...raw.matchAll(/```json([\s\S]*?)```/g)].map((match) => match[1]);
+  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/g, "");
+  const candidates = [...fencedMatches, stripped, raw].filter((candidate) => candidate.trim().length > 0);
+  for (const candidate of candidates) {
+    const parsed = tryParseJson(candidate);
+    if (parsed && isPlanShape(parsed)) return parsed;
   }
+  return undefined;
+};
+
+const isPlanShape = (value: any): boolean => {
+  if (!value || typeof value !== "object") return false;
+  return Array.isArray(value.epics) || Array.isArray(value.stories) || Array.isArray(value.tasks);
+};
+
+const tryParseJson = (value: string): any | undefined => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    // continue
+  }
+  const objects = extractJsonObjects(value).reverse();
+  for (const obj of objects) {
+    try {
+      return JSON.parse(obj);
+    } catch {
+      // continue
+    }
+  }
+  return undefined;
+};
+
+const extractJsonObjects = (value: string): string[] => {
+  const results: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        results.push(value.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return results;
 };
 
 const buildEpicDescription = (
@@ -344,6 +447,7 @@ export class CreateTasksService {
   private workspaceRepo: WorkspaceRepository;
   private routingService: RoutingService;
   private workspace: WorkspaceResolution;
+  private ratingService?: AgentRatingService;
 
   constructor(
     workspace: WorkspaceResolution,
@@ -354,6 +458,7 @@ export class CreateTasksService {
       repo: GlobalRepository;
       workspaceRepo: WorkspaceRepository;
       routingService: RoutingService;
+      ratingService?: AgentRatingService;
     },
   ) {
     this.workspace = workspace;
@@ -363,6 +468,7 @@ export class CreateTasksService {
     this.repo = deps.repo;
     this.workspaceRepo = deps.workspaceRepo;
     this.routingService = deps.routingService;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CreateTasksService> {
@@ -411,9 +517,23 @@ export class CreateTasksService {
     return resolved.agent;
   }
 
+  private ensureRatingService(): AgentRatingService {
+    if (!this.ratingService) {
+      this.ratingService = new AgentRatingService(this.workspace, {
+        workspaceRepo: this.workspaceRepo,
+        globalRepo: this.repo,
+        agentService: this.agentService,
+        routingService: this.routingService,
+      });
+    }
+    return this.ratingService;
+  }
+
   private async prepareDocs(inputs: string[]): Promise<DocdexDocument[]> {
+    const resolvedInputs = inputs.length > 0 ? inputs : await this.resolveDefaultDocInputs();
+    if (resolvedInputs.length === 0) return [];
     const documents: DocdexDocument[] = [];
-    for (const input of inputs) {
+    for (const input of resolvedInputs) {
       if (input.startsWith("docdex:")) {
         const docId = input.replace(/^docdex:/, "");
         try {
@@ -432,6 +552,9 @@ export class CreateTasksService {
         throw new Error(`Failed to read input ${input}: ${(error as Error).message}`);
       }
       for (const filePath of paths) {
+        const baseName = path.basename(filePath);
+        if (baseName.endsWith(".meta.json") || baseName.endsWith("-first-draft.md")) continue;
+        if (!/\.(md|markdown|ya?ml|json)$/i.test(baseName)) continue;
         const docType = inferDocType(filePath);
         try {
           const doc = await this.docdex.ensureRegisteredFromFile(filePath, docType, {
@@ -444,6 +567,27 @@ export class CreateTasksService {
       }
     }
     return documents;
+  }
+
+  private async resolveDefaultDocInputs(): Promise<string[]> {
+    const candidates = [
+      path.join(this.workspace.mcodaDir, "docs"),
+      path.join(this.workspace.workspaceRoot, "docs"),
+      path.join(this.workspace.workspaceRoot, "openapi"),
+      path.join(this.workspace.workspaceRoot, "openapi.yaml"),
+      path.join(this.workspace.workspaceRoot, "openapi.yml"),
+      path.join(this.workspace.workspaceRoot, "openapi.json"),
+    ];
+    const existing: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile() || stat.isDirectory()) existing.push(candidate);
+      } catch {
+        // Ignore missing candidates; fall back to empty inputs.
+      }
+    }
+    return existing;
   }
 
   private buildDocContext(docs: DocdexDocument[]): { docSummary: string; warnings: string[] } {
@@ -646,11 +790,11 @@ export class CreateTasksService {
     return (parsed.epics as any[])
       .map((epic, idx) => ({
         localId: epic.localId ?? `e${idx + 1}`,
-        area: epic.area,
+        area: normalizeArea(epic.area),
         title: epic.title ?? "Epic",
         description: epic.description,
         acceptanceCriteria: Array.isArray(epic.acceptanceCriteria) ? epic.acceptanceCriteria : [],
-        relatedDocs: Array.isArray(epic.relatedDocs) ? epic.relatedDocs : [],
+        relatedDocs: normalizeRelatedDocs(epic.relatedDocs),
         priorityHint: typeof epic.priorityHint === "number" ? epic.priorityHint : undefined,
         stories: [],
       }))
@@ -692,7 +836,7 @@ export class CreateTasksService {
         userStory: story.userStory ?? story.description,
         description: story.description,
         acceptanceCriteria: Array.isArray(story.acceptanceCriteria) ? story.acceptanceCriteria : [],
-        relatedDocs: Array.isArray(story.relatedDocs) ? story.relatedDocs : [],
+        relatedDocs: normalizeRelatedDocs(story.relatedDocs),
         priorityHint: typeof story.priorityHint === "number" ? story.priorityHint : undefined,
         tasks: [],
       }))
@@ -743,12 +887,12 @@ export class CreateTasksService {
       .map((task: any, idx: number) => ({
         localId: task.localId ?? `t${idx + 1}`,
         title: task.title ?? "Task",
-        type: task.type,
+        type: normalizeTaskType(task.type) ?? "feature",
         description: task.description,
         estimatedStoryPoints: typeof task.estimatedStoryPoints === "number" ? task.estimatedStoryPoints : undefined,
         priorityHint: typeof task.priorityHint === "number" ? task.priorityHint : undefined,
         dependsOnKeys: Array.isArray(task.dependsOnKeys) ? task.dependsOnKeys : [],
-        relatedDocs: Array.isArray(task.relatedDocs) ? task.relatedDocs : [],
+        relatedDocs: normalizeRelatedDocs(task.relatedDocs),
         unitTests: parseTestList(task.unitTests),
         componentTests: parseTestList(task.componentTests),
         integrationTests: parseTestList(task.integrationTests),
@@ -1150,6 +1294,25 @@ export class CreateTasksService {
           },
         });
         await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+        if (options.rateAgents) {
+          try {
+            const ratingService = this.ensureRatingService();
+            await ratingService.rate({
+              workspace: this.workspace,
+              agentId: agent.id,
+              commandName: "create-tasks",
+              jobId: job.id,
+              commandRunId: commandRun.id,
+            });
+          } catch (error) {
+            const message = `Agent rating failed: ${(error as Error).message ?? String(error)}`;
+            try {
+              await this.jobService.appendLog(job.id, `${message}\n`);
+            } catch {
+              /* ignore rating log failures */
+            }
+          }
+        }
 
         return {
           jobId: job.id,

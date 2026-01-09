@@ -15,6 +15,7 @@ import {
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { createTaskKeyGenerator } from "./KeyHelpers.js";
 
 interface RefineTasksOptions extends RefineTasksRequest {
@@ -22,6 +23,7 @@ interface RefineTasksOptions extends RefineTasksRequest {
   storyKey?: string;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   fromDb?: boolean;
   planInPath?: string;
   planOutPath?: string;
@@ -65,16 +67,82 @@ const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 
 const extractJson = (raw: string): any | undefined => {
-  try {
-    const fenced = raw.match(/```json([\s\S]*?)```/);
-    const candidate = fenced ? fenced[1] : raw;
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) return JSON.parse(raw);
-    return JSON.parse(candidate.slice(start, end + 1));
-  } catch {
-    return undefined;
+  const fencedMatches = [...raw.matchAll(/```json([\s\S]*?)```/g)].map((match) => match[1]);
+  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/g, "");
+  const candidates = [...fencedMatches, stripped, raw].filter((candidate) => candidate.trim().length > 0);
+  for (const candidate of candidates) {
+    const parsed = tryParseJson(candidate);
+    if (parsed !== undefined) return parsed;
   }
+  return undefined;
+};
+
+const tryParseJson = (value: string): any | undefined => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    // continue
+  }
+  const objects = extractJsonObjects(value).reverse();
+  for (const obj of objects) {
+    try {
+      return JSON.parse(obj);
+    } catch {
+      // continue
+    }
+  }
+  return undefined;
+};
+
+const extractJsonObjects = (value: string): string[] => {
+  const results: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        results.push(value.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return results;
+};
+
+const normalizePlanJson = (parsed: any): RefineTasksPlan | undefined => {
+  if (!parsed) return undefined;
+  if (Array.isArray(parsed)) {
+    return { operations: parsed };
+  }
+  if (Array.isArray(parsed.operations)) return parsed as RefineTasksPlan;
+  if (parsed.op) {
+    return { operations: [parsed] };
+  }
+  return undefined;
 };
 
 const normalizeOperation = (op: any): RefineOperation => {
@@ -97,13 +165,8 @@ const normalizeOperation = (op: any): RefineOperation => {
 };
 
 const safeParsePlan = (content: string): RefineTasksPlan | undefined => {
-  try {
-    const parsed = JSON.parse(content) as RefineTasksPlan;
-    if (parsed && Array.isArray(parsed.operations)) return parsed;
-  } catch {
-    /* ignore */
-  }
-  return undefined;
+  const parsed = extractJson(content);
+  return normalizePlanJson(parsed);
 };
 
 const formatTaskSummary = (task: CandidateTask): string => {
@@ -124,6 +187,7 @@ export class RefineTasksService {
   private workspaceRepo: WorkspaceRepository;
   private routingService: RoutingService;
   private workspace: WorkspaceResolution;
+  private ratingService?: AgentRatingService;
 
   constructor(
     workspace: WorkspaceResolution,
@@ -134,6 +198,7 @@ export class RefineTasksService {
       repo: GlobalRepository;
       workspaceRepo: WorkspaceRepository;
       routingService: RoutingService;
+      ratingService?: AgentRatingService;
     },
   ) {
     this.workspace = workspace;
@@ -143,6 +208,7 @@ export class RefineTasksService {
     this.repo = deps.repo;
     this.workspaceRepo = deps.workspaceRepo;
     this.routingService = deps.routingService;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<RefineTasksService> {
@@ -190,6 +256,18 @@ export class RefineTasksService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private ensureRatingService(): AgentRatingService {
+    if (!this.ratingService) {
+      this.ratingService = new AgentRatingService(this.workspace, {
+        workspaceRepo: this.workspaceRepo,
+        globalRepo: this.repo,
+        agentService: this.agentService,
+        routingService: this.routingService,
+      });
+    }
+    return this.ratingService;
   }
 
   private async selectTasks(
@@ -559,6 +637,8 @@ export class RefineTasksService {
       group.historySummary || "(none)",
       "Constraints:",
       constraints,
+      "Example JSON:",
+      "{\"operations\":[{\"op\":\"update_task\",\"taskKey\":\"web-01-us-01-t01\",\"updates\":{\"title\":\"Refined title\",\"storyPoints\":3}}]}",
       "Return JSON ONLY matching: { \"operations\": [UpdateTaskOp | SplitTaskOp | MergeTasksOp | UpdateEstimateOp] } where each item has an `op` discriminator (update_task|split_task|merge_tasks|update_estimate).",
     ].join("\n\n");
   }
@@ -1088,7 +1168,7 @@ export class RefineTasksService {
     jobId: string,
     commandRunId: string,
     metadata?: Record<string, unknown>,
-  ): Promise<{ raw: string; promptTokens: number; completionTokens: number }> {
+  ): Promise<{ raw: string; promptTokens: number; completionTokens: number; agentId: string }> {
     const startedAt = Date.now();
     const agent = await this.resolveAgent(agentName);
     const parts: string[] = [];
@@ -1171,7 +1251,7 @@ export class RefineTasksService {
       timestamp: new Date().toISOString(),
       metadata: { command: "refine-tasks", action: "agent_refine", ...(metadata ?? {}) },
     });
-    return { raw: output, promptTokens, completionTokens };
+    return { raw: output, promptTokens, completionTokens, agentId: agent.id };
   }
 
   async refineTasks(options: RefineTasksOptions): Promise<RefineTasksResult> {
@@ -1209,6 +1289,27 @@ export class RefineTasksService {
         planOut: options.planOutPath,
       },
     });
+    let ratingAgentId: string | undefined;
+    const maybeRateAgent = async () => {
+      if (!options.rateAgents || !ratingAgentId) return;
+      try {
+        const ratingService = this.ensureRatingService();
+        await ratingService.rate({
+          workspace: this.workspace,
+          agentId: ratingAgentId,
+          commandName: "refine-tasks",
+          jobId: job.id,
+          commandRunId: commandRun.id,
+        });
+      } catch (error) {
+        const message = `Agent rating failed: ${(error as Error).message ?? String(error)}`;
+        try {
+          await this.jobService.appendLog(job.id, `${message}\n`);
+        } catch {
+          /* ignore rating log failures */
+        }
+      }
+    };
 
     try {
       if (options.fromDb === false) {
@@ -1364,7 +1465,19 @@ export class RefineTasksService {
               );
             }
             const prompt = this.buildStoryPrompt(group, strategy, docSummary);
-            const { raw } = await this.invokeAgent(
+            const parseOps = (raw: string): RefineOperation[] => {
+              const parsed = normalizePlanJson(extractJson(raw));
+              const ops = parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
+              const normalized = ops.map(normalizeOperation);
+              return normalized.filter((op) => {
+                const { valid, reason } = this.validateOperation(group, op);
+                if (!valid && reason) {
+                  plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);
+                }
+                return valid;
+              });
+            };
+            const { raw, agentId } = await this.invokeAgent(
               options.agentName,
               prompt,
               agentStream,
@@ -1372,17 +1485,24 @@ export class RefineTasksService {
               commandRun.id,
               { epicKey: group.epic.key, storyKey: group.story.key },
             );
-            const parsed = extractJson(raw);
-            const ops =
-              parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
-            const normalized = ops.map(normalizeOperation);
-            const filtered = normalized.filter((op) => {
-              const { valid, reason } = this.validateOperation(group, op);
-              if (!valid && reason) {
-                plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);
+            ratingAgentId = agentId;
+            let filtered = parseOps(raw);
+            if (filtered.length === 0) {
+              const retryPrompt = `${prompt}\n\nRETRY: Your previous response did not match the JSON schema. Return only a JSON object with an operations array (no prose, no markdown, no <think> tags).`;
+              const retry = await this.invokeAgent(
+                options.agentName,
+                retryPrompt,
+                agentStream,
+                job.id,
+                commandRun.id,
+                { epicKey: group.epic.key, storyKey: group.story.key, retry: true },
+              );
+              ratingAgentId = retry.agentId;
+              filtered = parseOps(retry.raw);
+              if (filtered.length === 0) {
+                plan.warnings?.push(`No valid operations returned for story ${group.story.key}.`);
               }
-              return valid;
-            });
+            }
             plan.operations.push(...filtered);
           } catch (error) {
             throw new Error(
@@ -1439,6 +1559,7 @@ export class RefineTasksService {
           lastCheckpoint: "no_operations",
         });
         await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+        await maybeRateAgent();
         return {
           jobId: job.id,
           commandRunId: commandRun.id,
@@ -1464,6 +1585,7 @@ export class RefineTasksService {
           lastCheckpoint: "dry_run",
         });
         await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+        await maybeRateAgent();
         return {
           jobId: job.id,
           commandRunId: commandRun.id,
@@ -1527,6 +1649,7 @@ export class RefineTasksService {
         lastCheckpoint: "completed",
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      await maybeRateAgent();
 
       return {
         jobId: job.id,

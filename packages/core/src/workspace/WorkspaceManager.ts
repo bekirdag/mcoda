@@ -25,6 +25,7 @@ export interface WorkspaceConfig {
   mirrorDocs?: boolean;
   branch?: string;
   docdexUrl?: string;
+  projectKey?: string;
   velocity?: {
     implementationSpPerHour?: number;
     reviewSpPerHour?: number;

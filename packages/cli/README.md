@@ -13,6 +13,12 @@ mcoda set-workspace --workspace-root .
 mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web.md --agent codex
 ```
 
+## Docdex & QA
+- mcoda depends on the `docdex` CLI for doc search and context stitching.
+- Run `docdex setup` to install Playwright and at least one browser for `qa-tasks`.
+- Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
+- If `~/.docdex/agents.md` exists, it is prepended to every agent run.
+
 ## Workspace layout
 - `.mcoda/config.json` for defaults (docdex URL, branch metadata, telemetry preferences).
 - `.mcoda/mcoda.db` for backlog, jobs, and telemetry.

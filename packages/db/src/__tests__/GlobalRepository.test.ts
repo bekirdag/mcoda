@@ -27,6 +27,12 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
     slug: "test-agent",
     adapter: "openai-api",
     defaultModel: "gpt-4o",
+    maxComplexity: 6,
+    ratingSamples: 3,
+    ratingLastScore: 8.4,
+    ratingUpdatedAt: "2024-01-01T00:00:00.000Z",
+    complexitySamples: 2,
+    complexityUpdatedAt: "2024-01-02T00:00:00.000Z",
     capabilities: ["plan", "code_write"],
     models: [
       { agentId: "ignored", modelName: "gpt-4o", isDefault: true },
@@ -39,6 +45,12 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
   const fetched = await repo.getAgentBySlug("test-agent");
   assert.ok(fetched);
   assert.equal(fetched?.defaultModel, "gpt-4o");
+  assert.equal(fetched?.maxComplexity, 6);
+  assert.equal(fetched?.ratingSamples, 3);
+  assert.equal(fetched?.ratingLastScore, 8.4);
+  assert.equal(fetched?.ratingUpdatedAt, "2024-01-01T00:00:00.000Z");
+  assert.equal(fetched?.complexitySamples, 2);
+  assert.equal(fetched?.complexityUpdatedAt, "2024-01-02T00:00:00.000Z");
 
   const capabilities = await repo.getAgentCapabilities(created.id);
   assert.deepEqual(capabilities.sort(), ["code_write", "plan"].sort());
@@ -50,9 +62,11 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
   assert.equal(models.length, 2);
   assert.equal(models[0]?.agentId, created.id);
 
-  await repo.updateAgent(created.id, { defaultModel: "gpt-4.1-mini" });
+  await repo.updateAgent(created.id, { defaultModel: "gpt-4.1-mini", maxComplexity: 7, ratingSamples: 4 });
   const updated = await repo.getAgentById(created.id);
   assert.equal(updated?.defaultModel, "gpt-4.1-mini");
+  assert.equal(updated?.maxComplexity, 7);
+  assert.equal(updated?.ratingSamples, 4);
 
   await repo.deleteAgent(created.id);
   const afterDelete = await repo.getAgentById(created.id);
@@ -106,4 +120,35 @@ test("records command runs and token usage", async () => {
   assert.equal(runs.length, 1);
   const usage = await (repo as any).db.all("SELECT agent_id FROM token_usage WHERE command_run_id = ?", run.id);
   assert.equal(usage.length, 1);
+});
+
+test("stores agent run ratings", async () => {
+  const created = await repo.createAgent({ slug: "rating-agent", adapter: "codex-cli" });
+  const inserted = await repo.insertAgentRunRating({
+    agentId: created.id,
+    jobId: "job-1",
+    commandRunId: "run-1",
+    taskId: "task-1",
+    taskKey: "proj-01-t01",
+    commandName: "work-on-tasks",
+    discipline: "backend",
+    complexity: 7,
+    qualityScore: 8.5,
+    tokensTotal: 1200,
+    durationSeconds: 45.5,
+    iterations: 2,
+    totalCost: 0.012,
+    runScore: 7.9,
+    ratingVersion: "v1",
+    rawReview: { quality_score: 8.5 },
+    createdAt: new Date().toISOString(),
+  });
+  assert.ok(inserted.id);
+
+  const rows = await repo.listAgentRunRatings(created.id, 10);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.agentId, created.id);
+  assert.equal(rows[0]?.complexity, 7);
+  assert.equal(rows[0]?.runScore, 7.9);
+  assert.deepEqual(rows[0]?.rawReview, { quality_score: 8.5 });
 });

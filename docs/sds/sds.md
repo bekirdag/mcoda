@@ -2967,6 +2967,8 @@ Key global tables:
 
   * Global registry: `id`, `slug` (unique), `display_name`, `adapter_type`, config JSON, enabled flag.
 
+  * Performance fields: `rating`, `rating_samples`, `rating_last_score`, `rating_updated_at`, `max_complexity`, `complexity_samples`, `complexity_updated_at`.
+
 * **`agent_prompts`**
 
   * Prompt content and file mapping:
@@ -2980,6 +2982,10 @@ Key global tables:
 * **`agent_capabilities`**
 
   * Per‑agent capability flags: `plan`, `work`, `review`, `qa`, `docdex_query`, `qa_extension_maestro`, `qa_extension_chromium`, etc.
+
+* **`agent_run_ratings`**
+
+  * Per-run rating telemetry: `agent_id`, `job_id`, `command_run_id`, `task_id`, `task_key`, `command_name`, `discipline`, `complexity`, `quality_score`, `tokens_total`, `duration_seconds`, `iterations`, `total_cost`, `run_score`, `rating_version`, `raw_review_json`, `created_at`.
 
 * **`credentials` / `agent_auth`**
 
@@ -3399,6 +3405,22 @@ Routing decides **which global agent** is invoked for a given command in a given
 
   * Rejects agents missing required QA or docdex capabilities, even if they are defaults.
 
+**Performance-aware routing (rating + complexity)**
+
+* Agents maintain a rolling `rating` (0-10) and `max_complexity` (1-10) in the global registry.
+
+* `--rate-agents` enables post-run scoring that combines reviewer quality, token usage, duration, iterations, and cost into a run score, persists `agent_run_ratings`, and updates the agent's rating via EMA.
+
+* When task complexity is provided, routing filters candidates where `max_complexity >= task_complexity` and prefers higher-rated agents among eligible candidates.
+
+**Exploration / calibration**
+
+* Gateway routing uses a small epsilon-greedy exploration rate to:
+
+  * test low-rated agents on low-complexity tasks (redemption), and
+
+  * stretch agents slightly above `max_complexity` to recalibrate their ceiling.
+
 **Multi‑agent workflows**
 
 * High‑level commands may orchestrate multiple agents in sequence (e.g. `work-on-tasks` → `code-review` → `qa-tasks`), but each step:
@@ -3420,7 +3442,7 @@ This design centralizes agent definition and credentials in a single global regi
 The gateway router is an optional preflight layer that runs before a job to analyze task context and docdex snippets, then selects a best-fit agent for the requested job.
 
 * Produces a structured JSON analysis (summary, currentState, todo, plan, files, assumptions, risks) that is recorded for handoff.
-* Selects agents using routing defaults, required capabilities, health, and cost/discipline/complexity signals.
+* Selects agents using routing defaults, required capabilities, health, rating, max-complexity gates, and exploration signals.
 * Supports plan-only runs (`--no-offload`/`--plan-only`) or offloading to the chosen agent; offload writes a handoff file under `.mcoda/handoffs` and sets `MCODA_GATEWAY_HANDOFF_PATH` for the downstream command.
 * Does not mutate routing defaults; it is per-run only.
 

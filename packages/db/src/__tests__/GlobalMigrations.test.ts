@@ -30,6 +30,12 @@ test("GlobalMigrations recreates legacy schema and adds columns", async () => {
       "reasoning_rating",
       "best_usage",
       "cost_per_million",
+      "max_complexity",
+      "rating_samples",
+      "rating_last_score",
+      "rating_updated_at",
+      "complexity_samples",
+      "complexity_updated_at",
     ].forEach((col) => assert.ok(columns.includes(col), `missing column ${col}`));
   } finally {
     await db.close();
@@ -48,13 +54,24 @@ test("GlobalMigrations backfills ratings for known agents", async () => {
     await GlobalMigrations.run(db);
 
     const row = (await db.get(
-      "SELECT rating, reasoning_rating, best_usage, cost_per_million FROM agents WHERE slug = 'gateway-router'",
-    )) as { rating: number; reasoning_rating: number; best_usage: string; cost_per_million: number };
+      "SELECT rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, complexity_samples FROM agents WHERE slug = 'gateway-router'",
+    )) as {
+      rating: number;
+      reasoning_rating: number;
+      best_usage: string;
+      cost_per_million: number;
+      max_complexity: number;
+      rating_samples: number;
+      complexity_samples: number;
+    };
     assert.ok(row);
     assert.equal(row.rating, 10);
     assert.equal(row.reasoning_rating, 10);
     assert.equal(row.best_usage, "orchestration");
     assert.equal(row.cost_per_million, 14);
+    assert.equal(row.max_complexity, 5);
+    assert.equal(row.rating_samples, 0);
+    assert.equal(row.complexity_samples, 0);
   } finally {
     await db.close();
   }

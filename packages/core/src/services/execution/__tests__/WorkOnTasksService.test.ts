@@ -159,6 +159,13 @@ class StubRoutingService {
   }
 }
 
+class StubRatingService {
+  calls: any[] = [];
+  async rate(request: any) {
+    this.calls.push(request);
+  }
+}
+
 class StubVcs {
   async ensureRepo(_cwd: string) {}
   async ensureBaseBranch(_cwd: string, _base: string) {}
@@ -351,6 +358,45 @@ test("workOnTasks marks tasks ready_to_review and records task runs", async () =
     const checkpointPath = path.join(workspace.workspaceRoot, ".mcoda", "jobs", result.jobId, "work", "state.json");
     const exists = await fs.stat(checkpointPath).then(() => true, () => false);
     assert.equal(exists, true);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks invokes agent rating when enabled", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const ratingService = new StubRatingService();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+    ratingService: ratingService as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      rateAgents: true,
+    });
+    assert.equal(result.results.length, 2);
+    assert.equal(ratingService.calls.length, 2);
+    const ratedKeys = ratingService.calls.map((call) => call.taskKey).sort();
+    assert.deepEqual(ratedKeys, tasks.map((task) => task.key).sort());
+    assert.ok(ratingService.calls.every((call) => call.commandName === "work-on-tasks"));
+    assert.ok(ratingService.calls.every((call) => call.agentId === "agent-1"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

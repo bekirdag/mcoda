@@ -75,6 +75,13 @@ class StubVcs {
   async ensureBaseBranch() {}
 }
 
+class StubRatingService {
+  calls: any[] = [];
+  async rate(request: any) {
+    this.calls.push(request);
+  }
+}
+
 test("qa-tasks auto run records QA outcome, tokens, and state transitions", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
@@ -231,6 +238,77 @@ test("qa-tasks prepends project guidance to agent prompt", async () => {
     const taskIndex = lastInput.indexOf("Task: proj-epic-us-01-t01");
     assert.ok(guidanceIndex >= 0);
     assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks auto run invokes agent rating when enabled", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 2,
+      },
+    ],
+    false,
+  );
+
+  const ratingService = new StubRatingService();
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+    ratingService: ratingService as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+      rateAgents: true,
+    });
+
+    assert.equal(ratingService.calls.length, 1);
+    const call = ratingService.calls[0];
+    assert.equal(call.agentId, "qa-agent");
+    assert.equal(call.commandName, "qa-tasks");
+    assert.equal(call.taskKey, task.key);
+    assert.equal(call.jobId, result.jobId);
+    assert.equal(call.commandRunId, result.commandRunId);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

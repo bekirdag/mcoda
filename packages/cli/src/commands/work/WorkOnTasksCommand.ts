@@ -14,6 +14,7 @@ interface ParsedArgs {
   dryRun: boolean;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents: boolean;
   json: boolean;
 }
 
@@ -28,6 +29,7 @@ const usage = `mcoda work-on-tasks \\
   [--dry-run] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--rate-agents] \\
   [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -59,6 +61,7 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   let dryRun = false;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -76,6 +79,11 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--agent-stream=")) {
       const [, raw] = arg.split("=", 2);
       agentStream = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -135,6 +143,16 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -166,6 +184,7 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     dryRun,
     agentName,
     agentStream: agentStream ?? true,
+    rateAgents,
     json,
   };
 };
@@ -203,6 +222,7 @@ export class WorkOnTasksCommand {
         dryRun: parsed.dryRun,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
         onAgentChunk,
       });
 

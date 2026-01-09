@@ -11,6 +11,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.createFollowupTasks, "auto");
+    assert.equal(parsed.rateAgents, false);
   });
 
   it("parses manual flags, statuses, and overrides", () => {
@@ -31,6 +32,7 @@ describe("qa-tasks argument parsing", () => {
       "npm test",
       "--create-followup-tasks",
       "none",
+      "--rate-agents",
       "--notes",
       "needs fix",
       "--evidence-url",
@@ -44,6 +46,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.level, "integration");
     assert.equal(parsed.testCommand, "npm test");
     assert.equal(parsed.createFollowupTasks, "none");
+    assert.equal(parsed.rateAgents, true);
     assert.equal(parsed.notes, "needs fix");
     assert.equal(parsed.evidenceUrl, "https://ci.example");
   });
