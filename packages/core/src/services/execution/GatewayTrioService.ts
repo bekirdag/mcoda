@@ -50,6 +50,9 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   maxIterations?: number;
   maxCycles?: number;
   gatewayAgentName?: string;
+  workAgentName?: string;
+  reviewAgentName?: string;
+  qaAgentName?: string;
   maxDocs?: number;
   agentStream?: boolean;
   noCommit?: boolean;
@@ -64,6 +67,7 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   qaNotes?: string;
   qaEvidenceUrl?: string;
   resumeJobId?: string;
+  rateAgents?: boolean;
 }
 
 export interface GatewayTrioTaskSummary {
@@ -265,6 +269,9 @@ export class GatewayTrioService {
       maxIterations: request.maxIterations ?? raw.maxIterations,
       maxCycles: request.maxCycles ?? raw.maxCycles,
       gatewayAgentName: request.gatewayAgentName ?? raw.gatewayAgentName,
+      workAgentName: request.workAgentName ?? raw.workAgentName,
+      reviewAgentName: request.reviewAgentName ?? raw.reviewAgentName,
+      qaAgentName: request.qaAgentName ?? raw.qaAgentName,
       maxDocs: request.maxDocs ?? raw.maxDocs,
       agentStream: request.agentStream ?? raw.agentStream,
       noCommit: request.noCommit ?? raw.noCommit,
@@ -371,6 +378,7 @@ export class GatewayTrioService {
       gatewayAgentName: request.gatewayAgentName,
       maxDocs: request.maxDocs,
       agentStream: request.agentStream,
+      rateAgents: request.rateAgents,
     });
   }
 
@@ -394,8 +402,9 @@ export class GatewayTrioService {
         limit: 1,
         noCommit: request.noCommit,
         dryRun: request.dryRun,
-        agentName: gateway.chosenAgent.agentSlug,
+        agentName: request.workAgentName ?? gateway.chosenAgent.agentSlug,
         agentStream: request.agentStream,
+        rateAgents: request.rateAgents,
       }),
     );
     const parsed = this.parseWorkResult(taskKey, result);
@@ -421,8 +430,9 @@ export class GatewayTrioService {
         statusFilter,
         baseRef: request.reviewBase,
         dryRun: request.dryRun,
-        agentName: gateway.chosenAgent.agentSlug,
+        agentName: request.reviewAgentName ?? gateway.chosenAgent.agentSlug,
         agentStream: request.agentStream,
+        rateAgents: request.rateAgents,
       }),
     );
     const parsed = this.parseReviewResult(taskKey, result);
@@ -450,8 +460,9 @@ export class GatewayTrioService {
         profileName: request.qaProfileName,
         level: request.qaLevel,
         testCommand: request.qaTestCommand,
-        agentName: gateway.chosenAgent.agentSlug,
+        agentName: request.qaAgentName ?? gateway.chosenAgent.agentSlug,
         agentStream: request.agentStream,
+        rateAgents: request.rateAgents,
         createFollowupTasks: request.qaFollowups ?? "auto",
         dryRun: request.dryRun,
         result: request.qaResult,
@@ -521,6 +532,9 @@ export class GatewayTrioService {
           limit: resolvedRequest.limit,
           parallel: resolvedRequest.parallel,
           gatewayAgentName: resolvedRequest.gatewayAgentName,
+          workAgentName: resolvedRequest.workAgentName,
+          reviewAgentName: resolvedRequest.reviewAgentName,
+          qaAgentName: resolvedRequest.qaAgentName,
           maxDocs: resolvedRequest.maxDocs,
           agentStream: resolvedRequest.agentStream,
           noCommit: resolvedRequest.noCommit,

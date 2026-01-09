@@ -17,6 +17,12 @@ export class GlobalMigrations {
         reasoning_rating INTEGER,
         best_usage TEXT,
         cost_per_million REAL,
+        max_complexity INTEGER,
+        rating_samples INTEGER,
+        rating_last_score REAL,
+        rating_updated_at TEXT,
+        complexity_samples INTEGER,
+        complexity_updated_at TEXT,
         config_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -100,6 +106,27 @@ export class GlobalMigrations {
       );
 
       CREATE INDEX IF NOT EXISTS idx_token_usage_command_run_id ON token_usage(command_run_id);
+
+      CREATE TABLE IF NOT EXISTS agent_run_ratings (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        job_id TEXT,
+        command_run_id TEXT,
+        task_id TEXT,
+        task_key TEXT,
+        command_name TEXT,
+        discipline TEXT,
+        complexity INTEGER,
+        quality_score REAL,
+        tokens_total INTEGER,
+        duration_seconds REAL,
+        iterations INTEGER,
+        total_cost REAL,
+        run_score REAL,
+        rating_version TEXT,
+        raw_review_json TEXT,
+        created_at TEXT NOT NULL
+      );
     `);
     };
 
@@ -134,6 +161,12 @@ export class GlobalMigrations {
     const hasAgentReasoningRating = agentsInfo.some((col) => col.name === "reasoning_rating");
     const hasAgentBestUsage = agentsInfo.some((col) => col.name === "best_usage");
     const hasAgentCost = agentsInfo.some((col) => col.name === "cost_per_million");
+    const hasAgentMaxComplexity = agentsInfo.some((col) => col.name === "max_complexity");
+    const hasAgentRatingSamples = agentsInfo.some((col) => col.name === "rating_samples");
+    const hasAgentRatingLastScore = agentsInfo.some((col) => col.name === "rating_last_score");
+    const hasAgentRatingUpdatedAt = agentsInfo.some((col) => col.name === "rating_updated_at");
+    const hasAgentComplexitySamples = agentsInfo.some((col) => col.name === "complexity_samples");
+    const hasAgentComplexityUpdatedAt = agentsInfo.some((col) => col.name === "complexity_updated_at");
     if (!hasAgentRating) {
       await db.exec("ALTER TABLE agents ADD COLUMN rating INTEGER");
     }
@@ -145,6 +178,24 @@ export class GlobalMigrations {
     }
     if (!hasAgentCost) {
       await db.exec("ALTER TABLE agents ADD COLUMN cost_per_million REAL");
+    }
+    if (!hasAgentMaxComplexity) {
+      await db.exec("ALTER TABLE agents ADD COLUMN max_complexity INTEGER");
+    }
+    if (!hasAgentRatingSamples) {
+      await db.exec("ALTER TABLE agents ADD COLUMN rating_samples INTEGER");
+    }
+    if (!hasAgentRatingLastScore) {
+      await db.exec("ALTER TABLE agents ADD COLUMN rating_last_score REAL");
+    }
+    if (!hasAgentRatingUpdatedAt) {
+      await db.exec("ALTER TABLE agents ADD COLUMN rating_updated_at TEXT");
+    }
+    if (!hasAgentComplexitySamples) {
+      await db.exec("ALTER TABLE agents ADD COLUMN complexity_samples INTEGER");
+    }
+    if (!hasAgentComplexityUpdatedAt) {
+      await db.exec("ALTER TABLE agents ADD COLUMN complexity_updated_at TEXT");
     }
 
     await db.exec(`
@@ -270,6 +321,23 @@ export class GlobalMigrations {
           END
         )
       WHERE rating IS NULL OR reasoning_rating IS NULL OR best_usage IS NULL OR cost_per_million IS NULL;
+    `);
+
+    await db.exec(`
+      UPDATE agents
+      SET
+        max_complexity = COALESCE(max_complexity, 5),
+        rating_samples = COALESCE(rating_samples, 0),
+        rating_last_score = COALESCE(rating_last_score, rating),
+        rating_updated_at = COALESCE(rating_updated_at, updated_at),
+        complexity_samples = COALESCE(complexity_samples, 0),
+        complexity_updated_at = COALESCE(complexity_updated_at, updated_at)
+      WHERE max_complexity IS NULL
+         OR rating_samples IS NULL
+         OR rating_last_score IS NULL
+         OR rating_updated_at IS NULL
+         OR complexity_samples IS NULL
+         OR complexity_updated_at IS NULL;
     `);
 
     const workspaceDefaultsInfo = await db.all<any[]>("PRAGMA table_info(workspace_defaults)");

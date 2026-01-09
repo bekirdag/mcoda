@@ -30,6 +30,7 @@ await service.close();
 ## Notes
 - Primarily used by the mcoda CLI; APIs may evolve.
 - Set `MCODA_STREAM_IO=1` to emit adapter I/O lines to stderr.
+- If `~/.docdex/agents.md` exists, AgentService prepends it to every agent invocation.
 
 ## License
 MIT - see `LICENSE`.

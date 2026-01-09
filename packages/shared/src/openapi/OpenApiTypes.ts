@@ -9,6 +9,12 @@ export interface Agent {
   reasoningRating?: number;
   bestUsage?: string;
   costPerMillion?: number;
+  maxComplexity?: number;
+  ratingSamples?: number;
+  ratingLastScore?: number;
+  ratingUpdatedAt?: string;
+  complexitySamples?: number;
+  complexityUpdatedAt?: string;
   config?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -27,6 +33,12 @@ export interface CreateAgentInput {
   reasoningRating?: number;
   bestUsage?: string;
   costPerMillion?: number;
+  maxComplexity?: number;
+  ratingSamples?: number;
+  ratingLastScore?: number;
+  ratingUpdatedAt?: string;
+  complexitySamples?: number;
+  complexityUpdatedAt?: string;
   config?: Record<string, unknown>;
   capabilities?: string[];
   prompts?: AgentPromptManifest;
@@ -40,6 +52,12 @@ export interface UpdateAgentInput {
   reasoningRating?: number;
   bestUsage?: string;
   costPerMillion?: number;
+  maxComplexity?: number;
+  ratingSamples?: number;
+  ratingLastScore?: number;
+  ratingUpdatedAt?: string;
+  complexitySamples?: number;
+  complexityUpdatedAt?: string;
   config?: Record<string, unknown>;
   capabilities?: string[];
   prompts?: AgentPromptManifest;
@@ -225,6 +243,7 @@ export interface RefineTasksRequest {
   maxTasks?: number;
   dryRun?: boolean;
   agentIdOverride?: string;
+  rateAgents?: boolean;
   planInPath?: string;
   planOutPath?: string;
 }

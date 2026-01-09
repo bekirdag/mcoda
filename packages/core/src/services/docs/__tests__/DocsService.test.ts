@@ -141,6 +141,13 @@ class FailingDocdex {
   }
 }
 
+class StubRatingService {
+  calls: any[] = [];
+  async rate(request: any) {
+    this.calls.push(request);
+  }
+}
+
 describe("DocsService.generatePdr", () => {
   it("writes a PDR and records job + telemetry artifacts", async () => {
     process.env.MCODA_SKIP_PDR_VALIDATION = "1";
@@ -250,6 +257,63 @@ describe("DocsService.generatePdr", () => {
     const outputPath = result.outputPath ?? path.join(workspace.mcodaDir, "docs", "pdr");
     await assert.rejects(fs.access(outputPath));
     await service.close();
+  });
+
+  it("invokes agent rating when enabled", async () => {
+    process.env.MCODA_SKIP_PDR_VALIDATION = "1";
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-workspace-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
+      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+    };
+    const agent: Agent = {
+      id: "agent-rate",
+      slug: "fake",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const ratingService = new StubRatingService();
+    const agentService = new FakeAgentService(agent);
+    const repo = new FakeRepo(agent);
+    const routingService = new FakeRoutingService(agent);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+      ratingService: ratingService as any,
+    });
+
+    const rfpPath = path.join(workspaceRoot, "rfp.md");
+    await fs.writeFile(rfpPath, "- goal one\n- goal two\n", "utf8");
+
+    try {
+      await service.generatePdr({
+        workspace,
+        projectKey: "TEST",
+        rfpPath,
+        agentName: "fake",
+        agentStream: false,
+        dryRun: true,
+        json: false,
+        rateAgents: true,
+      });
+      assert.equal(ratingService.calls.length, 1);
+      assert.equal(ratingService.calls[0]?.commandName, "docs-pdr-generate");
+      assert.equal(ratingService.calls[0]?.agentId, agent.id);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("emits degraded warning when docdex unavailable", async () => {
@@ -470,6 +534,12 @@ describe("DocsService.generatePdr", () => {
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
     const docdex = new DocdexClient({ workspaceRoot });
+    const docdexDir = path.join(workspaceRoot, ".mcoda", "docdex");
+    await fs.mkdir(docdexDir, { recursive: true });
+    await fs.writeFile(path.join(docdexDir, "documents.json"), "[]", "utf8");
+    const localPdrDir = path.join(workspaceRoot, ".mcoda", "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- goal from pdr", "utf8");
     await docdex.registerDocument({
       docType: "PDR",
       path: path.join(workspaceRoot, "pdr.md"),

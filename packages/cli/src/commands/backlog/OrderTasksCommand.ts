@@ -9,6 +9,7 @@ interface ParsedArgs {
   includeBlocked: boolean;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents: boolean;
   json: boolean;
 }
 
@@ -20,6 +21,7 @@ const usage = `mcoda order-tasks \\
   [--include-blocked] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--rate-agents] \\
   [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -42,6 +44,7 @@ const parseStatuses = (value?: string): string[] | undefined => {
 export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
   const parsed: ParsedArgs = {
     includeBlocked: false,
+    rateAgents: false,
     json: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -52,6 +55,10 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg.startsWith("--agent-stream=")) {
       parsed.agentStream = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--rate-agents=")) {
+      parsed.rateAgents = parseBooleanFlag(arg.split("=")[1], true);
       continue;
     }
     switch (arg) {
@@ -85,6 +92,16 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
           i += 1;
         } else {
           parsed.agentStream = true;
+        }
+        break;
+      }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          parsed.rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          parsed.rateAgents = true;
         }
         break;
       }
@@ -209,6 +226,7 @@ export class OrderTasksCommand {
         includeBlocked: parsed.includeBlocked,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
       });
       if (parsed.json) {
         const payload: Record<string, unknown> = {

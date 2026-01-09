@@ -13,6 +13,7 @@ interface ParsedRefineArgs {
   strategy?: RefineStrategy;
   agentName?: string;
   agentStream: boolean;
+  rateAgents: boolean;
   fromDb: boolean;
   dryRun: boolean;
   apply: boolean;
@@ -26,7 +27,7 @@ interface ParsedRefineArgs {
   jobId?: string;
 }
 
-const usage = `mcoda refine-tasks --project <PROJECT_KEY> [--workspace-root <PATH>] [--epic <EPIC_KEY>] [--story <STORY_KEY>] [--task <TASK_KEY> ...] [--status <STATUS>] [--max-tasks N] [--strategy split|merge|enrich|estimate|auto] [--agent <NAME>] [--agent-stream [true|false]] [--from-db [true|false]] [--dry-run] [--apply] [--resume|--skip-refined] [--run-all] [--batch-size N] [--max-batches N] [--plan-in <PATH>] [--plan-out <PATH>] [--json]`;
+const usage = `mcoda refine-tasks --project <PROJECT_KEY> [--workspace-root <PATH>] [--epic <EPIC_KEY>] [--story <STORY_KEY>] [--task <TASK_KEY> ...] [--status <STATUS>] [--max-tasks N] [--strategy split|merge|enrich|estimate|auto] [--agent <NAME>] [--agent-stream [true|false]] [--rate-agents] [--from-db [true|false]] [--dry-run] [--apply] [--resume|--skip-refined] [--run-all] [--batch-size N] [--max-batches N] [--plan-in <PATH>] [--plan-out <PATH>] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -65,6 +66,7 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
   let strategy: RefineStrategy | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
   let fromDb: boolean | undefined;
   let dryRun = false;
   let apply = false;
@@ -92,6 +94,11 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
     if (arg.startsWith("--agent-stream=")) {
       const [, raw] = arg.split("=", 2);
       agentStream = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
       continue;
     }
     if (arg.startsWith("--from-db=")) {
@@ -169,6 +176,16 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
         }
         break;
       }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
       case "--from-db": {
         const next = argv[i + 1];
         if (next && !next.startsWith("--")) {
@@ -237,6 +254,7 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
     strategy,
     agentName,
     agentStream: agentStream ?? true,
+    rateAgents,
     fromDb: fromDb ?? true,
     dryRun,
     apply,
@@ -288,6 +306,7 @@ export class RefineTasksCommand {
         strategy: parsed.strategy ?? "auto",
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
         fromDb: parsed.fromDb,
         dryRun: parsed.dryRun,
         planInPath: parsed.planIn,

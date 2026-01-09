@@ -1,7 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { AgentService } from "@mcoda/agents";
-import { GlobalRepository } from "@mcoda/db";
+import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
 import { Agent, AgentPromptManifest } from "@mcoda/shared";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import {
@@ -18,6 +18,7 @@ import {
 import { JobService, JobCheckpoint } from "../jobs/JobService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 
 export interface GeneratePdrOptions {
   workspace: WorkspaceResolution;
@@ -27,6 +28,8 @@ export interface GeneratePdrOptions {
   outPath?: string;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
+  fast?: boolean;
   dryRun?: boolean;
   json?: boolean;
   onToken?: (token: string) => void;
@@ -49,6 +52,8 @@ export interface GenerateSdsOptions {
   agentName?: string;
   templateName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
+  fast?: boolean;
   dryRun?: boolean;
   json?: boolean;
   force?: boolean;
@@ -622,7 +627,20 @@ const ensureStructuredDraft = (
   for (const section of required) {
     const best = getBestSectionBody(normalized, section.title);
     const cleaned = cleanBody(best ?? "");
-    const body = cleaned && cleaned.length > 0 ? cleaned : cleanBody(section.fallback);
+    let body = cleaned && cleaned.length > 0 ? cleaned : cleanBody(section.fallback);
+    if (section.title === "Interfaces / APIs" && (context.openapi?.length ?? 0) === 0) {
+      const scrubbed = stripInventedEndpoints(body);
+      const openApiFallback =
+        "No OpenAPI excerpts available. Capture interface needs as open questions (auth/identity, restaurant suggestions, voting cycles, results/analytics).";
+      if (!scrubbed || scrubbed.length === 0 || /endpoint/i.test(scrubbed)) {
+        body = cleanBody(openApiFallback);
+      } else {
+        body = scrubbed;
+      }
+      if (!/openapi/i.test(body)) {
+        body = `${body}\n- No OpenAPI excerpts available; keep endpoints as open questions.`;
+      }
+    }
     parts.push(`## ${section.title}`);
     parts.push(body);
   }
@@ -778,6 +796,20 @@ const ensureSdsStructuredDraft = (
   let structured = parts.join("\n\n");
   for (const section of sections) {
     structured = ensureSectionContent(structured, section, fallbackFor(section));
+  }
+  if ((context.openapi?.length ?? 0) === 0) {
+    const interfaceTitle = sections.find((section) => /interface|contract/i.test(section)) ?? "Interfaces & Contracts";
+    const extracted = extractSection(structured, interfaceTitle);
+    if (extracted) {
+      const scrubbed = stripInventedEndpoints(cleanBody(extracted.body ?? ""));
+      const openApiFallback =
+        "No OpenAPI excerpts available. Capture interface needs as open questions (auth/identity, restaurant suggestions, voting cycles, results/analytics).";
+      let body = scrubbed.length > 0 && !/endpoint/i.test(scrubbed) ? scrubbed : cleanBody(openApiFallback);
+      if (!/openapi/i.test(body)) {
+        body = `${body}\n- No OpenAPI excerpts available; keep endpoints as open questions.`;
+      }
+      structured = replaceSection(structured, interfaceTitle, body);
+    }
   }
   return structured;
 };
@@ -1107,6 +1139,15 @@ const cleanBody = (body: string): string => {
   return deduped.join("\n").trim();
 };
 
+const stripInventedEndpoints = (body: string): string => {
+  const lines = body.split(/\r?\n/);
+  const filtered = lines.filter((line) => {
+    const normalized = line.replace(/[`*_]/g, "");
+    return !/(^|\s)\b(GET|POST|PUT|PATCH|DELETE)\b[^\n]*\//i.test(normalized);
+  });
+  return filtered.join("\n").trim();
+};
+
 const extractSection = (draft: string, title: string): { heading: string; body: string } | undefined => {
   const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|(?![\\s\\S]))`, "im");
   const match = draft.match(regex);
@@ -1134,7 +1175,10 @@ const getBestSectionBody = (draft: string, title: string): string | undefined =>
 
 const replaceSection = (draft: string, title: string, newBody: string): string => {
   const normalizedBody = cleanBody(newBody);
-  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
+  const regex = new RegExp(
+    `(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|(?![\\s\\S]))`,
+    "im",
+  );
   if (regex.test(draft)) {
     return draft.replace(regex, `$1\n\n${normalizedBody}\n\n`);
   }
@@ -1212,6 +1256,8 @@ export class DocsService {
   private agentService: AgentService;
   private repo: GlobalRepository;
   private routingService: RoutingService;
+  private ratingService?: AgentRatingService;
+  private workspaceRepo?: WorkspaceRepository;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -1221,6 +1267,8 @@ export class DocsService {
       agentService: AgentService;
       repo: GlobalRepository;
       routingService: RoutingService;
+      workspaceRepo?: WorkspaceRepository;
+      ratingService?: AgentRatingService;
       noTelemetry?: boolean;
     },
   ) {
@@ -1229,6 +1277,8 @@ export class DocsService {
     this.repo = deps.repo;
     this.agentService = deps.agentService;
     this.routingService = deps.routingService;
+    this.workspaceRepo = deps.workspaceRepo;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<DocsService> {
@@ -1244,15 +1294,17 @@ export class DocsService {
   }
 
   async close(): Promise<void> {
-    if ((this.agentService as any).close) {
-      await this.agentService.close();
-    }
-    if ((this.repo as any).close) {
-      await this.repo.close();
-    }
-    if ((this.jobService as any).close) {
-      await this.jobService.close();
-    }
+    const swallow = async (fn?: () => Promise<void>) => {
+      try {
+        if (fn) await fn();
+      } catch {
+        // Best-effort close; ignore errors (including "database is closed").
+      }
+    };
+    await swallow((this.agentService as any).close?.bind(this.agentService));
+    await swallow((this.repo as any).close?.bind(this.repo));
+    await swallow((this.jobService as any).close?.bind(this.jobService));
+    await swallow((this.workspaceRepo as any)?.close?.bind(this.workspaceRepo));
   }
 
   private defaultPdrOutputPath(projectKey: string | undefined, rfpPath?: string): string {
@@ -1298,6 +1350,23 @@ export class DocsService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private async ensureRatingService(): Promise<AgentRatingService> {
+    if (this.ratingService) return this.ratingService;
+    if (process.env.MCODA_DISABLE_DB === "1") {
+      throw new Error("Workspace DB disabled; agent rating requires DB access.");
+    }
+    if (!this.workspaceRepo) {
+      this.workspaceRepo = await WorkspaceRepository.create(this.workspace.workspaceRoot);
+    }
+    this.ratingService = new AgentRatingService(this.workspace, {
+      workspaceRepo: this.workspaceRepo,
+      globalRepo: this.repo,
+      agentService: this.agentService,
+      routingService: this.routingService,
+    });
+    return this.ratingService;
   }
 
   private async writePdrFile(outPath: string, content: string): Promise<void> {
@@ -1425,6 +1494,7 @@ export class DocsService {
         workspaceId: this.workspace.workspaceId,
         commandName: "docs-pdr-generate",
         jobId: job.id,
+        commandRunId: commandRun.id,
         action: "docdex_context",
         promptTokens: 0,
         completionTokens: 0,
@@ -1438,9 +1508,11 @@ export class DocsService {
         DEFAULT_PDR_RUNBOOK_PROMPT;
 
       let draft = "";
+      let agentUsed = false;
       let agentMetadata: Record<string, unknown> | undefined;
       let adapter = agent.adapter;
       const stream = options.agentStream ?? true;
+      const fastMode = options.fast === true || process.env.MCODA_DOCS_FAST === "1";
       const skipValidation = process.env.MCODA_SKIP_PDR_VALIDATION === "1";
       let lastInvoke:
         | ((input: string) => Promise<{ output: string; adapter: string; metadata?: Record<string, unknown> }>)
@@ -1448,6 +1520,7 @@ export class DocsService {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const prompt = buildRunPrompt(context, options.projectKey, prompts, attempt === 0 ? runbook : `${runbook}\n\nRETRY: The previous attempt failed validation. Ensure all required sections are present and non-empty. Do not leave placeholders.`);
         const invoke = async (input: string) => {
+          agentUsed = true;
           const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(agent, input, stream, job.id, options.onToken);
           adapter = usedAdapter;
           agentMetadata = metadata;
@@ -1467,6 +1540,7 @@ export class DocsService {
           workspaceId: this.workspace.workspaceId,
           commandName: "docs-pdr-generate",
           jobId: job.id,
+          commandRunId: commandRun.id,
           agentId: agent.id,
           modelName: agent.defaultModel,
           action: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
@@ -1492,14 +1566,21 @@ export class DocsService {
         throw new Error("PDR draft generation failed; no valid draft produced.");
       }
 
-      if (lastInvoke) {
+      if (fastMode) {
+        context.warnings.push("Fast mode enabled; skipping PDR enrichment and tidy passes.");
+      } else if (lastInvoke) {
         draft = await enrichPdrDraft(draft, agent, context, options.projectKey, lastInvoke);
         draft = ensureStructuredDraft(draft, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
       }
-      if (lastInvoke) {
+      if (!fastMode && lastInvoke) {
         try {
           const tidiedRaw = await tidyPdrDraft(draft, agent, lastInvoke);
-          const tidied = ensureStructuredDraft(tidiedRaw, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
+          const tidied = ensureStructuredDraft(
+            tidiedRaw,
+            options.projectKey,
+            context,
+            context.rfp.path ?? context.rfp.id ?? "RFP",
+          );
           const tidiedValid = validateDraft(tidied) && headingHasContent(tidied, "Introduction");
           const keepTidied = tidiedValid && tidied.length >= draft.length * 0.6;
           if (keepTidied) {
@@ -1519,17 +1600,21 @@ export class DocsService {
         );
         await ensureDir(firstDraftPath);
         await fs.writeFile(firstDraftPath, draft, "utf8");
-        try {
-          const iterativeDraft = await buildIterativePdr(
-            options.projectKey,
-            context,
-            draft,
-            outputPath,
-            lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
-          );
-          draft = iterativeDraft;
-        } catch (error) {
-          context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+        if (fastMode) {
+          context.warnings.push("Fast mode enabled; skipping iterative PDR refinement.");
+        } else {
+          try {
+            const iterativeDraft = await buildIterativePdr(
+              options.projectKey,
+              context,
+              draft,
+              outputPath,
+              lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
+            );
+            draft = iterativeDraft;
+          } catch (error) {
+            context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+          }
         }
       }
       await this.jobService.writeCheckpoint(job.id, {
@@ -1576,6 +1661,20 @@ export class DocsService {
         payload: { outputPath, docdexId, segments, mirrorStatus },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      if (options.rateAgents && agentUsed) {
+        try {
+          const ratingService = await this.ensureRatingService();
+          await ratingService.rate({
+            workspace: this.workspace,
+            agentId: agent.id,
+            commandName: "docs-pdr-generate",
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+        } catch (error) {
+          context.warnings.push(`Agent rating failed: ${(error as Error).message ?? String(error)}`);
+        }
+      }
       return {
         jobId: job.id,
         commandRunId: commandRun.id,
@@ -1728,6 +1827,7 @@ export class DocsService {
         workspaceId: this.workspace.workspaceId,
         commandName: "docs-sds-generate",
         jobId: job.id,
+        commandRunId: commandRun.id,
         action: "docdex_context",
         promptTokens: 0,
         completionTokens: 0,
@@ -1762,11 +1862,14 @@ export class DocsService {
         DEFAULT_SDS_RUNBOOK_PROMPT;
 
       let draft = resumeDraft ?? "";
+      let agentUsed = false;
       let agentMetadata: Record<string, unknown> | undefined;
       let adapter = agent.adapter;
       const stream = options.agentStream ?? true;
+      const fastMode = options.fast === true || process.env.MCODA_DOCS_FAST === "1";
       const skipValidation = process.env.MCODA_SKIP_SDS_VALIDATION === "1";
       const invoke = async (input: string) => {
+        agentUsed = true;
         const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(
           agent,
           input,
@@ -1797,6 +1900,7 @@ export class DocsService {
             workspaceId: this.workspace.workspaceId,
             commandName: "docs-sds-generate",
             jobId: job.id,
+            commandRunId: commandRun.id,
             agentId: agent.id,
             modelName: agent.defaultModel,
             action: attempt === 0 ? "draft_sds" : "draft_sds_retry",
@@ -1826,6 +1930,7 @@ export class DocsService {
             workspaceId: this.workspace.workspaceId,
             commandName: "docs-sds-generate",
             jobId: job.id,
+            commandRunId: commandRun.id,
             action: "draft_sds_resume",
             promptTokens: 0,
             completionTokens: estimateTokens(draft),
@@ -1849,6 +1954,7 @@ export class DocsService {
           workspaceId: this.workspace.workspaceId,
           commandName: "docs-sds-generate",
           jobId: job.id,
+          commandRunId: commandRun.id,
           agentId: agent.id,
           modelName: agent.defaultModel,
           action: "draft_sds_resume_regenerate",
@@ -1857,21 +1963,25 @@ export class DocsService {
           metadata: { adapter, provider: adapter, docdexAvailable: context.docdexAvailable, template: template.name },
         });
       }
-      // Enrich each section sequentially after a valid base draft exists.
-      draft = await enrichSdsDraft(draft, sdsSections, agent, context, options.projectKey, invoke);
-      draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
-      if (!skipValidation && !(validateSdsDraft(draft) && headingHasContent(draft, "Architecture"))) {
-        warnings.push("Enriched SDS draft failed validation; using structured fallback.");
+      if (fastMode) {
+        warnings.push("Fast mode enabled; skipping SDS enrichment and tidy passes.");
+      } else {
+        // Enrich each section sequentially after a valid base draft exists.
+        draft = await enrichSdsDraft(draft, sdsSections, agent, context, options.projectKey, invoke);
         draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
-      }
-      try {
-        const tidiedRaw = await tidySdsDraft(draft, sdsSections, agent, invoke);
-        const tidied = ensureSdsStructuredDraft(tidiedRaw, options.projectKey, context, template.content);
-        if (skipValidation || (validateSdsDraft(tidied) && headingHasContent(tidied, "Architecture"))) {
-          draft = tidied;
+        if (!skipValidation && !(validateSdsDraft(draft) && headingHasContent(draft, "Architecture"))) {
+          warnings.push("Enriched SDS draft failed validation; using structured fallback.");
+          draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
         }
-      } catch (error) {
-        warnings.push(`SDS tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
+        try {
+          const tidiedRaw = await tidySdsDraft(draft, sdsSections, agent, invoke);
+          const tidied = ensureSdsStructuredDraft(tidiedRaw, options.projectKey, context, template.content);
+          if (skipValidation || (validateSdsDraft(tidied) && headingHasContent(tidied, "Architecture"))) {
+            draft = tidied;
+          }
+        } catch (error) {
+          warnings.push(`SDS tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
+        }
       }
       await fs.mkdir(path.dirname(draftPath), { recursive: true });
       await fs.writeFile(draftPath, draft, "utf8");
@@ -1883,18 +1993,22 @@ export class DocsService {
       );
       await ensureDir(firstDraftPath);
       await fs.writeFile(firstDraftPath, draft, "utf8");
-      try {
-        const iterativeDraft = await buildIterativeSds(
-          options.projectKey,
-          context,
-          draft,
-          sdsSections,
-          outputPath,
-          invoke,
-        );
-        draft = iterativeDraft;
-      } catch (error) {
-        warnings.push(`Iterative SDS refinement failed; keeping first draft. ${String(error)}`);
+      if (fastMode) {
+        warnings.push("Fast mode enabled; skipping iterative SDS refinement.");
+      } else {
+        try {
+          const iterativeDraft = await buildIterativeSds(
+            options.projectKey,
+            context,
+            draft,
+            sdsSections,
+            outputPath,
+            invoke,
+          );
+          draft = iterativeDraft;
+        } catch (error) {
+          warnings.push(`Iterative SDS refinement failed; keeping first draft. ${String(error)}`);
+        }
       }
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
@@ -1946,6 +2060,20 @@ export class DocsService {
         },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      if (options.rateAgents && agentUsed) {
+        try {
+          const ratingService = await this.ensureRatingService();
+          await ratingService.rate({
+            workspace: this.workspace,
+            agentId: agent.id,
+            commandName: "docs-sds-generate",
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+        } catch (error) {
+          warnings.push(`Agent rating failed: ${(error as Error).message ?? String(error)}`);
+        }
+      }
       return {
         jobId: job.id,
         commandRunId: commandRun.id,

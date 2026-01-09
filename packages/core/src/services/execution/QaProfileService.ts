@@ -10,6 +10,14 @@ export interface QaProfileResolutionOptions {
   defaultLevel?: string;
 }
 
+const DEFAULT_QA_PROFILES: QaProfile[] = [
+  {
+    name: 'chromium',
+    runner: 'chromium',
+    default: true,
+  },
+];
+
 export class QaProfileService {
   private cache?: QaProfile[];
   private routingCache?: {
@@ -77,11 +85,11 @@ export class QaProfileService {
         this.cache = (parsed as any).profiles as QaProfile[];
         return this.cache;
       }
-      this.cache = [];
+      this.cache = DEFAULT_QA_PROFILES;
       return this.cache;
     } catch (error: any) {
       if (error?.code === 'ENOENT') {
-        this.cache = [];
+        this.cache = DEFAULT_QA_PROFILES;
         return this.cache;
       }
       throw error;

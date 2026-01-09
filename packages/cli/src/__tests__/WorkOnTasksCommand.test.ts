@@ -9,6 +9,7 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.noCommit, false);
     assert.equal(parsed.dryRun, false);
+    assert.equal(parsed.rateAgents, false);
     assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress"]);
   });
 
@@ -25,12 +26,22 @@ describe("work-on-tasks argument parsing", () => {
   });
 
   it("parses numeric flags and agent stream overrides", () => {
-    const parsed = parseWorkOnTasksArgs(["--agent-stream=false", "--limit", "5", "--parallel", "2", "--no-commit", "--dry-run"]);
+    const parsed = parseWorkOnTasksArgs([
+      "--agent-stream=false",
+      "--limit",
+      "5",
+      "--parallel",
+      "2",
+      "--no-commit",
+      "--dry-run",
+      "--rate-agents",
+    ]);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.limit, 5);
     assert.equal(parsed.parallel, 2);
     assert.equal(parsed.noCommit, true);
     assert.equal(parsed.dryRun, true);
+    assert.equal(parsed.rateAgents, true);
   });
 
   it("accepts workspace alias flags", () => {

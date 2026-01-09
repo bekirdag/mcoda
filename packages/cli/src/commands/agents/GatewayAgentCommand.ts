@@ -26,6 +26,7 @@ interface GatewayArgs {
   maxDocs?: number;
   agentStream?: boolean;
   noOffload: boolean;
+  rateAgents: boolean;
   json: boolean;
 }
 
@@ -46,6 +47,7 @@ const usage = `mcoda gateway-agent <job> \\
   [--gateway-agent <NAME>] \\
   [--max-docs <N>] \\
   [--agent-stream <true|false>] \\
+  [--rate-agents] \\
   [--no-offload] \\
   [--json] \\
   [--] [job args...]`;
@@ -99,7 +101,7 @@ const collectOffloadBlockers = (result: Awaited<ReturnType<GatewayAgentService["
 };
 
 const parseGatewayArgs = (argv: string[]): GatewayArgs => {
-  const args: GatewayArgs = { noOffload: false, json: false };
+  const args: GatewayArgs = { noOffload: false, rateAgents: false, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith("--workspace=") || arg.startsWith("--workspace-root=")) {
@@ -129,6 +131,10 @@ const parseGatewayArgs = (argv: string[]): GatewayArgs => {
     }
     if (arg.startsWith("--agent-stream=")) {
       args.agentStream = parseBooleanFlag(arg.split("=", 2)[1], true);
+      continue;
+    }
+    if (arg.startsWith("--rate-agents=")) {
+      args.rateAgents = parseBooleanFlag(arg.split("=", 2)[1], true);
       continue;
     }
     switch (arg) {
@@ -165,6 +171,16 @@ const parseGatewayArgs = (argv: string[]): GatewayArgs => {
           i += 1;
         } else {
           args.agentStream = true;
+        }
+        break;
+      }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          args.rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          args.rateAgents = true;
         }
         break;
       }
@@ -444,6 +460,7 @@ export class GatewayAgentCommand {
         maxDocs: gatewayArgs.maxDocs,
         agentStream: streamEnabled,
         onStreamChunk,
+        rateAgents: gatewayArgs.rateAgents,
       });
       if (shouldPrintStream && streamStarted && !streamEndedWithNewline) {
         process.stdout.write("\n");

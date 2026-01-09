@@ -215,7 +215,8 @@ test("zhipu-api invokes with configured baseUrl, model, and thinking", async () 
     assert.equal(body.thinking, true);
     assert.equal(body.temperature, 0.1);
     assert.equal(body.stream, false);
-    assert.equal(body.messages?.[0]?.content, "ping");
+    const content = String(body.messages?.[0]?.content ?? "");
+    assert.ok(content.includes("ping"));
     return new Response(JSON.stringify({ choices: [{ message: { content: "pong" } }], usage: { total_tokens: 5 } }), {
       status: 200,
       headers: { "content-type": "application/json" },

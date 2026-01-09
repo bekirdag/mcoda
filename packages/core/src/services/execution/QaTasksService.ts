@@ -21,6 +21,7 @@ import { AgentService } from '@mcoda/agents';
 import { GlobalRepository } from '@mcoda/db';
 import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
+import { AgentRatingService } from '../agents/AgentRatingService.js';
 import { loadProjectGuidance } from '../shared/ProjectGuidance.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
@@ -39,6 +40,7 @@ export interface QaTasksRequest extends TaskSelectionFilters {
   testCommand?: string;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   createFollowupTasks?: 'auto' | 'none' | 'prompt';
   dryRun?: boolean;
   result?: 'pass' | 'fail' | 'blocked';
@@ -110,6 +112,7 @@ export class QaTasksService {
   private docdex?: DocdexClient;
   private repo?: GlobalRepository;
   private routingService?: RoutingService;
+  private ratingService?: AgentRatingService;
   private dryRunGuard = false;
 
   constructor(
@@ -126,6 +129,7 @@ export class QaTasksService {
       docdex?: DocdexClient;
       repo?: GlobalRepository;
       routingService?: RoutingService;
+      ratingService?: AgentRatingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
@@ -138,6 +142,7 @@ export class QaTasksService {
     this.docdex = deps.docdex;
     this.repo = deps.repo;
     this.routingService = deps.routingService;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<QaTasksService> {
@@ -358,6 +363,31 @@ export class QaTasksService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private ensureRatingService(): AgentRatingService {
+    if (!this.ratingService) {
+      if (!this.repo || !this.agentService || !this.routingService) {
+        throw new Error('Agent rating requires routing, agent, and repository services.');
+      }
+      this.ratingService = new AgentRatingService(this.workspace, {
+        workspaceRepo: this.deps.workspaceRepo,
+        globalRepo: this.repo,
+        agentService: this.agentService,
+        routingService: this.routingService,
+      });
+    }
+    return this.ratingService;
+  }
+
+  private resolveTaskComplexity(task: TaskRow): number | undefined {
+    const metadata = (task.metadata as Record<string, unknown> | null | undefined) ?? {};
+    const metaComplexity =
+      typeof metadata.complexity === 'number' && Number.isFinite(metadata.complexity) ? metadata.complexity : undefined;
+    const storyPoints = typeof task.storyPoints === 'number' && Number.isFinite(task.storyPoints) ? task.storyPoints : undefined;
+    const candidate = metaComplexity ?? storyPoints;
+    if (!Number.isFinite(candidate ?? NaN)) return undefined;
+    return Math.min(10, Math.max(1, Math.round(candidate as number)));
   }
 
   private estimateTokens(text: string): number {
@@ -714,6 +744,7 @@ export class QaTasksService {
       jobId: string;
       commandRunId: string;
       request: QaTasksRequest;
+      warnings?: string[];
     },
   ): Promise<QaTaskResult> {
     const taskRun = await this.createTaskRun(task.task, ctx.jobId, ctx.commandRunId);
@@ -812,6 +843,14 @@ export class QaTasksService {
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'no_profile' };
     }
+    if (profile.runner && profile.runner !== 'chromium') {
+      await this.logTask(
+        taskRun.id,
+        `QA runner "${profile.runner}" overridden to chromium for Playwright-based QA.`,
+        'qa-runner',
+      );
+      profile = { ...profile, runner: 'chromium' };
+    }
     const adapter = this.adapterForProfile(profile);
     if (!adapter) {
       await this.logTask(taskRun.id, 'No QA adapter for profile', 'qa-adapter');
@@ -861,6 +900,17 @@ export class QaTasksService {
           recommendation: 'infra_issue',
           metadata: { install: ensure.message, adapter: profile.runner },
         });
+        const installMessage = ensure.message ?? 'QA install failed';
+        await this.deps.workspaceRepo.createTaskComment({
+          taskId: task.task.id,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          sourceCommand: 'qa-tasks',
+          authorType: 'agent',
+          category: 'qa_issue',
+          body: `QA infra issue: ${installMessage}`,
+          createdAt: new Date().toISOString(),
+        });
       }
       return {
         taskKey: task.task.key,
@@ -873,7 +923,12 @@ export class QaTasksService {
 
     const artifactDir = path.join(this.workspace.workspaceRoot, '.mcoda', 'jobs', ctx.jobId, 'qa', task.task.key);
     await PathHelper.ensureDir(artifactDir);
-    const result = await adapter.invoke(profile, { ...qaCtx, artifactDir });
+    const qaEnv: NodeJS.ProcessEnv = { ...qaCtx.env };
+    const browsersPath = ensure.details?.playwrightBrowsersPath;
+    if (typeof browsersPath === 'string' && browsersPath.trim().length > 0) {
+      qaEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+    }
+    const result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
     await this.logTask(taskRun.id, `QA run completed with outcome ${result.outcome}`, 'qa-exec', {
       exitCode: result.exitCode,
     });
@@ -982,6 +1037,32 @@ export class QaTasksService {
           ...(qaRun?.id ? { qaRunId: qaRun.id } : {}),
         },
       });
+    }
+
+    const ratingTokens = (interpretation.tokensPrompt ?? 0) + (interpretation.tokensCompletion ?? 0);
+    if (ctx.request.rateAgents && interpretation.agentId && ratingTokens > 0) {
+      try {
+        const ratingService = this.ensureRatingService();
+        await ratingService.rate({
+          workspace: this.workspace,
+          agentId: interpretation.agentId,
+          commandName: 'qa-tasks',
+          jobId: ctx.jobId,
+          commandRunId: ctx.commandRunId,
+          taskId: task.task.id,
+          taskKey: task.task.key,
+          discipline: task.task.type ?? undefined,
+          complexity: this.resolveTaskComplexity(task.task),
+        });
+      } catch (error) {
+        const message = `Agent rating failed for ${task.task.key}: ${error instanceof Error ? error.message : String(error)}`;
+        ctx.warnings?.push(message);
+        try {
+          await this.logTask(taskRun.id, message, 'rating');
+        } catch {
+          /* ignore rating log failures */
+        }
+      }
     }
 
     return {
@@ -1257,6 +1338,7 @@ export class QaTasksService {
       completedTaskKeys: Array.from(completedKeys),
     });
 
+    const warnings = [...selection.warnings];
     const results: QaTaskResult[] = [];
     for (const task of selection.ordered) {
       if (completedKeys.has(task.task.key)) {
@@ -1273,7 +1355,7 @@ export class QaTasksService {
         if (mode === 'manual') {
           results.push(await this.runManual(task, { jobId: job.id, commandRunId: commandRun.id, request }));
         } else {
-          results.push(await this.runAuto(task, { jobId: job.id, commandRunId: commandRun.id, request }));
+          results.push(await this.runAuto(task, { jobId: job.id, commandRunId: commandRun.id, request, warnings }));
         }
         completedKeys.add(task.task.key);
         processedCount = completedKeys.size;
@@ -1308,7 +1390,7 @@ export class QaTasksService {
       commandRunId: commandRun.id,
       selection,
       results,
-      warnings: selection.warnings,
+      warnings,
     };
   }
 }

@@ -6,7 +6,15 @@ import fs from "node:fs/promises";
 import { RefineTasksService } from "../RefineTasksService.js";
 import { WorkspaceResolver } from "../../../workspace/WorkspaceManager.js";
 import { WorkspaceRepository } from "@mcoda/db";
+import { JobService } from "../../jobs/JobService.js";
 import type { RefineTasksPlan } from "@mcoda/shared";
+
+class StubRatingService {
+  calls: any[] = [];
+  async rate(request: any) {
+    this.calls.push(request);
+  }
+}
 
 describe("RefineTasksService", () => {
   let workspaceDir: string;
@@ -168,5 +176,44 @@ describe("RefineTasksService", () => {
     });
     assert.equal(result.updatedTasks?.length ?? 0, 0);
     assert.ok(result.plan.warnings?.some((w) => w.includes("not in selection")));
+  });
+
+  it("invokes agent rating when enabled", async () => {
+    await service.close();
+    repo = await WorkspaceRepository.create(workspaceDir);
+    const ratingService = new StubRatingService();
+    const agentOutput = JSON.stringify({
+      operations: [{ op: "update_estimate", taskKey, storyPoints: 2 }],
+    });
+    const agentService = {
+      invoke: async () => ({ output: agentOutput }),
+    } as any;
+    const routingService = {
+      resolveAgentForCommand: async () => ({
+        agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any;
+    const docdex = { search: async () => [] } as any;
+    const jobService = new JobService(workspace, repo);
+    service = new RefineTasksService(workspace, {
+      docdex,
+      jobService,
+      agentService,
+      repo: { close: async () => {} } as any,
+      workspaceRepo: repo,
+      routingService,
+      ratingService: ratingService as any,
+    });
+
+    await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      agentStream: false,
+      rateAgents: true,
+    });
+
+    assert.equal(ratingService.calls.length, 1);
+    assert.equal(ratingService.calls[0]?.commandName, "refine-tasks");
+    assert.equal(ratingService.calls[0]?.agentId, "agent-1");
   });
 });

@@ -25,6 +25,7 @@ export class QaTasksApi {
         testCommand: request.testCommand,
         agentName: request.agentName,
         agentStream: request.agentStream,
+        rateAgents: request.rateAgents,
         createFollowupTasks: request.createFollowupTasks,
         dryRun: request.dryRun,
         result: request.result,

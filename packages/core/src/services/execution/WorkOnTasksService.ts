@@ -11,6 +11,7 @@ import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from "./TaskSelectionService.js";
 import { TaskStateService } from "./TaskStateService.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
 
 const exec = promisify(execCb);
@@ -36,6 +37,7 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   dryRun?: boolean;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   baseBranch?: string;
   onAgentChunk?: (chunk: string) => void;
 }
@@ -473,6 +475,7 @@ export class WorkOnTasksService {
   private taskLogSeq = new Map<string, number>();
   private vcs: VcsClient;
   private routingService: RoutingService;
+  private ratingService?: AgentRatingService;
   private async readPromptFiles(paths: string[]): Promise<string[]> {
     const contents: string[] = [];
     const seen = new Set<string>();
@@ -503,12 +506,14 @@ export class WorkOnTasksService {
       repo: GlobalRepository;
       vcsClient?: VcsClient;
       routingService: RoutingService;
+      ratingService?: AgentRatingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
     this.stateService = deps.stateService ?? new TaskStateService(deps.workspaceRepo);
     this.vcs = deps.vcsClient ?? new VcsClient();
     this.routingService = deps.routingService;
+    this.ratingService = deps.ratingService;
   }
 
   private async loadPrompts(agentId: string): Promise<{
@@ -634,6 +639,29 @@ export class WorkOnTasksService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private ensureRatingService(): AgentRatingService {
+    if (!this.ratingService) {
+      this.ratingService = new AgentRatingService(this.workspace, {
+        workspaceRepo: this.deps.workspaceRepo,
+        globalRepo: this.deps.repo,
+        agentService: this.deps.agentService,
+        routingService: this.routingService,
+      });
+    }
+    return this.ratingService;
+  }
+
+  private resolveTaskComplexity(task: TaskSelectionPlan["ordered"][number]["task"]): number | undefined {
+    const metadata = (task.metadata as Record<string, unknown> | null | undefined) ?? {};
+    const metaComplexity =
+      typeof metadata.complexity === "number" && Number.isFinite(metadata.complexity) ? metadata.complexity : undefined;
+    const storyPoints =
+      typeof task.storyPoints === "number" && Number.isFinite(task.storyPoints) ? task.storyPoints : undefined;
+    const candidate = metaComplexity ?? storyPoints;
+    if (!Number.isFinite(candidate ?? NaN)) return undefined;
+    return Math.min(10, Math.max(1, Math.round(candidate as number)));
   }
 
   private nextLogSeq(taskRunId: string): number {
@@ -1485,6 +1513,9 @@ export class WorkOnTasksService {
             if (fallbackCommand) testCommands = [fallbackCommand];
           }
           const runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+          if (!testCommands.length && hasTestRequirements(testRequirements) && runAllTestsCommandHint) {
+            testCommands = [runAllTestsCommandHint];
+          }
           const runAllTestsNote = request.dryRun
             ? ""
             : runAllTestsCommandHint
@@ -2245,6 +2276,32 @@ export class WorkOnTasksService {
           await emitTaskEndOnce();
           if (lockAcquired) {
             await this.deps.workspaceRepo.releaseTaskLock(task.task.id, taskRun.id);
+          }
+          if (request.rateAgents && tokensPromptTotal + tokensCompletionTotal > 0) {
+            try {
+              const ratingService = this.ensureRatingService();
+              await ratingService.rate({
+                workspace: this.workspace,
+                agentId: agent.id,
+                commandName: "work-on-tasks",
+                jobId: job.id,
+                commandRunId: commandRun.id,
+                taskId: task.task.id,
+                taskKey: task.task.key,
+                discipline: task.task.type ?? undefined,
+                complexity: this.resolveTaskComplexity(task.task),
+              });
+            } catch (error) {
+              const message = `Agent rating failed for ${task.task.key}: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+              warnings.push(message);
+              try {
+                await this.logTask(taskRun.id, message, "rating");
+              } catch {
+                /* ignore rating log failures */
+              }
+            }
           }
         }
     }

@@ -42,6 +42,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@mcoda/shared": "workspace:*"
+    "@mcoda/shared": "workspace:*",
+    "docdex": "^0.2.22"
   }
 }

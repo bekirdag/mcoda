@@ -12,6 +12,7 @@ import { BacklogService } from "../backlog/BacklogService.js";
 import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
@@ -31,6 +32,7 @@ export interface CodeReviewRequest extends TaskSelectionFilters {
   dryRun?: boolean;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   resumeJobId?: string;
 }
 
@@ -161,6 +163,7 @@ export class CodeReviewService {
   private vcs: VcsClient;
   private taskLogSeq = new Map<string, number>();
   private routingService: RoutingService;
+  private ratingService?: AgentRatingService;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -174,12 +177,14 @@ export class CodeReviewService {
       repo: GlobalRepository;
       vcsClient?: VcsClient;
       routingService: RoutingService;
+      ratingService?: AgentRatingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
     this.stateService = deps.stateService ?? new TaskStateService(deps.workspaceRepo);
     this.vcs = deps.vcsClient ?? new VcsClient();
     this.routingService = deps.routingService;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CodeReviewService> {
@@ -323,6 +328,28 @@ export class CodeReviewService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private ensureRatingService(): AgentRatingService {
+    if (!this.ratingService) {
+      this.ratingService = new AgentRatingService(this.workspace, {
+        workspaceRepo: this.deps.workspaceRepo,
+        globalRepo: this.deps.repo,
+        agentService: this.deps.agentService,
+        routingService: this.routingService,
+      });
+    }
+    return this.ratingService;
+  }
+
+  private resolveTaskComplexity(task: TaskRow): number | undefined {
+    const metadata = (task.metadata as Record<string, unknown> | null | undefined) ?? {};
+    const metaComplexity =
+      typeof metadata.complexity === "number" && Number.isFinite(metadata.complexity) ? metadata.complexity : undefined;
+    const storyPoints = typeof task.storyPoints === "number" && Number.isFinite(task.storyPoints) ? task.storyPoints : undefined;
+    const candidate = metaComplexity ?? storyPoints;
+    if (!Number.isFinite(candidate ?? NaN)) return undefined;
+    return Math.min(10, Math.max(1, Math.round(candidate as number)));
   }
 
   private async selectTasksViaApi(filters: {
@@ -960,6 +987,37 @@ export class CodeReviewService {
     const systemPrompts = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
 
     const results: TaskReviewResult[] = [];
+    const maybeRateTask = async (task: TaskRow, taskRunId: string, tokensTotal: number): Promise<void> => {
+      if (!request.rateAgents || tokensTotal <= 0) return;
+      try {
+        const ratingService = this.ensureRatingService();
+        await ratingService.rate({
+          workspace: this.workspace,
+          agentId: agent.id,
+          commandName: "code-review",
+          jobId,
+          commandRunId: commandRun.id,
+          taskId: task.id,
+          taskKey: task.key,
+          discipline: task.type ?? undefined,
+          complexity: this.resolveTaskComplexity(task),
+        });
+      } catch (error) {
+        const message = `Agent rating failed for ${task.key}: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        try {
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId,
+            sequence: this.sequenceForTask(taskRunId),
+            timestamp: new Date().toISOString(),
+            source: "rating",
+            message,
+          });
+        } catch {
+          /* ignore rating log failures */
+        }
+      }
+    };
 
     for (const task of tasks) {
       const statusBefore = task.status;
@@ -984,6 +1042,7 @@ export class CodeReviewService {
 
       // Debug visibility: show prompts/task details for this run
       const systemPrompt = systemPrompts.join("\n\n");
+      let tokensTotal = 0;
 
       try {
         const metadata = (task.metadata as any) ?? {};
@@ -1093,7 +1152,8 @@ export class CodeReviewService {
         ) => {
           const tokensPrompt = tokenMeta?.tokensPrompt ?? estimateTokens(promptText);
           const tokensCompletion = tokenMeta?.tokensCompletion ?? estimateTokens(outputText);
-          const tokensTotal = tokenMeta?.tokensTotal ?? tokensPrompt + tokensCompletion;
+          const entryTotal = tokenMeta?.tokensTotal ?? tokensPrompt + tokensCompletion;
+          tokensTotal += entryTotal;
           await this.deps.jobService.recordTokenUsage({
             workspaceId: this.workspace.workspaceId,
             agentId: agent.id,
@@ -1105,7 +1165,7 @@ export class CodeReviewService {
             projectId: task.projectId,
             tokensPrompt,
             tokensCompletion,
-            tokensTotal,
+            tokensTotal: entryTotal,
             durationSeconds,
             timestamp: new Date().toISOString(),
             metadata: { commandName: "code-review", phase, action: phase },
@@ -1351,6 +1411,7 @@ export class CodeReviewService {
         await this.deps.jobService.updateJobStatus(jobId, "running", {
           processedItems: state?.reviewed.length ?? 0,
         });
+        await maybeRateTask(task, taskRun.id, tokensTotal);
         continue;
       }
 
@@ -1367,6 +1428,7 @@ export class CodeReviewService {
       await this.deps.jobService.updateJobStatus(jobId, "running", {
         processedItems: state?.reviewed.length ?? 0,
       });
+      await maybeRateTask(task, taskRun.id, tokensTotal);
     }
 
     await this.deps.jobService.updateJobStatus(jobId, "completed", {

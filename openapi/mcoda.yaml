@@ -40,6 +40,8 @@ x-mcoda-command-capabilities:
     required: [code_review]
   qa-tasks:
     required: [qa_interpretation]
+  agent-rating:
+    required: []
   pdr:
     required: [docdex_query]
   sds:

@@ -142,6 +142,7 @@ export interface TaskOrderingRequest {
   includeBlocked?: boolean;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
 }
 
 type TaskNode = TaskRow & {

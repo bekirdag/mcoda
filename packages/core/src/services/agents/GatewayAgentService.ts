@@ -168,6 +168,8 @@ const scoreUsage = (discipline: string, bestUsage?: string, capabilities?: strin
   return score;
 };
 
+const EXPLORATION_RATE = 0.1;
+
 const DEFAULT_STATUS_FILTER = [
   "not_started",
   "in_progress",
@@ -295,6 +297,7 @@ export interface GatewayAgentRequest extends TaskSelectionFilters {
   maxDocs?: number;
   agentStream?: boolean;
   onStreamChunk?: (chunk: string) => void;
+  rateAgents?: boolean;
 }
 
 type Candidate = {
@@ -305,6 +308,7 @@ type Candidate = {
   reasoning: number;
   usageScore: number;
   cost: number;
+  maxComplexity: number;
 };
 
 export class GatewayAgentService {
@@ -448,15 +452,15 @@ export class GatewayAgentService {
           const caps = await this.deps.globalRepo.getAgentCapabilities(overrideAgent.id);
           const missing = requiredCaps.filter((cap) => !caps.includes(cap));
           const health = await this.deps.globalRepo.getAgentHealth(overrideAgent.id);
-          if (missing.length === 0 && health?.status !== "unreachable") {
-            return overrideAgent;
-          }
-          if (missing.length) {
-            warnings.push(
-              `Override agent ${overrideAgent.slug} is missing gateway capabilities (${missing.join(", ")}); ignoring override.`,
-            );
-          } else if (health?.status === "unreachable") {
+          if (health?.status === "unreachable") {
             warnings.push(`Override agent ${overrideAgent.slug} is unreachable; ignoring override.`);
+          } else if (missing.length === 0) {
+            return overrideAgent;
+          } else {
+            warnings.push(
+              `Override agent ${overrideAgent.slug} is missing gateway capabilities (${missing.join(", ")}); proceeding with override as requested.`,
+            );
+            return overrideAgent;
           }
         } catch (overrideError) {
           warnings.push(`Override agent ${override} could not be resolved (${(overrideError as Error).message}); ignoring override.`);
@@ -761,6 +765,10 @@ export class GatewayAgentService {
       const usageScore = scoreUsage(discipline, agent.bestUsage, capabilities);
       const cost = agent.costPerMillion ?? Number.POSITIVE_INFINITY;
       const adjustedQuality = healthEntry?.status === "degraded" ? quality - 0.5 : quality;
+      const maxComplexity =
+        typeof agent.maxComplexity === "number" && Number.isFinite(agent.maxComplexity)
+          ? clamp(Math.round(agent.maxComplexity), 1, 10)
+          : 5;
       candidates.push({
         agent,
         capabilities,
@@ -769,6 +777,7 @@ export class GatewayAgentService {
         reasoning,
         usageScore,
         cost,
+        maxComplexity,
       });
     }
     return candidates;
@@ -778,10 +787,31 @@ export class GatewayAgentService {
     if (candidates.length === 0) {
       throw new Error("No eligible agents available for this job");
     }
-    const sortedQuality = candidates.map((c) => c.quality);
+    const normalizedComplexity = clamp(Math.round(complexity), 1, 10);
+    const eligible = candidates.filter((c) => c.maxComplexity >= normalizedComplexity);
+    const pool = eligible.length ? eligible : candidates;
+    const gatingNote = eligible.length ? "" : ` No agents meet max complexity ${normalizedComplexity}; using best available.`;
+
+    if (Math.random() < EXPLORATION_RATE) {
+      const stretchPool =
+        eligible.length && normalizedComplexity > 1
+          ? candidates.filter((c) => c.maxComplexity < normalizedComplexity && c.maxComplexity >= normalizedComplexity - 1)
+          : [];
+      const sortedByQuality = pool.slice().sort((a, b) => a.quality - b.quality);
+      const redemptionPool = sortedByQuality.slice(0, Math.max(1, Math.ceil(pool.length * 0.2)));
+      const useStretch = stretchPool.length > 0 && Math.random() < 0.5;
+      const explorePool = useStretch ? stretchPool : redemptionPool;
+      const pick = explorePool[Math.floor(Math.random() * explorePool.length)];
+      const rationale = useStretch
+        ? `Exploration: stretching an agent (max complexity ${pick.maxComplexity}) for task complexity ${normalizedComplexity}/10.${gatingNote}`
+        : `Exploration: redemption run for a lower-rated agent to reassess performance.${gatingNote}`;
+      return { pick, rationale };
+    }
+
+    const sortedQuality = pool.map((c) => c.quality);
     const maxQuality = Math.max(...sortedQuality);
-    if (complexity >= 9) {
-      const pick = candidates
+    if (normalizedComplexity >= 9) {
+      const pick = pool
         .slice()
         .sort((a, b) => {
           if (b.quality !== a.quality) return b.quality - a.quality;
@@ -791,12 +821,12 @@ export class GatewayAgentService {
         })[0];
       return {
         pick,
-        rationale: `Complexity ${complexity}/10 requires the highest capability; selected top-rated agent with best fit for ${discipline}.`,
+        rationale: `Complexity ${normalizedComplexity}/10 requires the highest capability; selected top-rated agent with best fit for ${discipline}.${gatingNote}`,
       };
     }
-    if (complexity >= 8) {
-      const pool = candidates.filter((c) => c.quality >= maxQuality - 1);
-      const pick = (pool.length ? pool : candidates)
+    if (normalizedComplexity >= 8) {
+      const qualityPool = pool.filter((c) => c.quality >= maxQuality - 1);
+      const pick = (qualityPool.length ? qualityPool : pool)
         .slice()
         .sort((a, b) => {
           if (b.usageScore !== a.usageScore) return b.usageScore - a.usageScore;
@@ -805,12 +835,12 @@ export class GatewayAgentService {
         })[0];
       return {
         pick,
-        rationale: `Complexity ${complexity}/10 favors strong agents with good cost/fit balance; selected best-fit candidate.`,
+        rationale: `Complexity ${normalizedComplexity}/10 favors strong agents with good cost/fit balance; selected best-fit candidate.${gatingNote}`,
       };
     }
-    const target = complexity;
-    const pool = candidates.filter((c) => c.quality >= target);
-    const base = pool.length ? pool : candidates;
+    const target = normalizedComplexity;
+    const qualityPool = pool.filter((c) => c.quality >= target);
+    const base = qualityPool.length ? qualityPool : pool;
     const pick = base
       .slice()
       .sort((a, b) => {
@@ -823,7 +853,7 @@ export class GatewayAgentService {
       })[0];
     return {
       pick,
-      rationale: `Complexity ${complexity}/10 targets a comparable tier agent; selected closest match with discipline fit and cost awareness.`,
+      rationale: `Complexity ${normalizedComplexity}/10 targets a comparable tier agent; selected closest match with discipline fit and cost awareness.${gatingNote}`,
     };
   }
 

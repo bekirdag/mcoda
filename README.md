@@ -25,6 +25,8 @@ mcoda is a workflow CLI that connects planning, documentation, and delivery. It 
 | ⚙️ Execution | Drive work, review, and QA loops | Jobs, logs, and telemetry |
 | 🤝 Routing | Choose the right agent per command | Defaults and previews |
 
+Optional agent rating is available with `--rate-agents` to score outputs (quality, cost, time, iterations), update per-agent ratings, and inform gateway routing with max-complexity gates and exploration. The reviewer prompt is stored at `.mcoda/prompts/agent-rating.md`.
+
 ## 🚀 Why teams use it
 - **Local-first**: keeps artifacts and state in your repo.
 - **Repeatable**: stable workflows with versioned outputs.
@@ -37,6 +39,11 @@ npm i -g mcoda
 mcoda set-workspace --workspace-root .
 mcoda --help
 ```
+
+## 🧰 Docdex & QA
+- mcoda ships with the `docdex` CLI. Run `docdex setup` to configure docdex and install Playwright + at least one browser for QA.
+- Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
+- If `~/.docdex/agents.md` exists, it is prepended to every agent run (gateway, work-on-tasks, code-review, QA, docs).
 
 ## 🔌 Integrations
 - **Docdex** for doc search and context stitching.
