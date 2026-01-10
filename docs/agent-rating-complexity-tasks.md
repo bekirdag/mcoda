@@ -96,7 +96,7 @@ Description:
   - Calculate total cost using `cost_per_million`.  
   - Call reviewer agent (default system agent) to produce a `quality_score`.  
   - Compute run score and update `agents.rating`/`reasoning_rating`, `rating_samples`, `rating_last_score`.  
-  - Update `max_complexity` with promotion/demotion logic.  
+  - Update `max_complexity` with promotion/demotion logic and apply a cooldown to prevent oscillation.  
   - Write a `rating.json` artifact under `.mcoda/jobs/<jobId>/`.  
   - Persist `agent_run_ratings` record.  
 - Use `RoutingService` with command name `agent-rating` to resolve reviewer agent, fallback to default.  
@@ -123,6 +123,32 @@ Acceptance criteria:
 - Rating service computes and persists rating outputs.  
 - Reviewer agent is invoked and parsed.  
 - Agent record updated with rating + complexity fields.  
+- Tests pass.
+
+## Task 13
+Slug: arcx-13-agent-ratings-cli  
+Title: Add `mcoda agent ratings` CLI view  
+Description:  
+- Add `AgentsApi.listAgentRunRatings(agentSlug, limit)` to fetch recent ratings.  
+- Extend `mcoda agent` CLI with a `ratings` subcommand that prints a table (or JSON with `--json`).  
+- Support `--agent <slug>` and `--last <N>` (default 50).  
+Unit tests:  
+- `packages/cli/src/__tests__/AgentsCommands.test.ts`: seed an agent run rating and verify the output includes the command/task keys.  
+Component tests:  
+- N/A  
+Integration tests:  
+- N/A  
+API tests:  
+- N/A  
+Files to touch:  
+- `packages/core/src/api/AgentsApi.ts`  
+- `packages/cli/src/commands/agents/AgentsCommands.ts`  
+- `packages/cli/src/__tests__/AgentsCommands.test.ts`  
+Dependencies:  
+- Task 2  
+Acceptance criteria:  
+- `mcoda agent ratings --agent <slug>` renders recent ratings.  
+- JSON output works with `--json`.  
 - Tests pass.
 
 ## Task 5
@@ -336,4 +362,3 @@ Dependencies:
 - Tasks 6, 11  
 Acceptance criteria:  
 - Docs describe rating mechanism, exploration, and complexity gating.
-

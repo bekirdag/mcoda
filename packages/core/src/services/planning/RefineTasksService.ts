@@ -147,20 +147,52 @@ const normalizePlanJson = (parsed: any): RefineTasksPlan | undefined => {
 
 const normalizeOperation = (op: any): RefineOperation => {
   if (!op || typeof op !== "object") return op as RefineOperation;
-  if (op.op !== "update_task") return op as RefineOperation;
-  const taskKey =
-    (op as any).taskKey ?? (op as any).key ?? (op as any).task ?? (op as any).targetTaskKey ?? null;
-  const updates = { ...(op as any).updates };
-  const inlineFields = ["title", "description", "acceptanceCriteria", "type", "status", "storyPoints", "priority", "dependsOn", "metadata"];
-  for (const field of inlineFields) {
-    if (op[field] !== undefined && updates[field] === undefined) {
-      updates[field] = op[field];
+  const opType = (op as any).op;
+  const taskKey = (op as any).taskKey ?? (op as any).key ?? (op as any).task ?? (op as any).targetTaskKey ?? null;
+  if (opType === "update_task") {
+    const updates = { ...(op as any).updates };
+    const inlineFields = [
+      "title",
+      "description",
+      "acceptanceCriteria",
+      "type",
+      "status",
+      "storyPoints",
+      "priority",
+      "dependsOn",
+      "metadata",
+    ];
+    for (const field of inlineFields) {
+      if (op[field] !== undefined && updates[field] === undefined) {
+        updates[field] = op[field];
+      }
     }
+    return {
+      ...(op as any),
+      taskKey,
+      updates,
+    } as RefineOperation;
+  }
+  if (opType === "split_task") {
+    const children =
+      Array.isArray((op as any).children)
+        ? (op as any).children
+        : Array.isArray((op as any).subtasks)
+          ? (op as any).subtasks
+          : Array.isArray((op as any).newTasks)
+            ? (op as any).newTasks
+            : Array.isArray((op as any).tasks)
+              ? (op as any).tasks
+              : undefined;
+    return {
+      ...(op as any),
+      taskKey,
+      children,
+    } as RefineOperation;
   }
   return {
     ...(op as any),
     taskKey,
-    updates,
   } as RefineOperation;
 };
 

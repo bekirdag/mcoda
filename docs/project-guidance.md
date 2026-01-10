@@ -75,7 +75,7 @@ Keep changes aligned to this structure; add new files in the appropriate module.
 
 ## Docdex usage (required)
 Use docdex before any non-trivial change:
-- **Local search:** `docdex_search` / `docdexd query` for relevant docs and code references.
+- **Local search:** `docdex_search` / `docdexd chat` for relevant docs and code references.
 - **AST and symbols:** `docdex_ast`, `docdex_symbols` to locate classes/methods before creating new ones.
 - **Impact graph:** `docdex_impact_diagnostics` to see downstream effects of changes.
 - **Code intelligence:** open relevant snippets with `docdex_open` and confirm contracts.

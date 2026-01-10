@@ -279,10 +279,17 @@ export class OpenApiService {
   }
 
   async close(): Promise<void> {
-    if ((this.agentService as any).close) await this.agentService.close();
-    if ((this.jobService as any).close) await this.jobService.close();
-    if ((this.repo as any)?.close) await (this.repo as any).close();
-    if ((this.workspaceRepo as any)?.close) await (this.workspaceRepo as any).close();
+    const swallow = async (fn?: () => Promise<void>) => {
+      try {
+        if (fn) await fn();
+      } catch {
+        // Best-effort close; ignore errors (including "database is closed").
+      }
+    };
+    await swallow((this.agentService as any).close?.bind(this.agentService));
+    await swallow((this.jobService as any).close?.bind(this.jobService));
+    await swallow((this.repo as any)?.close?.bind(this.repo));
+    await swallow((this.workspaceRepo as any)?.close?.bind(this.workspaceRepo));
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {
@@ -346,11 +353,15 @@ export class OpenApiService {
 
   private sanitizeOutput(raw: string): string {
     const trimmed = raw.trim();
-    if (trimmed.startsWith("```")) {
-      const withoutFence = trimmed.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/, "");
-      return withoutFence.trim();
+    let body = trimmed;
+    if (body.startsWith("```")) {
+      body = body.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/, "");
     }
-    return trimmed;
+    const openapiIndex = body.search(/^openapi:\s*\d/m);
+    if (openapiIndex > 0) {
+      body = body.slice(openapiIndex);
+    }
+    return body.trim();
   }
 
   private validateSpec(doc: any): string[] {

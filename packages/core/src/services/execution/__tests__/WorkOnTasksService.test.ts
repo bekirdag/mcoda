@@ -70,6 +70,28 @@ class StubAgentServiceCapture {
   }
 }
 
+class StubAgentServiceJsonPlanThenPatch {
+  invocations = 0;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invocations += 1;
+    if (this.invocations === 1) {
+      return { output: JSON.stringify({ plan: ["step one", "step two"], notes: "no patch yet" }), adapter: "local-model" };
+    }
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubAgentServiceTestFix {
   invocations = 0;
   async resolveAgent() {
@@ -100,6 +122,25 @@ class StubAgentServiceRunAllFix {
     this.invocations += 1;
     const fileName = this.invocations === 1 ? "work.txt" : "global.pass";
     const output = [`FILE: ${fileName}`, "```", "ok", "```"].join("\n");
+    return { output, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceRunAllOnce {
+  invocations = 0;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invocations += 1;
+    const output = ["FILE: global.pass", "```", "ok", "```"].join("\n");
     return { output, adapter: "local-model" };
   }
   async getPrompts() {
@@ -482,6 +523,42 @@ test("workOnTasks prepends project guidance to agent input", async () => {
   }
 });
 
+test("workOnTasks retries when agent returns json-only output", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceJsonPlanThenPatch();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.ok(agent.invocations >= 2);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks retries failing tests until they pass", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -584,6 +661,65 @@ test("workOnTasks retries when run-all tests fail", async () => {
       () => false,
     );
     assert.equal(globalPassExists, true);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks skips package-manager test commands when no package.json", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceRunAllOnce();
+  await writeRunAllScript(
+    dir,
+    [
+      "const fs = require(\"node:fs\");",
+      "if (!fs.existsSync(\"global.pass\")) {",
+      "  console.error(\"missing global.pass\");",
+      "  process.exit(1);",
+      "}",
+      "process.exit(0);",
+      "",
+    ].join("\n"),
+  );
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      tests: ["npm test"],
+      test_requirements: {
+        unit: ["password utility tests"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.equal(agent.invocations, 1);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

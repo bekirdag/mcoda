@@ -7,7 +7,7 @@ import {
   UpdateAgentInput,
   CryptoHelper,
 } from "@mcoda/shared";
-import { GlobalCommandRun, GlobalRepository } from "@mcoda/db";
+import { AgentRunRatingRow, GlobalCommandRun, GlobalRepository } from "@mcoda/db";
 import { AgentService, InvocationResult } from "@mcoda/agents";
 import { RoutingService } from "../services/agents/RoutingService.js";
 
@@ -89,6 +89,11 @@ export class AgentsApi {
       });
     }
     return results;
+  }
+
+  async listAgentRunRatings(idOrSlug: string, limit = 50): Promise<AgentRunRatingRow[]> {
+    const agent = await this.resolveAgent(idOrSlug);
+    return this.repo.listAgentRunRatings(agent.id, limit);
   }
 
   async createAgent(input: CreateAgentInput): Promise<AgentResponse> {

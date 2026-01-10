@@ -789,23 +789,38 @@ export class GatewayAgentService {
     }
     const normalizedComplexity = clamp(Math.round(complexity), 1, 10);
     const eligible = candidates.filter((c) => c.maxComplexity >= normalizedComplexity);
-    const pool = eligible.length ? eligible : candidates;
-    const gatingNote = eligible.length ? "" : ` No agents meet max complexity ${normalizedComplexity}; using best available.`;
+    let pool = eligible;
+    let gatingNote = "";
+    if (!eligible.length) {
+      const fallback =
+        normalizedComplexity > 1
+          ? candidates.filter((c) => c.maxComplexity >= normalizedComplexity - 1)
+          : candidates;
+      pool = fallback.length ? fallback : candidates;
+      gatingNote = fallback.length
+        ? ` No agents meet max complexity ${normalizedComplexity}; allowing ${normalizedComplexity - 1} fallback.`
+        : ` No agents meet max complexity ${normalizedComplexity}; using best available.`;
+    }
 
     if (Math.random() < EXPLORATION_RATE) {
       const stretchPool =
-        eligible.length && normalizedComplexity > 1
+        normalizedComplexity > 1
           ? candidates.filter((c) => c.maxComplexity < normalizedComplexity && c.maxComplexity >= normalizedComplexity - 1)
           : [];
+      const allowRedemption = normalizedComplexity <= 4;
       const sortedByQuality = pool.slice().sort((a, b) => a.quality - b.quality);
-      const redemptionPool = sortedByQuality.slice(0, Math.max(1, Math.ceil(pool.length * 0.2)));
-      const useStretch = stretchPool.length > 0 && Math.random() < 0.5;
-      const explorePool = useStretch ? stretchPool : redemptionPool;
-      const pick = explorePool[Math.floor(Math.random() * explorePool.length)];
-      const rationale = useStretch
-        ? `Exploration: stretching an agent (max complexity ${pick.maxComplexity}) for task complexity ${normalizedComplexity}/10.${gatingNote}`
-        : `Exploration: redemption run for a lower-rated agent to reassess performance.${gatingNote}`;
-      return { pick, rationale };
+      const redemptionPool = allowRedemption ? sortedByQuality.slice(0, Math.max(1, Math.ceil(pool.length * 0.2))) : [];
+      const canUseStretch = stretchPool.length > 0;
+      const canUseRedemption = redemptionPool.length > 0;
+      if (canUseStretch || canUseRedemption) {
+        const useStretch = canUseStretch && (!canUseRedemption || Math.random() < 0.5);
+        const explorePool = useStretch ? stretchPool : redemptionPool;
+        const pick = explorePool[Math.floor(Math.random() * explorePool.length)];
+        const rationale = useStretch
+          ? `Exploration: stretching an agent (max complexity ${pick.maxComplexity}) for task complexity ${normalizedComplexity}/10.${gatingNote}`
+          : `Exploration: redemption run for a lower-rated agent to reassess performance.${gatingNote}`;
+        return { pick, rationale };
+      }
     }
 
     const sortedQuality = pool.map((c) => c.quality);

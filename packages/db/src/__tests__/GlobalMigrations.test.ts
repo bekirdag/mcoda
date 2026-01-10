@@ -76,3 +76,26 @@ test("GlobalMigrations backfills ratings for known agents", async () => {
     await db.close();
   }
 });
+
+test("GlobalMigrations ensures gateway-router capabilities", async () => {
+  const db = await openDb();
+  try {
+    await GlobalMigrations.run(db);
+    await db.run(
+      "INSERT INTO agents (id, slug, adapter, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ["agent-1", "gateway-router", "local-model", "now", "now"],
+    );
+
+    await GlobalMigrations.run(db);
+
+    const rows = (await db.all(
+      "SELECT capability FROM agent_capabilities WHERE agent_id = ? ORDER BY capability",
+      "agent-1",
+    )) as Array<{ capability: string }>;
+    const caps = rows.map((row) => row.capability);
+    assert.ok(caps.includes("plan"));
+    assert.ok(caps.includes("docdex_query"));
+  } finally {
+    await db.close();
+  }
+});

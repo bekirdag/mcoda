@@ -1,4 +1,5 @@
 import path from "node:path";
+import os from "node:os";
 import { createRequire } from "node:module";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
@@ -24,6 +25,15 @@ export interface DocdexBrowserInfo {
 }
 
 const DOCDEX_ENV_URLS = ["MCODA_DOCDEX_URL", "DOCDEX_URL"];
+const DEFAULT_DOCDEX_STATE_DIR = path.join(os.homedir(), ".docdex", "state");
+
+const buildDocdexEnv = (env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const merged = { ...process.env, ...(env ?? {}) };
+  if (!merged.DOCDEX_STATE_DIR) {
+    merged.DOCDEX_STATE_DIR = DEFAULT_DOCDEX_STATE_DIR;
+  }
+  return merged;
+};
 
 const resolveDocdexPackageRoot = (): string | undefined => {
   try {
@@ -57,13 +67,24 @@ export const runDocdex = async (
   }
   const { stdout, stderr } = await execFile(process.execPath, [binary, ...args], {
     cwd: options.cwd,
-    env: options.env,
+    env: buildDocdexEnv(options.env),
   });
   return { stdout: stdout ?? "", stderr: stderr ?? "" };
 };
 
 export const readDocdexCheck = async (options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<DocdexCheckResult> => {
-  const { stdout, stderr } = await runDocdex(["check"], options);
+  let stdout = "";
+  let stderr = "";
+  try {
+    ({ stdout, stderr } = await runDocdex(["check"], options));
+  } catch (error) {
+    const execError = error as NodeJS.ErrnoException & { stdout?: string | Buffer; stderr?: string | Buffer };
+    stdout = typeof execError.stdout === "string" ? execError.stdout : execError.stdout?.toString() ?? "";
+    stderr = typeof execError.stderr === "string" ? execError.stderr : execError.stderr?.toString() ?? "";
+    if (!stdout && !stderr) {
+      throw error;
+    }
+  }
   const trimmed = stdout.trim() || stderr.trim();
   if (!trimmed) {
     throw new Error("Docdex check returned empty output");
