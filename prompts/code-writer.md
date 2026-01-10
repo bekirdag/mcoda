@@ -7,7 +7,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Skim workspace guides: `README.md`, the main project manifest (to see scripts and tooling), and any package-level docs.
 - Docdex usage (required): before any code search, query docdex with the task key and feature keywords to pull SDS/PDR/RFP/OpenAPI snippets. Preferred paths:
   - MCP client: call `docdex_search` with concise queries (`"bulk complete selection"`), `limit` 4–8; if results are stale, call `docdex_index` (empty `paths` reindexes all) then re-run search. Fetch `docdex_open` only for specific doc_ids to keep payloads small.
-  - CLI: `docdexd query --repo <repo> --query "bulk complete selection" --limit 6 --snippets=false` for summaries; call `/snippet/:doc_id?text_only=true` or `docdexd query ... --snippets=true` for a single target doc. If the index is missing/stale, run `docdexd index --repo <repo>` first.
+  - CLI: `docdexd chat --repo <repo> --query "bulk complete selection" --limit 6` for summaries. For a specific document, use `docdex_open` (MCP) or call `/snippet/:doc_id?text_only=true` after `docdexd serve`. If the index is missing/stale, run `docdexd index --repo <repo>` first.
   - Ensure the daemon is running if needed: `docdexd serve --repo <repo> --host 127.0.0.1 --port 46137 --log warn --secure-mode=false` for local use (or use MCP with `docdexd mcp --repo . --log warn --max-results 8`). Keep `.docdex/` out of VCS.
   - Capture constraints: data model fields/enums, offline/online expectations, bulk rules, accessibility/perf requirements, acceptance criteria. If docdex is unavailable, say so and fall back to the task’s documentation catalog helpers (FTS/JSON catalog) instead of opening entire doc files.
 - Map the target area: inspect the relevant folder/package, list likely entry points, and open nearby tests/utilities. Favor existing slices/stores/adapters over creating new ones; note the current data shape (fields, enums, persistence model).
@@ -25,6 +25,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Avoid writing partial/placeholder files—ensure every file has its imports, exports, and compiles in isolation before moving on.
 - If you encounter merge conflicts, resolve them first (clean conflict markers and ensure code compiles) before continuing task work.
 - If a target file does not exist, create it by emitting a new-file unified diff with full content (no placeholder edits to missing paths).
+- Output only code changes: unified diff inside ```patch``` fences for edits; `FILE:` blocks for new files. Do not output JSON unless forced; if forced, include a top-level `patch` string or `files` array.
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
 - Add or update tests alongside code, following the existing style and fixtures. For each task, identify the relevant unit/component/integration/API tests and implement them as part of the change.
 - If you create a new test script or suite entry point, register it in `tests/all.js` so the run-all script stays complete.

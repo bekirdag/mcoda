@@ -18,6 +18,14 @@ import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
 const STATE_PATH = (workspaceRoot: string, jobId: string) => path.join(REVIEW_DIR(workspaceRoot, jobId), "state.json");
+const REVIEW_PROMPT_LIMITS = {
+  diff: 12000,
+  history: 3000,
+  docContext: 4000,
+  openapi: 8000,
+  checklist: 3000,
+};
+const DOCDEX_TIMEOUT_MS = 8000;
 const DEFAULT_CODE_REVIEW_PROMPT = [
   "You are the code-review agent. Before reviewing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
   "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
@@ -81,20 +89,52 @@ interface ReviewJobState {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
+const extractJsonSlice = (candidate: string): string | undefined => {
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return undefined;
+  return candidate.slice(start, end + 1);
+};
+
+const sanitizeJsonCandidate = (value: string): string => {
+  const cleanedLines = value
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (
+        trimmed.startsWith("{") ||
+        trimmed.startsWith("}") ||
+        trimmed.startsWith("[") ||
+        trimmed.startsWith("]") ||
+        trimmed.startsWith("\"")
+      ) {
+        return true;
+      }
+      return false;
+    })
+    .join("\n");
+  return cleanedLines.replace(/,\s*([}\]])/g, "$1");
+};
+
 const parseJsonOutput = (raw: string): ReviewAgentResult | undefined => {
   const trimmed = raw.trim();
   const fenced = trimmed.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   const candidates = [trimmed, fenced];
   for (const candidate of candidates) {
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) continue;
-    const slice = candidate.slice(start, end + 1);
+    const slice = extractJsonSlice(candidate);
+    if (!slice) continue;
     try {
       const parsed = JSON.parse(slice) as ReviewAgentResult;
       return { ...parsed, raw: raw };
     } catch {
-      /* ignore */
+      const sanitized = sanitizeJsonCandidate(slice);
+      try {
+        const parsed = JSON.parse(sanitized) as ReviewAgentResult;
+        return { ...parsed, raw: raw };
+      } catch {
+        /* ignore */
+      }
     }
   }
   return undefined;
@@ -108,6 +148,28 @@ const summarizeComments = (comments: { category?: string; body: string; file?: s
       return `- [${c.category ?? "general"}] ${loc ? `${loc} ` : ""}${c.body}`;
     })
     .join("\n");
+};
+
+const truncateSection = (label: string, text: string, limit: number): string => {
+  if (!text) return text;
+  if (text.length <= limit) return text;
+  const trimmed = text.slice(0, limit);
+  const remaining = text.length - limit;
+  return `${trimmed}\n...[truncated ${remaining} chars from ${label}]`;
+};
+
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 };
 
 const JSON_CONTRACT = `{
@@ -434,10 +496,14 @@ export class CodeReviewService {
     const queries = [...new Set([...(paths.length ? this.componentHintsFromPaths(paths) : []), taskTitle, ...(acceptance ?? [])])].slice(0, 8);
     for (const query of queries) {
       try {
-        const docs = await this.deps.docdex.search({
-          query,
-          profile: "workspace-code",
-        });
+        const docs = await withTimeout(
+          this.deps.docdex.search({
+            query,
+            profile: "workspace-code",
+          }),
+          DOCDEX_TIMEOUT_MS,
+          `docdex search for "${query}"`,
+        );
         snippets.push(
           ...docs.slice(0, 2).map((doc) => {
             const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
@@ -468,6 +534,13 @@ export class CodeReviewService {
       parts.push(params.systemPrompts.join("\n\n"));
     }
     const acceptance = params.task.acceptanceCriteria && params.task.acceptanceCriteria.length ? params.task.acceptanceCriteria.join(" | ") : "none provided";
+    const historySummary = truncateSection("history", params.historySummary, REVIEW_PROMPT_LIMITS.history);
+    const docContextText = params.docContext.length ? truncateSection("doc context", params.docContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext) : "";
+    const openapiSnippet = params.openapiSnippet ? truncateSection("openapi", params.openapiSnippet, REVIEW_PROMPT_LIMITS.openapi) : undefined;
+    const checklistsText = params.checklists?.length
+      ? truncateSection("checklists", params.checklists.join("\n\n"), REVIEW_PROMPT_LIMITS.checklist)
+      : "";
+    const diffText = truncateSection("diff", params.diff || "(no diff)", REVIEW_PROMPT_LIMITS.diff);
     parts.push(
       [
         `Task ${params.task.key}: ${params.task.title}`,
@@ -477,14 +550,14 @@ export class CodeReviewService {
         `Story description: ${params.task.storyDescription ? params.task.storyDescription : "none"}`,
         `Status: ${params.task.status}, Branch: ${params.branch ?? params.task.vcsBranch ?? "n/a"} (base ${params.baseRef})`,
         `Task description: ${params.task.description ? params.task.description : "none"}`,
-        `History:\n${params.historySummary}`,
+        `History:\n${historySummary}`,
         `Acceptance criteria: ${acceptance}`,
-        params.docContext.length ? `Doc context (docdex excerpts):\n${params.docContext.join("\n")}` : "Doc context: none",
-        params.openapiSnippet
-          ? `OpenAPI (authoritative contract; do not invent endpoints outside this):\n${params.openapiSnippet}`
+        docContextText ? `Doc context (docdex excerpts):\n${docContextText}` : "Doc context: none",
+        openapiSnippet
+          ? `OpenAPI (authoritative contract; do not invent endpoints outside this):\n${openapiSnippet}`
           : "OpenAPI: not provided; avoid inventing endpoints.",
-        params.checklists && params.checklists.length ? `Review checklists/runbook:\n${params.checklists.join("\n\n")}` : "Checklists: none",
-        "Diff:\n" + (params.diff || "(no diff)"),
+        checklistsText ? `Review checklists/runbook:\n${checklistsText}` : "Checklists: none",
+        "Diff:\n" + diffText,
         "Respond with STRICT JSON only, matching:\n" + JSON_CONTRACT,
         "Rules: honor OpenAPI contracts; cite doc context where relevant; do not add prose outside JSON.",
       ].join("\n"),

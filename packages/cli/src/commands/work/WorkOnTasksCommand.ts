@@ -192,6 +192,10 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
 export class WorkOnTasksCommand {
   static async run(argv: string[]): Promise<void> {
     const parsed = parseWorkOnTasksArgs(argv);
+    if (parsed.agentStream === false) {
+      process.env.MCODA_STREAM_IO = "0";
+      process.env.MCODA_STREAM_IO_PROMPT = "0";
+    }
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,

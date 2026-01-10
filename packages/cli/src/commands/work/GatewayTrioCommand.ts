@@ -564,6 +564,10 @@ export class GatewayTrioCommand {
       process.exitCode = 1;
       return;
     }
+    if (parsed.agentStream === false) {
+      process.env.MCODA_STREAM_IO = "0";
+      process.env.MCODA_STREAM_IO_PROMPT = "0";
+    }
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,

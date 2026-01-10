@@ -25,7 +25,7 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
   "If you encounter merge conflicts, resolve them first (clean conflict markers and ensure code compiles) before continuing task work.",
-  "If a target file does not exist, create it by outputting a FILE block (not a diff): `FILE: path/to/file.ext` followed by a fenced code block containing the full file contents.",
+  "If a target file does not exist, create it by outputting a FILE block (not a diff): `FILE: path/to/file.ext` followed by a fenced code block containing the full file contents. Do not respond with JSON-only output; if the runtime forces JSON, include a top-level `patch` string (unified diff) or `files` array of {path, content}.",
 ].join("\n");
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
@@ -59,9 +59,37 @@ export interface WorkOnTasksResult {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
+const looksLikeUnifiedDiff = (value: string): boolean => {
+  if (/^diff --git /m.test(value) || /\*\*\* Begin Patch/.test(value)) return true;
+  const hasFileHeaders = /^---\s+\S+/m.test(value) && /^\+\+\+\s+\S+/m.test(value);
+  const hasHunk = /^@@\s+-\d+/m.test(value);
+  return hasFileHeaders && hasHunk;
+};
+
 const extractPatches = (output: string): string[] => {
-  const matches = [...output.matchAll(/```(?:patch|diff)[\s\S]*?```/g)];
-  return matches.map((m) => m[0].replace(/```(?:patch|diff)/, "").replace(/```$/, "").trim()).filter(Boolean);
+  const patches = new Set<string>();
+  const fenceRegex = /```(\w+)?\s*\r?\n([\s\S]*?)\r?\n```/g;
+
+  for (const match of output.matchAll(fenceRegex)) {
+    const lang = (match[1] ?? "").toLowerCase();
+    const content = (match[2] ?? "").trim();
+    if (!content) continue;
+    if (lang === "patch" || lang === "diff" || looksLikeUnifiedDiff(content)) {
+      patches.add(content);
+    }
+  }
+
+  const unfenced = output.replace(fenceRegex, "");
+  for (const match of unfenced.matchAll(/\*\*\* Begin Patch[\s\S]*?\*\*\* End Patch/g)) {
+    const content = match[0].trim();
+    if (content) patches.add(content);
+  }
+  for (const match of unfenced.matchAll(/^diff --git [\s\S]*?(?=^diff --git |\s*$)/gm)) {
+    const content = match[0].trim();
+    if (content) patches.add(content);
+  }
+
+  return Array.from(patches).filter(Boolean);
 };
 
 const extractFileBlocks = (output: string): Array<{ path: string; content: string }> => {
@@ -74,6 +102,127 @@ const extractFileBlocks = (output: string): Array<{ path: string; content: strin
     files.push({ path: filePath, content: match[2] ?? "" });
   }
   return files;
+};
+
+const looksLikeJsonOutput = (output: string): boolean => {
+  const trimmed = output.trim();
+  if (!trimmed) return false;
+  if (/```json/i.test(output)) return true;
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+};
+
+const parseJsonPayload = (output: string): unknown | null => {
+  const fenced = output.match(/```json([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : output.trim();
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+};
+
+const extractPatchesFromJson = (payload: unknown): string[] => {
+  const patches = new Set<string>();
+  const seen = new Set<unknown>();
+  const addPatchText = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const extracted = extractPatches(trimmed);
+    if (extracted.length) {
+      extracted.forEach((patch) => patches.add(patch));
+      return;
+    }
+    if (looksLikeUnifiedDiff(trimmed)) {
+      patches.add(trimmed);
+    }
+  };
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") {
+      if (typeof value === "string") addPatchText(value);
+      return;
+    }
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const directKeys = ["patch", "diff", "unified_diff", "unifiedDiff", "patchText", "patches", "diffs"];
+    for (const key of directKeys) {
+      if (record[key] === undefined) continue;
+      visit(record[key]);
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(payload);
+  return Array.from(patches);
+};
+
+const extractFileBlocksFromJson = (payload: unknown): Array<{ path: string; content: string }> => {
+  const files = new Map<string, string>();
+  const seen = new Set<unknown>();
+  const addFile = (filePath: string, content: string) => {
+    const normalizedPath = filePath.trim();
+    if (!normalizedPath) return;
+    files.set(normalizedPath, content);
+  };
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (typeof record.path === "string" && typeof record.content === "string") {
+      addFile(record.path, record.content);
+    }
+    if (typeof record.file === "string" && typeof record.contents === "string") {
+      addFile(record.file, record.contents);
+    }
+    const fileContainers = ["files", "fileBlocks", "file_blocks", "newFiles", "writeFiles"];
+    for (const key of fileContainers) {
+      const container = record[key];
+      if (!container || typeof container !== "object") continue;
+      if (Array.isArray(container)) {
+        container.forEach(visit);
+        continue;
+      }
+      const entries = Object.entries(container as Record<string, unknown>);
+      if (entries.length && entries.every(([, val]) => typeof val === "string")) {
+        entries.forEach(([filePath, content]) => addFile(filePath, content as string));
+      } else {
+        visit(container);
+      }
+    }
+    Object.values(record).forEach(visit);
+  };
+  visit(payload);
+  return Array.from(files.entries()).map(([filePath, content]) => ({ path: filePath, content }));
+};
+
+const extractAgentChanges = (
+  output: string,
+): { patches: string[]; fileBlocks: Array<{ path: string; content: string }>; jsonDetected: boolean } => {
+  let patches = extractPatches(output);
+  let fileBlocks = extractFileBlocks(output);
+  let jsonDetected = false;
+  if (patches.length === 0 && fileBlocks.length === 0) {
+    const payload = parseJsonPayload(output);
+    if (payload) {
+      jsonDetected = true;
+      patches = extractPatchesFromJson(payload);
+      fileBlocks = extractFileBlocksFromJson(payload);
+    } else if (looksLikeJsonOutput(output)) {
+      jsonDetected = true;
+    }
+  }
+  return { patches, fileBlocks, jsonDetected };
 };
 
 type TaskPhase = "selection" | "context" | "prompt" | "agent" | "apply" | "tests" | "vcs" | "finalize";
@@ -175,6 +324,29 @@ const detectRunAllTestsCommand = (workspaceRoot: string): string | undefined => 
   if (!fs.existsSync(scriptPath)) return undefined;
   const relative = path.relative(workspaceRoot, scriptPath).split(path.sep).join("/");
   return `${resolveNodeCommand()} ${relative}`;
+};
+
+const sanitizeTestCommands = (
+  commands: string[],
+  workspaceRoot: string,
+): { commands: string[]; skipped: string[] } => {
+  if (!commands.length) return { commands, skipped: [] };
+  const hasPackageJson = fs.existsSync(path.join(workspaceRoot, "package.json"));
+  const skipped: string[] = [];
+  const sanitized = commands.filter((command) => {
+    const trimmed = command.trim();
+    if (!trimmed) return false;
+    const normalized = trimmed.replace(/\s+/g, " ");
+    const isPkgManager = /^(npm|yarn|pnpm)\b/i.test(normalized);
+    if (!isPkgManager) return true;
+    const hasExplicitCwd = /\s(--prefix|-C)\s|\s(--prefix|-C)=/i.test(normalized);
+    if (!hasPackageJson && !hasExplicitCwd) {
+      skipped.push(command);
+      return false;
+    }
+    return true;
+  });
+  return { commands: sanitized, skipped };
 };
 
 const touchedFilesFromPatch = (patch: string): string[] => {
@@ -767,8 +939,8 @@ export class WorkOnTasksService {
       deps,
       `Allowed files: ${fileScope.length ? fileScope.join(", ") : "(not constrained)"}`,
       `Doc context:\n${docdexHint}`,
-      "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, emit a new-file diff with full content (and parent dirs) instead of editing a non-existent file so git apply succeeds. Use JSON.parse-friendly unified diffs.",
-      "Produce a concise plan and a patch in unified diff fenced with ```patch```.",
+      "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, emit a new-file diff with full content (and parent dirs) instead of editing a non-existent file so git apply succeeds. Use valid unified diffs without JSON wrappers.",
+      "Provide a concise plan as plain text bullet points, then output code changes. If editing existing files, emit a unified diff inside ```patch``` fences. If creating new files, emit FILE blocks. Do not output JSON (unless forced by the runtime, in which case include a top-level `patch` string or `files` array).",
     ].join("\n");
   }
 
@@ -1508,6 +1680,15 @@ export class WorkOnTasksService {
           const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
           const testRequirementsNote = formatTestRequirementsNote(testRequirements);
           let testCommands = normalizeTestCommands(metadata.tests);
+          const sanitized = sanitizeTestCommands(testCommands, this.workspace.workspaceRoot);
+          testCommands = sanitized.commands;
+          if (sanitized.skipped.length) {
+            await this.logTask(
+              taskRun.id,
+              `Skipped test commands without workspace package.json: ${sanitized.skipped.join("; ")}`,
+              "tests",
+            );
+          }
           if (!testCommands.length && hasTestRequirements(testRequirements)) {
             const fallbackCommand = detectDefaultTestCommand(this.workspace.workspaceRoot);
             if (fallbackCommand) testCommands = [fallbackCommand];
@@ -1807,23 +1988,20 @@ export class WorkOnTasksService {
 
             await recordUsage("agent", agentOutput, agentDuration, agentInput);
 
-            let patches = extractPatches(agentOutput);
-            let fileBlocks = extractFileBlocks(agentOutput);
+            let { patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput);
             if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
               triedRetry = true;
-              await this.logTask(
-                taskRun.id,
-                "Agent output did not include a patch or file blocks; retrying with explicit output instructions.",
-                "agent",
-              );
+              const retryReason = jsonDetected
+                ? "Agent output was JSON-only and did not include patch or file blocks; retrying with explicit output instructions."
+                : "Agent output did not include a patch or file blocks; retrying with explicit output instructions.";
+              await this.logTask(taskRun.id, retryReason, "agent");
               try {
-                const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput only code changes. If editing existing files, output a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, output FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis or narration.`;
+                const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput only code changes. If editing existing files, output a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, output FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis or narration. Do not output JSON unless the runtime forces it; if forced, return a top-level JSON object with either a \`patch\` string (unified diff) or a \`files\` array of {path, content}.`;
                 const retry = await invokeAgentOnce(retryInput, "agent");
                 agentOutput = retry.output;
                 agentDuration += retry.durationSeconds;
                 await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput);
-                patches = extractPatches(agentOutput);
-                fileBlocks = extractFileBlocks(agentOutput);
+                ({ patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput));
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");

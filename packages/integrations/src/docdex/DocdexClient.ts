@@ -115,8 +115,8 @@ export class DocdexClient {
     return this.resolvedBaseUrl;
   }
 
-  private async ensureRepoInitialized(baseUrl: string): Promise<void> {
-    if (this.repoId || this.initializing) return;
+  private async ensureRepoInitialized(baseUrl: string, force = false): Promise<void> {
+    if ((this.repoId && !force) || this.initializing) return;
     if (!this.options.workspaceRoot) return;
     this.initializing = true;
     try {
@@ -148,12 +148,25 @@ export class DocdexClient {
     }
     await this.ensureRepoInitialized(baseUrl);
     const url = new URL(pathname, baseUrl);
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;
-    if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
-    const response = await fetch(url, { ...init, headers: { ...headers, ...(init?.headers as any) } });
+    const buildHeaders = () => {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;
+      if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
+      return { ...headers, ...(init?.headers as any) };
+    };
+    const response = await fetch(url, { ...init, headers: buildHeaders() });
     if (!response.ok) {
-      throw new Error(`Docdex request failed (${response.status}): ${await response.text()}`);
+      const message = await response.text();
+      if (message.includes("missing_repo")) {
+        await this.ensureRepoInitialized(baseUrl, true);
+        if (this.repoId) {
+          const retry = await fetch(url, { ...init, headers: buildHeaders() });
+          if (retry.ok) return retry;
+          const retryMessage = await retry.text();
+          throw new Error(`Docdex request failed (${retry.status}): ${retryMessage}`);
+        }
+      }
+      throw new Error(`Docdex request failed (${response.status}): ${message}`);
     }
     return response;
   }
@@ -289,11 +302,18 @@ export class DocdexClient {
     if (!input.path) {
       throw new Error("Docdex register requires a file path to ingest.");
     }
+    await this.ensureRepoInitialized(baseUrl);
     const resolvedPath = path.isAbsolute(input.path)
       ? input.path
       : path.join(this.options.workspaceRoot ?? process.cwd(), input.path);
     const repoRoot = this.options.workspaceRoot ?? process.cwd();
-    await runDocdex(["ingest", "--repo", repoRoot, "--file", resolvedPath], { cwd: repoRoot });
+    await runDocdex(["ingest", "--repo", repoRoot, "--file", resolvedPath], {
+      cwd: repoRoot,
+      env: {
+        DOCDEX_URL: baseUrl,
+        MCODA_DOCDEX_URL: baseUrl,
+      },
+    });
     const registered = await this.findDocumentByPath(resolvedPath, input.docType).catch(() => undefined);
     if (registered) return registered;
     return this.buildLocalDoc(input.docType, resolvedPath, input.content, input.metadata);

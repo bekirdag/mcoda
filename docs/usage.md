@@ -284,6 +284,17 @@ mcoda agent use suku-ollama    # set as default for workspace
 
 Firewall guidance: Ollama has no auth; keep it bound to localhost or LAN IP and allowlist only trusted IPs (VPN/LAN). If exposing via the internet, use a reverse proxy with auth/TLS and open port 11434 only to trusted sources.
 
+### Agent ratings (optional)
+Record and review agent performance scores (quality, cost, time, iterations). Enable scoring per command with `--rate-agents`, then inspect runs:
+
+```sh
+mcoda agent ratings --agent codex --last 25
+mcoda agent ratings --agent codex --last 25 --json
+```
+
+- Rating reviews use the `agent-rating` routing default (falls back to the workspace/global default agent).
+- Gateway routing uses ratings plus `max_complexity` gates and small exploration runs to recalibrate agents.
+
 ### Code review (review pipeline)
 Run AI-assisted review on task branches and write findings to the workspace DB:
 

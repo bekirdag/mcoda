@@ -400,5 +400,17 @@ export class GlobalMigrations {
         await db.exec("ALTER TABLE workspace_defaults ADD COLUMN docdex_scope TEXT");
       }
     }
+
+    const ensureCapabilities = async (slug: string, capabilities: string[]): Promise<void> => {
+      const row = (await db.get("SELECT id FROM agents WHERE lower(slug) = ?", slug.toLowerCase())) as
+        | { id: string }
+        | undefined;
+      if (!row?.id) return;
+      for (const capability of capabilities) {
+        await db.run("INSERT OR IGNORE INTO agent_capabilities (agent_id, capability) VALUES (?, ?)", row.id, capability);
+      }
+    };
+
+    await ensureCapabilities("gateway-router", ["plan", "docdex_query"]);
   }
 }

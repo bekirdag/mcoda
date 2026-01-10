@@ -1,5 +1,6 @@
 import { execFileSync, execSync } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
 import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { WorkspaceResolver } from "@mcoda/core";
@@ -89,13 +90,22 @@ const ensureDocdexIndex = async (workspaceRoot: string): Promise<boolean> => {
     }
   };
 
+  const buildDocdexEnv = (): NodeJS.ProcessEnv => {
+    const env = { ...process.env };
+    if (!env.DOCDEX_STATE_DIR) {
+      env.DOCDEX_STATE_DIR = path.join(os.homedir(), ".docdex", "state");
+    }
+    return env;
+  };
+
   const runDocdex = (args: string[], cwd: string): boolean => {
     const bin = resolveDocdexBin();
+    const env = buildDocdexEnv();
     try {
       if (bin) {
-        execFileSync(process.execPath, [bin, ...args], { cwd, stdio: "ignore" });
+        execFileSync(process.execPath, [bin, ...args], { cwd, stdio: "ignore", env });
       } else {
-        execSync(`docdex ${args.join(" ")}`, { cwd, stdio: "ignore" });
+        execSync(`docdex ${args.join(" ")}`, { cwd, stdio: "ignore", env });
       }
       return true;
     } catch {

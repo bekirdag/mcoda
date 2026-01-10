@@ -28,6 +28,8 @@ const DEFAULT_REVIEW_PROMPT = [
   "}",
 ].join("\n");
 
+const COMPLEXITY_COOLDOWN_SECONDS = 60 * 60 * 24;
+
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
 const extractJson = (raw: string): Record<string, unknown> | undefined => {
@@ -276,27 +278,35 @@ export class AgentRatingService {
     const alpha = computeAlpha(request.ratingWindow ?? 50);
     const baseRating = agent.rating ?? runScore;
     const updatedRating = updateEmaRating(baseRating, runScore, alpha);
+    const baseReasoning = agent.reasoningRating ?? baseRating;
+    const updatedReasoning = updateEmaRating(baseReasoning, runScore, alpha);
     const updatedSamples = (agent.ratingSamples ?? 0) + 1;
     const now = new Date().toISOString();
+    const nowMs = Date.parse(now);
 
     let maxComplexity = agent.maxComplexity ?? 5;
     let complexitySamples = agent.complexitySamples ?? 0;
     let complexityUpdatedAt = agent.complexityUpdatedAt ?? undefined;
     const promoteThreshold = 7.5;
     const demoteThreshold = 4.0;
-    if (runScore >= promoteThreshold && review.qualityScore >= 7 && complexity >= maxComplexity) {
-      maxComplexity = Math.min(10, maxComplexity + 1);
-      complexityUpdatedAt = now;
-      complexitySamples += 1;
-    } else if (runScore <= demoteThreshold && complexity <= maxComplexity) {
-      maxComplexity = Math.max(1, maxComplexity - 1);
-      complexityUpdatedAt = now;
-      complexitySamples += 1;
+    const lastComplexityUpdate = complexityUpdatedAt ? Date.parse(complexityUpdatedAt) : NaN;
+    const canAdjustComplexity =
+      !Number.isFinite(lastComplexityUpdate) || nowMs - lastComplexityUpdate >= COMPLEXITY_COOLDOWN_SECONDS * 1000;
+    if (canAdjustComplexity) {
+      if (runScore >= promoteThreshold && review.qualityScore >= 7 && complexity >= maxComplexity) {
+        maxComplexity = Math.min(10, maxComplexity + 1);
+        complexityUpdatedAt = now;
+        complexitySamples += 1;
+      } else if (runScore <= demoteThreshold && complexity <= maxComplexity) {
+        maxComplexity = Math.max(1, maxComplexity - 1);
+        complexityUpdatedAt = now;
+        complexitySamples += 1;
+      }
     }
 
     await this.deps.globalRepo.updateAgent(agent.id, {
       rating: updatedRating,
-      reasoningRating: agent.reasoningRating ?? updatedRating,
+      reasoningRating: updatedReasoning,
       ratingSamples: updatedSamples,
       ratingLastScore: runScore,
       ratingUpdatedAt: now,

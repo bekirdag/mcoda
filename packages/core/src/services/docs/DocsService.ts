@@ -1104,6 +1104,7 @@ const PLACEHOLDER_PATTERNS = [
   /^[-*+.]?\s*Outstanding questions/i,
   /^[-*+.]?\s*Performance, reliability, compliance/i,
   /^[-*+.]?\s*Enumerate risks from the RFP/i,
+  /^I (will|am going to|plan to|am)\s+(read|review|analy[sz]e|gather|start|begin|look|scan)\b/i,
 ];
 
 const cleanBody = (body: string): string => {
@@ -1632,14 +1633,18 @@ export class DocsService {
       if (!options.dryRun) {
         await this.writePdrFile(outputPath, draft);
         if (context.docdexAvailable) {
-          const registered = await this.registerPdr(outputPath, draft, options.projectKey);
-          docdexId = registered.id;
-          segments = (registered.segments ?? []).map((s) => s.id);
-          await fs.writeFile(
-            `${outputPath}.meta.json`,
-            JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
-            "utf8",
-          );
+          try {
+            const registered = await this.registerPdr(outputPath, draft, options.projectKey);
+            docdexId = registered.id;
+            segments = (registered.segments ?? []).map((s) => s.id);
+            await fs.writeFile(
+              `${outputPath}.meta.json`,
+              JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
+              "utf8",
+            );
+          } catch (error) {
+            context.warnings.push(`Docdex registration skipped: ${(error as Error).message}`);
+          }
         }
         const publicDocsDir = path.join(this.workspace.workspaceRoot, "docs", "pdr");
         const shouldMirror = this.workspace.config?.mirrorDocs !== false;
@@ -2025,14 +2030,18 @@ export class DocsService {
       if (!options.dryRun) {
         await this.writeSdsFile(outputPath, draft);
         if (context.docdexAvailable) {
-          const registered = await this.registerSds(outputPath, draft, options.projectKey);
-          docdexId = registered.id;
-          segments = (registered.segments ?? []).map((s) => s.id);
-          await fs.writeFile(
-            `${outputPath}.meta.json`,
-            JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
-            "utf8",
-          );
+          try {
+            const registered = await this.registerSds(outputPath, draft, options.projectKey);
+            docdexId = registered.id;
+            segments = (registered.segments ?? []).map((s) => s.id);
+            await fs.writeFile(
+              `${outputPath}.meta.json`,
+              JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
+              "utf8",
+            );
+          } catch (error) {
+            warnings.push(`Docdex registration skipped: ${(error as Error).message}`);
+          }
         }
         const publicDocsDir = path.join(this.workspace.workspaceRoot, "docs", "sds");
         const shouldMirror = this.workspace.config?.mirrorDocs !== false;
