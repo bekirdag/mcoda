@@ -626,11 +626,37 @@ export class QaTasksService {
     commandRunId: string,
     taskRunId?: string,
     commentBacklog?: string,
+    abortSignal?: AbortSignal,
   ): Promise<AgentInterpretation> {
     if (!this.agentService) {
       return { recommendation: this.mapOutcome(result) };
     }
+    const resolveAbortReason = () => {
+      const reason = abortSignal?.reason;
+      if (typeof reason === "string" && reason.trim().length > 0) return reason;
+      if (reason instanceof Error && reason.message) return reason.message;
+      return "qa_tasks_aborted";
+    };
+    const abortIfSignaled = () => {
+      if (abortSignal?.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+    };
+    const withAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      if (!abortSignal) return promise;
+      if (abortSignal.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+      return await new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(new Error(resolveAbortReason()));
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        promise.then(resolve, reject).finally(() => {
+          abortSignal.removeEventListener("abort", onAbort);
+        });
+      });
+    };
     try {
+      abortIfSignaled();
       const agent = await this.resolveAgent(agentName);
       const prompts = await this.loadPrompts(agent.id);
       const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
@@ -695,13 +721,21 @@ export class QaTasksService {
       let output = '';
       let chunkCount = 0;
       if (stream && this.agentService.invokeStream) {
-        const gen = await this.agentService.invokeStream(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } });
-        for await (const chunk of gen) {
+        const gen = await withAbort(
+          this.agentService.invokeStream(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } }),
+        );
+        while (true) {
+          abortIfSignaled();
+          const { value, done } = await withAbort(gen.next());
+          if (done) break;
+          const chunk = value;
           output += chunk.output ?? '';
           chunkCount += 1;
         }
       } else {
-        const res = await this.agentService.invoke(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } });
+        const res = await withAbort(
+          this.agentService.invoke(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } }),
+        );
         output = res.output ?? '';
       }
       const tokensPrompt = this.estimateTokens(prompt);
@@ -743,12 +777,20 @@ export class QaTasksService {
       const retryPrompt = `${prompt}\n\nReturn STRICT JSON only. Do not include prose, markdown fences, or comments.`;
       let retryOutput = "";
       if (stream && this.agentService.invokeStream) {
-        const gen = await this.agentService.invokeStream(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } });
-        for await (const chunk of gen) {
+        const gen = await withAbort(
+          this.agentService.invokeStream(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } }),
+        );
+        while (true) {
+          abortIfSignaled();
+          const { value, done } = await withAbort(gen.next());
+          if (done) break;
+          const chunk = value;
           retryOutput += chunk.output ?? '';
         }
       } else {
-        const res = await this.agentService.invoke(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } });
+        const res = await withAbort(
+          this.agentService.invoke(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } }),
+        );
         retryOutput = res.output ?? '';
       }
       const retryTokensPrompt = this.estimateTokens(retryPrompt);
@@ -1020,6 +1062,8 @@ export class QaTasksService {
       await this.stateService.returnToInProgress(task, timestamp);
     } else if (outcome === 'infra_issue') {
       await this.stateService.markBlocked(task, 'qa_infra_issue');
+    } else if (outcome === 'unclear') {
+      await this.stateService.markBlocked(task, 'qa_unclear');
     }
   }
 
@@ -1299,7 +1343,12 @@ export class QaTasksService {
 
     const ensure = await adapter.ensureInstalled(profile, qaCtx);
     if (!ensure.ok) {
-      await this.logTask(taskRun.id, ensure.message ?? 'QA install failed', 'qa-install');
+      const guidance = 'Run "docdex setup" to install Playwright and at least one browser.';
+      const installMessage = ensure.message ?? 'QA install failed';
+      const installMessageWithGuidance = installMessage.includes('docdex setup')
+        ? installMessage
+        : `${installMessage} ${guidance}`;
+      await this.logTask(taskRun.id, installMessageWithGuidance, 'qa-install');
       if (!this.dryRunGuard) {
         await this.applyStateTransition(task.task, 'infra_issue');
         await this.finishTaskRun(taskRun, 'failed');
@@ -1314,10 +1363,9 @@ export class QaTasksService {
           runner: profile.runner,
           rawOutcome: 'infra_issue',
           recommendation: 'infra_issue',
-          metadata: { install: ensure.message, adapter: profile.runner },
+          metadata: { install: installMessageWithGuidance, adapter: profile.runner },
         });
-        const installMessage = ensure.message ?? 'QA install failed';
-        const message = `QA infra issue: ${installMessage}`;
+        const message = `QA infra issue: ${installMessageWithGuidance}`;
         const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_issue' });
         const body = formatTaskCommentBody({
           slug,
@@ -1344,7 +1392,7 @@ export class QaTasksService {
         outcome: 'infra_issue',
         profile: profile.name,
         runner: profile.runner,
-        notes: ensure.message,
+        notes: installMessageWithGuidance,
       };
     }
 
@@ -1372,6 +1420,7 @@ export class QaTasksService {
       ctx.commandRunId,
       taskRun.id,
       commentBacklog,
+      ctx.request.abortSignal,
     );
     const outcome = this.combineOutcome(normalizedResult, interpretation.recommendation);
     const artifacts = normalizedResult.artifacts ?? [];
@@ -1453,6 +1502,9 @@ export class QaTasksService {
 
     const bodyLines = [
       `QA outcome: ${outcome}`,
+      outcome === 'unclear'
+        ? 'QA outcome unclear: provide missing acceptance criteria, reproduction steps, and expected behavior.'
+        : '',
       profile ? `Profile: ${profile.name} (${profile.runner ?? 'cli'})` : '',
       interpretation.coverageSummary ? `Coverage: ${interpretation.coverageSummary}` : '',
       interpretation.failures && interpretation.failures.length

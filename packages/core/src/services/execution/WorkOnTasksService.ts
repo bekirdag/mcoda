@@ -42,6 +42,7 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   onAgentChunk?: (chunk: string) => void;
   abortSignal?: AbortSignal;
   maxAgentSeconds?: number;
+  allowFileOverwrite?: boolean;
 }
 
 export interface TaskExecutionResult {
@@ -103,13 +104,18 @@ const extractPlainCodeFence = (output: string): string | null => {
   return content ? content : null;
 };
 
+const normalizeFileBlockPath = (value: string): string => {
+  const trimmed = value.trim();
+  return trimmed.replace(/^[`'"]+|[`'"]+$/g, "");
+};
+
 const extractFileBlocks = (output: string): Array<{ path: string; content: string }> => {
   const files: Array<{ path: string; content: string }> = [];
-  const regex = /(?:^|\r?\n)FILE:\s*([^\r\n]+)\r?\n```[^\r\n]*\r?\n([\s\S]*?)\r?\n```/g;
+  const regex = /(?:^|\r?\n)\s*(?:[-*]\s*)?FILE:\s*([^\r\n]+)\r?\n```[^\r\n]*\r?\n([\s\S]*?)\r?\n```/g;
   const seen = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = regex.exec(output)) !== null) {
-    const filePath = match[1]?.trim();
+    const filePath = normalizeFileBlockPath(match[1] ?? "");
     if (!filePath) continue;
     const content = match[2] ?? "";
     const key = `${filePath}::${content.length}`;
@@ -141,10 +147,13 @@ const extractFileBlocks = (output: string): Array<{ path: string; content: strin
       buffer = [];
     };
     for (const line of lines) {
-      const fileMatch = line.match(/^FILE:\s*(.+)$/);
+      const fileMatch = line.match(/^\s*(?:[-*]\s*)?FILE:\s*(.+)$/);
       if (fileMatch) {
         flush();
-        currentPath = fileMatch[1]?.trim() ?? null;
+        currentPath = normalizeFileBlockPath(fileMatch[1] ?? "");
+        if (!currentPath) {
+          currentPath = null;
+        }
         buffer = [];
         continue;
       }
@@ -163,16 +172,34 @@ const looksLikeJsonOutput = (output: string): boolean => {
 };
 
 const parseJsonPayload = (output: string): unknown | null => {
+  const candidates: string[] = [];
   const fenced = output.match(/```json([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : output.trim();
-  const trimmed = candidate.trim();
-  if (!trimmed) return null;
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
+  if (fenced?.[1]) candidates.push(fenced[1]);
+  const trimmed = output.trim();
+  if (trimmed) candidates.push(trimmed);
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    const firstBrace = output.indexOf("{");
+    const firstBracket = output.indexOf("[");
+    const start =
+      firstBrace >= 0 && firstBracket >= 0 ? Math.min(firstBrace, firstBracket) : Math.max(firstBrace, firstBracket);
+    const endBrace = output.lastIndexOf("}");
+    const endBracket = output.lastIndexOf("]");
+    const end = endBrace >= 0 && endBracket >= 0 ? Math.max(endBrace, endBracket) : Math.max(endBrace, endBracket);
+    if (start >= 0 && end > start) {
+      candidates.push(output.slice(start, end + 1));
+    }
   }
+  for (const candidate of candidates) {
+    const normalized = candidate.trim();
+    if (!normalized) continue;
+    if (!normalized.startsWith("{") && !normalized.startsWith("[")) continue;
+    try {
+      return JSON.parse(normalized);
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null;
 };
 
 const extractPatchesFromJson = (payload: unknown): string[] => {
@@ -389,6 +416,82 @@ const detectDefaultTestCommand = (workspaceRoot: string): string | undefined => 
   return undefined;
 };
 
+const quoteShellPath = (value: string): string => (value.includes(" ") ? `"${value}"` : value);
+
+const findNearestPackageRoot = (workspaceRoot: string, filePath: string): string | undefined => {
+  const resolved = path.isAbsolute(filePath) ? filePath : path.join(workspaceRoot, filePath);
+  let current = resolved;
+  if (fs.existsSync(resolved)) {
+    const stat = fs.statSync(resolved);
+    if (stat.isFile()) {
+      current = path.dirname(resolved);
+    }
+  } else {
+    current = path.dirname(resolved);
+  }
+  const root = path.resolve(workspaceRoot);
+  while (true) {
+    if (fs.existsSync(path.join(current, "package.json"))) return current;
+    if (current === root) break;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
+};
+
+const resolveScopedPackageRoot = (workspaceRoot: string, files: string[]): string | undefined => {
+  if (!files.length) return undefined;
+  const candidates = files
+    .map((file) => findNearestPackageRoot(workspaceRoot, file))
+    .filter((value): value is string => Boolean(value))
+    .map((value) => path.resolve(value));
+  if (!candidates.length) return undefined;
+  const unique = Array.from(new Set(candidates));
+  unique.sort((a, b) => b.length - a.length);
+  return unique[0];
+};
+
+const detectPackageManager = (workspaceRoot: string, packageRoot: string): "pnpm" | "yarn" | "npm" | undefined => {
+  const hasPnpm =
+    fs.existsSync(path.join(workspaceRoot, "pnpm-lock.yaml")) ||
+    fs.existsSync(path.join(workspaceRoot, "pnpm-workspace.yaml")) ||
+    fs.existsSync(path.join(packageRoot, "pnpm-lock.yaml"));
+  if (hasPnpm) return "pnpm";
+  const hasYarn =
+    fs.existsSync(path.join(workspaceRoot, "yarn.lock")) || fs.existsSync(path.join(packageRoot, "yarn.lock"));
+  if (hasYarn) return "yarn";
+  const hasNpmLock =
+    fs.existsSync(path.join(workspaceRoot, "package-lock.json")) ||
+    fs.existsSync(path.join(workspaceRoot, "npm-shrinkwrap.json")) ||
+    fs.existsSync(path.join(packageRoot, "package-lock.json")) ||
+    fs.existsSync(path.join(packageRoot, "npm-shrinkwrap.json"));
+  const hasPackageJson = fs.existsSync(path.join(packageRoot, "package.json"));
+  if (hasNpmLock || hasPackageJson) return "npm";
+  return undefined;
+};
+
+const buildScopedTestCommand = (workspaceRoot: string, packageRoot: string): string | undefined => {
+  const manager = detectPackageManager(workspaceRoot, packageRoot);
+  if (!manager) return undefined;
+  const relative = path.relative(workspaceRoot, packageRoot).split(path.sep).join("/");
+  const target = relative && relative !== "" ? relative : ".";
+  const quoted = quoteShellPath(target);
+  if (manager === "pnpm") return target === "." ? "pnpm test" : `pnpm -C ${quoted} test`;
+  if (manager === "yarn") return target === "." ? "yarn test" : `yarn --cwd ${quoted} test`;
+  if (manager === "npm") return target === "." ? "npm test" : `npm --prefix ${quoted} test`;
+  return undefined;
+};
+
+const detectScopedTestCommand = (workspaceRoot: string, files: string[]): string | undefined => {
+  const scopedRoot = resolveScopedPackageRoot(workspaceRoot, files);
+  if (scopedRoot) {
+    const scopedCommand = buildScopedTestCommand(workspaceRoot, scopedRoot);
+    if (scopedCommand) return scopedCommand;
+  }
+  return detectDefaultTestCommand(workspaceRoot);
+};
+
 const resolveNodeCommand = (): string => {
   const execPath = process.execPath;
   return execPath.includes(" ") ? `"${execPath}"` : execPath;
@@ -399,6 +502,65 @@ const detectRunAllTestsCommand = (workspaceRoot: string): string | undefined => 
   if (!fs.existsSync(scriptPath)) return undefined;
   const relative = path.relative(workspaceRoot, scriptPath).split(path.sep).join("/");
   return `${resolveNodeCommand()} ${relative}`;
+};
+
+const pickSeedTestCategory = (requirements: TestRequirements): keyof TestRequirements => {
+  const order: (keyof TestRequirements)[] = ["unit", "component", "integration", "api"];
+  const active = order.filter((key) => requirements[key].length > 0);
+  if (active.length === 1) return active[0];
+  return "unit";
+};
+
+const buildRunAllTestsScript = (seedCategory: keyof TestRequirements, seedCommands: string[]): string => {
+  const suites: Record<keyof TestRequirements, string[]> = {
+    unit: [],
+    component: [],
+    integration: [],
+    api: [],
+  };
+  if (seedCommands.length) {
+    suites[seedCategory] = seedCommands;
+  }
+  return [
+    "#!/usr/bin/env node",
+    'import { spawnSync } from "node:child_process";',
+    "",
+    "// Register test commands per discipline.",
+    `const testSuites = ${JSON.stringify(suites, null, 2)};`,
+    "",
+    'const entries = Object.entries(testSuites).flatMap(([label, commands]) =>',
+    "  commands.map((command) => ({ label, command }))",
+    ");",
+    "if (!entries.length) {",
+    '  console.error("No test commands registered in tests/all.js. Add unit/component/integration/api commands.");',
+    "  process.exit(1);",
+    "}",
+    "",
+    'console.log("MCODA_RUN_ALL_TESTS_START");',
+    "let failed = false;",
+    "for (const entry of entries) {",
+    "  const result = spawnSync(entry.command, { shell: true, stdio: \"inherit\" });",
+    "  const status = typeof result.status === \"number\" ? result.status : 1;",
+    "  if (status !== 0) failed = true;",
+    "}",
+    'console.log("MCODA_RUN_ALL_TESTS_END");',
+    "process.exit(failed ? 1 : 0);",
+    "",
+  ].join("\n");
+};
+
+const ensureRunAllTestsScript = async (
+  workspaceRoot: string,
+  requirements: TestRequirements,
+  seedCommands: string[],
+): Promise<boolean> => {
+  const scriptPath = path.join(workspaceRoot, "tests", "all.js");
+  if (fs.existsSync(scriptPath)) return false;
+  await PathHelper.ensureDir(path.dirname(scriptPath));
+  const seedCategory = pickSeedTestCategory(requirements);
+  const contents = buildRunAllTestsScript(seedCategory, seedCommands);
+  await fs.promises.writeFile(scriptPath, contents, "utf8");
+  return true;
 };
 
 const sanitizeTestCommands = (
@@ -1575,6 +1737,7 @@ export class WorkOnTasksService {
     cwd: string,
     dryRun: boolean,
     allowNoop = false,
+    allowOverwrite = false,
   ): Promise<{ touched: string[]; error?: string; warnings?: string[]; appliedCount: number }> {
     const touched = new Set<string>();
     const warnings: string[] = [];
@@ -1592,7 +1755,27 @@ export class WorkOnTasksService {
         continue;
       }
       if (fs.existsSync(resolved)) {
-        warnings.push(`Skipped file block for existing file: ${relativePath}`);
+        if (!allowOverwrite) {
+          warnings.push(`Skipped file block for existing file: ${relativePath}`);
+          continue;
+        }
+        if (!file.content || !file.content.trim()) {
+          warnings.push(`Skipped overwrite for ${relativePath}: empty FILE block content.`);
+          continue;
+        }
+        warnings.push(`Overwriting existing file from FILE block: ${relativePath}`);
+        if (dryRun) {
+          touched.add(relativePath);
+          applied += 1;
+          continue;
+        }
+        try {
+          await fs.promises.writeFile(resolved, file.content, "utf8");
+          touched.add(relativePath);
+          applied += 1;
+        } catch (error) {
+          warnings.push(`Failed to overwrite file block ${relativePath}: ${(error as Error).message}`);
+        }
         continue;
       }
       if (dryRun) {
@@ -1649,11 +1832,13 @@ export class WorkOnTasksService {
   async workOnTasks(request: WorkOnTasksRequest): Promise<WorkOnTasksResult> {
     await this.ensureMcoda();
     const agentStream = request.agentStream !== false;
-    const configuredBaseBranch = request.baseBranch ?? this.workspace.config?.branch;
-    const baseBranch = DEFAULT_BASE_BRANCH;
+    const configuredBaseBranch = this.workspace.config?.branch;
+    const requestedBaseBranch = request.baseBranch;
+    const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
+    const baseBranch = resolvedBaseBranch.length ? resolvedBaseBranch : DEFAULT_BASE_BRANCH;
     const baseBranchWarnings =
-      configuredBaseBranch && configuredBaseBranch !== baseBranch
-        ? [`Base branch forced to ${baseBranch}; ignoring configured ${configuredBaseBranch}.`]
+      requestedBaseBranch && configuredBaseBranch && requestedBaseBranch !== configuredBaseBranch
+        ? [`Base branch override ${requestedBaseBranch} differs from workspace config ${configuredBaseBranch}.`]
         : [];
     const commandRun = await this.deps.jobService.startCommandRun("work-on-tasks", request.projectKey, {
       taskIds: request.taskKeys,
@@ -1891,6 +2076,7 @@ export class WorkOnTasksService {
         });
 
         const sessionId = formatSessionId(startedAt);
+        const initialStatus = (task.task.status ?? "").toLowerCase().trim();
         const taskAlias = `Working on task ${task.task.key}`;
         const taskSummary = task.task.title || task.task.description || "(none)";
         const modelLabel = agent.defaultModel ?? "(default)";
@@ -1905,6 +2091,7 @@ export class WorkOnTasksService {
         let promptEstimateTotal = 0;
         let mergeStatus: "merged" | "skipped" | "failed" = "skipped";
         let patchApplied = false;
+        let runAllScriptCreated = false;
         let touched: string[] = [];
         let unresolvedComments: TaskCommentRow[] = [];
         let taskBranchName: string | null = task.task.vcsBranch ?? null;
@@ -2064,10 +2251,32 @@ export class WorkOnTasksService {
             );
           }
           if (!testCommands.length && hasTestRequirements(testRequirements)) {
-            const fallbackCommand = detectDefaultTestCommand(this.workspace.workspaceRoot);
+            const fallbackCommand = detectScopedTestCommand(this.workspace.workspaceRoot, allowedFiles);
             if (fallbackCommand) testCommands = [fallbackCommand];
           }
-          const runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+          let runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+          if (!runAllTestsCommandHint && !request.dryRun && hasTestRequirements(testRequirements)) {
+            try {
+              runAllScriptCreated = await ensureRunAllTestsScript(
+                this.workspace.workspaceRoot,
+                testRequirements,
+                testCommands,
+              );
+              if (runAllScriptCreated) {
+                runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+                await this.logTask(taskRun.id, "Created run-all tests script (tests/all.js).", "tests");
+              }
+            } catch (error) {
+              await this.logTask(
+                taskRun.id,
+                `Failed to create run-all tests script: ${error instanceof Error ? error.message : String(error)}`,
+                "tests",
+              );
+            }
+          }
+          if (runAllScriptCreated && allowedFiles.length && !allowedFiles.includes("tests/all.js")) {
+            allowedFiles = [...allowedFiles, "tests/all.js"];
+          }
           if (!testCommands.length && hasTestRequirements(testRequirements) && runAllTestsCommandHint) {
             testCommands = [runAllTestsCommandHint];
           }
@@ -2177,7 +2386,20 @@ export class WorkOnTasksService {
           const testExpectationNote = shouldRunTests
             ? "Tests must pass before the task can be finalized. Run task-specific tests first, then run-all tests."
             : "";
-          const promptExtras = [testRequirementsNote, testCommandNote, runAllTestsNote, testExpectationNote].filter(Boolean).join("\n");
+          const outputRequirementNote = [
+            "Output requirements (strict):",
+            "- Return only code changes.",
+            "- For edits to existing files, output a unified diff inside ```patch fences.",
+            "- For new files, output FILE blocks in this format:",
+            "  FILE: path/to/file.ext",
+            "  ```",
+            "  <full file contents>",
+            "  ```",
+            "- Do not include plans, narration, or JSON unless the runtime forces it; if forced, return JSON with a top-level `patch` string or `files` array of {path, content}.",
+          ].join("\n");
+          const promptExtras = [testRequirementsNote, testCommandNote, runAllTestsNote, testExpectationNote, outputRequirementNote]
+            .filter(Boolean)
+            .join("\n");
           const promptWithTests = promptExtras ? `${promptBase}\n${promptExtras}` : promptBase;
           const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : "";
           const notes = [remoteSyncNote, conflictNote].filter(Boolean).join("\n");
@@ -2521,13 +2743,15 @@ export class WorkOnTasksService {
                       if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
                       return fs.existsSync(resolved);
                     });
-                  const allowNoop = patchApplyError === null && (touched.length > 0 || onlyExistingFileBlocks);
-                  const applied = await this.applyFileBlocks(
-                    fileBlocks,
-                    this.workspace.workspaceRoot,
-                    request.dryRun ?? false,
-                    allowNoop,
-                  );
+                const allowNoop = patchApplyError === null && (touched.length > 0 || onlyExistingFileBlocks);
+                const allowFileOverwrite = request.allowFileOverwrite === true && patches.length === 0;
+                const applied = await this.applyFileBlocks(
+                  fileBlocks,
+                  this.workspace.workspaceRoot,
+                  request.dryRun ?? false,
+                  allowNoop,
+                  allowFileOverwrite,
+                );
                   if (applied.touched.length) {
                     const merged = new Set([...touched, ...applied.touched]);
                     touched = Array.from(merged);
@@ -2719,39 +2943,78 @@ export class WorkOnTasksService {
               continue taskLoop;
             }
 
-            if (!request.dryRun && touched.length === 0 && unresolvedComments.length > 0) {
-              const openSlugs = unresolvedComments
-                .map((comment) => comment.slug)
-                .filter((slug): slug is string => Boolean(slug && slug.trim()));
-              const slugList = openSlugs.length ? openSlugs.join(", ") : "untracked";
-              const body = [
-                "[work-on-tasks]",
-                "No changes detected while unresolved review/QA comments remain.",
-                `Open comment slugs: ${slugList}`,
-              ].join("\n");
-              await this.deps.workspaceRepo.createTaskComment({
-                taskId: task.task.id,
-                taskRunId: taskRun.id,
-                jobId: job.id,
-                sourceCommand: "work-on-tasks",
-                authorType: "agent",
-                authorAgentId: agent.id,
-                category: "comment_backlog",
-                body,
-                createdAt: new Date().toISOString(),
-                metadata: { reason: "no_changes", openSlugs },
-              });
-              await this.logTask(
-                taskRun.id,
-                `No changes detected; unresolved comments remain (${slugList}).`,
-                "execution",
-              );
-              await this.stateService.markBlocked(task.task, "no_changes");
-              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-              results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
-              taskStatus = "failed";
-              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-              continue taskLoop;
+            if (!request.dryRun) {
+              let hasChanges = touched.length > 0;
+              if (!hasChanges) {
+                try {
+                  const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter(
+                    (p) => !p.startsWith(".mcoda"),
+                  );
+                  hasChanges = dirty.length > 0;
+                } catch {
+                  hasChanges = false;
+                }
+              }
+              if (!hasChanges && unresolvedComments.length > 0) {
+                const openSlugs = unresolvedComments
+                  .map((comment) => comment.slug)
+                  .filter((slug): slug is string => Boolean(slug && slug.trim()));
+                const slugList = openSlugs.length ? openSlugs.join(", ") : "untracked";
+                const body = [
+                  "[work-on-tasks]",
+                  "No changes detected while unresolved review/QA comments remain.",
+                  `Open comment slugs: ${slugList}`,
+                ].join("\n");
+                await this.deps.workspaceRepo.createTaskComment({
+                  taskId: task.task.id,
+                  taskRunId: taskRun.id,
+                  jobId: job.id,
+                  sourceCommand: "work-on-tasks",
+                  authorType: "agent",
+                  authorAgentId: agent.id,
+                  category: "comment_backlog",
+                  body,
+                  createdAt: new Date().toISOString(),
+                  metadata: { reason: "no_changes", openSlugs },
+                });
+                await this.logTask(
+                  taskRun.id,
+                  `No changes detected; unresolved comments remain (${slugList}).`,
+                  "execution",
+                );
+                await this.stateService.markBlocked(task.task, "no_changes");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+              if (!hasChanges) {
+                const body = [
+                  "[work-on-tasks]",
+                  "No changes were applied for this task run.",
+                  "Re-run with a stronger agent or clarify the task requirements.",
+                ].join("\n");
+                await this.deps.workspaceRepo.createTaskComment({
+                  taskId: task.task.id,
+                  taskRunId: taskRun.id,
+                  jobId: job.id,
+                  sourceCommand: "work-on-tasks",
+                  authorType: "agent",
+                  authorAgentId: agent.id,
+                  category: "no_changes",
+                  body,
+                  createdAt: new Date().toISOString(),
+                  metadata: { reason: "no_changes", initialStatus },
+                });
+                await this.logTask(taskRun.id, "No changes detected; blocking task for escalation.", "execution");
+                await this.stateService.markBlocked(task.task, "no_changes");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
             }
   
         if (!request.dryRun && request.noCommit !== true) {
@@ -2815,32 +3078,52 @@ export class WorkOnTasksService {
               await this.logTask(taskRun.id, "No changes to commit.", "vcs");
             }
   
-            // Always merge back into base and end on base branch.
-            try {
-              await this.vcs.merge(this.workspace.workspaceRoot, branchInfo.branch, branchInfo.base);
-              mergeStatus = "merged";
+            const restrictAutoMergeWithoutScope = Boolean(this.workspace.config?.restrictAutoMergeWithoutScope);
+            const shouldSkipAutoMerge = restrictAutoMergeWithoutScope && allowedFiles.length === 0;
+            if (shouldSkipAutoMerge) {
+              mergeStatus = "skipped";
+              const changedFiles = dirty.length ? dirty : touched.length ? touched : [];
+              const changedNote = changedFiles.length ? `Changed files: ${changedFiles.join(", ")}` : "No changed files detected.";
+              await this.logTask(
+                taskRun.id,
+                `Auto-merge skipped because task has no file scope (metadata.files empty). ${changedNote}`,
+                "vcs",
+                { reason: "no_file_scope", changedFiles },
+              );
+              await this.vcs.checkoutBranch(this.workspace.workspaceRoot, branchInfo.base);
+            } else {
+              // Always merge back into base and end on base branch.
               try {
-                headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
-              } catch {
-                // Best-effort head capture.
+                await this.vcs.merge(this.workspace.workspaceRoot, branchInfo.branch, branchInfo.base);
+                mergeStatus = "merged";
+                try {
+                  headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
+                } catch {
+                  // Best-effort head capture.
+                }
+                await this.logTask(taskRun.id, `Merged ${branchInfo.branch} into ${branchInfo.base}`, "vcs");
+                if (!(await refreshLock("vcs_merge"))) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost after merge.", "vcs");
+                  throw new Error("Task lock lost after merge.");
+                }
+              } catch (error) {
+                mergeStatus = "failed";
+                const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
+                if (conflicts.length) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Merge conflicts while merging ${branchInfo.branch} into ${branchInfo.base}.`,
+                    "vcs",
+                    {
+                      conflicts,
+                    },
+                  );
+                  throw new Error(
+                    `Merge conflict(s) while merging ${branchInfo.branch} into ${branchInfo.base}: ${conflicts.join(", ")}`,
+                  );
+                }
+                throw error;
               }
-              await this.logTask(taskRun.id, `Merged ${branchInfo.branch} into ${branchInfo.base}`, "vcs");
-              if (!(await refreshLock("vcs_merge"))) {
-                await this.logTask(taskRun.id, "Aborting task: lock lost after merge.", "vcs");
-                throw new Error("Task lock lost after merge.");
-              }
-            } catch (error) {
-              mergeStatus = "failed";
-              const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
-              if (conflicts.length) {
-                await this.logTask(taskRun.id, `Merge conflicts while merging ${branchInfo.branch} into ${branchInfo.base}.`, "vcs", {
-                  conflicts,
-                });
-                throw new Error(
-                  `Merge conflict(s) while merging ${branchInfo.branch} into ${branchInfo.base}: ${conflicts.join(", ")}`,
-                );
-              }
-              throw error;
             }
   
             if (await this.vcs.hasRemote(this.workspace.workspaceRoot)) {
@@ -2854,18 +3137,30 @@ export class WorkOnTasksService {
                 await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
                 throw new Error("Task lock lost after pushing branch.");
               }
-              const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
-              if (basePush.pushed) {
-                await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
-              } else if (basePush.skipped) {
-                await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`, "vcs");
-              }
-              if (!(await refreshLock("vcs_push_base"))) {
-                await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
-                throw new Error("Task lock lost after pushing base branch.");
+              if (mergeStatus === "merged") {
+                const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
+                if (basePush.pushed) {
+                  await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
+                } else if (basePush.skipped) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`,
+                    "vcs",
+                  );
+                }
+                if (!(await refreshLock("vcs_push_base"))) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
+                  throw new Error("Task lock lost after pushing base branch.");
+                }
+              } else {
+                await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} because auto-merge was skipped.`, "vcs");
               }
             } else {
-              await this.logTask(taskRun.id, "No remote configured; merge completed locally.", "vcs");
+              const message =
+                mergeStatus === "skipped"
+                  ? "No remote configured; auto-merge skipped due to missing file scope."
+                  : "No remote configured; merge completed locally.";
+              await this.logTask(taskRun.id, message, "vcs");
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

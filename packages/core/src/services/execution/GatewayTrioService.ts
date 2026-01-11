@@ -19,6 +19,7 @@ const RETRYABLE_BLOCK_REASONS = new Set([
   "patch_failed",
   "tests_not_configured",
   "tests_failed",
+  "no_changes",
   "qa_infra_issue",
   "review_blocked",
 ]);
@@ -457,7 +458,10 @@ export class GatewayTrioService {
     if (!entry) {
       return { step: "work", status: "failed", error: "Task not processed by work-on-tasks" };
     }
-    if (entry.status === "succeeded") return { step: "work", status: "succeeded" };
+    if (entry.status === "succeeded") {
+      if (entry.notes === "no_changes") return { step: "work", status: "failed", error: "no_changes" };
+      return { step: "work", status: "succeeded" };
+    }
     if (entry.status === "blocked") return { step: "work", status: "blocked", error: entry.notes };
     if (entry.status === "skipped") return { step: "work", status: "skipped", error: entry.notes };
     return { step: "work", status: "failed", error: entry.notes };
@@ -472,7 +476,7 @@ export class GatewayTrioService {
       return { step: "review", status: "failed", error: entry.error };
     }
     const decision = entry.decision ?? "error";
-    if (decision === "approve") return { step: "review", status: "succeeded", decision };
+    if (decision === "approve" || decision === "info_only") return { step: "review", status: "succeeded", decision };
     if (decision === "block") return { step: "review", status: "blocked", decision };
     return { step: "review", status: "failed", decision };
   }
@@ -605,6 +609,7 @@ export class GatewayTrioService {
     warnings: string[],
     agentOptions: AgentSelectionOptions,
     abortSignal?: AbortSignal,
+    onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
     let gateway: GatewayAgentResult | undefined;
     let handoff: string;
@@ -627,6 +632,9 @@ export class GatewayTrioService {
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for work step on ${taskKey}`);
+    }
+    if (onResolvedAgent) {
+      await onResolvedAgent(resolvedAgent);
     }
     const handoffPath = await this.prepareHandoff(jobId, taskKey, "work", attempt, handoff);
     const result = await withGatewayHandoff(handoffPath, async () =>
@@ -659,6 +667,7 @@ export class GatewayTrioService {
     warnings: string[],
     agentOptions: AgentSelectionOptions,
     abortSignal?: AbortSignal,
+    onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
     let gateway: GatewayAgentResult | undefined;
     let handoff: string;
@@ -681,6 +690,9 @@ export class GatewayTrioService {
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for review step on ${taskKey}`);
+    }
+    if (onResolvedAgent) {
+      await onResolvedAgent(resolvedAgent);
     }
     const handoffPath = await this.prepareHandoff(jobId, taskKey, "review", attempt, handoff);
     const result = await withGatewayHandoff(handoffPath, async () =>
@@ -711,6 +723,7 @@ export class GatewayTrioService {
     warnings: string[],
     agentOptions: AgentSelectionOptions,
     abortSignal?: AbortSignal,
+    onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
     let gateway: GatewayAgentResult | undefined;
     let handoff: string;
@@ -733,6 +746,9 @@ export class GatewayTrioService {
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for QA step on ${taskKey}`);
+    }
+    if (onResolvedAgent) {
+      await onResolvedAgent(resolvedAgent);
     }
     const handoffPath = await this.prepareHandoff(jobId, taskKey, "qa", attempt, handoff);
     const result = await withGatewayHandoff(handoffPath, async () =>
@@ -949,8 +965,16 @@ export class GatewayTrioService {
           const workWasSkipped = statusBefore === "ready_to_review" || statusBefore === "ready_to_qa";
           const reviewWasSkipped = statusBefore === "ready_to_qa";
 
+          progress.attempts = attemptIndex;
+          progress.lastError = undefined;
+          state.tasks[taskKey] = progress;
+          await this.writeState(state);
+
           if (!workWasSkipped) {
             const workAgentOptions = this.buildAgentOptions(progress, "work", resolvedRequest);
+            progress.lastStep = "work";
+            state.tasks[taskKey] = progress;
+            await this.writeState(state);
             const workOutcome = await this.runStepWithTimeout(
               "work",
               jobId,
@@ -968,9 +992,13 @@ export class GatewayTrioService {
                   warnings,
                   workAgentOptions,
                   signal,
+                  async (agent) => {
+                    progress.chosenAgents.work = agent;
+                    state.tasks[taskKey] = progress;
+                    await this.writeState(state);
+                  },
                 ),
             );
-            progress.attempts = attemptIndex;
             progress.lastStep = "work";
             progress.lastError = workOutcome.error;
             progress.chosenAgents.work = workOutcome.chosenAgent ?? progress.chosenAgents.work;
@@ -1014,7 +1042,6 @@ export class GatewayTrioService {
               }
             }
           } else {
-            progress.attempts = attemptIndex;
             progress.lastStep = "work";
             progress.lastError = undefined;
             state.tasks[taskKey] = progress;
@@ -1028,6 +1055,9 @@ export class GatewayTrioService {
 
           if (!reviewWasSkipped) {
             const reviewAgentOptions = this.buildAgentOptions(progress, "review", resolvedRequest);
+            progress.lastStep = "review";
+            state.tasks[taskKey] = progress;
+            await this.writeState(state);
             const reviewOutcome = await this.runStepWithTimeout(
               "review",
               jobId,
@@ -1045,6 +1075,11 @@ export class GatewayTrioService {
                   warnings,
                   reviewAgentOptions,
                   signal,
+                  async (agent) => {
+                    progress.chosenAgents.review = agent;
+                    state.tasks[taskKey] = progress;
+                    await this.writeState(state);
+                  },
                 ),
             );
             progress.lastStep = "review";
@@ -1093,6 +1128,9 @@ export class GatewayTrioService {
             });
           }
 
+          progress.lastStep = "qa";
+          state.tasks[taskKey] = progress;
+          await this.writeState(state);
           const qaOutcome = await this.runStepWithTimeout(
             "qa",
             jobId,
@@ -1110,6 +1148,11 @@ export class GatewayTrioService {
                 warnings,
                 this.buildAgentOptions(progress, "qa", resolvedRequest),
                 signal,
+                async (agent) => {
+                  progress.chosenAgents.qa = agent;
+                  state.tasks[taskKey] = progress;
+                  await this.writeState(state);
+                },
               ),
           );
           progress.lastStep = "qa";
