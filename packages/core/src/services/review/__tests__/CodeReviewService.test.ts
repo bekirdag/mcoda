@@ -7,6 +7,7 @@ import { WorkspaceRepository } from "@mcoda/db";
 import { WorkspaceResolver } from "../../../workspace/WorkspaceManager.js";
 import { JobService } from "../../jobs/JobService.js";
 import { CodeReviewService } from "../CodeReviewService.js";
+import { formatTaskCommentBody } from "../../tasks/TaskCommentFormatter.js";
 
 test("CodeReviewService records approvals and updates status", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
@@ -257,6 +258,179 @@ test("CodeReviewService prepends project guidance to agent prompt", async () => 
     const taskIndex = lastInput.indexOf(`Task ${task.key}`);
     assert.ok(guidanceIndex >= 0);
     assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CodeReviewService resolves comment slugs and avoids duplicate findings", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+
+  const diffStub = [
+    "diff --git a/file.txt b/file.txt",
+    "index 1111111..2222222 100644",
+    "--- a/file.txt",
+    "+++ b/file.txt",
+    "@@ -1 +1 @@",
+    "-foo",
+    "+bar",
+    "",
+  ].join("\n");
+
+  let lastInput = "";
+  const service = new CodeReviewService(workspace, {
+    agentService: {
+      invoke: async (_id: string, { input }: { input: string }) => {
+        lastInput = input;
+        return {
+          output: JSON.stringify({
+            decision: "changes_requested",
+            summary: "needs work",
+            findings: [
+              {
+                type: "bug",
+                severity: "high",
+                file: "file.txt",
+                line: 1,
+                message: "Issue A",
+              },
+            ],
+            resolvedSlugs: ["review-open"],
+            unresolvedSlugs: ["review-resolved"],
+          }),
+          adapter: "local",
+        };
+      },
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "code-review": "Review prompt" },
+      }),
+    } as any,
+    docdex: { search: async () => [] } as any,
+    jobService,
+    workspaceRepo: repo,
+    repo: { close: async () => {} } as any,
+    routingService: {
+      resolveAgentForCommand: async () => ({
+        agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any,
+    vcsClient: {
+      ensureRepo: async () => {},
+      diff: async () => diffStub,
+    } as any,
+  });
+
+  try {
+    const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const [epic] = await repo.insertEpics([
+      { projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 },
+    ]);
+    const [story] = await repo.insertStories([
+      { projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" },
+    ]);
+    const [task] = await repo.insertTasks([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task",
+        description: "",
+        status: "ready_to_review",
+      },
+    ]);
+    await repo.updateTask(task.id, { vcsBranch: "feature/task" });
+
+    await repo.createTaskComment({
+      taskId: task.id,
+      sourceCommand: "code-review",
+      authorType: "agent",
+      authorAgentId: "agent-0",
+      category: "bug",
+      slug: "review-issue",
+      file: "file.txt",
+      line: 1,
+      pathHint: "file.txt",
+      body: formatTaskCommentBody({
+        slug: "review-issue",
+        source: "code-review",
+        message: "Issue A",
+        status: "open",
+        category: "bug",
+        file: "file.txt",
+        line: 1,
+      }),
+      createdAt: new Date().toISOString(),
+    });
+
+    await repo.createTaskComment({
+      taskId: task.id,
+      sourceCommand: "code-review",
+      authorType: "agent",
+      authorAgentId: "agent-0",
+      category: "info",
+      slug: "review-open",
+      body: formatTaskCommentBody({
+        slug: "review-open",
+        source: "code-review",
+        message: "Open comment",
+        status: "open",
+        category: "info",
+      }),
+      createdAt: new Date().toISOString(),
+    });
+
+    const resolvedAt = new Date(Date.now() - 1000).toISOString();
+    await repo.createTaskComment({
+      taskId: task.id,
+      sourceCommand: "code-review",
+      authorType: "agent",
+      authorAgentId: "agent-0",
+      category: "info",
+      slug: "review-resolved",
+      body: formatTaskCommentBody({
+        slug: "review-resolved",
+        source: "code-review",
+        message: "Resolved comment",
+        status: "resolved",
+        category: "info",
+      }),
+      createdAt: resolvedAt,
+      resolvedAt,
+      resolvedBy: "agent-0",
+    });
+
+    await service.reviewTasks({
+      workspace,
+      projectKey: project.key,
+      agentStream: false,
+      dryRun: false,
+    });
+
+    assert.ok(lastInput.includes("review-open"));
+    assert.ok(lastInput.includes("review-issue"));
+
+    const resolved = await repo.listTaskComments(task.id, { slug: "review-open", resolved: true });
+    assert.ok(resolved.length > 0);
+
+    const reopened = await repo.listTaskComments(task.id, { slug: "review-resolved", resolved: false });
+    assert.ok(reopened.length > 0);
+
+    const sameSlug = await repo.listTaskComments(task.id, { slug: "review-issue" });
+    assert.equal(sameSlug.length, 1);
+
+    const comments = await repo.listTaskComments(task.id, { sourceCommands: ["code-review"] });
+    assert.ok(comments.some((comment) => comment.category === "comment_resolution"));
+    const summary = comments.find((comment) => comment.category === "review_summary");
+    assert.ok(summary?.body.includes("resolved_slugs: 1"));
+    assert.ok(summary?.body.includes("reopened_slugs: 1"));
+    assert.ok(summary?.body.includes("open_slugs: 2"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

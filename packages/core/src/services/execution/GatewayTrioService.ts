@@ -14,8 +14,26 @@ import { QaTasksService, type QaTasksResponse } from "./QaTasksService.js";
 const DEFAULT_STATUS_FILTER = ["not_started", "in_progress", "ready_to_review", "ready_to_qa"];
 const TERMINAL_STATUSES = new Set(["completed", "cancelled", "failed"]);
 const BLOCKED_STATUSES = new Set(["blocked"]);
+const RETRYABLE_BLOCK_REASONS = new Set([
+  "missing_patch",
+  "patch_failed",
+  "tests_not_configured",
+  "tests_failed",
+  "qa_infra_issue",
+  "review_blocked",
+]);
+const ESCALATION_REASONS = new Set(["missing_patch", "patch_failed", "agent_timeout"]);
+const NO_CHANGE_REASON = "no_changes";
+const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
+const DEFAULT_MAX_AGENT_SECONDS = 900;
+const HEARTBEAT_INTERVAL_MS = 30000;
 
 type StepName = "work" | "review" | "qa";
+
+type AgentSelectionOptions = {
+  avoidAgents?: string[];
+  forceStronger?: boolean;
+};
 
 type StepOutcome = {
   step: StepName;
@@ -24,6 +42,14 @@ type StepOutcome = {
   outcome?: string;
   error?: string;
   chosenAgent?: string;
+};
+
+type FailureRecord = {
+  step: StepName;
+  agent: string;
+  reason: string;
+  attempt: number;
+  timestamp: string;
 };
 
 type TaskProgress = {
@@ -35,6 +61,7 @@ type TaskProgress = {
   lastDecision?: string;
   lastOutcome?: string;
   chosenAgents: { work?: string; review?: string; qa?: string };
+  failureHistory?: FailureRecord[];
 };
 
 type GatewayTrioState = {
@@ -58,6 +85,7 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   noCommit?: boolean;
   dryRun?: boolean;
   reviewBase?: string;
+  maxAgentSeconds?: number;
   qaProfileName?: string;
   qaLevel?: string;
   qaTestCommand?: string;
@@ -66,8 +94,10 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   qaResult?: "pass" | "fail" | "blocked";
   qaNotes?: string;
   qaEvidenceUrl?: string;
+  qaAllowDirty?: boolean;
   resumeJobId?: string;
   rateAgents?: boolean;
+  escalateOnNoChange?: boolean;
 }
 
 export interface GatewayTrioTaskSummary {
@@ -248,6 +278,104 @@ export class GatewayTrioService {
     return project.key;
   }
 
+  private async seedExplicitTasks(state: GatewayTrioState, explicitTasks: Set<string>, warnings: string[]): Promise<void> {
+    for (const taskKey of explicitTasks) {
+      if (state.tasks[taskKey]) continue;
+      const task = await this.deps.workspaceRepo.getTaskByKey(taskKey);
+      if (!task) {
+        warnings.push(`Explicit task ${taskKey} not found; skipping.`);
+        continue;
+      }
+      this.ensureProgress(state, taskKey);
+    }
+  }
+
+  private ensureProgress(state: GatewayTrioState, taskKey: string): TaskProgress {
+    const existing = state.tasks[taskKey];
+    if (existing) {
+      if (!existing.chosenAgents) existing.chosenAgents = {};
+      if (!existing.failureHistory) existing.failureHistory = [];
+      return existing;
+    }
+    const created: TaskProgress = {
+      taskKey,
+      attempts: 0,
+      status: "pending",
+      chosenAgents: {},
+      failureHistory: [],
+    };
+    state.tasks[taskKey] = created;
+    return created;
+  }
+
+  private async reopenRetryableBlockedTasks(
+    state: GatewayTrioState,
+    explicitTasks: Set<string>,
+    maxIterations: number,
+    warnings: string[],
+  ): Promise<void> {
+    const keys = new Set<string>([...explicitTasks, ...Object.keys(state.tasks)]);
+    for (const taskKey of keys) {
+      const progress = state.tasks[taskKey];
+      if (progress?.status === "completed") continue;
+      if (progress?.status === "failed" && progress.attempts >= maxIterations) continue;
+      if (progress && progress.attempts >= maxIterations) continue;
+      const task = await this.deps.workspaceRepo.getTaskByKey(taskKey);
+      if (!task) continue;
+      const status = this.normalizeStatus(task.status);
+      const metadata = (task.metadata as Record<string, unknown> | undefined) ?? {};
+      const blockedReason = typeof metadata.blocked_reason === "string" ? metadata.blocked_reason : undefined;
+      if (status === "blocked") {
+        if (!blockedReason) continue;
+        if (blockedReason === "dependency_not_ready") {
+          const depsReady = await this.dependenciesReady(task.id, warnings);
+          if (!depsReady) continue;
+        } else if (!RETRYABLE_BLOCK_REASONS.has(blockedReason)) {
+          continue;
+        }
+      } else if (progress?.status !== "failed") {
+        continue;
+      }
+      const nextMetadata = { ...metadata };
+      delete nextMetadata.blocked_reason;
+      if (status === "blocked") {
+        await this.deps.workspaceRepo.updateTask(task.id, {
+          status: "in_progress",
+          metadata: nextMetadata,
+        });
+      }
+      if (progress) {
+        progress.status = "pending";
+        progress.lastError = undefined;
+        state.tasks[taskKey] = progress;
+      }
+      warnings.push(
+        status === "blocked"
+          ? `Reopened blocked task ${taskKey} (reason=${blockedReason}) for retry.`
+          : `Reopened failed task ${taskKey} for retry (attempts=${progress?.attempts ?? 0}/${maxIterations}).`,
+      );
+    }
+  }
+
+  private async dependenciesReady(taskId: string, warnings: string[]): Promise<boolean> {
+    const deps = await this.deps.workspaceRepo.getTaskDependencies([taskId]);
+    if (!deps.length) return true;
+    const depIds = deps.map((dep) => dep.dependsOnTaskId).filter((id): id is string => Boolean(id));
+    if (!depIds.length) return true;
+    const depTasks = await this.deps.workspaceRepo.getTasksByIds(depIds);
+    const depMap = new Map(depTasks.map((task) => [task.id, task]));
+    for (const depId of depIds) {
+      const depTask = depMap.get(depId);
+      if (!depTask) {
+        warnings.push(`Dependency ${depId} not found for task ${taskId}; treating as not ready.`);
+        return false;
+      }
+      const status = this.normalizeStatus(depTask.status);
+      if (!status || !DONE_DEPENDENCY_STATUSES.has(status)) return false;
+    }
+    return true;
+  }
+
   private normalizeStatus(status?: string): string | undefined {
     return status ? status.toLowerCase().trim() : undefined;
   }
@@ -277,6 +405,7 @@ export class GatewayTrioService {
       noCommit: request.noCommit ?? raw.noCommit,
       dryRun: request.dryRun ?? raw.dryRun,
       reviewBase: request.reviewBase ?? raw.reviewBase,
+      maxAgentSeconds: request.maxAgentSeconds ?? raw.maxAgentSeconds,
       qaProfileName: request.qaProfileName ?? raw.qaProfileName,
       qaLevel: request.qaLevel ?? raw.qaLevel,
       qaTestCommand: request.qaTestCommand ?? raw.qaTestCommand,
@@ -285,6 +414,8 @@ export class GatewayTrioService {
       qaResult: request.qaResult ?? raw.qaResult,
       qaNotes: request.qaNotes ?? raw.qaNotes,
       qaEvidenceUrl: request.qaEvidenceUrl ?? raw.qaEvidenceUrl,
+      qaAllowDirty: request.qaAllowDirty ?? raw.qaAllowDirty,
+      escalateOnNoChange: request.escalateOnNoChange ?? raw.escalateOnNoChange,
     };
   }
 
@@ -364,11 +495,91 @@ export class GatewayTrioService {
     return step.status !== "succeeded";
   }
 
+  private escalationReasons(escalateOnNoChange: boolean): Set<string> {
+    const reasons = new Set(ESCALATION_REASONS);
+    if (escalateOnNoChange) reasons.add(NO_CHANGE_REASON);
+    return reasons;
+  }
+
+  private recordFailure(progress: TaskProgress, step: StepOutcome, attempt: number): void {
+    if (step.status !== "failed" && step.status !== "blocked") return;
+    const reason = step.error ?? step.decision ?? step.outcome;
+    const agent = step.chosenAgent;
+    if (!reason || !agent) return;
+    const history = progress.failureHistory ?? [];
+    history.push({ step: step.step, agent, reason, attempt, timestamp: new Date().toISOString() });
+    progress.failureHistory = history;
+  }
+
+  private buildAgentOptions(
+    progress: TaskProgress,
+    step: StepName,
+    request: GatewayTrioRequest,
+  ): { avoidAgents: string[]; forceStronger: boolean } {
+    const reasons = this.escalationReasons(request.escalateOnNoChange !== false);
+    const avoid = new Set<string>();
+    const history = progress.failureHistory ?? [];
+    for (const failure of history) {
+      if (failure.step !== step) continue;
+      if (!reasons.has(failure.reason)) continue;
+      avoid.add(failure.agent);
+    }
+    const avoidAgents = Array.from(avoid);
+    return { avoidAgents, forceStronger: avoidAgents.length > 0 };
+  }
+
+  private async runStepWithTimeout(
+    step: StepName,
+    jobId: string,
+    taskKey: string,
+    attempt: number,
+    maxAgentSeconds: number | undefined,
+    fn: (signal: AbortSignal) => Promise<StepOutcome>,
+  ): Promise<StepOutcome> {
+    await this.deps.jobService.writeCheckpoint(jobId, {
+      stage: `task:${taskKey}:${step}:start`,
+      timestamp: new Date().toISOString(),
+      details: { taskKey, attempt, step },
+    });
+    const timeoutMs = typeof maxAgentSeconds === "number" && maxAgentSeconds > 0 ? maxAgentSeconds * 1000 : undefined;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const controller = new AbortController();
+    const heartbeat = setInterval(() => {
+      void this.deps.jobService.writeCheckpoint(jobId, {
+        stage: `task:${taskKey}:${step}:heartbeat`,
+        timestamp: new Date().toISOString(),
+        details: { taskKey, attempt, step },
+      });
+    }, HEARTBEAT_INTERVAL_MS);
+    if (typeof heartbeat.unref === "function") {
+      heartbeat.unref();
+    }
+    try {
+      if (timeoutMs) {
+        const timeoutPromise = new Promise<StepOutcome>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            controller.abort("agent_timeout");
+            reject(new Error("agent_timeout"));
+          }, timeoutMs);
+        });
+        return await Promise.race([fn(controller.signal), timeoutPromise]);
+      }
+      return await fn(controller.signal);
+    } catch (error: any) {
+      const message = error?.message ?? String(error);
+      return { step, status: "failed", error: message === "agent_timeout" ? "agent_timeout" : message };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      clearInterval(heartbeat);
+    }
+  }
+
   private async runGateway(
     job: string,
     taskKey: string,
     projectKey: string | undefined,
     request: GatewayTrioRequest,
+    agentOptions?: AgentSelectionOptions,
   ): Promise<GatewayAgentResult> {
     return this.deps.gatewayService.run({
       workspace: this.workspace,
@@ -379,6 +590,8 @@ export class GatewayTrioService {
       maxDocs: request.maxDocs,
       agentStream: request.agentStream,
       rateAgents: request.rateAgents,
+      avoidAgents: agentOptions?.avoidAgents,
+      forceStronger: agentOptions?.forceStronger,
     });
   }
 
@@ -389,9 +602,32 @@ export class GatewayTrioService {
     projectKey: string | undefined,
     statusFilter: string[],
     request: GatewayTrioRequest,
+    warnings: string[],
+    agentOptions: AgentSelectionOptions,
+    abortSignal?: AbortSignal,
   ): Promise<StepOutcome> {
-    const gateway = await this.runGateway("work-on-tasks", taskKey, projectKey, request);
-    const handoff = buildGatewayHandoffContent(gateway);
+    let gateway: GatewayAgentResult | undefined;
+    let handoff: string;
+    let resolvedAgent: string | undefined;
+    try {
+      gateway = await this.runGateway("work-on-tasks", taskKey, projectKey, request, agentOptions);
+      handoff = buildGatewayHandoffContent(gateway);
+      resolvedAgent = request.workAgentName ?? gateway.chosenAgent.agentSlug;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!request.workAgentName) throw error;
+      resolvedAgent = request.workAgentName;
+      handoff = [
+        "# Gateway Handoff",
+        "",
+        `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
+        `Error: ${message}`,
+      ].join("\n");
+      warnings.push(`Gateway agent failed for work ${taskKey}; using override ${resolvedAgent}: ${message}`);
+    }
+    if (!resolvedAgent) {
+      throw new Error(`No agent resolved for work step on ${taskKey}`);
+    }
     const handoffPath = await this.prepareHandoff(jobId, taskKey, "work", attempt, handoff);
     const result = await withGatewayHandoff(handoffPath, async () =>
       this.deps.workService.workOnTasks({
@@ -402,13 +638,15 @@ export class GatewayTrioService {
         limit: 1,
         noCommit: request.noCommit,
         dryRun: request.dryRun,
-        agentName: request.workAgentName ?? gateway.chosenAgent.agentSlug,
+        agentName: resolvedAgent,
         agentStream: request.agentStream,
         rateAgents: request.rateAgents,
+        abortSignal,
+        maxAgentSeconds: request.maxAgentSeconds,
       }),
     );
     const parsed = this.parseWorkResult(taskKey, result);
-    return { ...parsed, chosenAgent: gateway.chosenAgent.agentSlug };
+    return { ...parsed, chosenAgent: resolvedAgent };
   }
 
   private async runReviewStep(
@@ -418,9 +656,32 @@ export class GatewayTrioService {
     projectKey: string | undefined,
     statusFilter: string[],
     request: GatewayTrioRequest,
+    warnings: string[],
+    agentOptions: AgentSelectionOptions,
+    abortSignal?: AbortSignal,
   ): Promise<StepOutcome> {
-    const gateway = await this.runGateway("code-review", taskKey, projectKey, request);
-    const handoff = buildGatewayHandoffContent(gateway);
+    let gateway: GatewayAgentResult | undefined;
+    let handoff: string;
+    let resolvedAgent: string | undefined;
+    try {
+      gateway = await this.runGateway("code-review", taskKey, projectKey, request, agentOptions);
+      handoff = buildGatewayHandoffContent(gateway);
+      resolvedAgent = request.reviewAgentName ?? gateway.chosenAgent.agentSlug;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!request.reviewAgentName) throw error;
+      resolvedAgent = request.reviewAgentName;
+      handoff = [
+        "# Gateway Handoff",
+        "",
+        `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
+        `Error: ${message}`,
+      ].join("\n");
+      warnings.push(`Gateway agent failed for review ${taskKey}; using override ${resolvedAgent}: ${message}`);
+    }
+    if (!resolvedAgent) {
+      throw new Error(`No agent resolved for review step on ${taskKey}`);
+    }
     const handoffPath = await this.prepareHandoff(jobId, taskKey, "review", attempt, handoff);
     const result = await withGatewayHandoff(handoffPath, async () =>
       this.deps.reviewService.reviewTasks({
@@ -430,13 +691,14 @@ export class GatewayTrioService {
         statusFilter,
         baseRef: request.reviewBase,
         dryRun: request.dryRun,
-        agentName: request.reviewAgentName ?? gateway.chosenAgent.agentSlug,
+        agentName: resolvedAgent,
         agentStream: request.agentStream,
         rateAgents: request.rateAgents,
+        abortSignal,
       }),
     );
     const parsed = this.parseReviewResult(taskKey, result);
-    return { ...parsed, chosenAgent: gateway.chosenAgent.agentSlug };
+    return { ...parsed, chosenAgent: resolvedAgent };
   }
 
   private async runQaStep(
@@ -446,9 +708,32 @@ export class GatewayTrioService {
     projectKey: string | undefined,
     statusFilter: string[],
     request: GatewayTrioRequest,
+    warnings: string[],
+    agentOptions: AgentSelectionOptions,
+    abortSignal?: AbortSignal,
   ): Promise<StepOutcome> {
-    const gateway = await this.runGateway("qa-tasks", taskKey, projectKey, request);
-    const handoff = buildGatewayHandoffContent(gateway);
+    let gateway: GatewayAgentResult | undefined;
+    let handoff: string;
+    let resolvedAgent: string | undefined;
+    try {
+      gateway = await this.runGateway("qa-tasks", taskKey, projectKey, request, agentOptions);
+      handoff = buildGatewayHandoffContent(gateway);
+      resolvedAgent = request.qaAgentName ?? gateway.chosenAgent.agentSlug;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!request.qaAgentName) throw error;
+      resolvedAgent = request.qaAgentName;
+      handoff = [
+        "# Gateway Handoff",
+        "",
+        `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
+        `Error: ${message}`,
+      ].join("\n");
+      warnings.push(`Gateway agent failed for QA ${taskKey}; using override ${resolvedAgent}: ${message}`);
+    }
+    if (!resolvedAgent) {
+      throw new Error(`No agent resolved for QA step on ${taskKey}`);
+    }
     const handoffPath = await this.prepareHandoff(jobId, taskKey, "qa", attempt, handoff);
     const result = await withGatewayHandoff(handoffPath, async () =>
       this.deps.qaService.run({
@@ -460,7 +745,7 @@ export class GatewayTrioService {
         profileName: request.qaProfileName,
         level: request.qaLevel,
         testCommand: request.qaTestCommand,
-        agentName: request.qaAgentName ?? gateway.chosenAgent.agentSlug,
+        agentName: resolvedAgent,
         agentStream: request.agentStream,
         rateAgents: request.rateAgents,
         createFollowupTasks: request.qaFollowups ?? "auto",
@@ -468,10 +753,12 @@ export class GatewayTrioService {
         result: request.qaResult,
         notes: request.qaNotes,
         evidenceUrl: request.qaEvidenceUrl,
+        allowDirty: request.qaAllowDirty,
+        abortSignal,
       }),
     );
     const parsed = this.parseQaResult(taskKey, result);
-    return { ...parsed, chosenAgent: gateway.chosenAgent.agentSlug };
+    return { ...parsed, chosenAgent: resolvedAgent };
   }
 
   private toSummary(state: GatewayTrioState): GatewayTrioTaskSummary[] {
@@ -504,6 +791,7 @@ export class GatewayTrioService {
     const resolvedRequest = this.resolveRequest(request, resumeJob?.payload as Record<string, unknown> | undefined);
     const maxIterations = resolvedRequest.maxIterations ?? 3;
     const maxCycles = resolvedRequest.maxCycles ?? 5;
+    const maxAgentSeconds = resolvedRequest.maxAgentSeconds ?? DEFAULT_MAX_AGENT_SECONDS;
     const statusFilter = await this.buildStatusFilter(resolvedRequest, warnings);
     const commandRun = await this.deps.jobService.startCommandRun("gateway-trio", resolvedRequest.projectKey, {
       taskIds: resolvedRequest.taskKeys,
@@ -540,6 +828,7 @@ export class GatewayTrioService {
           noCommit: resolvedRequest.noCommit,
           dryRun: resolvedRequest.dryRun,
           reviewBase: resolvedRequest.reviewBase,
+          maxAgentSeconds,
           qaProfileName: resolvedRequest.qaProfileName,
           qaLevel: resolvedRequest.qaLevel,
           qaTestCommand: resolvedRequest.qaTestCommand,
@@ -548,6 +837,8 @@ export class GatewayTrioService {
           qaResult: resolvedRequest.qaResult,
           qaNotes: resolvedRequest.qaNotes,
           qaEvidenceUrl: resolvedRequest.qaEvidenceUrl,
+          qaAllowDirty: resolvedRequest.qaAllowDirty,
+          escalateOnNoChange: resolvedRequest.escalateOnNoChange,
           resumeSupported: true,
         },
         totalItems: 0,
@@ -569,10 +860,14 @@ export class GatewayTrioService {
     }
 
     const explicitTasks = new Set(resolvedRequest.taskKeys ?? []);
+    await this.seedExplicitTasks(state, explicitTasks, warnings);
+    await this.writeState(state);
     let cycle = state.cycle ?? 0;
 
     try {
       while (cycle < maxCycles) {
+        await this.reopenRetryableBlockedTasks(state, explicitTasks, maxIterations, warnings);
+        await this.writeState(state);
         const selection = await this.selectionService.selectTasks({
           projectKey: resolvedRequest.projectKey,
           epicKey: resolvedRequest.epicKey,
@@ -589,12 +884,7 @@ export class GatewayTrioService {
         for (const blocked of selection.blocked) {
           const taskKey = blocked.task.key;
           if (explicitTasks.has(taskKey)) continue;
-          const progress = state.tasks[taskKey] ?? {
-            taskKey,
-            attempts: 0,
-            status: "pending",
-            chosenAgents: {},
-          };
+          const progress = this.ensureProgress(state, taskKey);
           progress.status = "skipped";
           progress.lastError = "dependency_blocked";
           state.tasks[taskKey] = progress;
@@ -613,12 +903,7 @@ export class GatewayTrioService {
           const taskKey = entry.task.key;
           if (blockedKeys.has(taskKey) && !explicitTasks.has(taskKey)) {
             warnings.push(`Task ${taskKey} blocked by dependencies; skipping this cycle.`);
-            const progress = state.tasks[taskKey] ?? {
-              taskKey,
-              attempts: 0,
-              status: "pending",
-              chosenAgents: {},
-            };
+            const progress = this.ensureProgress(state, taskKey);
             progress.status = "skipped";
             progress.lastError = "dependency_blocked";
             state.tasks[taskKey] = progress;
@@ -631,19 +916,22 @@ export class GatewayTrioService {
             continue;
           }
 
-          const progress = state.tasks[taskKey] ?? {
-            taskKey,
-            attempts: 0,
-            status: "pending",
-            chosenAgents: {},
-          };
+          const progress = this.ensureProgress(state, taskKey);
           if (progress.status === "skipped") {
             progress.status = "pending";
             progress.lastError = undefined;
           }
 
-          if (progress.status === "completed" || progress.status === "blocked" || progress.status === "failed") {
+          if (progress.status === "completed" || progress.status === "blocked") {
             continue;
+          }
+          if (progress.status === "failed") {
+            if (progress.attempts >= maxIterations) {
+              continue;
+            }
+            progress.status = "pending";
+            progress.lastError = undefined;
+            state.tasks[taskKey] = progress;
           }
 
           if (progress.attempts >= maxIterations) {
@@ -657,104 +945,178 @@ export class GatewayTrioService {
           const attemptIndex = progress.attempts + 1;
           attemptedThisCycle += 1;
           const projectKey = await this.projectKeyForTask(entry.task.projectId);
+          const statusBefore = this.normalizeStatus(entry.task.status);
+          const workWasSkipped = statusBefore === "ready_to_review" || statusBefore === "ready_to_qa";
+          const reviewWasSkipped = statusBefore === "ready_to_qa";
 
-          const workOutcome = await this.runWorkStep(jobId, attemptIndex, taskKey, projectKey, statusFilter, resolvedRequest);
-          progress.attempts = attemptIndex;
-          progress.lastStep = "work";
-          progress.lastError = workOutcome.error;
-          progress.chosenAgents.work = workOutcome.chosenAgent ?? progress.chosenAgents.work;
-          state.tasks[taskKey] = progress;
-          await this.writeState(state);
-          await this.deps.jobService.writeCheckpoint(jobId, {
-            stage: `task:${taskKey}:work`,
-            timestamp: new Date().toISOString(),
-            details: { taskKey, attempt: attemptIndex, outcome: workOutcome },
-          });
-
-          if (workOutcome.status === "blocked") {
-            progress.status = "blocked";
-            progress.lastError = workOutcome.error ?? "blocked";
+          if (!workWasSkipped) {
+            const workAgentOptions = this.buildAgentOptions(progress, "work", resolvedRequest);
+            const workOutcome = await this.runStepWithTimeout(
+              "work",
+              jobId,
+              taskKey,
+              attemptIndex,
+              maxAgentSeconds,
+              (signal) =>
+                this.runWorkStep(
+                  jobId,
+                  attemptIndex,
+                  taskKey,
+                  projectKey,
+                  statusFilter,
+                  resolvedRequest,
+                  warnings,
+                  workAgentOptions,
+                  signal,
+                ),
+            );
+            progress.attempts = attemptIndex;
+            progress.lastStep = "work";
+            progress.lastError = workOutcome.error;
+            progress.chosenAgents.work = workOutcome.chosenAgent ?? progress.chosenAgents.work;
+            this.recordFailure(progress, workOutcome, attemptIndex);
             state.tasks[taskKey] = progress;
             await this.writeState(state);
-            continue;
-          }
-          if (workOutcome.status === "skipped") {
-            progress.status = "skipped";
-            progress.lastError = workOutcome.error ?? "skipped";
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            continue;
-          }
-          if (workOutcome.status !== "succeeded") {
-            if (this.shouldRetryAfter(workOutcome)) {
-              warnings.push(`Retrying ${taskKey} after work step (${workOutcome.status}).`);
+            await this.deps.jobService.writeCheckpoint(jobId, {
+              stage: `task:${taskKey}:work`,
+              timestamp: new Date().toISOString(),
+              details: { taskKey, attempt: attemptIndex, outcome: workOutcome },
+            });
+
+            if (workOutcome.status === "blocked") {
+              progress.status = "blocked";
+              progress.lastError = workOutcome.error ?? "blocked";
               state.tasks[taskKey] = progress;
               await this.writeState(state);
               continue;
             }
-          }
-
-          if (!resolvedRequest.dryRun) {
-            const statusAfterWork = await this.refreshTaskStatus(taskKey, warnings);
-            if (statusAfterWork && statusAfterWork !== "ready_to_review") {
-              warnings.push(`Task ${taskKey} status ${statusAfterWork} after work; retrying work step.`);
+            if (workOutcome.status === "skipped") {
+              progress.status = "skipped";
+              progress.lastError = workOutcome.error ?? "skipped";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
               continue;
             }
-          }
+            if (workOutcome.status !== "succeeded") {
+              if (this.shouldRetryAfter(workOutcome)) {
+                warnings.push(`Retrying ${taskKey} after work step (${workOutcome.status}).`);
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                continue;
+              }
+            }
 
-          const reviewOutcome = await this.runReviewStep(
-            jobId,
-            attemptIndex,
-            taskKey,
-            projectKey,
-            ["ready_to_review", ...statusFilter],
-            resolvedRequest,
-          );
-          progress.lastStep = "review";
-          progress.lastDecision = reviewOutcome.decision;
-          progress.lastError = reviewOutcome.error;
-          progress.chosenAgents.review = reviewOutcome.chosenAgent ?? progress.chosenAgents.review;
-          state.tasks[taskKey] = progress;
-          await this.writeState(state);
-          await this.deps.jobService.writeCheckpoint(jobId, {
-            stage: `task:${taskKey}:review`,
-            timestamp: new Date().toISOString(),
-            details: { taskKey, attempt: attemptIndex, outcome: reviewOutcome },
-          });
-
-          if (reviewOutcome.status === "blocked") {
-            progress.status = "blocked";
-            progress.lastError = reviewOutcome.error ?? "blocked";
+            if (!resolvedRequest.dryRun) {
+              const statusAfterWork = await this.refreshTaskStatus(taskKey, warnings);
+              if (statusAfterWork && statusAfterWork !== "ready_to_review") {
+                warnings.push(`Task ${taskKey} status ${statusAfterWork} after work; retrying work step.`);
+                continue;
+              }
+            }
+          } else {
+            progress.attempts = attemptIndex;
+            progress.lastStep = "work";
+            progress.lastError = undefined;
             state.tasks[taskKey] = progress;
             await this.writeState(state);
-            continue;
+            await this.deps.jobService.writeCheckpoint(jobId, {
+              stage: `task:${taskKey}:work:skipped`,
+              timestamp: new Date().toISOString(),
+              details: { taskKey, attempt: attemptIndex, reason: statusBefore ?? "ready" },
+            });
           }
-          if (this.shouldRetryAfter(reviewOutcome)) {
-            warnings.push(`Retrying ${taskKey} after review (${reviewOutcome.decision ?? reviewOutcome.status}).`);
+
+          if (!reviewWasSkipped) {
+            const reviewAgentOptions = this.buildAgentOptions(progress, "review", resolvedRequest);
+            const reviewOutcome = await this.runStepWithTimeout(
+              "review",
+              jobId,
+              taskKey,
+              attemptIndex,
+              maxAgentSeconds,
+              (signal) =>
+                this.runReviewStep(
+                  jobId,
+                  attemptIndex,
+                  taskKey,
+                  projectKey,
+                  ["ready_to_review", ...statusFilter],
+                  resolvedRequest,
+                  warnings,
+                  reviewAgentOptions,
+                  signal,
+                ),
+            );
+            progress.lastStep = "review";
+            progress.lastDecision = reviewOutcome.decision;
+            progress.lastError = reviewOutcome.error;
+            progress.chosenAgents.review = reviewOutcome.chosenAgent ?? progress.chosenAgents.review;
+            this.recordFailure(progress, reviewOutcome, attemptIndex);
             state.tasks[taskKey] = progress;
             await this.writeState(state);
-            continue;
-          }
-          if (!resolvedRequest.dryRun) {
-            const statusAfterReview = await this.refreshTaskStatus(taskKey, warnings);
-            if (statusAfterReview && statusAfterReview !== "ready_to_qa") {
-              warnings.push(`Task ${taskKey} status ${statusAfterReview} after review; retrying work step.`);
+            await this.deps.jobService.writeCheckpoint(jobId, {
+              stage: `task:${taskKey}:review`,
+              timestamp: new Date().toISOString(),
+              details: { taskKey, attempt: attemptIndex, outcome: reviewOutcome },
+            });
+
+            if (reviewOutcome.status === "blocked") {
+              progress.status = "blocked";
+              progress.lastError = reviewOutcome.error ?? "blocked";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
               continue;
             }
+            if (this.shouldRetryAfter(reviewOutcome)) {
+              warnings.push(`Retrying ${taskKey} after review (${reviewOutcome.decision ?? reviewOutcome.status}).`);
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              continue;
+            }
+            if (!resolvedRequest.dryRun) {
+              const statusAfterReview = await this.refreshTaskStatus(taskKey, warnings);
+              if (statusAfterReview && statusAfterReview !== "ready_to_qa") {
+                warnings.push(`Task ${taskKey} status ${statusAfterReview} after review; retrying work step.`);
+                continue;
+              }
+            }
+          } else {
+            progress.lastStep = "review";
+            progress.lastDecision = "skipped";
+            progress.lastError = undefined;
+            state.tasks[taskKey] = progress;
+            await this.writeState(state);
+            await this.deps.jobService.writeCheckpoint(jobId, {
+              stage: `task:${taskKey}:review:skipped`,
+              timestamp: new Date().toISOString(),
+              details: { taskKey, attempt: attemptIndex, reason: statusBefore ?? "ready_to_qa" },
+            });
           }
 
-          const qaOutcome = await this.runQaStep(
+          const qaOutcome = await this.runStepWithTimeout(
+            "qa",
             jobId,
-            attemptIndex,
             taskKey,
-            projectKey,
-            ["ready_to_qa", ...statusFilter],
-            resolvedRequest,
+            attemptIndex,
+            maxAgentSeconds,
+            (signal) =>
+              this.runQaStep(
+                jobId,
+                attemptIndex,
+                taskKey,
+                projectKey,
+                ["ready_to_qa", ...statusFilter],
+                resolvedRequest,
+                warnings,
+                this.buildAgentOptions(progress, "qa", resolvedRequest),
+                signal,
+              ),
           );
           progress.lastStep = "qa";
           progress.lastOutcome = qaOutcome.outcome;
           progress.lastError = qaOutcome.error;
           progress.chosenAgents.qa = qaOutcome.chosenAgent ?? progress.chosenAgents.qa;
+          this.recordFailure(progress, qaOutcome, attemptIndex);
           state.tasks[taskKey] = progress;
           await this.writeState(state);
           await this.deps.jobService.writeCheckpoint(jobId, {
@@ -801,6 +1163,13 @@ export class GatewayTrioService {
         await this.writeState(state);
 
         if (attemptedThisCycle === 0) {
+          const hasPending = Object.values(state.tasks).some(
+            (task) => task.status === "pending" && task.attempts < maxIterations,
+          );
+          if (hasPending) {
+            warnings.push("No tasks attempted in this cycle; pending tasks remain, continuing.");
+            continue;
+          }
           warnings.push("No tasks attempted in this cycle; stopping to avoid infinite loop.");
           break;
         }

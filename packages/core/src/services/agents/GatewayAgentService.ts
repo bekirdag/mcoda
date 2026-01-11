@@ -298,6 +298,8 @@ export interface GatewayAgentRequest extends TaskSelectionFilters {
   agentStream?: boolean;
   onStreamChunk?: (chunk: string) => void;
   rateAgents?: boolean;
+  avoidAgents?: string[];
+  forceStronger?: boolean;
 }
 
 type Candidate = {
@@ -742,15 +744,18 @@ export class GatewayAgentService {
     };
   }
 
-  private async listCandidates(requiredCaps: string[], discipline: string): Promise<Candidate[]> {
+  private async listCandidates(requiredCaps: string[], discipline: string, avoidAgents: string[] = []): Promise<Candidate[]> {
     const agents = await this.deps.globalRepo.listAgents();
     if (agents.length === 0) {
       throw new Error("No agents available; register one with mcoda agent add");
     }
+    const avoidSet = new Set(avoidAgents.map((value) => value.toLowerCase()));
     const health = await this.deps.globalRepo.listAgentHealthSummary();
     const healthById = new Map(health.map((row) => [row.agentId, row]));
     const candidates: Candidate[] = [];
     for (const agent of agents) {
+      const slug = agent.slug ?? agent.id;
+      if (avoidSet.has(agent.id.toLowerCase()) || avoidSet.has(slug.toLowerCase())) continue;
       const capabilities = await this.deps.globalRepo.getAgentCapabilities(agent.id);
       const missing = requiredCaps.filter((cap) => !capabilities.includes(cap));
       if (missing.length) continue;
@@ -872,11 +877,18 @@ export class GatewayAgentService {
     };
   }
 
-  private async selectAgentForJob(job: string, analysis: GatewayAnalysis): Promise<GatewayAgentDecision> {
+  private async selectAgentForJob(
+    job: string,
+    analysis: GatewayAnalysis,
+    avoidAgents: string[] = [],
+    forceStronger: boolean = false,
+  ): Promise<GatewayAgentDecision> {
     const normalizedJob = canonicalizeCommandName(job);
     const requiredCaps = getCommandRequiredCapabilities(normalizedJob);
-    const candidates = await this.listCandidates(requiredCaps, analysis.discipline);
-    const { pick, rationale } = this.chooseCandidate(candidates, analysis.complexity, analysis.discipline);
+    const candidates = await this.listCandidates(requiredCaps, analysis.discipline, avoidAgents);
+    const boostedComplexity = forceStronger ? clamp(Math.round(analysis.complexity) + 1, 1, 10) : analysis.complexity;
+    const { pick, rationale } = this.chooseCandidate(candidates, boostedComplexity, analysis.discipline);
+    const finalRationale = forceStronger ? `${rationale} (force_stronger applied)` : rationale;
     return {
       agentId: pick.agent.id,
       agentSlug: pick.agent.slug ?? pick.agent.id,
@@ -884,7 +896,7 @@ export class GatewayAgentService {
       reasoningRating: pick.agent.reasoningRating ?? undefined,
       bestUsage: pick.agent.bestUsage ?? undefined,
       costPerMillion: Number.isFinite(pick.cost) ? pick.cost : undefined,
-      rationale,
+      rationale: finalRationale,
     };
   }
 
@@ -981,7 +993,12 @@ export class GatewayAgentService {
         analysis.docdexNotes.push(...docdexWarnings);
       }
       analysis = await this.validateFilePlan(analysis, warnings);
-      const chosenAgent = await this.selectAgentForJob(normalizedJob, analysis);
+      const chosenAgent = await this.selectAgentForJob(
+        normalizedJob,
+        analysis,
+        request.avoidAgents ?? [],
+        request.forceStronger ?? false,
+      );
       await this.deps.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {
         commandRunId: commandRun.id,

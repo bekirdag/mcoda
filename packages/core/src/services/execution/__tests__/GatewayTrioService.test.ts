@@ -11,11 +11,32 @@ type TaskStatusStore = {
   set: (key: string, status: string) => void;
 };
 
+type TaskMetadataStore = {
+  get: (key: string) => Record<string, unknown> | undefined;
+  set: (key: string, metadata: Record<string, unknown> | undefined) => void;
+};
+
+type DependencyMap = Record<string, string[]>;
+
 const makeStatusStore = (initial: Record<string, string>): TaskStatusStore => {
   const map = new Map(Object.entries(initial));
   return {
     get: (key) => map.get(key),
     set: (key, status) => map.set(key, status),
+  };
+};
+
+const makeMetadataStore = (initial: Record<string, Record<string, unknown>> = {}): TaskMetadataStore => {
+  const map = new Map(Object.entries(initial));
+  return {
+    get: (key) => map.get(key),
+    set: (key, metadata) => {
+      if (!metadata) {
+        map.delete(key);
+        return;
+      }
+      map.set(key, metadata);
+    },
   };
 };
 
@@ -33,7 +54,7 @@ type SelectionSnapshot = {
   warnings?: string[];
 };
 
-const buildTask = (key: string, statusStore: TaskStatusStore) => ({
+const buildTask = (key: string, statusStore: TaskStatusStore, metadataStore?: TaskMetadataStore) => ({
   id: `task-${key}`,
   projectId: "proj-1",
   epicId: "epic-1",
@@ -50,7 +71,7 @@ const buildTask = (key: string, statusStore: TaskStatusStore) => ({
   vcsBranch: undefined,
   vcsBaseBranch: undefined,
   vcsLastCommitSha: undefined,
-  metadata: undefined,
+  metadata: metadataStore?.get(key),
   openapiVersionAtCreation: undefined,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
@@ -67,17 +88,18 @@ const buildSelection = (
   blockedKeys: string[] | undefined,
   warnings: string[] | undefined,
   statusStore: TaskStatusStore,
+  metadataStore?: TaskMetadataStore,
 ) => {
   const blockedSet = new Set(blockedKeys ?? []);
   const ordered = orderedKeys
     .filter((key) => !blockedSet.has(key))
     .map((key) => ({
-      task: buildTask(key, statusStore),
+      task: buildTask(key, statusStore, metadataStore),
       dependencies: { ids: [], keys: [], blocking: [] },
       blockedReason: undefined,
     }));
   const blocked = (blockedKeys ?? []).map((key) => ({
-    task: buildTask(key, statusStore),
+    task: buildTask(key, statusStore, metadataStore),
     dependencies: { ids: ["dep-1"], keys: ["DEP-1"], blocking: ["dep-1"] },
     blockedReason: "dependency_not_ready",
   }));
@@ -92,15 +114,22 @@ const buildSelection = (
 
 const makeService = async (options: {
   statusStore: TaskStatusStore;
+  metadataStore?: TaskMetadataStore;
+  dependencyMap?: DependencyMap;
   selectionKeys: string[];
   blockedKeys?: string[];
   workOutcome?: "succeeded" | "failed";
+  workSequence?: Array<"succeeded" | "failed">;
+  workNotesSequence?: Array<string | undefined>;
   reviewSequence?: Array<"approve" | "changes_requested" | "block">;
   qaSequence?: Array<"pass" | "fix_required" | "infra_issue">;
   selectionSequence?: SelectionSnapshot[];
+  gatewayRequests?: any[];
 }) => {
   const { dir, workspace } = await makeWorkspace();
   const statusStore = options.statusStore;
+  const metadataStore = options.metadataStore;
+  const dependencyMap = options.dependencyMap ?? {};
   let selectionIndex = 0;
   const selectionService = {
     selectTasks: async () => {
@@ -108,13 +137,17 @@ const makeService = async (options: {
         ? options.selectionSequence[Math.min(selectionIndex, options.selectionSequence.length - 1)]
         : { ordered: options.selectionKeys, blocked: options.blockedKeys };
       selectionIndex += 1;
-      return buildSelection(entry.ordered, entry.blocked, entry.warnings, statusStore) as any;
+      return buildSelection(entry.ordered, entry.blocked, entry.warnings, statusStore, metadataStore) as any;
     },
     close: async () => {},
   };
 
   const gatewayService = {
-    run: async (req: any) => ({
+    run: async (req: any) => {
+      if (options.gatewayRequests) {
+        options.gatewayRequests.push(req);
+      }
+      return {
       commandRunId: `gw-${req.job}`,
       job: req.job,
       gatewayAgent: { id: "gw", slug: "gateway" },
@@ -137,25 +170,32 @@ const makeService = async (options: {
       },
       chosenAgent: { agentId: "agent-1", agentSlug: "agent-1", rationale: "Fit" },
       warnings: [],
-    }),
+    };
+    },
     close: async () => {},
   };
 
   let reviewIndex = 0;
   let qaIndex = 0;
+  let workIndex = 0;
 
   const workService = {
     workOnTasks: async ({ taskKeys, dryRun }: any) => {
       const key = taskKeys[0];
+      const sequence = options.workSequence ?? (options.workOutcome ? [options.workOutcome] : ["succeeded"]);
+      const outcome = sequence[Math.min(workIndex, sequence.length - 1)];
+      const notes =
+        options.workNotesSequence?.[Math.min(workIndex, options.workNotesSequence.length - 1)];
+      workIndex += 1;
       if (!dryRun) {
-        const next = options.workOutcome === "failed" ? "in_progress" : "ready_to_review";
+        const next = outcome === "failed" ? "in_progress" : "ready_to_review";
         statusStore.set(key, next);
       }
       return {
         jobId: "work-job",
         commandRunId: "work-run",
         selection: { ordered: [], blocked: [], warnings: [], filters: { effectiveStatuses: [] } },
-        results: [{ taskKey: key, status: options.workOutcome ?? "succeeded" }],
+        results: [{ taskKey: key, status: outcome, notes }],
         warnings: [],
       };
     },
@@ -219,11 +259,69 @@ const makeService = async (options: {
       vcsBranch: undefined,
       vcsBaseBranch: undefined,
       vcsLastCommitSha: undefined,
-      metadata: undefined,
+      metadata: metadataStore?.get(key),
       openapiVersionAtCreation: undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }),
+    getTaskDependencies: async (taskIds: string[]) => {
+      const rows: Array<{
+        id: string;
+        taskId: string;
+        dependsOnTaskId: string;
+        relationType: string;
+        createdAt: string;
+        updatedAt: string;
+      }> = [];
+      for (const taskId of taskIds) {
+        const key = taskId.replace("task-", "");
+        const deps = dependencyMap[key] ?? [];
+        for (const depKey of deps) {
+          rows.push({
+            id: `dep-${key}-${depKey}`,
+            taskId,
+            dependsOnTaskId: `task-${depKey}`,
+            relationType: "blocks",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+      return rows;
+    },
+    getTasksByIds: async (taskIds: string[]) =>
+      taskIds.map((id) => {
+        const key = id.replace("task-", "");
+        return {
+          id,
+          projectId: "proj-1",
+          epicId: "epic-1",
+          userStoryId: "story-1",
+          key,
+          title: key,
+          description: "",
+          type: "feature",
+          status: statusStore.get(key) ?? "in_progress",
+          storyPoints: 1,
+          priority: 1,
+          assignedAgentId: undefined,
+          assigneeHuman: undefined,
+          vcsBranch: undefined,
+          vcsBaseBranch: undefined,
+          vcsLastCommitSha: undefined,
+          metadata: metadataStore?.get(key),
+          openapiVersionAtCreation: undefined,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      }),
+    updateTask: async (taskId: string, updates: { status?: string; metadata?: Record<string, unknown> | null }) => {
+      const key = taskId.replace("task-", "");
+      if (updates.status) statusStore.set(key, updates.status);
+      if (updates.metadata !== undefined) {
+        metadataStore?.set(key, updates.metadata ?? undefined);
+      }
+    },
     getProjectById: async () => ({
       id: "proj-1",
       key: "PROJ",
@@ -248,7 +346,7 @@ const makeService = async (options: {
     selectionService,
   });
 
-  return { service, dir };
+  return { service, dir, workspace };
 };
 
 test("GatewayTrioService completes work-review-qa successfully", async () => {
@@ -392,6 +490,127 @@ test("GatewayTrioService retries blocked tasks when dependencies clear", async (
     assert.equal(summary["TASK-11"]?.status, "completed");
     assert.equal(summary["TASK-11"]?.attempts, 1);
     assert.equal(summary["TASK-12"]?.status, "completed");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService reopens retryable blocked tasks", async () => {
+  const statusStore = makeStatusStore({ "TASK-13": "blocked" });
+  const metadataStore = makeMetadataStore({ "TASK-13": { blocked_reason: "patch_failed" } });
+  const { service, dir } = await makeService({
+    statusStore,
+    metadataStore,
+    selectionKeys: [],
+    selectionSequence: [{ ordered: [] }, { ordered: ["TASK-13"] }],
+  });
+  try {
+    const result = await service.run({
+      workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any,
+      taskKeys: ["TASK-13"],
+      maxCycles: 2,
+    });
+    const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-13");
+    assert.equal(summary?.status, "completed");
+    assert.equal(statusStore.get("TASK-13"), "completed");
+    assert.equal((metadataStore.get("TASK-13") as any)?.blocked_reason, undefined);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService reopens dependency-blocked tasks only when deps complete", async () => {
+  const statusStore = makeStatusStore({ "TASK-20": "blocked", "TASK-21": "completed", "TASK-30": "blocked", "TASK-31": "in_progress" });
+  const metadataStore = makeMetadataStore({
+    "TASK-20": { blocked_reason: "dependency_not_ready" },
+    "TASK-30": { blocked_reason: "dependency_not_ready" },
+  });
+  const { service, dir } = await makeService({
+    statusStore,
+    metadataStore,
+    dependencyMap: {
+      "TASK-20": ["TASK-21"],
+      "TASK-30": ["TASK-31"],
+    },
+    selectionKeys: [],
+  });
+  try {
+    const state: any = {
+      schema_version: 1,
+      job_id: "job-1",
+      command_run_id: "run-1",
+      cycle: 0,
+      tasks: {
+        "TASK-20": { taskKey: "TASK-20", attempts: 0, status: "blocked", chosenAgents: {} },
+        "TASK-30": { taskKey: "TASK-30", attempts: 0, status: "blocked", chosenAgents: {} },
+      },
+    };
+    const warnings: string[] = [];
+    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-20", "TASK-30"]), 3, warnings);
+    assert.equal(statusStore.get("TASK-20"), "in_progress");
+    assert.equal((metadataStore.get("TASK-20") as any)?.blocked_reason, undefined);
+    assert.equal(statusStore.get("TASK-30"), "blocked");
+    assert.equal((metadataStore.get("TASK-30") as any)?.blocked_reason, "dependency_not_ready");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService reopens failed tasks when max iterations increases", async () => {
+  const statusStore = makeStatusStore({ "TASK-40": "in_progress" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: [],
+  });
+  try {
+    const state: any = {
+      schema_version: 1,
+      job_id: "job-2",
+      command_run_id: "run-2",
+      cycle: 0,
+      tasks: {
+        "TASK-40": { taskKey: "TASK-40", attempts: 2, status: "failed", chosenAgents: {} },
+      },
+    };
+    const warnings: string[] = [];
+    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-40"]), 5, warnings);
+    assert.equal(state.tasks["TASK-40"].status, "pending");
+    assert.equal(statusStore.get("TASK-40"), "in_progress");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService avoids failing agents on retryable errors", async () => {
+  const statusStore = makeStatusStore({ "T1": "in_progress" });
+  const gatewayRequests: any[] = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["T1"],
+    workSequence: ["failed", "succeeded"],
+    workNotesSequence: ["missing_patch", undefined],
+    reviewSequence: ["approve"],
+    qaSequence: ["pass"],
+    gatewayRequests,
+  });
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: "proj-1",
+      maxIterations: 2,
+      maxCycles: 2,
+      agentStream: false,
+    });
+
+    const workCalls = gatewayRequests.filter((req) => req.job === "work-on-tasks");
+    assert.ok(workCalls.length >= 2);
+    assert.deepEqual(workCalls[1].avoidAgents, ["agent-1"]);
+    assert.equal(workCalls[1].forceStronger, true);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

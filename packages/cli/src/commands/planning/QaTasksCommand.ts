@@ -25,10 +25,11 @@ interface ParsedArgs {
   result?: "pass" | "fail" | "blocked";
   notes?: string;
   evidenceUrl?: string;
+  allowDirty: boolean;
   quiet?: boolean;
 }
 
-const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--dry-run] [--json]`;
+const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--dry-run] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -58,6 +59,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   let debug = false;
   let noTelemetry = false;
   let resumeJobId: string | undefined;
+  let allowDirty = false;
   let result: "pass" | "fail" | "blocked" | undefined;
   let notes: string | undefined;
   let evidenceUrl: string | undefined;
@@ -159,6 +161,10 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
           resumeJobId = argv[i + 1];
           i += 1;
           break;
+        case "--allow-dirty":
+          allowDirty = parseBooleanFlag(argv[i + 1], allowDirty);
+          i += 1;
+          break;
         case "--result":
           result = argv[i + 1] as any;
           i += 1;
@@ -206,6 +212,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     debug,
     noTelemetry,
     resumeJobId,
+    allowDirty,
     result,
     notes,
     evidenceUrl,
@@ -273,6 +280,7 @@ export class QaTasksCommand {
         result: parsed.result,
         notes: parsed.notes,
         evidenceUrl: parsed.evidenceUrl,
+        allowDirty: parsed.allowDirty,
         noTelemetry: parsed.noTelemetry,
       });
 

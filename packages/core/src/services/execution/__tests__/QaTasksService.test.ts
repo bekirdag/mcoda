@@ -9,6 +9,7 @@ import { TaskSelectionService } from "../TaskSelectionService.js";
 import { TaskStateService } from "../TaskStateService.js";
 import { QaTasksService } from "../QaTasksService.js";
 import { JobService } from "../../jobs/JobService.js";
+import { createTaskCommentSlug, formatTaskCommentBody } from "../../tasks/TaskCommentFormatter.js";
 
 class StubQaAdapter {
   async ensureInstalled() {
@@ -238,6 +239,141 @@ test("qa-tasks prepends project guidance to agent prompt", async () => {
     const taskIndex = lastInput.indexOf("Task: proj-epic-us-01-t01");
     assert.ok(guidanceIndex >= 0);
     assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks resolves comment slugs and creates issue comments with slugs", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t02",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  const openMessage = "Open review comment";
+  await repo.createTaskComment({
+    taskId: task.id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    authorAgentId: "agent-0",
+    category: "info",
+    slug: "review-open",
+    body: formatTaskCommentBody({
+      slug: "review-open",
+      source: "code-review",
+      message: openMessage,
+      status: "open",
+      category: "info",
+    }),
+    createdAt: new Date().toISOString(),
+  });
+
+  const resolvedAt = new Date(Date.now() - 1000).toISOString();
+  await repo.createTaskComment({
+    taskId: task.id,
+    sourceCommand: "qa-tasks",
+    authorType: "agent",
+    authorAgentId: "agent-0",
+    category: "qa_issue",
+    slug: "qa-old",
+    body: formatTaskCommentBody({
+      slug: "qa-old",
+      source: "qa-tasks",
+      message: "Old QA issue",
+      status: "resolved",
+      category: "qa_issue",
+    }),
+    createdAt: resolvedAt,
+    resolvedAt,
+    resolvedBy: "agent-0",
+  });
+
+  let lastInput = "";
+  class CommentAgentService {
+    async resolveAgent() {
+      return { id: "qa-agent", defaultModel: "stub" } as any;
+    }
+    async invoke(_id: string, { input }: { input: string }) {
+      lastInput = input;
+      return {
+        output: JSON.stringify({
+          recommendation: "fix_required",
+          failures: [{ kind: "functional", message: "Login fails", evidence: "e2e.log" }],
+          resolvedSlugs: ["review-open"],
+          unresolvedSlugs: ["qa-old"],
+        }),
+      };
+    }
+  }
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new CommentAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.ok(lastInput.includes("review-open"));
+
+    const resolved = await repo.listTaskComments(task.id, { slug: "review-open", resolved: true });
+    assert.ok(resolved.length > 0);
+
+    const reopened = await repo.listTaskComments(task.id, { slug: "qa-old", resolved: false });
+    assert.ok(reopened.length > 0);
+
+    const failureSlug = createTaskCommentSlug({
+      source: "qa-tasks",
+      message: "Login fails",
+      category: "functional",
+    });
+    const failureComments = await repo.listTaskComments(task.id, { slug: failureSlug, resolved: false });
+    assert.ok(failureComments.length > 0);
+
+    const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
+    assert.ok(comments.some((comment) => comment.category === "comment_resolution"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

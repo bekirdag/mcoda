@@ -16,6 +16,7 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.qaFollowups, "auto");
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.rateAgents, false);
+    assert.equal(parsed.escalateOnNoChange, true);
   });
 
   it("parses selectors and numeric flags", () => {
@@ -56,6 +57,7 @@ describe("gateway-trio argument parsing", () => {
       "manual",
       "--qa-followups",
       "prompt",
+      "--escalate-on-no-change=false",
       "--agent-stream=false",
       "--rate-agents",
     ]);
@@ -69,6 +71,7 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.qaFollowups, "prompt");
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, true);
+    assert.equal(parsed.escalateOnNoChange, false);
   });
 
   it("accepts workspace alias flags", () => {

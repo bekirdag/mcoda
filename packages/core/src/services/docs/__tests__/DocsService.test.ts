@@ -172,7 +172,7 @@ describe("DocsService.generatePdr", () => {
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
-    const docdex = new DocdexClient({ workspaceRoot });
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
       repo: repo as any,
@@ -232,7 +232,7 @@ describe("DocsService.generatePdr", () => {
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
-    const docdex = new DocdexClient({ workspaceRoot });
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
       repo: repo as any,
@@ -283,7 +283,7 @@ describe("DocsService.generatePdr", () => {
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
-    const docdex = new DocdexClient({ workspaceRoot });
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
       repo: repo as any,
@@ -385,7 +385,7 @@ describe("DocsService.generatePdr", () => {
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
-    const docdex = new DocdexClient({ workspaceRoot });
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
       repo: repo as any,
@@ -444,7 +444,7 @@ describe("DocsService.generatePdr", () => {
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
-    const docdex = new DocdexClient({ workspaceRoot });
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
     const service = new DocsService(workspace, {
       agentService: agentService as any,
       repo: repo as any,
@@ -533,7 +533,7 @@ describe("DocsService.generatePdr", () => {
     const repo = new FakeRepo(agent);
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
-    const docdex = new DocdexClient({ workspaceRoot });
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
     const docdexDir = path.join(workspaceRoot, ".mcoda", "docdex");
     await fs.mkdir(docdexDir, { recursive: true });
     await fs.writeFile(path.join(docdexDir, "documents.json"), "[]", "utf8");

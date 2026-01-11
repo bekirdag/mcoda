@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow } from '@mcoda/db';
+import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { WorkspaceResolution } from '../../workspace/WorkspaceManager.js';
@@ -23,13 +23,86 @@ import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
 import { AgentRatingService } from '../agents/AgentRatingService.js';
 import { loadProjectGuidance } from '../shared/ProjectGuidance.js';
+import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
+  'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage.',
 ].join('\n');
+const QA_TEST_POLICY = 'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage.';
 const DEFAULT_JOB_PROMPT = 'You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.';
 const DEFAULT_CHARACTER_PROMPT =
   'Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.';
+const normalizeSlugList = (input?: string[] | null): string[] => {
+  if (!Array.isArray(input)) return [];
+  const cleaned = new Set<string>();
+  for (const slug of input) {
+    if (typeof slug !== 'string') continue;
+    const trimmed = slug.trim();
+    if (trimmed) cleaned.add(trimmed);
+  }
+  return Array.from(cleaned);
+};
+
+const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
+  const trimmed = (body ?? '').trim();
+  if (!trimmed) return { message: '(no details provided)' };
+  const lines = trimmed.split(/\r?\n/);
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const messageIndex = lines.findIndex((line) => normalize(line) === 'message:');
+  const suggestedIndex = lines.findIndex((line) => {
+    const normalized = normalize(line);
+    return normalized === 'suggested_fix:' || normalized === 'suggested fix:';
+  });
+  if (messageIndex >= 0) {
+    const messageLines = lines.slice(messageIndex + 1, suggestedIndex >= 0 ? suggestedIndex : undefined);
+    const message = messageLines.join('\n').trim();
+    const suggestedLines = suggestedIndex >= 0 ? lines.slice(suggestedIndex + 1) : [];
+    const suggestedFix = suggestedLines.join('\n').trim();
+    return { message: message || trimmed, suggestedFix: suggestedFix || undefined };
+  }
+  if (suggestedIndex >= 0) {
+    const message = lines.slice(0, suggestedIndex).join('\n').trim() || trimmed;
+    const inlineFix = lines[suggestedIndex]?.split(/suggested fix:/i)[1]?.trim();
+    const suggestedTail = lines.slice(suggestedIndex + 1).join('\n').trim();
+    const suggestedFix = inlineFix || suggestedTail || undefined;
+    return { message, suggestedFix };
+  }
+  return { message: trimmed };
+};
+
+const buildCommentBacklog = (comments: TaskCommentRow[]): string => {
+  if (!comments.length) return '';
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  const toSingleLine = (value: string) => value.replace(/\s+/g, ' ').trim();
+  for (const comment of comments) {
+    const slug = comment.slug?.trim() || undefined;
+    const details = parseCommentBody(comment.body);
+    const key =
+      slug ??
+      `${comment.sourceCommand}:${comment.file ?? ''}:${comment.line ?? ''}:${details.message || comment.body}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const location = comment.file
+      ? `${comment.file}${typeof comment.line === 'number' ? `:${comment.line}` : ''}`
+      : '(location not specified)';
+    const message = toSingleLine(details.message || comment.body || '(no details provided)');
+    lines.push(`- [${slug ?? 'untracked'}] ${location} ${message}`);
+    const suggestedFix =
+      (comment.metadata?.suggestedFix as string | undefined) ?? details.suggestedFix ?? undefined;
+    if (suggestedFix) {
+      lines.push(`  Suggested fix: ${toSingleLine(suggestedFix)}`);
+    }
+  }
+  return lines.join('\n');
+};
+
+const formatSlugList = (slugs: string[], limit = 12): string => {
+  if (!slugs.length) return 'none';
+  if (slugs.length <= limit) return slugs.join(', ');
+  return `${slugs.slice(0, limit).join(', ')} (+${slugs.length - limit} more)`;
+};
 
 export interface QaTasksRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -46,6 +119,8 @@ export interface QaTasksRequest extends TaskSelectionFilters {
   result?: 'pass' | 'fail' | 'blocked';
   notes?: string;
   evidenceUrl?: string;
+  allowDirty?: boolean;
+  abortSignal?: AbortSignal;
 }
 
 export interface QaTaskResult {
@@ -94,6 +169,8 @@ interface AgentInterpretation {
   coverageSummary?: string;
   failures?: AgentFailure[];
   followUps?: AgentFollowUp[];
+  resolvedSlugs?: string[];
+  unresolvedSlugs?: string[];
   rawOutput?: string;
   tokensPrompt?: number;
   tokensCompletion?: number;
@@ -256,10 +333,16 @@ export class QaTasksService {
     });
   }
 
-  private async ensureTaskBranch(task: TaskSelectionPlan['ordered'][number], taskRunId: string): Promise<{ ok: boolean; message?: string }> {
+  private async ensureTaskBranch(
+    task: TaskSelectionPlan['ordered'][number],
+    taskRunId: string,
+    allowDirty: boolean,
+  ): Promise<{ ok: boolean; message?: string }> {
     try {
       await this.vcs.ensureRepo(this.workspace.workspaceRoot);
-      await this.vcs.ensureClean(this.workspace.workspaceRoot, true);
+      if (!allowDirty) {
+        await this.vcs.ensureClean(this.workspace.workspaceRoot, true, ["test-results", "playwright-report"]);
+      }
       if (task.task.vcsBranch) {
         const exists = await this.vcs.branchExists(this.workspace.workspaceRoot, task.task.vcsBranch);
         if (!exists) {
@@ -302,6 +385,16 @@ export class QaTasksService {
     if (result.outcome === 'pass') return 'pass';
     if (result.outcome === 'infra_issue') return 'infra_issue';
     return 'fix_required';
+  }
+
+  private adjustOutcomeForSkippedTests(profile: QaProfile, result: QaRunResult): QaRunResult {
+    if ((profile.runner ?? 'cli') !== 'cli') return result;
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.toLowerCase();
+    const markers = ['no test script configured', 'skipping tests', 'no tests found'];
+    if (markers.some((marker) => output.includes(marker))) {
+      return { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1 };
+    }
+    return result;
   }
 
   private combineOutcome(
@@ -394,37 +487,132 @@ export class QaTasksService {
     return Math.max(1, Math.ceil((text?.length ?? 0) / 4));
   }
 
+  private async fileExists(absolutePath: string): Promise<boolean> {
+    try {
+      await fs.access(absolutePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async readPackageJson(): Promise<Record<string, any> | undefined> {
+    const pkgPath = path.join(this.workspace.workspaceRoot, 'package.json');
+    try {
+      const raw = await fs.readFile(pkgPath, 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async detectPackageManager(): Promise<'pnpm' | 'yarn' | 'npm' | undefined> {
+    const root = this.workspace.workspaceRoot;
+    if (await this.fileExists(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+    if (await this.fileExists(path.join(root, 'pnpm-workspace.yaml'))) return 'pnpm';
+    if (await this.fileExists(path.join(root, 'yarn.lock'))) return 'yarn';
+    if (await this.fileExists(path.join(root, 'package-lock.json'))) return 'npm';
+    if (await this.fileExists(path.join(root, 'npm-shrinkwrap.json'))) return 'npm';
+    if (await this.fileExists(path.join(root, 'package.json'))) return 'npm';
+    return undefined;
+  }
+
+  private async resolveTestCommand(profile: QaProfile, requestTestCommand?: string): Promise<string | undefined> {
+    if (requestTestCommand) return requestTestCommand;
+    if ((profile.runner ?? 'cli') !== 'cli') return undefined;
+    if (profile.test_command) return profile.test_command;
+    if (await this.fileExists(path.join(this.workspace.workspaceRoot, 'tests', 'all.js'))) {
+      return 'node tests/all.js';
+    }
+    const pkg = await this.readPackageJson();
+    if (pkg?.scripts?.test) {
+      const pm = (await this.detectPackageManager()) ?? 'npm';
+      return `${pm} test`;
+    }
+    return undefined;
+  }
+
   private extractJsonCandidate(raw: string): any | undefined {
     const fenced = raw.match(/```json([\s\S]*?)```/i);
     const candidate = fenced ? fenced[1] : raw;
     const start = candidate.indexOf('{');
     const end = candidate.lastIndexOf('}');
     if (start === -1 || end === -1 || end <= start) return undefined;
+    const slice = candidate.slice(start, end + 1);
     try {
-      return JSON.parse(candidate.slice(start, end + 1));
+      return JSON.parse(slice);
     } catch {
-      return undefined;
+      const cleanedLines = slice
+        .split(/\r?\n/)
+        .filter((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return true;
+          if (
+            trimmed.startsWith("{") ||
+            trimmed.startsWith("}") ||
+            trimmed.startsWith("[") ||
+            trimmed.startsWith("]") ||
+            trimmed.startsWith("\"")
+          ) {
+            return true;
+          }
+          return false;
+        })
+        .join("\n")
+        .replace(/,\s*([}\]])/g, "$1");
+      const withQuotedKeys = cleanedLines.replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":');
+      try {
+        return JSON.parse(withQuotedKeys);
+      } catch {
+        return undefined;
+      }
     }
   }
 
   private normalizeAgentOutput(parsed: any): AgentInterpretation | undefined {
     if (!parsed || typeof parsed !== 'object') return undefined;
+    const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value.trim() : undefined);
+    const asNumber = (value: unknown): number | undefined =>
+      typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    const asStringArray = (value: unknown): string[] | undefined =>
+      Array.isArray(value) ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean) : undefined;
     const recommendation = parsed.recommendation as AgentInterpretation['recommendation'];
     if (!recommendation || !['pass', 'fix_required', 'infra_issue', 'unclear'].includes(recommendation)) return undefined;
-    const followUps: AgentFollowUp[] | undefined = Array.isArray(parsed.follow_up_tasks)
+    const rawFollowUps = Array.isArray(parsed.follow_up_tasks)
       ? parsed.follow_up_tasks
       : Array.isArray(parsed.follow_ups)
         ? parsed.follow_ups
         : undefined;
+    const followUps: AgentFollowUp[] | undefined = rawFollowUps
+      ? rawFollowUps.map((item: any) => ({
+          title: asString(item?.title),
+          description: asString(item?.description),
+          type: asString(item?.type),
+          priority: asNumber(item?.priority),
+          story_points: asNumber(item?.story_points ?? item?.storyPoints),
+          tags: asStringArray(item?.tags),
+          related_task_key: asString(item?.related_task_key ?? item?.relatedTaskKey),
+          epic_key: asString(item?.epic_key ?? item?.epicKey),
+          story_key: asString(item?.story_key ?? item?.storyKey),
+          components: asStringArray(item?.components),
+          doc_links: asStringArray(item?.doc_links ?? item?.docLinks),
+          evidence_url: asString(item?.evidence_url ?? item?.evidenceUrl),
+          artifacts: asStringArray(item?.artifacts),
+        }))
+      : undefined;
     const failures: AgentFailure[] | undefined = Array.isArray(parsed.failures)
       ? parsed.failures.map((f: any) => ({ kind: f.kind, message: f.message ?? String(f), evidence: f.evidence }))
       : undefined;
+    const resolvedSlugs = normalizeSlugList(parsed.resolved_slugs ?? parsed.resolvedSlugs);
+    const unresolvedSlugs = normalizeSlugList(parsed.unresolved_slugs ?? parsed.unresolvedSlugs);
     return {
       recommendation,
       testedScope: parsed.tested_scope ?? parsed.scope,
       coverageSummary: parsed.coverage_summary ?? parsed.coverage,
       failures,
       followUps,
+      resolvedSlugs,
+      unresolvedSlugs,
     };
   }
 
@@ -437,6 +625,7 @@ export class QaTasksService {
     jobId: string,
     commandRunId: string,
     taskRunId?: string,
+    commentBacklog?: string,
   ): Promise<AgentInterpretation> {
     if (!this.agentService) {
       return { recommendation: this.mapOutcome(result) };
@@ -449,7 +638,9 @@ export class QaTasksService {
         await this.logTask(taskRunId, `Loaded project guidance from ${projectGuidance.source}`, 'project_guidance');
       }
       const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
-      const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
+      const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, QA_TEST_POLICY]
+        .filter(Boolean)
+        .join('\n\n');
       const docCtx = await this.gatherDocContext(task.task, taskRunId);
       const acceptance = (task.task.acceptanceCriteria ?? []).map((line) => `- ${line}`).join('\n');
       const prompt = [
@@ -460,6 +651,7 @@ export class QaTasksService {
         task.task.description ? `Task description:\n${task.task.description}` : '',
         `Epic/Story: ${task.task.epicKey ?? task.task.epicId} / ${task.task.storyKey ?? task.task.userStoryId}`,
         acceptance ? `Acceptance criteria:\n${acceptance}` : 'Acceptance criteria: (not provided)',
+        commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : 'Comment backlog: none',
         `QA profile: ${profile.name} (${profile.runner ?? 'cli'})`,
         `Test command / runner outcome: exit=${result.exitCode} outcome=${result.outcome}`,
         result.stdout ? `Stdout (truncated):\n${result.stdout.slice(0, 3000)}` : '',
@@ -473,9 +665,11 @@ export class QaTasksService {
           '  "coverage_summary": string,',
           '  "failures": [{ "kind": "functional|contract|perf|security|infra", "message": string, "evidence": string }],',
           '  "recommendation": "pass|fix_required|infra_issue|unclear",',
-          '  "follow_up_tasks": [{ "title": string, "description": string, "type": "bug|qa_followup|chore", "priority": number, "story_points": number, "tags": string[], "related_task_key": string, "epic_key": string, "story_key": string, "doc_links": string[], "evidence_url": string, "artifacts": string[] }]',
+          '  "follow_up_tasks": [{ "title": string, "description": string, "type": "bug|qa_followup|chore", "priority": number, "story_points": number, "tags": string[], "related_task_key": string, "epic_key": string, "story_key": string, "doc_links": string[], "evidence_url": string, "artifacts": string[] }],',
+          '  "resolvedSlugs": ["Optional list of comment slugs that are confirmed fixed"],',
+          '  "unresolvedSlugs": ["Optional list of comment slugs still open or reintroduced"]',
           '}',
-          'Do not include prose outside the JSON.',
+          'Do not include prose outside the JSON. Include resolvedSlugs/unresolvedSlugs when reviewing comment backlog.',
         ].join('\n'),
       ]
         .filter(Boolean)
@@ -546,13 +740,231 @@ export class QaTasksService {
           modelName: agent.defaultModel,
         };
       }
-      return { recommendation: this.mapOutcome(result), rawOutput: output, tokensPrompt, tokensCompletion, agentId: agent.id, modelName: agent.defaultModel };
+      const retryPrompt = `${prompt}\n\nReturn STRICT JSON only. Do not include prose, markdown fences, or comments.`;
+      let retryOutput = "";
+      if (stream && this.agentService.invokeStream) {
+        const gen = await this.agentService.invokeStream(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } });
+        for await (const chunk of gen) {
+          retryOutput += chunk.output ?? '';
+        }
+      } else {
+        const res = await this.agentService.invoke(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } });
+        retryOutput = res.output ?? '';
+      }
+      const retryTokensPrompt = this.estimateTokens(retryPrompt);
+      const retryTokensCompletion = this.estimateTokens(retryOutput);
+      if (!this.dryRunGuard) {
+        await this.jobService.recordTokenUsage({
+          workspaceId: this.workspace.workspaceId,
+          agentId: agent.id,
+          modelName: agent.defaultModel,
+          jobId,
+          taskId: task.task.id,
+          commandRunId,
+          taskRunId,
+          tokensPrompt: retryTokensPrompt,
+          tokensCompletion: retryTokensCompletion,
+          tokensTotal: retryTokensPrompt + retryTokensCompletion,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            commandName: 'qa-tasks',
+            action: 'qa-interpret-retry',
+            taskKey: task.task.key,
+          },
+        });
+      }
+      const retryParsed = this.extractJsonCandidate(retryOutput);
+      const retryNormalized = this.normalizeAgentOutput(retryParsed);
+      if (retryNormalized) {
+        return {
+          ...retryNormalized,
+          rawOutput: retryOutput,
+          tokensPrompt: tokensPrompt + retryTokensPrompt,
+          tokensCompletion: tokensCompletion + retryTokensCompletion,
+          agentId: agent.id,
+          modelName: agent.defaultModel,
+        };
+      }
+      if (taskRunId) {
+        await this.logTask(taskRunId, "QA agent returned invalid JSON after retry; falling back to QA outcome.", "qa-agent");
+      }
+      return {
+        recommendation: this.mapOutcome(result),
+        rawOutput: retryOutput || output,
+        tokensPrompt: tokensPrompt + retryTokensPrompt,
+        tokensCompletion: tokensCompletion + retryTokensCompletion,
+        agentId: agent.id,
+        modelName: agent.defaultModel,
+      };
     } catch (error: any) {
       if (taskRunId) {
         await this.logTask(taskRunId, `QA agent failed: ${error?.message ?? error}`, 'qa-agent');
       }
       return { recommendation: this.mapOutcome(result) };
     }
+  }
+
+  private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
+    const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
+      sourceCommands: ['code-review', 'qa-tasks'],
+      limit: 50,
+    });
+    const unresolved = comments.filter((comment) => !comment.resolvedAt);
+    return { comments, unresolved };
+  }
+
+  private resolveFailureSlug(failure: AgentFailure): string {
+    const message = (failure.message ?? '').trim() || 'QA issue';
+    return createTaskCommentSlug({
+      source: 'qa-tasks',
+      message,
+      category: failure.kind ?? 'qa_issue',
+    });
+  }
+
+  private async applyCommentResolutions(params: {
+    task: TaskRow;
+    taskRunId: string;
+    jobId: string;
+    agentId?: string;
+    failures: AgentFailure[];
+    resolvedSlugs?: string[] | null;
+    unresolvedSlugs?: string[] | null;
+    existingComments: TaskCommentRow[];
+  }): Promise<{ resolved: string[]; reopened: string[]; open: string[] }> {
+    const existingBySlug = new Map<string, TaskCommentRow>();
+    const openBySlug = new Set<string>();
+    const resolvedBySlug = new Set<string>();
+    for (const comment of params.existingComments) {
+      if (!comment.slug) continue;
+      if (!existingBySlug.has(comment.slug)) {
+        existingBySlug.set(comment.slug, comment);
+      }
+      if (comment.resolvedAt) {
+        resolvedBySlug.add(comment.slug);
+      } else {
+        openBySlug.add(comment.slug);
+      }
+    }
+
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const resolvedSet = new Set(resolvedSlugs);
+    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+
+    const failureSlugs: string[] = [];
+    for (const failure of params.failures ?? []) {
+      const slug = this.resolveFailureSlug(failure);
+      failureSlugs.push(slug);
+      if (!resolvedSet.has(slug)) {
+        unresolvedSet.add(slug);
+      }
+    }
+    for (const slug of resolvedSet) {
+      unresolvedSet.delete(slug);
+    }
+
+    const toResolve = resolvedSlugs.filter((slug) => openBySlug.has(slug));
+    const toReopen = Array.from(unresolvedSet).filter((slug) => resolvedBySlug.has(slug));
+
+    if (!this.dryRunGuard) {
+      for (const slug of toResolve) {
+        await this.deps.workspaceRepo.resolveTaskComment({
+          taskId: params.task.id,
+          slug,
+          resolvedAt: new Date().toISOString(),
+          resolvedBy: params.agentId ?? null,
+        });
+      }
+      for (const slug of toReopen) {
+        await this.deps.workspaceRepo.reopenTaskComment({ taskId: params.task.id, slug });
+      }
+    }
+
+    const createdSlugs = new Set<string>();
+    for (const failure of params.failures ?? []) {
+      const slug = this.resolveFailureSlug(failure);
+      if (existingBySlug.has(slug) || createdSlugs.has(slug)) continue;
+      const baseMessage = (failure.message ?? '').trim() || '(no details provided)';
+      const message = failure.evidence ? `${baseMessage}\nEvidence: ${failure.evidence}` : baseMessage;
+      const body = formatTaskCommentBody({
+        slug,
+        source: 'qa-tasks',
+        message,
+        status: 'open',
+        category: failure.kind ?? 'qa_issue',
+      });
+      if (!this.dryRunGuard) {
+        await this.deps.workspaceRepo.createTaskComment({
+          taskId: params.task.id,
+          taskRunId: params.taskRunId,
+          jobId: params.jobId,
+          sourceCommand: 'qa-tasks',
+          authorType: 'agent',
+          authorAgentId: params.agentId ?? null,
+          category: failure.kind ?? 'qa_issue',
+          slug,
+          status: 'open',
+          body,
+          createdAt: new Date().toISOString(),
+          metadata: {
+            kind: failure.kind,
+            evidence: failure.evidence,
+          },
+        });
+      }
+      createdSlugs.add(slug);
+    }
+
+    const openSet = new Set(openBySlug);
+    for (const slug of unresolvedSet) {
+      openSet.add(slug);
+    }
+    for (const slug of resolvedSet) {
+      openSet.delete(slug);
+    }
+
+    if ((resolvedSlugs.length || toReopen.length || unresolvedSet.size) && !this.dryRunGuard) {
+      const resolutionMessage = [
+        `Resolved slugs: ${formatSlugList(toResolve)}`,
+        `Reopened slugs: ${formatSlugList(toReopen)}`,
+        `Open slugs: ${formatSlugList(Array.from(openSet))}`,
+      ].join('\n');
+      const resolutionSlug = createTaskCommentSlug({
+        source: 'qa-tasks',
+        message: resolutionMessage,
+        category: 'comment_resolution',
+      });
+      const resolutionBody = formatTaskCommentBody({
+        slug: resolutionSlug,
+        source: 'qa-tasks',
+        message: resolutionMessage,
+        status: 'resolved',
+        category: 'comment_resolution',
+      });
+      const createdAt = new Date().toISOString();
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: params.task.id,
+        taskRunId: params.taskRunId,
+        jobId: params.jobId,
+        sourceCommand: 'qa-tasks',
+        authorType: 'agent',
+        authorAgentId: params.agentId ?? null,
+        category: 'comment_resolution',
+        slug: resolutionSlug,
+        status: 'resolved',
+        body: resolutionBody,
+        createdAt,
+        resolvedAt: createdAt,
+        resolvedBy: params.agentId ?? null,
+        metadata: {
+          resolvedSlugs: toResolve,
+          reopenedSlugs: toReopen,
+          openSlugs: Array.from(openSet),
+        },
+      });
+    }
+
+    return { resolved: toResolve, reopened: toReopen, open: Array.from(openSet) };
   }
 
   private async createTaskRun(
@@ -772,7 +1184,7 @@ export class QaTasksService {
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'status_gating' };
     }
 
-    const branchCheck = await this.ensureTaskBranch(task, taskRun.id);
+    const branchCheck = await this.ensureTaskBranch(task, taskRun.id, ctx.request.allowDirty ?? false);
     if (!branchCheck.ok) {
       if (!this.dryRunGuard) {
         await this.applyStateTransition(task.task, 'infra_issue');
@@ -788,6 +1200,15 @@ export class QaTasksService {
           recommendation: 'infra_issue',
           metadata: { reason: 'vcs_branch_missing', detail: branchCheck.message },
         });
+        const message = `VCS validation failed: ${branchCheck.message ?? 'unknown error'}`;
+        const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_issue' });
+        const body = formatTaskCommentBody({
+          slug,
+          source: 'qa-tasks',
+          message,
+          status: 'open',
+          category: 'qa_issue',
+        });
         await this.deps.workspaceRepo.createTaskComment({
           taskId: task.task.id,
           taskRunId: taskRun.id,
@@ -795,7 +1216,9 @@ export class QaTasksService {
           sourceCommand: 'qa-tasks',
           authorType: 'agent',
           category: 'qa_issue',
-          body: `VCS validation failed: ${branchCheck.message ?? 'unknown error'}`,
+          slug,
+          status: 'open',
+          body,
           createdAt: new Date().toISOString(),
         });
       }
@@ -843,14 +1266,6 @@ export class QaTasksService {
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'no_profile' };
     }
-    if (profile.runner && profile.runner !== 'chromium') {
-      await this.logTask(
-        taskRun.id,
-        `QA runner "${profile.runner}" overridden to chromium for Playwright-based QA.`,
-        'qa-runner',
-      );
-      profile = { ...profile, runner: 'chromium' };
-    }
     const adapter = this.adapterForProfile(profile);
     if (!adapter) {
       await this.logTask(taskRun.id, 'No QA adapter for profile', 'qa-adapter');
@@ -873,12 +1288,13 @@ export class QaTasksService {
       return { taskKey: task.task.key, outcome: 'infra_issue', profile: profile.name, runner: profile.runner, notes: 'no_adapter' };
     }
 
+    const testCommand = await this.resolveTestCommand(profile, ctx.request.testCommand);
     const qaCtx: QaContext = {
       workspaceRoot: this.workspace.workspaceRoot,
       jobId: ctx.jobId,
       taskKey: task.task.key,
       env: process.env,
-      testCommandOverride: ctx.request.testCommand,
+      testCommandOverride: testCommand,
     };
 
     const ensure = await adapter.ensureInstalled(profile, qaCtx);
@@ -901,6 +1317,15 @@ export class QaTasksService {
           metadata: { install: ensure.message, adapter: profile.runner },
         });
         const installMessage = ensure.message ?? 'QA install failed';
+        const message = `QA infra issue: ${installMessage}`;
+        const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_issue' });
+        const body = formatTaskCommentBody({
+          slug,
+          source: 'qa-tasks',
+          message,
+          status: 'open',
+          category: 'qa_issue',
+        });
         await this.deps.workspaceRepo.createTaskComment({
           taskId: task.task.id,
           taskRunId: taskRun.id,
@@ -908,7 +1333,9 @@ export class QaTasksService {
           sourceCommand: 'qa-tasks',
           authorType: 'agent',
           category: 'qa_issue',
-          body: `QA infra issue: ${installMessage}`,
+          slug,
+          status: 'open',
+          body,
           createdAt: new Date().toISOString(),
         });
       }
@@ -929,21 +1356,35 @@ export class QaTasksService {
       qaEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
     }
     const result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
-    await this.logTask(taskRun.id, `QA run completed with outcome ${result.outcome}`, 'qa-exec', {
-      exitCode: result.exitCode,
+    const normalizedResult = this.adjustOutcomeForSkippedTests(profile, result);
+    await this.logTask(taskRun.id, `QA run completed with outcome ${normalizedResult.outcome}`, 'qa-exec', {
+      exitCode: normalizedResult.exitCode,
     });
+    const commentContext = await this.loadCommentContext(task.task.id);
+    const commentBacklog = buildCommentBacklog(commentContext.unresolved);
     const interpretation = await this.interpretResult(
       task,
       profile,
-      result,
+      normalizedResult,
       ctx.request.agentName,
       ctx.request.agentStream ?? true,
       ctx.jobId,
       ctx.commandRunId,
       taskRun.id,
+      commentBacklog,
     );
-    const outcome = this.combineOutcome(result, interpretation.recommendation);
-    const artifacts = result.artifacts ?? [];
+    const outcome = this.combineOutcome(normalizedResult, interpretation.recommendation);
+    const artifacts = normalizedResult.artifacts ?? [];
+    const commentResolution = await this.applyCommentResolutions({
+      task: task.task,
+      taskRunId: taskRun.id,
+      jobId: ctx.jobId,
+      agentId: interpretation.agentId,
+      failures: interpretation.failures ?? [],
+      resolvedSlugs: interpretation.resolvedSlugs,
+      unresolvedSlugs: interpretation.unresolvedSlugs,
+      existingComments: commentContext.comments,
+    });
 
     let qaRun: TaskQaRunRow | undefined;
     if (!this.dryRunGuard) {
@@ -958,15 +1399,15 @@ export class QaTasksService {
         mode: 'auto',
         profileName: profile.name,
         runner: profile.runner,
-        rawOutcome: result.outcome,
+        rawOutcome: normalizedResult.outcome,
         recommendation: interpretation.recommendation,
         artifacts,
         rawResult: {
-          adapter: result,
+          adapter: normalizedResult,
           agent: interpretation.rawOutput,
         },
-        startedAt: result.startedAt,
-        finishedAt: result.finishedAt,
+        startedAt: normalizedResult.startedAt,
+        finishedAt: normalizedResult.finishedAt,
         metadata: {
           tokensPrompt: interpretation.tokensPrompt,
           tokensCompletion: interpretation.tokensCompletion,
@@ -1017,21 +1458,45 @@ export class QaTasksService {
       interpretation.failures && interpretation.failures.length
         ? `Failures:\n${interpretation.failures.map((f) => `- [${f.kind ?? 'issue'}] ${f.message}${f.evidence ? ` (${f.evidence})` : ''}`).join('\n')}`
         : '',
+      commentResolution
+        ? `Comment slugs: resolved ${commentResolution.resolved.length}, reopened ${commentResolution.reopened.length}, open ${commentResolution.open.length}`
+        : '',
       result.stdout ? `Stdout:\n${result.stdout.slice(0, 4000)}` : '',
       result.stderr ? `Stderr:\n${result.stderr.slice(0, 4000)}` : '',
       artifacts.length ? `Artifacts:\n${artifacts.join('\n')}` : '',
       followups.length ? `Follow-ups: ${followups.join(', ')}` : '',
     ].filter(Boolean);
     if (!this.dryRunGuard) {
+      const category = outcome === 'pass' ? 'qa_result' : 'qa_issue';
+      const summaryMessage = bodyLines.join('\n\n');
+      const summarySlug = createTaskCommentSlug({
+        source: 'qa-tasks',
+        message: summaryMessage,
+        category,
+      });
+      const status = outcome === 'pass' ? 'resolved' : 'open';
+      const summaryBody = formatTaskCommentBody({
+        slug: summarySlug,
+        source: 'qa-tasks',
+        message: summaryMessage,
+        status,
+        category,
+      });
+      const createdAt = new Date().toISOString();
       await this.deps.workspaceRepo.createTaskComment({
         taskId: task.task.id,
         taskRunId: taskRun.id,
         jobId: ctx.jobId,
         sourceCommand: 'qa-tasks',
         authorType: 'agent',
-        category: outcome === 'pass' ? 'qa_result' : 'qa_issue',
-        body: bodyLines.join('\n\n'),
-        createdAt: new Date().toISOString(),
+        authorAgentId: interpretation.agentId ?? null,
+        category,
+        slug: summarySlug,
+        status,
+        body: summaryBody,
+        createdAt,
+        resolvedAt: status === 'resolved' ? createdAt : null,
+        resolvedBy: status === 'resolved' ? interpretation.agentId ?? null : null,
         metadata: {
           ...(artifacts.length ? { artifacts } : {}),
           ...(qaRun?.id ? { qaRunId: qaRun.id } : {}),
@@ -1174,15 +1639,30 @@ export class QaTasksService {
       .filter(Boolean)
       .join('\n');
     if (!ctx.request.dryRun) {
+      const category = result === 'pass' ? 'qa_result' : 'qa_issue';
+      const status = result === 'pass' ? 'resolved' : 'open';
+      const slug = createTaskCommentSlug({ source: 'qa-tasks', message: body, category });
+      const formattedBody = formatTaskCommentBody({
+        slug,
+        source: 'qa-tasks',
+        message: body,
+        status,
+        category,
+      });
+      const createdAt = new Date().toISOString();
       await this.deps.workspaceRepo.createTaskComment({
         taskId: task.task.id,
         taskRunId: taskRun.id,
         jobId: ctx.jobId,
         sourceCommand: 'qa-tasks',
         authorType: 'human',
-        category: result === 'pass' ? 'qa_result' : 'qa_issue',
-        body,
-        createdAt: new Date().toISOString(),
+        category,
+        slug,
+        status,
+        body: formattedBody,
+        createdAt,
+        resolvedAt: status === 'resolved' ? createdAt : null,
+        resolvedBy: status === 'resolved' ? 'human' : null,
         metadata: {
           ...(ctx.request.evidenceUrl ? { evidence: ctx.request.evidenceUrl } : {}),
           ...(artifacts.length ? { artifacts } : {}),
@@ -1217,11 +1697,24 @@ export class QaTasksService {
       taskKeys: effectiveTasks,
       statusFilter: effectiveStatus,
     });
+    const abortSignal = request.abortSignal;
+    const resolveAbortReason = () => {
+      const reason = abortSignal?.reason;
+      if (typeof reason === "string" && reason.trim().length > 0) return reason;
+      if (reason instanceof Error && reason.message) return reason.message;
+      return "qa_tasks_aborted";
+    };
+    const abortIfSignaled = () => {
+      if (abortSignal?.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+    };
 
     this.dryRunGuard = request.dryRun ?? false;
     if (request.dryRun) {
       const dryResults: QaTaskResult[] = [];
       for (const task of selection.ordered) {
+        abortIfSignaled();
         let profile: QaProfile | undefined;
         try {
           profile = await this.profileService.resolveProfileForTask(task.task, {
@@ -1351,6 +1844,7 @@ export class QaTasksService {
     try {
       let processedCount = completedKeys.size;
       for (const [index, task] of filteredRemaining.entries()) {
+        abortIfSignaled();
         const mode = request.mode ?? 'auto';
         if (mode === 'manual') {
           results.push(await this.runManual(task, { jobId: job.id, commandRunId: commandRun.id, request }));

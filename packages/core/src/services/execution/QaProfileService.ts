@@ -12,14 +12,19 @@ export interface QaProfileResolutionOptions {
 
 const DEFAULT_QA_PROFILES: QaProfile[] = [
   {
+    name: 'cli',
+    runner: 'cli',
+    default: true,
+  },
+  {
     name: 'chromium',
     runner: 'chromium',
-    default: true,
   },
 ];
 
 export class QaProfileService {
   private cache?: QaProfile[];
+  private webInterfaceCache?: boolean;
   private routingCache?: {
     defaultProfile?: string;
     levels?: Record<string, string>;
@@ -28,6 +33,85 @@ export class QaProfileService {
   };
 
   constructor(private workspaceRoot: string) {}
+
+  private async fileExists(targetPath: string): Promise<boolean> {
+    try {
+      await fs.access(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async readPackageJson(): Promise<Record<string, any> | undefined> {
+    const pkgPath = path.join(this.workspaceRoot, 'package.json');
+    try {
+      const raw = await fs.readFile(pkgPath, 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async detectWebInterface(): Promise<boolean> {
+    if (this.webInterfaceCache !== undefined) return this.webInterfaceCache;
+    const markers = [
+      'client',
+      'frontend',
+      'web',
+      'ui',
+      'apps/web',
+      'apps/client',
+      'packages/web',
+      'packages/client',
+      'public/index.html',
+      'index.html',
+      'src/App.tsx',
+      'src/main.tsx',
+      'src/App.jsx',
+      'src/main.jsx',
+      'next.config.js',
+      'next.config.mjs',
+      'vite.config.ts',
+      'vite.config.js',
+      'svelte.config.js',
+      'angular.json',
+      'nuxt.config.js',
+      'astro.config.mjs',
+      'remix.config.js',
+    ];
+    for (const marker of markers) {
+      if (await this.fileExists(path.join(this.workspaceRoot, marker))) {
+        this.webInterfaceCache = true;
+        return true;
+      }
+    }
+    const pkg = await this.readPackageJson();
+    const deps = {
+      ...(pkg?.dependencies ?? {}),
+      ...(pkg?.devDependencies ?? {}),
+      ...(pkg?.peerDependencies ?? {}),
+    };
+    const uiDeps = [
+      'react',
+      'next',
+      'vue',
+      'nuxt',
+      'svelte',
+      'astro',
+      '@angular/core',
+      '@remix-run/react',
+      'solid-js',
+    ];
+    const hasUiDep = uiDeps.some((dep) => typeof deps?.[dep] === 'string');
+    this.webInterfaceCache = hasUiDep;
+    return hasUiDep;
+  }
+
+  private async resolveRunnerPreference(): Promise<'chromium' | 'cli'> {
+    const hasUi = await this.detectWebInterface();
+    return hasUi ? 'chromium' : 'cli';
+  }
 
   private get profilePath(): string {
     return path.join(this.workspaceRoot, '.mcoda', 'qa-profiles.json');
@@ -101,6 +185,17 @@ export class QaProfileService {
     if (!profiles.length) return undefined;
     const envProfile = process.env.MCODA_QA_PROFILE;
     const routing = await this.getRoutingConfig();
+    const runnerPreference = await this.resolveRunnerPreference();
+    const normalizeRunner = (profile: QaProfile): string => profile.runner ?? 'cli';
+    const matchRunner = (profile: QaProfile): boolean =>
+      normalizeRunner(profile) === runnerPreference || profile.name === runnerPreference;
+    const pickByRunner = (): QaProfile | undefined => {
+      const matches = profiles.filter(matchRunner);
+      if (!matches.length) return undefined;
+      const defaults = matches.filter((p) => p.default);
+      if (defaults.length === 1) return defaults[0];
+      return matches[0];
+    };
     const configuredDefault = options.profileName ?? envProfile ?? (await this.getConfiguredDefaultProfileName()) ?? routing.defaultProfile;
     const pickByName = (name: string | undefined): QaProfile | undefined => {
       if (!name) return undefined;
@@ -112,6 +207,10 @@ export class QaProfileService {
     };
     const explicit = pickByName(configuredDefault);
     if (explicit) {
+      if (normalizeRunner(explicit) !== runnerPreference) {
+        const fallback = pickByRunner();
+        if (fallback) return fallback;
+      }
       return explicit;
     }
     const taskTags: string[] = Array.isArray((task.metadata as any)?.tags)
@@ -137,7 +236,17 @@ export class QaProfileService {
           : undefined;
       const routedName = levelRoute ?? typeRoute ?? tagRoute;
       const routed = pickByName(routedName);
-      if (routed) return routed;
+      if (routed) {
+        if (normalizeRunner(routed) !== runnerPreference) {
+          const fallback = pickByRunner();
+          if (fallback) return fallback;
+        }
+        return routed;
+      }
+    }
+    const runnerCandidates = candidates.filter(matchRunner);
+    if (runnerCandidates.length) {
+      candidates = runnerCandidates;
     }
     const targetLevel = options.level ?? options.defaultLevel;
     if (targetLevel) {
@@ -158,6 +267,8 @@ export class QaProfileService {
           .join(', ')}`,
       );
     }
+    const runnerDefault = pickByRunner();
+    if (runnerDefault) return runnerDefault;
     const defaults = profiles.filter((p) => p.default);
     if (defaults.length === 1) return defaults[0];
     if (defaults.length > 1) {

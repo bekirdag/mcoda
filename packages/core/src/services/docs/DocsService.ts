@@ -485,10 +485,23 @@ class DocContextAssembler {
 
     let related: DocdexDocument[] = [];
     if (docdexAvailable) {
-      related = await this.docdex.search({ projectKey: input.projectKey, docType: "PDR", profile: "rfp_default" });
-      const sds = await this.docdex.search({ projectKey: input.projectKey, docType: "SDS", profile: "rfp_default" });
-      openapi = await this.docdex.search({ projectKey: input.projectKey, docType: "OPENAPI", profile: "rfp_default" });
-      related = [...related, ...sds];
+      try {
+        related = await this.docdex.search({ projectKey: input.projectKey, docType: "PDR", profile: "rfp_default" });
+        const sds = await this.docdex.search({ projectKey: input.projectKey, docType: "SDS", profile: "rfp_default" });
+        openapi = await this.docdex.search({
+          projectKey: input.projectKey,
+          docType: "OPENAPI",
+          profile: "rfp_default",
+        });
+        related = [...related, ...sds];
+      } catch (error) {
+        docdexAvailable = false;
+        related = [];
+        openapi = [];
+        warnings.push(
+          `Docdex unavailable; continuing without related docs (${(error as Error).message ?? "unknown error"}).`,
+        );
+      }
     }
 
     const summaryParts = [

@@ -707,23 +707,26 @@ export class TaskOrderingService {
       }
 
       let agentRank: AgentRanking | undefined;
-      const docContext = await this.buildDocContext(project.key, warnings);
-      if (docContext && commandRun && this.recordTelemetry) {
-        const contextTokens = estimateTokens(docContext.content);
-        await this.jobService.recordTokenUsage({
-          workspaceId: this.workspace.workspaceId,
-          projectId: project.id,
-          commandRunId: commandRun.id,
-          jobId: job?.id,
-          timestamp: new Date().toISOString(),
-          commandName: "order-tasks",
-          action: "docdex_context",
-          tokensPrompt: contextTokens,
-          tokensTotal: contextTokens,
-          metadata: { source: docContext.source },
-        });
-      }
       const enableAgent = request.agentName !== undefined || this.recordTelemetry;
+      let docContext: DocContext | undefined;
+      if (enableAgent) {
+        docContext = await this.buildDocContext(project.key, warnings);
+        if (docContext && commandRun && this.recordTelemetry) {
+          const contextTokens = estimateTokens(docContext.content);
+          await this.jobService.recordTokenUsage({
+            workspaceId: this.workspace.workspaceId,
+            projectId: project.id,
+            commandRunId: commandRun.id,
+            jobId: job?.id,
+            timestamp: new Date().toISOString(),
+            commandName: "order-tasks",
+            action: "docdex_context",
+            tokensPrompt: contextTokens,
+            tokensTotal: contextTokens,
+            metadata: { source: docContext.source },
+          });
+        }
+      }
       if (enableAgent) {
         try {
           const agent = await this.resolveAgent(request.agentName);
