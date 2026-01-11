@@ -108,7 +108,10 @@ export class DocdexClient {
   }
 
   private async resolveBaseUrl(): Promise<string | undefined> {
-    if (this.options.baseUrl) return normalizeBaseUrl(this.options.baseUrl);
+    if (this.options.baseUrl !== undefined) {
+      const trimmed = this.options.baseUrl.trim();
+      return trimmed ? normalizeBaseUrl(trimmed) : undefined;
+    }
     if (this.resolvedBaseUrl !== undefined) return this.resolvedBaseUrl;
     const resolved = await resolveDocdexBaseUrl({ cwd: this.options.workspaceRoot });
     this.resolvedBaseUrl = resolved ? normalizeBaseUrl(resolved) : undefined;

@@ -2,7 +2,15 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
-import { GlobalRepository, WorkspaceRepository, type EpicRow, type StoryRow, type TaskInsert, type TaskRow } from "@mcoda/db";
+import {
+  GlobalRepository,
+  WorkspaceRepository,
+  type EpicRow,
+  type StoryRow,
+  type TaskCommentRow,
+  type TaskInsert,
+  type TaskRow,
+} from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
@@ -14,6 +22,7 @@ import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
@@ -42,6 +51,7 @@ export interface CodeReviewRequest extends TaskSelectionFilters {
   agentStream?: boolean;
   rateAgents?: boolean;
   resumeJobId?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface ReviewFinding {
@@ -58,6 +68,8 @@ export interface ReviewAgentResult {
   summary?: string;
   findings: ReviewFinding[];
   testRecommendations?: string[];
+  resolvedSlugs?: string[];
+  unresolvedSlugs?: string[];
   raw?: string;
 }
 
@@ -185,12 +197,91 @@ const JSON_CONTRACT = `{
       "suggestedFix": "Optional suggested change"
     }
   ],
-  "testRecommendations": ["Optional test or QA recommendations per task"]
+  "testRecommendations": ["Optional test or QA recommendations per task"],
+  "resolvedSlugs": ["Optional list of comment slugs that are confirmed fixed"],
+  "unresolvedSlugs": ["Optional list of comment slugs still open or reintroduced"]
 }`;
 
 const normalizeSingleLine = (value: string | undefined, fallback: string): string => {
   const trimmed = (value ?? "").replace(/\s+/g, " ").trim();
   return trimmed || fallback;
+};
+
+const normalizeSlugList = (input?: string[] | null): string[] => {
+  if (!Array.isArray(input)) return [];
+  const cleaned = new Set<string>();
+  for (const slug of input) {
+    if (typeof slug !== "string") continue;
+    const trimmed = slug.trim();
+    if (trimmed) cleaned.add(trimmed);
+  }
+  return Array.from(cleaned);
+};
+
+const normalizePath = (value: string): string =>
+  value
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "");
+
+const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
+  const trimmed = (body ?? "").trim();
+  if (!trimmed) return { message: "(no details provided)" };
+  const lines = trimmed.split(/\r?\n/);
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const messageIndex = lines.findIndex((line) => normalize(line) === "message:");
+  const suggestedIndex = lines.findIndex((line) => {
+    const normalized = normalize(line);
+    return normalized === "suggested_fix:" || normalized === "suggested fix:";
+  });
+  if (messageIndex >= 0) {
+    const messageLines = lines.slice(messageIndex + 1, suggestedIndex >= 0 ? suggestedIndex : undefined);
+    const message = messageLines.join("\n").trim();
+    const suggestedLines = suggestedIndex >= 0 ? lines.slice(suggestedIndex + 1) : [];
+    const suggestedFix = suggestedLines.join("\n").trim();
+    return { message: message || trimmed, suggestedFix: suggestedFix || undefined };
+  }
+  if (suggestedIndex >= 0) {
+    const message = lines.slice(0, suggestedIndex).join("\n").trim() || trimmed;
+    const inlineFix = lines[suggestedIndex]?.split(/suggested fix:/i)[1]?.trim();
+    const suggestedTail = lines.slice(suggestedIndex + 1).join("\n").trim();
+    const suggestedFix = inlineFix || suggestedTail || undefined;
+    return { message, suggestedFix };
+  }
+  return { message: trimmed };
+};
+
+const buildCommentBacklog = (comments: TaskCommentRow[]): string => {
+  if (!comments.length) return "";
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  const toSingleLine = (value: string) => value.replace(/\s+/g, " ").trim();
+  for (const comment of comments) {
+    const slug = comment.slug?.trim() || undefined;
+    const details = parseCommentBody(comment.body);
+    const key =
+      slug ??
+      `${comment.sourceCommand}:${comment.file ?? ""}:${comment.line ?? ""}:${details.message || comment.body}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const location = comment.file
+      ? `${comment.file}${typeof comment.line === "number" ? `:${comment.line}` : ""}`
+      : "(location not specified)";
+    const message = toSingleLine(details.message || comment.body || "(no details provided)");
+    lines.push(`- [${slug ?? "untracked"}] ${location} ${message}`);
+    const suggestedFix =
+      (comment.metadata?.suggestedFix as string | undefined) ?? details.suggestedFix ?? undefined;
+    if (suggestedFix) {
+      lines.push(`  Suggested fix: ${toSingleLine(suggestedFix)}`);
+    }
+  }
+  return lines.join("\n");
+};
+
+const formatSlugList = (slugs: string[], limit = 12): string => {
+  if (!slugs.length) return "none";
+  if (slugs.length <= limit) return slugs.join(", ");
+  return `${slugs.slice(0, limit).join(", ")} (+${slugs.length - limit} more)`;
 };
 
 const buildStandardReviewComment = (params: {
@@ -201,22 +292,37 @@ const buildStandardReviewComment = (params: {
   summary?: string;
   followupTaskKeys?: string[];
   error?: string;
+  resolvedCount?: number;
+  reopenedCount?: number;
+  openCount?: number;
 }): string => {
   const decision = params.decision ?? (params.error ? "error" : "info_only");
   const statusAfter = params.statusAfter ?? params.statusBefore;
   const summary = normalizeSingleLine(params.summary, params.error ? "Review failed." : "No summary provided.");
   const error = normalizeSingleLine(params.error, "none");
   const followups = params.followupTaskKeys && params.followupTaskKeys.length ? params.followupTaskKeys.join(", ") : "none";
-  return [
+  const lines = [
     "[code-review]",
     `decision: ${decision}`,
     `status_before: ${params.statusBefore}`,
     `status_after: ${statusAfter}`,
     `findings: ${params.findingsCount}`,
     `summary: ${summary}`,
+  ];
+  if (typeof params.resolvedCount === "number") {
+    lines.push(`resolved_slugs: ${params.resolvedCount}`);
+  }
+  if (typeof params.reopenedCount === "number") {
+    lines.push(`reopened_slugs: ${params.reopenedCount}`);
+  }
+  if (typeof params.openCount === "number") {
+    lines.push(`open_slugs: ${params.openCount}`);
+  }
+  lines.push(
     `followups: ${followups}`,
     `error: ${error}`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 };
 
 export class CodeReviewService {
@@ -526,6 +632,7 @@ export class CodeReviewService {
     openapiSnippet?: string;
     checklists?: string[];
     historySummary: string;
+    commentBacklog: string;
     baseRef: string;
     branch?: string;
   }): string {
@@ -535,6 +642,9 @@ export class CodeReviewService {
     }
     const acceptance = params.task.acceptanceCriteria && params.task.acceptanceCriteria.length ? params.task.acceptanceCriteria.join(" | ") : "none provided";
     const historySummary = truncateSection("history", params.historySummary, REVIEW_PROMPT_LIMITS.history);
+    const commentBacklog = params.commentBacklog
+      ? truncateSection("comment backlog", params.commentBacklog, REVIEW_PROMPT_LIMITS.history)
+      : "";
     const docContextText = params.docContext.length ? truncateSection("doc context", params.docContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext) : "";
     const openapiSnippet = params.openapiSnippet ? truncateSection("openapi", params.openapiSnippet, REVIEW_PROMPT_LIMITS.openapi) : undefined;
     const checklistsText = params.checklists?.length
@@ -551,6 +661,7 @@ export class CodeReviewService {
         `Status: ${params.task.status}, Branch: ${params.branch ?? params.task.vcsBranch ?? "n/a"} (base ${params.baseRef})`,
         `Task description: ${params.task.description ? params.task.description : "none"}`,
         `History:\n${historySummary}`,
+        commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : "Comment backlog: none",
         `Acceptance criteria: ${acceptance}`,
         docContextText ? `Doc context (docdex excerpts):\n${docContextText}` : "Doc context: none",
         openapiSnippet
@@ -559,7 +670,7 @@ export class CodeReviewService {
         checklistsText ? `Review checklists/runbook:\n${checklistsText}` : "Checklists: none",
         "Diff:\n" + diffText,
         "Respond with STRICT JSON only, matching:\n" + JSON_CONTRACT,
-        "Rules: honor OpenAPI contracts; cite doc context where relevant; do not add prose outside JSON.",
+        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for comment backlog items; do not add prose outside JSON.",
       ].join("\n"),
     );
     return parts.join("\n\n");
@@ -594,6 +705,197 @@ export class CodeReviewService {
     }
     if (!parts.length) return "No prior review or QA history.";
     return parts.join("\n");
+  }
+
+  private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
+    const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
+      sourceCommands: ["code-review", "qa-tasks"],
+      limit: 50,
+    });
+    const unresolved = comments.filter((comment) => !comment.resolvedAt);
+    return { comments, unresolved };
+  }
+
+  private commentSlugKey(file?: string | null, line?: number | null, category?: string | null): string | undefined {
+    if (!file) return undefined;
+    const normalizedFile = normalizePath(file);
+    const linePart = typeof line === "number" ? String(line) : "";
+    const categoryPart = category?.toLowerCase() ?? "";
+    return `${normalizedFile}|${linePart}|${categoryPart}`;
+  }
+
+  private buildCommentSlugIndex(comments: TaskCommentRow[]): Map<string, string> {
+    const index = new Map<string, string>();
+    for (const comment of comments) {
+      if (!comment.slug) continue;
+      const key = this.commentSlugKey(comment.file, comment.line, comment.category);
+      if (!key) continue;
+      if (!index.has(key)) index.set(key, comment.slug);
+    }
+    return index;
+  }
+
+  private resolveFindingSlug(finding: ReviewFinding, slugIndex: Map<string, string>): string {
+    const key = this.commentSlugKey(finding.file, finding.line, finding.type ?? null);
+    const existing = key ? slugIndex.get(key) : undefined;
+    if (existing) return existing;
+    const message = (finding.message ?? "").trim() || "Review finding.";
+    return createTaskCommentSlug({
+      source: "code-review",
+      message,
+      file: finding.file,
+      line: finding.line,
+      category: finding.type ?? null,
+    });
+  }
+
+  private async applyCommentResolutions(params: {
+    task: TaskRow;
+    taskRunId: string;
+    jobId: string;
+    agentId: string;
+    findings: ReviewFinding[];
+    resolvedSlugs?: string[] | null;
+    unresolvedSlugs?: string[] | null;
+    existingComments: TaskCommentRow[];
+  }): Promise<{ resolved: string[]; reopened: string[]; open: string[] }> {
+    const existingBySlug = new Map<string, TaskCommentRow>();
+    const openBySlug = new Set<string>();
+    const resolvedBySlug = new Set<string>();
+    for (const comment of params.existingComments) {
+      if (!comment.slug) continue;
+      if (!existingBySlug.has(comment.slug)) {
+        existingBySlug.set(comment.slug, comment);
+      }
+      if (comment.resolvedAt) {
+        resolvedBySlug.add(comment.slug);
+      } else {
+        openBySlug.add(comment.slug);
+      }
+    }
+
+    const reviewSlugIndex = this.buildCommentSlugIndex(
+      params.existingComments.filter((comment) => comment.sourceCommand === "code-review"),
+    );
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const resolvedSet = new Set(resolvedSlugs);
+    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+
+    const findingSlugs: string[] = [];
+    for (const finding of params.findings ?? []) {
+      const slug = this.resolveFindingSlug(finding, reviewSlugIndex);
+      findingSlugs.push(slug);
+      if (!resolvedSet.has(slug)) {
+        unresolvedSet.add(slug);
+      }
+    }
+    for (const slug of resolvedSet) {
+      unresolvedSet.delete(slug);
+    }
+
+    const toResolve = resolvedSlugs.filter((slug) => openBySlug.has(slug));
+    const toReopen = Array.from(unresolvedSet).filter((slug) => resolvedBySlug.has(slug));
+
+    for (const slug of toResolve) {
+      await this.deps.workspaceRepo.resolveTaskComment({
+        taskId: params.task.id,
+        slug,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: params.agentId,
+      });
+    }
+    for (const slug of toReopen) {
+      await this.deps.workspaceRepo.reopenTaskComment({ taskId: params.task.id, slug });
+    }
+
+    const createdSlugs = new Set<string>();
+    for (const finding of params.findings ?? []) {
+      const slug = this.resolveFindingSlug(finding, reviewSlugIndex);
+      if (existingBySlug.has(slug) || createdSlugs.has(slug)) continue;
+      const message = (finding.message ?? "").trim() || "(no details provided)";
+      const body = formatTaskCommentBody({
+        slug,
+        source: "code-review",
+        message,
+        status: "open",
+        category: finding.type ?? "other",
+        file: finding.file ?? null,
+        line: finding.line ?? null,
+        suggestedFix: finding.suggestedFix ?? null,
+      });
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: params.task.id,
+        taskRunId: params.taskRunId,
+        jobId: params.jobId,
+        sourceCommand: "code-review",
+        authorType: "agent",
+        authorAgentId: params.agentId,
+        category: finding.type ?? "other",
+        slug,
+        status: "open",
+        file: finding.file ?? null,
+        line: finding.line ?? null,
+        pathHint: finding.file ?? null,
+        body,
+        metadata: {
+          severity: finding.severity,
+          suggestedFix: finding.suggestedFix,
+        },
+        createdAt: new Date().toISOString(),
+      });
+      createdSlugs.add(slug);
+    }
+
+    const openSet = new Set(openBySlug);
+    for (const slug of unresolvedSet) {
+      openSet.add(slug);
+    }
+    for (const slug of resolvedSet) {
+      openSet.delete(slug);
+    }
+
+    if (resolvedSlugs.length || toReopen.length || unresolvedSet.size) {
+      const resolutionMessage = [
+        `Resolved slugs: ${formatSlugList(toResolve)}`,
+        `Reopened slugs: ${formatSlugList(toReopen)}`,
+        `Open slugs: ${formatSlugList(Array.from(openSet))}`,
+      ].join("\n");
+      const resolutionSlug = createTaskCommentSlug({
+        source: "code-review",
+        message: resolutionMessage,
+        category: "comment_resolution",
+      });
+      const resolutionBody = formatTaskCommentBody({
+        slug: resolutionSlug,
+        source: "code-review",
+        message: resolutionMessage,
+        status: "resolved",
+        category: "comment_resolution",
+      });
+      const createdAt = new Date().toISOString();
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: params.task.id,
+        taskRunId: params.taskRunId,
+        jobId: params.jobId,
+        sourceCommand: "code-review",
+        authorType: "agent",
+        authorAgentId: params.agentId,
+        category: "comment_resolution",
+        slug: resolutionSlug,
+        status: "resolved",
+        body: resolutionBody,
+        createdAt,
+        resolvedAt: createdAt,
+        resolvedBy: params.agentId,
+        metadata: {
+          resolvedSlugs: toResolve,
+          reopenedSlugs: toReopen,
+          openSlugs: Array.from(openSet),
+        },
+      });
+    }
+
+    return { resolved: toResolve, reopened: toReopen, open: Array.from(openSet) };
   }
 
   private extractPathsFromDiff(diff: string): string[] {
@@ -695,6 +997,9 @@ export class CodeReviewService {
     findingsCount: number;
     followupTaskKeys?: string[];
     error?: string;
+    resolvedCount?: number;
+    reopenedCount?: number;
+    openCount?: number;
   }): Promise<void> {
     const body = buildStandardReviewComment({
       decision: params.decision,
@@ -704,6 +1009,9 @@ export class CodeReviewService {
       summary: params.summary,
       followupTaskKeys: params.followupTaskKeys,
       error: params.error,
+      resolvedCount: params.resolvedCount,
+      reopenedCount: params.reopenedCount,
+      openCount: params.openCount,
     });
     await this.deps.workspaceRepo.createTaskComment({
       taskId: params.task.id,
@@ -1058,6 +1366,18 @@ export class CodeReviewService {
     }
     const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
     const systemPrompts = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
+    const abortSignal = request.abortSignal;
+    const resolveAbortReason = () => {
+      const reason = abortSignal?.reason;
+      if (typeof reason === "string" && reason.trim().length > 0) return reason;
+      if (reason instanceof Error && reason.message) return reason.message;
+      return "code_review_aborted";
+    };
+    const abortIfSignaled = () => {
+      if (abortSignal?.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+    };
 
     const results: TaskReviewResult[] = [];
     const maybeRateTask = async (task: TaskRow, taskRunId: string, tokensTotal: number): Promise<void> => {
@@ -1093,6 +1413,7 @@ export class CodeReviewService {
     };
 
     for (const task of tasks) {
+      abortIfSignaled();
       const statusBefore = task.status;
       const taskRun = await this.deps.workspaceRepo.createTaskRun({
         taskId: task.id,
@@ -1112,6 +1433,7 @@ export class CodeReviewService {
       let decision: ReviewAgentResult["decision"] | undefined;
       let statusAfter: string | undefined;
       const followupCreated: { taskId: string; taskKey: string; epicId: string; userStoryId: string; generic?: boolean }[] = [];
+      let commentResolution: { resolved: string[]; reopened: string[]; open: string[] } | undefined;
 
       // Debug visibility: show prompts/task details for this run
       const systemPrompt = systemPrompts.join("\n\n");
@@ -1140,6 +1462,8 @@ export class CodeReviewService {
         });
 
         const historySummary = await this.buildHistorySummary(task.id);
+        const commentContext = await this.loadCommentContext(task.id);
+        const commentBacklog = buildCommentBacklog(commentContext.unresolved);
         await this.deps.workspaceRepo.insertTaskLog({
           taskRunId: taskRun.id,
           sequence: this.sequenceForTask(taskRun.id),
@@ -1179,6 +1503,7 @@ export class CodeReviewService {
           docContext: docLinks.snippets,
           openapiSnippet,
           historySummary,
+          commentBacklog,
           baseRef: state?.baseRef ?? baseRef,
           branch: task.vcsBranch ?? undefined,
         });
@@ -1208,6 +1533,7 @@ export class CodeReviewService {
 
         await this.persistContext(jobId, task.id, {
           historySummary,
+          commentBacklog,
           docdex: docLinks.snippets,
           openapiSnippet,
           changedPaths,
@@ -1338,6 +1664,17 @@ export class CodeReviewService {
         decision = parsed.decision;
         findings.push(...(parsed.findings ?? []));
 
+        commentResolution = await this.applyCommentResolutions({
+          task,
+          taskRunId: taskRun.id,
+          jobId,
+          agentId: agent.id,
+          findings: parsed.findings ?? [],
+          resolvedSlugs: parsed.resolvedSlugs ?? undefined,
+          unresolvedSlugs: parsed.unresolvedSlugs ?? undefined,
+          existingComments: commentContext.comments,
+        });
+
         const followups = await this.createFollowupTasksForFindings({
           task,
           findings: parsed.findings ?? [],
@@ -1383,27 +1720,6 @@ export class CodeReviewService {
         }
         statusAfter = taskStatusUpdate;
 
-        for (const finding of parsed.findings ?? []) {
-          await this.deps.workspaceRepo.createTaskComment({
-            taskId: task.id,
-            taskRunId: taskRun.id,
-            jobId,
-            sourceCommand: "code-review",
-            authorType: "agent",
-            authorAgentId: agent.id,
-            category: finding.type ?? "other",
-            file: finding.file,
-            line: finding.line,
-            pathHint: finding.file,
-            body: finding.message + (finding.suggestedFix ? `\n\nSuggested fix: ${finding.suggestedFix}` : ""),
-            metadata: {
-              severity: finding.severity,
-              suggestedFix: finding.suggestedFix,
-            },
-            createdAt: new Date().toISOString(),
-          });
-        }
-
         await this.writeReviewSummaryComment({
           task,
           taskRunId: taskRun.id,
@@ -1415,6 +1731,9 @@ export class CodeReviewService {
           summary: parsed.summary,
           findingsCount: parsed.findings?.length ?? 0,
           followupTaskKeys: followupCreated.map((t) => t.taskKey),
+          resolvedCount: commentResolution?.resolved.length,
+          reopenedCount: commentResolution?.reopened.length,
+          openCount: commentResolution?.open.length,
         });
 
         await this.deps.workspaceRepo.createTaskReview({

@@ -368,7 +368,7 @@ describe("code-review service flow", () => {
 
     assert.equal(result.jobId, "job-1");
     assert.equal(fakeJobService.createdJob?.type, "review");
-    assert.equal(fakeWorkspaceRepo.comments.length, 2);
+    assert.equal(fakeWorkspaceRepo.comments.length, 3);
     assert.equal(fakeWorkspaceRepo.reviews.length, 1);
     assert.equal(fakeStateService.readyToQaCalled, true);
     assert.equal(fakeJobService.tokenUsage.length, 1);

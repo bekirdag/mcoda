@@ -4,7 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
-import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
+import { GlobalRepository, WorkspaceRepository, type TaskCommentRow } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService, type JobState } from "../jobs/JobService.js";
@@ -40,6 +40,8 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   rateAgents?: boolean;
   baseBranch?: string;
   onAgentChunk?: (chunk: string) => void;
+  abortSignal?: AbortSignal;
+  maxAgentSeconds?: number;
 }
 
 export interface TaskExecutionResult {
@@ -92,14 +94,63 @@ const extractPatches = (output: string): string[] => {
   return Array.from(patches).filter(Boolean);
 };
 
+const extractPlainCodeFence = (output: string): string | null => {
+  const match = output.match(/```(\w+)?\s*\r?\n([\s\S]*?)\r?\n```/);
+  if (!match) return null;
+  const lang = (match[1] ?? "").toLowerCase();
+  if (lang === "patch" || lang === "diff") return null;
+  const content = (match[2] ?? "").trimEnd();
+  return content ? content : null;
+};
+
 const extractFileBlocks = (output: string): Array<{ path: string; content: string }> => {
   const files: Array<{ path: string; content: string }> = [];
   const regex = /(?:^|\r?\n)FILE:\s*([^\r\n]+)\r?\n```[^\r\n]*\r?\n([\s\S]*?)\r?\n```/g;
+  const seen = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = regex.exec(output)) !== null) {
     const filePath = match[1]?.trim();
     if (!filePath) continue;
-    files.push({ path: filePath, content: match[2] ?? "" });
+    const content = match[2] ?? "";
+    const key = `${filePath}::${content.length}`;
+    if (!seen.has(key)) {
+      files.push({ path: filePath, content });
+      seen.add(key);
+    }
+  }
+  if (!files.length) {
+    const lines = output.split(/\r?\n/);
+    let currentPath: string | null = null;
+    let buffer: string[] = [];
+    const flush = () => {
+      if (!currentPath) return;
+      let content = buffer.join("\n");
+      const trimmed = content.trim();
+      if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
+        const contentLines = content.split(/\r?\n/);
+        contentLines.shift();
+        contentLines.pop();
+        content = contentLines.join("\n");
+      }
+      const key = `${currentPath}::${content.length}`;
+      if (!seen.has(key)) {
+        files.push({ path: currentPath, content });
+        seen.add(key);
+      }
+      currentPath = null;
+      buffer = [];
+    };
+    for (const line of lines) {
+      const fileMatch = line.match(/^FILE:\s*(.+)$/);
+      if (fileMatch) {
+        flush();
+        currentPath = fileMatch[1]?.trim() ?? null;
+        buffer = [];
+        continue;
+      }
+      if (currentPath) buffer.push(line);
+    }
+    flush();
   }
   return files;
 };
@@ -209,20 +260,44 @@ const extractFileBlocksFromJson = (payload: unknown): Array<{ path: string; cont
 const extractAgentChanges = (
   output: string,
 ): { patches: string[]; fileBlocks: Array<{ path: string; content: string }>; jsonDetected: boolean } => {
+  const placeholderRegex = /\?\?\?|rest of existing code/i;
   let patches = extractPatches(output);
   let fileBlocks = extractFileBlocks(output);
   let jsonDetected = false;
+  if (patches.length) {
+    patches = patches.filter((patch) => !placeholderRegex.test(patch));
+  }
   if (patches.length === 0 && fileBlocks.length === 0) {
     const payload = parseJsonPayload(output);
     if (payload) {
       jsonDetected = true;
       patches = extractPatchesFromJson(payload);
       fileBlocks = extractFileBlocksFromJson(payload);
+      if (patches.length) {
+        patches = patches.filter((patch) => !placeholderRegex.test(patch));
+      }
     } else if (looksLikeJsonOutput(output)) {
       jsonDetected = true;
     }
   }
   return { patches, fileBlocks, jsonDetected };
+};
+
+const splitFileBlocksByExistence = (
+  fileBlocks: Array<{ path: string; content: string }>,
+  cwd: string,
+): { existing: string[]; remaining: Array<{ path: string; content: string }> } => {
+  const existing: string[] = [];
+  const remaining: Array<{ path: string; content: string }> = [];
+  for (const block of fileBlocks) {
+    const resolved = path.resolve(cwd, block.path);
+    if (fs.existsSync(resolved)) {
+      existing.push(block.path);
+    } else {
+      remaining.push(block);
+    }
+  }
+  return { existing, remaining };
 };
 
 type TaskPhase = "selection" | "context" | "prompt" | "agent" | "apply" | "tests" | "vcs" | "finalize";
@@ -361,6 +436,10 @@ const touchedFilesFromPatch = (patch: string): string[] => {
 
 const normalizePaths = (workspaceRoot: string, files: string[]): string[] =>
   files.map((f) => path.relative(workspaceRoot, path.isAbsolute(f) ? f : path.join(workspaceRoot, f))).map((f) => f.replace(/\\/g, "/"));
+const resolveLockTtlSeconds = (maxAgentSeconds?: number): number => {
+  if (!maxAgentSeconds || maxAgentSeconds <= 0) return TASK_LOCK_TTL_SECONDS;
+  return Math.max(1, Math.min(TASK_LOCK_TTL_SECONDS, maxAgentSeconds + 60));
+};
 const MCODA_GITIGNORE_ENTRY = ".mcoda/\n";
 const WORK_DIR = (jobId: string, workspaceRoot: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "work");
 
@@ -468,6 +547,92 @@ const ensureDiffHeader = (patch: string): string => {
   return result.join("\n");
 };
 
+const normalizeDiffPaths = (patch: string, workspaceRoot: string): string => {
+  const rootEntries = new Set<string>();
+  try {
+    fs.readdirSync(workspaceRoot, { withFileTypes: true }).forEach((entry) => {
+      rootEntries.add(entry.name);
+    });
+  } catch {
+    /* ignore */
+  }
+
+  const normalizePath = (raw: string): string => {
+    let value = raw.trim();
+    value = value.replace(/^file:\s*/i, "");
+    value = value.replace(/^a\//, "").replace(/^b\//, "");
+    if (value === "/dev/null") return value;
+    const original = value;
+    const absolute = path.isAbsolute(original);
+    if (absolute) {
+      const relative = path.relative(workspaceRoot, original);
+      const normalizedRelative = relative.replace(/\\/g, "/");
+      if (!normalizedRelative.startsWith("..") && normalizedRelative !== "") {
+        return normalizedRelative;
+      }
+      const segments = original.replace(/\\/g, "/").split("/").filter(Boolean);
+      for (let i = 0; i < segments.length; i += 1) {
+        if (rootEntries.has(segments[i])) {
+          return segments.slice(i).join("/");
+        }
+      }
+    }
+    return original.replace(/\\/g, "/");
+  };
+
+  return patch
+    .split(/\r?\n/)
+    .map((line) => {
+      if (line.startsWith("diff --git ")) {
+        const parts = line.split(" ");
+        if (parts.length >= 4) {
+          const left = normalizePath(parts[2]);
+          const right = normalizePath(parts[3]);
+          return `diff --git a/${left} b/${right}`;
+        }
+        return line;
+      }
+      if (line.startsWith("--- ")) {
+        const rest = line.slice(4).trim();
+        if (rest === "/dev/null") return line;
+        const normalized = normalizePath(rest);
+        return `--- a/${normalized}`;
+      }
+      if (line.startsWith("+++ ")) {
+        const rest = line.slice(4).trim();
+        if (rest === "/dev/null") return line;
+        const normalized = normalizePath(rest);
+        return `+++ b/${normalized}`;
+      }
+      return line;
+    })
+    .join("\n");
+};
+
+const convertMissingFilePatchToAdd = (patch: string, workspaceRoot: string): string => {
+  if (!/@@\s+-0,0\s+\+\d+/m.test(patch)) return patch;
+  const files = touchedFilesFromPatch(patch);
+  if (!files.length) return patch;
+  let updated = patch;
+  let changed = false;
+  for (const file of files) {
+    const resolved = path.join(workspaceRoot, file);
+    if (fs.existsSync(resolved)) continue;
+    const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const minus = new RegExp(`^---\\s+(?:a/)?${escaped}$`, "m");
+    if (minus.test(updated)) {
+      updated = updated.replace(minus, "--- /dev/null");
+      changed = true;
+    }
+    const plus = new RegExp(`^\\+\\+\\+\\s+(?:b/)?${escaped}$`, "m");
+    if (plus.test(updated)) {
+      updated = updated.replace(plus, `+++ b/${file}`);
+      changed = true;
+    }
+  }
+  return changed ? ensureDiffHeader(updated) : updated;
+};
+
 const stripInvalidIndexLines = (patch: string): string =>
   patch
     .split(/\r?\n/)
@@ -545,7 +710,23 @@ const fixMissingPrefixesInHunks = (patch: string): string => {
   const lines = patch.split(/\r?\n/);
   const out: string[] = [];
   let inHunk = false;
+  let addFile = false;
   for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      inHunk = false;
+      addFile = false;
+      out.push(line);
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      addFile = line.includes("/dev/null");
+      out.push(line);
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      out.push(line);
+      continue;
+    }
     if (line.startsWith("@@")) {
       inHunk = true;
       out.push(line);
@@ -557,7 +738,11 @@ const fixMissingPrefixesInHunks = (patch: string): string => {
         out.push(line);
         continue;
       }
-      if (!/^[+\-\s]/.test(line) && line.trim().length) {
+      if (!line.length) {
+        out.push(addFile ? "+" : " ");
+        continue;
+      }
+      if (!/^[+\-\s]/.test(line)) {
         out.push(`+${line}`);
         continue;
       }
@@ -596,10 +781,88 @@ const parseAddedFileContents = (patch: string): Record<string, string> => {
   return Object.fromEntries(Object.entries(additions).map(([file, content]) => [file, content.join("\n")]));
 };
 
+const parseAddOnlyPatchContents = (patch: string): Record<string, string> => {
+  const lines = patch.split(/\r?\n/);
+  const additions: Record<string, string[]> = {};
+  let currentFile: string | null = null;
+  let inHunk = false;
+  let sawContextOrRemoval = false;
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      currentFile = null;
+      inHunk = false;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      const pathLine = line.replace(/^\+\+\+\s+/, "").trim();
+      if (pathLine && pathLine !== "/dev/null") {
+        currentFile = pathLine.replace(/^b\//, "");
+      }
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith("diff --git ") || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("*** End Patch")) {
+      inHunk = false;
+      continue;
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      if (currentFile) {
+        if (!additions[currentFile]) additions[currentFile] = [];
+        additions[currentFile].push(line.slice(1));
+      }
+      continue;
+    }
+    if (!line.length) {
+      if (currentFile) {
+        if (!additions[currentFile]) additions[currentFile] = [];
+        additions[currentFile].push("");
+      }
+      continue;
+    }
+    if (line.startsWith("-") || line.startsWith(" ")) {
+      sawContextOrRemoval = true;
+    }
+  }
+
+  if (sawContextOrRemoval) return {};
+  return Object.fromEntries(Object.entries(additions).map(([file, content]) => [file, content.join("\n")]));
+};
+
 const updateAddPatchForExistingFile = (patch: string, existingFiles: Set<string>, cwd: string): { patch: string; skipped: string[] } => {
   const additions = parseAddedFileContents(patch);
   const skipped: string[] = [];
   let updated = patch;
+  if (existingFiles.size > 0) {
+    const existingRelative = new Set(
+      Array.from(existingFiles).map((absolute) => path.relative(cwd, absolute).replace(/\\/g, "/")),
+    );
+    let currentFile: string | null = null;
+    const out: string[] = [];
+    for (const line of updated.split(/\r?\n/)) {
+      if (line.startsWith("diff --git ")) {
+        const parts = line.split(" ");
+        const raw = parts[3] ?? parts[2] ?? "";
+        currentFile = raw.replace(/^b\//, "").replace(/^a\//, "");
+        out.push(line);
+        continue;
+      }
+      const currentExists = currentFile ? existingRelative.has(currentFile) : false;
+      if (currentExists && line.startsWith("new file mode")) {
+        continue;
+      }
+      if (currentExists && line.startsWith("--- /dev/null")) {
+        out.push(`--- a/${currentFile}`);
+        continue;
+      }
+      out.push(line);
+    }
+    updated = out.join("\n");
+  }
   for (const file of Object.keys(additions)) {
     const absolute = path.join(cwd, file);
     if (!existingFiles.has(absolute)) continue;
@@ -925,23 +1188,94 @@ export class WorkOnTasksService {
     return { summary, warnings };
   }
 
-  private buildPrompt(task: TaskSelectionPlan["ordered"][number], docSummary: string, fileScope: string[]): string {
+  private parseCommentBody(body: string): { message: string; suggestedFix?: string } {
+    const trimmed = (body ?? "").trim();
+    if (!trimmed) return { message: "(no details provided)" };
+    const lines = trimmed.split(/\r?\n/);
+    const normalize = (value: string) => value.trim().toLowerCase();
+    const messageIndex = lines.findIndex((line) => normalize(line) === "message:");
+    const suggestedIndex = lines.findIndex((line) => {
+      const normalized = normalize(line);
+      return normalized === "suggested_fix:" || normalized === "suggested fix:";
+    });
+    if (messageIndex >= 0) {
+      const messageLines = lines.slice(messageIndex + 1, suggestedIndex >= 0 ? suggestedIndex : undefined);
+      const message = messageLines.join("\n").trim();
+      const suggestedLines = suggestedIndex >= 0 ? lines.slice(suggestedIndex + 1) : [];
+      const suggestedFix = suggestedLines.join("\n").trim();
+      return { message: message || trimmed, suggestedFix: suggestedFix || undefined };
+    }
+    if (suggestedIndex >= 0) {
+      const message = lines.slice(0, suggestedIndex).join("\n").trim() || trimmed;
+      const inlineFix = lines[suggestedIndex]?.split(/suggested fix:/i)[1]?.trim();
+      const suggestedTail = lines.slice(suggestedIndex + 1).join("\n").trim();
+      const suggestedFix = inlineFix || suggestedTail || undefined;
+      return { message, suggestedFix };
+    }
+    return { message: trimmed };
+  }
+
+  private buildCommentBacklog(comments: TaskCommentRow[]): string {
+    if (!comments.length) return "";
+    const seen = new Set<string>();
+    const lines: string[] = [];
+    const toSingleLine = (value: string) => value.replace(/\s+/g, " ").trim();
+    for (const comment of comments) {
+      const slug = comment.slug?.trim() || undefined;
+      const details = this.parseCommentBody(comment.body);
+      const key =
+        slug ??
+        `${comment.sourceCommand}:${comment.file ?? ""}:${comment.line ?? ""}:${details.message || comment.body}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const location = comment.file
+        ? `${comment.file}${typeof comment.line === "number" ? `:${comment.line}` : ""}`
+        : "(location not specified)";
+      const message = toSingleLine(details.message || comment.body || "(no details provided)");
+      lines.push(`- [${slug ?? "untracked"}] ${location} ${message}`);
+      const suggestedFix =
+        (comment.metadata?.suggestedFix as string | undefined) ?? details.suggestedFix ?? undefined;
+      if (suggestedFix) {
+        lines.push(`  Suggested fix: ${toSingleLine(suggestedFix)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
+  private async loadUnresolvedComments(taskId: string): Promise<TaskCommentRow[]> {
+    return this.deps.workspaceRepo.listTaskComments(taskId, {
+      sourceCommands: ["code-review", "qa-tasks"],
+      resolved: false,
+      limit: 20,
+    });
+  }
+
+  private buildPrompt(
+    task: TaskSelectionPlan["ordered"][number],
+    docSummary: string,
+    fileScope: string[],
+    commentBacklog: string,
+  ): string {
     const deps = task.dependencies.keys.length ? `Depends on: ${task.dependencies.keys.join(", ")}` : "No open dependencies.";
     const acceptance = (task.task.acceptanceCriteria ?? []).join("; ");
     const docdexHint =
       docSummary ||
       "Use docdex: search workspace docs with project key and fetch linked documents when present (doc_links metadata).";
+    const backlog = commentBacklog ? `Comment backlog:\n${commentBacklog}` : "";
     return [
       `Task ${task.task.key}: ${task.task.title}`,
       `Description: ${task.task.description ?? "(none)"}`,
       `Epic: ${task.task.epicKey} (${task.task.epicTitle ?? "n/a"}), Story: ${task.task.storyKey} (${task.task.storyTitle ?? "n/a"})`,
       `Acceptance: ${acceptance || "Refer to SDS/OpenAPI for expected behavior."}`,
       deps,
+      backlog,
       `Allowed files: ${fileScope.length ? fileScope.join(", ") : "(not constrained)"}`,
       `Doc context:\n${docdexHint}`,
       "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, emit a new-file diff with full content (and parent dirs) instead of editing a non-existent file so git apply succeeds. Use valid unified diffs without JSON wrappers.",
       "Provide a concise plan as plain text bullet points, then output code changes. If editing existing files, emit a unified diff inside ```patch``` fences. If creating new files, emit FILE blocks. Do not output JSON (unless forced by the runtime, in which case include a top-level `patch` string or `files` array).",
-    ].join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   private async checkoutBaseBranch(baseBranch: string): Promise<void> {
@@ -1158,7 +1492,9 @@ export class WorkOnTasksService {
     for (const patch of patches) {
       const normalized = maybeConvertApplyPatch(patch);
       const withHeader = ensureDiffHeader(normalized);
-      const withHunks = normalizeHunkHeaders(withHeader);
+      const withPaths = normalizeDiffPaths(withHeader, cwd);
+      const withAdds = convertMissingFilePatchToAdd(withPaths, cwd);
+      const withHunks = normalizeHunkHeaders(withAdds);
       const withPrefixes = fixMissingPrefixesInHunks(withHunks);
       const sanitized = stripInvalidIndexLines(withPrefixes);
       if (isPlaceholderPatch(sanitized)) {
@@ -1204,13 +1540,14 @@ export class WorkOnTasksService {
         } catch (error) {
           // Fallback: if the segment only adds new files and git apply fails, write the files directly.
           const additions = parseAddedFileContents(patchToApply);
-          const addTargets = Object.keys(additions);
+          const fallbackAdditions = Object.keys(additions).length ? additions : parseAddOnlyPatchContents(patchToApply);
+          const addTargets = Object.keys(fallbackAdditions);
           if (addTargets.length && segmentFiles.length === addTargets.length) {
             try {
               for (const file of addTargets) {
                 const dest = path.join(cwd, file);
                 await fs.promises.mkdir(path.dirname(dest), { recursive: true });
-                await fs.promises.writeFile(dest, additions[file], "utf8");
+                await fs.promises.writeFile(dest, fallbackAdditions[file], "utf8");
                 touched.add(file);
               }
               applied += 1;
@@ -1228,7 +1565,7 @@ export class WorkOnTasksService {
       }
     }
     if (!applied && warnings.length) {
-      return { touched: Array.from(touched), warnings, error: "No patches applied; all were skipped as placeholders." };
+      return { touched: Array.from(touched), warnings, error: "No patches applied; all segments failed or were skipped." };
     }
     return { touched: Array.from(touched), warnings };
   }
@@ -1283,11 +1620,18 @@ export class WorkOnTasksService {
     return { touched: Array.from(touched), warnings, appliedCount: applied };
   }
 
-  private async runTests(commands: string[], cwd: string): Promise<{ ok: boolean; results: { command: string; stdout: string; stderr: string; code: number }[] }> {
+  private async runTests(
+    commands: string[],
+    cwd: string,
+    abortSignal?: AbortSignal,
+  ): Promise<{ ok: boolean; results: { command: string; stdout: string; stderr: string; code: number }[] }> {
     const results: { command: string; stdout: string; stderr: string; code: number }[] = [];
     for (const command of commands) {
       try {
-        const { stdout, stderr } = await exec(command, { cwd });
+        if (abortSignal?.aborted) {
+          throw new Error("work_on_tasks_aborted");
+        }
+        const { stdout, stderr } = await exec(command, { cwd, signal: abortSignal });
         results.push({ command, stdout, stderr, code: 0 });
       } catch (error: any) {
         results.push({
@@ -1333,6 +1677,37 @@ export class WorkOnTasksService {
 
     let selection: TaskSelectionPlan;
     let storyPointsProcessed = 0;
+    const abortSignal = request.abortSignal;
+    const resolveAbortReason = () => {
+      const reason = abortSignal?.reason;
+      if (typeof reason === "string" && reason.trim().length > 0) return reason;
+      if (reason instanceof Error && reason.message) return reason.message;
+      return "work_on_tasks_aborted";
+    };
+    const abortIfSignaled = () => {
+      if (abortSignal?.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+    };
+    const withAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      if (!abortSignal) return promise;
+      if (abortSignal.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+      return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(new Error(resolveAbortReason()));
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        promise.then(resolve, reject).finally(() => {
+          abortSignal.removeEventListener("abort", onAbort);
+        });
+      });
+    };
+    const isAbortError = (message: string): boolean => {
+      if (!message) return false;
+      if (message === "agent_timeout") return true;
+      if (/abort/i.test(message)) return true;
+      return message === resolveAbortReason();
+    };
     try {
       await this.checkoutBaseBranch(baseBranch);
       selection = await this.selectionService.selectTasks({
@@ -1499,6 +1874,7 @@ export class WorkOnTasksService {
       };
 
       taskLoop: for (const [index, task] of selection.ordered.entries()) {
+        abortIfSignaled();
         const startedAt = new Date().toISOString();
         const taskRun = await this.deps.workspaceRepo.createTaskRun({
           taskId: task.task.id,
@@ -1530,6 +1906,7 @@ export class WorkOnTasksService {
         let mergeStatus: "merged" | "skipped" | "failed" = "skipped";
         let patchApplied = false;
         let touched: string[] = [];
+        let unresolvedComments: TaskCommentRow[] = [];
         let taskBranchName: string | null = task.task.vcsBranch ?? null;
         let baseBranchName: string | null = task.task.vcsBaseBranch ?? baseBranch;
         let branchInfo: { branch: string; base: string; mergeConflicts?: string[]; remoteSyncNote?: string } | null = {
@@ -1605,6 +1982,7 @@ export class WorkOnTasksService {
         };
 
         try {
+          abortIfSignaled();
           await startPhase("selection", {
             dependencies: task.dependencies.keys,
             blockedReason: task.blockedReason,
@@ -1648,15 +2026,10 @@ export class WorkOnTasksService {
           await emitTaskEndOnce();
           continue taskLoop;
         }
+        const lockTtlSeconds = resolveLockTtlSeconds(request.maxAgentSeconds);
         let lockAcquired = false;
         if (!request.dryRun) {
-          const ttlSeconds = Math.max(1, TASK_LOCK_TTL_SECONDS);
-          const lockResult = await this.deps.workspaceRepo.tryAcquireTaskLock(
-            task.task.id,
-            taskRun.id,
-            job.id,
-            ttlSeconds,
-          );
+          const lockResult = await this.deps.workspaceRepo.tryAcquireTaskLock(task.task.id, taskRun.id, job.id, lockTtlSeconds);
           if (!lockResult.acquired) {
             await this.logTask(taskRun.id, "Task already locked by another run; skipping.", "vcs", {
               lock: lockResult.lock ?? null,
@@ -1675,6 +2048,7 @@ export class WorkOnTasksService {
         }
 
         try {
+          abortIfSignaled();
           const metadata = (task.task.metadata as any) ?? {};
           let allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
           const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
@@ -1708,8 +2082,7 @@ export class WorkOnTasksService {
           let testAttemptCount = 0;
           let lastLockRefresh = Date.now();
           const getLockRefreshIntervalMs = () => {
-            const ttlSeconds = Math.max(1, TASK_LOCK_TTL_SECONDS);
-            const ttlMs = ttlSeconds * 1000;
+            const ttlMs = lockTtlSeconds * 1000;
             return Math.max(250, Math.min(ttlMs - 250, Math.floor(ttlMs / 3)));
           };
           const refreshLock = async (label: string, force = false): Promise<boolean> => {
@@ -1717,8 +2090,7 @@ export class WorkOnTasksService {
             const now = Date.now();
             if (!force && now - lastLockRefresh < getLockRefreshIntervalMs()) return true;
             try {
-              const ttlSeconds = Math.max(1, TASK_LOCK_TTL_SECONDS);
-              const refreshed = await this.deps.workspaceRepo.refreshTaskLock(task.task.id, taskRun.id, ttlSeconds);
+              const refreshed = await this.deps.workspaceRepo.refreshTaskLock(task.task.id, taskRun.id, lockTtlSeconds);
               if (!refreshed) {
                 await this.logTask(taskRun.id, `Task lock lost during ${label}; another run may have taken it.`, "vcs", {
                   reason: "lock_stolen",
@@ -1795,10 +2167,12 @@ export class WorkOnTasksService {
           }
 
           await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
+          unresolvedComments = await this.loadUnresolvedComments(task.task.id);
+          const commentBacklog = this.buildCommentBacklog(unresolvedComments);
           const conflictNote = mergeConflicts.length
             ? `Merge conflicts detected in: ${mergeConflicts.join(", ")}. Resolve these conflicts before any other task work. Remove conflict markers and ensure the files are consistent.`
             : "";
-          const promptBase = this.buildPrompt(task, docSummary, allowedFiles);
+          const promptBase = this.buildPrompt(task, docSummary, allowedFiles, commentBacklog);
           const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
           const testExpectationNote = shouldRunTests
             ? "Tests must pass before the task can be finalized. Run task-specific tests first, then run-all tests."
@@ -1845,14 +2219,22 @@ export class WorkOnTasksService {
           };
 
           const invokeAgentOnce = async (input: string, phaseLabel: string) => {
+            abortIfSignaled();
             let output = "";
             const started = Date.now();
             if (agentStream && this.deps.agentService.invokeStream) {
-              const stream = await this.deps.agentService.invokeStream(agent.id, {
-                input,
-                metadata: { taskKey: task.task.key },
-              });
+              const stream = await withAbort(
+                this.deps.agentService.invokeStream(agent.id, {
+                  input,
+                  metadata: { taskKey: task.task.key },
+                }),
+              );
               let pollLockLost = false;
+              let aborted = false;
+              const onAbort = () => {
+                aborted = true;
+              };
+              abortSignal?.addEventListener("abort", onAbort, { once: true });
               const refreshTimer = setInterval(() => {
                 void refreshLock("agent_stream_poll").then((ok) => {
                   if (!ok) pollLockLost = true;
@@ -1860,6 +2242,9 @@ export class WorkOnTasksService {
               }, getLockRefreshIntervalMs());
               try {
                 for await (const chunk of stream) {
+                  if (aborted) {
+                    throw new Error(resolveAbortReason());
+                  }
                   output += chunk.output ?? "";
                   streamChunk(chunk.output);
                   await this.logTask(taskRun.id, chunk.output ?? "", phaseLabel);
@@ -1870,10 +2255,14 @@ export class WorkOnTasksService {
                 }
               } finally {
                 clearInterval(refreshTimer);
+                abortSignal?.removeEventListener("abort", onAbort);
               }
               if (pollLockLost) {
                 await this.logTask(taskRun.id, "Aborting task: lock lost during agent stream.", "vcs");
                 throw new Error("Task lock lost during agent stream.");
+              }
+              if (aborted) {
+                throw new Error(resolveAbortReason());
               }
             } else {
               let pollLockLost = false;
@@ -1888,12 +2277,12 @@ export class WorkOnTasksService {
                   if (rejectLockLost) rejectLockLost(new Error("Task lock lost during agent invoke."));
                 });
               }, getLockRefreshIntervalMs());
-              const invokePromise = this.deps.agentService
-                .invoke(agent.id, { input, metadata: { taskKey: task.task.key } })
-                .catch((error) => {
-                  if (pollLockLost) return null as any;
-                  throw error;
-                });
+              const invokePromise = withAbort(
+                this.deps.agentService.invoke(agent.id, { input, metadata: { taskKey: task.task.key } }),
+              ).catch((error) => {
+                if (pollLockLost) return null as any;
+                throw error;
+              });
               try {
                 const result = await Promise.race([invokePromise, lockLostPromise]);
                 if (result) {
@@ -1945,6 +2334,7 @@ export class WorkOnTasksService {
           let lastTestErrorType: "tests_failed" | "tests_not_configured" | null = null;
 
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            abortIfSignaled();
             const attemptNotes: string[] = [];
             if (attempt > 1) {
               attemptNotes.push(`Retry attempt ${attempt} of ${maxAttempts}.`);
@@ -1958,6 +2348,7 @@ export class WorkOnTasksService {
             let agentOutput = "";
             let agentDuration = 0;
             let triedRetry = false;
+            let triedPatchFallback = false;
 
             try {
               await startPhase("agent", { agent: agent.id, stream: agentStream, attempt, maxAttempts });
@@ -1989,6 +2380,13 @@ export class WorkOnTasksService {
             await recordUsage("agent", agentOutput, agentDuration, agentInput);
 
             let { patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput);
+            if (fileBlocks.length && patches.length) {
+              const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
+              if (existing.length) {
+                await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+              }
+              fileBlocks = remaining;
+            }
             if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
               triedRetry = true;
               const retryReason = jsonDetected
@@ -2002,6 +2400,13 @@ export class WorkOnTasksService {
                 agentDuration += retry.durationSeconds;
                 await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput);
                 ({ patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput));
+                if (fileBlocks.length && patches.length) {
+                  const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
+                  if (existing.length) {
+                    await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                  }
+                  fileBlocks = remaining;
+                }
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
@@ -2046,29 +2451,77 @@ export class WorkOnTasksService {
                 if (applied.error) {
                   patchApplyError = applied.error;
                   await this.logTask(taskRun.id, `Patch apply failed: ${applied.error}`, "patch");
-                  if (!fileBlocks.length) {
+                  if (!fileBlocks.length && !triedPatchFallback) {
+                    triedPatchFallback = true;
+                    const files = Array.from(
+                      new Set(patches.flatMap((patch) => touchedFilesFromPatch(patch))),
+                    ).filter(Boolean);
+                    if (files.length) {
+                      const fallbackPrompt = [
+                        systemPrompt,
+                        "",
+                        attemptPrompt,
+                        "",
+                        `Patch apply failed (${applied.error}).`,
+                        "Return FILE blocks only for these paths (full contents, no diffs, no prose):",
+                        files.map((file) => `- ${file}`).join("\n"),
+                      ].join("\n");
+                      try {
+                        const fallback = await invokeAgentOnce(fallbackPrompt, "agent");
+                        agentDuration += fallback.durationSeconds;
+                        await recordUsage("agent_retry", fallback.output, fallback.durationSeconds, fallbackPrompt);
+                        const fallbackChanges = extractAgentChanges(fallback.output);
+                        if (!fallbackChanges.fileBlocks.length && !fallbackChanges.patches.length && files.length === 1) {
+                          const inferred = extractPlainCodeFence(fallback.output);
+                          if (inferred) {
+                            fallbackChanges.fileBlocks = [{ path: files[0], content: inferred }];
+                          }
+                        }
+                        if (fallbackChanges.fileBlocks.length) {
+                          fileBlocks = fallbackChanges.fileBlocks;
+                          patches = [];
+                          patchApplyError = null;
+                          await this.logTask(taskRun.id, "Recovered from patch failure using FILE blocks.", "patch");
+                        }
+                      } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        await this.logTask(taskRun.id, `Patch fallback failed: ${message}`, "patch");
+                      }
+                    }
+                  }
+                  if (patchApplyError && !fileBlocks.length) {
                     await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
                     await this.stateService.markBlocked(task.task, "patch_failed");
                     await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                     results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                     taskStatus = "failed";
-                      if (!request.dryRun && request.noCommit !== true) {
-                        await this.commitPendingChanges(
-                          branchInfo,
-                          task.task.key,
-                          task.task.title,
-                          "auto-save (patch_failed)",
-                          task.task.id,
-                          taskRun.id,
-                        );
-                      }
-                      await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                      continue taskLoop;
+                    if (!request.dryRun && request.noCommit !== true) {
+                      await this.commitPendingChanges(
+                        branchInfo,
+                        task.task.key,
+                        task.task.title,
+                        "auto-save (patch_failed)",
+                        task.task.id,
+                        taskRun.id,
+                      );
                     }
+                    await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                    continue taskLoop;
                   }
                 }
+                }
                 if (fileBlocks.length) {
-                  const allowNoop = patchApplyError === null && touched.length > 0;
+                  const onlyExistingFileBlocks =
+                    fileBlocks.length > 0 &&
+                    fileBlocks.every((block) => {
+                      const rawPath = block.path?.trim();
+                      if (!rawPath) return false;
+                      const resolved = path.resolve(this.workspace.workspaceRoot, rawPath);
+                      const relative = path.relative(this.workspace.workspaceRoot, resolved);
+                      if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+                      return fs.existsSync(resolved);
+                    });
+                  const allowNoop = patchApplyError === null && (touched.length > 0 || onlyExistingFileBlocks);
                   const applied = await this.applyFileBlocks(
                     fileBlocks,
                     this.workspace.workspaceRoot,
@@ -2163,6 +2616,7 @@ export class WorkOnTasksService {
               }
   
               if (shouldRunTests) {
+                abortIfSignaled();
                 testAttemptCount += 1;
                 const runAllTestsCommand = detectRunAllTestsCommand(this.workspace.workspaceRoot);
                 if (!runAllTestsCommand) {
@@ -2198,7 +2652,7 @@ export class WorkOnTasksService {
                 }
                 const combinedCommands = [...testCommands, runAllTestsCommand];
                 await startPhase("tests", { commands: combinedCommands, attempt, runAll: true });
-                const testResult = await this.runTests(combinedCommands, this.workspace.workspaceRoot);
+                const testResult = await this.runTests(combinedCommands, this.workspace.workspaceRoot, abortSignal);
                 await this.logTask(taskRun.id, "Test results", "tests", { results: testResult.results, attempt });
                 if (!testResult.ok) {
                   lastTestResults = testResult.results;
@@ -2261,6 +2715,41 @@ export class WorkOnTasksService {
                   taskRun.id,
                 );
               }
+              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+              continue taskLoop;
+            }
+
+            if (!request.dryRun && touched.length === 0 && unresolvedComments.length > 0) {
+              const openSlugs = unresolvedComments
+                .map((comment) => comment.slug)
+                .filter((slug): slug is string => Boolean(slug && slug.trim()));
+              const slugList = openSlugs.length ? openSlugs.join(", ") : "untracked";
+              const body = [
+                "[work-on-tasks]",
+                "No changes detected while unresolved review/QA comments remain.",
+                `Open comment slugs: ${slugList}`,
+              ].join("\n");
+              await this.deps.workspaceRepo.createTaskComment({
+                taskId: task.task.id,
+                taskRunId: taskRun.id,
+                jobId: job.id,
+                sourceCommand: "work-on-tasks",
+                authorType: "agent",
+                authorAgentId: agent.id,
+                category: "comment_backlog",
+                body,
+                createdAt: new Date().toISOString(),
+                metadata: { reason: "no_changes", openSlugs },
+              });
+              await this.logTask(
+                taskRun.id,
+                `No changes detected; unresolved comments remain (${slugList}).`,
+                "execution",
+              );
+              await this.stateService.markBlocked(task.task, "no_changes");
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+              results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
+              taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
               continue taskLoop;
             }
@@ -2437,6 +2926,14 @@ export class WorkOnTasksService {
         await this.checkpoint(job.id, "task_ready_for_review", { taskKey: task.task.key });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          if (isAbortError(message)) {
+            await this.logTask(taskRun.id, `Task aborted: ${message}`, "execution");
+            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+            await this.stateService.markBlocked(task.task, "agent_timeout");
+            taskStatus = "failed";
+            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+            throw error;
+          }
           if (/task lock lost/i.test(message)) {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "vcs");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });

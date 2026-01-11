@@ -220,6 +220,8 @@ export interface TaskCommentInsert {
   authorType: "agent" | "human";
   authorAgentId?: string | null;
   category?: string | null;
+  slug?: string | null;
+  status?: string | null;
   file?: string | null;
   line?: number | null;
   pathHint?: string | null;
@@ -1075,7 +1077,13 @@ export class WorkspaceRepository {
            job_id = excluded.job_id,
            acquired_at = excluded.acquired_at,
            expires_at = excluded.expires_at
-         WHERE task_locks.expires_at < ?`,
+         WHERE task_locks.expires_at < ?
+           OR NOT EXISTS (
+             SELECT 1
+             FROM task_runs
+             WHERE task_runs.id = task_locks.task_run_id
+               AND task_runs.status = 'running'
+           )`,
         taskId,
         taskRunId,
         jobId ?? null,
@@ -1311,8 +1319,8 @@ export class WorkspaceRepository {
   async createTaskComment(record: TaskCommentInsert): Promise<TaskCommentRow> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, slug, status, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.taskId,
       record.taskRunId ?? null,
@@ -1321,6 +1329,8 @@ export class WorkspaceRepository {
       record.authorType,
       record.authorAgentId ?? null,
       record.category ?? null,
+      record.slug ?? null,
+      record.status ?? "open",
       record.file ?? null,
       record.line ?? null,
       record.pathHint ?? null,
@@ -1330,20 +1340,35 @@ export class WorkspaceRepository {
       record.resolvedAt ?? null,
       record.resolvedBy ?? null,
     );
-    return { ...record, id };
+    return { ...record, id, status: record.status ?? "open" };
   }
 
-  async listTaskComments(taskId: string, options: { sourceCommands?: string[]; limit?: number } = {}): Promise<TaskCommentRow[]> {
+  async listTaskComments(
+    taskId: string,
+    options: { sourceCommands?: string[]; limit?: number; slug?: string | string[]; resolved?: boolean } = {},
+  ): Promise<TaskCommentRow[]> {
     const clauses = ["task_id = ?"];
     const params: any[] = [taskId];
     if (options.sourceCommands && options.sourceCommands.length) {
       clauses.push(`source_command IN (${options.sourceCommands.map(() => "?").join(", ")})`);
       params.push(...options.sourceCommands);
     }
+    if (options.slug) {
+      const slugs = Array.isArray(options.slug) ? options.slug : [options.slug];
+      if (slugs.length) {
+        clauses.push(`slug IN (${slugs.map(() => "?").join(", ")})`);
+        params.push(...slugs);
+      }
+    }
+    if (options.resolved === true) {
+      clauses.push("resolved_at IS NOT NULL");
+    } else if (options.resolved === false) {
+      clauses.push("resolved_at IS NULL");
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const limitClause = options.limit ? `LIMIT ${options.limit}` : "";
     const rows = await this.db.all<any[]>(
-      `SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
+      `SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, slug, status, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
        FROM task_comments
        ${where}
        ORDER BY datetime(created_at) DESC
@@ -1359,6 +1384,8 @@ export class WorkspaceRepository {
       authorType: row.author_type,
       authorAgentId: row.author_agent_id ?? undefined,
       category: row.category ?? undefined,
+      slug: row.slug ?? undefined,
+      status: row.status ?? undefined,
       file: row.file ?? undefined,
       line: row.line ?? undefined,
       pathHint: row.path_hint ?? undefined,
@@ -1368,6 +1395,30 @@ export class WorkspaceRepository {
       resolvedAt: row.resolved_at ?? undefined,
       resolvedBy: row.resolved_by ?? undefined,
     }));
+  }
+
+  async resolveTaskComment(params: { taskId: string; slug: string; resolvedAt: string; resolvedBy?: string | null }): Promise<void> {
+    await this.db.run(
+      `UPDATE task_comments
+       SET resolved_at = ?, resolved_by = ?, status = ?
+       WHERE task_id = ? AND slug = ?`,
+      params.resolvedAt,
+      params.resolvedBy ?? null,
+      "resolved",
+      params.taskId,
+      params.slug,
+    );
+  }
+
+  async reopenTaskComment(params: { taskId: string; slug: string }): Promise<void> {
+    await this.db.run(
+      `UPDATE task_comments
+       SET resolved_at = NULL, resolved_by = NULL, status = ?
+       WHERE task_id = ? AND slug = ?`,
+      "open",
+      params.taskId,
+      params.slug,
+    );
   }
 
   async createTaskReview(record: TaskReviewInsert): Promise<TaskReviewRow> {

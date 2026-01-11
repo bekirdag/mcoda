@@ -868,6 +868,7 @@ export class CreateTasksService {
       "- Each task must include localId, title, description, type, estimatedStoryPoints, priorityHint.",
       "- Include test arrays: unitTests, componentTests, integrationTests, apiTests. Use [] when not applicable.",
       "- Only include tests that are relevant to the task's scope.",
+      "- If the task involves code or configuration changes, include at least one relevant test; do not leave all test arrays empty unless it's purely documentation or research.",
       "- dependsOnKeys must reference localIds in this story.",
       "- Use docdex handles when citing docs.",
       `Story context (key=${story.key ?? story.localId ?? "TBD"}):`,
@@ -884,20 +885,33 @@ export class CreateTasksService {
       throw new Error(`Agent did not return tasks for story ${story.title}`);
     }
     return parsed.tasks
-      .map((task: any, idx: number) => ({
-        localId: task.localId ?? `t${idx + 1}`,
-        title: task.title ?? "Task",
-        type: normalizeTaskType(task.type) ?? "feature",
-        description: task.description,
-        estimatedStoryPoints: typeof task.estimatedStoryPoints === "number" ? task.estimatedStoryPoints : undefined,
-        priorityHint: typeof task.priorityHint === "number" ? task.priorityHint : undefined,
-        dependsOnKeys: Array.isArray(task.dependsOnKeys) ? task.dependsOnKeys : [],
-        relatedDocs: normalizeRelatedDocs(task.relatedDocs),
-        unitTests: parseTestList(task.unitTests),
-        componentTests: parseTestList(task.componentTests),
-        integrationTests: parseTestList(task.integrationTests),
-        apiTests: parseTestList(task.apiTests),
-      }))
+      .map((task: any, idx: number) => {
+        const unitTests = parseTestList(task.unitTests);
+        const componentTests = parseTestList(task.componentTests);
+        const integrationTests = parseTestList(task.integrationTests);
+        const apiTests = parseTestList(task.apiTests);
+        const hasTests = unitTests.length || componentTests.length || integrationTests.length || apiTests.length;
+        const title = task.title ?? "Task";
+        const description = task.description ?? "";
+        const docOnly = /doc|documentation|readme|pdr|sds|openapi|spec/.test(`${title} ${description}`.toLowerCase());
+        if (!hasTests && !docOnly) {
+          unitTests.push(`Add tests for ${title} (unit/component/integration/api as applicable)`);
+        }
+        return {
+          localId: task.localId ?? `t${idx + 1}`,
+          title,
+          type: normalizeTaskType(task.type) ?? "feature",
+          description,
+          estimatedStoryPoints: typeof task.estimatedStoryPoints === "number" ? task.estimatedStoryPoints : undefined,
+          priorityHint: typeof task.priorityHint === "number" ? task.priorityHint : undefined,
+          dependsOnKeys: Array.isArray(task.dependsOnKeys) ? task.dependsOnKeys : [],
+          relatedDocs: normalizeRelatedDocs(task.relatedDocs),
+          unitTests,
+          componentTests,
+          integrationTests,
+          apiTests,
+        };
+      })
       .filter((t: AgentTaskNode) => t.title);
   }
 

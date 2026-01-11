@@ -44,6 +44,12 @@ test("WorkspaceMigrations creates core tables and indexes", async () => {
 
     const lockIndexes = (await db.all("PRAGMA index_list(task_locks)")) as Array<{ name: string }>;
     assert.ok(lockIndexes.some((idx) => idx.name === "idx_task_locks_expires_at"));
+
+    const commentColumns = (await db.all("PRAGMA table_info(task_comments)")) as Array<{ name: string }>;
+    assert.ok(commentColumns.some((col) => col.name === "slug"));
+    assert.ok(commentColumns.some((col) => col.name === "status"));
+    const commentIndexes = (await db.all("PRAGMA index_list(task_comments)")) as Array<{ name: string }>;
+    assert.ok(commentIndexes.some((idx) => idx.name === "idx_task_comments_slug"));
   } finally {
     await db.close();
   }

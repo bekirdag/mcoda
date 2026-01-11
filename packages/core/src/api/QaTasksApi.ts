@@ -31,6 +31,7 @@ export class QaTasksApi {
         result: request.result,
         notes: request.notes,
         evidenceUrl: request.evidenceUrl,
+        allowDirty: request.allowDirty,
       });
     } finally {
       await service.close();

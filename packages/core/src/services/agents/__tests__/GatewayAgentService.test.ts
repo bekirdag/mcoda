@@ -271,3 +271,70 @@ test("GatewayAgentService exploration can select a lower-rated agent", async () 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("GatewayAgentService avoids specified agents", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const agents = [
+    { id: "agent-preferred", slug: "agent-preferred", adapter: "local", defaultModel: "stub", rating: 9, reasoningRating: 9, maxComplexity: 6 },
+    { id: "agent-fallback", slug: "agent-fallback", adapter: "local", defaultModel: "stub", rating: 5, reasoningRating: 5, maxComplexity: 6 },
+  ];
+  const service = new (GatewayAgentService as any)(workspace, {
+    agentService: {
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "gateway-agent": "Prompt" },
+      }),
+      invoke: async () => ({
+        output: JSON.stringify({
+          summary: "Update docs",
+          reasoningSummary: "Docs work",
+          currentState: "Unknown",
+          todo: "Update README",
+          understanding: "Docs updated",
+          plan: ["Review", "Edit", "Verify"],
+          complexity: 4,
+          discipline: "docs",
+          filesLikelyTouched: ["README.md"],
+          filesToCreate: [],
+          assumptions: [],
+          risks: [],
+          docdexNotes: ["No matching docs"],
+        }),
+      }),
+    },
+    docdex: { search: async () => [] },
+    globalRepo: {
+      listAgents: async () => agents,
+      listAgentHealthSummary: async () => agents.map((agent) => ({ agentId: agent.id, status: "healthy" })),
+      getAgentCapabilities: async () => ["plan", "docdex_query", "code_write"],
+    },
+    jobService: {
+      startCommandRun: async () => ({ id: "run-1" }),
+      recordTokenUsage: async () => {},
+      finishCommandRun: async () => {},
+    },
+    workspaceRepo: {},
+    routingService: {
+      resolveAgentForCommand: async () => ({ agent: agents[0] }),
+    },
+  });
+
+  const originalRandom = Math.random;
+  Math.random = () => 0.9;
+  try {
+    const result = await service.run({
+      workspace,
+      job: "work-on-tasks",
+      inputText: "Update README",
+      agentStream: false,
+      avoidAgents: ["agent-preferred"],
+    });
+    assert.equal(result.chosenAgent.agentId, "agent-fallback");
+  } finally {
+    Math.random = originalRandom;
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

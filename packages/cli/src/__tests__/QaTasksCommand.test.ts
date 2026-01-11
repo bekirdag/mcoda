@@ -33,6 +33,8 @@ describe("qa-tasks argument parsing", () => {
       "--create-followup-tasks",
       "none",
       "--rate-agents",
+      "--allow-dirty",
+      "true",
       "--notes",
       "needs fix",
       "--evidence-url",
@@ -47,6 +49,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.testCommand, "npm test");
     assert.equal(parsed.createFollowupTasks, "none");
     assert.equal(parsed.rateAgents, true);
+    assert.equal(parsed.allowDirty, true);
     assert.equal(parsed.notes, "needs fix");
     assert.equal(parsed.evidenceUrl, "https://ci.example");
   });

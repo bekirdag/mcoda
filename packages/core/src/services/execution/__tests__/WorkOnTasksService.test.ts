@@ -51,6 +51,54 @@ class StubAgentServiceNoPlus {
   }
 }
 
+class StubAgentServiceAbsolutePatch {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    const patch = [
+      "```patch",
+      "--- /dev/null",
+      "+++ FILE: tests/absolute.txt",
+      "@@ -0,0 +1,1 @@",
+      "+hello world",
+      "```",
+    ].join("\n");
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceAddPatchMissingFile {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    const patch = [
+      "```patch",
+      "--- a/tests/newfile.txt",
+      "+++ b/tests/newfile.txt",
+      "@@ -0,0 +1,1 @@",
+      "+hello world",
+      "```",
+    ].join("\n");
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubAgentServiceCapture {
   lastInput: string | null = null;
   async resolveAgent() {
@@ -60,6 +108,23 @@ class StubAgentServiceCapture {
     this.lastInput = req?.input ?? null;
     const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
     return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceNoChange {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    const output = ["FILE: existing.txt", "```", "no-op", "```"].join("\n");
+    return { output, adapter: "local-model" };
   }
   async getPrompts() {
     return {
@@ -480,6 +545,80 @@ test("workOnTasks handles apply_patch add-file output without leading '+' lines"
   }
 });
 
+test("workOnTasks normalizes absolute patch paths into workspace-relative paths", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  await fs.mkdir(path.join(dir, "tests"), { recursive: true });
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new RecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceAbsolutePatch() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.ok(vcs.patches.some((patch) => patch.includes("+++ b/tests/absolute.txt")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks converts add patches for missing files into new-file patches", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  await fs.mkdir(path.join(dir, "tests"), { recursive: true });
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new RecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceAddPatchMissingFile() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.ok(vcs.patches.some((patch) => patch.includes("--- /dev/null")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks prepends project guidance to agent input", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -517,6 +656,153 @@ test("workOnTasks prepends project guidance to agent input", async () => {
     const taskIndex = input.indexOf("Task proj-epic-us-01-t01");
     assert.ok(guidanceIndex >= 0);
     assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks includes unresolved review/qa comment backlog", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  const now = new Date().toISOString();
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    slug: "review-1",
+    status: "open",
+    file: "src/app.ts",
+    line: 12,
+    body: "Fix null guard in handler",
+    metadata: { suggestedFix: "Add early return when value missing" },
+    createdAt: now,
+  });
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    slug: "review-1",
+    status: "open",
+    file: "src/app.ts",
+    line: 12,
+    body: "Duplicate of review-1",
+    createdAt: now,
+  });
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "qa-tasks",
+    authorType: "agent",
+    slug: "qa-1",
+    status: "open",
+    file: "src/app.ts",
+    line: 20,
+    body: "QA failed for empty input",
+    metadata: { suggestedFix: "Add unit test for empty input" },
+    createdAt: now,
+  });
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "work-on-tasks",
+    authorType: "agent",
+    slug: "work-1",
+    status: "open",
+    body: "Internal work note",
+    createdAt: now,
+  });
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    slug: "resolved-1",
+    status: "resolved",
+    body: "Resolved note",
+    resolvedAt: new Date().toISOString(),
+    resolvedBy: "agent-1",
+    createdAt: now,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    const input = agent.lastInput ?? "";
+    assert.ok(input.includes("Comment backlog:"));
+    assert.ok(input.includes("review-1"));
+    assert.ok(input.includes("qa-1"));
+    assert.ok(!input.includes("work-1"));
+    assert.ok(!input.includes("resolved-1"));
+    assert.equal((input.match(/review-1/g) ?? []).length, 1);
+    assert.ok(input.includes("src/app.ts:12"));
+    assert.ok(input.includes("Suggested fix: Add early return when value missing"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks blocks no-change runs when unresolved comments exist", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await fs.writeFile(path.join(dir, "existing.txt"), "keep", "utf8");
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    slug: "review-1",
+    status: "open",
+    body: "Fix missing guard",
+    createdAt: new Date().toISOString(),
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "no_changes");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "blocked");
+    const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
+    const backlog = comments.find((comment) => comment.category === "comment_backlog");
+    assert.ok(backlog?.body.includes("Open comment slugs: review-1"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

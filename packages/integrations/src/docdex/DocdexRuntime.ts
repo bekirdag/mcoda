@@ -52,9 +52,20 @@ export const resolveDocdexBinary = (): string | undefined => {
 };
 
 export const resolvePlaywrightCli = (): string | undefined => {
+  const require = createRequire(import.meta.url);
+  try {
+    return require.resolve("playwright/cli.js");
+  } catch {
+    // fall through to docdex-local resolution
+  }
   const root = resolveDocdexPackageRoot();
   if (!root) return undefined;
-  return path.join(root, "node_modules", "playwright", "cli.js");
+  try {
+    const requireFromDocdex = createRequire(path.join(root, "package.json"));
+    return requireFromDocdex.resolve("playwright/cli.js");
+  } catch {
+    return undefined;
+  }
 };
 
 export const runDocdex = async (
