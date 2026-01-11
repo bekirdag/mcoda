@@ -17,7 +17,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Treat `gpt-creator` as legacy; do not reference or depend on it in plans, prompts, or code paths.
 
 ## Plan, then code
-- Write a brief plan (steps/files) before modifying anything; prefer reuse over new abstractions.
+- Plan internally before modifying anything; do not include the plan in your response output. The response must contain only patches or FILE blocks.
 - Match existing conventions: language/framework choices already in the repo, error handling, logging, naming, and file layout. Keep behavior backward-compatible unless told otherwise.
 - Confirm the data/persistence model from docs before coding (e.g., offline/local storage vs. network). Do not invent new APIs or backends if the design is client-only.
 - Extend the current store/state modules instead of bolting on parallel action/reducer files; wire bulk/selection flows through existing selectors/slices and persistence hooks. Use existing action creators/selectors rather than ad-hoc action type strings.

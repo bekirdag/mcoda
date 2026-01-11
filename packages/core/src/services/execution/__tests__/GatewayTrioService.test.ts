@@ -121,7 +121,7 @@ const makeService = async (options: {
   workOutcome?: "succeeded" | "failed";
   workSequence?: Array<"succeeded" | "failed">;
   workNotesSequence?: Array<string | undefined>;
-  reviewSequence?: Array<"approve" | "changes_requested" | "block">;
+  reviewSequence?: Array<"approve" | "changes_requested" | "block" | "info_only">;
   qaSequence?: Array<"pass" | "fix_required" | "infra_issue">;
   selectionSequence?: SelectionSnapshot[];
   gatewayRequests?: any[];
@@ -208,7 +208,12 @@ const makeService = async (options: {
       const decision = options.reviewSequence?.[reviewIndex] ?? "approve";
       reviewIndex += 1;
       if (!dryRun) {
-        const next = decision === "approve" ? "ready_to_qa" : decision === "block" ? "blocked" : "in_progress";
+        const next =
+          decision === "approve" || decision === "info_only"
+            ? "ready_to_qa"
+            : decision === "block"
+              ? "blocked"
+              : "in_progress";
         statusStore.set(key, next);
       }
       return {
@@ -359,6 +364,23 @@ test("GatewayTrioService completes work-review-qa successfully", async () => {
     const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
     assert.equal(result.tasks[0].status, "completed");
     assert.equal(result.tasks[0].attempts, 1);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService treats review info_only as success", async () => {
+  const statusStore = makeStatusStore({ "TASK-1A": "in_progress" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-1A"],
+    reviewSequence: ["info_only"],
+  });
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
+    assert.equal(result.tasks[0].status, "completed");
+    assert.equal(result.tasks[0].lastDecision, "info_only");
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

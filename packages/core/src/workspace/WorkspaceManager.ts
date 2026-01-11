@@ -26,6 +26,7 @@ export interface WorkspaceConfig {
   branch?: string;
   docdexUrl?: string;
   projectKey?: string;
+  restrictAutoMergeWithoutScope?: boolean;
   velocity?: {
     implementationSpPerHour?: number;
     reviewSpPerHour?: number;

@@ -1378,6 +1378,19 @@ export class CodeReviewService {
         throw new Error(resolveAbortReason());
       }
     };
+    const withAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      if (!abortSignal) return promise;
+      if (abortSignal.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+      return await new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(new Error(resolveAbortReason()));
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        promise.then(resolve, reject).finally(() => {
+          abortSignal.removeEventListener("abort", onAbort);
+        });
+      });
+    };
 
     const results: TaskReviewResult[] = [];
     const maybeRateTask = async (task: TaskRow, taskRunId: string, tokensTotal: number): Promise<void> => {
@@ -1460,6 +1473,55 @@ export class CodeReviewService {
             allowedFiles,
           },
         });
+
+        if (!diff.trim()) {
+          const message = "Review diff is empty; blocking review until changes are produced.";
+          warnings.push(`Empty diff for ${task.key}; blocking review.`);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message,
+          });
+          if (!request.dryRun) {
+            await this.stateService.markBlocked(task, "review_empty_diff");
+            statusAfter = "blocked";
+          }
+          await this.writeReviewSummaryComment({
+            task,
+            taskRunId: taskRun.id,
+            jobId,
+            agentId: agent.id,
+            statusBefore,
+            statusAfter: statusAfter ?? statusBefore,
+            decision: "block",
+            summary: message,
+            findingsCount: 0,
+          });
+          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+            status: "failed",
+            finishedAt: new Date().toISOString(),
+            runContext: { decision: "block", reason: "empty_diff" },
+          });
+          state?.reviewed.push({ taskId: task.id, decision: "block" });
+          await this.persistState(jobId, state!);
+          await this.writeCheckpoint(jobId, "review_applied", { reviewed: state?.reviewed ?? [], schema_version: 1 });
+          results.push({
+            taskId: task.id,
+            taskKey: task.key,
+            statusBefore,
+            statusAfter: statusAfter ?? statusBefore,
+            decision: "block",
+            findings,
+            followupTasks: followupCreated,
+          });
+          await this.deps.jobService.updateJobStatus(jobId, "running", {
+            processedItems: state?.reviewed.length ?? 0,
+          });
+          await maybeRateTask(task, taskRun.id, tokensTotal);
+          continue;
+        }
 
         const historySummary = await this.buildHistorySummary(task.id);
         const commentContext = await this.loadCommentContext(task.id);
@@ -1576,8 +1638,14 @@ export class CodeReviewService {
         const started = Date.now();
         let lastStreamMeta: any;
         if (agentStream && this.deps.agentService.invokeStream) {
-          const stream = await this.deps.agentService.invokeStream(agent.id, { input: prompt, metadata: { taskKey: task.key } });
-          for await (const chunk of stream) {
+          const stream = await withAbort(
+            this.deps.agentService.invokeStream(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
+          );
+          while (true) {
+            abortIfSignaled();
+            const { value, done } = await withAbort(stream.next());
+            if (done) break;
+            const chunk = value;
             agentOutput += chunk.output ?? "";
             lastStreamMeta = chunk.metadata ?? lastStreamMeta;
             await this.deps.workspaceRepo.insertTaskLog({
@@ -1590,7 +1658,9 @@ export class CodeReviewService {
           }
           durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
         } else {
-          const response = await this.deps.agentService.invoke(agent.id, { input: prompt, metadata: { taskKey: task.key } });
+          const response = await withAbort(
+            this.deps.agentService.invoke(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
+          );
           agentOutput = response.output ?? "";
           durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
           await this.deps.workspaceRepo.insertTaskLog({
@@ -1616,6 +1686,7 @@ export class CodeReviewService {
         await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain);
 
         let parsed = parseJsonOutput(agentOutput);
+        let invalidJson = false;
         if (!parsed) {
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
@@ -1626,7 +1697,9 @@ export class CodeReviewService {
           });
           const retryPrompt = `${prompt}\n\nRespond ONLY with valid JSON matching the schema above. Do not include prose or fences.`;
           const retryStarted = Date.now();
-          const retryResp = await this.deps.agentService.invoke(agent.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } });
+          const retryResp = await withAbort(
+            this.deps.agentService.invoke(agent.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
+          );
           const retryOutput = retryResp.output ?? "";
           const retryDuration = Math.round(((Date.now() - retryStarted) / 1000) * 1000) / 1000;
           await this.deps.workspaceRepo.insertTaskLog({
@@ -1658,7 +1731,24 @@ export class CodeReviewService {
           agentOutput = retryOutput;
         }
         if (!parsed) {
-          throw new Error("Agent output did not contain valid JSON review result after retry");
+          invalidJson = true;
+          const fallbackSummary =
+            "Review agent returned non-JSON output after retry; block review and re-run with a stricter JSON-only model.";
+          warnings.push(`Review agent returned non-JSON output for ${task.key}; blocking review.`);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message: fallbackSummary,
+          });
+          parsed = {
+            decision: "block",
+            summary: fallbackSummary,
+            findings: [],
+            testRecommendations: [],
+            raw: agentOutput,
+          };
         }
         parsed.raw = agentOutput;
         decision = parsed.decision;
@@ -1698,15 +1788,21 @@ export class CodeReviewService {
 
         let taskStatusUpdate = statusBefore;
         if (!request.dryRun) {
-          if (parsed.decision === "approve") {
-            await this.stateService.markReadyToQa(task);
-            taskStatusUpdate = "ready_to_qa";
-          } else if (parsed.decision === "changes_requested") {
-            await this.stateService.returnToInProgress(task);
-            taskStatusUpdate = "in_progress";
-          } else if (parsed.decision === "block") {
-            await this.stateService.markBlocked(task, "review_blocked");
+          if (invalidJson) {
+            await this.stateService.markBlocked(task, "review_invalid_output");
             taskStatusUpdate = "blocked";
+          } else {
+            const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
+            if (approveDecision) {
+              await this.stateService.markReadyToQa(task);
+              taskStatusUpdate = "ready_to_qa";
+            } else if (parsed.decision === "changes_requested") {
+              await this.stateService.returnToInProgress(task);
+              taskStatusUpdate = "in_progress";
+            } else if (parsed.decision === "block") {
+              await this.stateService.markBlocked(task, "review_blocked");
+              taskStatusUpdate = "blocked";
+            }
           }
         } else {
           await this.deps.workspaceRepo.insertTaskLog({
