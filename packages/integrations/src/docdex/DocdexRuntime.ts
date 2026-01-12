@@ -112,6 +112,13 @@ export const resolveDocdexBaseUrl = async (options: { cwd?: string; env?: NodeJS
     const envValue = process.env[key];
     if (envValue) return envValue;
   }
+  if (
+    process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" ||
+    process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS === "1" ||
+    (process.platform === "win32" && process.env.CI)
+  ) {
+    return undefined;
+  }
   try {
     const check = await readDocdexCheck(options);
     const bind = check.checks?.find((c) => c.name === "bind")?.details as Record<string, unknown> | undefined;

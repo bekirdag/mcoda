@@ -707,7 +707,7 @@ export class TaskOrderingService {
       }
 
       let agentRank: AgentRanking | undefined;
-      const enableAgent = request.agentName !== undefined || this.recordTelemetry;
+      const enableAgent = Boolean(request.agentName);
       let docContext: DocContext | undefined;
       if (enableAgent) {
         docContext = await this.buildDocContext(project.key, warnings);
