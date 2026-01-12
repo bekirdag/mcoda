@@ -9,15 +9,47 @@ import { GlobalRepository } from "@mcoda/db";
 
 const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> => {
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const originalHomeDrive = process.env.HOMEDRIVE;
+  const originalHomePath = process.env.HOMEPATH;
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-agent-run-"));
   const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
   process.env.HOME = tempHome;
+  if (process.platform === "win32") {
+    const parsed = path.parse(tempHome);
+    process.env.USERPROFILE = tempHome;
+    process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, "");
+    process.env.HOMEPATH = tempHome.slice(parsed.root.length - 1);
+  }
   process.env.MCODA_SKIP_CLI_CHECKS = "1";
   try {
     await fn(tempHome);
   } finally {
-    process.env.HOME = originalHome;
-    process.env.MCODA_SKIP_CLI_CHECKS = originalSkip;
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
+    if (originalHomeDrive === undefined) {
+      delete process.env.HOMEDRIVE;
+    } else {
+      process.env.HOMEDRIVE = originalHomeDrive;
+    }
+    if (originalHomePath === undefined) {
+      delete process.env.HOMEPATH;
+    } else {
+      process.env.HOMEPATH = originalHomePath;
+    }
+    if (originalSkip === undefined) {
+      delete process.env.MCODA_SKIP_CLI_CHECKS;
+    } else {
+      process.env.MCODA_SKIP_CLI_CHECKS = originalSkip;
+    }
     await fs.rm(tempHome, { recursive: true, force: true });
   }
 };
