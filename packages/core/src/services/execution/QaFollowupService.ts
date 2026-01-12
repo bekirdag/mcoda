@@ -27,6 +27,7 @@ export interface FollowupSuggestion {
   testName?: string;
   evidenceUrl?: string;
   artifacts?: string[];
+  followupSlug?: string;
 }
 
 const BUG_EPIC_KEY = 'EPIC-BUGS';
@@ -142,6 +143,7 @@ export class QaFollowupService {
     const metadata: Record<string, unknown> = {
       tags: ['qa-found', 'auto-created', 'ready-for-ai-dev', 'source=qa', ...(suggestion.tags ?? [])],
       source_task: sourceTask.key,
+      ...(suggestion.followupSlug ? { qa_followup_slug: suggestion.followupSlug } : {}),
       ...(suggestion.components ? { components: suggestion.components } : {}),
       ...(suggestion.docLinks ? { doc_links: suggestion.docLinks } : {}),
       ...(suggestion.testName ? { failing_test: suggestion.testName } : {}),

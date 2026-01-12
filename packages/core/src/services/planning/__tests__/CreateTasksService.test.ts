@@ -194,6 +194,13 @@ class StubJobService {
   async close() {}
 }
 
+class StubRatingService {
+  calls: any[] = [];
+  async rate(request: any) {
+    this.calls.push(request);
+  }
+}
+
 test("Key generators respect existing keys", () => {
   const epicGen = createEpicKeyGenerator("web", ["web-01"]);
   assert.equal(epicGen(), "web-02");
@@ -236,6 +243,10 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
           estimatedStoryPoints: 3,
           priorityHint: 5,
           dependsOnKeys: [],
+          unitTests: ["Add unit coverage for task path"],
+          componentTests: [],
+          integrationTests: ["Run integration flow A"],
+          apiTests: ["Validate API response contract"],
         },
       ],
     }),
@@ -262,6 +273,147 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.equal(result.dependencies.length, 0);
   assert.equal(result.tasks[0].status, "not_started");
   assert.equal(result.tasks[0].storyPoints, 3);
+  const metadata = result.tasks[0].metadata as any;
+  assert.deepEqual(metadata?.test_requirements, {
+    unit: ["Add unit coverage for task path"],
+    component: [],
+    integration: ["Run integration flow A"],
+    api: ["Validate API response contract"],
+  });
+  assert.ok(result.tasks[0].description.includes("Unit tests: Add unit coverage for task path"));
+  assert.ok(result.tasks[0].description.includes("Component tests: Not applicable"));
+  assert.ok(result.tasks[0].description.includes("Integration tests: Run integration flow A"));
+  assert.ok(result.tasks[0].description.includes("API tests: Validate API response contract"));
+});
+
+test("createTasks invokes agent rating when enabled", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: ["Add unit coverage for task path"],
+          componentTests: [],
+          integrationTests: ["Run integration flow A"],
+          apiTests: ["Validate API response contract"],
+        },
+      ],
+    }),
+  ];
+  const ratingService = new StubRatingService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: new StubWorkspaceRepo() as any,
+    ratingService: ratingService as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+    rateAgents: true,
+  });
+
+  assert.equal(ratingService.calls.length, 1);
+  assert.equal(ratingService.calls[0]?.commandName, "create-tasks");
+  assert.equal(ratingService.calls[0]?.agentId, "agent-1");
+});
+
+test("createTasks tolerates JSON wrapped in think tags", async () => {
+  const epic = {
+    epics: [
+      {
+        localId: "e1",
+        area: "web",
+        title: "Epic One",
+        description: "Epic desc",
+        acceptanceCriteria: ["ac1"],
+      },
+    ],
+  };
+  const story = {
+    stories: [
+      {
+        localId: "us1",
+        title: "Story One",
+        description: "Story desc",
+        acceptanceCriteria: ["s ac1"],
+      },
+    ],
+  };
+  const task = {
+    tasks: [
+      {
+        localId: "t1",
+        title: "Task One",
+        type: "feature",
+        description: "Task desc",
+        estimatedStoryPoints: 3,
+        priorityHint: 5,
+        dependsOnKeys: [],
+        unitTests: ["Add unit coverage for task path"],
+        componentTests: [],
+        integrationTests: ["Run integration flow A"],
+        apiTests: ["Validate API response contract"],
+      },
+    ],
+  };
+  const outputs = [
+    `<think>${JSON.stringify(epic)}</think>\n${JSON.stringify(epic)}`,
+    `<think>${JSON.stringify(story)}</think>\n${JSON.stringify(story)}`,
+    `<think>${JSON.stringify(task)}</think>\n${JSON.stringify(task)}`,
+  ];
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: new StubWorkspaceRepo() as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.equal(result.epics.length, 1);
+  assert.equal(result.stories.length, 1);
+  assert.equal(result.tasks.length, 1);
 });
 
 test("createTasks fails on invalid agent output", async () => {

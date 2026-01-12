@@ -14,6 +14,7 @@ interface ParsedArgs {
   limit?: number;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents: boolean;
   json: boolean;
 }
 
@@ -28,6 +29,7 @@ const usage = `mcoda code-review \\
   [--limit N] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--rate-agents] \\
   [--json]
 
 Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks for critical findings, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under .mcoda/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
@@ -61,6 +63,7 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
   let limit: number | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -78,6 +81,11 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--agent-stream=")) {
       const [, raw] = arg.split("=", 2);
       agentStream = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -138,6 +146,16 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -169,6 +187,7 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     limit: Number.isFinite(limit) ? limit : undefined,
     agentName,
     agentStream: agentStream ?? true,
+    rateAgents,
     json,
   };
 };
@@ -195,6 +214,7 @@ export class CodeReviewCommand {
         limit: parsed.limit,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
       });
 
       if (parsed.json) {

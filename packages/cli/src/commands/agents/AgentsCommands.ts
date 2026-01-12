@@ -44,7 +44,7 @@ const readSecret = async (promptText: string): Promise<string> =>
   });
 
 const USAGE = `
-Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|use> ...
+Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
 
 Subcommands:
   list                       List agents (supports --json)
@@ -69,6 +69,9 @@ Subcommands:
   auth-status <NAME>         Show redacted auth status (supports --json)
   set-default|use <NAME>     Set workspace default agent (use --workspace to override detection)
     --workspace <PATH>       Workspace root to bind defaults
+  ratings                    Show recent rating runs
+    --agent <NAME>           Agent slug/id (required)
+    --last <N>               Number of runs (default 50)
   --json                     Emit JSON for supported commands
   --help                     Show this help
 `.trim();
@@ -169,6 +172,16 @@ const formatDate = (value?: string): string => {
 const formatCost = (value?: number): string => {
   if (value === undefined || value === null || Number.isNaN(value)) return "-";
   return Number(value).toFixed(2);
+};
+
+const formatNumber = (value?: number | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  return `${value}`;
+};
+
+const formatDuration = (value?: number | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  return `${Number(value).toFixed(1)}s`;
 };
 
 const formatCapabilities = (caps: string[] | undefined): string => {
@@ -362,6 +375,40 @@ export class AgentsCommands {
           await api.setDefaultAgent(name, workspace.workspaceId);
           // eslint-disable-next-line no-console
           console.log(`Default agent set to ${name} for workspace ${workspace.workspaceRoot}`);
+          break;
+        }
+        case "ratings": {
+          const agentName = parsed.flags.agent ? String(parsed.flags.agent) : parsed.positionals[0];
+          if (!agentName) throw new Error("Usage: mcoda agent ratings --agent <NAME> [--last <N>] [--json]");
+          const lastRaw = parsed.flags.last ?? parsed.flags.limit;
+          const last = lastRaw !== undefined ? Number.parseInt(String(lastRaw), 10) : 50;
+          if (Number.isNaN(last) || last <= 0) {
+            throw new Error("Invalid --last; expected a positive number");
+          }
+          const ratings = await api.listAgentRunRatings(agentName, last);
+          if (parsed.flags.json) {
+            // eslint-disable-next-line no-console
+            console.log(JSON.stringify(ratings, null, 2));
+          } else if (ratings.length === 0) {
+            // eslint-disable-next-line no-console
+            console.log(`No ratings found for ${agentName}.`);
+          } else {
+            const headers = ["CREATED", "COMMAND", "TASK", "SCORE", "QUALITY", "TOKENS", "DURATION", "ITER", "COST"];
+            const maxWidths = [16, 18, 24, 6, 7, 8, 9, 6, 8];
+            const rows = ratings.map((row) => [
+              formatDate(row.createdAt),
+              row.commandName ?? "-",
+              row.taskKey ?? row.taskId ?? "-",
+              formatNumber(row.runScore),
+              formatNumber(row.qualityScore),
+              formatNumber(row.tokensTotal),
+              formatDuration(row.durationSeconds),
+              formatNumber(row.iterations),
+              formatCost(row.totalCost ?? undefined),
+            ]);
+            // eslint-disable-next-line no-console
+            console.log(formatBoxTable(headers, rows, maxWidths));
+          }
           break;
         }
         default:

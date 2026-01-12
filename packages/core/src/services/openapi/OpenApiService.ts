@@ -4,16 +4,18 @@ import YAML from "yaml";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
-import { GlobalRepository } from "@mcoda/db";
+import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
 import { Agent } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 
 export interface GenerateOpenapiOptions {
   workspace: WorkspaceResolution;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   force?: boolean;
   dryRun?: boolean;
   validateOnly?: boolean;
@@ -237,16 +239,31 @@ export class OpenApiService {
   private agentService: AgentService;
   private routingService: RoutingService;
   private workspace: WorkspaceResolution;
+  private repo?: GlobalRepository;
+  private ratingService?: AgentRatingService;
+  private workspaceRepo?: WorkspaceRepository;
 
   constructor(
     workspace: WorkspaceResolution,
-    deps: { docdex?: DocdexClient; jobService?: JobService; agentService: AgentService; routingService: RoutingService; noTelemetry?: boolean },
+    deps: {
+      docdex?: DocdexClient;
+      jobService?: JobService;
+      agentService: AgentService;
+      routingService: RoutingService;
+      repo?: GlobalRepository;
+      workspaceRepo?: WorkspaceRepository;
+      ratingService?: AgentRatingService;
+      noTelemetry?: boolean;
+    },
   ) {
     this.workspace = workspace;
     this.docdex = deps?.docdex ?? new DocdexClient({ workspaceRoot: workspace.workspaceRoot });
     this.jobService = deps?.jobService ?? new JobService(workspace, undefined, { noTelemetry: deps?.noTelemetry });
     this.agentService = deps.agentService;
     this.routingService = deps.routingService;
+    this.repo = deps.repo;
+    this.workspaceRepo = deps.workspaceRepo;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<OpenApiService> {
@@ -258,12 +275,21 @@ export class OpenApiService {
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
     });
     const jobService = new JobService(workspace, undefined, { noTelemetry: options.noTelemetry });
-    return new OpenApiService(workspace, { agentService, routingService, docdex, jobService, noTelemetry: options.noTelemetry });
+    return new OpenApiService(workspace, { agentService, routingService, docdex, jobService, repo, noTelemetry: options.noTelemetry });
   }
 
   async close(): Promise<void> {
-    if ((this.agentService as any).close) await this.agentService.close();
-    if ((this.jobService as any).close) await this.jobService.close();
+    const swallow = async (fn?: () => Promise<void>) => {
+      try {
+        if (fn) await fn();
+      } catch {
+        // Best-effort close; ignore errors (including "database is closed").
+      }
+    };
+    await swallow((this.agentService as any).close?.bind(this.agentService));
+    await swallow((this.jobService as any).close?.bind(this.jobService));
+    await swallow((this.repo as any)?.close?.bind(this.repo));
+    await swallow((this.workspaceRepo as any)?.close?.bind(this.workspaceRepo));
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {
@@ -273,6 +299,26 @@ export class OpenApiService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private async ensureRatingService(): Promise<AgentRatingService> {
+    if (this.ratingService) return this.ratingService;
+    if (process.env.MCODA_DISABLE_DB === "1") {
+      throw new Error("Workspace DB disabled; agent rating requires DB access.");
+    }
+    if (!this.workspaceRepo) {
+      this.workspaceRepo = await WorkspaceRepository.create(this.workspace.workspaceRoot);
+    }
+    if (!this.repo) {
+      this.repo = await GlobalRepository.create();
+    }
+    this.ratingService = new AgentRatingService(this.workspace, {
+      workspaceRepo: this.workspaceRepo,
+      globalRepo: this.repo,
+      agentService: this.agentService,
+      routingService: this.routingService,
+    });
+    return this.ratingService;
   }
 
   private async invokeAgent(
@@ -307,11 +353,15 @@ export class OpenApiService {
 
   private sanitizeOutput(raw: string): string {
     const trimmed = raw.trim();
-    if (trimmed.startsWith("```")) {
-      const withoutFence = trimmed.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/, "");
-      return withoutFence.trim();
+    let body = trimmed;
+    if (body.startsWith("```")) {
+      body = body.replace(/^```[a-zA-Z]*\s*/m, "").replace(/```$/, "");
     }
-    return trimmed;
+    const openapiIndex = body.search(/^openapi:\s*\d/m);
+    if (openapiIndex > 0) {
+      body = body.slice(openapiIndex);
+    }
+    return body.trim();
   }
 
   private validateSpec(doc: any): string[] {
@@ -423,6 +473,7 @@ export class OpenApiService {
         workspaceId: this.workspace.workspaceId,
         commandName: "openapi-from-docs",
         jobId: job.id,
+        commandRunId: commandRun.id,
         action: "docdex_context",
         promptTokens: 0,
         completionTokens: 0,
@@ -463,8 +514,10 @@ export class OpenApiService {
       let adapter = agent.adapter;
       let agentMetadata: Record<string, unknown> | undefined;
       let lastErrors: string[] | undefined;
+      let agentUsed = false;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const prompt = this.buildPrompt(context, options.cliVersion, lastErrors);
+        agentUsed = true;
         const { output, adapter: usedAdapter, metadata } = await this.invokeAgent(
           agent,
           prompt,
@@ -490,6 +543,7 @@ export class OpenApiService {
             workspaceId: this.workspace.workspaceId,
             commandName: "openapi-from-docs",
             jobId: job.id,
+            commandRunId: commandRun.id,
             agentId: agent.id,
             modelName: agent.defaultModel,
             action: attempt === 0 ? "draft_openapi" : "draft_openapi_retry",
@@ -541,6 +595,20 @@ export class OpenApiService {
         },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      if (options.rateAgents && agentUsed) {
+        try {
+          const ratingService = await this.ensureRatingService();
+          await ratingService.rate({
+            workspace: this.workspace,
+            agentId: agent.id,
+            commandName: "openapi-from-docs",
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+        } catch (error) {
+          warnings.push(`Agent rating failed: ${(error as Error).message ?? String(error)}`);
+        }
+      }
       return {
         jobId: job.id,
         commandRunId: commandRun.id,

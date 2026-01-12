@@ -13,6 +13,7 @@ describe("refine-tasks argument parsing", () => {
     assert.equal(parsed.resume, false);
     assert.equal(parsed.runAll, false);
     assert.equal(parsed.json, false);
+    assert.equal(parsed.rateAgents, false);
   });
 
   it("captures repeated tasks and statuses", () => {
@@ -29,9 +30,10 @@ describe("refine-tasks argument parsing", () => {
   });
 
   it("parses boolean flags from inline values", () => {
-    const parsed = parseRefineTasksArgs(["--agent-stream=false", "--from-db", "false"]);
+    const parsed = parseRefineTasksArgs(["--agent-stream=false", "--from-db", "false", "--rate-agents"]);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.fromDb, false);
+    assert.equal(parsed.rateAgents, true);
   });
 
   it("captures workspace root, strategy, and numeric flags", () => {

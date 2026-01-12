@@ -2,7 +2,15 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
-import { GlobalRepository, WorkspaceRepository, type EpicRow, type StoryRow, type TaskInsert, type TaskRow } from "@mcoda/db";
+import {
+  GlobalRepository,
+  WorkspaceRepository,
+  type EpicRow,
+  type StoryRow,
+  type TaskCommentRow,
+  type TaskInsert,
+  type TaskRow,
+} from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
@@ -12,10 +20,21 @@ import { BacklogService } from "../backlog/BacklogService.js";
 import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
+import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
 const STATE_PATH = (workspaceRoot: string, jobId: string) => path.join(REVIEW_DIR(workspaceRoot, jobId), "state.json");
+const REVIEW_PROMPT_LIMITS = {
+  diff: 12000,
+  history: 3000,
+  docContext: 4000,
+  openapi: 8000,
+  checklist: 3000,
+};
+const DOCDEX_TIMEOUT_MS = 8000;
 const DEFAULT_CODE_REVIEW_PROMPT = [
   "You are the code-review agent. Before reviewing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
   "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
@@ -30,7 +49,9 @@ export interface CodeReviewRequest extends TaskSelectionFilters {
   dryRun?: boolean;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
   resumeJobId?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface ReviewFinding {
@@ -47,6 +68,8 @@ export interface ReviewAgentResult {
   summary?: string;
   findings: ReviewFinding[];
   testRecommendations?: string[];
+  resolvedSlugs?: string[];
+  unresolvedSlugs?: string[];
   raw?: string;
 }
 
@@ -78,20 +101,52 @@ interface ReviewJobState {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
+const extractJsonSlice = (candidate: string): string | undefined => {
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return undefined;
+  return candidate.slice(start, end + 1);
+};
+
+const sanitizeJsonCandidate = (value: string): string => {
+  const cleanedLines = value
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (
+        trimmed.startsWith("{") ||
+        trimmed.startsWith("}") ||
+        trimmed.startsWith("[") ||
+        trimmed.startsWith("]") ||
+        trimmed.startsWith("\"")
+      ) {
+        return true;
+      }
+      return false;
+    })
+    .join("\n");
+  return cleanedLines.replace(/,\s*([}\]])/g, "$1");
+};
+
 const parseJsonOutput = (raw: string): ReviewAgentResult | undefined => {
   const trimmed = raw.trim();
   const fenced = trimmed.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   const candidates = [trimmed, fenced];
   for (const candidate of candidates) {
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) continue;
-    const slice = candidate.slice(start, end + 1);
+    const slice = extractJsonSlice(candidate);
+    if (!slice) continue;
     try {
       const parsed = JSON.parse(slice) as ReviewAgentResult;
       return { ...parsed, raw: raw };
     } catch {
-      /* ignore */
+      const sanitized = sanitizeJsonCandidate(slice);
+      try {
+        const parsed = JSON.parse(sanitized) as ReviewAgentResult;
+        return { ...parsed, raw: raw };
+      } catch {
+        /* ignore */
+      }
     }
   }
   return undefined;
@@ -107,6 +162,28 @@ const summarizeComments = (comments: { category?: string; body: string; file?: s
     .join("\n");
 };
 
+const truncateSection = (label: string, text: string, limit: number): string => {
+  if (!text) return text;
+  if (text.length <= limit) return text;
+  const trimmed = text.slice(0, limit);
+  const remaining = text.length - limit;
+  return `${trimmed}\n...[truncated ${remaining} chars from ${label}]`;
+};
+
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 const JSON_CONTRACT = `{
   "decision": "approve | changes_requested | block | info_only",
   "summary": "short textual summary",
@@ -120,12 +197,91 @@ const JSON_CONTRACT = `{
       "suggestedFix": "Optional suggested change"
     }
   ],
-  "testRecommendations": ["Optional test or QA recommendations per task"]
+  "testRecommendations": ["Optional test or QA recommendations per task"],
+  "resolvedSlugs": ["Optional list of comment slugs that are confirmed fixed"],
+  "unresolvedSlugs": ["Optional list of comment slugs still open or reintroduced"]
 }`;
 
 const normalizeSingleLine = (value: string | undefined, fallback: string): string => {
   const trimmed = (value ?? "").replace(/\s+/g, " ").trim();
   return trimmed || fallback;
+};
+
+const normalizeSlugList = (input?: string[] | null): string[] => {
+  if (!Array.isArray(input)) return [];
+  const cleaned = new Set<string>();
+  for (const slug of input) {
+    if (typeof slug !== "string") continue;
+    const trimmed = slug.trim();
+    if (trimmed) cleaned.add(trimmed);
+  }
+  return Array.from(cleaned);
+};
+
+const normalizePath = (value: string): string =>
+  value
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\/+/, "");
+
+const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
+  const trimmed = (body ?? "").trim();
+  if (!trimmed) return { message: "(no details provided)" };
+  const lines = trimmed.split(/\r?\n/);
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const messageIndex = lines.findIndex((line) => normalize(line) === "message:");
+  const suggestedIndex = lines.findIndex((line) => {
+    const normalized = normalize(line);
+    return normalized === "suggested_fix:" || normalized === "suggested fix:";
+  });
+  if (messageIndex >= 0) {
+    const messageLines = lines.slice(messageIndex + 1, suggestedIndex >= 0 ? suggestedIndex : undefined);
+    const message = messageLines.join("\n").trim();
+    const suggestedLines = suggestedIndex >= 0 ? lines.slice(suggestedIndex + 1) : [];
+    const suggestedFix = suggestedLines.join("\n").trim();
+    return { message: message || trimmed, suggestedFix: suggestedFix || undefined };
+  }
+  if (suggestedIndex >= 0) {
+    const message = lines.slice(0, suggestedIndex).join("\n").trim() || trimmed;
+    const inlineFix = lines[suggestedIndex]?.split(/suggested fix:/i)[1]?.trim();
+    const suggestedTail = lines.slice(suggestedIndex + 1).join("\n").trim();
+    const suggestedFix = inlineFix || suggestedTail || undefined;
+    return { message, suggestedFix };
+  }
+  return { message: trimmed };
+};
+
+const buildCommentBacklog = (comments: TaskCommentRow[]): string => {
+  if (!comments.length) return "";
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  const toSingleLine = (value: string) => value.replace(/\s+/g, " ").trim();
+  for (const comment of comments) {
+    const slug = comment.slug?.trim() || undefined;
+    const details = parseCommentBody(comment.body);
+    const key =
+      slug ??
+      `${comment.sourceCommand}:${comment.file ?? ""}:${comment.line ?? ""}:${details.message || comment.body}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const location = comment.file
+      ? `${comment.file}${typeof comment.line === "number" ? `:${comment.line}` : ""}`
+      : "(location not specified)";
+    const message = toSingleLine(details.message || comment.body || "(no details provided)");
+    lines.push(`- [${slug ?? "untracked"}] ${location} ${message}`);
+    const suggestedFix =
+      (comment.metadata?.suggestedFix as string | undefined) ?? details.suggestedFix ?? undefined;
+    if (suggestedFix) {
+      lines.push(`  Suggested fix: ${toSingleLine(suggestedFix)}`);
+    }
+  }
+  return lines.join("\n");
+};
+
+const formatSlugList = (slugs: string[], limit = 12): string => {
+  if (!slugs.length) return "none";
+  if (slugs.length <= limit) return slugs.join(", ");
+  return `${slugs.slice(0, limit).join(", ")} (+${slugs.length - limit} more)`;
 };
 
 const buildStandardReviewComment = (params: {
@@ -136,22 +292,37 @@ const buildStandardReviewComment = (params: {
   summary?: string;
   followupTaskKeys?: string[];
   error?: string;
+  resolvedCount?: number;
+  reopenedCount?: number;
+  openCount?: number;
 }): string => {
   const decision = params.decision ?? (params.error ? "error" : "info_only");
   const statusAfter = params.statusAfter ?? params.statusBefore;
   const summary = normalizeSingleLine(params.summary, params.error ? "Review failed." : "No summary provided.");
   const error = normalizeSingleLine(params.error, "none");
   const followups = params.followupTaskKeys && params.followupTaskKeys.length ? params.followupTaskKeys.join(", ") : "none";
-  return [
+  const lines = [
     "[code-review]",
     `decision: ${decision}`,
     `status_before: ${params.statusBefore}`,
     `status_after: ${statusAfter}`,
     `findings: ${params.findingsCount}`,
     `summary: ${summary}`,
+  ];
+  if (typeof params.resolvedCount === "number") {
+    lines.push(`resolved_slugs: ${params.resolvedCount}`);
+  }
+  if (typeof params.reopenedCount === "number") {
+    lines.push(`reopened_slugs: ${params.reopenedCount}`);
+  }
+  if (typeof params.openCount === "number") {
+    lines.push(`open_slugs: ${params.openCount}`);
+  }
+  lines.push(
     `followups: ${followups}`,
     `error: ${error}`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 };
 
 export class CodeReviewService {
@@ -160,6 +331,7 @@ export class CodeReviewService {
   private vcs: VcsClient;
   private taskLogSeq = new Map<string, number>();
   private routingService: RoutingService;
+  private ratingService?: AgentRatingService;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -173,12 +345,14 @@ export class CodeReviewService {
       repo: GlobalRepository;
       vcsClient?: VcsClient;
       routingService: RoutingService;
+      ratingService?: AgentRatingService;
     },
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
     this.stateService = deps.stateService ?? new TaskStateService(deps.workspaceRepo);
     this.vcs = deps.vcsClient ?? new VcsClient();
     this.routingService = deps.routingService;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CodeReviewService> {
@@ -324,6 +498,28 @@ export class CodeReviewService {
     return resolved.agent;
   }
 
+  private ensureRatingService(): AgentRatingService {
+    if (!this.ratingService) {
+      this.ratingService = new AgentRatingService(this.workspace, {
+        workspaceRepo: this.deps.workspaceRepo,
+        globalRepo: this.deps.repo,
+        agentService: this.deps.agentService,
+        routingService: this.routingService,
+      });
+    }
+    return this.ratingService;
+  }
+
+  private resolveTaskComplexity(task: TaskRow): number | undefined {
+    const metadata = (task.metadata as Record<string, unknown> | null | undefined) ?? {};
+    const metaComplexity =
+      typeof metadata.complexity === "number" && Number.isFinite(metadata.complexity) ? metadata.complexity : undefined;
+    const storyPoints = typeof task.storyPoints === "number" && Number.isFinite(task.storyPoints) ? task.storyPoints : undefined;
+    const candidate = metaComplexity ?? storyPoints;
+    if (!Number.isFinite(candidate ?? NaN)) return undefined;
+    return Math.min(10, Math.max(1, Math.round(candidate as number)));
+  }
+
   private async selectTasksViaApi(filters: {
     projectKey?: string;
     epicKey?: string;
@@ -404,12 +600,17 @@ export class CodeReviewService {
     const snippets: string[] = [];
     const warnings: string[] = [];
     const queries = [...new Set([...(paths.length ? this.componentHintsFromPaths(paths) : []), taskTitle, ...(acceptance ?? [])])].slice(0, 8);
+    let reindexed = false;
     for (const query of queries) {
       try {
-        const docs = await this.deps.docdex.search({
-          query,
-          profile: "workspace-code",
-        });
+        const docs = await withTimeout(
+          this.deps.docdex.search({
+            query,
+            profile: "workspace-code",
+          }),
+          DOCDEX_TIMEOUT_MS,
+          `docdex search for "${query}"`,
+        );
         snippets.push(
           ...docs.slice(0, 2).map((doc) => {
             const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
@@ -418,6 +619,31 @@ export class CodeReviewService {
           }),
         );
       } catch (error) {
+        if (!reindexed && typeof (this.deps.docdex as any).reindex === "function") {
+          reindexed = true;
+          try {
+            await (this.deps.docdex as any).reindex();
+            const docs = await withTimeout(
+              this.deps.docdex.search({
+                query,
+                profile: "workspace-code",
+              }),
+              DOCDEX_TIMEOUT_MS,
+              `docdex search for "${query}" after reindex`,
+            );
+            snippets.push(
+              ...docs.slice(0, 2).map((doc) => {
+                const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
+                const ref = doc.path ?? doc.id ?? doc.title ?? query;
+                return `- [${doc.docType ?? "doc"}] ${ref}: ${content}`;
+              }),
+            );
+            continue;
+          } catch (retryError) {
+            warnings.push(`docdex search failed after reindex for ${query}: ${(retryError as Error).message}`);
+            continue;
+          }
+        }
         warnings.push(`docdex search failed for ${query}: ${(error as Error).message}`);
       }
     }
@@ -432,6 +658,7 @@ export class CodeReviewService {
     openapiSnippet?: string;
     checklists?: string[];
     historySummary: string;
+    commentBacklog: string;
     baseRef: string;
     branch?: string;
   }): string {
@@ -440,6 +667,16 @@ export class CodeReviewService {
       parts.push(params.systemPrompts.join("\n\n"));
     }
     const acceptance = params.task.acceptanceCriteria && params.task.acceptanceCriteria.length ? params.task.acceptanceCriteria.join(" | ") : "none provided";
+    const historySummary = truncateSection("history", params.historySummary, REVIEW_PROMPT_LIMITS.history);
+    const commentBacklog = params.commentBacklog
+      ? truncateSection("comment backlog", params.commentBacklog, REVIEW_PROMPT_LIMITS.history)
+      : "";
+    const docContextText = params.docContext.length ? truncateSection("doc context", params.docContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext) : "";
+    const openapiSnippet = params.openapiSnippet ? truncateSection("openapi", params.openapiSnippet, REVIEW_PROMPT_LIMITS.openapi) : undefined;
+    const checklistsText = params.checklists?.length
+      ? truncateSection("checklists", params.checklists.join("\n\n"), REVIEW_PROMPT_LIMITS.checklist)
+      : "";
+    const diffText = truncateSection("diff", params.diff || "(no diff)", REVIEW_PROMPT_LIMITS.diff);
     parts.push(
       [
         `Task ${params.task.key}: ${params.task.title}`,
@@ -449,16 +686,17 @@ export class CodeReviewService {
         `Story description: ${params.task.storyDescription ? params.task.storyDescription : "none"}`,
         `Status: ${params.task.status}, Branch: ${params.branch ?? params.task.vcsBranch ?? "n/a"} (base ${params.baseRef})`,
         `Task description: ${params.task.description ? params.task.description : "none"}`,
-        `History:\n${params.historySummary}`,
+        `History:\n${historySummary}`,
+        commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : "Comment backlog: none",
         `Acceptance criteria: ${acceptance}`,
-        params.docContext.length ? `Doc context (docdex excerpts):\n${params.docContext.join("\n")}` : "Doc context: none",
-        params.openapiSnippet
-          ? `OpenAPI (authoritative contract; do not invent endpoints outside this):\n${params.openapiSnippet}`
+        docContextText ? `Doc context (docdex excerpts):\n${docContextText}` : "Doc context: none",
+        openapiSnippet
+          ? `OpenAPI (authoritative contract; do not invent endpoints outside this):\n${openapiSnippet}`
           : "OpenAPI: not provided; avoid inventing endpoints.",
-        params.checklists && params.checklists.length ? `Review checklists/runbook:\n${params.checklists.join("\n\n")}` : "Checklists: none",
-        "Diff:\n" + (params.diff || "(no diff)"),
+        checklistsText ? `Review checklists/runbook:\n${checklistsText}` : "Checklists: none",
+        "Diff:\n" + diffText,
         "Respond with STRICT JSON only, matching:\n" + JSON_CONTRACT,
-        "Rules: honor OpenAPI contracts; cite doc context where relevant; do not add prose outside JSON.",
+        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for comment backlog items; do not add prose outside JSON.",
       ].join("\n"),
     );
     return parts.join("\n\n");
@@ -493,6 +731,209 @@ export class CodeReviewService {
     }
     if (!parts.length) return "No prior review or QA history.";
     return parts.join("\n");
+  }
+
+  private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
+    const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
+      sourceCommands: ["code-review", "qa-tasks"],
+      limit: 50,
+    });
+    const unresolved = comments.filter((comment) => !comment.resolvedAt);
+    return { comments, unresolved };
+  }
+
+  private commentSlugKey(file?: string | null, line?: number | null, category?: string | null): string | undefined {
+    if (!file) return undefined;
+    const normalizedFile = normalizePath(file);
+    const linePart = typeof line === "number" ? String(line) : "";
+    const categoryPart = category?.toLowerCase() ?? "";
+    return `${normalizedFile}|${linePart}|${categoryPart}`;
+  }
+
+  private buildCommentSlugIndex(comments: TaskCommentRow[]): Map<string, string> {
+    const index = new Map<string, string>();
+    for (const comment of comments) {
+      if (!comment.slug) continue;
+      const key = this.commentSlugKey(comment.file, comment.line, comment.category);
+      if (!key) continue;
+      if (!index.has(key)) index.set(key, comment.slug);
+    }
+    return index;
+  }
+
+  private resolveFindingSlug(finding: ReviewFinding, slugIndex: Map<string, string>): string {
+    const key = this.commentSlugKey(finding.file, finding.line, finding.type ?? null);
+    const existing = key ? slugIndex.get(key) : undefined;
+    if (existing) return existing;
+    const message = (finding.message ?? "").trim() || "Review finding.";
+    return createTaskCommentSlug({
+      source: "code-review",
+      message,
+      file: finding.file,
+      line: finding.line,
+      category: finding.type ?? null,
+    });
+  }
+
+  private async applyCommentResolutions(params: {
+    task: TaskRow;
+    taskRunId: string;
+    jobId: string;
+    agentId: string;
+    findings: ReviewFinding[];
+    resolvedSlugs?: string[] | null;
+    unresolvedSlugs?: string[] | null;
+    decision?: ReviewAgentResult["decision"];
+    existingComments: TaskCommentRow[];
+  }): Promise<{ resolved: string[]; reopened: string[]; open: string[] }> {
+    const existingBySlug = new Map<string, TaskCommentRow>();
+    const openBySlug = new Set<string>();
+    const resolvedBySlug = new Set<string>();
+    for (const comment of params.existingComments) {
+      if (!comment.slug) continue;
+      if (!existingBySlug.has(comment.slug)) {
+        existingBySlug.set(comment.slug, comment);
+      }
+      if (comment.resolvedAt) {
+        resolvedBySlug.add(comment.slug);
+      } else {
+        openBySlug.add(comment.slug);
+      }
+    }
+
+    const reviewSlugIndex = this.buildCommentSlugIndex(
+      params.existingComments.filter((comment) => comment.sourceCommand === "code-review"),
+    );
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const resolvedSet = new Set(resolvedSlugs);
+    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+
+    const findingSlugs: string[] = [];
+    for (const finding of params.findings ?? []) {
+      const slug = this.resolveFindingSlug(finding, reviewSlugIndex);
+      findingSlugs.push(slug);
+      const severity = (finding.severity ?? "").toLowerCase();
+      const autoResolve =
+        (params.decision === "approve" || params.decision === "info_only") &&
+        ["info", "low"].includes(severity);
+      if (!resolvedSet.has(slug) && !autoResolve) {
+        unresolvedSet.add(slug);
+      }
+    }
+    for (const slug of resolvedSet) {
+      unresolvedSet.delete(slug);
+    }
+
+    const toResolve = resolvedSlugs.filter((slug) => openBySlug.has(slug));
+    const toReopen = Array.from(unresolvedSet).filter((slug) => resolvedBySlug.has(slug));
+
+    for (const slug of toResolve) {
+      await this.deps.workspaceRepo.resolveTaskComment({
+        taskId: params.task.id,
+        slug,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: params.agentId,
+      });
+    }
+    for (const slug of toReopen) {
+      await this.deps.workspaceRepo.reopenTaskComment({ taskId: params.task.id, slug });
+    }
+
+    const createdSlugs = new Set<string>();
+    for (const finding of params.findings ?? []) {
+      const slug = this.resolveFindingSlug(finding, reviewSlugIndex);
+      if (existingBySlug.has(slug) || createdSlugs.has(slug)) continue;
+      const severity = (finding.severity ?? "").toLowerCase();
+      const autoResolve =
+        (params.decision === "approve" || params.decision === "info_only") &&
+        ["info", "low"].includes(severity);
+      const message = (finding.message ?? "").trim() || "(no details provided)";
+      const body = formatTaskCommentBody({
+        slug,
+        source: "code-review",
+        message,
+        status: autoResolve ? "resolved" : "open",
+        category: finding.type ?? "other",
+        file: finding.file ?? null,
+        line: finding.line ?? null,
+        suggestedFix: finding.suggestedFix ?? null,
+      });
+      const resolvedAt = autoResolve ? new Date().toISOString() : undefined;
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: params.task.id,
+        taskRunId: params.taskRunId,
+        jobId: params.jobId,
+        sourceCommand: "code-review",
+        authorType: "agent",
+        authorAgentId: params.agentId,
+        category: finding.type ?? "other",
+        slug,
+        status: autoResolve ? "resolved" : "open",
+        file: finding.file ?? null,
+        line: finding.line ?? null,
+        pathHint: finding.file ?? null,
+        body,
+        resolvedAt,
+        resolvedBy: autoResolve ? params.agentId : undefined,
+        metadata: {
+          severity: finding.severity,
+          suggestedFix: finding.suggestedFix,
+        },
+        createdAt: new Date().toISOString(),
+      });
+      createdSlugs.add(slug);
+    }
+
+    const openSet = new Set(openBySlug);
+    for (const slug of unresolvedSet) {
+      openSet.add(slug);
+    }
+    for (const slug of resolvedSet) {
+      openSet.delete(slug);
+    }
+
+    if (resolvedSlugs.length || toReopen.length || unresolvedSet.size) {
+      const resolutionMessage = [
+        `Resolved slugs: ${formatSlugList(toResolve)}`,
+        `Reopened slugs: ${formatSlugList(toReopen)}`,
+        `Open slugs: ${formatSlugList(Array.from(openSet))}`,
+      ].join("\n");
+      const resolutionSlug = createTaskCommentSlug({
+        source: "code-review",
+        message: resolutionMessage,
+        category: "comment_resolution",
+      });
+      const resolutionBody = formatTaskCommentBody({
+        slug: resolutionSlug,
+        source: "code-review",
+        message: resolutionMessage,
+        status: "resolved",
+        category: "comment_resolution",
+      });
+      const createdAt = new Date().toISOString();
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: params.task.id,
+        taskRunId: params.taskRunId,
+        jobId: params.jobId,
+        sourceCommand: "code-review",
+        authorType: "agent",
+        authorAgentId: params.agentId,
+        category: "comment_resolution",
+        slug: resolutionSlug,
+        status: "resolved",
+        body: resolutionBody,
+        createdAt,
+        resolvedAt: createdAt,
+        resolvedBy: params.agentId,
+        metadata: {
+          resolvedSlugs: toResolve,
+          reopenedSlugs: toReopen,
+          openSlugs: Array.from(openSet),
+        },
+      });
+    }
+
+    return { resolved: toResolve, reopened: toReopen, open: Array.from(openSet) };
   }
 
   private extractPathsFromDiff(diff: string): string[] {
@@ -594,6 +1035,9 @@ export class CodeReviewService {
     findingsCount: number;
     followupTaskKeys?: string[];
     error?: string;
+    resolvedCount?: number;
+    reopenedCount?: number;
+    openCount?: number;
   }): Promise<void> {
     const body = buildStandardReviewComment({
       decision: params.decision,
@@ -603,6 +1047,9 @@ export class CodeReviewService {
       summary: params.summary,
       followupTaskKeys: params.followupTaskKeys,
       error: params.error,
+      resolvedCount: params.resolvedCount,
+      reopenedCount: params.reopenedCount,
+      openCount: params.openCount,
     });
     await this.deps.workspaceRepo.createTaskComment({
       taskId: params.task.id,
@@ -865,11 +1312,29 @@ export class CodeReviewService {
       if (!selectedTaskIds.length) {
         throw new Error("Resume requested but no task selection found in job payload");
       }
+      selectedTasks = await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
+      const terminalStatuses = new Set(["completed", "cancelled"]);
+      const terminalTasks = selectedTasks.filter((task) => terminalStatuses.has((task.status ?? "").toLowerCase()));
+      if (terminalTasks.length) {
+        const terminalIds = new Set(terminalTasks.map((task) => task.id));
+        const terminalKeys = terminalTasks.map((task) => task.key);
+        warnings.push(`Skipping terminal tasks on resume: ${terminalKeys.join(", ")}`);
+        selectedTasks = selectedTasks.filter((task) => !terminalIds.has(task.id));
+        selectedTaskIds = selectedTaskIds.filter((id) => !terminalIds.has(id));
+        if (state) {
+          state.selectedTaskIds = selectedTaskIds;
+          await this.persistState(job.id, state);
+        }
+        await this.writeCheckpoint(job.id, "resume_filtered", {
+          skippedTaskKeys: terminalKeys,
+          selectedTaskIds,
+          schema_version: 1,
+        });
+      }
       await this.deps.jobService.updateJobStatus(job.id, "running", {
-        totalItems: job.totalItems ?? selectedTaskIds.length,
+        totalItems: selectedTaskIds.length,
         processedItems: state?.reviewed.length ?? 0,
       });
-      selectedTasks = await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
     } else {
       try {
         selectedTasks = await this.selectTasksViaApi({
@@ -951,11 +1416,73 @@ export class CodeReviewService {
     const agent = await this.resolveAgent(request.agentName);
     const prompts = await this.loadPrompts(agent.id);
     const extras = await this.loadRunbookAndChecklists();
-    const systemPrompts = [prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+    if (projectGuidance) {
+      console.info(`[code-review] loaded project guidance from ${projectGuidance.source}`);
+    }
+    const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
+    const systemPrompts = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
+    const abortSignal = request.abortSignal;
+    const resolveAbortReason = () => {
+      const reason = abortSignal?.reason;
+      if (typeof reason === "string" && reason.trim().length > 0) return reason;
+      if (reason instanceof Error && reason.message) return reason.message;
+      return "code_review_aborted";
+    };
+    const abortIfSignaled = () => {
+      if (abortSignal?.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+    };
+    const withAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      if (!abortSignal) return promise;
+      if (abortSignal.aborted) {
+        throw new Error(resolveAbortReason());
+      }
+      return await new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(new Error(resolveAbortReason()));
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        promise.then(resolve, reject).finally(() => {
+          abortSignal.removeEventListener("abort", onAbort);
+        });
+      });
+    };
 
     const results: TaskReviewResult[] = [];
+    const maybeRateTask = async (task: TaskRow, taskRunId: string, tokensTotal: number): Promise<void> => {
+      if (!request.rateAgents || tokensTotal <= 0) return;
+      try {
+        const ratingService = this.ensureRatingService();
+        await ratingService.rate({
+          workspace: this.workspace,
+          agentId: agent.id,
+          commandName: "code-review",
+          jobId,
+          commandRunId: commandRun.id,
+          taskId: task.id,
+          taskKey: task.key,
+          discipline: task.type ?? undefined,
+          complexity: this.resolveTaskComplexity(task),
+        });
+      } catch (error) {
+        const message = `Agent rating failed for ${task.key}: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        try {
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId,
+            sequence: this.sequenceForTask(taskRunId),
+            timestamp: new Date().toISOString(),
+            source: "rating",
+            message,
+          });
+        } catch {
+          /* ignore rating log failures */
+        }
+      }
+    };
 
     for (const task of tasks) {
+      abortIfSignaled();
       const statusBefore = task.status;
       const taskRun = await this.deps.workspaceRepo.createTaskRun({
         taskId: task.id,
@@ -975,9 +1502,11 @@ export class CodeReviewService {
       let decision: ReviewAgentResult["decision"] | undefined;
       let statusAfter: string | undefined;
       const followupCreated: { taskId: string; taskKey: string; epicId: string; userStoryId: string; generic?: boolean }[] = [];
+      let commentResolution: { resolved: string[]; reopened: string[]; open: string[] } | undefined;
 
       // Debug visibility: show prompts/task details for this run
       const systemPrompt = systemPrompts.join("\n\n");
+      let tokensTotal = 0;
 
       try {
         const metadata = (task.metadata as any) ?? {};
@@ -1001,7 +1530,58 @@ export class CodeReviewService {
           },
         });
 
+        if (!diff.trim()) {
+          const message = "Review diff is empty; blocking review until changes are produced.";
+          warnings.push(`Empty diff for ${task.key}; blocking review.`);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message,
+          });
+          if (!request.dryRun) {
+            await this.stateService.markBlocked(task, "review_empty_diff");
+            statusAfter = "blocked";
+          }
+          await this.writeReviewSummaryComment({
+            task,
+            taskRunId: taskRun.id,
+            jobId,
+            agentId: agent.id,
+            statusBefore,
+            statusAfter: statusAfter ?? statusBefore,
+            decision: "block",
+            summary: message,
+            findingsCount: 0,
+          });
+          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+            status: "failed",
+            finishedAt: new Date().toISOString(),
+            runContext: { decision: "block", reason: "empty_diff" },
+          });
+          state?.reviewed.push({ taskId: task.id, decision: "block" });
+          await this.persistState(jobId, state!);
+          await this.writeCheckpoint(jobId, "review_applied", { reviewed: state?.reviewed ?? [], schema_version: 1 });
+          results.push({
+            taskId: task.id,
+            taskKey: task.key,
+            statusBefore,
+            statusAfter: statusAfter ?? statusBefore,
+            decision: "block",
+            findings,
+            followupTasks: followupCreated,
+          });
+          await this.deps.jobService.updateJobStatus(jobId, "running", {
+            processedItems: state?.reviewed.length ?? 0,
+          });
+          await maybeRateTask(task, taskRun.id, tokensTotal);
+          continue;
+        }
+
         const historySummary = await this.buildHistorySummary(task.id);
+        const commentContext = await this.loadCommentContext(task.id);
+        const commentBacklog = buildCommentBacklog(commentContext.unresolved);
         await this.deps.workspaceRepo.insertTaskLog({
           taskRunId: taskRun.id,
           sequence: this.sequenceForTask(taskRun.id),
@@ -1041,6 +1621,7 @@ export class CodeReviewService {
           docContext: docLinks.snippets,
           openapiSnippet,
           historySummary,
+          commentBacklog,
           baseRef: state?.baseRef ?? baseRef,
           branch: task.vcsBranch ?? undefined,
         });
@@ -1070,6 +1651,7 @@ export class CodeReviewService {
 
         await this.persistContext(jobId, task.id, {
           historySummary,
+          commentBacklog,
           docdex: docLinks.snippets,
           openapiSnippet,
           changedPaths,
@@ -1087,7 +1669,8 @@ export class CodeReviewService {
         ) => {
           const tokensPrompt = tokenMeta?.tokensPrompt ?? estimateTokens(promptText);
           const tokensCompletion = tokenMeta?.tokensCompletion ?? estimateTokens(outputText);
-          const tokensTotal = tokenMeta?.tokensTotal ?? tokensPrompt + tokensCompletion;
+          const entryTotal = tokenMeta?.tokensTotal ?? tokensPrompt + tokensCompletion;
+          tokensTotal += entryTotal;
           await this.deps.jobService.recordTokenUsage({
             workspaceId: this.workspace.workspaceId,
             agentId: agent.id,
@@ -1099,7 +1682,7 @@ export class CodeReviewService {
             projectId: task.projectId,
             tokensPrompt,
             tokensCompletion,
-            tokensTotal,
+            tokensTotal: entryTotal,
             durationSeconds,
             timestamp: new Date().toISOString(),
             metadata: { commandName: "code-review", phase, action: phase },
@@ -1111,8 +1694,14 @@ export class CodeReviewService {
         const started = Date.now();
         let lastStreamMeta: any;
         if (agentStream && this.deps.agentService.invokeStream) {
-          const stream = await this.deps.agentService.invokeStream(agent.id, { input: prompt, metadata: { taskKey: task.key } });
-          for await (const chunk of stream) {
+          const stream = await withAbort(
+            this.deps.agentService.invokeStream(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
+          );
+          while (true) {
+            abortIfSignaled();
+            const { value, done } = await withAbort(stream.next());
+            if (done) break;
+            const chunk = value;
             agentOutput += chunk.output ?? "";
             lastStreamMeta = chunk.metadata ?? lastStreamMeta;
             await this.deps.workspaceRepo.insertTaskLog({
@@ -1125,7 +1714,9 @@ export class CodeReviewService {
           }
           durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
         } else {
-          const response = await this.deps.agentService.invoke(agent.id, { input: prompt, metadata: { taskKey: task.key } });
+          const response = await withAbort(
+            this.deps.agentService.invoke(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
+          );
           agentOutput = response.output ?? "";
           durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
           await this.deps.workspaceRepo.insertTaskLog({
@@ -1151,6 +1742,7 @@ export class CodeReviewService {
         await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain);
 
         let parsed = parseJsonOutput(agentOutput);
+        let invalidJson = false;
         if (!parsed) {
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
@@ -1161,7 +1753,9 @@ export class CodeReviewService {
           });
           const retryPrompt = `${prompt}\n\nRespond ONLY with valid JSON matching the schema above. Do not include prose or fences.`;
           const retryStarted = Date.now();
-          const retryResp = await this.deps.agentService.invoke(agent.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } });
+          const retryResp = await withAbort(
+            this.deps.agentService.invoke(agent.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
+          );
           const retryOutput = retryResp.output ?? "";
           const retryDuration = Math.round(((Date.now() - retryStarted) / 1000) * 1000) / 1000;
           await this.deps.workspaceRepo.insertTaskLog({
@@ -1193,16 +1787,84 @@ export class CodeReviewService {
           agentOutput = retryOutput;
         }
         if (!parsed) {
-          throw new Error("Agent output did not contain valid JSON review result after retry");
+          invalidJson = true;
+          const fallbackSummary =
+            "Review agent returned non-JSON output after retry; block review and re-run with a stricter JSON-only model.";
+          warnings.push(`Review agent returned non-JSON output for ${task.key}; blocking review.`);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message: fallbackSummary,
+          });
+          parsed = {
+            decision: "block",
+            summary: fallbackSummary,
+            findings: [],
+            testRecommendations: [],
+            raw: agentOutput,
+          };
         }
         parsed.raw = agentOutput;
+        const originalDecision = parsed.decision;
         decision = parsed.decision;
         findings.push(...(parsed.findings ?? []));
+
+        commentResolution = await this.applyCommentResolutions({
+          task,
+          taskRunId: taskRun.id,
+          jobId,
+          agentId: agent.id,
+          findings: parsed.findings ?? [],
+          resolvedSlugs: parsed.resolvedSlugs ?? undefined,
+          unresolvedSlugs: parsed.unresolvedSlugs ?? undefined,
+          decision: parsed.decision,
+          existingComments: commentContext.comments,
+        });
+
+        let finalDecision = parsed.decision;
+        if (
+          commentResolution?.open?.length &&
+          (finalDecision === "approve" || finalDecision === "info_only")
+        ) {
+          const openSlugs = commentResolution.open;
+          finalDecision = "changes_requested";
+          const message = `Unresolved comment slugs remain: ${formatSlugList(openSlugs)}. Review approval requires resolving these items.`;
+          const backlogSlug = createTaskCommentSlug({
+            source: "code-review",
+            message,
+            category: "comment_backlog",
+          });
+          const backlogBody = formatTaskCommentBody({
+            slug: backlogSlug,
+            source: "code-review",
+            message,
+            status: "open",
+            category: "comment_backlog",
+          });
+          await this.deps.workspaceRepo.createTaskComment({
+            taskId: task.id,
+            taskRunId: taskRun.id,
+            jobId,
+            sourceCommand: "code-review",
+            authorType: "agent",
+            authorAgentId: agent.id,
+            category: "comment_backlog",
+            slug: backlogSlug,
+            status: "open",
+            body: backlogBody,
+            metadata: { openSlugs },
+            createdAt: new Date().toISOString(),
+          });
+        }
+        parsed.decision = finalDecision;
+        decision = finalDecision;
 
         const followups = await this.createFollowupTasksForFindings({
           task,
           findings: parsed.findings ?? [],
-          decision: parsed.decision,
+          decision: originalDecision,
           jobId,
           commandRunId: commandRun.id,
           taskRunId: taskRun.id,
@@ -1222,15 +1884,21 @@ export class CodeReviewService {
 
         let taskStatusUpdate = statusBefore;
         if (!request.dryRun) {
-          if (parsed.decision === "approve") {
-            await this.stateService.markReadyToQa(task);
-            taskStatusUpdate = "ready_to_qa";
-          } else if (parsed.decision === "changes_requested") {
-            await this.stateService.returnToInProgress(task);
-            taskStatusUpdate = "in_progress";
-          } else if (parsed.decision === "block") {
-            await this.stateService.markBlocked(task, "review_blocked");
+          if (invalidJson) {
+            await this.stateService.markBlocked(task, "review_invalid_output");
             taskStatusUpdate = "blocked";
+          } else {
+            const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
+            if (approveDecision) {
+              await this.stateService.markReadyToQa(task);
+              taskStatusUpdate = "ready_to_qa";
+            } else if (parsed.decision === "changes_requested") {
+              await this.stateService.returnToInProgress(task);
+              taskStatusUpdate = "in_progress";
+            } else if (parsed.decision === "block") {
+              await this.stateService.markBlocked(task, "review_blocked");
+              taskStatusUpdate = "blocked";
+            }
           }
         } else {
           await this.deps.workspaceRepo.insertTaskLog({
@@ -1244,27 +1912,6 @@ export class CodeReviewService {
         }
         statusAfter = taskStatusUpdate;
 
-        for (const finding of parsed.findings ?? []) {
-          await this.deps.workspaceRepo.createTaskComment({
-            taskId: task.id,
-            taskRunId: taskRun.id,
-            jobId,
-            sourceCommand: "code-review",
-            authorType: "agent",
-            authorAgentId: agent.id,
-            category: finding.type ?? "other",
-            file: finding.file,
-            line: finding.line,
-            pathHint: finding.file,
-            body: finding.message + (finding.suggestedFix ? `\n\nSuggested fix: ${finding.suggestedFix}` : ""),
-            metadata: {
-              severity: finding.severity,
-              suggestedFix: finding.suggestedFix,
-            },
-            createdAt: new Date().toISOString(),
-          });
-        }
-
         await this.writeReviewSummaryComment({
           task,
           taskRunId: taskRun.id,
@@ -1276,6 +1923,9 @@ export class CodeReviewService {
           summary: parsed.summary,
           findingsCount: parsed.findings?.length ?? 0,
           followupTaskKeys: followupCreated.map((t) => t.taskKey),
+          resolvedCount: commentResolution?.resolved.length,
+          reopenedCount: commentResolution?.reopened.length,
+          openCount: commentResolution?.open.length,
         });
 
         await this.deps.workspaceRepo.createTaskReview({
@@ -1345,6 +1995,7 @@ export class CodeReviewService {
         await this.deps.jobService.updateJobStatus(jobId, "running", {
           processedItems: state?.reviewed.length ?? 0,
         });
+        await maybeRateTask(task, taskRun.id, tokensTotal);
         continue;
       }
 
@@ -1361,6 +2012,7 @@ export class CodeReviewService {
       await this.deps.jobService.updateJobStatus(jobId, "running", {
         processedItems: state?.reviewed.length ?? 0,
       });
+      await maybeRateTask(task, taskRun.id, tokensTotal);
     }
 
     await this.deps.jobService.updateJobStatus(jobId, "completed", {

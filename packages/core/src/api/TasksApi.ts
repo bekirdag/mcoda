@@ -21,6 +21,7 @@ export class TasksApi {
         strategy: request.strategy,
         agentName: request.agentIdOverride,
         agentStream: true,
+        rateAgents: request.rateAgents,
         fromDb: true,
         dryRun: request.dryRun,
         planInPath: request.planInPath,

@@ -198,6 +198,8 @@ export class WorkspaceMigrations {
         author_type TEXT NOT NULL,
         author_agent_id TEXT,
         category TEXT,
+        slug TEXT,
+        status TEXT DEFAULT 'open',
         file TEXT,
         line INTEGER,
         path_hint TEXT,
@@ -244,5 +246,20 @@ export class WorkspaceMigrations {
         metadata_json TEXT
       );
     `);
+
+    await WorkspaceMigrations.ensureColumn(db, "task_comments", "slug TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "task_comments", "status TEXT");
+    await db.exec(`CREATE INDEX IF NOT EXISTS idx_task_comments_slug ON task_comments(task_id, slug);`);
+    await db.exec(`UPDATE task_comments SET status = 'open' WHERE status IS NULL;`);
+  }
+
+  private static async ensureColumn(db: Database, table: string, columnDef: string): Promise<void> {
+    try {
+      await db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef};`);
+    } catch (error: any) {
+      const message = String(error?.message ?? error);
+      if (/duplicate column name/i.test(message)) return;
+      throw error;
+    }
   }
 }

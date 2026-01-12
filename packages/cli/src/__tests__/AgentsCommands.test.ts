@@ -135,3 +135,31 @@ test("agent add stores config for ollama-remote", { concurrency: false }, async 
     await repo.close();
   });
 });
+
+test("agent ratings lists recent run scores", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "rated-agent", "--adapter", "codex-cli"]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("rated-agent");
+    assert.ok(agent);
+    await repo.insertAgentRunRating({
+      agentId: agent.id,
+      commandName: "work-on-tasks",
+      taskKey: "proj-epic-us-01-t01",
+      runScore: 8.4,
+      qualityScore: 8.8,
+      tokensTotal: 1200,
+      durationSeconds: 45,
+      iterations: 2,
+      totalCost: 0.02,
+      createdAt: new Date().toISOString(),
+    });
+    await repo.close();
+
+    const logs = await captureLogs(() => AgentsCommands.run(["ratings", "--agent", "rated-agent"]));
+    const output = logs.join("\n");
+    assert.match(output, /work-on-tasks/);
+    assert.match(output, /proj-epic-us-01-t01/);
+  });
+});

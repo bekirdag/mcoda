@@ -593,7 +593,7 @@ The purpose of this SDS is to define, in enough detail to implement and evolve m
 * **Data model & OpenAPI contracts** for projects, epics, user stories, tasks, task dependencies, task comments, jobs, token usage, and command/task run logs — including how these map to OpenAPI schemas (`x-mcoda-db-table`) and are synchronized across global and workspace DBs.
 
 * **CLI commands and workflows**, including (but not limited to):  
-   `create-tasks`, `refine-tasks`, `work-on-tasks`, `code-review`, `qa-tasks`, `backlog`, `estimate`, token/telemetry views, `task show`/task-detail, task dependency ordering, agent management, `test-agent`, and `mcoda update`.
+   `create-tasks`, `refine-tasks`, `work-on-tasks`, `code-review`, `qa-tasks`, `gateway-trio`, `backlog`, `estimate`, token/telemetry views, `task show`/task-detail, task dependency ordering, agent management, `test-agent`, and `mcoda update`.
 
 * **Agent routing, prompts, and character model**: a global agent registry only (no workspace‑local agents) stored in `~/.mcoda/mcoda.db`; prompt files per agent for its **job description** and its **character**, plus command‑specific prompt templates that describe how to use tools (docdex, Git, QA runners, SDS generation, etc.). These are wired via OpenAPI `x-mcoda-*` extensions so agents “know what to do” for each command.
 
@@ -630,7 +630,7 @@ Whenever there is a conflict between implementation, SQL, and documentation, the
    Generation of epics, user stories, and tasks from RFP/PDR/SDS and other docs via docdex. The SDS specifies how docdex is called, what DTOs are used, and how retrieved context is assembled.
 
 * **Task execution commands**  
-   `refine-tasks`, `work-on-tasks`, `code-review`, and `qa-tasks` are responsible for evolving tasks through their lifecycle, updating task state, creating comments, and writing run logs. Their behavior, persistence model and interaction with docdex, VCS, and QA tools are in scope.
+   `refine-tasks`, `work-on-tasks`, `code-review`, `qa-tasks`, and the `gateway-trio` orchestration loop are responsible for evolving tasks through their lifecycle, updating task state, creating comments, and writing run logs. Their behavior, persistence model and interaction with docdex, VCS, and QA tools are in scope.
 
 * **Backlog & estimation**  
    Story‑point‑based modeling of work, including SP/hour (SP/h) defaults and learned velocities from historical task runs, broken down by lane (e.g., implementation vs review vs QA). Estimation for “ready‑to‑review”, “ready‑to‑qa”, and “completed” milestones is in scope.
@@ -1814,6 +1814,104 @@ mcoda/
 
 ```
 
+##### **5.1.1 Planned Folder Tree** {#5.1.1-planned-folder-tree}
+
+The following tree represents the expected end-state of the repository (plus runtime folders where relevant). It includes all planned scripts and the run-all tests entrypoint.
+
+Plaintext
+
+```
+
+mcoda/
+  .mcoda/                     # workspace runtime data (not committed)
+    docs/                     # cached PDR/SDS/RFP snapshots
+    jobs/                     # job manifests and artifacts
+    logs/                     # execution logs
+    prompts/                  # per-workspace prompt overrides
+    state/                    # checkpoints, last-run metadata
+    mcoda.db                  # workspace SQLite DB
+  docs/
+    pdr/
+    sds/
+    rfp/
+    project-guidance.md
+    requirements-implementation-plan.md
+    requirements-implementation-tasks.md
+    usage.md
+  openapi/
+    mcoda.yaml
+    generated/
+      types/
+      clients/
+    gen-openapi.ts
+  prompts/
+    README.md
+    code-writer.md
+    code-reviewer.md
+    gateway-agent.md
+    qa-agent.md
+  scripts/
+    dev.ts
+    build-all.ts
+    release.ts
+    run-node-tests.js
+    install-local-cli.sh
+    pack-npm-tarballs.js
+  packages/
+    agents/
+      src/
+      dist/
+      README.md
+    cli/
+      src/
+      dist/
+      README.md
+    core/
+      src/
+      dist/
+      README.md
+    db/
+      src/
+      dist/
+      README.md
+    generators/
+      src/
+      dist/
+      README.md
+    integrations/
+      src/
+      dist/
+      README.md
+    shared/
+      src/
+      dist/
+      README.md
+    testing/
+      src/
+      dist/
+      README.md
+  tests/
+    all.js
+    unit/
+    component/
+    integration/
+    api/
+    gateway-trio-plan.test.js
+    gateway-trio-docs.test.js
+    artifacts.md
+    results/
+      test-summary.json
+  package.json
+  pnpm-workspace.yaml
+  tsconfig.base.json
+  README.md
+  .editorconfig
+  .eslintrc.cjs
+  .prettierrc
+  .gitignore
+
+```
+
 **Runtime Data Locations (Not in Repo)**
 
 *Global data (machine‑wide, shared across workspaces):*
@@ -2869,6 +2967,8 @@ Key global tables:
 
   * Global registry: `id`, `slug` (unique), `display_name`, `adapter_type`, config JSON, enabled flag.
 
+  * Performance fields: `rating`, `rating_samples`, `rating_last_score`, `rating_updated_at`, `max_complexity`, `complexity_samples`, `complexity_updated_at`.
+
 * **`agent_prompts`**
 
   * Prompt content and file mapping:
@@ -2882,6 +2982,10 @@ Key global tables:
 * **`agent_capabilities`**
 
   * Per‑agent capability flags: `plan`, `work`, `review`, `qa`, `docdex_query`, `qa_extension_maestro`, `qa_extension_chromium`, etc.
+
+* **`agent_run_ratings`**
+
+  * Per-run rating telemetry: `agent_id`, `job_id`, `command_run_id`, `task_id`, `task_key`, `command_name`, `discipline`, `complexity`, `quality_score`, `tokens_total`, `duration_seconds`, `iterations`, `total_cost`, `run_score`, `rating_version`, `raw_review_json`, `created_at`.
 
 * **`credentials` / `agent_auth`**
 
@@ -3301,6 +3405,22 @@ Routing decides **which global agent** is invoked for a given command in a given
 
   * Rejects agents missing required QA or docdex capabilities, even if they are defaults.
 
+**Performance-aware routing (rating + complexity)**
+
+* Agents maintain a rolling `rating` (0-10) and `max_complexity` (1-10) in the global registry.
+
+* `--rate-agents` enables post-run scoring that combines reviewer quality, token usage, duration, iterations, and cost into a run score, persists `agent_run_ratings`, and updates the agent's rating via EMA.
+
+* When task complexity is provided, routing filters candidates where `max_complexity >= task_complexity` and prefers higher-rated agents among eligible candidates.
+
+**Exploration / calibration**
+
+* Gateway routing uses a small epsilon-greedy exploration rate to:
+
+  * test low-rated agents on low-complexity tasks (redemption), and
+
+  * stretch agents slightly above `max_complexity` to recalibrate their ceiling.
+
 **Multi‑agent workflows**
 
 * High‑level commands may orchestrate multiple agents in sequence (e.g. `work-on-tasks` → `code-review` → `qa-tasks`), but each step:
@@ -3316,6 +3436,17 @@ Routing decides **which global agent** is invoked for a given command in a given
   * users can see which agents were responsible for which changes and what they cost.
 
 This design centralizes agent definition and credentials in a single global registry, keeps workspaces as thin references with per‑command defaults, and uses capability‑aware routing plus `--agent` overrides to keep behavior explicit and predictable.
+
+**Gateway router (gateway-agent)**
+
+The gateway router is an optional preflight layer that runs before a job to analyze task context and docdex snippets, then selects a best-fit agent for the requested job.
+
+* Produces a structured JSON analysis (summary, currentState, todo, plan, files, assumptions, risks) that is recorded for handoff.
+* Selects agents using routing defaults, required capabilities, health, rating, max-complexity gates, and exploration signals.
+* Supports plan-only runs (`--no-offload`/`--plan-only`) or offloading to the chosen agent; offload writes a handoff file under `.mcoda/handoffs` and sets `MCODA_GATEWAY_HANDOFF_PATH` for the downstream command.
+* Does not mutate routing defaults; it is per-run only.
+
+`mcoda gateway-trio` uses the gateway router before each work/review/QA step, persisting per-step handoffs under `.mcoda/jobs/<job_id>/gateway-trio/`, and loops tasks back to implementation when review or QA reports issues.
 
 ### **9\. Documentation & docdex Integration** {#9.-documentation-&-docdex-integration}
 
@@ -3700,7 +3831,7 @@ All planning entities are workspace‑local and live in `<repo>/.mcoda/mcoda.db`
 
     * VCS: `vcs_branch`, `vcs_base_branch`, `vcs_last_commit_sha`.
 
-    * Scope hints: `metadata.files`, `metadata.tests`, `metadata.components`, `metadata.doc_links`.
+    * Scope hints: `metadata.files`, `metadata.tests`, `metadata.test_requirements`, `metadata.components`, `metadata.doc_links`.
 
     * Audit: timestamps, `openapi_version_at_creation`.
 
@@ -3899,7 +4030,7 @@ Status changes are owned by commands and are enforced through a TaskStateService
 
     * `diff_too_large`, `patch_validation_failed`, `git_apply_error`,
 
-    * `tests_failed`, `doc_context_missing`, `qa_profile_not_found`, …
+    * `tests_failed`, `tests_not_configured`, `doc_context_missing`, `qa_profile_not_found`, …
 
 * `work-on-tasks` never sets `ready_to_qa` or `completed`.
 
@@ -4108,6 +4239,8 @@ Tasks must map cleanly to real code and docs in Git so that automation is **safe
   * `tasks.metadata.files` – candidate paths for implementation,
 
   * `tasks.metadata.tests` – candidate test paths,
+
+  * `tasks.metadata.test_requirements` – unit/component/integration/api test expectations,
 
   * `tasks.metadata.doc_links` – SDS/RFP/docdex links.
 
@@ -4431,6 +4564,8 @@ mcoda create-tasks \
 
 * Creates a `jobs` row of type `task_creation` and writes checkpoints while creating epics, stories, and tasks.
 
+* Captures test requirements per task (unit/component/integration/api) in task metadata and description so `work-on-tasks` can create the relevant tests.
+
 **State & side‑effects**
 
 * Inserts rows in `epics`, `user_stories`, `tasks`.
@@ -4537,7 +4672,7 @@ mcoda work-on-tasks \
 
   * Use docdex \+ SDS/OpenAPI context to propose small, safe patches to code, tests, and docs.
 
-  * Apply patches, run optional tests, and validate diffs.
+  * Apply patches, run required tests, and iterate fixes until tests pass before proceeding.
 
   * Commit changes with structured message (unless `--no-commit`).
 
@@ -4656,6 +4791,33 @@ mcoda qa-tasks \
   * `ready_to_qa → in_progress` or `blocked` on failures.
 
 * `jobs`, `task_runs`, `task_run_logs`, and `token_usage` entries.
+
+**Gateway-trio (work + review + QA loop)**
+
+**Usage**
+
+```shell
+mcoda gateway-trio \
+  [--project <PROJECT_KEY>] \
+  [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \
+  [--status <CSV>] \
+  [--max-iterations N] \
+  [--max-cycles N] \
+  [--gateway-agent <NAME>] \
+  [--review-base <BRANCH>] \
+  [--qa-profile <NAME>] \
+  [--resume <JOB_ID>]
+```
+
+**Behavior**
+
+* Orchestrates `work-on-tasks → code-review → qa-tasks` per task, routing each step through the gateway router and looping back to implementation when review or QA reports issues.
+
+* Re-selects tasks after each cycle to pick up newly created follow-ups or tasks unblocked by dependencies.
+
+* Stops when QA reports `infra_issue`, dependencies block a task, or iteration/cycle limits are reached (if set).
+
+* Persists state and handoff artifacts under `.mcoda/jobs/<job_id>/gateway-trio/` for resume and auditability.
 
 ---
 
@@ -4778,6 +4940,8 @@ mcoda routing explain [--job-type <TYPE>] [--agent <OVERRIDE>] [--json]
 * Manage routing rules that map job types/patterns to global agents.
 
 * `routing explain` runs the router in dry‑run mode and prints the candidate list, health, capabilities and final selection for debugging.
+
+* `gateway-agent` is a preflight router (`mcoda gateway-agent <job>`) that produces a handoff summary and can optionally offload to the selected agent; it does not change routing defaults.
 
 * Routing always returns global agents; workspaces only influence defaults and patterns, not agent storage.
 
@@ -5136,6 +5300,8 @@ The core pipeline is a fixed sequence of phases:
        * Clear titles and “definition of done”.
 
        * Optional `component` / `area` tags and OpenAPI operation links.
+
+       * Explicit test expectations (`unitTests`, `componentTests`, `integrationTests`, `apiTests`), persisted into `tasks.metadata.test_requirements`.
 
        * Initial `story_points` estimate on the configured scale (e.g. Fibonacci).
 
@@ -5881,13 +6047,15 @@ For every task in the ordered list:
 
    * Apply patches using the Git abstraction; on failure, revert to the pre‑task snapshot and mark the task as `blocked` with a precise `blocked_reason`.
 
-9. **Optional tests**
+9. **Required tests & retry loop**
 
-   * If the project config enables tests for `work-on-tasks`, run a scoped test command (e.g. only tests near changed files).
+   * Determine test commands from task metadata (`metadata.tests`). If tests are required via `metadata.test_requirements` but no command is configured, block with `tests_not_configured`.
 
-   * Summarize results into metadata (pass/fail, key failures) and into `task_run_logs`.
+   * Run tests after each patch application (scoped when possible).
 
-   * A failing test can hard‑block advancement to `ready_to_review` depending on policy.
+   * If tests fail, capture a concise failure summary, re‑invoke the agent to fix issues, and retry until tests pass or the max retry budget is exhausted.
+
+   * Only advance to `ready_to_review` once all required tests pass; otherwise mark `blocked` with `tests_failed`.
 
 10. **Commit, push, merge & metrics**
 

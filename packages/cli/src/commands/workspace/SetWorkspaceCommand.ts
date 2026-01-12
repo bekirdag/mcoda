@@ -1,6 +1,8 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import { WorkspaceResolver } from "@mcoda/core";
 import { WorkspaceRepository } from "@mcoda/db";
 
@@ -78,17 +80,41 @@ const ensureCodexTrust = async (workspaceRoot: string): Promise<boolean> => {
 };
 
 const ensureDocdexIndex = async (workspaceRoot: string): Promise<boolean> => {
-  try {
-    execSync("docdex --version", { stdio: "ignore" });
-  } catch {
-    return false;
-  }
-  try {
-    execSync("docdex index", { cwd: workspaceRoot, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  const resolveDocdexBin = (): string | undefined => {
+    try {
+      const require = createRequire(import.meta.url);
+      const pkgPath = require.resolve("docdex/package.json");
+      return path.join(path.dirname(pkgPath), "bin", "docdex.js");
+    } catch {
+      return undefined;
+    }
+  };
+
+  const buildDocdexEnv = (): NodeJS.ProcessEnv => {
+    const env = { ...process.env };
+    if (!env.DOCDEX_STATE_DIR) {
+      env.DOCDEX_STATE_DIR = path.join(os.homedir(), ".docdex", "state");
+    }
+    return env;
+  };
+
+  const runDocdex = (args: string[], cwd: string): boolean => {
+    const bin = resolveDocdexBin();
+    const env = buildDocdexEnv();
+    try {
+      if (bin) {
+        execFileSync(process.execPath, [bin, ...args], { cwd, stdio: "ignore", env });
+      } else {
+        execSync(`docdex ${args.join(" ")}`, { cwd, stdio: "ignore", env });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!runDocdex(["--version"], workspaceRoot)) return false;
+  return runDocdex(["index", "--repo", workspaceRoot], workspaceRoot);
 };
 
 export class SetWorkspaceCommand {

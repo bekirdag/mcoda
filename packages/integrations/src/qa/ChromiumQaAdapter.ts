@@ -5,6 +5,7 @@ import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { QaAdapter } from './QaAdapter.js';
 import { QaContext, QaEnsureResult, QaRunResult } from './QaTypes.js';
 import fs from 'node:fs/promises';
+import { resolveDocdexBrowserInfo, resolvePlaywrightCli } from '../docdex/DocdexRuntime.js';
 
 const exec = promisify(execCb);
 const shouldSkipInstall = (ctx: QaContext) =>
@@ -23,18 +24,22 @@ export class ChromiumQaAdapter implements QaAdapter {
   async ensureInstalled(profile: QaProfile, ctx: QaContext): Promise<QaEnsureResult> {
     if (shouldSkipInstall(ctx)) return { ok: true, details: { skipped: true } };
     const cwd = this.resolveCwd(profile, ctx);
-    try {
-      await exec('npx playwright --version', { cwd, env: { ...process.env, ...profile.env, ...ctx.env } });
-      return { ok: true };
-    } catch (versionError: any) {
-      const installCommand = profile.install_command ?? 'npx playwright install chromium';
-      try {
-        await exec(installCommand, { cwd, env: { ...process.env, ...profile.env, ...ctx.env } });
-        return { ok: true, details: { installedVia: installCommand } };
-      } catch (error: any) {
-        return { ok: false, message: error?.message ?? versionError?.message ?? 'Chromium QA install failed' };
-      }
+    const browserInfo = await resolveDocdexBrowserInfo({ cwd });
+    if (!browserInfo.ok) {
+      return {
+        ok: false,
+        message:
+          browserInfo.message ??
+          'Playwright browsers not installed. Run `docdex setup` and install Playwright with at least one browser.',
+      };
     }
+    return {
+      ok: true,
+      details: {
+        playwrightBrowsersPath: browserInfo.browsersPath,
+        browsers: browserInfo.browsers,
+      },
+    };
   }
 
   private async persistLogs(ctx: QaContext, stdout: string, stderr: string): Promise<string[]> {
@@ -50,13 +55,22 @@ export class ChromiumQaAdapter implements QaAdapter {
   }
 
   async invoke(profile: QaProfile, ctx: QaContext): Promise<QaRunResult> {
-    const command = ctx.testCommandOverride ?? profile.test_command ?? 'npx playwright test --reporter=list';
+    const playwrightCli = resolvePlaywrightCli();
+    const defaultCommand = playwrightCli
+      ? `node ${playwrightCli} test --reporter=list`
+      : 'npx playwright test --reporter=list';
+    const command = ctx.testCommandOverride ?? profile.test_command ?? defaultCommand;
     const startedAt = new Date().toISOString();
     const cwd = this.resolveCwd(profile, ctx);
     try {
       const { stdout, stderr } = await exec(command, {
         cwd,
-        env: { ...process.env, ...profile.env, ...ctx.env },
+        env: {
+          ...process.env,
+          ...profile.env,
+          ...ctx.env,
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD ?? '1',
+        },
       });
       const finishedAt = new Date().toISOString();
        const artifacts = await this.persistLogs(ctx, stdout, stderr);

@@ -15,6 +15,7 @@ Mandatory sections (include even if you must mark TODOs):
 - Goals & Scope
 - Architecture Overview
 - Components & Responsibilities
+- Planned Folder Tree (include a detailed final structure, scripts, and tooling paths)
 - Data Model & Persistence
 - Interfaces & Contracts (reference OpenAPI operations when available)
 - Non-Functional Requirements
@@ -35,6 +36,7 @@ export const DEFAULT_SDS_TEMPLATE = `
 ## Goals & Scope
 ## Architecture Overview
 ## Components & Responsibilities
+## Planned Folder Tree
 ## Data Model & Persistence
 ## Interfaces & Contracts
 ## Non-Functional Requirements

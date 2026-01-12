@@ -3,12 +3,13 @@ import { createRequire } from "node:module";
 import { OpenApiService, WorkspaceResolver } from "@mcoda/core";
 
 const usage =
-  "mcoda openapi-from-docs [--workspace-root <PATH>] [--agent <NAME>] [--agent-stream <true|false>] [--force] [--dry-run] [--validate-only] [--no-telemetry]";
+  "mcoda openapi-from-docs [--workspace-root <PATH>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--force] [--dry-run] [--validate-only] [--no-telemetry]";
 
 export interface ParsedOpenapiArgs {
   workspaceRoot?: string;
   agentName?: string;
   agentStream: boolean;
+  rateAgents: boolean;
   force: boolean;
   dryRun: boolean;
   validateOnly: boolean;
@@ -27,6 +28,7 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
   let workspaceRoot: string | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
   let force = false;
   let dryRun = false;
   let validateOnly = false;
@@ -37,6 +39,11 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
     if (arg.startsWith("--agent-stream=")) {
       const [, raw] = arg.split("=", 2);
       agentStream = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -55,6 +62,16 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
           i += 1;
         } else {
           agentStream = true;
+        }
+        break;
+      }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
         }
         break;
       }
@@ -85,6 +102,7 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
     workspaceRoot,
     agentName,
     agentStream: agentStream ?? true,
+    rateAgents,
     force,
     dryRun,
     validateOnly,
@@ -120,6 +138,7 @@ export class OpenapiCommands {
         workspace,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
         force: parsed.force,
         dryRun: parsed.dryRun,
         validateOnly: parsed.validateOnly,

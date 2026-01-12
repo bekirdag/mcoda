@@ -1,7 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { AgentService } from "@mcoda/agents";
-import { GlobalRepository } from "@mcoda/db";
+import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
 import { Agent, AgentPromptManifest } from "@mcoda/shared";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import {
@@ -18,6 +18,7 @@ import {
 import { JobService, JobCheckpoint } from "../jobs/JobService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { AgentRatingService } from "../agents/AgentRatingService.js";
 
 export interface GeneratePdrOptions {
   workspace: WorkspaceResolution;
@@ -27,6 +28,8 @@ export interface GeneratePdrOptions {
   outPath?: string;
   agentName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
+  fast?: boolean;
   dryRun?: boolean;
   json?: boolean;
   onToken?: (token: string) => void;
@@ -49,6 +52,8 @@ export interface GenerateSdsOptions {
   agentName?: string;
   templateName?: string;
   agentStream?: boolean;
+  rateAgents?: boolean;
+  fast?: boolean;
   dryRun?: boolean;
   json?: boolean;
   force?: boolean;
@@ -121,6 +126,7 @@ const readPromptIfExists = async (workspace: WorkspaceResolution, relative: stri
 const PDR_REQUIRED_HEADINGS: string[][] = [
   ["Introduction"],
   ["Scope"],
+  ["Technology Stack", "Tech Stack"],
   ["Requirements", "Requirements & Constraints"],
   ["Architecture", "Architecture Overview"],
   ["Interfaces", "Interfaces / APIs"],
@@ -193,6 +199,46 @@ const extractBullets = (content: string, limit = 20): string[] => {
     .map((line) => line.replace(/^[-*+]\s+/, "").trim())
     .filter((line) => line.length > 0)
     .slice(0, limit);
+};
+
+const DEFAULT_TECH_STACK_FALLBACK = [
+  "- Frontend: React + TypeScript",
+  "- Backend/services: TypeScript (Node.js)",
+  "- Database: MySQL",
+  "- Cache/queues: Redis",
+  "- Scripting/ops: Bash",
+  "- Override defaults if the RFP specifies a different stack.",
+].join("\n");
+
+const ML_TECH_STACK_FALLBACK = [
+  "- Language: Python",
+  "- ML stack: PyTorch or TensorFlow (pick based on model requirements)",
+  "- Services/API: Python web framework (FastAPI/Flask) as needed",
+  "- Database: MySQL",
+  "- Cache/queues: Redis",
+  "- Scripting/ops: Bash",
+  "- Override defaults if the RFP specifies a different stack.",
+].join("\n");
+
+const contextIndicatesMlStack = (context: PdrContext): boolean => {
+  const sources = [context.rfp?.content, ...context.related.map((doc) => doc.content ?? "")].filter(Boolean);
+  if (!sources.length) return false;
+  const text = sources.join("\n").toLowerCase();
+  const patterns = [
+    /\bmachine learning\b/,
+    /\bdeep learning\b/,
+    /\bneural\b/,
+    /\bmodel training\b/,
+    /\bmodel inference\b/,
+    /\bml\b/,
+    /\bllm\b/,
+    /\bembeddings?\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+};
+
+const resolveTechStackFallback = (context: PdrContext): string => {
+  return contextIndicatesMlStack(context) ? ML_TECH_STACK_FALLBACK : DEFAULT_TECH_STACK_FALLBACK;
 };
 
 class DocContextAssembler {
@@ -439,10 +485,23 @@ class DocContextAssembler {
 
     let related: DocdexDocument[] = [];
     if (docdexAvailable) {
-      related = await this.docdex.search({ projectKey: input.projectKey, docType: "PDR", profile: "rfp_default" });
-      const sds = await this.docdex.search({ projectKey: input.projectKey, docType: "SDS", profile: "rfp_default" });
-      openapi = await this.docdex.search({ projectKey: input.projectKey, docType: "OPENAPI", profile: "rfp_default" });
-      related = [...related, ...sds];
+      try {
+        related = await this.docdex.search({ projectKey: input.projectKey, docType: "PDR", profile: "rfp_default" });
+        const sds = await this.docdex.search({ projectKey: input.projectKey, docType: "SDS", profile: "rfp_default" });
+        openapi = await this.docdex.search({
+          projectKey: input.projectKey,
+          docType: "OPENAPI",
+          profile: "rfp_default",
+        });
+        related = [...related, ...sds];
+      } catch (error) {
+        docdexAvailable = false;
+        related = [];
+        openapi = [];
+        warnings.push(
+          `Docdex unavailable; continuing without related docs (${(error as Error).message ?? "unknown error"}).`,
+        );
+      }
     }
 
     const summaryParts = [
@@ -501,7 +560,7 @@ const buildRunPrompt = (
     docdexNote,
     [
       "Return markdown with exactly these sections as H2 headings, one time each:",
-      "Introduction, Scope, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria",
+      "Introduction, Scope, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria",
       "Do not use bold headings; use `##` headings only. Do not repeat sections.",
     ].join("\n"),
     runbookPrompt,
@@ -553,6 +612,7 @@ const ensureStructuredDraft = (
 ): string => {
   const canonicalTitles = PDR_REQUIRED_HEADINGS.map((variants) => variants[0]);
   const normalized = normalizeHeadingsToH2(draft, canonicalTitles);
+  const techStackFallback = resolveTechStackFallback(context);
   const required = [
     { title: "Introduction", fallback: `This PDR summarizes project ${projectKey ?? "N/A"} based on ${rfpSource}.` },
     {
@@ -560,6 +620,7 @@ const ensureStructuredDraft = (
       fallback:
         "In-scope: todo CRUD (title required; optional description, due date, priority), status toggle, filters/sort/search, bulk complete/delete, keyboard shortcuts, responsive UI, offline/localStorage. Out-of-scope: multi-user/auth/sync/backends, notifications/reminders, team features, heavy UI kits.",
     },
+    { title: "Technology Stack", fallback: techStackFallback },
     {
       title: "Requirements & Constraints",
       fallback:
@@ -579,7 +640,20 @@ const ensureStructuredDraft = (
   for (const section of required) {
     const best = getBestSectionBody(normalized, section.title);
     const cleaned = cleanBody(best ?? "");
-    const body = cleaned && cleaned.length > 0 ? cleaned : cleanBody(section.fallback);
+    let body = cleaned && cleaned.length > 0 ? cleaned : cleanBody(section.fallback);
+    if (section.title === "Interfaces / APIs" && (context.openapi?.length ?? 0) === 0) {
+      const scrubbed = stripInventedEndpoints(body);
+      const openApiFallback =
+        "No OpenAPI excerpts available. Capture interface needs as open questions (auth/identity, restaurant suggestions, voting cycles, results/analytics).";
+      if (!scrubbed || scrubbed.length === 0 || /endpoint/i.test(scrubbed)) {
+        body = cleanBody(openApiFallback);
+      } else {
+        body = scrubbed;
+      }
+      if (!/openapi/i.test(body)) {
+        body = `${body}\n- No OpenAPI excerpts available; keep endpoints as open questions.`;
+      }
+    }
     parts.push(`## ${section.title}`);
     parts.push(body);
   }
@@ -598,7 +672,7 @@ const tidyPdrDraft = async (
     draft,
     "",
     "Requirements:",
-    "- Keep exactly one instance of each H2 section: Introduction, Scope, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria, Source RFP.",
+    "- Keep exactly one instance of each H2 section: Introduction, Scope, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria, Source RFP.",
     "- Remove duplicate sections, bold headings posing as sections, placeholder sentences, and repeated bullet blocks. If the same idea appears twice, keep the richer/longer version and drop the restatement.",
     "- Do not add new sections or reorder the required outline.",
     "- Keep content concise and aligned to the headings. Do not alter semantics.",
@@ -609,6 +683,13 @@ const tidyPdrDraft = async (
 };
 
 const PDR_ENRICHMENT_SECTIONS: { title: string; guidance: string[] }[] = [
+  {
+    title: "Technology Stack",
+    guidance: [
+      "List frontend, backend/services, databases, caches/queues, infra/runtime, and scripting/tooling choices.",
+      "If the RFP omits stack details, state the default stack (TypeScript/React/MySQL/Redis/Bash) or a Python ML stack when neural/ML workloads are explicit.",
+    ],
+  },
   {
     title: "Architecture Overview",
     guidance: [
@@ -728,6 +809,20 @@ const ensureSdsStructuredDraft = (
   let structured = parts.join("\n\n");
   for (const section of sections) {
     structured = ensureSectionContent(structured, section, fallbackFor(section));
+  }
+  if ((context.openapi?.length ?? 0) === 0) {
+    const interfaceTitle = sections.find((section) => /interface|contract/i.test(section)) ?? "Interfaces & Contracts";
+    const extracted = extractSection(structured, interfaceTitle);
+    if (extracted) {
+      const scrubbed = stripInventedEndpoints(cleanBody(extracted.body ?? ""));
+      const openApiFallback =
+        "No OpenAPI excerpts available. Capture interface needs as open questions (auth/identity, restaurant suggestions, voting cycles, results/analytics).";
+      let body = scrubbed.length > 0 && !/endpoint/i.test(scrubbed) ? scrubbed : cleanBody(openApiFallback);
+      if (!/openapi/i.test(body)) {
+        body = `${body}\n- No OpenAPI excerpts available; keep endpoints as open questions.`;
+      }
+      structured = replaceSection(structured, interfaceTitle, body);
+    }
   }
   return structured;
 };
@@ -1022,6 +1117,7 @@ const PLACEHOLDER_PATTERNS = [
   /^[-*+.]?\s*Outstanding questions/i,
   /^[-*+.]?\s*Performance, reliability, compliance/i,
   /^[-*+.]?\s*Enumerate risks from the RFP/i,
+  /^I (will|am going to|plan to|am)\s+(read|review|analy[sz]e|gather|start|begin|look|scan)\b/i,
 ];
 
 const cleanBody = (body: string): string => {
@@ -1057,6 +1153,15 @@ const cleanBody = (body: string): string => {
   return deduped.join("\n").trim();
 };
 
+const stripInventedEndpoints = (body: string): string => {
+  const lines = body.split(/\r?\n/);
+  const filtered = lines.filter((line) => {
+    const normalized = line.replace(/[`*_]/g, "");
+    return !/(^|\s)\b(GET|POST|PUT|PATCH|DELETE)\b[^\n]*\//i.test(normalized);
+  });
+  return filtered.join("\n").trim();
+};
+
 const extractSection = (draft: string, title: string): { heading: string; body: string } | undefined => {
   const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|(?![\\s\\S]))`, "im");
   const match = draft.match(regex);
@@ -1084,7 +1189,10 @@ const getBestSectionBody = (draft: string, title: string): string | undefined =>
 
 const replaceSection = (draft: string, title: string, newBody: string): string => {
   const normalizedBody = cleanBody(newBody);
-  const regex = new RegExp(`(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|$)`, "im");
+  const regex = new RegExp(
+    `(^#{1,6}\\s+${title}\\b)([\\s\\S]*?)(?=^#{1,6}\\s+|(?![\\s\\S]))`,
+    "im",
+  );
   if (regex.test(draft)) {
     return draft.replace(regex, `$1\n\n${normalizedBody}\n\n`);
   }
@@ -1162,6 +1270,8 @@ export class DocsService {
   private agentService: AgentService;
   private repo: GlobalRepository;
   private routingService: RoutingService;
+  private ratingService?: AgentRatingService;
+  private workspaceRepo?: WorkspaceRepository;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -1171,6 +1281,8 @@ export class DocsService {
       agentService: AgentService;
       repo: GlobalRepository;
       routingService: RoutingService;
+      workspaceRepo?: WorkspaceRepository;
+      ratingService?: AgentRatingService;
       noTelemetry?: boolean;
     },
   ) {
@@ -1179,6 +1291,8 @@ export class DocsService {
     this.repo = deps.repo;
     this.agentService = deps.agentService;
     this.routingService = deps.routingService;
+    this.workspaceRepo = deps.workspaceRepo;
+    this.ratingService = deps.ratingService;
   }
 
   static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<DocsService> {
@@ -1194,15 +1308,17 @@ export class DocsService {
   }
 
   async close(): Promise<void> {
-    if ((this.agentService as any).close) {
-      await this.agentService.close();
-    }
-    if ((this.repo as any).close) {
-      await this.repo.close();
-    }
-    if ((this.jobService as any).close) {
-      await this.jobService.close();
-    }
+    const swallow = async (fn?: () => Promise<void>) => {
+      try {
+        if (fn) await fn();
+      } catch {
+        // Best-effort close; ignore errors (including "database is closed").
+      }
+    };
+    await swallow((this.agentService as any).close?.bind(this.agentService));
+    await swallow((this.repo as any).close?.bind(this.repo));
+    await swallow((this.jobService as any).close?.bind(this.jobService));
+    await swallow((this.workspaceRepo as any)?.close?.bind(this.workspaceRepo));
   }
 
   private defaultPdrOutputPath(projectKey: string | undefined, rfpPath?: string): string {
@@ -1248,6 +1364,23 @@ export class DocsService {
       overrideAgentSlug: agentName,
     });
     return resolved.agent;
+  }
+
+  private async ensureRatingService(): Promise<AgentRatingService> {
+    if (this.ratingService) return this.ratingService;
+    if (process.env.MCODA_DISABLE_DB === "1") {
+      throw new Error("Workspace DB disabled; agent rating requires DB access.");
+    }
+    if (!this.workspaceRepo) {
+      this.workspaceRepo = await WorkspaceRepository.create(this.workspace.workspaceRoot);
+    }
+    this.ratingService = new AgentRatingService(this.workspace, {
+      workspaceRepo: this.workspaceRepo,
+      globalRepo: this.repo,
+      agentService: this.agentService,
+      routingService: this.routingService,
+    });
+    return this.ratingService;
   }
 
   private async writePdrFile(outPath: string, content: string): Promise<void> {
@@ -1375,6 +1508,7 @@ export class DocsService {
         workspaceId: this.workspace.workspaceId,
         commandName: "docs-pdr-generate",
         jobId: job.id,
+        commandRunId: commandRun.id,
         action: "docdex_context",
         promptTokens: 0,
         completionTokens: 0,
@@ -1388,9 +1522,11 @@ export class DocsService {
         DEFAULT_PDR_RUNBOOK_PROMPT;
 
       let draft = "";
+      let agentUsed = false;
       let agentMetadata: Record<string, unknown> | undefined;
       let adapter = agent.adapter;
       const stream = options.agentStream ?? true;
+      const fastMode = options.fast === true || process.env.MCODA_DOCS_FAST === "1";
       const skipValidation = process.env.MCODA_SKIP_PDR_VALIDATION === "1";
       let lastInvoke:
         | ((input: string) => Promise<{ output: string; adapter: string; metadata?: Record<string, unknown> }>)
@@ -1398,6 +1534,7 @@ export class DocsService {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const prompt = buildRunPrompt(context, options.projectKey, prompts, attempt === 0 ? runbook : `${runbook}\n\nRETRY: The previous attempt failed validation. Ensure all required sections are present and non-empty. Do not leave placeholders.`);
         const invoke = async (input: string) => {
+          agentUsed = true;
           const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(agent, input, stream, job.id, options.onToken);
           adapter = usedAdapter;
           agentMetadata = metadata;
@@ -1417,6 +1554,7 @@ export class DocsService {
           workspaceId: this.workspace.workspaceId,
           commandName: "docs-pdr-generate",
           jobId: job.id,
+          commandRunId: commandRun.id,
           agentId: agent.id,
           modelName: agent.defaultModel,
           action: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
@@ -1442,14 +1580,21 @@ export class DocsService {
         throw new Error("PDR draft generation failed; no valid draft produced.");
       }
 
-      if (lastInvoke) {
+      if (fastMode) {
+        context.warnings.push("Fast mode enabled; skipping PDR enrichment and tidy passes.");
+      } else if (lastInvoke) {
         draft = await enrichPdrDraft(draft, agent, context, options.projectKey, lastInvoke);
         draft = ensureStructuredDraft(draft, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
       }
-      if (lastInvoke) {
+      if (!fastMode && lastInvoke) {
         try {
           const tidiedRaw = await tidyPdrDraft(draft, agent, lastInvoke);
-          const tidied = ensureStructuredDraft(tidiedRaw, options.projectKey, context, context.rfp.path ?? context.rfp.id ?? "RFP");
+          const tidied = ensureStructuredDraft(
+            tidiedRaw,
+            options.projectKey,
+            context,
+            context.rfp.path ?? context.rfp.id ?? "RFP",
+          );
           const tidiedValid = validateDraft(tidied) && headingHasContent(tidied, "Introduction");
           const keepTidied = tidiedValid && tidied.length >= draft.length * 0.6;
           if (keepTidied) {
@@ -1469,17 +1614,21 @@ export class DocsService {
         );
         await ensureDir(firstDraftPath);
         await fs.writeFile(firstDraftPath, draft, "utf8");
-        try {
-          const iterativeDraft = await buildIterativePdr(
-            options.projectKey,
-            context,
-            draft,
-            outputPath,
-            lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
-          );
-          draft = iterativeDraft;
-        } catch (error) {
-          context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+        if (fastMode) {
+          context.warnings.push("Fast mode enabled; skipping iterative PDR refinement.");
+        } else {
+          try {
+            const iterativeDraft = await buildIterativePdr(
+              options.projectKey,
+              context,
+              draft,
+              outputPath,
+              lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
+            );
+            draft = iterativeDraft;
+          } catch (error) {
+            context.warnings.push(`Iterative PDR refinement failed; keeping first draft. ${String(error)}`);
+          }
         }
       }
       await this.jobService.writeCheckpoint(job.id, {
@@ -1497,14 +1646,18 @@ export class DocsService {
       if (!options.dryRun) {
         await this.writePdrFile(outputPath, draft);
         if (context.docdexAvailable) {
-          const registered = await this.registerPdr(outputPath, draft, options.projectKey);
-          docdexId = registered.id;
-          segments = (registered.segments ?? []).map((s) => s.id);
-          await fs.writeFile(
-            `${outputPath}.meta.json`,
-            JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
-            "utf8",
-          );
+          try {
+            const registered = await this.registerPdr(outputPath, draft, options.projectKey);
+            docdexId = registered.id;
+            segments = (registered.segments ?? []).map((s) => s.id);
+            await fs.writeFile(
+              `${outputPath}.meta.json`,
+              JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
+              "utf8",
+            );
+          } catch (error) {
+            context.warnings.push(`Docdex registration skipped: ${(error as Error).message}`);
+          }
         }
         const publicDocsDir = path.join(this.workspace.workspaceRoot, "docs", "pdr");
         const shouldMirror = this.workspace.config?.mirrorDocs !== false;
@@ -1526,6 +1679,20 @@ export class DocsService {
         payload: { outputPath, docdexId, segments, mirrorStatus },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      if (options.rateAgents && agentUsed) {
+        try {
+          const ratingService = await this.ensureRatingService();
+          await ratingService.rate({
+            workspace: this.workspace,
+            agentId: agent.id,
+            commandName: "docs-pdr-generate",
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+        } catch (error) {
+          context.warnings.push(`Agent rating failed: ${(error as Error).message ?? String(error)}`);
+        }
+      }
       return {
         jobId: job.id,
         commandRunId: commandRun.id,
@@ -1678,6 +1845,7 @@ export class DocsService {
         workspaceId: this.workspace.workspaceId,
         commandName: "docs-sds-generate",
         jobId: job.id,
+        commandRunId: commandRun.id,
         action: "docdex_context",
         promptTokens: 0,
         completionTokens: 0,
@@ -1712,11 +1880,14 @@ export class DocsService {
         DEFAULT_SDS_RUNBOOK_PROMPT;
 
       let draft = resumeDraft ?? "";
+      let agentUsed = false;
       let agentMetadata: Record<string, unknown> | undefined;
       let adapter = agent.adapter;
       const stream = options.agentStream ?? true;
+      const fastMode = options.fast === true || process.env.MCODA_DOCS_FAST === "1";
       const skipValidation = process.env.MCODA_SKIP_SDS_VALIDATION === "1";
       const invoke = async (input: string) => {
+        agentUsed = true;
         const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(
           agent,
           input,
@@ -1747,6 +1918,7 @@ export class DocsService {
             workspaceId: this.workspace.workspaceId,
             commandName: "docs-sds-generate",
             jobId: job.id,
+            commandRunId: commandRun.id,
             agentId: agent.id,
             modelName: agent.defaultModel,
             action: attempt === 0 ? "draft_sds" : "draft_sds_retry",
@@ -1776,6 +1948,7 @@ export class DocsService {
             workspaceId: this.workspace.workspaceId,
             commandName: "docs-sds-generate",
             jobId: job.id,
+            commandRunId: commandRun.id,
             action: "draft_sds_resume",
             promptTokens: 0,
             completionTokens: estimateTokens(draft),
@@ -1799,6 +1972,7 @@ export class DocsService {
           workspaceId: this.workspace.workspaceId,
           commandName: "docs-sds-generate",
           jobId: job.id,
+          commandRunId: commandRun.id,
           agentId: agent.id,
           modelName: agent.defaultModel,
           action: "draft_sds_resume_regenerate",
@@ -1807,21 +1981,25 @@ export class DocsService {
           metadata: { adapter, provider: adapter, docdexAvailable: context.docdexAvailable, template: template.name },
         });
       }
-      // Enrich each section sequentially after a valid base draft exists.
-      draft = await enrichSdsDraft(draft, sdsSections, agent, context, options.projectKey, invoke);
-      draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
-      if (!skipValidation && !(validateSdsDraft(draft) && headingHasContent(draft, "Architecture"))) {
-        warnings.push("Enriched SDS draft failed validation; using structured fallback.");
+      if (fastMode) {
+        warnings.push("Fast mode enabled; skipping SDS enrichment and tidy passes.");
+      } else {
+        // Enrich each section sequentially after a valid base draft exists.
+        draft = await enrichSdsDraft(draft, sdsSections, agent, context, options.projectKey, invoke);
         draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
-      }
-      try {
-        const tidiedRaw = await tidySdsDraft(draft, sdsSections, agent, invoke);
-        const tidied = ensureSdsStructuredDraft(tidiedRaw, options.projectKey, context, template.content);
-        if (skipValidation || (validateSdsDraft(tidied) && headingHasContent(tidied, "Architecture"))) {
-          draft = tidied;
+        if (!skipValidation && !(validateSdsDraft(draft) && headingHasContent(draft, "Architecture"))) {
+          warnings.push("Enriched SDS draft failed validation; using structured fallback.");
+          draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
         }
-      } catch (error) {
-        warnings.push(`SDS tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
+        try {
+          const tidiedRaw = await tidySdsDraft(draft, sdsSections, agent, invoke);
+          const tidied = ensureSdsStructuredDraft(tidiedRaw, options.projectKey, context, template.content);
+          if (skipValidation || (validateSdsDraft(tidied) && headingHasContent(tidied, "Architecture"))) {
+            draft = tidied;
+          }
+        } catch (error) {
+          warnings.push(`SDS tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
+        }
       }
       await fs.mkdir(path.dirname(draftPath), { recursive: true });
       await fs.writeFile(draftPath, draft, "utf8");
@@ -1833,18 +2011,22 @@ export class DocsService {
       );
       await ensureDir(firstDraftPath);
       await fs.writeFile(firstDraftPath, draft, "utf8");
-      try {
-        const iterativeDraft = await buildIterativeSds(
-          options.projectKey,
-          context,
-          draft,
-          sdsSections,
-          outputPath,
-          invoke,
-        );
-        draft = iterativeDraft;
-      } catch (error) {
-        warnings.push(`Iterative SDS refinement failed; keeping first draft. ${String(error)}`);
+      if (fastMode) {
+        warnings.push("Fast mode enabled; skipping iterative SDS refinement.");
+      } else {
+        try {
+          const iterativeDraft = await buildIterativeSds(
+            options.projectKey,
+            context,
+            draft,
+            sdsSections,
+            outputPath,
+            invoke,
+          );
+          draft = iterativeDraft;
+        } catch (error) {
+          warnings.push(`Iterative SDS refinement failed; keeping first draft. ${String(error)}`);
+        }
       }
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
@@ -1861,14 +2043,18 @@ export class DocsService {
       if (!options.dryRun) {
         await this.writeSdsFile(outputPath, draft);
         if (context.docdexAvailable) {
-          const registered = await this.registerSds(outputPath, draft, options.projectKey);
-          docdexId = registered.id;
-          segments = (registered.segments ?? []).map((s) => s.id);
-          await fs.writeFile(
-            `${outputPath}.meta.json`,
-            JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
-            "utf8",
-          );
+          try {
+            const registered = await this.registerSds(outputPath, draft, options.projectKey);
+            docdexId = registered.id;
+            segments = (registered.segments ?? []).map((s) => s.id);
+            await fs.writeFile(
+              `${outputPath}.meta.json`,
+              JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
+              "utf8",
+            );
+          } catch (error) {
+            warnings.push(`Docdex registration skipped: ${(error as Error).message}`);
+          }
         }
         const publicDocsDir = path.join(this.workspace.workspaceRoot, "docs", "sds");
         const shouldMirror = this.workspace.config?.mirrorDocs !== false;
@@ -1896,6 +2082,20 @@ export class DocsService {
         },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      if (options.rateAgents && agentUsed) {
+        try {
+          const ratingService = await this.ensureRatingService();
+          await ratingService.rate({
+            workspace: this.workspace,
+            agentId: agent.id,
+            commandName: "docs-sds-generate",
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+        } catch (error) {
+          warnings.push(`Agent rating failed: ${(error as Error).message ?? String(error)}`);
+        }
+      }
       return {
         jobId: job.id,
         commandRunId: commandRun.id,

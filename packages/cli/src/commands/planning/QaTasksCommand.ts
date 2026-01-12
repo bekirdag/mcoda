@@ -15,6 +15,7 @@ interface ParsedArgs {
   testCommand?: string;
   agentName?: string;
   agentStream: boolean;
+  rateAgents: boolean;
   createFollowupTasks: "auto" | "none" | "prompt";
   dryRun: boolean;
   json: boolean;
@@ -24,10 +25,11 @@ interface ParsedArgs {
   result?: "pass" | "fail" | "blocked";
   notes?: string;
   evidenceUrl?: string;
+  allowDirty: boolean;
   quiet?: boolean;
 }
 
-const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--dry-run] [--json]`;
+const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--dry-run] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -50,12 +52,14 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   let testCommand: string | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
   let followups: "auto" | "none" | "prompt" = "auto";
   let dryRun = false;
   let json = false;
   let debug = false;
   let noTelemetry = false;
   let resumeJobId: string | undefined;
+  let allowDirty = false;
   let result: "pass" | "fail" | "blocked" | undefined;
   let notes: string | undefined;
   let evidenceUrl: string | undefined;
@@ -64,6 +68,11 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
+      if (arg.startsWith("--rate-agents=")) {
+        const [, raw] = arg.split("=", 2);
+        rateAgents = parseBooleanFlag(raw, true);
+        continue;
+      }
       switch (arg) {
         case "--workspace-root":
           workspaceRoot = argv[i + 1] ? path.resolve(argv[i + 1]) : undefined;
@@ -122,6 +131,16 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
           }
           break;
         }
+        case "--rate-agents": {
+          const next = argv[i + 1];
+          if (next && !next.startsWith("--")) {
+            rateAgents = parseBooleanFlag(next, true);
+            i += 1;
+          } else {
+            rateAgents = true;
+          }
+          break;
+        }
         case "--create-followup-tasks":
           followups = (argv[i + 1] as any) ?? "auto";
           i += 1;
@@ -140,6 +159,10 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
           break;
         case "--resume":
           resumeJobId = argv[i + 1];
+          i += 1;
+          break;
+        case "--allow-dirty":
+          allowDirty = parseBooleanFlag(argv[i + 1], allowDirty);
           i += 1;
           break;
         case "--result":
@@ -182,12 +205,14 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     testCommand,
     agentName,
     agentStream: agentStream ?? true,
+    rateAgents,
     createFollowupTasks: followups,
     dryRun,
     json,
     debug,
     noTelemetry,
     resumeJobId,
+    allowDirty,
     result,
     notes,
     evidenceUrl,
@@ -249,11 +274,13 @@ export class QaTasksCommand {
         testCommand: parsed.testCommand,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
         createFollowupTasks: followupMode,
         dryRun: parsed.dryRun,
         result: parsed.result,
         notes: parsed.notes,
         evidenceUrl: parsed.evidenceUrl,
+        allowDirty: parsed.allowDirty,
         noTelemetry: parsed.noTelemetry,
       });
 
@@ -308,6 +335,9 @@ export class QaTasksCommand {
         if (r.followups?.length) bits.push(`follow-ups=${r.followups.join(",")}`);
         if (r.artifacts?.length) bits.push(`artifacts=${r.artifacts.join(",")}`);
         lines.push(`- ${bits.join(" | ")}`);
+        if (r.notes) {
+          lines.push(`  notes: ${r.notes}`);
+        }
       }
       // eslint-disable-next-line no-console
       console.log(lines.join("\n"));

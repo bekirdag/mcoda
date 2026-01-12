@@ -25,11 +25,13 @@ export class QaTasksApi {
         testCommand: request.testCommand,
         agentName: request.agentName,
         agentStream: request.agentStream,
+        rateAgents: request.rateAgents,
         createFollowupTasks: request.createFollowupTasks,
         dryRun: request.dryRun,
         result: request.result,
         notes: request.notes,
         evidenceUrl: request.evidenceUrl,
+        allowDirty: request.allowDirty,
       });
     } finally {
       await service.close();
