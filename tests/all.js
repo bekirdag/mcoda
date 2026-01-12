@@ -55,6 +55,12 @@ if (process.platform === "win32") {
   process.env.HOMEPATH = winTestHome.slice(parsed.root.length - 1);
   process.env.MCODA_SKIP_DOCDEX_CHECKS = "1";
   process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS = "1";
+  if (!process.env.MCODA_FS_RM_RETRIES) {
+    process.env.MCODA_FS_RM_RETRIES = "20";
+  }
+  if (!process.env.MCODA_FS_RM_DELAY_MS) {
+    process.env.MCODA_FS_RM_DELAY_MS = "100";
+  }
   const patchPath = path.join(root, "tests", "helpers", "win32-fs-patch.cjs");
   const existingNodeOptions = process.env.NODE_OPTIONS ?? "";
   const requireFlag = `--require=${patchPath}`;

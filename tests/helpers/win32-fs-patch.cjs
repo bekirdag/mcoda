@@ -3,8 +3,8 @@ const fsp = require("node:fs/promises");
 const { setTimeout: delay } = require("node:timers/promises");
 
 const retryable = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
-const retries = Number.parseInt(process.env.MCODA_FS_RM_RETRIES ?? "6", 10);
-const baseDelayMs = Number.parseInt(process.env.MCODA_FS_RM_DELAY_MS ?? "50", 10);
+const retries = Number.parseInt(process.env.MCODA_FS_RM_RETRIES ?? "20", 10);
+const baseDelayMs = Number.parseInt(process.env.MCODA_FS_RM_DELAY_MS ?? "100", 10);
 
 const shouldRetry = (error) => {
   if (!error || typeof error !== "object") return false;
