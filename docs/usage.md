@@ -56,7 +56,7 @@ Run the implementation loop and follow with review/QA.
 
 ```sh
 mcoda work-on-tasks --workspace-root . --project WEB --status not_started,in_progress --limit 3
-mcoda gateway-trio --workspace-root . --project WEB --max-iterations 3 --max-cycles 5 --review-base mcoda-dev --qa-profile integration
+mcoda gateway-trio --workspace-root . --project WEB --max-iterations 10 --max-cycles 10 --review-base mcoda-dev --qa-profile integration
 mcoda code-review --workspace-root . --project WEB --status ready_to_review --limit 5 --base mcoda-dev
 mcoda qa-tasks --workspace-root . --project WEB --status ready_to_qa --profile integration
 ```
@@ -262,11 +262,12 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 ```
 
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, or `--story <KEY>`. Default statuses: `not_started,in_progress` (override with `--status ...`).
-- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--json`.
+- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--max-agent-seconds <N>`, `--json`.
 - Selection & ordering: dependency-aware (skips/reroutes blocked tasks), topo + priority + SP + created_at, with in-progress tie-breaks. Blocked tasks are listed in JSON output (`blocked`).
 - Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `.mcoda/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_review`. Checkpoints live under `.mcoda/jobs/<jobId>/work/state.json` for resume/debug.
 - Scope & safety: enforces allowed files/tests from task metadata; scope violations are blocked and logged.
-- VCS: ensures `.mcoda` exists and is gitignored, creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (default `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit` or `--dry-run`.
+- Tests: if test requirements exist and `tests/all.js` is missing, `work-on-tasks` attempts to create it and reruns tests.
+- VCS: ensures `.mcoda` exists and is gitignored, creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
 
 ### Use a remote Ollama agent (GPU offload)
 Point mcoda at a remote Ollama host (e.g., `sukunahikona` on your LAN/VPN):
@@ -283,6 +284,15 @@ mcoda agent use suku-ollama    # set as default for workspace
 ```
 
 Firewall guidance: Ollama has no auth; keep it bound to localhost or LAN IP and allowlist only trusted IPs (VPN/LAN). If exposing via the internet, use a reverse proxy with auth/TLS and open port 11434 only to trusted sources.
+
+### Agent run (direct prompts)
+Use `agent-run` to send one or more prompts to an agent and capture its responses (useful for sub-jobs during development):
+
+```sh
+mcoda agent-run codex --prompt "Summarize the task requirements"
+mcoda agent-run suku-ollama --prompt "List impacted files for feature X"
+mcoda agent-run qa --task-file docs/subtasks.txt --json
+```
 
 ### Agent ratings (optional)
 Record and review agent performance scores (quality, cost, time, iterations). Enable scoring per command with `--rate-agents`, then inspect runs:
@@ -305,6 +315,7 @@ mcoda code-review --workspace . --project WEB --status ready_to_review --limit 5
 - Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_review` (override with `--status ...`), optional `--limit <N>`.
 - Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default true), `--rate-agents`, `--json`.
 - Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_review → ready_to_qa/in_progress/blocked` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `.mcoda/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
+- Invalid JSON after retry blocks the task with `review_invalid_output`. Empty diffs block review with `review_empty_diff`.
 
 ### QA tasks (QA pipeline)
 Run automated or manual QA on tasks in the workspace DB:
@@ -317,19 +328,21 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Modes: `--mode auto` (default; runs CLI/Chromium/Maestro via QA profiles) or `--mode manual --result pass|fail|blocked [--notes "..."] [--evidence-url "..."]`.
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`. Add `--rate-agents` to score QA agent performance.
 - Playwright: auto QA uses the Chromium runner and Playwright browsers provisioned by `docdex setup`. If Playwright or browsers are missing, run `docdex setup` before QA.
+- CLI marker: when `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE` or QA marks the run as `infra_issue` with guidance in task comments.
 - Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
+- Invalid JSON: if the QA agent returns invalid JSON after retry, the outcome is treated as `unclear` (`qa_unclear`) and a manual QA follow-up can be created.
 - Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.
 
 ### Gateway trio (work → review → QA loop)
 Run work, review, and QA in a single loop with gateway routing for each step:
 
 ```sh
-mcoda gateway-trio --workspace . --project WEB --max-iterations 3 --max-cycles 5 --review-base mcoda-dev --qa-profile ui --gateway-agent router
+mcoda gateway-trio --workspace . --project WEB --max-iterations 10 --max-cycles 10 --review-base mcoda-dev --qa-profile ui --gateway-agent router
 ```
 
 - Uses the gateway router to pick specialized agents for work, review, and QA.
 - Loops back to work when review requests changes or QA needs fixes, stopping on QA pass, infra issues, or iteration limits.
-- Key flags: `--gateway-agent`, `--max-docs`, `--review-base`, `--qa-profile`/`--qa-level`/`--qa-test-command`, `--qa-mode`, `--qa-followups`, `--no-commit`, `--dry-run`, `--resume`, `--rate-agents`, `--json`.
+- Key flags: `--gateway-agent`, `--task-file`, `--max-docs`, `--max-iterations` (default disabled), `--max-cycles` (default disabled), `--max-agent-seconds` (default disabled), `--review-base`, `--qa-profile`/`--qa-level`/`--qa-test-command`, `--qa-mode`, `--qa-followups`, `--no-commit`, `--dry-run`, `--resume`, `--watch`, `--rate-agents`, `--json`.
 
 ### Routing defaults, preview, and explain
 Use the OpenAPI-backed router to inspect or update workspace defaults:

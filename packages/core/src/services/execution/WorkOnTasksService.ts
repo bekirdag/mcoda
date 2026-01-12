@@ -39,6 +39,8 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   agentStream?: boolean;
   rateAgents?: boolean;
   baseBranch?: string;
+  autoMerge?: boolean;
+  autoPush?: boolean;
   onAgentChunk?: (chunk: string) => void;
   abortSignal?: AbortSignal;
   maxAgentSeconds?: number;
@@ -1535,6 +1537,7 @@ export class WorkOnTasksService {
           await this.logTask(taskRunId, `Merge conflicts detected while merging ${baseBranch} into ${branch}.`, "vcs", {
             conflicts,
           });
+          await this.vcs.abortMerge(this.workspace.workspaceRoot);
           return { branch, base: baseBranch, mergeConflicts: conflicts, remoteSyncNote };
         }
         throw new Error(`Failed to merge ${baseBranch} into ${branch}: ${(error as Error).message}`);
@@ -1836,6 +1839,10 @@ export class WorkOnTasksService {
     const requestedBaseBranch = request.baseBranch;
     const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
     const baseBranch = resolvedBaseBranch.length ? resolvedBaseBranch : DEFAULT_BASE_BRANCH;
+    const configuredAutoMerge = this.workspace.config?.autoMerge;
+    const configuredAutoPush = this.workspace.config?.autoPush;
+    const autoMerge = request.autoMerge ?? configuredAutoMerge ?? true;
+    const autoPush = request.autoPush ?? configuredAutoPush ?? true;
     const baseBranchWarnings =
       requestedBaseBranch && configuredBaseBranch && requestedBaseBranch !== configuredBaseBranch
         ? [`Base branch override ${requestedBaseBranch} differs from workspace config ${configuredBaseBranch}.`]
@@ -2342,14 +2349,24 @@ export class WorkOnTasksService {
               baseBranchName = branchInfo.base || baseBranchName;
               mergeConflicts = branchInfo.mergeConflicts ?? [];
               remoteSyncNote = branchInfo.remoteSyncNote ?? "";
-              if (mergeConflicts.length && allowedFiles.length) {
-                allowedFiles = Array.from(new Set([...allowedFiles, ...mergeConflicts.map((f) => f.replace(/\\/g, "/"))]));
-              }
               await this.deps.workspaceRepo.updateTask(task.task.id, {
                 vcsBranch: branchInfo.branch,
                 vcsBaseBranch: branchInfo.base,
               });
               await this.logTask(taskRun.id, `Using branch ${branchInfo.branch} (base ${branchInfo.base})`, "vcs");
+              if (mergeConflicts.length) {
+                await this.logTask(taskRun.id, `Blocking task due to merge conflicts: ${mergeConflicts.join(", ")}`, "vcs");
+                await this.stateService.markBlocked(task.task, "merge_conflict");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                results.push({ taskKey: task.task.key, status: "failed", notes: "merge_conflict" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                await emitTaskEndOnce();
+                continue taskLoop;
+              }
             } catch (error) {
               const message = `Failed to prepare branches: ${(error as Error).message}`;
               await this.logTask(taskRun.id, message, "vcs");
@@ -2378,9 +2395,6 @@ export class WorkOnTasksService {
           await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
           unresolvedComments = await this.loadUnresolvedComments(task.task.id);
           const commentBacklog = this.buildCommentBacklog(unresolvedComments);
-          const conflictNote = mergeConflicts.length
-            ? `Merge conflicts detected in: ${mergeConflicts.join(", ")}. Resolve these conflicts before any other task work. Remove conflict markers and ensure the files are consistent.`
-            : "";
           const promptBase = this.buildPrompt(task, docSummary, allowedFiles, commentBacklog);
           const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
           const testExpectationNote = shouldRunTests
@@ -2402,7 +2416,7 @@ export class WorkOnTasksService {
             .join("\n");
           const promptWithTests = promptExtras ? `${promptBase}\n${promptExtras}` : promptBase;
           const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : "";
-          const notes = [remoteSyncNote, conflictNote].filter(Boolean).join("\n");
+          const notes = remoteSyncNote;
           const prompt = [guidanceBlock, notes, promptWithTests].filter(Boolean).join("\n\n");
           const commandPrompt = prompts.commandPrompt ?? "";
           const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
@@ -3079,17 +3093,16 @@ export class WorkOnTasksService {
             }
   
             const restrictAutoMergeWithoutScope = Boolean(this.workspace.config?.restrictAutoMergeWithoutScope);
-            const shouldSkipAutoMerge = restrictAutoMergeWithoutScope && allowedFiles.length === 0;
+            const shouldSkipAutoMerge = !autoMerge || (restrictAutoMergeWithoutScope && allowedFiles.length === 0);
             if (shouldSkipAutoMerge) {
               mergeStatus = "skipped";
               const changedFiles = dirty.length ? dirty : touched.length ? touched : [];
               const changedNote = changedFiles.length ? `Changed files: ${changedFiles.join(", ")}` : "No changed files detected.";
-              await this.logTask(
-                taskRun.id,
-                `Auto-merge skipped because task has no file scope (metadata.files empty). ${changedNote}`,
-                "vcs",
-                { reason: "no_file_scope", changedFiles },
-              );
+              const reason = !autoMerge ? "auto_merge_disabled" : "no_file_scope";
+              const message = !autoMerge
+                ? `Auto-merge disabled; leaving branch ${branchInfo.branch} for manual PR. ${changedNote}`
+                : `Auto-merge skipped because task has no file scope (metadata.files empty). ${changedNote}`;
+              await this.logTask(taskRun.id, message, "vcs", { reason, changedFiles });
               await this.vcs.checkoutBranch(this.workspace.workspaceRoot, branchInfo.base);
             } else {
               // Always merge back into base and end on base branch.
@@ -3118,42 +3131,58 @@ export class WorkOnTasksService {
                       conflicts,
                     },
                   );
-                  throw new Error(
-                    `Merge conflict(s) while merging ${branchInfo.branch} into ${branchInfo.base}: ${conflicts.join(", ")}`,
-                  );
+                  await this.vcs.abortMerge(this.workspace.workspaceRoot);
+                  await this.stateService.markBlocked(task.task, "merge_conflict");
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                    status: "failed",
+                    finishedAt: new Date().toISOString(),
+                  });
+                  results.push({ taskKey: task.task.key, status: "failed", notes: "merge_conflict" });
+                  taskStatus = "failed";
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue taskLoop;
                 }
                 throw error;
               }
             }
   
             if (await this.vcs.hasRemote(this.workspace.workspaceRoot)) {
-              const branchPush = await this.pushWithRecovery(taskRun.id, branchInfo.branch);
-              if (branchPush.pushed) {
-                await this.logTask(taskRun.id, "Pushed branch to remote origin", "vcs");
-              } else if (branchPush.skipped) {
-                await this.logTask(taskRun.id, "Skipped pushing branch to remote origin due to permissions/protection.", "vcs");
-              }
-              if (!(await refreshLock("vcs_push_branch"))) {
-                await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
-                throw new Error("Task lock lost after pushing branch.");
-              }
-              if (mergeStatus === "merged") {
-                const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
-                if (basePush.pushed) {
-                  await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
-                } else if (basePush.skipped) {
-                  await this.logTask(
-                    taskRun.id,
-                    `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`,
-                    "vcs",
-                  );
-                }
-                if (!(await refreshLock("vcs_push_base"))) {
-                  await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
-                  throw new Error("Task lock lost after pushing base branch.");
-                }
+              if (!autoPush) {
+                await this.logTask(
+                  taskRun.id,
+                  `Auto-push disabled; skipping remote push for ${branchInfo.branch} and ${branchInfo.base}.`,
+                  "vcs",
+                  { reason: "auto_push_disabled" },
+                );
               } else {
-                await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} because auto-merge was skipped.`, "vcs");
+                const branchPush = await this.pushWithRecovery(taskRun.id, branchInfo.branch);
+                if (branchPush.pushed) {
+                  await this.logTask(taskRun.id, "Pushed branch to remote origin", "vcs");
+                } else if (branchPush.skipped) {
+                  await this.logTask(taskRun.id, "Skipped pushing branch to remote origin due to permissions/protection.", "vcs");
+                }
+                if (!(await refreshLock("vcs_push_branch"))) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
+                  throw new Error("Task lock lost after pushing branch.");
+                }
+                if (mergeStatus === "merged") {
+                  const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
+                  if (basePush.pushed) {
+                    await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
+                  } else if (basePush.skipped) {
+                    await this.logTask(
+                      taskRun.id,
+                      `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`,
+                      "vcs",
+                    );
+                  }
+                  if (!(await refreshLock("vcs_push_base"))) {
+                    await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
+                    throw new Error("Task lock lost after pushing base branch.");
+                  }
+                } else {
+                  await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} because auto-merge was skipped.`, "vcs");
+                }
               }
             } else {
               const message =

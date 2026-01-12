@@ -39,8 +39,8 @@ mcoda gateway-trio \
 
 Defaults:
 - `--status` defaults to `not_started,in_progress,ready_to_review,ready_to_qa` (exclude completed/cancelled/failed).
-- `--max-iterations` defaults to 3 per task (avoid infinite loops).
-- `--max-cycles` defaults to 5 full passes (handles newly created follow-ups).
+- `--max-iterations` is disabled unless explicitly set.
+- `--max-cycles` is disabled unless explicitly set.
 
 ### Flag surface (initial)
 Gateway router flags:
@@ -74,7 +74,7 @@ Pipeline control flags:
    - Gateway -> QA
 3) If any step reports issues, return to Work for that task and iterate.
 4) After a full pass, re-load tasks to catch new follow-ups or tasks unblocked by dependencies.
-5) Stop when all selected tasks are completed or all remaining are blocked/failed/at max-iterations.
+5) Stop when all selected tasks are completed or all remaining are blocked/failed/at max-iterations (if set).
 
 ## Detailed Orchestration Logic
 ### Task selection
@@ -111,7 +111,7 @@ Treat these as "issues" and loop back to Work:
 - QA outcome is `fix_required` or `unclear`.
 
 Stop conditions (per task):
-- `max-iterations` reached.
+- `max-iterations` reached (if set).
 - QA reports `infra_issue` (mark blocked; do not loop).
 - Task is blocked due to dependency (skip and revisit in next cycle).
 
@@ -157,7 +157,7 @@ Extract helper(s) from `GatewayAgentCommand`:
 Step | Outcome | Task status after step | Pipeline action
 --- | --- | --- | ---
 Work | succeeded | ready_to_review | proceed to review
-Work | failed/blocked | blocked or failed | loop back to work until max-iterations
+Work | failed/blocked | blocked or failed | loop back to work until max-iterations (if set)
 Review | approve | ready_to_qa | proceed to QA
 Review | changes_requested | in_progress | loop back to work
 Review | block | blocked | stop (blocked)
@@ -184,7 +184,7 @@ Artifacts:
 Add `packages/core/src/services/execution/__tests__/GatewayTrioService.test.ts`:
 - Handles work->review->qa success path.
 - Loops on review changes_requested and QA fix_required.
-- Stops after `max-iterations`.
+- Stops after `max-iterations` (if set).
 - Skips blocked tasks unless explicitly requested.
 - Rescans tasks and picks up new follow-up tasks.
 

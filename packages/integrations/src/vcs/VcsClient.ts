@@ -147,6 +147,14 @@ export class VcsClient {
     await this.runGit(cwd, ["merge", "--no-edit", source]);
   }
 
+  async abortMerge(cwd: string): Promise<void> {
+    try {
+      await this.runGit(cwd, ["merge", "--abort"]);
+    } catch {
+      // Ignore when no merge is in progress.
+    }
+  }
+
   async push(cwd: string, remote: string, branch: string): Promise<void> {
     await this.runGit(cwd, ["push", remote, branch]);
   }

@@ -3,7 +3,12 @@ import path from "node:path";
 import { WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { GatewayAgentService, type GatewayAgentResult } from "../agents/GatewayAgentService.js";
-import { buildGatewayHandoffContent, withGatewayHandoff, writeGatewayHandoffFile } from "../agents/GatewayHandoff.js";
+import {
+  buildGatewayHandoffContent,
+  buildGatewayHandoffDocdexUsage,
+  withGatewayHandoff,
+  writeGatewayHandoffFile,
+} from "../agents/GatewayHandoff.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionFilters, TaskSelectionPlan, TaskSelectionService } from "./TaskSelectionService.js";
@@ -23,10 +28,9 @@ const RETRYABLE_BLOCK_REASONS = new Set([
   "qa_infra_issue",
   "review_blocked",
 ]);
-const ESCALATION_REASONS = new Set(["missing_patch", "patch_failed", "agent_timeout"]);
+const ESCALATION_REASONS = new Set(["missing_patch", "patch_failed", "tests_failed", "agent_timeout"]);
 const NO_CHANGE_REASON = "no_changes";
 const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
-const DEFAULT_MAX_AGENT_SECONDS = 900;
 const HEARTBEAT_INTERVAL_MS = 30000;
 
 type StepName = "work" | "review" | "qa";
@@ -77,6 +81,7 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
   maxIterations?: number;
   maxCycles?: number;
+  onJobStart?: (jobId: string, commandRunId: string) => void;
   gatewayAgentName?: string;
   workAgentName?: string;
   reviewAgentName?: string;
@@ -210,6 +215,13 @@ export class GatewayTrioService {
     }
   }
 
+  private async cleanupExpiredTaskLocks(warnings: string[]): Promise<void> {
+    const cleared = await this.deps.workspaceRepo.cleanupExpiredTaskLocks();
+    if (cleared.length > 0) {
+      warnings.push(`Cleared ${cleared.length} expired task lock(s): ${cleared.join(", ")}`);
+    }
+  }
+
   private assertResumeAllowed(job: any, manifest?: Record<string, unknown>): void {
     const state = job.jobState ?? job.state ?? job.status ?? "unknown";
     if (["completed", "cancelled"].includes(state)) {
@@ -309,18 +321,28 @@ export class GatewayTrioService {
     return created;
   }
 
+  private hasReachedMaxIterations(progress: TaskProgress | undefined, maxIterations?: number): boolean {
+    if (maxIterations === undefined) return false;
+    const attempts = progress?.attempts ?? 0;
+    return attempts >= maxIterations;
+  }
+
+  private hasIterationsRemaining(progress: TaskProgress, maxIterations?: number): boolean {
+    if (maxIterations === undefined) return true;
+    return progress.attempts < maxIterations;
+  }
+
   private async reopenRetryableBlockedTasks(
     state: GatewayTrioState,
     explicitTasks: Set<string>,
-    maxIterations: number,
+    maxIterations: number | undefined,
     warnings: string[],
   ): Promise<void> {
     const keys = new Set<string>([...explicitTasks, ...Object.keys(state.tasks)]);
     for (const taskKey of keys) {
       const progress = state.tasks[taskKey];
       if (progress?.status === "completed") continue;
-      if (progress?.status === "failed" && progress.attempts >= maxIterations) continue;
-      if (progress && progress.attempts >= maxIterations) continue;
+      if (this.hasReachedMaxIterations(progress, maxIterations)) continue;
       const task = await this.deps.workspaceRepo.getTaskByKey(taskKey);
       if (!task) continue;
       const status = this.normalizeStatus(task.status);
@@ -328,6 +350,11 @@ export class GatewayTrioService {
       const blockedReason = typeof metadata.blocked_reason === "string" ? metadata.blocked_reason : undefined;
       if (status === "blocked") {
         if (!blockedReason) continue;
+        const testsFailedCount = this.countFailures(progress, "work", "tests_failed");
+        if (blockedReason === "tests_failed" && testsFailedCount >= 2) {
+          warnings.push(`Task ${taskKey} remains blocked after repeated tests_failed; skipping reopen.`);
+          continue;
+        }
         if (blockedReason === "dependency_not_ready") {
           const depsReady = await this.dependenciesReady(task.id, warnings);
           if (!depsReady) continue;
@@ -353,7 +380,9 @@ export class GatewayTrioService {
       warnings.push(
         status === "blocked"
           ? `Reopened blocked task ${taskKey} (reason=${blockedReason}) for retry.`
-          : `Reopened failed task ${taskKey} for retry (attempts=${progress?.attempts ?? 0}/${maxIterations}).`,
+          : `Reopened failed task ${taskKey} for retry (attempts=${progress?.attempts ?? 0}${
+              maxIterations !== undefined ? `/${maxIterations}` : ""
+            }).`,
       );
     }
   }
@@ -515,6 +544,38 @@ export class GatewayTrioService {
     progress.failureHistory = history;
   }
 
+  private countFailures(progress: TaskProgress | undefined, step: StepName, reason: string): number {
+    if (!progress?.failureHistory?.length) return 0;
+    return progress.failureHistory.filter((failure) => failure.step === step && failure.reason === reason).length;
+  }
+
+  private prioritizeFeedbackTasks(
+    ordered: TaskSelectionPlan["ordered"],
+    state: GatewayTrioState,
+  ): TaskSelectionPlan["ordered"] {
+    const feedback = new Set<string>();
+    for (const progress of Object.values(state.tasks)) {
+      if (progress.lastDecision === "changes_requested") {
+        feedback.add(progress.taskKey);
+        continue;
+      }
+      if (progress.lastOutcome === "fix_required" || progress.lastOutcome === "unclear") {
+        feedback.add(progress.taskKey);
+      }
+    }
+    if (feedback.size === 0) return ordered;
+    const prioritized: TaskSelectionPlan["ordered"] = [];
+    const remaining: TaskSelectionPlan["ordered"] = [];
+    for (const entry of ordered) {
+      if (feedback.has(entry.task.key)) {
+        prioritized.push(entry);
+      } else {
+        remaining.push(entry);
+      }
+    }
+    return [...prioritized, ...remaining];
+  }
+
   private buildAgentOptions(
     progress: TaskProgress,
     step: StepName,
@@ -627,6 +688,8 @@ export class GatewayTrioService {
         "",
         `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
         `Error: ${message}`,
+        "",
+        buildGatewayHandoffDocdexUsage(),
       ].join("\n");
       warnings.push(`Gateway agent failed for work ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
@@ -685,6 +748,8 @@ export class GatewayTrioService {
         "",
         `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
         `Error: ${message}`,
+        "",
+        buildGatewayHandoffDocdexUsage(),
       ].join("\n");
       warnings.push(`Gateway agent failed for review ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
@@ -741,6 +806,8 @@ export class GatewayTrioService {
         "",
         `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
         `Error: ${message}`,
+        "",
+        buildGatewayHandoffDocdexUsage(),
       ].join("\n");
       warnings.push(`Gateway agent failed for QA ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
@@ -805,9 +872,9 @@ export class GatewayTrioService {
       resumeJob = job;
     }
     const resolvedRequest = this.resolveRequest(request, resumeJob?.payload as Record<string, unknown> | undefined);
-    const maxIterations = resolvedRequest.maxIterations ?? 3;
-    const maxCycles = resolvedRequest.maxCycles ?? 5;
-    const maxAgentSeconds = resolvedRequest.maxAgentSeconds ?? DEFAULT_MAX_AGENT_SECONDS;
+    const maxIterations = resolvedRequest.maxIterations;
+    const maxCycles = resolvedRequest.maxCycles;
+    const maxAgentSeconds = resolvedRequest.maxAgentSeconds;
     const statusFilter = await this.buildStatusFilter(resolvedRequest, warnings);
     const commandRun = await this.deps.jobService.startCommandRun("gateway-trio", resolvedRequest.projectKey, {
       taskIds: resolvedRequest.taskKeys,
@@ -874,6 +941,11 @@ export class GatewayTrioService {
     if (!jobId || !state) {
       throw new Error("gateway-trio job initialization failed");
     }
+    if (resolvedRequest.onJobStart) {
+      resolvedRequest.onJobStart(jobId, commandRun.id);
+    }
+
+    await this.cleanupExpiredTaskLocks(warnings);
 
     const explicitTasks = new Set(resolvedRequest.taskKeys ?? []);
     await this.seedExplicitTasks(state, explicitTasks, warnings);
@@ -881,7 +953,7 @@ export class GatewayTrioService {
     let cycle = state.cycle ?? 0;
 
     try {
-      while (cycle < maxCycles) {
+      while (maxCycles === undefined || cycle < maxCycles) {
         await this.reopenRetryableBlockedTasks(state, explicitTasks, maxIterations, warnings);
         await this.writeState(state);
         const selection = await this.selectionService.selectTasks({
@@ -896,7 +968,7 @@ export class GatewayTrioService {
         const blockedKeys = new Set(selection.blocked.map((t) => t.task.key));
         if (selection.warnings.length) warnings.push(...selection.warnings);
 
-        const ordered = selection.ordered;
+        const ordered = this.prioritizeFeedbackTasks(selection.ordered, state);
         for (const blocked of selection.blocked) {
           const taskKey = blocked.task.key;
           if (explicitTasks.has(taskKey)) continue;
@@ -942,7 +1014,7 @@ export class GatewayTrioService {
             continue;
           }
           if (progress.status === "failed") {
-            if (progress.attempts >= maxIterations) {
+            if (this.hasReachedMaxIterations(progress, maxIterations)) {
               continue;
             }
             progress.status = "pending";
@@ -950,11 +1022,13 @@ export class GatewayTrioService {
             state.tasks[taskKey] = progress;
           }
 
-          if (progress.attempts >= maxIterations) {
+          if (this.hasReachedMaxIterations(progress, maxIterations)) {
             progress.status = "failed";
             progress.lastError = "max_iterations_reached";
             state.tasks[taskKey] = progress;
-            warnings.push(`Task ${taskKey} hit max iterations (${maxIterations}).`);
+            if (maxIterations !== undefined) {
+              warnings.push(`Task ${taskKey} hit max iterations (${maxIterations}).`);
+            }
             continue;
           }
 
@@ -1010,6 +1084,22 @@ export class GatewayTrioService {
               timestamp: new Date().toISOString(),
               details: { taskKey, attempt: attemptIndex, outcome: workOutcome },
             });
+
+            if (workOutcome.error === "tests_failed") {
+              const testsFailedCount = this.countFailures(progress, "work", "tests_failed");
+              if (testsFailedCount >= 2) {
+                progress.status = "blocked";
+                progress.lastError = "tests_failed";
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                warnings.push(`Task ${taskKey} blocked after repeated tests_failed.`);
+                continue;
+              }
+              warnings.push(`Retrying ${taskKey} after tests_failed with stronger agent.`);
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              continue;
+            }
 
             if (workOutcome.status === "blocked") {
               progress.status = "blocked";
@@ -1207,9 +1297,15 @@ export class GatewayTrioService {
 
         if (attemptedThisCycle === 0) {
           const hasPending = Object.values(state.tasks).some(
-            (task) => task.status === "pending" && task.attempts < maxIterations,
+            (task) => task.status === "pending" && this.hasIterationsRemaining(task, maxIterations),
           );
           if (hasPending) {
+            if (maxCycles === undefined) {
+              warnings.push(
+                "No tasks attempted in this cycle; pending tasks remain, stopping to avoid infinite loop without max-cycles.",
+              );
+              break;
+            }
             warnings.push("No tasks attempted in this cycle; pending tasks remain, continuing.");
             continue;
           }

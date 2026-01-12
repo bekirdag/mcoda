@@ -109,6 +109,7 @@ const extraTests = [
 const extraWorkspaceTests = [
   path.join("packages", "db", "dist", "__tests__", "WorkspaceRepository.test.js"),
   path.join("packages", "core", "dist", "services", "agents", "__tests__", "GatewayHandoff.test.js"),
+  path.join("packages", "core", "dist", "api", "__tests__", "AgentsApi.test.js"),
   path.join("packages", "core", "dist", "services", "docs", "__tests__", "DocsService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "WorkOnTasksService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "QaTasksService.test.js"),
@@ -116,6 +117,8 @@ const extraWorkspaceTests = [
   path.join("packages", "core", "dist", "services", "shared", "__tests__", "ProjectGuidance.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "GatewayTrioService.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "GatewayTrioCommand.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "AgentRunCommand.test.js"),
+  path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexRuntime.test.js"),
 ];
 
 const testFiles = collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
@@ -143,4 +146,5 @@ writeFileSync(
     "\n",
 );
 
+console.log(`MCODA_RUN_ALL_TESTS_COMPLETE status=${failed ? "failed" : "passed"}`);
 process.exit(failed ? 1 : 0);

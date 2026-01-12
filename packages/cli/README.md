@@ -31,6 +31,7 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 - Execution: `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
 - Backlog: `mcoda backlog`, `mcoda task`
 - Jobs/telemetry: `mcoda jobs`, `mcoda tokens`, `mcoda telemetry`
+- Agents: `mcoda test-agent`, `mcoda agent-run`
 - Updates: `mcoda update --check`
 
 ## Configuration

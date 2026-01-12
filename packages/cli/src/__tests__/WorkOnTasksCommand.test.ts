@@ -44,6 +44,15 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.rateAgents, true);
   });
 
+  it("captures auto-merge and auto-push overrides", () => {
+    const parsed = parseWorkOnTasksArgs([
+      "--no-auto-merge",
+      "--auto-push=false",
+    ]);
+    assert.equal(parsed.autoMerge, false);
+    assert.equal(parsed.autoPush, false);
+  });
+
   it("accepts workspace alias flags", () => {
     const root = path.resolve("/tmp/demo");
     const parsed = parseWorkOnTasksArgs(["--workspace-root", root, "--project", "proj"]);

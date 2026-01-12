@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { GatewayTrioService } from "@mcoda/core";
 import {
@@ -17,6 +19,7 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.escalateOnNoChange, true);
+    assert.equal(parsed.watch, false);
   });
 
   it("parses selectors and numeric flags", () => {
@@ -37,6 +40,41 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.limit, 5);
     assert.equal(parsed.maxIterations, 2);
     assert.equal(parsed.maxCycles, 4);
+  });
+
+  it("normalizes task keys and flags invalid entries", () => {
+    const parsed = parseGatewayTrioArgs(["--task", "TASK-1\nTASK-2", "--task", "TASK-2", "--task", "bad$key"]);
+    assert.deepEqual(parsed.taskKeys, ["TASK-1", "TASK-2"]);
+    assert.deepEqual(parsed.invalidTaskKeys, ["bad$key"]);
+    assert.equal(parsed.taskKeysProvided, true);
+    assert.equal(validateGatewayTrioArgs(parsed), undefined);
+  });
+
+  it("rejects when no valid task keys remain", () => {
+    const parsed = parseGatewayTrioArgs(["--task", "!!!"]);
+    assert.equal(parsed.taskKeys.length, 0);
+    assert.equal(parsed.taskKeysProvided, true);
+    assert.equal(validateGatewayTrioArgs(parsed), "gateway-trio: no valid task keys provided");
+  });
+
+  it("parses task keys from --task-file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-"));
+    const file = path.join(dir, "tasks.txt");
+    await fs.writeFile(file, "TASK-1\n# ignore me\nTASK-2\n");
+    try {
+      const parsed = parseGatewayTrioArgs(["--task-file", file, "--task", "TASK-2"]);
+      assert.deepEqual(parsed.taskKeys, ["TASK-2", "TASK-1"]);
+      assert.equal(parsed.invalidTaskKeys.length, 0);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses watch flag", () => {
+    const parsed = parseGatewayTrioArgs(["--watch"]);
+    assert.equal(parsed.watch, true);
+    const parsedFalse = parseGatewayTrioArgs(["--watch=false"]);
+    assert.equal(parsedFalse.watch, false);
   });
 
   it("parses gateway, review, and qa flags", () => {
@@ -139,11 +177,14 @@ describe("gateway-trio CLI output shape", () => {
     });
     const logs: string[] = [];
     const originalLog = console.log;
+    const originalError = console.error;
     console.log = (msg?: any) => {
       logs.push(String(msg));
     };
+    console.error = () => {};
     await GatewayTrioCommand.run(["--json"]);
     console.log = originalLog;
+    console.error = originalError;
     GatewayTrioService.create = originalCreate;
     const parsed = JSON.parse(logs[0]);
     assert.equal(parsed.jobId, "job-123");

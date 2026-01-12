@@ -27,6 +27,8 @@ export interface WorkspaceConfig {
   docdexUrl?: string;
   projectKey?: string;
   restrictAutoMergeWithoutScope?: boolean;
+  autoMerge?: boolean;
+  autoPush?: boolean;
   velocity?: {
     implementationSpPerHour?: number;
     reviewSpPerHour?: number;

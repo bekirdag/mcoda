@@ -13,7 +13,7 @@ Files to touch:
 - docs/gateway-trio-plan.md
 Acceptance criteria:
 - Plan doc lists a single official command name and finalized CLI usage.
-- Defaults for `--status`, `--max-iterations`, `--max-cycles` are explicit and justified.
+- Defaults for `--status`, `--max-iterations`, `--max-cycles` are explicit and justified (max limits disabled unless set).
 - Stop conditions for review failures, QA infra issues, and dependency blocks are defined.
 Dependencies:
 - None
@@ -207,7 +207,7 @@ Add iteration logic that loops work->review->QA until success or stop conditions
 Files to touch:
 - packages/core/src/services/execution/GatewayTrioService.ts
 Acceptance criteria:
-- Per-task attempts stop at max-iterations.
+- Per-task attempts stop at max-iterations (if set).
 - Full-cycle loop stops when no tasks are attempted.
 - New follow-up tasks are visible in subsequent cycles.
 Dependencies:
@@ -319,7 +319,7 @@ Dependencies:
 Slug: gateway-trio-core-tests-loop
 Title: Add tests for review/QA loopbacks
 Description:
-Add tests that force review `changes_requested` and QA `fix_required` to ensure the service loops back to work and respects max-iterations.
+Add tests that force review `changes_requested` and QA `fix_required` to ensure the service loops back to work and respects max-iterations (when set).
 Files to touch:
 - packages/core/src/services/execution/__tests__/GatewayTrioService.test.ts
 Acceptance criteria:

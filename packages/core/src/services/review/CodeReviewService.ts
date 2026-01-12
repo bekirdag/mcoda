@@ -600,6 +600,7 @@ export class CodeReviewService {
     const snippets: string[] = [];
     const warnings: string[] = [];
     const queries = [...new Set([...(paths.length ? this.componentHintsFromPaths(paths) : []), taskTitle, ...(acceptance ?? [])])].slice(0, 8);
+    let reindexed = false;
     for (const query of queries) {
       try {
         const docs = await withTimeout(
@@ -618,6 +619,31 @@ export class CodeReviewService {
           }),
         );
       } catch (error) {
+        if (!reindexed && typeof (this.deps.docdex as any).reindex === "function") {
+          reindexed = true;
+          try {
+            await (this.deps.docdex as any).reindex();
+            const docs = await withTimeout(
+              this.deps.docdex.search({
+                query,
+                profile: "workspace-code",
+              }),
+              DOCDEX_TIMEOUT_MS,
+              `docdex search for "${query}" after reindex`,
+            );
+            snippets.push(
+              ...docs.slice(0, 2).map((doc) => {
+                const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
+                const ref = doc.path ?? doc.id ?? doc.title ?? query;
+                return `- [${doc.docType ?? "doc"}] ${ref}: ${content}`;
+              }),
+            );
+            continue;
+          } catch (retryError) {
+            warnings.push(`docdex search failed after reindex for ${query}: ${(retryError as Error).message}`);
+            continue;
+          }
+        }
         warnings.push(`docdex search failed for ${query}: ${(error as Error).message}`);
       }
     }
@@ -757,6 +783,7 @@ export class CodeReviewService {
     findings: ReviewFinding[];
     resolvedSlugs?: string[] | null;
     unresolvedSlugs?: string[] | null;
+    decision?: ReviewAgentResult["decision"];
     existingComments: TaskCommentRow[];
   }): Promise<{ resolved: string[]; reopened: string[]; open: string[] }> {
     const existingBySlug = new Map<string, TaskCommentRow>();
@@ -785,7 +812,11 @@ export class CodeReviewService {
     for (const finding of params.findings ?? []) {
       const slug = this.resolveFindingSlug(finding, reviewSlugIndex);
       findingSlugs.push(slug);
-      if (!resolvedSet.has(slug)) {
+      const severity = (finding.severity ?? "").toLowerCase();
+      const autoResolve =
+        (params.decision === "approve" || params.decision === "info_only") &&
+        ["info", "low"].includes(severity);
+      if (!resolvedSet.has(slug) && !autoResolve) {
         unresolvedSet.add(slug);
       }
     }
@@ -812,17 +843,22 @@ export class CodeReviewService {
     for (const finding of params.findings ?? []) {
       const slug = this.resolveFindingSlug(finding, reviewSlugIndex);
       if (existingBySlug.has(slug) || createdSlugs.has(slug)) continue;
+      const severity = (finding.severity ?? "").toLowerCase();
+      const autoResolve =
+        (params.decision === "approve" || params.decision === "info_only") &&
+        ["info", "low"].includes(severity);
       const message = (finding.message ?? "").trim() || "(no details provided)";
       const body = formatTaskCommentBody({
         slug,
         source: "code-review",
         message,
-        status: "open",
+        status: autoResolve ? "resolved" : "open",
         category: finding.type ?? "other",
         file: finding.file ?? null,
         line: finding.line ?? null,
         suggestedFix: finding.suggestedFix ?? null,
       });
+      const resolvedAt = autoResolve ? new Date().toISOString() : undefined;
       await this.deps.workspaceRepo.createTaskComment({
         taskId: params.task.id,
         taskRunId: params.taskRunId,
@@ -832,11 +868,13 @@ export class CodeReviewService {
         authorAgentId: params.agentId,
         category: finding.type ?? "other",
         slug,
-        status: "open",
+        status: autoResolve ? "resolved" : "open",
         file: finding.file ?? null,
         line: finding.line ?? null,
         pathHint: finding.file ?? null,
         body,
+        resolvedAt,
+        resolvedBy: autoResolve ? params.agentId : undefined,
         metadata: {
           severity: finding.severity,
           suggestedFix: finding.suggestedFix,
@@ -1274,11 +1312,29 @@ export class CodeReviewService {
       if (!selectedTaskIds.length) {
         throw new Error("Resume requested but no task selection found in job payload");
       }
+      selectedTasks = await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
+      const terminalStatuses = new Set(["completed", "cancelled"]);
+      const terminalTasks = selectedTasks.filter((task) => terminalStatuses.has((task.status ?? "").toLowerCase()));
+      if (terminalTasks.length) {
+        const terminalIds = new Set(terminalTasks.map((task) => task.id));
+        const terminalKeys = terminalTasks.map((task) => task.key);
+        warnings.push(`Skipping terminal tasks on resume: ${terminalKeys.join(", ")}`);
+        selectedTasks = selectedTasks.filter((task) => !terminalIds.has(task.id));
+        selectedTaskIds = selectedTaskIds.filter((id) => !terminalIds.has(id));
+        if (state) {
+          state.selectedTaskIds = selectedTaskIds;
+          await this.persistState(job.id, state);
+        }
+        await this.writeCheckpoint(job.id, "resume_filtered", {
+          skippedTaskKeys: terminalKeys,
+          selectedTaskIds,
+          schema_version: 1,
+        });
+      }
       await this.deps.jobService.updateJobStatus(job.id, "running", {
-        totalItems: job.totalItems ?? selectedTaskIds.length,
+        totalItems: selectedTaskIds.length,
         processedItems: state?.reviewed.length ?? 0,
       });
-      selectedTasks = await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
     } else {
       try {
         selectedTasks = await this.selectTasksViaApi({
@@ -1751,6 +1807,7 @@ export class CodeReviewService {
           };
         }
         parsed.raw = agentOutput;
+        const originalDecision = parsed.decision;
         decision = parsed.decision;
         findings.push(...(parsed.findings ?? []));
 
@@ -1762,13 +1819,52 @@ export class CodeReviewService {
           findings: parsed.findings ?? [],
           resolvedSlugs: parsed.resolvedSlugs ?? undefined,
           unresolvedSlugs: parsed.unresolvedSlugs ?? undefined,
+          decision: parsed.decision,
           existingComments: commentContext.comments,
         });
+
+        let finalDecision = parsed.decision;
+        if (
+          commentResolution?.open?.length &&
+          (finalDecision === "approve" || finalDecision === "info_only")
+        ) {
+          const openSlugs = commentResolution.open;
+          finalDecision = "changes_requested";
+          const message = `Unresolved comment slugs remain: ${formatSlugList(openSlugs)}. Review approval requires resolving these items.`;
+          const backlogSlug = createTaskCommentSlug({
+            source: "code-review",
+            message,
+            category: "comment_backlog",
+          });
+          const backlogBody = formatTaskCommentBody({
+            slug: backlogSlug,
+            source: "code-review",
+            message,
+            status: "open",
+            category: "comment_backlog",
+          });
+          await this.deps.workspaceRepo.createTaskComment({
+            taskId: task.id,
+            taskRunId: taskRun.id,
+            jobId,
+            sourceCommand: "code-review",
+            authorType: "agent",
+            authorAgentId: agent.id,
+            category: "comment_backlog",
+            slug: backlogSlug,
+            status: "open",
+            body: backlogBody,
+            metadata: { openSlugs },
+            createdAt: new Date().toISOString(),
+          });
+        }
+        parsed.decision = finalDecision;
+        decision = finalDecision;
 
         const followups = await this.createFollowupTasksForFindings({
           task,
           findings: parsed.findings ?? [],
-          decision: parsed.decision,
+          decision: originalDecision,
           jobId,
           commandRunId: commandRun.id,
           taskRunId: taskRun.id,
