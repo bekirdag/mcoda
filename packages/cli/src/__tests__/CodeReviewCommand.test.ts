@@ -261,6 +261,7 @@ describe("code-review argument parsing", () => {
     assert.deepEqual(parsed.statusFilter, ["ready_to_review"]);
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.dryRun, false);
+    assert.equal(parsed.rateAgents, false);
   });
 
   it("parses filters, resume and agent stream override", () => {
@@ -281,6 +282,7 @@ describe("code-review argument parsing", () => {
       "--resume",
       "job-1",
       "--agent-stream=false",
+      "--rate-agents",
       "--json",
     ]);
     assert.equal(parsed.workspaceRoot, path.resolve("/tmp/demo"));
@@ -289,6 +291,7 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.storyKey, "S1");
     assert.equal(parsed.resumeJobId, "job-1");
     assert.equal(parsed.agentStream, false);
+    assert.equal(parsed.rateAgents, true);
     assert.equal(parsed.baseRef, "main");
     assert.equal(parsed.json, true);
     assert.deepEqual(parsed.taskKeys, ["TASK-1"]);
@@ -367,6 +370,7 @@ describe("code-review service flow", () => {
     assert.equal(fakeJobService.createdJob?.type, "review");
     assert.equal(fakeWorkspaceRepo.comments.length, 2);
     assert.equal(fakeWorkspaceRepo.reviews.length, 1);
+    assert.equal(fakeStateService.inProgressCalled, false);
     assert.equal(fakeStateService.readyToQaCalled, true);
     assert.equal(fakeJobService.tokenUsage.length, 1);
   });

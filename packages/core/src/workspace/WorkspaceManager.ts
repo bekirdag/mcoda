@@ -25,6 +25,10 @@ export interface WorkspaceConfig {
   mirrorDocs?: boolean;
   branch?: string;
   docdexUrl?: string;
+  projectKey?: string;
+  restrictAutoMergeWithoutScope?: boolean;
+  autoMerge?: boolean;
+  autoPush?: boolean;
   velocity?: {
     implementationSpPerHour?: number;
     reviewSpPerHour?: number;
@@ -110,6 +114,9 @@ const looksLikeWorkspaceId = (value: string): boolean =>
 
 const migrateWorkspaceDbIds = async (workspace: WorkspaceResolution, legacyIds: string[]): Promise<void> => {
   if (!legacyIds.length) return;
+  if (!(await fileExists(workspace.workspaceDbPath))) {
+    return;
+  }
   try {
     const { Connection } = await import("@mcoda/db");
     const conn = await Connection.open(workspace.workspaceDbPath);

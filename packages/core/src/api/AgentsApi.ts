@@ -7,7 +7,7 @@ import {
   UpdateAgentInput,
   CryptoHelper,
 } from "@mcoda/shared";
-import { GlobalCommandRun, GlobalRepository } from "@mcoda/db";
+import { AgentRunRatingRow, GlobalCommandRun, GlobalRepository } from "@mcoda/db";
 import { AgentService, InvocationResult } from "@mcoda/agents";
 import { RoutingService } from "../services/agents/RoutingService.js";
 
@@ -89,6 +89,11 @@ export class AgentsApi {
       });
     }
     return results;
+  }
+
+  async listAgentRunRatings(idOrSlug: string, limit = 50): Promise<AgentRunRatingRow[]> {
+    const agent = await this.resolveAgent(idOrSlug);
+    return this.repo.listAgentRunRatings(agent.id, limit);
   }
 
   async createAgent(input: CreateAgentInput): Promise<AgentResponse> {
@@ -202,6 +207,89 @@ export class AgentsApi {
           metadata: { reason: "agent.test", healthStatus: health.status, adapter: response.adapter },
         });
         return { health, response, prompt: trimmedPrompt };
+      },
+    );
+  }
+
+  private extractTokenUsage(metadata?: Record<string, unknown>): {
+    tokensPrompt?: number;
+    tokensCompletion?: number;
+    tokensTotal?: number;
+  } {
+    if (!metadata || typeof metadata !== "object") return {};
+    const usage = typeof metadata.usage === "object" && metadata.usage ? (metadata.usage as Record<string, unknown>) : undefined;
+    const toNumber = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    const tokensPrompt =
+      toNumber(metadata.tokensPrompt) ??
+      toNumber(metadata.tokens_prompt) ??
+      toNumber(usage?.prompt_tokens) ??
+      toNumber(usage?.promptTokens) ??
+      toNumber(usage?.prompt_tokens);
+    const tokensCompletion =
+      toNumber(metadata.tokensCompletion) ??
+      toNumber(metadata.tokens_completion) ??
+      toNumber(usage?.completion_tokens) ??
+      toNumber(usage?.completionTokens) ??
+      toNumber(usage?.completion_tokens);
+    let tokensTotal =
+      toNumber(metadata.tokensTotal) ??
+      toNumber(metadata.tokens_total) ??
+      toNumber(usage?.total_tokens) ??
+      toNumber(usage?.totalTokens) ??
+      toNumber(usage?.total_tokens);
+    if (tokensTotal === undefined && tokensPrompt !== undefined && tokensCompletion !== undefined) {
+      tokensTotal = tokensPrompt + tokensCompletion;
+    }
+    return { tokensPrompt, tokensCompletion, tokensTotal };
+  }
+
+  async runAgent(
+    idOrSlug: string,
+    prompts: string[],
+    metadata?: Record<string, unknown>,
+  ): Promise<{ agent: Pick<Agent, "id" | "slug">; prompts: string[]; responses: InvocationResult[] }> {
+    const agent = await this.resolveAgent(idOrSlug);
+    const cleaned = prompts.map((prompt) => prompt.trim()).filter(Boolean);
+    if (cleaned.length === 0) {
+      throw new Error("No prompts provided.");
+    }
+    return this.withCommandRun(
+      "agent.run",
+      { id: agent.id, slug: agent.slug, promptCount: cleaned.length },
+      async (run) => {
+        const responses: InvocationResult[] = [];
+        for (let index = 0; index < cleaned.length; index += 1) {
+          const input = cleaned[index];
+          const startedAt = Date.now();
+          const response = await this.agentService.invoke(agent.id, {
+            input,
+            metadata: {
+              command: "agent-run",
+              promptIndex: index,
+              ...metadata,
+            },
+          });
+          const durationSeconds = (Date.now() - startedAt) / 1000;
+          const usage = this.extractTokenUsage(response.metadata as Record<string, unknown> | undefined);
+          await this.repo.recordTokenUsage({
+            agentId: agent.id,
+            commandRunId: run.id,
+            modelName: response.model ?? agent.defaultModel,
+            tokensPrompt: usage.tokensPrompt,
+            tokensCompletion: usage.tokensCompletion,
+            tokensTotal: usage.tokensTotal,
+            durationSeconds,
+            timestamp: new Date().toISOString(),
+            metadata: {
+              reason: "agent.run",
+              adapter: response.adapter,
+              promptIndex: index,
+            },
+          });
+          responses.push(response);
+        }
+        return { agent: { id: agent.id, slug: agent.slug }, prompts: cleaned, responses };
       },
     );
   }

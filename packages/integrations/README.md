@@ -7,7 +7,7 @@ External integrations for mcoda (docdex, telemetry, VCS, QA runners, update chec
 - Install: `npm i @mcoda/integrations`
 
 ## What it provides
-- DocdexClient for local or remote docdex queries.
+- DocdexClient for docdex daemon queries and CLI-backed ingestion.
 - TelemetryClient for token usage reporting.
 - VcsClient for Git operations.
 - SystemClient for update checks.
@@ -26,6 +26,8 @@ const docs = await client.search({ docType: "rfp", query: "payments" });
 ```
 
 ## Notes
+- Docdex state lives under `~/.docdex` (managed by the `docdex` CLI); mcoda does not create repo-local `.docdex`.
+- Chromium QA expects Playwright browsers provisioned via `docdex setup`.
 - Some integrations call external services; configure base URLs and tokens as needed.
 - Primarily used by the mcoda CLI; APIs may evolve.
 

@@ -8,7 +8,9 @@ import { promises as fs } from "node:fs";
  */
 export class PathHelper {
   static getGlobalMcodaDir(): string {
-    return path.join(os.homedir(), ".mcoda");
+    const envHome = process.env.HOME ?? process.env.USERPROFILE;
+    const homeDir = envHome && envHome.trim().length > 0 ? envHome : os.homedir();
+    return path.join(homeDir, ".mcoda");
   }
 
   static getGlobalDbPath(): string {

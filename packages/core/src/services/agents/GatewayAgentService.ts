@@ -168,6 +168,8 @@ const scoreUsage = (discipline: string, bestUsage?: string, capabilities?: strin
   return score;
 };
 
+const EXPLORATION_RATE = 0.1;
+
 const DEFAULT_STATUS_FILTER = [
   "not_started",
   "in_progress",
@@ -295,6 +297,9 @@ export interface GatewayAgentRequest extends TaskSelectionFilters {
   maxDocs?: number;
   agentStream?: boolean;
   onStreamChunk?: (chunk: string) => void;
+  rateAgents?: boolean;
+  avoidAgents?: string[];
+  forceStronger?: boolean;
 }
 
 type Candidate = {
@@ -305,6 +310,7 @@ type Candidate = {
   reasoning: number;
   usageScore: number;
   cost: number;
+  maxComplexity: number;
 };
 
 export class GatewayAgentService {
@@ -448,15 +454,15 @@ export class GatewayAgentService {
           const caps = await this.deps.globalRepo.getAgentCapabilities(overrideAgent.id);
           const missing = requiredCaps.filter((cap) => !caps.includes(cap));
           const health = await this.deps.globalRepo.getAgentHealth(overrideAgent.id);
-          if (missing.length === 0 && health?.status !== "unreachable") {
-            return overrideAgent;
-          }
-          if (missing.length) {
-            warnings.push(
-              `Override agent ${overrideAgent.slug} is missing gateway capabilities (${missing.join(", ")}); ignoring override.`,
-            );
-          } else if (health?.status === "unreachable") {
+          if (health?.status === "unreachable") {
             warnings.push(`Override agent ${overrideAgent.slug} is unreachable; ignoring override.`);
+          } else if (missing.length === 0) {
+            return overrideAgent;
+          } else {
+            warnings.push(
+              `Override agent ${overrideAgent.slug} is missing gateway capabilities (${missing.join(", ")}); proceeding with override as requested.`,
+            );
+            return overrideAgent;
           }
         } catch (overrideError) {
           warnings.push(`Override agent ${override} could not be resolved (${(overrideError as Error).message}); ignoring override.`);
@@ -738,15 +744,18 @@ export class GatewayAgentService {
     };
   }
 
-  private async listCandidates(requiredCaps: string[], discipline: string): Promise<Candidate[]> {
+  private async listCandidates(requiredCaps: string[], discipline: string, avoidAgents: string[] = []): Promise<Candidate[]> {
     const agents = await this.deps.globalRepo.listAgents();
     if (agents.length === 0) {
       throw new Error("No agents available; register one with mcoda agent add");
     }
+    const avoidSet = new Set(avoidAgents.map((value) => value.toLowerCase()));
     const health = await this.deps.globalRepo.listAgentHealthSummary();
     const healthById = new Map(health.map((row) => [row.agentId, row]));
     const candidates: Candidate[] = [];
     for (const agent of agents) {
+      const slug = agent.slug ?? agent.id;
+      if (avoidSet.has(agent.id.toLowerCase()) || avoidSet.has(slug.toLowerCase())) continue;
       const capabilities = await this.deps.globalRepo.getAgentCapabilities(agent.id);
       const missing = requiredCaps.filter((cap) => !capabilities.includes(cap));
       if (missing.length) continue;
@@ -761,6 +770,10 @@ export class GatewayAgentService {
       const usageScore = scoreUsage(discipline, agent.bestUsage, capabilities);
       const cost = agent.costPerMillion ?? Number.POSITIVE_INFINITY;
       const adjustedQuality = healthEntry?.status === "degraded" ? quality - 0.5 : quality;
+      const maxComplexity =
+        typeof agent.maxComplexity === "number" && Number.isFinite(agent.maxComplexity)
+          ? clamp(Math.round(agent.maxComplexity), 1, 10)
+          : 5;
       candidates.push({
         agent,
         capabilities,
@@ -769,6 +782,7 @@ export class GatewayAgentService {
         reasoning,
         usageScore,
         cost,
+        maxComplexity,
       });
     }
     return candidates;
@@ -778,10 +792,46 @@ export class GatewayAgentService {
     if (candidates.length === 0) {
       throw new Error("No eligible agents available for this job");
     }
-    const sortedQuality = candidates.map((c) => c.quality);
+    const normalizedComplexity = clamp(Math.round(complexity), 1, 10);
+    const eligible = candidates.filter((c) => c.maxComplexity >= normalizedComplexity);
+    let pool = eligible;
+    let gatingNote = "";
+    if (!eligible.length) {
+      const fallback =
+        normalizedComplexity > 1
+          ? candidates.filter((c) => c.maxComplexity >= normalizedComplexity - 1)
+          : candidates;
+      pool = fallback.length ? fallback : candidates;
+      gatingNote = fallback.length
+        ? ` No agents meet max complexity ${normalizedComplexity}; allowing ${normalizedComplexity - 1} fallback.`
+        : ` No agents meet max complexity ${normalizedComplexity}; using best available.`;
+    }
+
+    if (Math.random() < EXPLORATION_RATE) {
+      const stretchPool =
+        normalizedComplexity > 1
+          ? candidates.filter((c) => c.maxComplexity < normalizedComplexity && c.maxComplexity >= normalizedComplexity - 1)
+          : [];
+      const allowRedemption = normalizedComplexity <= 4;
+      const sortedByQuality = pool.slice().sort((a, b) => a.quality - b.quality);
+      const redemptionPool = allowRedemption ? sortedByQuality.slice(0, Math.max(1, Math.ceil(pool.length * 0.2))) : [];
+      const canUseStretch = stretchPool.length > 0;
+      const canUseRedemption = redemptionPool.length > 0;
+      if (canUseStretch || canUseRedemption) {
+        const useStretch = canUseStretch && (!canUseRedemption || Math.random() < 0.5);
+        const explorePool = useStretch ? stretchPool : redemptionPool;
+        const pick = explorePool[Math.floor(Math.random() * explorePool.length)];
+        const rationale = useStretch
+          ? `Exploration: stretching an agent (max complexity ${pick.maxComplexity}) for task complexity ${normalizedComplexity}/10.${gatingNote}`
+          : `Exploration: redemption run for a lower-rated agent to reassess performance.${gatingNote}`;
+        return { pick, rationale };
+      }
+    }
+
+    const sortedQuality = pool.map((c) => c.quality);
     const maxQuality = Math.max(...sortedQuality);
-    if (complexity >= 9) {
-      const pick = candidates
+    if (normalizedComplexity >= 9) {
+      const pick = pool
         .slice()
         .sort((a, b) => {
           if (b.quality !== a.quality) return b.quality - a.quality;
@@ -791,12 +841,12 @@ export class GatewayAgentService {
         })[0];
       return {
         pick,
-        rationale: `Complexity ${complexity}/10 requires the highest capability; selected top-rated agent with best fit for ${discipline}.`,
+        rationale: `Complexity ${normalizedComplexity}/10 requires the highest capability; selected top-rated agent with best fit for ${discipline}.${gatingNote}`,
       };
     }
-    if (complexity >= 8) {
-      const pool = candidates.filter((c) => c.quality >= maxQuality - 1);
-      const pick = (pool.length ? pool : candidates)
+    if (normalizedComplexity >= 8) {
+      const qualityPool = pool.filter((c) => c.quality >= maxQuality - 1);
+      const pick = (qualityPool.length ? qualityPool : pool)
         .slice()
         .sort((a, b) => {
           if (b.usageScore !== a.usageScore) return b.usageScore - a.usageScore;
@@ -805,12 +855,12 @@ export class GatewayAgentService {
         })[0];
       return {
         pick,
-        rationale: `Complexity ${complexity}/10 favors strong agents with good cost/fit balance; selected best-fit candidate.`,
+        rationale: `Complexity ${normalizedComplexity}/10 favors strong agents with good cost/fit balance; selected best-fit candidate.${gatingNote}`,
       };
     }
-    const target = complexity;
-    const pool = candidates.filter((c) => c.quality >= target);
-    const base = pool.length ? pool : candidates;
+    const target = normalizedComplexity;
+    const qualityPool = pool.filter((c) => c.quality >= target);
+    const base = qualityPool.length ? qualityPool : pool;
     const pick = base
       .slice()
       .sort((a, b) => {
@@ -823,15 +873,22 @@ export class GatewayAgentService {
       })[0];
     return {
       pick,
-      rationale: `Complexity ${complexity}/10 targets a comparable tier agent; selected closest match with discipline fit and cost awareness.`,
+      rationale: `Complexity ${normalizedComplexity}/10 targets a comparable tier agent; selected closest match with discipline fit and cost awareness.${gatingNote}`,
     };
   }
 
-  private async selectAgentForJob(job: string, analysis: GatewayAnalysis): Promise<GatewayAgentDecision> {
+  private async selectAgentForJob(
+    job: string,
+    analysis: GatewayAnalysis,
+    avoidAgents: string[] = [],
+    forceStronger: boolean = false,
+  ): Promise<GatewayAgentDecision> {
     const normalizedJob = canonicalizeCommandName(job);
     const requiredCaps = getCommandRequiredCapabilities(normalizedJob);
-    const candidates = await this.listCandidates(requiredCaps, analysis.discipline);
-    const { pick, rationale } = this.chooseCandidate(candidates, analysis.complexity, analysis.discipline);
+    const candidates = await this.listCandidates(requiredCaps, analysis.discipline, avoidAgents);
+    const boostedComplexity = forceStronger ? clamp(Math.round(analysis.complexity) + 1, 1, 10) : analysis.complexity;
+    const { pick, rationale } = this.chooseCandidate(candidates, boostedComplexity, analysis.discipline);
+    const finalRationale = forceStronger ? `${rationale} (force_stronger applied)` : rationale;
     return {
       agentId: pick.agent.id,
       agentSlug: pick.agent.slug ?? pick.agent.id,
@@ -839,7 +896,7 @@ export class GatewayAgentService {
       reasoningRating: pick.agent.reasoningRating ?? undefined,
       bestUsage: pick.agent.bestUsage ?? undefined,
       costPerMillion: Number.isFinite(pick.cost) ? pick.cost : undefined,
-      rationale,
+      rationale: finalRationale,
     };
   }
 
@@ -936,7 +993,12 @@ export class GatewayAgentService {
         analysis.docdexNotes.push(...docdexWarnings);
       }
       analysis = await this.validateFilePlan(analysis, warnings);
-      const chosenAgent = await this.selectAgentForJob(normalizedJob, analysis);
+      const chosenAgent = await this.selectAgentForJob(
+        normalizedJob,
+        analysis,
+        request.avoidAgents ?? [],
+        request.forceStronger ?? false,
+      );
       await this.deps.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {
         commandRunId: commandRun.id,

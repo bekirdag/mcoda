@@ -106,13 +106,20 @@ export class VcsClient {
       await exec(applyCmd, opts as any);
       return;
     } catch (error) {
-      // If the patch is already applied, a reverse --check succeeds; treat that as a no-op.
-      const reverseCheckCmd = `cat <<'__PATCH__' | git apply --reverse --check --whitespace=nowarn\n${patch}\n__PATCH__`;
+      // Retry with 3-way merge for drifted files.
+      const apply3wayCmd = `cat <<'__PATCH__' | git apply --3way --whitespace=nowarn\n${patch}\n__PATCH__`;
       try {
-        await exec(reverseCheckCmd, opts as any);
+        await exec(apply3wayCmd, opts as any);
         return;
       } catch {
-        throw error;
+        // If the patch is already applied, a reverse --check succeeds; treat that as a no-op.
+        const reverseCheckCmd = `cat <<'__PATCH__' | git apply --reverse --check --whitespace=nowarn\n${patch}\n__PATCH__`;
+        try {
+          await exec(reverseCheckCmd, opts as any);
+          return;
+        } catch {
+          throw error;
+        }
       }
     }
   }
@@ -138,6 +145,14 @@ export class VcsClient {
       await this.ensureClean(cwd);
     }
     await this.runGit(cwd, ["merge", "--no-edit", source]);
+  }
+
+  async abortMerge(cwd: string): Promise<void> {
+    try {
+      await this.runGit(cwd, ["merge", "--abort"]);
+    } catch {
+      // Ignore when no merge is in progress.
+    }
   }
 
   async push(cwd: string, remote: string, branch: string): Promise<void> {
@@ -187,9 +202,12 @@ export class VcsClient {
     }
   }
 
-  async ensureClean(cwd: string, ignoreDotMcoda = true): Promise<void> {
+  async ensureClean(cwd: string, ignoreDotMcoda = true, ignorePaths: string[] = []): Promise<void> {
     const dirty = await this.dirtyPaths(cwd);
-    const filtered = ignoreDotMcoda ? dirty.filter((p) => !p.startsWith(".mcoda")) : dirty;
+    const filtered = dirty.filter((p) => {
+      if (ignoreDotMcoda && p.startsWith(".mcoda")) return false;
+      return !ignorePaths.some((prefix) => p.startsWith(prefix));
+    });
     if (filtered.length) {
       throw new Error(`Working tree dirty: ${filtered.join(", ")}`);
     }

@@ -23,6 +23,12 @@ const mapAgentRow = (row: any): Agent => ({
   reasoningRating: row.reasoning_rating ?? undefined,
   bestUsage: row.best_usage ?? undefined,
   costPerMillion: row.cost_per_million ?? undefined,
+  maxComplexity: row.max_complexity ?? undefined,
+  ratingSamples: row.rating_samples ?? undefined,
+  ratingLastScore: row.rating_last_score ?? undefined,
+  ratingUpdatedAt: row.rating_updated_at ?? undefined,
+  complexitySamples: row.complexity_samples ?? undefined,
+  complexityUpdatedAt: row.complexity_updated_at ?? undefined,
   config: row.config_json ? (JSON.parse(row.config_json) as Record<string, unknown>) : undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -58,6 +64,30 @@ export interface GlobalTokenUsageInsert {
   metadata?: Record<string, unknown>;
 }
 
+export interface AgentRunRatingInsert {
+  agentId: string;
+  jobId?: string | null;
+  commandRunId?: string | null;
+  taskId?: string | null;
+  taskKey?: string | null;
+  commandName?: string | null;
+  discipline?: string | null;
+  complexity?: number | null;
+  qualityScore?: number | null;
+  tokensTotal?: number | null;
+  durationSeconds?: number | null;
+  iterations?: number | null;
+  totalCost?: number | null;
+  runScore?: number | null;
+  ratingVersion?: string | null;
+  rawReview?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface AgentRunRatingRow extends AgentRunRatingInsert {
+  id: string;
+}
+
 export class GlobalRepository {
   constructor(private db: Database, private connection?: Connection) {}
 
@@ -75,14 +105,14 @@ export class GlobalRepository {
 
   async listAgents(): Promise<Agent[]> {
     const rows = await this.db.all(
-      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at FROM agents ORDER BY slug ASC",
+      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents ORDER BY slug ASC",
     );
     return rows.map(mapAgentRow);
   }
 
   async getAgentById(id: string): Promise<Agent | undefined> {
     const row = await this.db.get(
-      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at FROM agents WHERE id = ?",
+      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents WHERE id = ?",
       id,
     );
     return row ? mapAgentRow(row) : undefined;
@@ -90,7 +120,7 @@ export class GlobalRepository {
 
   async getAgentBySlug(slug: string): Promise<Agent | undefined> {
     const row = await this.db.get(
-      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at FROM agents WHERE slug = ?",
+      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents WHERE slug = ?",
       slug,
     );
     return row ? mapAgentRow(row) : undefined;
@@ -100,8 +130,8 @@ export class GlobalRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO agents (id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, config_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.slug,
       input.adapter,
@@ -110,6 +140,12 @@ export class GlobalRepository {
       input.reasoningRating ?? null,
       input.bestUsage ?? null,
       input.costPerMillion ?? null,
+      input.maxComplexity ?? null,
+      input.ratingSamples ?? null,
+      input.ratingLastScore ?? null,
+      input.ratingUpdatedAt ?? null,
+      input.complexitySamples ?? null,
+      input.complexityUpdatedAt ?? null,
       input.config ? JSON.stringify(input.config) : null,
       now,
       now,
@@ -153,6 +189,30 @@ export class GlobalRepository {
     if (patch.costPerMillion !== undefined) {
       updates.push("cost_per_million = ?");
       params.push(patch.costPerMillion);
+    }
+    if (patch.maxComplexity !== undefined) {
+      updates.push("max_complexity = ?");
+      params.push(patch.maxComplexity);
+    }
+    if (patch.ratingSamples !== undefined) {
+      updates.push("rating_samples = ?");
+      params.push(patch.ratingSamples);
+    }
+    if (patch.ratingLastScore !== undefined) {
+      updates.push("rating_last_score = ?");
+      params.push(patch.ratingLastScore);
+    }
+    if (patch.ratingUpdatedAt !== undefined) {
+      updates.push("rating_updated_at = ?");
+      params.push(patch.ratingUpdatedAt);
+    }
+    if (patch.complexitySamples !== undefined) {
+      updates.push("complexity_samples = ?");
+      params.push(patch.complexitySamples);
+    }
+    if (patch.complexityUpdatedAt !== undefined) {
+      updates.push("complexity_updated_at = ?");
+      params.push(patch.complexityUpdatedAt);
     }
     if (patch.config !== undefined) {
       updates.push("config_json = ?");
@@ -488,5 +548,83 @@ export class GlobalRepository {
       entry.timestamp,
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     );
+  }
+
+  async insertAgentRunRating(entry: AgentRunRatingInsert): Promise<AgentRunRatingRow> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO agent_run_ratings (
+        id,
+        agent_id,
+        job_id,
+        command_run_id,
+        task_id,
+        task_key,
+        command_name,
+        discipline,
+        complexity,
+        quality_score,
+        tokens_total,
+        duration_seconds,
+        iterations,
+        total_cost,
+        run_score,
+        rating_version,
+        raw_review_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      entry.agentId,
+      entry.jobId ?? null,
+      entry.commandRunId ?? null,
+      entry.taskId ?? null,
+      entry.taskKey ?? null,
+      entry.commandName ?? null,
+      entry.discipline ?? null,
+      entry.complexity ?? null,
+      entry.qualityScore ?? null,
+      entry.tokensTotal ?? null,
+      entry.durationSeconds ?? null,
+      entry.iterations ?? null,
+      entry.totalCost ?? null,
+      entry.runScore ?? null,
+      entry.ratingVersion ?? null,
+      entry.rawReview ? JSON.stringify(entry.rawReview) : null,
+      entry.createdAt,
+    );
+    return { ...entry, id };
+  }
+
+  async listAgentRunRatings(agentId: string, limit = 50): Promise<AgentRunRatingRow[]> {
+    const rows = await this.db.all<any[]>(
+      `SELECT id, agent_id, job_id, command_run_id, task_id, task_key, command_name, discipline, complexity, quality_score,
+              tokens_total, duration_seconds, iterations, total_cost, run_score, rating_version, raw_review_json, created_at
+       FROM agent_run_ratings
+       WHERE agent_id = ?
+       ORDER BY datetime(created_at) DESC
+       LIMIT ?`,
+      agentId,
+      limit,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      agentId: row.agent_id,
+      jobId: row.job_id ?? null,
+      commandRunId: row.command_run_id ?? null,
+      taskId: row.task_id ?? null,
+      taskKey: row.task_key ?? null,
+      commandName: row.command_name ?? null,
+      discipline: row.discipline ?? null,
+      complexity: row.complexity ?? null,
+      qualityScore: row.quality_score ?? null,
+      tokensTotal: row.tokens_total ?? null,
+      durationSeconds: row.duration_seconds ?? null,
+      iterations: row.iterations ?? null,
+      totalCost: row.total_cost ?? null,
+      runScore: row.run_score ?? null,
+      ratingVersion: row.rating_version ?? null,
+      rawReview: row.raw_review_json ? JSON.parse(row.raw_review_json) : null,
+      createdAt: row.created_at,
+    }));
   }
 }

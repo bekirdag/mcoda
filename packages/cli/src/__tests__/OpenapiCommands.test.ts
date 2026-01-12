@@ -7,11 +7,13 @@ describe("openapi-from-docs argument parsing", () => {
   it("defaults agentStream to true", () => {
     const parsed = parseOpenapiArgs([]);
     assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.rateAgents, false);
   });
 
   it("parses agentStream false", () => {
-    const parsed = parseOpenapiArgs(["--agent-stream", "false"]);
+    const parsed = parseOpenapiArgs(["--agent-stream", "false", "--rate-agents"]);
     assert.equal(parsed.agentStream, false);
+    assert.equal(parsed.rateAgents, true);
   });
 
   it("parses agentStream with inline value", () => {

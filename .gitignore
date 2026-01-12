@@ -13,3 +13,4 @@ pnpm-lock.yaml
 .turbo
 logs/
 tests/results/
+.mcoda/

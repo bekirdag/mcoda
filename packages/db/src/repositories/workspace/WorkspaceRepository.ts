@@ -220,6 +220,8 @@ export interface TaskCommentInsert {
   authorType: "agent" | "human";
   authorAgentId?: string | null;
   category?: string | null;
+  slug?: string | null;
+  status?: string | null;
   file?: string | null;
   line?: number | null;
   pathHint?: string | null;
@@ -340,6 +342,23 @@ export class WorkspaceRepository {
     const row = await this.db.get(
       `SELECT id, key, name, description, metadata_json, created_at, updated_at FROM projects WHERE key = ?`,
       key,
+    );
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      key: row.key,
+      name: row.name ?? undefined,
+      description: row.description ?? undefined,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getProjectById(id: string): Promise<ProjectRow | undefined> {
+    const row = await this.db.get(
+      `SELECT id, key, name, description, metadata_json, created_at, updated_at FROM projects WHERE id = ?`,
+      id,
     );
     if (!row) return undefined;
     return {
@@ -702,6 +721,38 @@ export class WorkspaceRepository {
     };
   }
 
+  async listTasksByMetadataValue(projectId: string, metadataKey: string, metadataValue: string): Promise<TaskRow[]> {
+    const rows = await this.db.all<any[]>(
+      `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
+       FROM tasks WHERE project_id = ?`,
+      projectId,
+    );
+    return rows
+      .map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        epicId: row.epic_id,
+        userStoryId: row.user_story_id,
+        key: row.key,
+        title: row.title,
+        description: row.description ?? undefined,
+        type: row.type ?? undefined,
+        status: row.status,
+        storyPoints: row.story_points ?? undefined,
+        priority: row.priority ?? undefined,
+        assignedAgentId: row.assigned_agent_id ?? undefined,
+        assigneeHuman: row.assignee_human ?? undefined,
+        vcsBranch: row.vcs_branch ?? undefined,
+        vcsBaseBranch: row.vcs_base_branch ?? undefined,
+        vcsLastCommitSha: row.vcs_last_commit_sha ?? undefined,
+        metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+        openapiVersionAtCreation: row.openapi_version_at_creation ?? undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
+      .filter((task) => (task.metadata as Record<string, unknown> | undefined)?.[metadataKey] === metadataValue);
+  }
+
   async getTasksByIds(taskIds: string[]): Promise<TaskRow[]> {
     if (!taskIds.length) return [];
     const placeholders = taskIds.map(() => "?").join(", ");
@@ -1041,6 +1092,21 @@ export class WorkspaceRepository {
     };
   }
 
+  async cleanupExpiredTaskLocks(nowIso: string = new Date().toISOString()): Promise<string[]> {
+    return this.withTransaction(async () => {
+      const rows = await this.db.all<{ task_key?: string | null; task_id: string }[]>(
+        `SELECT t.key as task_key, l.task_id as task_id
+         FROM task_locks l
+         LEFT JOIN tasks t ON t.id = l.task_id
+         WHERE l.expires_at < ?`,
+        nowIso,
+      );
+      if (!rows.length) return [];
+      await this.db.run(`DELETE FROM task_locks WHERE expires_at < ?`, nowIso);
+      return rows.map((row) => row.task_key ?? row.task_id);
+    });
+  }
+
   async tryAcquireTaskLock(
     taskId: string,
     taskRunId: string,
@@ -1058,7 +1124,13 @@ export class WorkspaceRepository {
            job_id = excluded.job_id,
            acquired_at = excluded.acquired_at,
            expires_at = excluded.expires_at
-         WHERE task_locks.expires_at < ?`,
+         WHERE task_locks.expires_at < ?
+           OR NOT EXISTS (
+             SELECT 1
+             FROM task_runs
+             WHERE task_runs.id = task_locks.task_run_id
+               AND task_runs.status = 'running'
+           )`,
         taskId,
         taskRunId,
         jobId ?? null,
@@ -1294,8 +1366,8 @@ export class WorkspaceRepository {
   async createTaskComment(record: TaskCommentInsert): Promise<TaskCommentRow> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, slug, status, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.taskId,
       record.taskRunId ?? null,
@@ -1304,6 +1376,8 @@ export class WorkspaceRepository {
       record.authorType,
       record.authorAgentId ?? null,
       record.category ?? null,
+      record.slug ?? null,
+      record.status ?? "open",
       record.file ?? null,
       record.line ?? null,
       record.pathHint ?? null,
@@ -1313,20 +1387,35 @@ export class WorkspaceRepository {
       record.resolvedAt ?? null,
       record.resolvedBy ?? null,
     );
-    return { ...record, id };
+    return { ...record, id, status: record.status ?? "open" };
   }
 
-  async listTaskComments(taskId: string, options: { sourceCommands?: string[]; limit?: number } = {}): Promise<TaskCommentRow[]> {
+  async listTaskComments(
+    taskId: string,
+    options: { sourceCommands?: string[]; limit?: number; slug?: string | string[]; resolved?: boolean } = {},
+  ): Promise<TaskCommentRow[]> {
     const clauses = ["task_id = ?"];
     const params: any[] = [taskId];
     if (options.sourceCommands && options.sourceCommands.length) {
       clauses.push(`source_command IN (${options.sourceCommands.map(() => "?").join(", ")})`);
       params.push(...options.sourceCommands);
     }
+    if (options.slug) {
+      const slugs = Array.isArray(options.slug) ? options.slug : [options.slug];
+      if (slugs.length) {
+        clauses.push(`slug IN (${slugs.map(() => "?").join(", ")})`);
+        params.push(...slugs);
+      }
+    }
+    if (options.resolved === true) {
+      clauses.push("resolved_at IS NOT NULL");
+    } else if (options.resolved === false) {
+      clauses.push("resolved_at IS NULL");
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const limitClause = options.limit ? `LIMIT ${options.limit}` : "";
     const rows = await this.db.all<any[]>(
-      `SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
+      `SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, slug, status, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
        FROM task_comments
        ${where}
        ORDER BY datetime(created_at) DESC
@@ -1342,6 +1431,8 @@ export class WorkspaceRepository {
       authorType: row.author_type,
       authorAgentId: row.author_agent_id ?? undefined,
       category: row.category ?? undefined,
+      slug: row.slug ?? undefined,
+      status: row.status ?? undefined,
       file: row.file ?? undefined,
       line: row.line ?? undefined,
       pathHint: row.path_hint ?? undefined,
@@ -1351,6 +1442,30 @@ export class WorkspaceRepository {
       resolvedAt: row.resolved_at ?? undefined,
       resolvedBy: row.resolved_by ?? undefined,
     }));
+  }
+
+  async resolveTaskComment(params: { taskId: string; slug: string; resolvedAt: string; resolvedBy?: string | null }): Promise<void> {
+    await this.db.run(
+      `UPDATE task_comments
+       SET resolved_at = ?, resolved_by = ?, status = ?
+       WHERE task_id = ? AND slug = ?`,
+      params.resolvedAt,
+      params.resolvedBy ?? null,
+      "resolved",
+      params.taskId,
+      params.slug,
+    );
+  }
+
+  async reopenTaskComment(params: { taskId: string; slug: string }): Promise<void> {
+    await this.db.run(
+      `UPDATE task_comments
+       SET resolved_at = NULL, resolved_by = NULL, status = ?
+       WHERE task_id = ? AND slug = ?`,
+      "open",
+      params.taskId,
+      params.slug,
+    );
   }
 
   async createTaskReview(record: TaskReviewInsert): Promise<TaskReviewRow> {

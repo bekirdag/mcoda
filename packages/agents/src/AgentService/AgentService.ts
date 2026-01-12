@@ -1,4 +1,6 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { CryptoHelper, Agent, AgentAuthMetadata, AgentHealth, AgentPromptManifest } from "@mcoda/shared";
 import { GlobalRepository } from "@mcoda/db";
 import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
@@ -37,6 +39,11 @@ const MAX_HANDOFF_CHARS = 8000;
 const IO_ENV = "MCODA_STREAM_IO";
 const IO_PROMPT_ENV = "MCODA_STREAM_IO_PROMPT";
 const IO_PREFIX = "[agent-io]";
+const DOCDEX_GUIDANCE_HEADER = "[Docdex guidance]";
+const DOCDEX_GUIDANCE_MAX_CHARS = 12000;
+const DOCDEX_GUIDANCE_PATH = path.join(os.homedir(), ".docdex", "agents.md");
+let docdexGuidanceCache: string | undefined;
+let docdexGuidanceLoaded = false;
 
 const isIoEnabled = (): boolean => {
   const raw = process.env[IO_ENV];
@@ -89,6 +96,20 @@ const readGatewayHandoff = async (): Promise<string | undefined> => {
     const trimmed = content.trim();
     if (!trimmed) return undefined;
     return trimmed.slice(0, MAX_HANDOFF_CHARS);
+  } catch {
+    return undefined;
+  }
+};
+
+const readDocdexGuidance = async (): Promise<string | undefined> => {
+  if (docdexGuidanceLoaded) return docdexGuidanceCache;
+  docdexGuidanceLoaded = true;
+  try {
+    const content = await fs.readFile(DOCDEX_GUIDANCE_PATH, "utf8");
+    const trimmed = content.trim();
+    if (!trimmed) return undefined;
+    docdexGuidanceCache = trimmed.slice(0, DOCDEX_GUIDANCE_MAX_CHARS);
+    return docdexGuidanceCache;
   } catch {
     return undefined;
   }
@@ -257,7 +278,8 @@ export class AgentService {
     if (!adapter.invoke) {
       throw new Error("Adapter does not support invoke");
     }
-    const enriched = await this.applyGatewayHandoff(request);
+    const withDocdex = await this.applyDocdexGuidance(request);
+    const enriched = await this.applyGatewayHandoff(withDocdex);
     const ioEnabled = isIoEnabled();
     if (ioEnabled) {
       renderIoHeader(agent, enriched, "invoke");
@@ -276,7 +298,8 @@ export class AgentService {
     if (!adapter.invokeStream) {
       throw new Error("Adapter does not support streaming");
     }
-    const enriched = await this.applyGatewayHandoff(request);
+    const withDocdex = await this.applyDocdexGuidance(request);
+    const enriched = await this.applyGatewayHandoff(withDocdex);
     const ioEnabled = isIoEnabled();
     const generator = await adapter.invokeStream(enriched);
     async function* wrap(): AsyncGenerator<InvocationResult, void, unknown> {
@@ -304,5 +327,12 @@ export class AgentService {
     if (!handoff) return request;
     const suffix = `\n\n${HANDOFF_HEADER}\n${handoff}`;
     return { ...request, input: `${request.input ?? ""}${suffix}` };
+  }
+
+  private async applyDocdexGuidance(request: InvocationRequest): Promise<InvocationRequest> {
+    const guidance = await readDocdexGuidance();
+    if (!guidance) return request;
+    const prefix = `${DOCDEX_GUIDANCE_HEADER}\n${guidance}\n\n`;
+    return { ...request, input: `${prefix}${request.input ?? ""}` };
   }
 }

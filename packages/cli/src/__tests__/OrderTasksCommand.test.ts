@@ -107,6 +107,7 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
     "codex",
     "--agent-stream",
     "false",
+    "--rate-agents",
     "--json",
   ]);
   assert.equal(parsed.workspaceRoot, path.resolve("/tmp/ws"));
@@ -116,6 +117,7 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
   assert.equal(parsed.includeBlocked, true);
   assert.equal(parsed.agentName, "codex");
   assert.equal(parsed.agentStream, false);
+  assert.equal(parsed.rateAgents, true);
   assert.equal(parsed.json, true);
 });
 

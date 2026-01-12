@@ -1,8 +1,8 @@
 import path from "node:path";
 import { DocsService, WorkspaceResolver } from "@mcoda/core";
 
-const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rfp-id <ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
-const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
+const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--rfp-id <ID>] [--fast] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
+const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--rate-agents] [--fast] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
 
 export interface ParsedPdrArgs {
   workspaceRoot?: string;
@@ -12,6 +12,8 @@ export interface ParsedPdrArgs {
   outPath?: string;
   agentName?: string;
   agentStream: boolean;
+  rateAgents: boolean;
+  fast: boolean;
   dryRun: boolean;
   json: boolean;
   quiet: boolean;
@@ -27,6 +29,8 @@ export interface ParsedSdsArgs {
   agentName?: string;
   templateName?: string;
   agentStream: boolean;
+  rateAgents: boolean;
+  fast: boolean;
   force: boolean;
   resumeJobId?: string;
   dryRun: boolean;
@@ -53,6 +57,8 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
   let outPath: string | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
+  let fast = false;
   let dryRun = false;
   let json = false;
   let quiet = false;
@@ -62,6 +68,11 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
     switch (arg) {
       case "--workspace-root":
         workspaceRoot = argv[i + 1] ? path.resolve(argv[i + 1]) : undefined;
@@ -97,6 +108,19 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
         }
         break;
       }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
+      case "--fast":
+        fast = true;
+        break;
       case "--json":
         json = true;
         break;
@@ -136,6 +160,8 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
     outPath,
     agentName,
     agentStream: agentStream ?? true,
+    rateAgents,
+    fast,
     dryRun,
     json,
     quiet,
@@ -152,7 +178,9 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
   let agentName: string | undefined;
   let templateName: string | undefined;
   let agentStream: boolean | undefined;
+  let rateAgents = false;
   let force = false;
+  let fast = false;
   let resumeJobId: string | undefined;
   let dryRun = false;
   let json = false;
@@ -163,6 +191,11 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
     switch (arg) {
       case "--workspace-root":
         workspaceRoot = argv[i + 1] ? path.resolve(argv[i + 1]) : undefined;
@@ -194,6 +227,19 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
         }
         break;
       }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
+      case "--fast":
+        fast = true;
+        break;
       case "--force":
         force = true;
         break;
@@ -234,6 +280,8 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
     agentName,
     templateName,
     agentStream: agentStream ?? true,
+    rateAgents,
+    fast,
     force,
     resumeJobId,
     dryRun,
@@ -279,6 +327,8 @@ export class DocsCommands {
           agentName: parsed.agentName,
           templateName: parsed.templateName,
           agentStream: parsed.agentStream,
+          rateAgents: parsed.rateAgents,
+          fast: parsed.fast,
           dryRun: parsed.dryRun,
           json: parsed.json,
           force: parsed.force,
@@ -354,6 +404,8 @@ export class DocsCommands {
         outPath: parsed.outPath,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
+        rateAgents: parsed.rateAgents,
+        fast: parsed.fast,
         dryRun: parsed.dryRun,
         json: parsed.json,
         onToken,

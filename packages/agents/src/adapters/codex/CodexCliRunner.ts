@@ -1,6 +1,28 @@
 import { spawn, spawnSync } from "node:child_process";
 
 const CODEX_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const CODEX_REASONING_ENV = "MCODA_CODEX_REASONING_EFFORT";
+const CODEX_REASONING_ENV_FALLBACK = "CODEX_REASONING_EFFORT";
+
+const normalizeReasoningEffort = (raw: string | undefined): string | undefined => {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!["low", "medium", "high", "xhigh"].includes(normalized)) return undefined;
+  return normalized;
+};
+
+const resolveReasoningEffort = (model?: string): string | undefined => {
+  const configured = normalizeReasoningEffort(process.env[CODEX_REASONING_ENV] ?? process.env[CODEX_REASONING_ENV_FALLBACK]);
+  const normalizedModel = (model ?? "").toLowerCase();
+  const isGpt51 = normalizedModel.includes("gpt-5.1");
+  if (configured) {
+    if (configured === "xhigh" && isGpt51) return "high";
+    return configured;
+  }
+  if (isGpt51) return "high";
+  return undefined;
+};
 
 export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Record<string, unknown> } => {
   if (process.env.MCODA_CLI_STUB === "1") {
@@ -38,7 +60,12 @@ export const runCodexExec = (prompt: string, model?: string): { output: string; 
     return { output, raw };
   }
   const health = cliHealthy(true);
-  const args = ["exec", "--model", model ?? "gpt-5.1-codex-max", "--full-auto", "--json"];
+  const resolvedModel = model ?? "gpt-5.1-codex-max";
+  const args = ["exec", "--model", resolvedModel, "--full-auto", "--json"];
+  const reasoningEffort = resolveReasoningEffort(resolvedModel);
+  if (reasoningEffort) {
+    args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
+  }
   const result = spawnSync("codex", args, {
     input: prompt,
     encoding: "utf8",
@@ -85,7 +112,12 @@ export async function* runCodexExecStream(
     return;
   }
   cliHealthy(true);
-  const args = ["exec", "--model", model ?? "gpt-5.1-codex-max", "--full-auto", "--json"];
+  const resolvedModel = model ?? "gpt-5.1-codex-max";
+  const args = ["exec", "--model", resolvedModel, "--full-auto", "--json"];
+  const reasoningEffort = resolveReasoningEffort(resolvedModel);
+  if (reasoningEffort) {
+    args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
+  }
   const child = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.write(prompt);
   child.stdin.end();
