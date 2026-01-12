@@ -55,6 +55,12 @@ if (process.platform === "win32") {
   process.env.HOMEPATH = winTestHome.slice(parsed.root.length - 1);
   process.env.MCODA_SKIP_DOCDEX_CHECKS = "1";
   process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS = "1";
+  const patchPath = path.join(root, "tests", "helpers", "win32-fs-patch.cjs");
+  const existingNodeOptions = process.env.NODE_OPTIONS ?? "";
+  const requireFlag = `--require=${patchPath}`;
+  if (!existingNodeOptions.includes(requireFlag)) {
+    process.env.NODE_OPTIONS = `${existingNodeOptions} ${requireFlag}`.trim();
+  }
   if (!process.env.NODE_TEST_CONCURRENCY) {
     process.env.NODE_TEST_CONCURRENCY = "1";
   }
