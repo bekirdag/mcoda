@@ -9,8 +9,7 @@ import {
   resolvePlaywrightCli,
 } from "../DocdexRuntime.js";
 
-const shouldSkipDocdexCheck =
-  process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" || (process.platform === "win32" && Boolean(process.env.CI));
+const shouldSkipDocdexCheck = process.platform === "win32" || process.env.MCODA_SKIP_DOCDEX_CHECKS === "1";
 
 test("resolveDocdexBinary returns an existing binary path when docdex is installed", () => {
   const binary = resolveDocdexBinary();

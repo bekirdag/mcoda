@@ -54,6 +54,7 @@ if (process.platform === "win32") {
   process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, "");
   process.env.HOMEPATH = winTestHome.slice(parsed.root.length - 1);
   process.env.MCODA_SKIP_DOCDEX_CHECKS = "1";
+  process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS = "1";
   if (!process.env.NODE_TEST_CONCURRENCY) {
     process.env.NODE_TEST_CONCURRENCY = "1";
   }
