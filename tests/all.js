@@ -42,6 +42,10 @@ const pnpm = resolvePnpm();
 let failed = false;
 let winTestHome;
 
+if (process.env.DOCDEX_UPDATE_CHECK == null) {
+  process.env.DOCDEX_UPDATE_CHECK = "0";
+}
+
 if (process.platform === "win32") {
   winTestHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
   const parsed = path.parse(winTestHome);

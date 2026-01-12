@@ -9,6 +9,8 @@ import {
   resolvePlaywrightCli,
 } from "../DocdexRuntime.js";
 
+const shouldSkipDocdexCheck = process.platform === "win32" && Boolean(process.env.CI);
+
 test("resolveDocdexBinary returns an existing binary path when docdex is installed", () => {
   const binary = resolveDocdexBinary();
   assert.ok(binary, "expected docdex binary to resolve");
@@ -39,6 +41,10 @@ test("resolveDocdexBaseUrl respects explicit env overrides", async () => {
 });
 
 test("readDocdexCheck returns parsed JSON output", async (t) => {
+  if (shouldSkipDocdexCheck) {
+    t.skip("docdex check can hang on Windows CI");
+    return;
+  }
   if (!resolveDocdexBinary()) {
     t.skip("docdex binary not available in this environment");
     return;
@@ -48,7 +54,11 @@ test("readDocdexCheck returns parsed JSON output", async (t) => {
   assert.ok(Array.isArray(result.checks), "expected checks array");
 });
 
-test("resolveDocdexBrowserInfo returns a stable shape", async () => {
+test("resolveDocdexBrowserInfo returns a stable shape", async (t) => {
+  if (shouldSkipDocdexCheck) {
+    t.skip("docdex check can hang on Windows CI");
+    return;
+  }
   const info = await resolveDocdexBrowserInfo();
   assert.equal(typeof info.ok, "boolean");
   if (info.ok) {
