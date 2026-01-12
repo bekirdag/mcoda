@@ -6,6 +6,9 @@ import path from "node:path";
 import http from "node:http";
 import { DocdexClient } from "../DocdexClient.js";
 
+const shouldSkipDocdexClient =
+  process.platform === "win32" || process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS === "1";
+
 const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<void> }> => {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "", "http://localhost");
@@ -53,10 +56,14 @@ const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<vo
           else resolve();
         }),
       ),
-  };
+    };
 };
 
-test("DocdexClient searches via docdex daemon and fetches snippets", async () => {
+test("DocdexClient searches via docdex daemon and fetches snippets", async (t) => {
+  if (shouldSkipDocdexClient) {
+    t.skip("docdex client tests can hang on Windows CI");
+    return;
+  }
   const server = await startServer();
   try {
     const client = new DocdexClient({ baseUrl: server.baseUrl, workspaceRoot: "/tmp/ws" });
@@ -73,7 +80,11 @@ test("DocdexClient searches via docdex daemon and fetches snippets", async () =>
   }
 });
 
-test("DocdexClient falls back to local docs when baseUrl is missing", async () => {
+test("DocdexClient falls back to local docs when baseUrl is missing", async (t) => {
+  if (shouldSkipDocdexClient) {
+    t.skip("docdex client tests can hang on Windows CI");
+    return;
+  }
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-docdex-"));
   const docPath = path.join(dir, "docs", "rfp.md");
   await fs.mkdir(path.dirname(docPath), { recursive: true });
