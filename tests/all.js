@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +40,26 @@ const resolvePnpm = () => {
 
 const pnpm = resolvePnpm();
 let failed = false;
+let winTestHome;
+
+if (process.platform === "win32") {
+  winTestHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
+  const parsed = path.parse(winTestHome);
+  process.env.HOME = winTestHome;
+  process.env.USERPROFILE = winTestHome;
+  process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, "");
+  process.env.HOMEPATH = winTestHome.slice(parsed.root.length - 1);
+  if (!process.env.NODE_TEST_CONCURRENCY) {
+    process.env.NODE_TEST_CONCURRENCY = "1";
+  }
+  process.on("exit", () => {
+    try {
+      rmSync(winTestHome, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+}
 
 const collectTests = (dir) => {
   const entries = readdirSync(dir);
