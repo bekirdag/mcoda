@@ -1,16 +1,31 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
 import { JobInsightsService, JobService, JobResumeService } from "@mcoda/core";
 
 const originalApiBase = process.env.MCODA_API_BASE_URL;
-if (!originalApiBase) {
+const originalJobsApiBase = process.env.MCODA_JOBS_API_URL;
+const didSetApiBase = !originalApiBase;
+const didSetJobsApiBase = !originalJobsApiBase;
+if (didSetApiBase) {
   process.env.MCODA_API_BASE_URL = "http://localhost";
 }
-const originalJobsApiBase = process.env.MCODA_JOBS_API_URL;
-if (!originalJobsApiBase) {
+if (didSetJobsApiBase) {
   process.env.MCODA_JOBS_API_URL = process.env.MCODA_API_BASE_URL;
 }
+
+after(() => {
+  if (didSetApiBase) {
+    delete process.env.MCODA_API_BASE_URL;
+  } else if (originalApiBase !== undefined) {
+    process.env.MCODA_API_BASE_URL = originalApiBase;
+  }
+  if (didSetJobsApiBase) {
+    delete process.env.MCODA_JOBS_API_URL;
+  } else if (originalJobsApiBase !== undefined) {
+    process.env.MCODA_JOBS_API_URL = originalJobsApiBase;
+  }
+});
 
 const withPatched = <T, K extends keyof T>(target: T, key: K, impl: T[K], fn: () => Promise<void> | void) => {
   const original = target[key];
