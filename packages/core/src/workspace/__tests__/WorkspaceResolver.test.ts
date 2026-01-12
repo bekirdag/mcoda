@@ -7,12 +7,33 @@ import { WorkspaceResolver } from "../WorkspaceManager.js";
 
 const uuidRegex = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const cleanupTempDir = async (dir: string): Promise<void> => {
+  const attempts = process.platform === "win32" ? 5 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (process.platform !== "win32") {
+        throw error;
+      }
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") {
+        throw error;
+      }
+      await wait(100 * (attempt + 1));
+    }
+  }
+};
+
 const withTempDir = async (fn: (dir: string) => Promise<void>): Promise<void> => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-ws-"));
   try {
     await fn(dir);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await cleanupTempDir(dir);
   }
 };
 
