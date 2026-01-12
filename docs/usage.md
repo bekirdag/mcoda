@@ -61,6 +61,8 @@ mcoda code-review --workspace-root . --project WEB --status ready_to_review --li
 mcoda qa-tasks --workspace-root . --project WEB --status ready_to_qa --profile integration
 ```
 
+Note: `--max-iterations` and `--max-cycles` are optional; omit them to run without caps.
+
 ## Jobs and telemetry
 Inspect long-running jobs and token usage.
 

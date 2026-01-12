@@ -889,12 +889,23 @@ export class GatewayTrioCommand {
       const header = `Job: ${result.jobId}, Command Run: ${result.commandRunId}`;
       const summary = `Tasks: ${counts.total} (completed=${counts.completed}, blocked=${counts.blocked}, failed=${counts.failed}, skipped=${counts.skipped}, pending=${counts.pending})`;
       const taskLines = result.tasks.map((task) => {
+        const ratingDetails = task.ratings?.length
+          ? `ratings=${task.ratings
+              .map((entry) => {
+                const rating = typeof entry.rating === "number" ? entry.rating.toFixed(2) : "n/a";
+                const maxComplexity =
+                  typeof entry.maxComplexity === "number" ? entry.maxComplexity.toString() : "n/a";
+                return `${entry.step}:${entry.agent}@${rating}/c${maxComplexity}`;
+              })
+              .join("; ")}`
+          : undefined;
         const details = [
           `status=${task.status}`,
           `attempts=${task.attempts}`,
           task.lastDecision ? `review=${task.lastDecision}` : undefined,
           task.lastOutcome ? `qa=${task.lastOutcome}` : undefined,
           task.lastError ? `error=${task.lastError}` : undefined,
+          ratingDetails,
         ]
           .filter(Boolean)
           .join(", ");

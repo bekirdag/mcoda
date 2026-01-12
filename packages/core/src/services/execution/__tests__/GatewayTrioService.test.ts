@@ -779,3 +779,33 @@ test("GatewayTrioService rejects resume when manifest command mismatches", async
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("GatewayTrioService records rating summaries when enabled", async () => {
+  const statusStore = makeStatusStore({ "TASK-13": "in_progress" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-13"],
+  });
+  try {
+    const jobRoot = path.join(dir, ".mcoda", "jobs");
+    await fs.mkdir(path.join(jobRoot, "work-job"), { recursive: true });
+    await fs.mkdir(path.join(jobRoot, "review-job"), { recursive: true });
+    await fs.mkdir(path.join(jobRoot, "qa-job"), { recursive: true });
+    const ratingPayload = { rating: 7.2, maxComplexity: 6, runScore: 7.1, qualityScore: 8 };
+    await fs.writeFile(path.join(jobRoot, "work-job", "rating.json"), JSON.stringify(ratingPayload));
+    await fs.writeFile(path.join(jobRoot, "review-job", "rating.json"), JSON.stringify({ ...ratingPayload, rating: 6.4 }));
+    await fs.writeFile(path.join(jobRoot, "qa-job", "rating.json"), JSON.stringify({ ...ratingPayload, rating: 8.1 }));
+
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, rateAgents: true });
+    const ratings = result.tasks[0].ratings ?? [];
+    assert.equal(ratings.length, 3);
+    assert.ok(ratings.some((entry: { step?: string; agent?: string }) => entry.step === "work" && entry.agent === "agent-1"));
+    assert.ok(
+      ratings.some((entry: { step?: string; agent?: string }) => entry.step === "review" && entry.agent === "agent-1"),
+    );
+    assert.ok(ratings.some((entry: { step?: string; agent?: string }) => entry.step === "qa" && entry.agent === "agent-1"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

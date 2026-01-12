@@ -47,6 +47,7 @@ type StepOutcome = {
   outcome?: string;
   error?: string;
   chosenAgent?: string;
+  ratingSummary?: RatingSummary;
 };
 
 type FailureRecord = {
@@ -55,6 +56,15 @@ type FailureRecord = {
   reason: string;
   attempt: number;
   timestamp: string;
+};
+
+type RatingSummary = {
+  step: StepName;
+  agent: string;
+  rating?: number;
+  maxComplexity?: number;
+  runScore?: number;
+  qualityScore?: number;
 };
 
 type TaskProgress = {
@@ -67,6 +77,7 @@ type TaskProgress = {
   lastOutcome?: string;
   chosenAgents: { work?: string; review?: string; qa?: string };
   failureHistory?: FailureRecord[];
+  ratings?: RatingSummary[];
 };
 
 type GatewayTrioState = {
@@ -115,6 +126,7 @@ export interface GatewayTrioTaskSummary {
   lastOutcome?: string;
   lastError?: string;
   chosenAgents: TaskProgress["chosenAgents"];
+  ratings?: RatingSummary[];
 }
 
 export interface GatewayTrioResult {
@@ -593,6 +605,33 @@ export class GatewayTrioService {
     return { avoidAgents, forceStronger: avoidAgents.length > 0 };
   }
 
+  private recordRating(progress: TaskProgress, summary: RatingSummary | undefined): void {
+    if (!summary) return;
+    const existing = progress.ratings ?? [];
+    const next = existing.filter((entry) => entry.step !== summary.step);
+    next.push(summary);
+    progress.ratings = next;
+  }
+
+  private async loadRatingSummary(
+    jobId: string | undefined,
+    step: StepName,
+    agent: string,
+  ): Promise<RatingSummary | undefined> {
+    if (!jobId) return undefined;
+    try {
+      const payload = await fs.readFile(path.join(this.workspace.workspaceRoot, ".mcoda", "jobs", jobId, "rating.json"), "utf8");
+      const parsed = JSON.parse(payload) as Record<string, unknown>;
+      const rating = typeof parsed.rating === "number" ? parsed.rating : undefined;
+      const maxComplexity = typeof parsed.maxComplexity === "number" ? parsed.maxComplexity : undefined;
+      const runScore = typeof parsed.runScore === "number" ? parsed.runScore : undefined;
+      const qualityScore = typeof parsed.qualityScore === "number" ? parsed.qualityScore : undefined;
+      return { step, agent, rating, maxComplexity, runScore, qualityScore };
+    } catch {
+      return undefined;
+    }
+  }
+
   private async runStepWithTimeout(
     step: StepName,
     jobId: string,
@@ -717,7 +756,10 @@ export class GatewayTrioService {
       }),
     );
     const parsed = this.parseWorkResult(taskKey, result);
-    return { ...parsed, chosenAgent: resolvedAgent };
+    const ratingSummary = request.rateAgents
+      ? await this.loadRatingSummary(result.jobId, "work", resolvedAgent)
+      : undefined;
+    return { ...parsed, chosenAgent: resolvedAgent, ratingSummary };
   }
 
   private async runReviewStep(
@@ -775,7 +817,10 @@ export class GatewayTrioService {
       }),
     );
     const parsed = this.parseReviewResult(taskKey, result);
-    return { ...parsed, chosenAgent: resolvedAgent };
+    const ratingSummary = request.rateAgents
+      ? await this.loadRatingSummary(result.jobId, "review", resolvedAgent)
+      : undefined;
+    return { ...parsed, chosenAgent: resolvedAgent, ratingSummary };
   }
 
   private async runQaStep(
@@ -841,7 +886,10 @@ export class GatewayTrioService {
       }),
     );
     const parsed = this.parseQaResult(taskKey, result);
-    return { ...parsed, chosenAgent: resolvedAgent };
+    const ratingSummary = request.rateAgents
+      ? await this.loadRatingSummary(result.jobId, "qa", resolvedAgent)
+      : undefined;
+    return { ...parsed, chosenAgent: resolvedAgent, ratingSummary };
   }
 
   private toSummary(state: GatewayTrioState): GatewayTrioTaskSummary[] {
@@ -854,6 +902,7 @@ export class GatewayTrioService {
       lastOutcome: task.lastOutcome,
       lastError: task.lastError,
       chosenAgents: task.chosenAgents,
+      ratings: task.ratings,
     }));
   }
 
@@ -875,6 +924,9 @@ export class GatewayTrioService {
     const maxIterations = resolvedRequest.maxIterations;
     const maxCycles = resolvedRequest.maxCycles;
     const maxAgentSeconds = resolvedRequest.maxAgentSeconds;
+    if (!resolvedRequest.rateAgents) {
+      warnings.push("Agent rating disabled; use --rate-agents to track rating/complexity updates.");
+    }
     const statusFilter = await this.buildStatusFilter(resolvedRequest, warnings);
     const commandRun = await this.deps.jobService.startCommandRun("gateway-trio", resolvedRequest.projectKey, {
       taskIds: resolvedRequest.taskKeys,
@@ -1077,6 +1129,7 @@ export class GatewayTrioService {
             progress.lastError = workOutcome.error;
             progress.chosenAgents.work = workOutcome.chosenAgent ?? progress.chosenAgents.work;
             this.recordFailure(progress, workOutcome, attemptIndex);
+            this.recordRating(progress, workOutcome.ratingSummary);
             state.tasks[taskKey] = progress;
             await this.writeState(state);
             await this.deps.jobService.writeCheckpoint(jobId, {
@@ -1177,6 +1230,7 @@ export class GatewayTrioService {
             progress.lastError = reviewOutcome.error;
             progress.chosenAgents.review = reviewOutcome.chosenAgent ?? progress.chosenAgents.review;
             this.recordFailure(progress, reviewOutcome, attemptIndex);
+            this.recordRating(progress, reviewOutcome.ratingSummary);
             state.tasks[taskKey] = progress;
             await this.writeState(state);
             await this.deps.jobService.writeCheckpoint(jobId, {
@@ -1246,12 +1300,13 @@ export class GatewayTrioService {
               ),
           );
           progress.lastStep = "qa";
-          progress.lastOutcome = qaOutcome.outcome;
-          progress.lastError = qaOutcome.error;
-          progress.chosenAgents.qa = qaOutcome.chosenAgent ?? progress.chosenAgents.qa;
-          this.recordFailure(progress, qaOutcome, attemptIndex);
-          state.tasks[taskKey] = progress;
-          await this.writeState(state);
+            progress.lastOutcome = qaOutcome.outcome;
+            progress.lastError = qaOutcome.error;
+            progress.chosenAgents.qa = qaOutcome.chosenAgent ?? progress.chosenAgents.qa;
+            this.recordFailure(progress, qaOutcome, attemptIndex);
+            this.recordRating(progress, qaOutcome.ratingSummary);
+            state.tasks[taskKey] = progress;
+            await this.writeState(state);
           await this.deps.jobService.writeCheckpoint(jobId, {
             stage: `task:${taskKey}:qa`,
             timestamp: new Date().toISOString(),
