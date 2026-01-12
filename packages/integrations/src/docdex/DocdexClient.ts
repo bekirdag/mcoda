@@ -296,6 +296,20 @@ export class DocdexClient {
     return this.coerceSearchResults(payload, filter.docType);
   }
 
+  async reindex(): Promise<void> {
+    const repoRoot = this.options.workspaceRoot ?? process.cwd();
+    const baseUrl = await this.resolveBaseUrl();
+    await runDocdex(["index", "--repo", repoRoot], {
+      cwd: repoRoot,
+      env: baseUrl
+        ? {
+            DOCDEX_URL: baseUrl,
+            MCODA_DOCDEX_URL: baseUrl,
+          }
+        : undefined,
+    });
+  }
+
   async registerDocument(input: RegisterDocumentInput): Promise<DocdexDocument> {
     const baseUrl = await this.resolveBaseUrl();
     if (!baseUrl) {

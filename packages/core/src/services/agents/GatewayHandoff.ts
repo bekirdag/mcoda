@@ -4,6 +4,25 @@ import type { GatewayAgentResult } from "./GatewayAgentService.js";
 
 export const GATEWAY_HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
 
+export const buildGatewayHandoffDocdexUsage = (): string => {
+  const lines: string[] = [];
+  lines.push("## Docdex Usage (required)");
+  lines.push("- Use docdexd CLI (daemon-backed), not curl or MCP.");
+  lines.push("- Search: `docdexd chat --repo <repo> --query \"...\" --limit 8` (HTTP: `GET /search`).");
+  lines.push("- Web: `docdexd web-search`, `docdexd web-fetch`, `docdexd web-rag` (HTTP: `/v1/web/*`).");
+  lines.push("- Memory: `docdexd memory-store` / `memory-recall` (HTTP: `/v1/memory/store`, `/v1/memory/recall`).");
+  lines.push(
+    "- Agent profile: `docdexd profile add/search` (HTTP: `/v1/profile/add`, `/v1/profile/search`, `/v1/profile/save`).",
+  );
+  lines.push("- AST/impact/snippets use daemon endpoints (`/v1/ast`, `/v1/graph/impact`, `/snippet/:doc_id`).");
+  lines.push(
+    "- Reasoning DAG: capture session_id (docdex request_id) and export with `docdexd dag view --repo <repo> <session_id> --format text|dot|json`.",
+  );
+  lines.push("- HTTP DAG export: `GET /v1/dag/export?session_id=<id>&format=json|text|dot&max_nodes=<n>`.");
+  lines.push("- Note any docdex failures/disabled memory/profile in task comments or docdexNotes.");
+  return lines.join("\n");
+};
+
 export const buildGatewayHandoffContent = (result: GatewayAgentResult): string => {
   const lines: string[] = [];
   lines.push("# Gateway Handoff");
@@ -64,6 +83,8 @@ export const buildGatewayHandoffContent = (result: GatewayAgentResult): string =
     lines.push("## Docdex Notes");
     result.analysis.docdexNotes.forEach((item) => lines.push(`- ${item}`));
   }
+  lines.push("");
+  lines.push(buildGatewayHandoffDocdexUsage());
   return lines.join("\n");
 };
 

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
@@ -33,6 +34,9 @@ const QA_TEST_POLICY = 'QA policy: always run automated tests. Use browser (Play
 const DEFAULT_JOB_PROMPT = 'You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.';
 const DEFAULT_CHARACTER_PROMPT =
   'Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.';
+const RUN_ALL_TESTS_MARKER = 'mcoda_run_all_tests_complete';
+const RUN_ALL_TESTS_GUIDANCE =
+  'Run-all tests did not emit the expected marker. Ensure tests/all.js prints "MCODA_RUN_ALL_TESTS_COMPLETE".';
 const normalizeSlugList = (input?: string[] | null): string[] => {
   if (!Array.isArray(input)) return [];
   const cleaned = new Set<string>();
@@ -176,6 +180,7 @@ interface AgentInterpretation {
   tokensCompletion?: number;
   agentId?: string;
   modelName?: string;
+  invalidJson?: boolean;
 }
 
 export class QaTasksService {
@@ -387,12 +392,19 @@ export class QaTasksService {
     return 'fix_required';
   }
 
-  private adjustOutcomeForSkippedTests(profile: QaProfile, result: QaRunResult): QaRunResult {
+  private adjustOutcomeForSkippedTests(profile: QaProfile, result: QaRunResult, testCommand?: string): QaRunResult {
     if ((profile.runner ?? 'cli') !== 'cli') return result;
-    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.toLowerCase();
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const outputLower = output.toLowerCase();
     const markers = ['no test script configured', 'skipping tests', 'no tests found'];
-    if (markers.some((marker) => output.includes(marker))) {
+    if (markers.some((marker) => outputLower.includes(marker))) {
       return { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1 };
+    }
+    if (testCommand && testCommand.includes('tests/all.js')) {
+      if (!outputLower.includes(RUN_ALL_TESTS_MARKER)) {
+        const stderr = [result.stderr, RUN_ALL_TESTS_GUIDANCE].filter(Boolean).join('\n');
+        return { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1, stderr };
+      }
     }
     return result;
   }
@@ -831,12 +843,13 @@ export class QaTasksService {
         await this.logTask(taskRunId, "QA agent returned invalid JSON after retry; falling back to QA outcome.", "qa-agent");
       }
       return {
-        recommendation: this.mapOutcome(result),
+        recommendation: 'unclear',
         rawOutput: retryOutput || output,
         tokensPrompt: tokensPrompt + retryTokensPrompt,
         tokensCompletion: tokensCompletion + retryTokensCompletion,
         agentId: agent.id,
         modelName: agent.defaultModel,
+        invalidJson: true,
       };
     } catch (error: any) {
       if (taskRunId) {
@@ -1083,6 +1096,40 @@ export class QaTasksService {
       docLinks,
       testName: tests[0],
     };
+  }
+
+  private buildManualQaFollowup(task: TaskRow, rawOutput?: string): FollowupSuggestion {
+    const summary = rawOutput ? rawOutput.slice(0, 1000) : 'QA agent returned invalid JSON after retry.';
+    const components = Array.isArray((task.metadata as any)?.components) ? (task.metadata as any).components : [];
+    const docLinks = Array.isArray((task.metadata as any)?.doc_links) ? (task.metadata as any).doc_links : [];
+    const tests = Array.isArray((task.metadata as any)?.tests) ? (task.metadata as any).tests : [];
+    return {
+      title: `Manual QA follow-up for ${task.key}`,
+      description: `QA agent returned invalid JSON after retry. Manual QA required.\n\nRaw output:\n${summary}`.slice(0, 2000),
+      type: 'qa_followup',
+      storyPoints: 1,
+      priority: 90,
+      tags: ['qa', 'manual', ...components],
+      components,
+      docLinks,
+      testName: tests[0],
+    };
+  }
+
+  private buildFollowupSlug(task: TaskRow, suggestion: FollowupSuggestion): string {
+    const seedParts = [
+      task.key,
+      suggestion.title ?? '',
+      suggestion.description ?? '',
+      suggestion.type ?? '',
+      suggestion.testName ?? '',
+      suggestion.evidenceUrl ?? '',
+      ...(suggestion.tags ?? []),
+      ...(suggestion.components ?? []),
+    ];
+    const seed = seedParts.join('|').toLowerCase();
+    const digest = createHash('sha1').update(seed).digest('hex').slice(0, 12);
+    return `qa-followup-${task.key}-${digest}`;
   }
 
   private toFollowupSuggestion(
@@ -1403,17 +1450,17 @@ export class QaTasksService {
     if (typeof browsersPath === 'string' && browsersPath.trim().length > 0) {
       qaEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
     }
-    const result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
-    const normalizedResult = this.adjustOutcomeForSkippedTests(profile, result);
-    await this.logTask(taskRun.id, `QA run completed with outcome ${normalizedResult.outcome}`, 'qa-exec', {
-      exitCode: normalizedResult.exitCode,
+    let result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
+    result = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
+    await this.logTask(taskRun.id, `QA run completed with outcome ${result.outcome}`, 'qa-exec', {
+      exitCode: result.exitCode,
     });
     const commentContext = await this.loadCommentContext(task.task.id);
     const commentBacklog = buildCommentBacklog(commentContext.unresolved);
     const interpretation = await this.interpretResult(
       task,
       profile,
-      normalizedResult,
+      result,
       ctx.request.agentName,
       ctx.request.agentStream ?? true,
       ctx.jobId,
@@ -1422,8 +1469,8 @@ export class QaTasksService {
       commentBacklog,
       ctx.request.abortSignal,
     );
-    const outcome = this.combineOutcome(normalizedResult, interpretation.recommendation);
-    const artifacts = normalizedResult.artifacts ?? [];
+    const outcome = this.combineOutcome(result, interpretation.recommendation);
+    const artifacts = result.artifacts ?? [];
     const commentResolution = await this.applyCommentResolutions({
       task: task.task,
       taskRunId: taskRun.id,
@@ -1448,21 +1495,22 @@ export class QaTasksService {
         mode: 'auto',
         profileName: profile.name,
         runner: profile.runner,
-        rawOutcome: normalizedResult.outcome,
+        rawOutcome: result.outcome,
         recommendation: interpretation.recommendation,
         artifacts,
         rawResult: {
-          adapter: normalizedResult,
+          adapter: result,
           agent: interpretation.rawOutput,
         },
-        startedAt: normalizedResult.startedAt,
-        finishedAt: normalizedResult.finishedAt,
+        startedAt: result.startedAt,
+        finishedAt: result.finishedAt,
         metadata: {
           tokensPrompt: interpretation.tokensPrompt,
           tokensCompletion: interpretation.tokensCompletion,
           testedScope: interpretation.testedScope,
           coverageSummary: interpretation.coverageSummary,
           failures: interpretation.failures,
+          invalidJson: interpretation.invalidJson ?? false,
         },
       });
     }
@@ -1473,13 +1521,31 @@ export class QaTasksService {
     }
 
     const followups: string[] = [];
-    if (outcome === 'fix_required' && ctx.request.createFollowupTasks !== 'none') {
+    const wantsFollowups = ctx.request.createFollowupTasks !== 'none';
+    const needsManualFollowup = interpretation.invalidJson === true;
+    if ((outcome === 'fix_required' || needsManualFollowup) && wantsFollowups) {
       const suggestions: FollowupSuggestion[] = interpretation.followUps?.map((f) => this.toFollowupSuggestion(task.task, f, artifacts)) ?? [];
-      if (suggestions.length === 0) {
+      if (needsManualFollowup) {
+        suggestions.unshift(this.buildManualQaFollowup(task.task, interpretation.rawOutput));
+      } else if (suggestions.length === 0) {
         suggestions.push(this.buildFollowupSuggestion(task.task, result, ctx.request.notes));
       }
       const interactive = ctx.request.createFollowupTasks === 'prompt' && process.stdout.isTTY;
       for (const suggestion of suggestions) {
+        const followupSlug = this.buildFollowupSlug(task.task, suggestion);
+        const existing = await this.deps.workspaceRepo.listTasksByMetadataValue(
+          task.task.projectId,
+          'qa_followup_slug',
+          followupSlug,
+        );
+        if (existing.length) {
+          await this.logTask(
+            taskRun.id,
+            `Skipped follow-up ${followupSlug}; already exists: ${existing.map((item) => item.key).join(', ')}`,
+            'qa-followup',
+          );
+          continue;
+        }
         let proceed = ctx.request.createFollowupTasks !== 'prompt';
         if (interactive) {
           const rl = readline.createInterface({ input, output });
@@ -1490,7 +1556,10 @@ export class QaTasksService {
         if (!proceed) continue;
         try {
           if (!this.dryRunGuard) {
-            const created = await this.followupService.createFollowupTask({ ...task.task, storyKey: task.task.storyKey, epicKey: task.task.epicKey }, suggestion);
+            const created = await this.followupService.createFollowupTask(
+              { ...task.task, storyKey: task.task.storyKey, epicKey: task.task.epicKey },
+              { ...suggestion, followupSlug },
+            );
             followups.push(created.task.key);
             await this.logTask(taskRun.id, `Created follow-up ${created.task.key}`, 'qa-followup');
           }
@@ -1512,6 +1581,9 @@ export class QaTasksService {
         : '',
       commentResolution
         ? `Comment slugs: resolved ${commentResolution.resolved.length}, reopened ${commentResolution.reopened.length}, open ${commentResolution.open.length}`
+        : '',
+      interpretation.invalidJson && interpretation.rawOutput
+        ? `QA agent output (invalid JSON):\n${interpretation.rawOutput.slice(0, 4000)}`
         : '',
       result.stdout ? `Stdout:\n${result.stdout.slice(0, 4000)}` : '',
       result.stderr ? `Stderr:\n${result.stderr.slice(0, 4000)}` : '',
@@ -1661,6 +1733,20 @@ export class QaTasksService {
       }
       const interactive = ctx.request.createFollowupTasks === 'prompt' && process.stdout.isTTY;
       for (const suggestion of suggestions) {
+        const followupSlug = this.buildFollowupSlug(task.task, suggestion);
+        const existing = await this.deps.workspaceRepo.listTasksByMetadataValue(
+          task.task.projectId,
+          'qa_followup_slug',
+          followupSlug,
+        );
+        if (existing.length) {
+          await this.logTask(
+            taskRun.id,
+            `Skipped follow-up ${followupSlug}; already exists: ${existing.map((item) => item.key).join(', ')}`,
+            'qa-followup',
+          );
+          continue;
+        }
         let proceed = ctx.request.createFollowupTasks === 'auto' || ctx.request.createFollowupTasks === undefined;
         if (interactive) {
           const rl = readline.createInterface({ input, output });
@@ -1672,7 +1758,7 @@ export class QaTasksService {
         try {
           const created = await this.followupService.createFollowupTask(
             { ...task.task, storyKey: task.task.storyKey, epicKey: task.task.epicKey },
-            suggestion,
+            { ...suggestion, followupSlug },
           );
           followups.push(created.task.key);
         } catch (error: any) {

@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
-import { GatewayTrioService, WorkspaceResolver } from "@mcoda/core";
+import { GatewayTrioService, JobService, WorkspaceResolver } from "@mcoda/core";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -7,6 +8,8 @@ interface ParsedArgs {
   epicKey?: string;
   storyKey?: string;
   taskKeys: string[];
+  taskKeysProvided: boolean;
+  invalidTaskKeys: string[];
   statusFilter: string[];
   limit?: number;
   maxIterations?: number;
@@ -30,6 +33,7 @@ interface ParsedArgs {
   resumeJobId?: string;
   rateAgents: boolean;
   escalateOnNoChange: boolean;
+  watch: boolean;
   json: boolean;
   errors: string[];
 }
@@ -37,12 +41,12 @@ interface ParsedArgs {
 const usage = `mcoda gateway-trio \\
   [--workspace-root <PATH>] \\
   [--project <PROJECT_KEY>] \\
-  [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
+  [--task <TASK_KEY> ... | --task-file <PATH> | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
   [--status <CSV>] \\
   [--limit N] \\
-  [--max-iterations N] \\
-  [--max-cycles N] \\
-  [--max-agent-seconds N] \\
+  [--max-iterations N] (default disabled) \\
+  [--max-cycles N] (default disabled) \\
+  [--max-agent-seconds N] (default disabled) \\
   [--gateway-agent <NAME>] \\
   [--work-agent <NAME>] \\
   [--review-agent <NAME>] \\
@@ -60,6 +64,7 @@ const usage = `mcoda gateway-trio \\
   [--escalate-on-no-change <true|false>] \\
   [--agent-stream <true|false>] \\
   [--rate-agents] \\
+  [--watch] \\
   [--resume <JOB_ID>] \\
   [--json]`;
 
@@ -77,6 +82,39 @@ const parseCsv = (value: string | undefined): string[] => {
     .split(",")
     .map((v) => v.trim())
     .filter(Boolean);
+};
+
+const TASK_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-_]*$/;
+
+const normalizeTaskKeys = (inputs: string[]): { keys: string[]; invalid: string[] } => {
+  const keys: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  for (const input of inputs) {
+    if (!input) continue;
+    const parts = input
+      .split(/[\s,]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      if (!TASK_KEY_PATTERN.test(part)) {
+        invalid.push(part);
+        continue;
+      }
+      if (seen.has(part)) continue;
+      seen.add(part);
+      keys.push(part);
+    }
+  }
+  return { keys, invalid };
+};
+
+const readTaskFile = (filePath: string): string[] => {
+  const raw = fs.readFileSync(filePath, "utf8");
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
 };
 
 const takeValue = (
@@ -116,6 +154,10 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let epicKey: string | undefined;
   let storyKey: string | undefined;
   const taskKeys: string[] = [];
+  const taskInputs: string[] = [];
+  const taskFiles: string[] = [];
+  let taskKeysProvided = false;
+  const invalidTaskKeys: string[] = [];
   const statusFilter: string[] = [];
   let limit: number | undefined;
   let maxIterations: number | undefined;
@@ -139,6 +181,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let resumeJobId: string | undefined;
   let rateAgents = false;
   let escalateOnNoChange = true;
+  let watch = false;
   let json = false;
   const errors: string[] = [];
 
@@ -158,7 +201,18 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
       if (!raw) {
         errors.push("gateway-trio: --task requires a value");
       } else {
-        taskKeys.push(raw);
+        taskInputs.push(raw);
+        taskKeysProvided = true;
+      }
+      continue;
+    }
+    if (arg.startsWith("--task-file=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --task-file requires a value");
+      } else {
+        taskFiles.push(raw);
+        taskKeysProvided = true;
       }
       continue;
     }
@@ -344,6 +398,15 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
       }
       continue;
     }
+    if (arg.startsWith("--watch=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --watch requires a value");
+      } else {
+        watch = parseBooleanFlag(raw, true);
+      }
+      continue;
+    }
     switch (arg) {
       case "--workspace":
       case "--workspace-root":
@@ -385,7 +448,20 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
       case "--task":
         {
           const { value, consumed } = takeValue("--task", argv, i, errors);
-          if (value) taskKeys.push(value);
+          if (value) {
+            taskInputs.push(value);
+            taskKeysProvided = true;
+          }
+          if (consumed) i += 1;
+        }
+        break;
+      case "--task-file":
+        {
+          const { value, consumed } = takeValue("--task-file", argv, i, errors);
+          if (value) {
+            taskFiles.push(value);
+            taskKeysProvided = true;
+          }
           if (consumed) i += 1;
         }
         break;
@@ -550,6 +626,16 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           if (consumed) i += 1;
         }
         break;
+      case "--watch": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          watch = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          watch = true;
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -564,6 +650,21 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     }
   }
 
+  if (taskFiles.length > 0) {
+    for (const filePath of taskFiles) {
+      try {
+        taskInputs.push(...readTaskFile(path.resolve(filePath)));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`gateway-trio: failed to read --task-file ${filePath}: ${message}`);
+      }
+    }
+  }
+
+  const normalized = normalizeTaskKeys(taskInputs);
+  taskKeys.push(...normalized.keys);
+  invalidTaskKeys.push(...normalized.invalid);
+
   if (statusFilter.length === 0) {
     statusFilter.push("not_started", "in_progress", "ready_to_review", "ready_to_qa");
   }
@@ -574,6 +675,8 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     epicKey,
     storyKey,
     taskKeys,
+    taskKeysProvided,
+    invalidTaskKeys,
     statusFilter,
     limit: Number.isFinite(limit) ? limit : undefined,
     maxIterations: Number.isFinite(maxIterations) ? maxIterations : undefined,
@@ -597,6 +700,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     resumeJobId,
     rateAgents,
     escalateOnNoChange,
+    watch,
     json,
     errors,
   };
@@ -614,6 +718,9 @@ export const validateGatewayTrioArgs = (parsed: ParsedArgs): string | undefined 
   if (selectors.length > 1) {
     return "gateway-trio: choose only one of --task, --epic, or --story";
   }
+  if (parsed.taskKeysProvided && parsed.taskKeys.length === 0) {
+    return "gateway-trio: no valid task keys provided";
+  }
   return undefined;
 };
 
@@ -627,6 +734,10 @@ export class GatewayTrioCommand {
       process.exitCode = 1;
       return;
     }
+    const preflightWarnings: string[] = [];
+    if (parsed.invalidTaskKeys.length > 0) {
+      preflightWarnings.push(`Ignoring invalid task keys: ${parsed.invalidTaskKeys.join(", ")}`);
+    }
     if (parsed.agentStream === false) {
       process.env.MCODA_STREAM_IO = "0";
       process.env.MCODA_STREAM_IO_PROMPT = "0";
@@ -637,6 +748,45 @@ export class GatewayTrioCommand {
     });
     const service = await GatewayTrioService.create(workspace);
     try {
+      let watchDone = false;
+      let watchPromise: Promise<void> | undefined;
+      let watchResolve: ((value: { jobId: string; commandRunId: string }) => void) | undefined;
+      const watchStart = new Promise<{ jobId: string; commandRunId: string }>((resolve) => {
+        watchResolve = resolve;
+      });
+
+      if (parsed.watch) {
+        watchPromise = (async () => {
+          const { jobId } = await watchStart;
+          const watcher = new JobService(workspace);
+          try {
+            while (!watchDone) {
+              const job = await watcher.getJob(jobId);
+              if (job) {
+                const state = job.jobState ?? job.state ?? "unknown";
+                const detail = job.jobStateDetail ? ` (${job.jobStateDetail})` : "";
+                const total = job.totalItems ?? 0;
+                const processed = job.processedItems ?? 0;
+                const line = `gateway-trio job ${jobId}: ${state}${detail} ${processed}/${total}`;
+                if (parsed.json) {
+                  // eslint-disable-next-line no-console
+                  console.error(line);
+                } else {
+                  // eslint-disable-next-line no-console
+                  console.log(line);
+                }
+                if (["completed", "failed", "cancelled", "partial"].includes(state)) {
+                  return;
+                }
+              }
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+          } finally {
+            await watcher.close();
+          }
+        })();
+      }
+
       const result = await service.run({
         workspace,
         projectKey: parsed.projectKey,
@@ -666,7 +816,26 @@ export class GatewayTrioCommand {
         resumeJobId: parsed.resumeJobId,
         rateAgents: parsed.rateAgents,
         escalateOnNoChange: parsed.escalateOnNoChange,
+        onJobStart: (jobId, commandRunId) => {
+          if (watchResolve) {
+            watchResolve({ jobId, commandRunId });
+            watchResolve = undefined;
+          }
+          const resumeCmd = `mcoda gateway-trio --resume ${jobId}`;
+          const message = `Resume with: ${resumeCmd}`;
+          if (parsed.json) {
+            // eslint-disable-next-line no-console
+            console.error(message);
+          } else {
+            // eslint-disable-next-line no-console
+            console.log(message);
+          }
+        },
       });
+      watchDone = true;
+      if (watchPromise) {
+        await watchPromise;
+      }
 
       const counts = result.tasks.reduce(
         (acc, task) => {
@@ -683,6 +852,7 @@ export class GatewayTrioCommand {
           pending: 0,
         } as Record<string, number>,
       );
+      const warnings = [...preflightWarnings, ...result.warnings];
       const incomplete = counts.total - counts.completed;
       if (incomplete > 0) {
         process.exitCode = 1;
@@ -700,21 +870,21 @@ export class GatewayTrioCommand {
                 total: counts.total,
                 completed: counts.completed,
                 blocked: counts.blocked,
-                failed: counts.failed,
-                skipped: counts.skipped,
-                pending: counts.pending,
-              },
-              blocked: result.blocked,
-              failed: result.failed,
-              skipped: result.skipped,
-              warnings: result.warnings,
+              failed: counts.failed,
+              skipped: counts.skipped,
+              pending: counts.pending,
             },
-            null,
-            2,
-          ),
-        );
-        return;
-      }
+            blocked: result.blocked,
+            failed: result.failed,
+            skipped: result.skipped,
+            warnings,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
 
       const header = `Job: ${result.jobId}, Command Run: ${result.commandRunId}`;
       const summary = `Tasks: ${counts.total} (completed=${counts.completed}, blocked=${counts.blocked}, failed=${counts.failed}, skipped=${counts.skipped}, pending=${counts.pending})`;
@@ -733,9 +903,9 @@ export class GatewayTrioCommand {
       const output = [header, summary, ...taskLines].join("\n");
       // eslint-disable-next-line no-console
       console.log(output);
-      if (result.warnings.length) {
+      if (warnings.length) {
         // eslint-disable-next-line no-console
-        console.warn(result.warnings.map((warning) => `! ${warning}`).join("\n"));
+        console.warn(warnings.map((warning) => `! ${warning}`).join("\n"));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

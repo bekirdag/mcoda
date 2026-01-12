@@ -4815,7 +4815,7 @@ mcoda gateway-trio \
 
 * Re-selects tasks after each cycle to pick up newly created follow-ups or tasks unblocked by dependencies.
 
-* Stops when QA reports `infra_issue`, dependencies block a task, or iteration/cycle limits are reached.
+* Stops when QA reports `infra_issue`, dependencies block a task, or iteration/cycle limits are reached (if set).
 
 * Persists state and handoff artifacts under `.mcoda/jobs/<job_id>/gateway-trio/` for resume and auditability.
 

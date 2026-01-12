@@ -326,7 +326,7 @@ class StubVcs {
   async createOrCheckoutBranch(_cwd: string, _branch: string, _base: string) {}
   async applyPatch(_cwd: string, _patch: string) {}
   async pull(_cwd: string, _remote: string, _branch: string, _ffOnly = true) {}
-  async conflictPaths(_cwd?: string) {
+  async conflictPaths(_cwd?: string): Promise<string[]> {
     return [];
   }
   async currentBranch(_cwd?: string) {
@@ -349,6 +349,7 @@ class StubVcs {
   }
   async push(_cwd: string, _remote: string, _branch: string) {}
   async merge(_cwd: string, _source: string, _target: string) {}
+  async abortMerge(_cwd: string) {}
 }
 
 class BaseBranchRecordingVcs extends StubVcs {
@@ -385,6 +386,33 @@ class MergeRecordingVcs extends StubVcs {
     this.dirtyCalls += 1;
     if (this.dirtyCalls <= 4) return [];
     return ["tmp.txt"];
+  }
+}
+
+class MergeConflictVcs extends StubVcs {
+  conflicts: string[] = ["server/src/index.ts"];
+  abortCalls = 0;
+  override async branchExists() {
+    return true;
+  }
+  override async merge() {
+    throw new Error("merge conflict");
+  }
+  override async conflictPaths() {
+    return this.conflicts;
+  }
+  override async abortMerge() {
+    this.abortCalls += 1;
+  }
+}
+
+class PushRecordingVcs extends MergeRecordingVcs {
+  pushes: Array<{ remote: string; branch: string }> = [];
+  override async hasRemote() {
+    return true;
+  }
+  override async push(_cwd: string, remote: string, branch: string) {
+    this.pushes.push({ remote, branch });
   }
 }
 
@@ -1524,6 +1552,46 @@ test("workOnTasks blocks tasks when tests keep failing", async () => {
   }
 });
 
+test("workOnTasks blocks task when merge conflicts are detected", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new MergeConflictVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "merge_conflict");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "blocked");
+    assert.equal((updated?.metadata as any)?.blocked_reason, "merge_conflict");
+    assert.equal(vcs.abortCalls, 1);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks skips auto-merge when file scope missing and config enabled", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   workspace.config = { restrictAutoMergeWithoutScope: true };
@@ -1560,6 +1628,82 @@ test("workOnTasks skips auto-merge when file scope missing and config enabled", 
     const db = repo.getDb();
     const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
     assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge skipped")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks skips auto-merge when autoMerge disabled", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  workspace.config = { autoMerge: false };
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new MergeRecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(vcs.merges.length, 0);
+    const db = repo.getDb();
+    const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
+    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge disabled")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks skips auto-push when autoPush disabled", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  workspace.config = { autoPush: false };
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new PushRecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(vcs.pushes.length, 0);
+    const db = repo.getDb();
+    const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
+    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-push disabled")));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

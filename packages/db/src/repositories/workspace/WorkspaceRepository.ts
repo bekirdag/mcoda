@@ -721,6 +721,38 @@ export class WorkspaceRepository {
     };
   }
 
+  async listTasksByMetadataValue(projectId: string, metadataKey: string, metadataValue: string): Promise<TaskRow[]> {
+    const rows = await this.db.all<any[]>(
+      `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
+       FROM tasks WHERE project_id = ?`,
+      projectId,
+    );
+    return rows
+      .map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        epicId: row.epic_id,
+        userStoryId: row.user_story_id,
+        key: row.key,
+        title: row.title,
+        description: row.description ?? undefined,
+        type: row.type ?? undefined,
+        status: row.status,
+        storyPoints: row.story_points ?? undefined,
+        priority: row.priority ?? undefined,
+        assignedAgentId: row.assigned_agent_id ?? undefined,
+        assigneeHuman: row.assignee_human ?? undefined,
+        vcsBranch: row.vcs_branch ?? undefined,
+        vcsBaseBranch: row.vcs_base_branch ?? undefined,
+        vcsLastCommitSha: row.vcs_last_commit_sha ?? undefined,
+        metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+        openapiVersionAtCreation: row.openapi_version_at_creation ?? undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
+      .filter((task) => (task.metadata as Record<string, unknown> | undefined)?.[metadataKey] === metadataValue);
+  }
+
   async getTasksByIds(taskIds: string[]): Promise<TaskRow[]> {
     if (!taskIds.length) return [];
     const placeholders = taskIds.map(() => "?").join(", ");
@@ -1058,6 +1090,21 @@ export class WorkspaceRepository {
       acquiredAt: row.acquired_at,
       expiresAt: row.expires_at,
     };
+  }
+
+  async cleanupExpiredTaskLocks(nowIso: string = new Date().toISOString()): Promise<string[]> {
+    return this.withTransaction(async () => {
+      const rows = await this.db.all<{ task_key?: string | null; task_id: string }[]>(
+        `SELECT t.key as task_key, l.task_id as task_id
+         FROM task_locks l
+         LEFT JOIN tasks t ON t.id = l.task_id
+         WHERE l.expires_at < ?`,
+        nowIso,
+      );
+      if (!rows.length) return [];
+      await this.db.run(`DELETE FROM task_locks WHERE expires_at < ?`, nowIso);
+      return rows.map((row) => row.task_key ?? row.task_id);
+    });
   }
 
   async tryAcquireTaskLock(

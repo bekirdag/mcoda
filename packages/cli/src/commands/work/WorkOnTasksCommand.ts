@@ -15,6 +15,8 @@ interface ParsedArgs {
   agentName?: string;
   agentStream?: boolean;
   rateAgents: boolean;
+  autoMerge?: boolean;
+  autoPush?: boolean;
   json: boolean;
 }
 
@@ -30,6 +32,10 @@ const usage = `mcoda work-on-tasks \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
   [--rate-agents] \\
+  [--auto-merge <true|false>] \\
+  [--auto-push <true|false>] \\
+  [--no-auto-merge] \\
+  [--no-auto-push] \\
   [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -62,6 +68,8 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
   let rateAgents = false;
+  let autoMerge: boolean | undefined;
+  let autoPush: boolean | undefined;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -79,6 +87,16 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--agent-stream=")) {
       const [, raw] = arg.split("=", 2);
       agentStream = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--auto-merge=")) {
+      const [, raw] = arg.split("=", 2);
+      autoMerge = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--auto-push=")) {
+      const [, raw] = arg.split("=", 2);
+      autoPush = parseBooleanFlag(raw, true);
       continue;
     }
     if (arg.startsWith("--rate-agents=")) {
@@ -143,6 +161,32 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--auto-merge": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          autoMerge = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          autoMerge = true;
+        }
+        break;
+      }
+      case "--auto-push": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          autoPush = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          autoPush = true;
+        }
+        break;
+      }
+      case "--no-auto-merge":
+        autoMerge = false;
+        break;
+      case "--no-auto-push":
+        autoPush = false;
+        break;
       case "--rate-agents": {
         const next = argv[i + 1];
         if (next && !next.startsWith("--")) {
@@ -185,6 +229,8 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     agentName,
     agentStream: agentStream ?? true,
     rateAgents,
+    autoMerge,
+    autoPush,
     json,
   };
 };
@@ -227,6 +273,8 @@ export class WorkOnTasksCommand {
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
+        autoMerge: parsed.autoMerge,
+        autoPush: parsed.autoPush,
         onAgentChunk,
       });
 

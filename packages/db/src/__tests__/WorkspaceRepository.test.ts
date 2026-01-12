@@ -101,6 +101,59 @@ test("WorkspaceRepository tryAcquireTaskLock overrides stale locks", async () =>
   }
 });
 
+test("WorkspaceRepository cleanupExpiredTaskLocks removes expired locks", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-db-"));
+  const repo = await WorkspaceRepository.create(dir);
+  try {
+    const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const [epic] = await repo.insertEpics([
+      {
+        projectId: project.id,
+        key: "epic-1",
+        title: "Epic",
+        description: "",
+      },
+    ]);
+    const [story] = await repo.insertStories([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        key: "story-1",
+        title: "Story",
+        description: "",
+      },
+    ]);
+    const [task] = await repo.insertTasks([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "task-1",
+        title: "Task",
+        description: "",
+        status: "in_progress",
+      },
+    ]);
+    const run = await repo.createTaskRun({
+      taskId: task.id,
+      command: "work-on-tasks",
+      jobId: null,
+      commandRunId: null,
+      agentId: null,
+      status: "running",
+      startedAt: new Date().toISOString(),
+    });
+    await repo.tryAcquireTaskLock(task.id, run.id, null, -1);
+    const cleared = await repo.cleanupExpiredTaskLocks();
+    assert.deepEqual(cleared, ["task-1"]);
+    const lock = await repo.getTaskLock(task.id);
+    assert.equal(lock, undefined);
+  } finally {
+    await repo.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("WorkspaceRepository resolves and reopens task comments by slug", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-db-"));
   const repo = await WorkspaceRepository.create(dir);

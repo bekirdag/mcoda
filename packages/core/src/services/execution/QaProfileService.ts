@@ -108,7 +108,47 @@ export class QaProfileService {
     return hasUiDep;
   }
 
-  private async resolveRunnerPreference(): Promise<'chromium' | 'cli'> {
+  private detectUiTask(task: TaskRow & { metadata?: any }): boolean {
+    const metadata = (task.metadata as any) ?? {};
+    const tags: string[] = Array.isArray(metadata.tags) ? metadata.tags.map((t: string) => t.toLowerCase()) : [];
+    const uiTags = new Set([
+      'ui',
+      'frontend',
+      'front-end',
+      'client',
+      'web',
+      'react',
+      'vue',
+      'svelte',
+      'angular',
+      'next',
+      'nuxt',
+      'astro',
+    ]);
+    if (tags.some((tag) => uiTags.has(tag))) return true;
+    const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
+    const uiHints = [
+      '/ui/',
+      '/frontend/',
+      '/client/',
+      '/web/',
+      '/components/',
+      '/pages/',
+      '/app/',
+      '/public/',
+      '/styles/',
+    ];
+    const uiExtensions = ['.tsx', '.jsx', '.vue', '.svelte', '.astro', '.html', '.css', '.scss', '.less'];
+    for (const file of files) {
+      const normalized = String(file).toLowerCase();
+      if (uiExtensions.some((ext) => normalized.endsWith(ext))) return true;
+      if (uiHints.some((hint) => normalized.includes(hint))) return true;
+    }
+    return false;
+  }
+
+  private async resolveRunnerPreference(task?: TaskRow & { metadata?: any }): Promise<'chromium' | 'cli'> {
+    if (task && this.detectUiTask(task)) return 'chromium';
     const hasUi = await this.detectWebInterface();
     return hasUi ? 'chromium' : 'cli';
   }
@@ -185,7 +225,7 @@ export class QaProfileService {
     if (!profiles.length) return undefined;
     const envProfile = process.env.MCODA_QA_PROFILE;
     const routing = await this.getRoutingConfig();
-    const runnerPreference = await this.resolveRunnerPreference();
+    const runnerPreference = await this.resolveRunnerPreference(task);
     const normalizeRunner = (profile: QaProfile): string => profile.runner ?? 'cli';
     const matchRunner = (profile: QaProfile): boolean =>
       normalizeRunner(profile) === runnerPreference || profile.name === runnerPreference;
