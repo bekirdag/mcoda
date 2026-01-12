@@ -60,14 +60,14 @@ if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
   const shell = process.platform === "win32";
   if (process.platform === "win32") {
     const workspacePackages = [
-      "packages/shared",
-      "packages/generators",
-      "packages/integrations",
-      "packages/db",
-      "packages/agents",
-      "packages/core",
-      "packages/cli",
-      "packages/testing",
+      "@mcoda/shared",
+      "@mcoda/generators",
+      "@mcoda/integrations",
+      "@mcoda/db",
+      "@mcoda/agents",
+      "@mcoda/core",
+      "mcoda",
+      "@mcoda/testing",
     ];
     for (const pkg of workspacePackages) {
       let workspace = run(`workspace-tests:${pkg}`, pnpm, ["--filter", pkg, "run", "test"], { shell });
