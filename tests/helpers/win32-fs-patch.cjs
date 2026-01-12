@@ -13,6 +13,8 @@ const shouldRetry = (error) => {
 
 const origRm = fsp.rm ? fsp.rm.bind(fsp) : fs.promises.rm.bind(fs.promises);
 const origRmSync = fs.rmSync ? fs.rmSync.bind(fs) : undefined;
+const origUnlink = fsp.unlink ? fsp.unlink.bind(fsp) : fs.promises.unlink.bind(fs.promises);
+const origUnlinkSync = fs.unlinkSync ? fs.unlinkSync.bind(fs) : undefined;
 
 const rmWithRetries = async (target, options) => {
   let lastError;
@@ -57,3 +59,12 @@ const rmSyncWithRetries = (target, options) => {
 fsp.rm = rmWithRetries;
 fs.promises.rm = rmWithRetries;
 fs.rmSync = rmSyncWithRetries;
+
+const unlinkWithRetries = async (target) => rmWithRetries(target, { force: true });
+const unlinkSyncWithRetries = (target) => rmSyncWithRetries(target, { force: true });
+
+fsp.unlink = unlinkWithRetries;
+fs.promises.unlink = unlinkWithRetries;
+if (origUnlinkSync) {
+  fs.unlinkSync = unlinkSyncWithRetries;
+}
