@@ -48,6 +48,8 @@ export class TaskStateService {
       status: "blocked",
       metadata,
     });
+    task.status = "blocked";
+    task.metadata = metadata;
   }
 
   async recordReviewMetadata(task: TaskRow, metadata: { decision: string; agentId?: string | null; modelName?: string | null; jobId?: string | null; reviewId?: string | null }) {

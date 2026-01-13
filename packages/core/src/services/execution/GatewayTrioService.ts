@@ -27,8 +27,15 @@ const RETRYABLE_BLOCK_REASONS = new Set([
   "no_changes",
   "qa_infra_issue",
   "review_blocked",
+  "review_invalid_output",
 ]);
-const ESCALATION_REASONS = new Set(["missing_patch", "patch_failed", "tests_failed", "agent_timeout"]);
+const ESCALATION_REASONS = new Set([
+  "missing_patch",
+  "patch_failed",
+  "tests_failed",
+  "agent_timeout",
+  "review_invalid_output",
+]);
 const NO_CHANGE_REASON = "no_changes";
 const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
 const HEARTBEAT_INTERVAL_MS = 30000;
@@ -1040,6 +1047,8 @@ export class GatewayTrioService {
         let attemptedThisCycle = 0;
 
         for (const entry of ordered) {
+          let attempted = false;
+          try {
           const taskKey = entry.task.key;
           if (blockedKeys.has(taskKey) && !explicitTasks.has(taskKey)) {
             warnings.push(`Task ${taskKey} blocked by dependencies; skipping this cycle.`);
@@ -1086,6 +1095,7 @@ export class GatewayTrioService {
 
           const attemptIndex = progress.attempts + 1;
           attemptedThisCycle += 1;
+          attempted = true;
           const projectKey = await this.projectKeyForTask(entry.task.projectId);
           const statusBefore = this.normalizeStatus(entry.task.status);
           const workWasSkipped = statusBefore === "ready_to_review" || statusBefore === "ready_to_qa";
@@ -1340,10 +1350,14 @@ export class GatewayTrioService {
           state.tasks[taskKey] = progress;
           await this.writeState(state);
           completedThisCycle += 1;
-          processedThisCycle += 1;
-          await this.deps.jobService.updateJobStatus(jobId, "running", {
-            processedItems: processedThisCycle,
-          });
+          } finally {
+            if (attempted) {
+              processedThisCycle += 1;
+              await this.deps.jobService.updateJobStatus(jobId, "running", {
+                processedItems: processedThisCycle,
+              });
+            }
+          }
         }
 
         cycle += 1;

@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
@@ -36,6 +37,8 @@ const DEFAULT_GATEWAY_PROMPT = [
   "}",
   "If information is missing, keep arrays empty and mention the gap in assumptions or docdexNotes.",
 ].join("\n");
+const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
+const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 
 const REQUIRED_PROMPT_MARKERS = [
   '"summary"',
@@ -54,6 +57,15 @@ const DEFAULT_JOB_PROMPT =
   "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
   "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
+
+const ROUTING_PROMPT_MARKERS = [
+  "routing gateway",
+  "choose a route",
+  "devstral-local",
+  "glm-worker",
+  "codex-architect",
+  "complexity from 1 to 5",
+];
 
 const extractJson = (raw: string): any | undefined => {
   const fenced = raw.match(/```json([\s\S]*?)```/);
@@ -89,6 +101,19 @@ const normalizeTextField = (value: unknown): string | undefined => {
     return parts.length ? parts.join("; ") : undefined;
   }
   return undefined;
+};
+
+const isRoutingPrompt = (value: string): boolean => {
+  const lower = value.toLowerCase();
+  return ROUTING_PROMPT_MARKERS.some((marker) => lower.includes(marker));
+};
+
+const sanitizeGatewayPrompt = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (isRoutingPrompt(trimmed)) return undefined;
+  return trimmed;
 };
 
 const isPlaceholderPath = (value: string): boolean => {
@@ -390,6 +415,7 @@ export class GatewayAgentService {
       "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
     const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "gateway-agent.md");
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "gateway-agent.md");
+    const repoPromptPath = resolveRepoPromptPath("gateway-agent.md");
     try {
       await fs.promises.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.promises.access(mcodaPromptPath);
@@ -398,7 +424,12 @@ export class GatewayAgentService {
         await fs.promises.access(workspacePromptPath);
         await fs.promises.copyFile(workspacePromptPath, mcodaPromptPath);
       } catch {
-        await fs.promises.writeFile(mcodaPromptPath, DEFAULT_GATEWAY_PROMPT, "utf8");
+        try {
+          await fs.promises.access(repoPromptPath);
+          await fs.promises.copyFile(repoPromptPath, mcodaPromptPath);
+        } catch {
+          await fs.promises.writeFile(mcodaPromptPath, DEFAULT_GATEWAY_PROMPT, "utf8");
+        }
       }
     }
     try {
@@ -411,14 +442,21 @@ export class GatewayAgentService {
             nextPrompt = workspacePrompt.trim();
           }
         } catch {
-          /* ignore */
+          try {
+            const repoPrompt = await fs.promises.readFile(repoPromptPath, "utf8");
+            if (hasRequiredPromptMarkers(repoPrompt)) {
+              nextPrompt = repoPrompt.trim();
+            }
+          } catch {
+            /* ignore */
+          }
         }
         await fs.promises.writeFile(mcodaPromptPath, nextPrompt, "utf8");
       }
     } catch {
       /* ignore */
     }
-    const commandPromptFiles = (await this.readPromptFiles([mcodaPromptPath, workspacePromptPath])).filter(
+    const commandPromptFiles = (await this.readPromptFiles([mcodaPromptPath, workspacePromptPath, repoPromptPath])).filter(
       hasRequiredPromptMarkers,
     );
     const mergedCommandPrompt = (() => {
@@ -430,9 +468,11 @@ export class GatewayAgentService {
       if (!parts.length) parts.push(DEFAULT_GATEWAY_PROMPT);
       return parts.filter(Boolean).join("\n\n");
     })();
+    const sanitizedJobPrompt = sanitizeGatewayPrompt(agentPrompts?.jobPrompt);
+    const sanitizedCharacterPrompt = sanitizeGatewayPrompt(agentPrompts?.characterPrompt);
     return {
-      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
-      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
+      jobPrompt: sanitizedJobPrompt ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: sanitizedCharacterPrompt ?? DEFAULT_CHARACTER_PROMPT,
       commandPrompt: mergedCommandPrompt,
     };
   }

@@ -287,6 +287,40 @@ class StubDocdex {
   async close() {}
 }
 
+class StubDocdexWithLinks {
+  findByPathCalls: string[] = [];
+  fetchByIdCalls: string[] = [];
+  async search() {
+    return [];
+  }
+  async findDocumentByPath(docPath: string) {
+    this.findByPathCalls.push(docPath);
+    if (docPath === "docs/sds/project.md") {
+      return {
+        id: "doc-1",
+        docType: "SDS",
+        title: "project.md",
+        segments: [{ id: "doc-1-seg-1", docId: "doc-1", index: 0, content: "SDS excerpt" }],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    return undefined;
+  }
+  async fetchDocumentById(id: string) {
+    this.fetchByIdCalls.push(id);
+    return {
+      id,
+      docType: "DOC",
+      title: id,
+      segments: [{ id: `${id}-seg-1`, docId: id, index: 0, content: "fallback excerpt" }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  async close() {}
+}
+
 class StubRepo {
   async getWorkspaceDefaults() {
     return [];
@@ -831,6 +865,83 @@ test("workOnTasks prepends project guidance to agent input", async () => {
     const taskIndex = input.indexOf("Task proj-epic-us-01-t01");
     assert.ok(guidanceIndex >= 0);
     assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks prompt omits plan instruction in favor of patch-only output", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    const input = agent.lastInput ?? "";
+    assert.ok(!input.includes("Provide a concise plan"));
+    assert.ok(input.includes("Output requirements (strict):"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks resolves docdex path links via findDocumentByPath", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  await repo.updateTask(tasks[0].id, {
+    metadata: { doc_links: ["docdex:docs/sds/project.md"] },
+  });
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const docdex = new StubDocdexWithLinks();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: docdex as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    const input = agent.lastInput ?? "";
+    assert.ok(docdex.findByPathCalls.includes("docs/sds/project.md"));
+    assert.ok(input.includes("[linked:SDS]"));
+    assert.ok(input.includes("SDS excerpt"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
 import {
@@ -39,6 +40,8 @@ const DEFAULT_CODE_REVIEW_PROMPT = [
   "You are the code-review agent. Before reviewing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
   "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
 ].join("\n");
+const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
+const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
   "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
@@ -434,6 +437,7 @@ export class CodeReviewService {
   private async loadPrompts(agentId: string): Promise<{ jobPrompt?: string; characterPrompt?: string; commandPrompt?: string }> {
     const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-reviewer.md");
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-reviewer.md");
+    const repoPromptPath = resolveRepoPromptPath("code-reviewer.md");
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.access(mcodaPromptPath);
@@ -444,11 +448,19 @@ export class CodeReviewService {
         await fs.copyFile(workspacePromptPath, mcodaPromptPath);
         console.info(`[code-review] copied code-reviewer prompt to ${mcodaPromptPath}`);
       } catch {
-        console.info(`[code-review] no code-reviewer prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
-        await fs.writeFile(mcodaPromptPath, DEFAULT_CODE_REVIEW_PROMPT, 'utf8');
+        try {
+          await fs.access(repoPromptPath);
+          await fs.copyFile(repoPromptPath, mcodaPromptPath);
+          console.info(`[code-review] copied repo code-reviewer prompt to ${mcodaPromptPath}`);
+        } catch {
+          console.info(
+            `[code-review] no code-reviewer prompt found at ${workspacePromptPath} or repo prompts; writing default prompt to ${mcodaPromptPath}`,
+          );
+          await fs.writeFile(mcodaPromptPath, DEFAULT_CODE_REVIEW_PROMPT, "utf8");
+        }
       }
     }
-    const filePrompts = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath]);
+    const filePrompts = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath, repoPromptPath]);
     const agentPrompts =
       "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
     const mergedCommandPrompt = (() => {
@@ -1501,12 +1513,15 @@ export class CodeReviewService {
       const findings: ReviewFinding[] = [];
       let decision: ReviewAgentResult["decision"] | undefined;
       let statusAfter: string | undefined;
+      let reviewErrorCode: string | undefined;
+      let invalidJson = false;
       const followupCreated: { taskId: string; taskKey: string; epicId: string; userStoryId: string; generic?: boolean }[] = [];
       let commentResolution: { resolved: string[]; reopened: string[]; open: string[] } | undefined;
 
       // Debug visibility: show prompts/task details for this run
       const systemPrompt = systemPrompts.join("\n\n");
       let tokensTotal = 0;
+      let agentOutput = "";
 
       try {
         const metadata = (task.metadata as any) ?? {};
@@ -1689,7 +1704,7 @@ export class CodeReviewService {
           });
         };
 
-        let agentOutput = "";
+        agentOutput = "";
         let durationSeconds = 0;
         const started = Date.now();
         let lastStreamMeta: any;
@@ -1742,7 +1757,6 @@ export class CodeReviewService {
         await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain);
 
         let parsed = parseJsonOutput(agentOutput);
-        let invalidJson = false;
         if (!parsed) {
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
@@ -1788,6 +1802,7 @@ export class CodeReviewService {
         }
         if (!parsed) {
           invalidJson = true;
+          reviewErrorCode = "review_invalid_output";
           const fallbackSummary =
             "Review agent returned non-JSON output after retry; block review and re-run with a stricter JSON-only model.";
           warnings.push(`Review agent returned non-JSON output for ${task.key}; blocking review.`);
@@ -1999,6 +2014,12 @@ export class CodeReviewService {
         continue;
       }
 
+      if (invalidJson && !reviewErrorCode) {
+        reviewErrorCode = "review_invalid_output";
+      }
+      if (!reviewErrorCode && agentOutput && !parseJsonOutput(agentOutput)) {
+        reviewErrorCode = "review_invalid_output";
+      }
       results.push({
         taskId: task.id,
         taskKey: task.key,
@@ -2006,6 +2027,7 @@ export class CodeReviewService {
         statusAfter,
         decision,
         findings,
+        error: reviewErrorCode,
         followupTasks: followupCreated,
       });
 

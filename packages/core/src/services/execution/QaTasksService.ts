@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
@@ -30,6 +31,8 @@ const DEFAULT_QA_PROMPT = [
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
   'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage.',
 ].join('\n');
+const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import.meta.url));
+const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const QA_TEST_POLICY = 'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage.';
 const DEFAULT_JOB_PROMPT = 'You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.';
 const DEFAULT_CHARACTER_PROMPT =
@@ -298,6 +301,7 @@ export class QaTasksService {
   private async loadPrompts(agentId: string): Promise<PromptBundle> {
     const mcodaPromptPath = path.join(this.workspace.workspaceRoot, '.mcoda', 'prompts', 'qa-agent.md');
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, 'prompts', 'qa-agent.md');
+    const repoPromptPath = resolveRepoPromptPath('qa-agent.md');
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.access(mcodaPromptPath);
@@ -308,11 +312,19 @@ export class QaTasksService {
         await fs.copyFile(workspacePromptPath, mcodaPromptPath);
         console.info(`[qa-tasks] copied QA prompt to ${mcodaPromptPath}`);
       } catch {
-        console.info(`[qa-tasks] no QA prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
-        await fs.writeFile(mcodaPromptPath, DEFAULT_QA_PROMPT, 'utf8');
+        try {
+          await fs.access(repoPromptPath);
+          await fs.copyFile(repoPromptPath, mcodaPromptPath);
+          console.info(`[qa-tasks] copied repo QA prompt to ${mcodaPromptPath}`);
+        } catch {
+          console.info(
+            `[qa-tasks] no QA prompt found at ${workspacePromptPath} or repo prompts; writing default prompt to ${mcodaPromptPath}`,
+          );
+          await fs.writeFile(mcodaPromptPath, DEFAULT_QA_PROMPT, 'utf8');
+        }
       }
     }
-    const commandPromptFiles = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath]);
+    const commandPromptFiles = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath, repoPromptPath]);
     const agentPrompts =
       this.agentService && 'getPrompts' in this.agentService ? await (this.agentService as any).getPrompts(agentId) : undefined;
     const mergedCommandPrompt = (() => {

@@ -455,10 +455,12 @@ test("CodeReviewService blocks after invalid JSON retry", async () => {
 
     assert.equal(result.tasks.length, 1);
     assert.equal(result.tasks[0]?.decision, "block");
+    assert.equal(result.tasks[0]?.error, "review_invalid_output");
     assert.ok(result.warnings.some((warning) => warning.includes("non-JSON output")));
 
     const updated = await repo.getTaskByKey(task.key);
     assert.equal(updated?.status, "blocked");
+    assert.equal((updated?.metadata as any)?.blocked_reason, "review_invalid_output");
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

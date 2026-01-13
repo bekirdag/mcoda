@@ -2,6 +2,7 @@ import { exec as execCb } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
 import { GlobalRepository, WorkspaceRepository, type TaskCommentRow } from "@mcoda/db";
@@ -20,6 +21,8 @@ const DEFAULT_TASK_BRANCH_PREFIX = "mcoda/task/";
 const TASK_LOCK_TTL_SECONDS = 60 * 60;
 const MAX_TEST_FIX_ATTEMPTS = 3;
 const DEFAULT_TEST_OUTPUT_CHARS = 1200;
+const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
+const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_CODE_WRITER_PROMPT = [
   "You are the code-writing agent. Before coding, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run search. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
@@ -1124,6 +1127,7 @@ export class WorkOnTasksService {
       "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
     const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-writer.md");
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-writer.md");
+    const repoPromptPath = resolveRepoPromptPath("code-writer.md");
     try {
       await fs.promises.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.promises.access(mcodaPromptPath);
@@ -1134,13 +1138,22 @@ export class WorkOnTasksService {
         await fs.promises.copyFile(workspacePromptPath, mcodaPromptPath);
         console.info(`[work-on-tasks] copied code-writer prompt to ${mcodaPromptPath}`);
       } catch {
-        console.info(`[work-on-tasks] no code-writer prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
-        await fs.promises.writeFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT, "utf8");
+        try {
+          await fs.promises.access(repoPromptPath);
+          await fs.promises.copyFile(repoPromptPath, mcodaPromptPath);
+          console.info(`[work-on-tasks] copied repo code-writer prompt to ${mcodaPromptPath}`);
+        } catch {
+          console.info(
+            `[work-on-tasks] no code-writer prompt found at ${workspacePromptPath} or repo prompts; writing default prompt to ${mcodaPromptPath}`,
+          );
+          await fs.promises.writeFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT, "utf8");
+        }
       }
     }
     const commandPromptFiles = await this.readPromptFiles([
       mcodaPromptPath,
       workspacePromptPath,
+      repoPromptPath,
     ]);
     const mergedCommandPrompt = (() => {
       const parts = [...commandPromptFiles];
@@ -1339,9 +1352,30 @@ export class WorkOnTasksService {
     } catch (error) {
       warnings.push(`docdex search failed: ${(error as Error).message}`);
     }
+    const normalizeDocLink = (value: string): { type: "id" | "path"; ref: string } => {
+      const trimmed = value.trim();
+      const stripped = trimmed.replace(/^docdex:/i, "").replace(/^doc:/i, "");
+      const candidate = stripped || trimmed;
+      const looksLikePath =
+        candidate.includes("/") ||
+        candidate.includes("\\") ||
+        /\.(md|markdown|txt|rst|yaml|yml|json)$/i.test(candidate);
+      return { type: looksLikePath ? "path" : "id", ref: candidate };
+    };
     for (const link of docLinks) {
       try {
-        const doc = await this.deps.docdex.fetchDocumentById(link);
+        const { type, ref } = normalizeDocLink(link);
+        let doc = undefined;
+        if (type === "path" && "findDocumentByPath" in this.deps.docdex) {
+          doc = await (this.deps.docdex as DocdexClient).findDocumentByPath(ref);
+        }
+        if (!doc) {
+          doc = await this.deps.docdex.fetchDocumentById(ref);
+        }
+        if (!doc) {
+          warnings.push(`docdex fetch returned no document for ${link}`);
+          continue;
+        }
         const excerpt = doc.segments?.[0]?.content?.slice(0, 240);
         parts.push(`- [linked:${doc.docType}] ${doc.title ?? doc.id}${excerpt ? ` — ${excerpt}` : ""}`);
       } catch (error) {
@@ -1436,7 +1470,6 @@ export class WorkOnTasksService {
       `Allowed files: ${fileScope.length ? fileScope.join(", ") : "(not constrained)"}`,
       `Doc context:\n${docdexHint}`,
       "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, emit a new-file diff with full content (and parent dirs) instead of editing a non-existent file so git apply succeeds. Use valid unified diffs without JSON wrappers.",
-      "Provide a concise plan as plain text bullet points, then output code changes. If editing existing files, emit a unified diff inside ```patch``` fences. If creating new files, emit FILE blocks. Do not output JSON (unless forced by the runtime, in which case include a top-level `patch` string or `files` array).",
     ]
       .filter(Boolean)
       .join("\n");
