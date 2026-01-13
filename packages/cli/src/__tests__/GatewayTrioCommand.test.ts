@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { GatewayTrioService } from "@mcoda/core";
+import { GatewayTrioService, JobService } from "@mcoda/core";
 import {
   GatewayTrioCommand,
   parseGatewayTrioArgs,
@@ -16,6 +16,7 @@ describe("gateway-trio argument parsing", () => {
     assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress", "ready_to_review", "ready_to_qa"]);
     assert.equal(parsed.qaMode, "auto");
     assert.equal(parsed.qaFollowups, "auto");
+    assert.equal(parsed.reviewFollowups, false);
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.escalateOnNoChange, true);
@@ -95,6 +96,8 @@ describe("gateway-trio argument parsing", () => {
       "manual",
       "--qa-followups",
       "prompt",
+      "--review-followups",
+      "true",
       "--escalate-on-no-change=false",
       "--agent-stream=false",
       "--rate-agents",
@@ -107,6 +110,7 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.qaTestCommand, "pnpm test");
     assert.equal(parsed.qaMode, "manual");
     assert.equal(parsed.qaFollowups, "prompt");
+    assert.equal(parsed.reviewFollowups, true);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, true);
     assert.equal(parsed.escalateOnNoChange, false);
@@ -191,5 +195,86 @@ describe("gateway-trio CLI output shape", () => {
     assert.equal(parsed.commandRunId, "cmd-123");
     assert.equal(parsed.tasks[0].taskKey, "TASK-1");
     assert.equal(parsed.summary.completed, 1);
+  });
+
+  it("streams watch progress to stderr after totals are known", async () => {
+    const originalCreate = GatewayTrioService.create;
+    const originalGetJob = JobService.prototype.getJob;
+    const originalClose = JobService.prototype.close;
+    const originalPoll = process.env.MCODA_WATCH_POLL_MS;
+    let jobCalls = 0;
+    const timestamp = new Date().toISOString();
+    const baseJob = {
+      id: "job-123",
+      type: "gateway-trio",
+      state: "running" as const,
+      workspaceId: "ws-1",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    JobService.prototype.getJob = async () => {
+      jobCalls += 1;
+      if (jobCalls === 1) {
+        return { ...baseJob, jobState: "running" as const };
+      }
+      if (jobCalls === 2) {
+        return { ...baseJob, jobState: "running" as const, totalItems: 2, processedItems: 0 };
+      }
+      return {
+        ...baseJob,
+        state: "completed",
+        jobState: "completed" as const,
+        totalItems: 2,
+        processedItems: 2,
+      };
+    };
+    JobService.prototype.close = async () => {};
+    const fakeResult = {
+      jobId: "job-123",
+      commandRunId: "cmd-123",
+      tasks: [],
+      warnings: [],
+      blocked: [],
+      failed: [],
+      skipped: [],
+    };
+    // @ts-expect-error override for test
+    GatewayTrioService.create = async () => ({
+      run: async (request: any) => {
+        request.onJobStart?.("job-123", "cmd-123");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return fakeResult;
+      },
+      close: async () => {},
+    });
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = (msg?: any) => {
+      logs.push(String(msg));
+    };
+    console.error = (msg?: any) => {
+      errors.push(String(msg));
+    };
+    process.env.MCODA_WATCH_POLL_MS = "1";
+    try {
+      await GatewayTrioCommand.run(["--json", "--watch"]);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      JobService.prototype.getJob = originalGetJob;
+      JobService.prototype.close = originalClose;
+      GatewayTrioService.create = originalCreate;
+      if (originalPoll === undefined) {
+        delete process.env.MCODA_WATCH_POLL_MS;
+      } else {
+        process.env.MCODA_WATCH_POLL_MS = originalPoll;
+      }
+    }
+    const progressLines = errors.filter((line) => line.includes("gateway-trio job job-123"));
+    assert.ok(progressLines.length > 0);
+    assert.equal(logs.some((line) => line.includes("gateway-trio job job-123")), false);
+    assert.equal(progressLines.some((line) => line.includes("0/0")), false);
   });
 });

@@ -38,6 +38,7 @@
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",
     "test": "node tests/all.js",
+    "test:repo": "node --input-type=module -e \"process.env.MCODA_SKIP_WORKSPACE_TESTS='1'; import('./tests/all.js');\"",
     "test:workspaces": "pnpm -r run test"
   },
   "devDependencies": {

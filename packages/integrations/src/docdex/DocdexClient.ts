@@ -118,6 +118,22 @@ export class DocdexClient {
     return this.resolvedBaseUrl;
   }
 
+  private buildMissingRepoMessage(): string {
+    const root = this.options.workspaceRoot ? path.resolve(this.options.workspaceRoot) : "unknown workspace";
+    return `Docdex repo scope missing for ${root}. Ensure docdexd is running and initialized for this repo, or set MCODA_DOCDEX_URL to a daemon that already indexed it.`;
+  }
+
+  async ensureRepoScope(): Promise<void> {
+    const baseUrl = await this.resolveBaseUrl();
+    if (!baseUrl) return;
+    if (!this.repoId) {
+      await this.ensureRepoInitialized(baseUrl, true);
+    }
+    if (!this.repoId) {
+      throw new Error(this.buildMissingRepoMessage());
+    }
+  }
+
   private async ensureRepoInitialized(baseUrl: string, force = false): Promise<void> {
     if ((this.repoId && !force) || this.initializing) return;
     if (!this.options.workspaceRoot) return;
@@ -149,12 +165,13 @@ export class DocdexClient {
     if (!baseUrl) {
       throw new Error("Docdex baseUrl not configured. Run docdex setup or set MCODA_DOCDEX_URL.");
     }
-    await this.ensureRepoInitialized(baseUrl);
+    await this.ensureRepoScope();
     const url = new URL(pathname, baseUrl);
     const buildHeaders = () => {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;
       if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
+      if (this.options.workspaceRoot) headers["x-docdex-repo-root"] = path.resolve(this.options.workspaceRoot);
       return { ...headers, ...(init?.headers as any) };
     };
     const response = await fetch(url, { ...init, headers: buildHeaders() });

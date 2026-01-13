@@ -26,7 +26,7 @@ const sampleResult = {
     complexity: 3,
     discipline: "backend",
     filesLikelyTouched: ["src/file.ts"],
-    filesToCreate: [],
+    filesToCreate: ["src/new.ts"],
     assumptions: ["Assume"],
     risks: ["Risk"],
     docdexNotes: ["Docdex note"],
@@ -43,6 +43,9 @@ test("buildGatewayHandoffContent renders core sections", () => {
   assert.ok(content.includes("## Todo"));
   assert.ok(content.includes("## Plan"));
   assert.ok(content.includes("## Files Likely Touched"));
+  assert.ok(content.includes("- src/file.ts"));
+  assert.ok(content.includes("## Files To Create"));
+  assert.ok(content.includes("- src/new.ts"));
 });
 
 test("writeGatewayHandoffFile writes content and returns path", async () => {

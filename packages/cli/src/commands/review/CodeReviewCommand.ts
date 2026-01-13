@@ -15,6 +15,7 @@ interface ParsedArgs {
   agentName?: string;
   agentStream?: boolean;
   rateAgents: boolean;
+  createFollowupTasks: boolean;
   json: boolean;
 }
 
@@ -29,10 +30,11 @@ const usage = `mcoda code-review \\
   [--limit N] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--create-followup-tasks <true|false>] \\
   [--rate-agents] \\
   [--json]
 
-Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks for critical findings, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under .mcoda/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
+Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks when --create-followup-tasks=true, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under .mcoda/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -64,6 +66,7 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
   let rateAgents = false;
+  let createFollowupTasks = false;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -86,6 +89,11 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--rate-agents=")) {
       const [, raw] = arg.split("=", 2);
       rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--create-followup-tasks=")) {
+      const [, raw] = arg.split("=", 2);
+      createFollowupTasks = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -156,6 +164,16 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--create-followup-tasks": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          createFollowupTasks = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          createFollowupTasks = true;
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -188,6 +206,7 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     agentName,
     agentStream: agentStream ?? true,
     rateAgents,
+    createFollowupTasks,
     json,
   };
 };
@@ -215,6 +234,7 @@ export class CodeReviewCommand {
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
+        createFollowupTasks: parsed.createFollowupTasks,
       });
 
       if (parsed.json) {

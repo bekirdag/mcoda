@@ -128,12 +128,43 @@ const makeService = async (options: {
   gatewayRequests?: any[];
   cleanupExpiredLocks?: string[];
   jobStatusUpdates?: Array<{ state: string; payload: Record<string, unknown> }>;
+  recordTokenUsage?: boolean;
+  tokenUsageOverride?: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number };
 }) => {
   const { dir, workspace } = await makeWorkspace();
+  const jobService = new JobService(workspace);
   const statusStore = options.statusStore;
   const metadataStore = options.metadataStore;
   const dependencyMap = options.dependencyMap ?? {};
   let selectionIndex = 0;
+  const recordTokens = async (commandName: string, jobId: string, commandRunId: string) => {
+    if (options.recordTokenUsage === false) return;
+    const tokensPrompt = options.tokenUsageOverride?.tokensPrompt ?? 5;
+    const tokensCompletion = options.tokenUsageOverride?.tokensCompletion ?? 5;
+    const tokensTotal =
+      options.tokenUsageOverride?.tokensTotal ?? tokensPrompt + tokensCompletion;
+    const tokenPath = path.join(dir, ".mcoda", "token_usage.json");
+    const entry = {
+      workspaceId: workspace.workspaceId,
+      commandName,
+      jobId,
+      commandRunId,
+      tokensPrompt,
+      tokensCompletion,
+      tokensTotal,
+      timestamp: new Date().toISOString(),
+    };
+    await fs.mkdir(path.dirname(tokenPath), { recursive: true });
+    try {
+      const raw = await fs.readFile(tokenPath, "utf8");
+      const parsed = JSON.parse(raw);
+      const existing = Array.isArray(parsed) ? parsed : [];
+      existing.push(entry);
+      await fs.writeFile(tokenPath, JSON.stringify(existing, null, 2), "utf8");
+    } catch {
+      await fs.writeFile(tokenPath, JSON.stringify([entry], null, 2), "utf8");
+    }
+  };
   const selectionService = {
     selectTasks: async () => {
       const entry = options.selectionSequence?.length
@@ -178,6 +209,15 @@ const makeService = async (options: {
     close: async () => {},
   };
 
+  const routingService = {
+    resolveAgentForCommand: async () => ({
+      agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      agentSlug: "agent-1",
+      source: "workspace_default",
+    }),
+    close: async () => {},
+  };
+
   let reviewIndex = 0;
   let qaIndex = 0;
   let workIndex = 0;
@@ -195,6 +235,7 @@ const makeService = async (options: {
         const next = outcome === "failed" ? "in_progress" : "ready_to_review";
         statusStore.set(key, next);
       }
+      await recordTokens("work-on-tasks", "work-job", "work-run");
       return {
         jobId: "work-job",
         commandRunId: "work-run",
@@ -220,6 +261,7 @@ const makeService = async (options: {
               : "in_progress";
         statusStore.set(key, next);
       }
+      await recordTokens("code-review", "review-job", "review-run");
       return {
         jobId: "review-job",
         commandRunId: "review-run",
@@ -239,6 +281,7 @@ const makeService = async (options: {
         const next = outcome === "pass" ? "completed" : outcome === "infra_issue" ? "blocked" : "in_progress";
         statusStore.set(key, next);
       }
+      await recordTokens("qa-tasks", "qa-job", "qa-run");
       return {
         jobId: "qa-job",
         commandRunId: "qa-run",
@@ -344,7 +387,6 @@ const makeService = async (options: {
     close: async () => {},
   };
 
-  const jobService = new JobService(workspace);
   if (options.jobStatusUpdates) {
     const originalUpdate = jobService.updateJobStatus.bind(jobService);
     jobService.updateJobStatus = async (jobId: string, state: any, payload: any) => {
@@ -357,6 +399,7 @@ const makeService = async (options: {
     workspaceRepo,
     jobService,
     gatewayService,
+    routingService,
     workService,
     reviewService,
     qaService,
@@ -379,6 +422,24 @@ test("GatewayTrioService completes work-review-qa successfully", async () => {
     const job = await jobService.getJob(result.jobId);
     assert.equal((job?.payload as any)?.maxIterations, undefined);
     assert.equal((job?.payload as any)?.maxCycles, undefined);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService skips gateway planning for review and QA steps", async () => {
+  const statusStore = makeStatusStore({ "TASK-1": "in_progress" });
+  const gatewayRequests: any[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-1"],
+    gatewayRequests,
+  });
+  try {
+    await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
+    const jobs = gatewayRequests.map((req) => req.job);
+    assert.deepEqual(jobs, ["work-on-tasks"]);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -490,6 +551,27 @@ test("GatewayTrioService advances processedItems after failed attempts", async (
   }
 });
 
+test("GatewayTrioService sets totalItems once tasks are selected", async () => {
+  const statusStore = makeStatusStore({ "TASK-TOTAL": "in_progress" });
+  const jobStatusUpdates: Array<{ state: string; payload: Record<string, unknown> }> = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-TOTAL"],
+    jobStatusUpdates,
+  });
+  try {
+    await service.run({ workspace, maxIterations: 1, maxCycles: 1 });
+    const totals = jobStatusUpdates
+      .map((entry) => entry.payload.totalItems)
+      .filter((value): value is number => typeof value === "number");
+    assert.ok(totals.length > 0);
+    assert.ok(totals[0] > 0);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService retries tests_failed once before blocking", async () => {
   const statusStore = makeStatusStore({ "TASK-TF": "in_progress" });
   const gatewayRequests: any[] = [];
@@ -516,6 +598,45 @@ test("GatewayTrioService retries tests_failed once before blocking", async () =>
   }
 });
 
+test("GatewayTrioService skips [RUN] pseudo tasks", async () => {
+  const statusStore = makeStatusStore({ "[RUN]TASK-1": "in_progress" });
+  const workCalls: string[] = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["[RUN]TASK-1"],
+    workCalls,
+  });
+  try {
+    const result = await service.run({ workspace, maxCycles: 1 });
+    assert.equal(workCalls.length, 0);
+    assert.equal(result.tasks[0]?.status, "skipped");
+    assert.ok(result.warnings.some((warning: string) => warning.includes("pseudo task")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService retries zero-token work once before failing", async () => {
+  const statusStore = makeStatusStore({ "TASK-ZERO": "in_progress" });
+  const workCalls: string[] = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-ZERO"],
+    workCalls,
+    tokenUsageOverride: { tokensPrompt: 0, tokensCompletion: 0, tokensTotal: 0 },
+  });
+  try {
+    const result = await service.run({ workspace, maxIterations: 2, maxCycles: 2 });
+    assert.equal(workCalls.length, 2);
+    assert.equal(result.tasks[0].status, "failed");
+    assert.equal(result.tasks[0].lastError, "zero_tokens");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService skips dependency-blocked tasks unless explicit", async () => {
   const statusStore = makeStatusStore({ "TASK-6": "in_progress" });
   const { service, dir } = await makeService({
@@ -534,6 +655,7 @@ test("GatewayTrioService skips dependency-blocked tasks unless explicit", async 
 
 test("GatewayTrioService picks up new tasks on later cycles", async () => {
   const statusStore = makeStatusStore({ "TASK-9": "in_progress", "TASK-10": "not_started" });
+  const workCalls: string[] = [];
   const { service, dir } = await makeService({
     statusStore,
     selectionKeys: [],
@@ -541,6 +663,7 @@ test("GatewayTrioService picks up new tasks on later cycles", async () => {
       { ordered: ["TASK-9"] },
       { ordered: ["TASK-9", "TASK-10"] },
     ],
+    workCalls,
   });
   try {
     const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 2 });
@@ -550,6 +673,8 @@ test("GatewayTrioService picks up new tasks on later cycles", async () => {
     assert.equal(summary["TASK-9"]?.status, "completed");
     assert.equal(summary["TASK-10"]?.status, "completed");
     assert.equal(summary["TASK-10"]?.attempts, 1);
+    assert.equal(workCalls.filter((key) => key === "TASK-9").length, 1);
+    assert.equal(workCalls.filter((key) => key === "TASK-10").length, 1);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

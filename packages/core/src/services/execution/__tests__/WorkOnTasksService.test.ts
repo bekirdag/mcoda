@@ -75,6 +75,31 @@ class StubAgentServiceAbsolutePatch {
   }
 }
 
+class StubAgentServiceOutOfScopePatch {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    const patch = [
+      "```patch",
+      "--- a/../outside.txt",
+      "+++ b/../outside.txt",
+      "@@ -1 +1 @@",
+      "-foo",
+      "+bar",
+      "```",
+    ].join("\n");
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubAgentServiceAddPatchMissingFile {
   async resolveAgent() {
     return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
@@ -161,6 +186,31 @@ class StubAgentServiceJsonPlanThenPatch {
     this.invocations += 1;
     if (this.invocations === 1) {
       return { output: JSON.stringify({ plan: ["step one", "step two"], notes: "no patch yet" }), adapter: "local-model" };
+    }
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceNonPatchFenceThenPatch {
+  invocations = 0;
+  inputs: string[] = [];
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, req: any) {
+    this.invocations += 1;
+    this.inputs.push(req?.input ?? "");
+    if (this.invocations === 1) {
+      const output = ["```patch", "console.log('no diff')", "```"].join("\n");
+      return { output, adapter: "local-model" };
     }
     const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
     return { output: patch, adapter: "local-model" };
@@ -283,6 +333,16 @@ class StubAgentServiceAlwaysFail {
 class StubDocdex {
   async search() {
     return [];
+  }
+  async close() {}
+}
+
+class StubDocdexScopeFail {
+  async ensureRepoScope() {
+    throw new Error("Docdex repo scope missing for /tmp/ws");
+  }
+  async search() {
+    throw new Error("docdex search should not run without scope");
   }
   async close() {}
 }
@@ -607,6 +667,43 @@ test("workOnTasks marks tasks ready_to_review and records task runs", async () =
   }
 });
 
+test("workOnTasks blocks patches outside workspace", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceOutOfScopePatch() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "scope_violation");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "blocked");
+    assert.equal((updated?.metadata as any)?.blocked_reason, "scope_violation");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks invokes agent rating when enabled", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -748,6 +845,43 @@ test("workOnTasks parses JSON patches with surrounding text", async () => {
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.status, "succeeded");
     assert.ok(vcs.patches.some((patch) => patch.includes("+hello world")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks logs docdex scope failures before search", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdexScopeFail() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      limit: 1,
+      noCommit: true,
+    });
+    assert.equal(result.results.length, 1);
+    const logs = await repo.getDb().all<{ source: string; message: string }[]>(
+      "SELECT source, message FROM task_logs",
+    );
+    assert.ok(logs.some((log) => log.source === "docdex" && log.message.includes("docdex scope missing")));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -907,6 +1041,55 @@ test("workOnTasks prompt omits plan instruction in favor of patch-only output", 
   }
 });
 
+test("workOnTasks strips gateway-style prompts from agent profile", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  let lastInput = "";
+  const agent = {
+    resolveAgent: async () => ({ id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any),
+    invoke: async (_id: string, { input }: { input: string }) => {
+      lastInput = input;
+      const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+      return { output: patch, adapter: "local-model" };
+    },
+    getPrompts: async () => ({
+      jobPrompt: "You are the gateway agent. Return JSON only.",
+      characterPrompt: "Do not include fields outside the schema.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    }),
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.ok(!lastInput.toLowerCase().includes("gateway agent"));
+    assert.ok(!lastInput.toLowerCase().includes("return json only"));
+    assert.ok(lastInput.includes("Apply patches carefully."));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks resolves docdex path links via findDocumentByPath", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   await repo.updateTask(tasks[0].id, {
@@ -942,6 +1125,81 @@ test("workOnTasks resolves docdex path links via findDocumentByPath", async () =
     assert.ok(docdex.findByPathCalls.includes("docs/sds/project.md"));
     assert.ok(input.includes("[linked:SDS]"));
     assert.ok(input.includes("SDS excerpt"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks filters QA and .mcoda docs from doc context", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const docdex = {
+    search: async () => [
+      {
+        id: "doc-qa",
+        docType: "DOC",
+        path: "docs/qa-workflow.md",
+        title: "QA Workflow",
+        createdAt: "now",
+        updatedAt: "now",
+      },
+      {
+        id: "doc-e2e",
+        docType: "DOC",
+        path: "docs/e2e-test-issues.md",
+        title: "E2E Issues",
+        createdAt: "now",
+        updatedAt: "now",
+      },
+      {
+        id: "doc-hidden",
+        docType: "DOC",
+        path: ".mcoda/docs/internal.md",
+        title: "Internal Guidance",
+        createdAt: "now",
+        updatedAt: "now",
+      },
+      {
+        id: "doc-sds",
+        docType: "SDS",
+        path: "docs/sds/project.md",
+        title: "Project SDS",
+        createdAt: "now",
+        updatedAt: "now",
+      },
+    ],
+    close: async () => {},
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: docdex as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    const input = agent.lastInput ?? "";
+    assert.ok(input.includes("Project SDS"));
+    assert.ok(!input.includes("QA Workflow"));
+    assert.ok(!input.includes("E2E Issues"));
+    assert.ok(!input.includes("Internal Guidance"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -1089,6 +1347,8 @@ test("workOnTasks blocks no-change runs when unresolved comments exist", async (
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const backlog = comments.find((comment) => comment.category === "comment_backlog");
     assert.ok(backlog?.body.includes("Open comment slugs: review-1"));
+    assert.ok(backlog?.body.includes("Justification:"));
+    assert.ok((backlog?.metadata as any)?.justification);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -1199,6 +1459,8 @@ test("workOnTasks blocks no-change runs without unresolved comments", async () =
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const noChange = comments.find((comment) => comment.category === "no_changes");
     assert.ok(noChange?.body.includes("No changes were applied"));
+    assert.ok(noChange?.body.includes("Justification:"));
+    assert.ok((noChange?.metadata as any)?.justification);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -1278,6 +1540,9 @@ test("workOnTasks blocks no-change runs for ready_to_review status", async () =>
     assert.equal(result.results[0]?.notes, "no_changes");
     const updated = await repo.getTaskByKey(tasks[0].key);
     assert.equal(updated?.status, "blocked");
+    const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
+    const noChange = comments.find((comment) => comment.category === "no_changes");
+    assert.ok(noChange?.body.includes("Justification:"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -1314,6 +1579,43 @@ test("workOnTasks retries when agent returns json-only output", async () => {
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.status, "succeeded");
     assert.ok(agent.invocations >= 2);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks retries when patch fence lacks diff markers", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceNonPatchFenceThenPatch();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.equal(agent.invocations, 2);
+    assert.ok(agent.inputs[1]?.includes("Output ONLY code changes."));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

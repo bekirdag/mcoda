@@ -5,7 +5,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 ## Get oriented first (before editing)
 - Read the task and restate the success criteria in your own words.
 - Skim workspace guides: `README.md`, the main project manifest (to see scripts and tooling), and any package-level docs.
-- Docdex usage (required; use docdexd daemon CLI, not curl or MCP):
+- Docdex usage (required; use docdexd daemon CLI, not curl):
   - Ensure the daemon is running: `docdexd daemon --repo <repo> --host 127.0.0.1 --port 3210 --log warn --secure-mode=false`.
   - If the daemon is already running, set `DOCDEX_HTTP_BASE_URL=http://127.0.0.1:3210` and use docdexd CLI commands (they call the daemon HTTP API).
   - For multi-repo daemons, determine `repo_id` with `docdexd repo inspect --repo <repo>` and always scope requests via `--repo` (CLI attaches `x-docdex-repo-id`).

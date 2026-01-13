@@ -144,7 +144,9 @@ const listMissingFields = (raw: any): string[] => {
   if (!todo) missing.push("todo");
   if (!understanding) missing.push("understanding");
   if (plan.length === 0) missing.push("plan");
-  if (filesLikelyTouched.length === 0 && filesToCreate.length === 0) missing.push("files");
+  if (filesLikelyTouched.length === 0 && filesToCreate.length === 0) {
+    missing.push("filesLikelyTouched", "filesToCreate");
+  }
   return missing;
 };
 
@@ -641,6 +643,14 @@ export class GatewayAgentService {
   ): Promise<GatewayDocSummary[]> {
     const maxDocs = request.maxDocs ?? 4;
     if (maxDocs <= 0) return [];
+    if (typeof (this.deps.docdex as any)?.ensureRepoScope === "function") {
+      try {
+        await (this.deps.docdex as any).ensureRepoScope();
+      } catch (error) {
+        warnings.push(`Docdex scope missing: ${(error as Error).message}`);
+        return [];
+      }
+    }
     const docTypes = this.pickDocTypes(request.job, request.inputText);
     const query = this.buildQuerySeed(tasks, request.inputText);
     const summaries: GatewayDocSummary[] = [];
@@ -986,7 +996,7 @@ export class GatewayAgentService {
       let parsed = extractJson(response.output);
       let missingFields = parsed
         ? listMissingFields(parsed)
-        : ["summary", "reasoningSummary", "currentState", "todo", "understanding", "plan", "files"];
+        : ["summary", "reasoningSummary", "currentState", "todo", "understanding", "plan", "filesLikelyTouched", "filesToCreate"];
       if (!parsed) {
         warnings.push("Gateway analysis response was not valid JSON; falling back to defaults.");
       }

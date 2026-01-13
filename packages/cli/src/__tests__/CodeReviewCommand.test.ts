@@ -262,6 +262,7 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
+    assert.equal(parsed.createFollowupTasks, false);
   });
 
   it("parses filters, resume and agent stream override", () => {
@@ -283,6 +284,7 @@ describe("code-review argument parsing", () => {
       "job-1",
       "--agent-stream=false",
       "--rate-agents",
+      "--create-followup-tasks=true",
       "--json",
     ]);
     assert.equal(parsed.workspaceRoot, path.resolve("/tmp/demo"));
@@ -292,6 +294,7 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.resumeJobId, "job-1");
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, true);
+    assert.equal(parsed.createFollowupTasks, true);
     assert.equal(parsed.baseRef, "main");
     assert.equal(parsed.json, true);
     assert.deepEqual(parsed.taskKeys, ["TASK-1"]);
@@ -407,6 +410,8 @@ describe("code-review service flow", () => {
             type: "bug",
             severity: "high",
             message: "Fix this issue",
+            file: "src/demo.ts",
+            line: 12,
           },
         ],
       }),
@@ -429,11 +434,13 @@ describe("code-review service flow", () => {
       statusFilter: ["ready_to_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
+      createFollowupTasks: true,
     });
     const followups = result.tasks[0].followupTasks ?? [];
     assert.ok(followups.length >= 1);
     assert.ok(fakeWorkspaceRepo.tasks.length > 1);
-    assert.ok(fakeWorkspaceRepo.epics.find((e: any) => e.key === "epic-bugs" || e.key === "epic-issues"));
+    const created = fakeWorkspaceRepo.tasks.find((item: any) => item.key !== task.key);
+    assert.equal(created?.epicId, task.epicId);
   });
 
   it("does not create follow-up tasks for approved low/info findings", async () => {
@@ -447,11 +454,15 @@ describe("code-review service flow", () => {
             type: "style",
             severity: "low",
             message: "Nit only",
+            file: "src/demo.ts",
+            line: 8,
           },
           {
             type: "docs",
             severity: "info",
             message: "Note",
+            file: "README.md",
+            line: 3,
           },
         ],
       }),
@@ -475,6 +486,7 @@ describe("code-review service flow", () => {
       statusFilter: ["ready_to_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
+      createFollowupTasks: true,
     });
     const afterCount = fakeWorkspaceRepo.tasks.length;
     assert.equal(afterCount, beforeCount);

@@ -29,6 +29,7 @@ interface ParsedArgs {
   qaTestCommand?: string;
   qaMode: "auto" | "manual";
   qaFollowups: "auto" | "none" | "prompt";
+  reviewFollowups: boolean;
   qaAllowDirty: boolean;
   resumeJobId?: string;
   rateAgents: boolean;
@@ -60,6 +61,7 @@ const usage = `mcoda gateway-trio \\
   [--qa-test-command "<CMD>"] \\
   [--qa-mode auto|manual] \\
   [--qa-followups auto|none|prompt] \\
+  [--review-followups <true|false>] \\
   [--qa-allow-dirty <true|false>] \\
   [--escalate-on-no-change <true|false>] \\
   [--agent-stream <true|false>] \\
@@ -67,6 +69,33 @@ const usage = `mcoda gateway-trio \\
   [--watch] \\
   [--resume <JOB_ID>] \\
   [--json]`;
+
+let pipeGuardInstalled = false;
+
+const installPipeGuards = (): void => {
+  if (pipeGuardInstalled) return;
+  pipeGuardInstalled = true;
+  const onStreamError = (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") {
+      return;
+    }
+    process.exitCode = 1;
+  };
+  process.stdout.on("error", onStreamError);
+  process.stderr.on("error", onStreamError);
+  if (process.platform !== "win32") {
+    process.on("SIGPIPE", () => {
+      process.exit(0);
+    });
+  }
+};
+
+const resolvePollIntervalMs = (): number => {
+  const raw = process.env.MCODA_WATCH_POLL_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return 15000;
+};
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -177,6 +206,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let qaTestCommand: string | undefined;
   let qaMode: "auto" | "manual" = "auto";
   let qaFollowups: "auto" | "none" | "prompt" = "auto";
+  let reviewFollowups = false;
   let qaAllowDirty = false;
   let resumeJobId: string | undefined;
   let rateAgents = false;
@@ -341,6 +371,15 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           errors.push("gateway-trio: --qa-followups must be auto|none|prompt");
         }
         qaFollowups = normalizeQaFollowups(raw);
+      }
+      continue;
+    }
+    if (arg.startsWith("--review-followups=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --review-followups requires a value");
+      } else {
+        reviewFollowups = parseBooleanFlag(raw, true);
       }
       continue;
     }
@@ -582,6 +621,16 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           if (consumed) i += 1;
         }
         break;
+      case "--review-followups": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          reviewFollowups = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          reviewFollowups = true;
+        }
+        break;
+      }
       case "--qa-allow-dirty":
         {
           const { value, consumed } = takeValue("--qa-allow-dirty", argv, i, errors);
@@ -696,6 +745,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     qaTestCommand,
     qaMode,
     qaFollowups,
+    reviewFollowups,
     qaAllowDirty,
     resumeJobId,
     rateAgents,
@@ -726,6 +776,7 @@ export const validateGatewayTrioArgs = (parsed: ParsedArgs): string | undefined 
 
 export class GatewayTrioCommand {
   static async run(argv: string[]): Promise<void> {
+    installPipeGuards();
     const parsed = parseGatewayTrioArgs(argv);
     const validationError = validateGatewayTrioArgs(parsed);
     if (validationError) {
@@ -759,27 +810,27 @@ export class GatewayTrioCommand {
         watchPromise = (async () => {
           const { jobId } = await watchStart;
           const watcher = new JobService(workspace);
+          const pollIntervalMs = resolvePollIntervalMs();
           try {
             while (!watchDone) {
               const job = await watcher.getJob(jobId);
               if (job) {
                 const state = job.jobState ?? job.state ?? "unknown";
                 const detail = job.jobStateDetail ? ` (${job.jobStateDetail})` : "";
-                const total = job.totalItems ?? 0;
-                const processed = job.processedItems ?? 0;
-                const line = `gateway-trio job ${jobId}: ${state}${detail} ${processed}/${total}`;
-                if (parsed.json) {
+                const totalKnown = typeof job.totalItems === "number";
+                const isTerminal = ["completed", "failed", "cancelled", "partial"].includes(state);
+                if (totalKnown || isTerminal) {
+                  const total = totalKnown ? (job.totalItems ?? 0) : 0;
+                  const processed = typeof job.processedItems === "number" ? job.processedItems : 0;
+                  const line = `gateway-trio job ${jobId}: ${state}${detail} ${processed}/${total}`;
                   // eslint-disable-next-line no-console
                   console.error(line);
-                } else {
-                  // eslint-disable-next-line no-console
-                  console.log(line);
-                }
-                if (["completed", "failed", "cancelled", "partial"].includes(state)) {
-                  return;
+                  if (isTerminal) {
+                    return;
+                  }
                 }
               }
-              await new Promise((resolve) => setTimeout(resolve, 15000));
+              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
             }
           } finally {
             await watcher.close();
@@ -812,6 +863,7 @@ export class GatewayTrioCommand {
         qaTestCommand: parsed.qaTestCommand,
         qaMode: parsed.qaMode,
         qaFollowups: parsed.qaFollowups,
+        reviewFollowups: parsed.reviewFollowups,
         qaAllowDirty: parsed.qaAllowDirty,
         resumeJobId: parsed.resumeJobId,
         rateAgents: parsed.rateAgents,

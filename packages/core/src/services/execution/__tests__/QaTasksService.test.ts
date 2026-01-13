@@ -68,6 +68,17 @@ class StubDocdex {
   async close() {}
 }
 
+class CapturingAgentService {
+  lastInput = "";
+  async resolveAgent() {
+    return { id: "qa-agent", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, req: any) {
+    this.lastInput = req?.input ?? "";
+    return { output: '{"recommendation":"pass"}' };
+  }
+}
+
 class StubVcs {
   async ensureRepo() {}
   async ensureClean() {}
@@ -166,6 +177,90 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
   }
 });
 
+test("qa-tasks includes QA docs in context and filters .mcoda docs", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+  const agent = new CapturingAgentService();
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: agent as any,
+    docdex: {
+      search: async () => [
+        {
+          id: "doc-qa",
+          docType: "DOC",
+          path: "docs/qa-workflow.md",
+          title: "QA Workflow",
+          segments: [{ id: "seg-1", docId: "doc-qa", index: 0, content: "QA details" }],
+          createdAt: "now",
+          updatedAt: "now",
+        },
+        {
+          id: "doc-internal",
+          docType: "DOC",
+          path: ".mcoda/docs/internal.md",
+          title: "Internal Guidance",
+          segments: [{ id: "seg-2", docId: "doc-internal", index: 0, content: "Hidden" }],
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ],
+      close: async () => {},
+    } as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+    assert.ok(agent.lastInput.includes("QA Workflow"));
+    assert.ok(!agent.lastInput.includes("Internal Guidance"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("qa-tasks prepends project guidance to agent prompt", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
@@ -241,6 +336,82 @@ test("qa-tasks prepends project guidance to agent prompt", async () => {
     const taskIndex = lastInput.indexOf("Task: proj-epic-us-01-t01");
     assert.ok(guidanceIndex >= 0);
     assert.ok(taskIndex > guidanceIndex);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks strips gateway-style prompts from agent profile", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  let lastInput = "";
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: {
+      invoke: async (_id: string, { input }: { input: string }) => {
+        lastInput = input;
+        return { output: '{"recommendation":"pass"}' };
+      },
+      getPrompts: async () => ({
+        jobPrompt: "You are the gateway agent. Return JSON only.",
+        characterPrompt: "Do not include fields outside the schema.",
+        commandPrompts: { "qa-tasks": "QA prompt" },
+      }),
+    } as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.ok(!lastInput.toLowerCase().includes("gateway agent"));
+    assert.ok(!lastInput.toLowerCase().includes("return json only"));
+    assert.ok(lastInput.includes("QA prompt"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -493,7 +664,7 @@ test("qa-tasks skips duplicate QA follow-up tasks", async () => {
       return {
         output: JSON.stringify({
           recommendation: "fix_required",
-          failures: [{ kind: "functional", message: "QA issue", evidence: "log" }],
+          failures: [{ kind: "functional", message: "QA issue", file: "src/app.ts", line: 5, evidence: "log" }],
           follow_up_tasks: [suggestion],
         }),
       };
@@ -617,7 +788,7 @@ test("qa-tasks resolves comment slugs and creates issue comments with slugs", as
       return {
         output: JSON.stringify({
           recommendation: "fix_required",
-          failures: [{ kind: "functional", message: "Login fails", evidence: "e2e.log" }],
+          failures: [{ kind: "functional", message: "Login fails", file: "src/auth/login.ts", line: 42, evidence: "e2e.log" }],
           resolvedSlugs: ["review-open"],
           unresolvedSlugs: ["qa-old"],
         }),
@@ -660,6 +831,8 @@ test("qa-tasks resolves comment slugs and creates issue comments with slugs", as
       source: "qa-tasks",
       message: "Login fails",
       category: "functional",
+      file: "src/auth/login.ts",
+      line: 42,
     });
     const failureComments = await repo.listTaskComments(task.id, { slug: failureSlug, resolved: false });
     assert.ok(failureComments.length > 0);
@@ -845,6 +1018,122 @@ test("qa-tasks flags missing run-all marker as infra issue", async () => {
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
     assert.ok(comments.some((comment) => comment.body.includes("MCODA_RUN_ALL_TESTS_COMPLETE")));
   } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks preflight blocks missing dependencies and env vars", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-preflight-"));
+  const pkgPath = path.join(dir, "package.json");
+  await fs.writeFile(
+    pkgPath,
+    JSON.stringify(
+      {
+        name: "qa-preflight",
+        version: "1.0.0",
+        dependencies: { pg: "1.0.0", ioredis: "1.0.0", argon2: "1.0.0" },
+      },
+      null,
+      2,
+    ),
+  );
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t06",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  class PreflightProfileService {
+    async resolveProfileForTask() {
+      return { name: "unit", runner: "cli", test_command: "node tests/all.js" };
+    }
+  }
+
+  let ensureCalled = false;
+  class PreflightAdapter {
+    async ensureInstalled() {
+      ensureCalled = true;
+      return { ok: true };
+    }
+    async invoke() {
+      throw new Error("should not invoke when preflight fails");
+    }
+  }
+
+  const existingDb = process.env.TEST_DB_URL;
+  const existingRedis = process.env.TEST_REDIS_URL;
+  delete process.env.TEST_DB_URL;
+  delete process.env.TEST_REDIS_URL;
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new PreflightProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new PreflightAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.outcome, "infra_issue");
+    assert.equal(ensureCalled, false);
+
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "blocked");
+
+    const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
+    assert.ok(comments.some((comment) => comment.body.includes("Missing QA dependencies")));
+    assert.ok(comments.some((comment) => comment.body.includes("Missing QA environment variables")));
+  } finally {
+    if (existingDb === undefined) {
+      delete process.env.TEST_DB_URL;
+    } else {
+      process.env.TEST_DB_URL = existingDb;
+    }
+    if (existingRedis === undefined) {
+      delete process.env.TEST_REDIS_URL;
+    } else {
+      process.env.TEST_REDIS_URL = existingRedis;
+    }
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }

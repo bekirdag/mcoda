@@ -52,6 +52,9 @@ export const resolveDocdexBinary = (): string | undefined => {
 };
 
 export const resolvePlaywrightCli = (): string | undefined => {
+  if (process.env.MCODA_FORCE_NO_PLAYWRIGHT === "1") {
+    return undefined;
+  }
   const require = createRequire(import.meta.url);
   try {
     return require.resolve("playwright/cli.js");
@@ -135,6 +138,12 @@ export const resolveDocdexBrowserInfo = async (
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<DocdexBrowserInfo> => {
   const setupHint = "Run `docdex setup` to install Playwright and at least one browser.";
+  if (!resolvePlaywrightCli()) {
+    return {
+      ok: false,
+      message: `Playwright CLI not available. ${setupHint}`,
+    };
+  }
   try {
     const check = await readDocdexCheck(options);
     const browserCheck = check.checks?.find((c) => c.name === "browser");

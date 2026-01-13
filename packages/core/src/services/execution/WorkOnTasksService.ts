@@ -13,7 +13,8 @@ import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from ".
 import { TaskStateService } from "./TaskStateService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
-import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { isDocContextExcluded, loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { createTaskCommentSlug } from "../tasks/TaskCommentFormatter.js";
 
 const exec = promisify(execCb);
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
@@ -27,12 +28,41 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "You are the code-writing agent. Before coding, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run search. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
-  "If you encounter merge conflicts, resolve them first (clean conflict markers and ensure code compiles) before continuing task work.",
+  "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
   "If a target file does not exist, create it by outputting a FILE block (not a diff): `FILE: path/to/file.ext` followed by a fenced code block containing the full file contents. Do not respond with JSON-only output; if the runtime forces JSON, include a top-level `patch` string (unified diff) or `files` array of {path, content}.",
 ].join("\n");
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
   "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
+const GATEWAY_PROMPT_MARKERS = [
+  "you are the gateway agent",
+  "return json only",
+  "output json only",
+  "docdexnotes",
+  "fileslikelytouched",
+  "filestocreate",
+  "do not include fields outside the schema",
+];
+
+const sanitizeNonGatewayPrompt = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (GATEWAY_PROMPT_MARKERS.some((marker) => lower.includes(marker))) return undefined;
+  return trimmed;
+};
+
+const readPromptFile = async (promptPath: string, fallback: string): Promise<string> => {
+  try {
+    const content = await fs.promises.readFile(promptPath, "utf8");
+    const trimmed = content.trim();
+    if (trimmed) return trimmed;
+  } catch {
+    // fall through to fallback
+  }
+  return fallback;
+};
 
 export interface WorkOnTasksRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -70,7 +100,7 @@ const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? 
 const looksLikeUnifiedDiff = (value: string): boolean => {
   if (/^diff --git /m.test(value) || /\*\*\* Begin Patch/.test(value)) return true;
   const hasFileHeaders = /^---\s+\S+/m.test(value) && /^\+\+\+\s+\S+/m.test(value);
-  const hasHunk = /^@@\s+-\d+/m.test(value);
+  const hasHunk = /^@@/m.test(value);
   return hasFileHeaders && hasHunk;
 };
 
@@ -82,7 +112,7 @@ const extractPatches = (output: string): string[] => {
     const lang = (match[1] ?? "").toLowerCase();
     const content = (match[2] ?? "").trim();
     if (!content) continue;
-    if (lang === "patch" || lang === "diff" || looksLikeUnifiedDiff(content)) {
+    if (looksLikeUnifiedDiff(content)) {
       patches.add(content);
     }
   }
@@ -601,8 +631,45 @@ const touchedFilesFromPatch = (patch: string): string[] => {
   return Array.from(files);
 };
 
+const normalizePatchPath = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "/dev/null") return null;
+  const stripped = trimmed.replace(/^a\//, "").replace(/^b\//, "");
+  return stripped.replace(/^["'`]+|["'`]+$/g, "");
+};
+
+const extractPatchFilePaths = (patch: string): string[] => {
+  const files = new Set<string>();
+  const diffHeader = /^diff --git\s+([^\s]+)\s+([^\s]+)/gm;
+  const fileHeader = /^(?:\+\+\+|---)\s+(.+)$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = diffHeader.exec(patch)) !== null) {
+    const left = normalizePatchPath(match[1] ?? "");
+    const right = normalizePatchPath(match[2] ?? "");
+    if (left) files.add(left);
+    if (right) files.add(right);
+  }
+  while ((match = fileHeader.exec(patch)) !== null) {
+    const normalized = normalizePatchPath(match[1] ?? "");
+    if (normalized) files.add(normalized);
+  }
+  return Array.from(files);
+};
+
+const findOutOfScopePatchPaths = (patches: string[], workspaceRoot: string): string[] => {
+  const invalid = new Set<string>();
+  for (const patch of patches) {
+    for (const file of extractPatchFilePaths(patch)) {
+      if (!PathHelper.isPathInside(workspaceRoot, file)) {
+        invalid.add(file);
+      }
+    }
+  }
+  return Array.from(invalid);
+};
+
 const normalizePaths = (workspaceRoot: string, files: string[]): string[] =>
-  files.map((f) => path.relative(workspaceRoot, path.isAbsolute(f) ? f : path.join(workspaceRoot, f))).map((f) => f.replace(/\\/g, "/"));
+  files.map((f) => PathHelper.resolveRelativePath(workspaceRoot, f));
 const resolveLockTtlSeconds = (maxAgentSeconds?: number): number => {
   if (!maxAgentSeconds || maxAgentSeconds <= 0) return TASK_LOCK_TTL_SECONDS;
   return Math.max(1, Math.min(TASK_LOCK_TTL_SECONDS, maxAgentSeconds + 60));
@@ -1150,23 +1217,12 @@ export class WorkOnTasksService {
         }
       }
     }
-    const commandPromptFiles = await this.readPromptFiles([
-      mcodaPromptPath,
-      workspacePromptPath,
-      repoPromptPath,
-    ]);
-    const mergedCommandPrompt = (() => {
-      const parts = [...commandPromptFiles];
-      if (agentPrompts?.commandPrompts?.["work-on-tasks"]) {
-        parts.push(agentPrompts.commandPrompts["work-on-tasks"]);
-      }
-      if (!parts.length) parts.push(DEFAULT_CODE_WRITER_PROMPT);
-      return parts.filter(Boolean).join("\n\n");
-    })();
+    const filePrompt = await readPromptFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT);
+    const commandPrompt = agentPrompts?.commandPrompts?.["work-on-tasks"]?.trim() || filePrompt;
     return {
-      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
-      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
-      commandPrompt: mergedCommandPrompt || undefined,
+      jobPrompt: sanitizeNonGatewayPrompt(agentPrompts?.jobPrompt) ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: sanitizeNonGatewayPrompt(agentPrompts?.characterPrompt) ?? DEFAULT_CHARACTER_PROMPT,
+      commandPrompt: commandPrompt || undefined,
     };
   }
 
@@ -1342,10 +1398,21 @@ export class WorkOnTasksService {
   private async gatherDocContext(projectKey?: string, docLinks: string[] = []): Promise<{ summary: string; warnings: string[] }> {
     const warnings: string[] = [];
     const parts: string[] = [];
+    if (typeof (this.deps.docdex as any)?.ensureRepoScope === "function") {
+      try {
+        await (this.deps.docdex as any).ensureRepoScope();
+      } catch (error) {
+        warnings.push(`docdex scope missing: ${(error as Error).message}`);
+        return { summary: "", warnings };
+      }
+    }
     try {
       const docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code" });
+      const filteredDocs = docs.filter(
+        (doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false),
+      );
       parts.push(
-        ...docs
+        ...filteredDocs
           .slice(0, 5)
           .map((doc) => `- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}`),
       );
@@ -1365,6 +1432,10 @@ export class WorkOnTasksService {
     for (const link of docLinks) {
       try {
         const { type, ref } = normalizeDocLink(link);
+        if (type === "path" && isDocContextExcluded(ref, false)) {
+          parts.push(`- [linked:filtered] ${link} — excluded from non-QA context`);
+          continue;
+        }
         let doc = undefined;
         if (type === "path" && "findDocumentByPath" in this.deps.docdex) {
           doc = await (this.deps.docdex as DocdexClient).findDocumentByPath(ref);
@@ -1374,12 +1445,15 @@ export class WorkOnTasksService {
         }
         if (!doc) {
           warnings.push(`docdex fetch returned no document for ${link}`);
+          parts.push(`- [linked:missing] ${link} — no docdex entry found`);
           continue;
         }
         const excerpt = doc.segments?.[0]?.content?.slice(0, 240);
         parts.push(`- [linked:${doc.docType}] ${doc.title ?? doc.id}${excerpt ? ` — ${excerpt}` : ""}`);
       } catch (error) {
-        warnings.push(`docdex fetch failed for ${link}: ${(error as Error).message}`);
+        const message = (error as Error).message;
+        warnings.push(`docdex fetch failed for ${link}: ${message}`);
+        parts.push(`- [linked:missing] ${link} — ${message}`);
       }
     }
     const summary = parts.join("\n");
@@ -1419,8 +1493,16 @@ export class WorkOnTasksService {
     const lines: string[] = [];
     const toSingleLine = (value: string) => value.replace(/\s+/g, " ").trim();
     for (const comment of comments) {
-      const slug = comment.slug?.trim() || undefined;
       const details = this.parseCommentBody(comment.body);
+      const slug =
+        comment.slug?.trim() ||
+        createTaskCommentSlug({
+          source: comment.sourceCommand ?? "comment",
+          message: details.message || comment.body,
+          file: comment.file,
+          line: comment.line,
+          category: comment.category ?? null,
+        });
       const key =
         slug ??
         `${comment.sourceCommand}:${comment.file ?? ""}:${comment.line ?? ""}:${details.message || comment.body}`;
@@ -1558,7 +1640,7 @@ export class WorkOnTasksService {
             error: errorText,
           });
           if (this.isNonFastForwardPull(errorText)) {
-            remoteSyncNote = `Remote task branch ${branch} is ahead/diverged. Sync it with origin (pull/rebase or merge) and resolve conflicts before continuing task work.`;
+            remoteSyncNote = `Remote task branch ${branch} is ahead/diverged. Sync it with origin (pull/rebase or merge). If conflicts arise, stop and report; do not attempt to merge them.`;
           }
         }
       }
@@ -2450,9 +2532,9 @@ export class WorkOnTasksService {
           const promptWithTests = promptExtras ? `${promptBase}\n${promptExtras}` : promptBase;
           const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : "";
           const notes = remoteSyncNote;
-          const prompt = [guidanceBlock, notes, promptWithTests].filter(Boolean).join("\n\n");
+          const prompt = [notes, promptWithTests].filter(Boolean).join("\n\n");
           const commandPrompt = prompts.commandPrompt ?? "";
-          const systemPrompt = [prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
+          const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, commandPrompt].filter(Boolean).join("\n\n");
           await this.logTask(taskRun.id, `System prompt:\n${systemPrompt || "(none)"}`, "prompt");
           await this.logTask(taskRun.id, `Task prompt:\n${prompt}`, "prompt");
           promptEstimateBase = estimateTokens(systemPrompt + prompt);
@@ -2487,13 +2569,48 @@ export class WorkOnTasksService {
             }
           };
 
-          const invokeAgentOnce = async (input: string, phaseLabel: string) => {
+          const patchOnlyAgentSlug = (() => {
+            const config = agent.config as Record<string, unknown> | undefined;
+            const direct = typeof config?.patchOnlyAgent === "string" ? config.patchOnlyAgent : undefined;
+            const legacy = typeof config?.patch_only_agent === "string" ? config.patch_only_agent : undefined;
+            const candidate = (direct ?? legacy)?.trim();
+            return candidate || undefined;
+          })();
+          let patchOnlyAgent: { id: string; defaultModel?: string } | null = null;
+          const resolvePatchOnlyAgent = async (): Promise<{ id: string; defaultModel?: string } | null> => {
+            if (!patchOnlyAgentSlug) return null;
+            if (patchOnlyAgent) return patchOnlyAgent;
+            try {
+              const resolved = await this.routingService.resolveAgentForCommand({
+                workspace: this.workspace,
+                commandName: "work-on-tasks",
+                overrideAgentSlug: patchOnlyAgentSlug,
+                projectKey: selection.project?.key,
+              });
+              patchOnlyAgent = resolved.agent;
+              return patchOnlyAgent;
+            } catch (error) {
+              await this.logTask(
+                taskRun.id,
+                `Patch-only agent override (${patchOnlyAgentSlug}) failed: ${error instanceof Error ? error.message : String(error)}`,
+                "agent",
+              );
+              return null;
+            }
+          };
+
+          const invokeAgentOnce = async (
+            input: string,
+            phaseLabel: string,
+            agentOverride?: { id: string; defaultModel?: string },
+          ) => {
             abortIfSignaled();
+            const activeAgent = agentOverride ?? agent;
             let output = "";
             const started = Date.now();
             if (agentStream && this.deps.agentService.invokeStream) {
               const stream = await withAbort(
-                this.deps.agentService.invokeStream(agent.id, {
+                this.deps.agentService.invokeStream(activeAgent.id, {
                   input,
                   metadata: { taskKey: task.task.key },
                 }),
@@ -2547,7 +2664,7 @@ export class WorkOnTasksService {
                 });
               }, getLockRefreshIntervalMs());
               const invokePromise = withAbort(
-                this.deps.agentService.invoke(agent.id, { input, metadata: { taskKey: task.task.key } }),
+                this.deps.agentService.invoke(activeAgent.id, { input, metadata: { taskKey: task.task.key } }),
               ).catch((error) => {
                 if (pollLockLost) return null as any;
                 throw error;
@@ -2567,7 +2684,7 @@ export class WorkOnTasksService {
               streamChunk(output);
               await this.logTask(taskRun.id, output, phaseLabel);
             }
-            return { output, durationSeconds: (Date.now() - started) / 1000 };
+            return { output, durationSeconds: (Date.now() - started) / 1000, agentUsed: activeAgent };
           };
 
           const recordUsage = async (
@@ -2575,15 +2692,17 @@ export class WorkOnTasksService {
             output: string,
             durationSeconds: number,
             promptText: string,
+            agentUsed?: { id: string; defaultModel?: string },
           ) => {
             const promptTokens = estimateTokens(promptText);
             const completionTokens = estimateTokens(output);
             tokensPromptTotal += promptTokens;
             tokensCompletionTotal += completionTokens;
             promptEstimateTotal += promptTokens;
+            const resolvedAgent = agentUsed ?? agent;
             await this.recordTokenUsage({
-              agentId: agent.id,
-              model: agent.defaultModel,
+              agentId: resolvedAgent.id,
+              model: resolvedAgent.defaultModel,
               jobId: job.id,
               commandRunId: commandRun.id,
               taskRunId: taskRun.id,
@@ -2616,14 +2735,19 @@ export class WorkOnTasksService {
             const agentInput = `${systemPrompt}\n\n${attemptPrompt}`;
             let agentOutput = "";
             let agentDuration = 0;
+            let agentInvocation: {
+              output: string;
+              durationSeconds: number;
+              agentUsed: { id: string; defaultModel?: string };
+            } | null = null;
             let triedRetry = false;
             let triedPatchFallback = false;
 
             try {
               await startPhase("agent", { agent: agent.id, stream: agentStream, attempt, maxAttempts });
-              const first = await invokeAgentOnce(agentInput, "agent");
-              agentOutput = first.output;
-              agentDuration = first.durationSeconds;
+              agentInvocation = await invokeAgentOnce(agentInput, "agent");
+              agentOutput = agentInvocation.output;
+              agentDuration = agentInvocation.durationSeconds;
               await endPhase("agent", { agentDurationSeconds: agentDuration, attempt });
               if (!(await refreshLock("agent"))) {
                 await this.logTask(taskRun.id, "Aborting task: lock lost after agent completion.", "vcs");
@@ -2646,7 +2770,10 @@ export class WorkOnTasksService {
               continue taskLoop;
             }
 
-            await recordUsage("agent", agentOutput, agentDuration, agentInput);
+            if (!agentInvocation) {
+              throw new Error("Agent invocation did not return a response.");
+            }
+            await recordUsage("agent", agentOutput, agentDuration, agentInput, agentInvocation.agentUsed);
 
             let { patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput);
             if (fileBlocks.length && patches.length) {
@@ -2663,11 +2790,19 @@ export class WorkOnTasksService {
                 : "Agent output did not include a patch or file blocks; retrying with explicit output instructions.";
               await this.logTask(taskRun.id, retryReason, "agent");
               try {
-                const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput only code changes. If editing existing files, output a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, output FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis or narration. Do not output JSON unless the runtime forces it; if forced, return a top-level JSON object with either a \`patch\` string (unified diff) or a \`files\` array of {path, content}.`;
-                const retry = await invokeAgentOnce(retryInput, "agent");
+                const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput ONLY code changes. If editing existing files, respond with a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, respond ONLY with FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis, narration, or extra text. Do not output JSON unless the runtime forces it; if forced, return a top-level JSON object with either a \`patch\` string (unified diff) or a \`files\` array of {path, content}.`;
+                const retryAgent = patchOnlyAgentSlug ? ((await resolvePatchOnlyAgent()) ?? agent) : agent;
+                if (retryAgent.id !== agent.id) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Retrying with patch-only agent override: ${patchOnlyAgentSlug}`,
+                    "agent",
+                  );
+                }
+                const retry = await invokeAgentOnce(retryInput, "agent", retryAgent);
                 agentOutput = retry.output;
                 agentDuration += retry.durationSeconds;
-                await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput);
+                await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput, retry.agentUsed);
                 ({ patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput));
                 if (fileBlocks.length && patches.length) {
                   const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
@@ -2691,6 +2826,28 @@ export class WorkOnTasksService {
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
               continue taskLoop;
+            }
+
+            if (patches.length) {
+              const outOfScope = findOutOfScopePatchPaths(patches, this.workspace.workspaceRoot);
+              if (outOfScope.length) {
+                const message = `Patch references paths outside workspace: ${outOfScope.join(", ")}`;
+                await this.logTask(taskRun.id, message, "scope");
+                await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
+                  error: "scope_violation",
+                  outOfScope,
+                  attempt,
+                });
+                await this.stateService.markBlocked(task.task, "scope_violation");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
             }
 
             if (patches.length || fileBlocks.length) {
@@ -2738,7 +2895,7 @@ export class WorkOnTasksService {
                       try {
                         const fallback = await invokeAgentOnce(fallbackPrompt, "agent");
                         agentDuration += fallback.durationSeconds;
-                        await recordUsage("agent_retry", fallback.output, fallback.durationSeconds, fallbackPrompt);
+                        await recordUsage("agent_retry", fallback.output, fallback.durationSeconds, fallbackPrompt, fallback.agentUsed);
                         const fallbackChanges = extractAgentChanges(fallback.output);
                         if (!fallbackChanges.fileBlocks.length && !fallbackChanges.patches.length && files.length === 1) {
                           const inferred = extractPlainCodeFence(fallback.output);
@@ -2992,16 +3149,21 @@ export class WorkOnTasksService {
 
             if (!request.dryRun) {
               let hasChanges = touched.length > 0;
+              let dirtyPaths: string[] = [];
               if (!hasChanges) {
                 try {
-                  const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter(
+                  dirtyPaths = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter(
                     (p) => !p.startsWith(".mcoda"),
                   );
-                  hasChanges = dirty.length > 0;
                 } catch {
-                  hasChanges = false;
+                  dirtyPaths = [];
                 }
               }
+              const noChangeJustification = !hasChanges
+                ? dirtyPaths.length
+                  ? `No touched files detected; dirty paths present: ${dirtyPaths.join(", ")}`
+                  : "No touched files detected after applying patches."
+                : undefined;
               if (!hasChanges && unresolvedComments.length > 0) {
                 const openSlugs = unresolvedComments
                   .map((comment) => comment.slug)
@@ -3011,6 +3173,7 @@ export class WorkOnTasksService {
                   "[work-on-tasks]",
                   "No changes detected while unresolved review/QA comments remain.",
                   `Open comment slugs: ${slugList}`,
+                  `Justification: ${noChangeJustification ?? "No justification provided."}`,
                 ].join("\n");
                 await this.deps.workspaceRepo.createTaskComment({
                   taskId: task.task.id,
@@ -3022,7 +3185,7 @@ export class WorkOnTasksService {
                   category: "comment_backlog",
                   body,
                   createdAt: new Date().toISOString(),
-                  metadata: { reason: "no_changes", openSlugs },
+                  metadata: { reason: "no_changes", openSlugs, justification: noChangeJustification, dirtyPaths },
                 });
                 await this.logTask(
                   taskRun.id,
@@ -3041,6 +3204,7 @@ export class WorkOnTasksService {
                   "[work-on-tasks]",
                   "No changes were applied for this task run.",
                   "Re-run with a stronger agent or clarify the task requirements.",
+                  `Justification: ${noChangeJustification ?? "No justification provided."}`,
                 ].join("\n");
                 await this.deps.workspaceRepo.createTaskComment({
                   taskId: task.task.id,
@@ -3052,7 +3216,7 @@ export class WorkOnTasksService {
                   category: "no_changes",
                   body,
                   createdAt: new Date().toISOString(),
-                  metadata: { reason: "no_changes", initialStatus },
+                  metadata: { reason: "no_changes", initialStatus, justification: noChangeJustification, dirtyPaths },
                 });
                 await this.logTask(taskRun.id, "No changes detected; blocking task for escalation.", "execution");
                 await this.stateService.markBlocked(task.task, "no_changes");

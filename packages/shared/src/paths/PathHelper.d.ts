@@ -3,6 +3,9 @@
  * The helpers intentionally avoid touching any other layer to keep shared free of deps.
  */
 export declare class PathHelper {
+    static normalizePathCase(value: string): string;
+    static resolveRelativePath(root: string, target: string): string;
+    static isPathInside(root: string, target: string): boolean;
     static getGlobalMcodaDir(): string;
     static getGlobalDbPath(): string;
     static getWorkspaceDir(cwd?: string): string;
