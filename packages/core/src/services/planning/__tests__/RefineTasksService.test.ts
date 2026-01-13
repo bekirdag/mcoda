@@ -159,6 +159,48 @@ describe("RefineTasksService", () => {
     assert.equal(okRow?.key, eligible.key);
   });
 
+  it("falls back to an available agent when routing defaults are missing", async () => {
+    const fallbackAgent = {
+      id: "agent-fallback",
+      slug: "agent-fallback",
+      adapter: "local-model",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => {
+        throw new Error("No routing defaults found for command refine-tasks");
+      },
+    };
+    (service as any).repo = {
+      listAgents: async () => [fallbackAgent],
+      listAgentHealthSummary: async () => [{ agentId: fallbackAgent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan"],
+    };
+    (service as any).agentService = {
+      invoke: async () => ({
+        output: JSON.stringify({
+          operations: [{ op: "update_estimate", taskKey, storyPoints: 3 }],
+        }),
+      }),
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "estimate",
+      agentStream: false,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.ok(result.plan.operations.length >= 1);
+  });
+
   it("rejects plan-in operations targeting unknown tasks", async () => {
     const plan: RefineTasksPlan = {
       strategy: "estimate",

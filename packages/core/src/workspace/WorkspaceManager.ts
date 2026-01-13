@@ -117,9 +117,10 @@ const migrateWorkspaceDbIds = async (workspace: WorkspaceResolution, legacyIds: 
   if (!(await fileExists(workspace.workspaceDbPath))) {
     return;
   }
+  let conn: { db: { run: (sql: string, params?: unknown[]) => Promise<unknown> }; close: () => Promise<void> } | undefined;
   try {
     const { Connection } = await import("@mcoda/db");
-    const conn = await Connection.open(workspace.workspaceDbPath);
+    conn = await Connection.open(workspace.workspaceDbPath);
     const db = conn.db;
     const placeholders = legacyIds.map(() => "?").join(",");
     const params = [workspace.workspaceId, ...legacyIds];
@@ -127,9 +128,16 @@ const migrateWorkspaceDbIds = async (workspace: WorkspaceResolution, legacyIds: 
     for (const table of tables) {
       await db.run(`UPDATE ${table} SET workspace_id = ? WHERE workspace_id IN (${placeholders})`, params);
     }
-    await conn.close();
   } catch {
     /* best effort */
+  } finally {
+    if (conn) {
+      try {
+        await conn.close();
+      } catch {
+        /* best effort */
+      }
+    }
   }
 
   const updateJsonArray = async (filePath: string) => {

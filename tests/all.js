@@ -148,6 +148,7 @@ const extraTests = [
 const extraWorkspaceTests = [
   path.join("packages", "db", "dist", "__tests__", "WorkspaceRepository.test.js"),
   path.join("packages", "core", "dist", "services", "agents", "__tests__", "GatewayHandoff.test.js"),
+  path.join("packages", "core", "dist", "services", "agents", "__tests__", "GatewayAgentService.test.js"),
   path.join("packages", "core", "dist", "api", "__tests__", "AgentsApi.test.js"),
   path.join("packages", "core", "dist", "services", "docs", "__tests__", "DocsService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "WorkOnTasksService.test.js"),

@@ -71,6 +71,75 @@ test("GatewayAgentService returns analysis and agent decision", async () => {
   }
 });
 
+test("GatewayAgentService strips routing-only prompts from agent profile", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  let capturedInput = "";
+  const agent = { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub", rating: 6, reasoningRating: 6 };
+  const service = new (GatewayAgentService as any)(workspace, {
+    agentService: {
+      getPrompts: async () => ({
+        jobPrompt: "You are the routing gateway. Choose a route: devstral-local.",
+        characterPrompt: "Routing gateway output only route JSON.",
+        commandPrompts: {
+          "gateway-agent": '"summary" "reasoningSummary" "currentState" "todo" "understanding" "filesLikelyTouched" "filesToCreate"',
+        },
+      }),
+      invoke: async (_id: string, req: any) => {
+        capturedInput = req?.input ?? "";
+        return {
+          output: JSON.stringify({
+            summary: "Update docs",
+            reasoningSummary: "Docs work",
+            currentState: "Unknown",
+            todo: "Update README",
+            understanding: "Docs updated",
+            plan: ["Review", "Edit", "Verify"],
+            complexity: 3,
+            discipline: "docs",
+            filesLikelyTouched: ["README.md"],
+            filesToCreate: [],
+            assumptions: [],
+            risks: [],
+            docdexNotes: ["No matching docs"],
+          }),
+        };
+      },
+    },
+    docdex: { search: async () => [] },
+    globalRepo: {
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan", "docdex_query", "code_write"],
+    },
+    jobService: {
+      startCommandRun: async () => ({ id: "run-1" }),
+      recordTokenUsage: async () => {},
+      finishCommandRun: async () => {},
+    },
+    workspaceRepo: {},
+    routingService: {
+      resolveAgentForCommand: async () => ({ agent }),
+    },
+  });
+
+  try {
+    await service.run({
+      workspace,
+      job: "work-on-tasks",
+      inputText: "Update README",
+      agentStream: false,
+    });
+
+    assert.ok(!capturedInput.includes("routing gateway"));
+    assert.ok(!capturedInput.includes("devstral-local"));
+    assert.ok(capturedInput.includes("\"summary\""));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayAgentService respects max complexity gating", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });

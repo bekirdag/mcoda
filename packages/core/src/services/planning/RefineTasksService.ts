@@ -11,6 +11,8 @@ import {
   RefineTasksResult,
   SplitTaskOp,
   UpdateTaskOp,
+  getCommandRequiredCapabilities,
+  type Agent,
 } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
@@ -281,13 +283,72 @@ export class RefineTasksService {
     await tryClose(this.docdex);
   }
 
-  private async resolveAgent(agentName?: string) {
-    const resolved = await this.routingService.resolveAgentForCommand({
-      workspace: this.workspace,
-      commandName: "refine-tasks",
-      overrideAgentSlug: agentName,
+  private async resolveAgent(agentName?: string): Promise<Agent> {
+    try {
+      const resolved = await this.routingService.resolveAgentForCommand({
+        workspace: this.workspace,
+        commandName: "refine-tasks",
+        overrideAgentSlug: agentName,
+      });
+      return resolved.agent;
+    } catch (error) {
+      const message = (error as Error).message ?? "";
+      if (!/No routing defaults/i.test(message)) {
+        throw error;
+      }
+      const requiredCaps = getCommandRequiredCapabilities("refine-tasks");
+      const fallback = await this.selectFallbackAgent(requiredCaps);
+      if (fallback) return fallback;
+      throw new Error(
+        `No routing defaults found for command refine-tasks. ` +
+          `Set a default agent (mcoda agent set-default <NAME> --workspace <PATH>) ` +
+          `or pass --agent <NAME> with ${requiredCaps.length ? `capabilities: ${requiredCaps.join(", ")}` : "required capabilities"}.`,
+      );
+    }
+  }
+
+  private async selectFallbackAgent(requiredCaps: string[]): Promise<Agent | undefined> {
+    const agents = await this.repo.listAgents();
+    if (!agents.length) return undefined;
+    let healthRows: { agentId: string; status?: string }[] = [];
+    try {
+      healthRows = await this.repo.listAgentHealthSummary();
+    } catch {
+      healthRows = [];
+    }
+    const healthById = new Map(healthRows.map((row) => [row.agentId, row]));
+    const candidates: Array<{
+      agent: Agent;
+      rating: number;
+      reasoning: number;
+      cost: number;
+      hasCaps: boolean;
+      slug: string;
+    }> = [];
+    for (const agent of agents) {
+      const health = healthById.get(agent.id);
+      if (health?.status === "unreachable") continue;
+      const caps = await this.repo.getAgentCapabilities(agent.id);
+      const hasCaps = requiredCaps.every((cap) => caps.includes(cap));
+      candidates.push({
+        agent,
+        rating: Number(agent.rating ?? 0),
+        reasoning: Number(agent.reasoningRating ?? 0),
+        cost: Number(agent.costPerMillion ?? 0),
+        hasCaps,
+        slug: agent.slug ?? agent.id,
+      });
+    }
+    if (!candidates.length) return undefined;
+    const eligible = candidates.filter((c) => c.hasCaps);
+    const pool = eligible.length ? eligible : candidates;
+    pool.sort((a, b) => {
+      if (b.rating !== a.rating) return b.rating - a.rating;
+      if (b.reasoning !== a.reasoning) return b.reasoning - a.reasoning;
+      if (a.cost !== b.cost) return a.cost - b.cost;
+      return a.slug.localeCompare(b.slug);
     });
-    return resolved.agent;
+    return pool[0]?.agent;
   }
 
   private ensureRatingService(): AgentRatingService {

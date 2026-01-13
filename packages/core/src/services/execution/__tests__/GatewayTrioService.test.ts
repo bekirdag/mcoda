@@ -127,6 +127,7 @@ const makeService = async (options: {
   selectionSequence?: SelectionSnapshot[];
   gatewayRequests?: any[];
   cleanupExpiredLocks?: string[];
+  jobStatusUpdates?: Array<{ state: string; payload: Record<string, unknown> }>;
 }) => {
   const { dir, workspace } = await makeWorkspace();
   const statusStore = options.statusStore;
@@ -344,6 +345,13 @@ const makeService = async (options: {
   };
 
   const jobService = new JobService(workspace);
+  if (options.jobStatusUpdates) {
+    const originalUpdate = jobService.updateJobStatus.bind(jobService);
+    jobService.updateJobStatus = async (jobId: string, state: any, payload: any) => {
+      options.jobStatusUpdates?.push({ state, payload });
+      return originalUpdate(jobId, state, payload);
+    };
+  }
 
   const service = new (GatewayTrioService as any)(workspace, {
     workspaceRepo,
@@ -455,6 +463,27 @@ test("GatewayTrioService fails after max iterations", async () => {
     const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxIterations: 2 });
     assert.equal(result.tasks[0].status, "failed");
     assert.equal(result.tasks[0].attempts, 2);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService advances processedItems after failed attempts", async () => {
+  const statusStore = makeStatusStore({ "TASK-5A": "in_progress" });
+  const jobStatusUpdates: Array<{ state: string; payload: Record<string, unknown> }> = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-5A"],
+    workOutcome: "failed",
+    jobStatusUpdates,
+  });
+  try {
+    await service.run({ workspace, maxIterations: 1, maxCycles: 1 });
+    const processedUpdates = jobStatusUpdates
+      .map((entry) => entry.payload.processedItems)
+      .filter((value) => typeof value === "number") as number[];
+    assert.ok(processedUpdates.some((value) => value >= 1));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
