@@ -44,6 +44,7 @@ const DOCDEX_GUIDANCE_MAX_CHARS = 12000;
 const DOCDEX_GUIDANCE_PATH = path.join(os.homedir(), ".docdex", "agents.md");
 let docdexGuidanceCache: string | undefined;
 let docdexGuidanceLoaded = false;
+const DOCDEX_JSON_ONLY_MARKERS = [/output json only/i, /return json only/i, /no prose, no analysis/i];
 
 const isIoEnabled = (): boolean => {
   const raw = process.env[IO_ENV];
@@ -113,6 +114,12 @@ const readDocdexGuidance = async (): Promise<string | undefined> => {
   } catch {
     return undefined;
   }
+};
+
+const stripJsonOnlyGuidance = (guidance: string): string => {
+  const lines = guidance.split(/\r?\n/);
+  const filtered = lines.filter((line) => !DOCDEX_JSON_ONLY_MARKERS.some((marker) => marker.test(line)));
+  return filtered.join("\n").trim();
 };
 
 export class AgentService {
@@ -332,7 +339,10 @@ export class AgentService {
   private async applyDocdexGuidance(request: InvocationRequest): Promise<InvocationRequest> {
     const guidance = await readDocdexGuidance();
     if (!guidance) return request;
-    const prefix = `${DOCDEX_GUIDANCE_HEADER}\n${guidance}\n\n`;
+    const command = request.metadata?.command ? String(request.metadata.command) : "";
+    const cleaned = command === "gateway-agent" ? guidance : stripJsonOnlyGuidance(guidance);
+    if (!cleaned) return request;
+    const prefix = `${DOCDEX_GUIDANCE_HEADER}\n${cleaned}\n\n`;
     return { ...request, input: `${prefix}${request.input ?? ""}` };
   }
 }

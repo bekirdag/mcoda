@@ -49,7 +49,8 @@ if (process.platform === "win32" && existsSync(win32Patch)) {
 }
 testArgs.push(...filteredTests);
 
-const result = spawnSync(process.execPath, testArgs, {
+const nodeBin = process.env.NODE_BIN ?? (process.platform === "win32" ? "node.exe" : "node");
+const result = spawnSync(nodeBin, testArgs, {
   stdio: "inherit",
 });
 

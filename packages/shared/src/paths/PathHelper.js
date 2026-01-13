@@ -6,6 +6,21 @@ import { promises as fs } from "node:fs";
  * The helpers intentionally avoid touching any other layer to keep shared free of deps.
  */
 export class PathHelper {
+    static normalizePathCase(value) {
+        const normalized = path.normalize(value);
+        return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    }
+    static resolveRelativePath(root, target) {
+        const resolvedRoot = this.normalizePathCase(path.resolve(root));
+        const resolvedTarget = this.normalizePathCase(path.resolve(root, target));
+        return path.relative(resolvedRoot, resolvedTarget).replace(/\\/g, "/");
+    }
+    static isPathInside(root, target) {
+        const relative = this.resolveRelativePath(root, target);
+        if (relative === "")
+            return true;
+        return !relative.startsWith("..") && !path.isAbsolute(relative);
+    }
     static getGlobalMcodaDir() {
         const envHome = process.env.HOME ?? process.env.USERPROFILE;
         const homeDir = envHome && envHome.trim().length > 0 ? envHome : os.homedir();

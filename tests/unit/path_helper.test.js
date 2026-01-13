@@ -18,3 +18,13 @@ test("PathHelper.ensureDir creates nested directories", async () => {
   const stat = await fs.stat(target);
   assert.equal(stat.isDirectory(), true);
 });
+
+test("PathHelper.isPathInside detects scoped paths", () => {
+  const root = path.join(os.tmpdir(), "mcoda-paths-root");
+  const inside = path.join(root, "subdir", "file.txt");
+  const outside = path.join(root, "..", "outside.txt");
+  assert.equal(PathHelper.isPathInside(root, inside), true);
+  assert.equal(PathHelper.isPathInside(root, outside), false);
+  const relative = PathHelper.resolveRelativePath(root, inside);
+  assert.equal(relative.includes("\\"), false);
+});

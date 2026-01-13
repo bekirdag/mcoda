@@ -3,7 +3,7 @@
 Goal: verify the change meets its acceptance criteria and guard against regressions with clear, reproducible findings.
 
 ## Orient yourself
-- Docdex usage (required; use docdexd daemon CLI, not curl or MCP):
+- Docdex usage (required; use docdexd daemon CLI, not curl):
   - Ensure the daemon is running: `docdexd daemon --repo <repo> --host 127.0.0.1 --port 3210 --log warn --secure-mode=false`.
   - If the daemon is already running, set `DOCDEX_HTTP_BASE_URL=http://127.0.0.1:3210` and use docdexd CLI commands (they call the daemon HTTP API).
   - For multi-repo daemons, determine `repo_id` with `docdexd repo inspect --repo <repo>` and always scope requests via `--repo` (CLI attaches `x-docdex-repo-id`).

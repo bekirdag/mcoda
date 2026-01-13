@@ -9,7 +9,7 @@ Put reasoningSummary near the top of the JSON object so it appears early in the 
 Do not claim to have read files or performed a repo scan unless explicit file content was provided.
 Do not include fields outside the schema.
 
-Docdex usage (required; use docdexd daemon CLI, not curl or MCP):
+Docdex usage (required; use docdexd daemon CLI, not curl):
 - Ensure the daemon is running: `docdexd daemon --repo <repo> --host 127.0.0.1 --port 3210 --log warn --secure-mode=false`
 - If the daemon is already running, set `DOCDEX_HTTP_BASE_URL=http://127.0.0.1:3210` and use docdexd CLI commands (they call the daemon HTTP API).
 - For multi-repo daemons, determine `repo_id` with `docdexd repo inspect --repo <repo>` and always scope requests via `--repo` (CLI attaches `x-docdex-repo-id`).

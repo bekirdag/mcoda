@@ -3,6 +3,7 @@ import path from "node:path";
 import { WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { GatewayAgentService, type GatewayAgentResult } from "../agents/GatewayAgentService.js";
+import { RoutingService } from "../agents/RoutingService.js";
 import {
   buildGatewayHandoffContent,
   buildGatewayHandoffDocdexUsage,
@@ -39,6 +40,9 @@ const ESCALATION_REASONS = new Set([
 const NO_CHANGE_REASON = "no_changes";
 const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
 const HEARTBEAT_INTERVAL_MS = 30000;
+const ZERO_TOKEN_BACKOFF_MS = 750;
+const PSEUDO_TASK_PREFIX = "[RUN]";
+const ZERO_TOKEN_ERROR = "zero_tokens";
 
 type StepName = "work" | "review" | "qa";
 
@@ -115,6 +119,7 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   qaTestCommand?: string;
   qaMode?: "auto" | "manual";
   qaFollowups?: "auto" | "none" | "prompt";
+  reviewFollowups?: boolean;
   qaResult?: "pass" | "fail" | "blocked";
   qaNotes?: string;
   qaEvidenceUrl?: string;
@@ -149,6 +154,7 @@ export interface GatewayTrioResult {
 export class GatewayTrioService {
   private selectionService: TaskSelectionService;
   private projectKeyCache = new Map<string, string>();
+  private tokenUsageCheckEnabled?: boolean;
 
   private constructor(
     private workspace: WorkspaceResolution,
@@ -156,6 +162,7 @@ export class GatewayTrioService {
       workspaceRepo: WorkspaceRepository;
       jobService: JobService;
       gatewayService: GatewayAgentService;
+      routingService: RoutingService;
       workService: WorkOnTasksService;
       reviewService: CodeReviewService;
       qaService: QaTasksService;
@@ -170,6 +177,7 @@ export class GatewayTrioService {
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
     const jobService = new JobService(workspace, workspaceRepo);
     const gatewayService = await GatewayAgentService.create(workspace);
+    const routingService = await RoutingService.create();
     const workService = await WorkOnTasksService.create(workspace);
     const reviewService = await CodeReviewService.create(workspace);
     const qaService = await QaTasksService.create(workspace, { noTelemetry: options.noTelemetry ?? false });
@@ -178,6 +186,7 @@ export class GatewayTrioService {
       workspaceRepo,
       jobService,
       gatewayService,
+      routingService,
       workService,
       reviewService,
       qaService,
@@ -195,6 +204,7 @@ export class GatewayTrioService {
     };
     await maybeClose(this.selectionService);
     await maybeClose(this.deps.gatewayService);
+    await maybeClose(this.deps.routingService);
     await maybeClose(this.deps.workService);
     await maybeClose(this.deps.reviewService);
     await maybeClose(this.deps.qaService);
@@ -232,6 +242,72 @@ export class GatewayTrioService {
     } catch {
       return undefined;
     }
+  }
+
+  private isPseudoTaskKey(key: string): boolean {
+    return key.trim().toUpperCase().startsWith(PSEUDO_TASK_PREFIX);
+  }
+
+  private skipPseudoTask(state: GatewayTrioState, taskKey: string, warnings: string[]): void {
+    const progress = this.ensureProgress(state, taskKey);
+    progress.status = "skipped";
+    progress.lastError = "pseudo_task";
+    state.tasks[taskKey] = progress;
+    warnings.push(`Skipping pseudo task ${taskKey}.`);
+  }
+
+  private async isTokenUsageCheckEnabled(): Promise<boolean> {
+    if (this.tokenUsageCheckEnabled !== undefined) return this.tokenUsageCheckEnabled;
+    const configPath = path.join(this.workspace.workspaceRoot, ".mcoda", "config.json");
+    try {
+      const raw = await fs.readFile(configPath, "utf8");
+      const parsed = JSON.parse(raw) as { telemetry?: { strict?: boolean } };
+      this.tokenUsageCheckEnabled = !parsed?.telemetry?.strict;
+    } catch {
+      this.tokenUsageCheckEnabled = true;
+    }
+    return this.tokenUsageCheckEnabled;
+  }
+
+  private async isZeroTokenRun(jobId?: string, commandRunId?: string): Promise<boolean | undefined> {
+    if (!jobId) return undefined;
+    const enabled = await this.isTokenUsageCheckEnabled();
+    if (!enabled) return undefined;
+    const tokenPath = path.join(this.workspace.workspaceRoot, ".mcoda", "token_usage.json");
+    let raw: string;
+    try {
+      raw = await fs.readFile(tokenPath, "utf8");
+    } catch {
+      return undefined;
+    }
+    let entries: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(raw) as Array<Record<string, unknown>>;
+      entries = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return undefined;
+    }
+    if (!entries.length) return undefined;
+    const relevant = entries.filter((entry) => {
+      if (!entry) return false;
+      if ((entry as any).jobId === jobId) return true;
+      if (commandRunId && (entry as any).commandRunId === commandRunId) return true;
+      return false;
+    });
+    if (relevant.length === 0) return undefined;
+    const total = relevant.reduce((sum, entry) => {
+      const prompt = Number((entry as any).tokensPrompt ?? (entry as any).tokens_prompt ?? 0);
+      const completion = Number((entry as any).tokensCompletion ?? (entry as any).tokens_completion ?? 0);
+      const rawTotal = (entry as any).tokensTotal ?? (entry as any).tokens_total;
+      const entryTotal = Number.isFinite(rawTotal) ? Number(rawTotal) : prompt + completion;
+      return sum + (Number.isFinite(entryTotal) ? entryTotal : 0);
+    }, 0);
+    return total <= 0;
+  }
+
+  private async backoffZeroTokens(attempts: number): Promise<void> {
+    const backoffMs = ZERO_TOKEN_BACKOFF_MS * Math.max(1, Math.min(attempts, 2));
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
   }
 
   private async cleanupExpiredTaskLocks(warnings: string[]): Promise<void> {
@@ -460,6 +536,7 @@ export class GatewayTrioService {
       qaTestCommand: request.qaTestCommand ?? raw.qaTestCommand,
       qaMode: request.qaMode ?? raw.qaMode,
       qaFollowups: request.qaFollowups ?? raw.qaFollowups,
+      reviewFollowups: request.reviewFollowups ?? raw.reviewFollowups,
       qaResult: request.qaResult ?? raw.qaResult,
       qaNotes: request.qaNotes ?? raw.qaNotes,
       qaEvidenceUrl: request.qaEvidenceUrl ?? raw.qaEvidenceUrl,
@@ -766,6 +843,10 @@ export class GatewayTrioService {
     const ratingSummary = request.rateAgents
       ? await this.loadRatingSummary(result.jobId, "work", resolvedAgent)
       : undefined;
+    const zeroTokens = await this.isZeroTokenRun(result.jobId, result.commandRunId);
+    if (zeroTokens) {
+      return { step: "work", status: "failed", error: ZERO_TOKEN_ERROR, chosenAgent: resolvedAgent, ratingSummary };
+    }
     return { ...parsed, chosenAgent: resolvedAgent, ratingSummary };
   }
 
@@ -781,13 +862,24 @@ export class GatewayTrioService {
     abortSignal?: AbortSignal,
     onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
-    let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
     try {
-      gateway = await this.runGateway("code-review", taskKey, projectKey, request, agentOptions);
-      handoff = buildGatewayHandoffContent(gateway);
-      resolvedAgent = request.reviewAgentName ?? gateway.chosenAgent.agentSlug;
+      const resolved = await this.deps.routingService.resolveAgentForCommand({
+        workspace: this.workspace,
+        commandName: "code-review",
+        overrideAgentSlug: request.reviewAgentName,
+        projectKey,
+      });
+      resolvedAgent = resolved.agentSlug;
+      handoff = [
+        "# Gateway Handoff",
+        "",
+        "Gateway planning skipped for code-review; using routing defaults.",
+        `Resolved agent: ${resolved.agentSlug} (${resolved.source}).`,
+        "",
+        buildGatewayHandoffDocdexUsage(),
+      ].join("\n");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!request.reviewAgentName) throw error;
@@ -795,12 +887,12 @@ export class GatewayTrioService {
       handoff = [
         "# Gateway Handoff",
         "",
-        `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
+        `Routing failed; proceeding with override agent ${resolvedAgent}.`,
         `Error: ${message}`,
         "",
         buildGatewayHandoffDocdexUsage(),
       ].join("\n");
-      warnings.push(`Gateway agent failed for review ${taskKey}; using override ${resolvedAgent}: ${message}`);
+      warnings.push(`Routing failed for review ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for review step on ${taskKey}`);
@@ -820,6 +912,7 @@ export class GatewayTrioService {
         agentName: resolvedAgent,
         agentStream: request.agentStream,
         rateAgents: request.rateAgents,
+        createFollowupTasks: request.reviewFollowups === true,
         abortSignal,
       }),
     );
@@ -827,6 +920,10 @@ export class GatewayTrioService {
     const ratingSummary = request.rateAgents
       ? await this.loadRatingSummary(result.jobId, "review", resolvedAgent)
       : undefined;
+    const zeroTokens = await this.isZeroTokenRun(result.jobId, result.commandRunId);
+    if (zeroTokens) {
+      return { step: "review", status: "failed", error: ZERO_TOKEN_ERROR, chosenAgent: resolvedAgent, ratingSummary };
+    }
     return { ...parsed, chosenAgent: resolvedAgent, ratingSummary };
   }
 
@@ -842,13 +939,24 @@ export class GatewayTrioService {
     abortSignal?: AbortSignal,
     onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
-    let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
     try {
-      gateway = await this.runGateway("qa-tasks", taskKey, projectKey, request, agentOptions);
-      handoff = buildGatewayHandoffContent(gateway);
-      resolvedAgent = request.qaAgentName ?? gateway.chosenAgent.agentSlug;
+      const resolved = await this.deps.routingService.resolveAgentForCommand({
+        workspace: this.workspace,
+        commandName: "qa-tasks",
+        overrideAgentSlug: request.qaAgentName,
+        projectKey,
+      });
+      resolvedAgent = resolved.agentSlug;
+      handoff = [
+        "# Gateway Handoff",
+        "",
+        "Gateway planning skipped for qa-tasks; using routing defaults.",
+        `Resolved agent: ${resolved.agentSlug} (${resolved.source}).`,
+        "",
+        buildGatewayHandoffDocdexUsage(),
+      ].join("\n");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!request.qaAgentName) throw error;
@@ -856,12 +964,12 @@ export class GatewayTrioService {
       handoff = [
         "# Gateway Handoff",
         "",
-        `Gateway agent failed; proceeding with override agent ${resolvedAgent}.`,
+        `Routing failed; proceeding with override agent ${resolvedAgent}.`,
         `Error: ${message}`,
         "",
         buildGatewayHandoffDocdexUsage(),
       ].join("\n");
-      warnings.push(`Gateway agent failed for QA ${taskKey}; using override ${resolvedAgent}: ${message}`);
+      warnings.push(`Routing failed for QA ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for QA step on ${taskKey}`);
@@ -896,6 +1004,10 @@ export class GatewayTrioService {
     const ratingSummary = request.rateAgents
       ? await this.loadRatingSummary(result.jobId, "qa", resolvedAgent)
       : undefined;
+    const zeroTokens = await this.isZeroTokenRun(result.jobId, result.commandRunId);
+    if (zeroTokens) {
+      return { step: "qa", status: "failed", error: ZERO_TOKEN_ERROR, chosenAgent: resolvedAgent, ratingSummary };
+    }
     return { ...parsed, chosenAgent: resolvedAgent, ratingSummary };
   }
 
@@ -935,8 +1047,20 @@ export class GatewayTrioService {
       warnings.push("Agent rating disabled; use --rate-agents to track rating/complexity updates.");
     }
     const statusFilter = await this.buildStatusFilter(resolvedRequest, warnings);
+    const explicitTaskKeys = resolvedRequest.taskKeys ?? [];
+    const pseudoTaskKeys = explicitTaskKeys.filter((key) => this.isPseudoTaskKey(key));
+    const filteredTaskKeys = explicitTaskKeys.filter((key) => !this.isPseudoTaskKey(key));
+    const explicitTaskKeysProvided = explicitTaskKeys.length > 0;
+    const explicitTaskFilterEmpty = explicitTaskKeysProvided && filteredTaskKeys.length === 0;
+    if (pseudoTaskKeys.length) {
+      warnings.push(`Skipping pseudo tasks: ${pseudoTaskKeys.join(", ")}.`);
+    }
+    if (explicitTaskFilterEmpty) {
+      warnings.push("All requested tasks were pseudo entries; nothing to run.");
+    }
+    const taskKeysForRun = explicitTaskKeysProvided ? filteredTaskKeys : resolvedRequest.taskKeys;
     const commandRun = await this.deps.jobService.startCommandRun("gateway-trio", resolvedRequest.projectKey, {
-      taskIds: resolvedRequest.taskKeys,
+      taskIds: taskKeysForRun,
       jobId: request.resumeJobId,
     });
 
@@ -955,7 +1079,7 @@ export class GatewayTrioService {
           projectKey: resolvedRequest.projectKey,
           epicKey: resolvedRequest.epicKey,
           storyKey: resolvedRequest.storyKey,
-          tasks: resolvedRequest.taskKeys,
+          tasks: taskKeysForRun,
           statusFilter,
           maxIterations,
           maxCycles,
@@ -976,6 +1100,7 @@ export class GatewayTrioService {
           qaTestCommand: resolvedRequest.qaTestCommand,
           qaMode: resolvedRequest.qaMode,
           qaFollowups: resolvedRequest.qaFollowups,
+          reviewFollowups: resolvedRequest.reviewFollowups,
           qaResult: resolvedRequest.qaResult,
           qaNotes: resolvedRequest.qaNotes,
           qaEvidenceUrl: resolvedRequest.qaEvidenceUrl,
@@ -983,8 +1108,6 @@ export class GatewayTrioService {
           escalateOnNoChange: resolvedRequest.escalateOnNoChange,
           resumeSupported: true,
         },
-        totalItems: 0,
-        processedItems: 0,
       });
       jobId = job.id;
       state = {
@@ -995,6 +1118,9 @@ export class GatewayTrioService {
         tasks: {},
       };
       await this.writeState(state);
+      await this.deps.jobService.updateJobStatus(jobId, "running", {
+        job_state_detail: "loading_tasks",
+      } as any);
     }
 
     if (!jobId || !state) {
@@ -1006,7 +1132,12 @@ export class GatewayTrioService {
 
     await this.cleanupExpiredTaskLocks(warnings);
 
-    const explicitTasks = new Set(resolvedRequest.taskKeys ?? []);
+    const explicitTasks = new Set(explicitTaskKeysProvided ? filteredTaskKeys : []);
+    if (pseudoTaskKeys.length) {
+      for (const key of pseudoTaskKeys) {
+        this.skipPseudoTask(state, key, warnings);
+      }
+    }
     await this.seedExplicitTasks(state, explicitTasks, warnings);
     await this.writeState(state);
     let cycle = state.cycle ?? 0;
@@ -1015,21 +1146,48 @@ export class GatewayTrioService {
       while (maxCycles === undefined || cycle < maxCycles) {
         await this.reopenRetryableBlockedTasks(state, explicitTasks, maxIterations, warnings);
         await this.writeState(state);
-        const selection = await this.selectionService.selectTasks({
-          projectKey: resolvedRequest.projectKey,
-          epicKey: resolvedRequest.epicKey,
-          storyKey: resolvedRequest.storyKey,
-          taskKeys: resolvedRequest.taskKeys,
-          statusFilter,
-          limit: resolvedRequest.limit,
-          parallel: resolvedRequest.parallel,
-        });
+        const selection = explicitTaskFilterEmpty
+          ? ({
+              ordered: [],
+              blocked: [],
+              warnings: [],
+              filters: { effectiveStatuses: [] },
+            } as TaskSelectionPlan)
+          : await this.selectionService.selectTasks({
+              projectKey: resolvedRequest.projectKey,
+              epicKey: resolvedRequest.epicKey,
+              storyKey: resolvedRequest.storyKey,
+              taskKeys: taskKeysForRun,
+              statusFilter,
+              limit: resolvedRequest.limit,
+              parallel: resolvedRequest.parallel,
+            });
         const blockedKeys = new Set(selection.blocked.map((t) => t.task.key));
         if (selection.warnings.length) warnings.push(...selection.warnings);
 
-        const ordered = this.prioritizeFeedbackTasks(selection.ordered, state);
+        const completedKeys = new Set(
+          Object.values(state.tasks)
+            .filter((task) => task.status === "completed")
+            .map((task) => task.taskKey),
+        );
+        const ordered = this.prioritizeFeedbackTasks(selection.ordered, state).filter((entry) => {
+          const taskKey = entry.task.key;
+          if (completedKeys.has(taskKey)) {
+            warnings.push(`Task ${taskKey} already completed earlier in this run; skipping.`);
+            return false;
+          }
+          if (this.isPseudoTaskKey(taskKey)) {
+            this.skipPseudoTask(state, taskKey, warnings);
+            return false;
+          }
+          return true;
+        });
         for (const blocked of selection.blocked) {
           const taskKey = blocked.task.key;
+          if (this.isPseudoTaskKey(taskKey)) {
+            this.skipPseudoTask(state, taskKey, warnings);
+            continue;
+          }
           if (explicitTasks.has(taskKey)) continue;
           const progress = this.ensureProgress(state, taskKey);
           progress.status = "skipped";
@@ -1040,16 +1198,27 @@ export class GatewayTrioService {
         await this.deps.jobService.updateJobStatus(jobId, "running", {
           totalItems: ordered.length,
           processedItems: 0,
+          job_state_detail: ordered.length === 0 ? "no_tasks" : "processing",
         });
 
         let completedThisCycle = 0;
         let processedThisCycle = 0;
         let attemptedThisCycle = 0;
 
+        const seenThisCycle = new Set<string>();
         for (const entry of ordered) {
           let attempted = false;
           try {
           const taskKey = entry.task.key;
+          if (seenThisCycle.has(taskKey)) {
+            warnings.push(`Task ${taskKey} appears multiple times in this cycle; skipping duplicate entry.`);
+            continue;
+          }
+          seenThisCycle.add(taskKey);
+          if (completedKeys.has(taskKey)) {
+            warnings.push(`Task ${taskKey} already completed earlier in this run; skipping.`);
+            continue;
+          }
           if (blockedKeys.has(taskKey) && !explicitTasks.has(taskKey)) {
             warnings.push(`Task ${taskKey} blocked by dependencies; skipping this cycle.`);
             const progress = this.ensureProgress(state, taskKey);
@@ -1075,6 +1244,10 @@ export class GatewayTrioService {
             continue;
           }
           if (progress.status === "failed") {
+            if (progress.lastError === ZERO_TOKEN_ERROR) {
+              warnings.push(`Task ${taskKey} failed after repeated zero-token runs.`);
+              continue;
+            }
             if (this.hasReachedMaxIterations(progress, maxIterations)) {
               continue;
             }
@@ -1147,6 +1320,26 @@ export class GatewayTrioService {
               timestamp: new Date().toISOString(),
               details: { taskKey, attempt: attemptIndex, outcome: workOutcome },
             });
+
+            if (workOutcome.error === ZERO_TOKEN_ERROR) {
+              if (!resolvedRequest.dryRun) {
+                await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "in_progress" });
+              }
+              const zeroTokenCount = this.countFailures(progress, "work", ZERO_TOKEN_ERROR);
+              if (zeroTokenCount >= 2) {
+                progress.status = "failed";
+                progress.lastError = ZERO_TOKEN_ERROR;
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                warnings.push(`Task ${taskKey} failed after repeated zero-token work runs.`);
+                continue;
+              }
+              warnings.push(`Retrying ${taskKey} after zero-token work run.`);
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              await this.backoffZeroTokens(zeroTokenCount);
+              continue;
+            }
 
             if (workOutcome.error === "tests_failed") {
               const testsFailedCount = this.countFailures(progress, "work", "tests_failed");
@@ -1249,6 +1442,26 @@ export class GatewayTrioService {
               details: { taskKey, attempt: attemptIndex, outcome: reviewOutcome },
             });
 
+            if (reviewOutcome.error === ZERO_TOKEN_ERROR) {
+              if (!resolvedRequest.dryRun) {
+                await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "ready_to_review" });
+              }
+              const zeroTokenCount = this.countFailures(progress, "review", ZERO_TOKEN_ERROR);
+              if (zeroTokenCount >= 2) {
+                progress.status = "failed";
+                progress.lastError = ZERO_TOKEN_ERROR;
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                warnings.push(`Task ${taskKey} failed after repeated zero-token review runs.`);
+                continue;
+              }
+              warnings.push(`Retrying ${taskKey} after zero-token review run.`);
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              await this.backoffZeroTokens(zeroTokenCount);
+              continue;
+            }
+
             if (reviewOutcome.status === "blocked") {
               progress.status = "blocked";
               progress.lastError = reviewOutcome.error ?? "blocked";
@@ -1323,6 +1536,26 @@ export class GatewayTrioService {
             details: { taskKey, attempt: attemptIndex, outcome: qaOutcome },
           });
 
+          if (qaOutcome.error === ZERO_TOKEN_ERROR) {
+            if (!resolvedRequest.dryRun) {
+              await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "ready_to_qa" });
+            }
+            const zeroTokenCount = this.countFailures(progress, "qa", ZERO_TOKEN_ERROR);
+            if (zeroTokenCount >= 2) {
+              progress.status = "failed";
+              progress.lastError = ZERO_TOKEN_ERROR;
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              warnings.push(`Task ${taskKey} failed after repeated zero-token QA runs.`);
+              continue;
+            }
+            warnings.push(`Retrying ${taskKey} after zero-token QA run.`);
+            state.tasks[taskKey] = progress;
+            await this.writeState(state);
+            await this.backoffZeroTokens(zeroTokenCount);
+            continue;
+          }
+
           if (qaOutcome.status === "blocked") {
             progress.status = "blocked";
             progress.lastError = qaOutcome.error ?? "blocked";
@@ -1348,6 +1581,7 @@ export class GatewayTrioService {
 
           progress.status = "completed";
           state.tasks[taskKey] = progress;
+          completedKeys.add(taskKey);
           await this.writeState(state);
           completedThisCycle += 1;
           } finally {

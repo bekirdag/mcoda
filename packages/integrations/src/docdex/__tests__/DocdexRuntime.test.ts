@@ -67,3 +67,17 @@ test("resolveDocdexBrowserInfo returns a stable shape", async (t) => {
     assert.ok(info.message?.includes("docdex setup"), "expected setup hint in failure message");
   }
 });
+
+test("resolveDocdexBrowserInfo reports missing Playwright CLI", async () => {
+  const prev = process.env.MCODA_FORCE_NO_PLAYWRIGHT;
+  process.env.MCODA_FORCE_NO_PLAYWRIGHT = "1";
+  try {
+    const info = await resolveDocdexBrowserInfo();
+    assert.equal(info.ok, false);
+    assert.ok(info.message?.toLowerCase().includes("playwright cli"));
+    assert.ok(info.message?.toLowerCase().includes("docdex setup"));
+  } finally {
+    if (prev === undefined) delete process.env.MCODA_FORCE_NO_PLAYWRIGHT;
+    else process.env.MCODA_FORCE_NO_PLAYWRIGHT = prev;
+  }
+});

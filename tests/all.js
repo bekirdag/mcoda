@@ -38,13 +38,44 @@ const resolvePnpm = () => {
   return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 };
 
+const resolveNode = () => {
+  if (process.env.NODE_BIN) return process.env.NODE_BIN;
+  return process.platform === "win32" ? "node.exe" : "node";
+};
+
 const pnpm = resolvePnpm();
+const nodeBin = resolveNode();
 let failed = false;
+let markerPrinted = false;
 let winTestHome;
 
 if (process.env.DOCDEX_UPDATE_CHECK == null) {
   process.env.DOCDEX_UPDATE_CHECK = "0";
 }
+
+const printMarker = () => {
+  if (markerPrinted) return;
+  markerPrinted = true;
+  console.log(`MCODA_RUN_ALL_TESTS_COMPLETE status=${failed ? "failed" : "passed"}`);
+};
+
+process.on("exit", () => {
+  printMarker();
+});
+
+process.on("uncaughtException", (error) => {
+  failed = true;
+  console.error(error);
+  printMarker();
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (error) => {
+  failed = true;
+  console.error(error);
+  printMarker();
+  process.exit(1);
+});
 
 if (process.platform === "win32") {
   winTestHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
@@ -161,15 +192,26 @@ const extraWorkspaceTests = [
   path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexRuntime.test.js"),
 ];
 
-const testFiles = collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
-const resolvedExtras = [...extraTests, ...extraWorkspaceTests].filter((file) => existsSync(path.join(root, file)));
-const allTests = Array.from(new Set([...testFiles, ...resolvedExtras]));
-const repoTests = run("repo-tests", process.execPath, ["--test", ...allTests]);
-results.push(repoTests);
-if (repoTests.error) {
-  console.error(`[${repoTests.label}] ${repoTests.error}`);
+const repoOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
+  .split(",")
+  .map((file) => file.trim())
+  .filter(Boolean)
+  .map((file) => (path.isAbsolute(file) ? path.relative(root, file) : file));
+const testFiles = repoOverride.length
+  ? []
+  : collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
+const resolvedExtras = repoOverride.length
+  ? []
+  : [...extraTests, ...extraWorkspaceTests].filter((file) => existsSync(path.join(root, file)));
+const allTests = repoOverride.length ? Array.from(new Set(repoOverride)) : Array.from(new Set([...testFiles, ...resolvedExtras]));
+if (process.env.MCODA_SKIP_REPO_TESTS !== "1") {
+  const repoTests = run("repo-tests", nodeBin, ["--test", ...allTests]);
+  results.push(repoTests);
+  if (repoTests.error) {
+    console.error(`[${repoTests.label}] ${repoTests.error}`);
+  }
+  if (repoTests.status !== 0) failed = true;
 }
-if (repoTests.status !== 0) failed = true;
 
 const artifactsDir = path.join(root, "tests", "results");
 mkdirSync(artifactsDir, { recursive: true });
@@ -186,5 +228,5 @@ writeFileSync(
     "\n",
 );
 
-console.log(`MCODA_RUN_ALL_TESTS_COMPLETE status=${failed ? "failed" : "passed"}`);
+printMarker();
 process.exit(failed ? 1 : 0);

@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
@@ -24,19 +25,54 @@ import { GlobalRepository } from '@mcoda/db';
 import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
 import { AgentRatingService } from '../agents/AgentRatingService.js';
-import { loadProjectGuidance } from '../shared/ProjectGuidance.js';
+import { isDocContextExcluded, loadProjectGuidance } from '../shared/ProjectGuidance.js';
 import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
-  'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage.',
+  'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
 ].join('\n');
 const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
-const QA_TEST_POLICY = 'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage.';
+const QA_TEST_POLICY =
+  'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
+const QA_REQUIRED_DEPS = ['argon2', 'pg', 'ioredis', '@jest/globals'];
+const QA_REQUIRED_ENV = [
+  { dep: 'pg', env: 'TEST_DB_URL' },
+  { dep: 'ioredis', env: 'TEST_REDIS_URL' },
+];
 const DEFAULT_JOB_PROMPT = 'You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.';
 const DEFAULT_CHARACTER_PROMPT =
   'Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.';
+const GATEWAY_PROMPT_MARKERS = [
+  'you are the gateway agent',
+  'return json only',
+  'output json only',
+  'docdexnotes',
+  'fileslikelytouched',
+  'filestocreate',
+  'do not include fields outside the schema',
+];
+
+const sanitizeNonGatewayPrompt = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (GATEWAY_PROMPT_MARKERS.some((marker) => lower.includes(marker))) return undefined;
+  return trimmed;
+};
+
+const readPromptFile = async (promptPath: string, fallback: string): Promise<string> => {
+  try {
+    const content = await fs.readFile(promptPath, 'utf8');
+    const trimmed = content.trim();
+    if (trimmed) return trimmed;
+  } catch {
+    // fall through to fallback
+  }
+  return fallback;
+};
 const RUN_ALL_TESTS_MARKER = 'mcoda_run_all_tests_complete';
 const RUN_ALL_TESTS_GUIDANCE =
   'Run-all tests did not emit the expected marker. Ensure tests/all.js prints "MCODA_RUN_ALL_TESTS_COMPLETE".';
@@ -49,6 +85,23 @@ const normalizeSlugList = (input?: string[] | null): string[] => {
     if (trimmed) cleaned.add(trimmed);
   }
   return Array.from(cleaned);
+};
+
+const normalizePath = (value: string): string =>
+  value
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '');
+
+const normalizeLineNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(1, Math.round(value));
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return Math.max(1, parsed);
+  }
+  return undefined;
 };
 
 const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
@@ -84,8 +137,16 @@ const buildCommentBacklog = (comments: TaskCommentRow[]): string => {
   const lines: string[] = [];
   const toSingleLine = (value: string) => value.replace(/\s+/g, ' ').trim();
   for (const comment of comments) {
-    const slug = comment.slug?.trim() || undefined;
     const details = parseCommentBody(comment.body);
+    const slug =
+      comment.slug?.trim() ||
+      createTaskCommentSlug({
+        source: comment.sourceCommand ?? 'comment',
+        message: details.message || comment.body,
+        file: comment.file,
+        line: comment.line,
+        category: comment.category ?? null,
+      });
     const key =
       slug ??
       `${comment.sourceCommand}:${comment.file ?? ''}:${comment.line ?? ''}:${details.message || comment.body}`;
@@ -151,7 +212,7 @@ export interface QaTasksResponse {
 
 const MCODA_GITIGNORE_ENTRY = '.mcoda/\n';
 
-type AgentFailure = { kind?: string; message: string; evidence?: string };
+type AgentFailure = { kind?: string; message: string; evidence?: string; file?: string; line?: number };
 type AgentFollowUp = {
   title?: string;
   description?: string;
@@ -324,21 +385,14 @@ export class QaTasksService {
         }
       }
     }
-    const commandPromptFiles = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath, repoPromptPath]);
     const agentPrompts =
       this.agentService && 'getPrompts' in this.agentService ? await (this.agentService as any).getPrompts(agentId) : undefined;
-    const mergedCommandPrompt = (() => {
-      const parts = [...commandPromptFiles];
-      if (agentPrompts?.commandPrompts?.['qa-tasks']) {
-        parts.push(agentPrompts.commandPrompts['qa-tasks']);
-      }
-      if (!parts.length) parts.push(DEFAULT_QA_PROMPT);
-      return parts.filter(Boolean).join('\n\n');
-    })();
+    const filePrompt = await readPromptFile(mcodaPromptPath, DEFAULT_QA_PROMPT);
+    const commandPrompt = agentPrompts?.commandPrompts?.['qa-tasks']?.trim() || filePrompt;
     return {
-      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
-      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
-      commandPrompt: mergedCommandPrompt || undefined,
+      jobPrompt: sanitizeNonGatewayPrompt(agentPrompts?.jobPrompt) ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: sanitizeNonGatewayPrompt(agentPrompts?.characterPrompt) ?? DEFAULT_CHARACTER_PROMPT,
+      commandPrompt: commandPrompt || undefined,
     };
   }
 
@@ -437,9 +491,13 @@ export class QaTasksService {
   private async gatherDocContext(
     task: TaskSelectionPlan['ordered'][number]['task'],
     taskRunId?: string,
+    docLinks: string[] = [],
   ): Promise<string> {
     if (!this.docdex) return '';
     try {
+      if (typeof (this.docdex as any)?.ensureRepoScope === 'function') {
+        await (this.docdex as any).ensureRepoScope();
+      }
       const querySeeds = [task.key, task.title, ...(task.acceptanceCriteria ?? [])]
         .filter(Boolean)
         .join(' ')
@@ -450,7 +508,8 @@ export class QaTasksService {
         query: querySeeds,
       });
       const snippets: string[] = [];
-      for (const doc of docs.slice(0, 5)) {
+      const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, true));
+      for (const doc of filteredDocs.slice(0, 5)) {
         const segments = (doc.segments ?? []).slice(0, 2);
         const body = segments.length
           ? segments
@@ -460,6 +519,40 @@ export class QaTasksService {
             ? doc.content.slice(0, 600)
             : '';
         snippets.push(`- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
+      }
+      const normalizeDocLink = (value: string): { type: 'id' | 'path'; ref: string } => {
+        const trimmed = value.trim();
+        const stripped = trimmed.replace(/^docdex:/i, '').replace(/^doc:/i, '');
+        const candidate = stripped || trimmed;
+        const looksLikePath =
+          candidate.includes('/') ||
+          candidate.includes('\\') ||
+          /\.(md|markdown|txt|rst|yaml|yml|json)$/i.test(candidate);
+        return { type: looksLikePath ? 'path' : 'id', ref: candidate };
+      };
+      for (const link of docLinks) {
+        try {
+          const { type, ref } = normalizeDocLink(link);
+          if (type === 'path' && isDocContextExcluded(ref, true)) {
+            snippets.push(`- [linked:filtered] ${link} — excluded from context`);
+            continue;
+          }
+          let doc = undefined;
+          if (type === 'path' && 'findDocumentByPath' in this.docdex) {
+            doc = await (this.docdex as DocdexClient).findDocumentByPath(ref);
+          }
+          if (!doc) {
+            doc = await this.docdex.fetchDocumentById(ref);
+          }
+          if (!doc) {
+            snippets.push(`- [linked:missing] ${link} — no docdex entry found`);
+            continue;
+          }
+          const body = (doc.segments?.[0]?.content ?? doc.content ?? '').slice(0, 600);
+          snippets.push(`- [linked:${doc.docType ?? 'doc'}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
+        } catch (error: any) {
+          snippets.push(`- [linked:missing] ${link} — ${error?.message ?? error}`);
+        }
       }
       return snippets.join('\n\n');
     } catch (error: any) {
@@ -556,6 +649,64 @@ export class QaTasksService {
     return undefined;
   }
 
+  private async checkQaPreflight(testCommand?: string): Promise<{
+    ok: boolean;
+    missingDeps: string[];
+    missingEnv: string[];
+    message?: string;
+  }> {
+    const pkg = await this.readPackageJson();
+    const declared = new Set([
+      ...Object.keys(pkg?.dependencies ?? {}),
+      ...Object.keys(pkg?.devDependencies ?? {}),
+    ]);
+    if (declared.size === 0 && !testCommand) {
+      return { ok: true, missingDeps: [], missingEnv: [] };
+    }
+    const usesJest = testCommand?.toLowerCase().includes('jest') ?? false;
+    const depsToCheck = QA_REQUIRED_DEPS.filter((dep) => {
+      if (dep === '@jest/globals') {
+        return usesJest || declared.has('@jest/globals') || declared.has('jest');
+      }
+      return declared.has(dep);
+    });
+    if (depsToCheck.length === 0 && !usesJest) {
+      return { ok: true, missingDeps: [], missingEnv: [] };
+    }
+    const requireFromWorkspace = createRequire(path.join(this.workspace.workspaceRoot, 'package.json'));
+    const missingDeps = depsToCheck.filter((dep) => {
+      try {
+        requireFromWorkspace.resolve(dep);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    const missingEnv: string[] = [];
+    for (const requirement of QA_REQUIRED_ENV) {
+      if (!declared.has(requirement.dep) && !missingDeps.includes(requirement.dep)) continue;
+      const value = process.env[requirement.env];
+      if (!value) missingEnv.push(requirement.env);
+    }
+    const messages: string[] = [];
+    if (missingDeps.length) {
+      messages.push(
+        `Missing QA dependencies: ${missingDeps.join(', ')}. Install them with your package manager (e.g., pnpm add -D ${missingDeps.join(
+          ' ',
+        )}).`,
+      );
+    }
+    if (missingEnv.length) {
+      messages.push(`Missing QA environment variables: ${missingEnv.join(', ')}. Set them (e.g., in .env.test).`);
+    }
+    return {
+      ok: messages.length === 0,
+      missingDeps,
+      missingEnv,
+      message: messages.join(' '),
+    };
+  }
+
   private extractJsonCandidate(raw: string): any | undefined {
     const fenced = raw.match(/```json([\s\S]*?)```/i);
     const candidate = fenced ? fenced[1] : raw;
@@ -598,6 +749,12 @@ export class QaTasksService {
     const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value.trim() : undefined);
     const asNumber = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    const asLine = (value: unknown): number | undefined => normalizeLineNumber(value);
+    const asFile = (value: unknown): string | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      return trimmed ? normalizePath(trimmed) : undefined;
+    };
     const asStringArray = (value: unknown): string[] | undefined =>
       Array.isArray(value) ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean) : undefined;
     const recommendation = parsed.recommendation as AgentInterpretation['recommendation'];
@@ -625,7 +782,13 @@ export class QaTasksService {
         }))
       : undefined;
     const failures: AgentFailure[] | undefined = Array.isArray(parsed.failures)
-      ? parsed.failures.map((f: any) => ({ kind: f.kind, message: f.message ?? String(f), evidence: f.evidence }))
+      ? parsed.failures.map((f: any) => ({
+          kind: asString(f?.kind),
+          message: asString(f?.message) ?? String(f),
+          evidence: asString(f?.evidence),
+          file: asFile(f?.file ?? f?.path ?? f?.file_path ?? f?.filePath),
+          line: asLine(f?.line ?? f?.line_number ?? f?.lineNumber),
+        }))
       : undefined;
     const resolvedSlugs = normalizeSlugList(parsed.resolved_slugs ?? parsed.resolvedSlugs);
     const unresolvedSlugs = normalizeSlugList(parsed.unresolved_slugs ?? parsed.unresolvedSlugs);
@@ -638,6 +801,20 @@ export class QaTasksService {
       resolvedSlugs,
       unresolvedSlugs,
     };
+  }
+
+  private validateInterpretation(result: AgentInterpretation): string | undefined {
+    if (!result.failures || result.failures.length === 0) return undefined;
+    for (const failure of result.failures) {
+      const file = failure.file?.trim();
+      const line = normalizeLineNumber(failure.line);
+      if (!file || !line) {
+        return "Each QA failure must include file and line.";
+      }
+      failure.file = normalizePath(file);
+      failure.line = line;
+    }
+    return undefined;
   }
 
   private async interpretResult(
@@ -691,7 +868,8 @@ export class QaTasksService {
       const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, QA_TEST_POLICY]
         .filter(Boolean)
         .join('\n\n');
-      const docCtx = await this.gatherDocContext(task.task, taskRunId);
+      const docLinks = Array.isArray((task.task.metadata as any)?.doc_links) ? (task.task.metadata as any).doc_links : [];
+      const docCtx = await this.gatherDocContext(task.task, taskRunId, docLinks);
       const acceptance = (task.task.acceptanceCriteria ?? []).map((line) => `- ${line}`).join('\n');
       const prompt = [
         systemPrompt,
@@ -713,7 +891,7 @@ export class QaTasksService {
           '{',
           '  "tested_scope": string,',
           '  "coverage_summary": string,',
-          '  "failures": [{ "kind": "functional|contract|perf|security|infra", "message": string, "evidence": string }],',
+          '  "failures": [{ "kind": "functional|contract|perf|security|infra", "message": string, "file": string, "line": number, "evidence": string }],',
           '  "recommendation": "pass|fix_required|infra_issue|unclear",',
           '  "follow_up_tasks": [{ "title": string, "description": string, "type": "bug|qa_followup|chore", "priority": number, "story_points": number, "tags": string[], "related_task_key": string, "epic_key": string, "story_key": string, "doc_links": string[], "evidence_url": string, "artifacts": string[] }],',
           '  "resolvedSlugs": ["Optional list of comment slugs that are confirmed fixed"],',
@@ -787,7 +965,14 @@ export class QaTasksService {
         });
       }
       const parsed = this.extractJsonCandidate(output);
-      const normalized = this.normalizeAgentOutput(parsed);
+      let normalized = this.normalizeAgentOutput(parsed);
+      let validationError = normalized ? this.validateInterpretation(normalized) : undefined;
+      if (normalized && validationError) {
+        if (taskRunId) {
+          await this.logTask(taskRunId, `QA agent output missing required fields (${validationError}); retrying once.`, 'qa-agent');
+        }
+        normalized = undefined;
+      }
       if (normalized) {
         return {
           ...normalized,
@@ -840,7 +1025,11 @@ export class QaTasksService {
         });
       }
       const retryParsed = this.extractJsonCandidate(retryOutput);
-      const retryNormalized = this.normalizeAgentOutput(retryParsed);
+      let retryNormalized = this.normalizeAgentOutput(retryParsed);
+      validationError = retryNormalized ? this.validateInterpretation(retryNormalized) : undefined;
+      if (retryNormalized && validationError) {
+        retryNormalized = undefined;
+      }
       if (retryNormalized) {
         return {
           ...retryNormalized,
@@ -852,7 +1041,10 @@ export class QaTasksService {
         };
       }
       if (taskRunId) {
-        await this.logTask(taskRunId, "QA agent returned invalid JSON after retry; falling back to QA outcome.", "qa-agent");
+        const message = validationError
+          ? `QA agent output missing required fields (${validationError}); falling back to QA outcome.`
+          : "QA agent returned invalid JSON after retry; falling back to QA outcome.";
+        await this.logTask(taskRunId, message, "qa-agent");
       }
       return {
         recommendation: 'unclear',
@@ -886,6 +1078,8 @@ export class QaTasksService {
       source: 'qa-tasks',
       message,
       category: failure.kind ?? 'qa_issue',
+      file: failure.file,
+      line: failure.line,
     });
   }
 
@@ -959,6 +1153,8 @@ export class QaTasksService {
         message,
         status: 'open',
         category: failure.kind ?? 'qa_issue',
+        file: failure.file ?? null,
+        line: failure.line ?? null,
       });
       if (!this.dryRunGuard) {
         await this.deps.workspaceRepo.createTaskComment({
@@ -971,6 +1167,9 @@ export class QaTasksService {
           category: failure.kind ?? 'qa_issue',
           slug,
           status: 'open',
+          file: failure.file ?? null,
+          line: failure.line ?? null,
+          pathHint: failure.file ?? null,
           body,
           createdAt: new Date().toISOString(),
           metadata: {
@@ -1187,7 +1386,8 @@ export class QaTasksService {
     }
     const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
     const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt].filter(Boolean).join('\n\n');
-    const docCtx = await this.gatherDocContext(task.task, taskRunId);
+    const docLinks = Array.isArray((task.task.metadata as any)?.doc_links) ? (task.task.metadata as any).doc_links : [];
+    const docCtx = await this.gatherDocContext(task.task, taskRunId, docLinks);
     const prompt = [
       systemPrompt,
       'You are the mcoda QA agent. Given QA notes/evidence, propose structured follow-up tasks as JSON.',
@@ -1399,6 +1599,63 @@ export class QaTasksService {
       env: process.env,
       testCommandOverride: testCommand,
     };
+
+    const preflight = await this.checkQaPreflight(testCommand);
+    if (!preflight.ok) {
+      const message = preflight.message ?? 'QA preflight failed.';
+      await this.logTask(taskRun.id, message, 'qa-preflight', {
+        missingDeps: preflight.missingDeps,
+        missingEnv: preflight.missingEnv,
+      });
+      if (!this.dryRunGuard) {
+        await this.applyStateTransition(task.task, 'infra_issue');
+        await this.finishTaskRun(taskRun, 'failed');
+        await this.deps.workspaceRepo.createTaskQaRun({
+          taskId: task.task.id,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          commandRunId: ctx.commandRunId,
+          source: 'auto',
+          mode: 'auto',
+          profileName: profile.name,
+          runner: profile.runner,
+          rawOutcome: 'infra_issue',
+          recommendation: 'infra_issue',
+          metadata: {
+            preflight: message,
+            missingDeps: preflight.missingDeps,
+            missingEnv: preflight.missingEnv,
+          },
+        });
+        const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_issue' });
+        const body = formatTaskCommentBody({
+          slug,
+          source: 'qa-tasks',
+          message,
+          status: 'open',
+          category: 'qa_issue',
+        });
+        await this.deps.workspaceRepo.createTaskComment({
+          taskId: task.task.id,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          sourceCommand: 'qa-tasks',
+          authorType: 'agent',
+          category: 'qa_issue',
+          slug,
+          status: 'open',
+          body,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      return {
+        taskKey: task.task.key,
+        outcome: 'infra_issue',
+        profile: profile.name,
+        runner: profile.runner,
+        notes: message,
+      };
+    }
 
     const ensure = await adapter.ensureInstalled(profile, qaCtx);
     if (!ensure.ok) {
