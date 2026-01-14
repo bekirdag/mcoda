@@ -32,18 +32,67 @@ test("TaskStateService merges metadata and updates status", async () => {
       },
     ]);
 
+    const job = await repo.createJob({
+      workspaceId: workspace.workspaceId,
+      type: "work",
+      state: "running",
+      commandName: "work-on-tasks",
+    });
+    const taskRun = await repo.createTaskRun({
+      taskId: task.id,
+      command: "work-on-tasks",
+      jobId: job.id,
+      status: "running",
+      startedAt: new Date().toISOString(),
+    });
+    const statusContext = {
+      commandName: "work-on-tasks",
+      jobId: job.id,
+      taskRunId: taskRun.id,
+      agentId: "agent-1",
+      metadata: { lane: "work" },
+    };
+
     const service = new TaskStateService(repo);
-    await service.markReadyToReview(task, { review: true });
+    await service.markReadyToReview(task, { review: true }, statusContext);
 
     const updated = await repo.getTaskByKey(task.key);
     assert.equal(updated?.status, "ready_to_review");
     assert.equal((updated?.metadata as any)?.owner, "alex");
     assert.equal((updated?.metadata as any)?.review, true);
 
-    await service.markBlocked(task, "needs_spec");
+    await service.markBlocked(task, "needs_spec", statusContext);
     const blocked = await repo.getTaskByKey(task.key);
     assert.equal(blocked?.status, "blocked");
     assert.equal((blocked?.metadata as any)?.blocked_reason, "needs_spec");
+
+    const db = repo.getDb();
+    const events = await db.all<{
+      from_status: string | null;
+      to_status: string;
+      command_name: string | null;
+      job_id: string | null;
+      task_run_id: string | null;
+      agent_id: string | null;
+      metadata_json: string | null;
+    }[]>(
+      "SELECT from_status, to_status, command_name, job_id, task_run_id, agent_id, metadata_json FROM task_status_events WHERE task_id = ? ORDER BY timestamp",
+      task.id,
+    );
+    assert.equal(events.length, 2);
+    assert.equal(events[0]?.from_status, "not_started");
+    assert.equal(events[0]?.to_status, "ready_to_review");
+    assert.equal(events[0]?.command_name, "work-on-tasks");
+    assert.equal(events[0]?.job_id, job.id);
+    assert.equal(events[0]?.task_run_id, taskRun.id);
+    assert.equal(events[0]?.agent_id, "agent-1");
+    const firstMeta = events[0]?.metadata_json ? JSON.parse(events[0].metadata_json) : {};
+    assert.equal(firstMeta.lane, "work");
+    assert.equal(events[1]?.from_status, "ready_to_review");
+    assert.equal(events[1]?.to_status, "blocked");
+    const secondMeta = events[1]?.metadata_json ? JSON.parse(events[1].metadata_json) : {};
+    assert.equal(secondMeta.lane, "work");
+    assert.equal(secondMeta.blocked_reason, "needs_spec");
   } finally {
     await repo.close();
     await fs.rm(dir, { recursive: true, force: true });

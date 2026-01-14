@@ -232,6 +232,29 @@ export interface EstimateResult {
   etas: EstimateEtas;
 }
 
+export interface TokenUsage {
+  timestamp: string;
+  workspaceId: string;
+  commandName: string;
+  action: string;
+  promptTokens: number;
+  completionTokens: number;
+  jobId?: string;
+  taskId?: string;
+  costUsd?: number;
+  modelName?: string;
+  agentId?: string;
+  invocationKind?: string;
+  provider?: string;
+  currency?: string;
+  tokensCached?: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
 export type RefineStrategy = "split" | "merge" | "enrich" | "estimate" | "auto";
 
 export interface RefineTasksRequest {

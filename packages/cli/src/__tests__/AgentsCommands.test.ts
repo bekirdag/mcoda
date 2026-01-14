@@ -35,6 +35,16 @@ const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> 
   }
 };
 
+test("agent --help prints usage", { concurrency: false }, async () => {
+  const logs = await captureLogs(() => AgentsCommands.run(["--help"]));
+  const output = logs.join("\n");
+  assert.match(output, /Usage: mcoda agent/);
+
+  const logsSub = await captureLogs(() => AgentsCommands.run(["list", "--help"]));
+  const outputSub = logsSub.join("\n");
+  assert.match(outputSub, /Usage: mcoda agent/);
+});
+
 test("agent add/list surfaces health from agent_health", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const slug = "codex-super-long-agent-name";
@@ -69,6 +79,59 @@ test("agent add/list surfaces health from agent_health", { concurrency: false },
     assert.ok(row);
     const cells = row.split("│").map((cell) => cell.trim()).filter(Boolean);
     assert.equal(cells[5], "8");
+  });
+});
+
+test("agent list supports JSON output", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "json-agent", "--adapter", "codex-cli", "--capability", "chat"]);
+    const logs = await captureLogs(() => AgentsCommands.run(["list", "--json"]));
+    const parsed = JSON.parse(logs.join("\n"));
+    assert.ok(Array.isArray(parsed));
+    const agent = parsed.find((entry: any) => entry.slug === "json-agent");
+    assert.ok(agent);
+    assert.equal(agent.adapter, "codex-cli");
+  });
+});
+
+test("agent details supports JSON output", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "detail-agent",
+      "--adapter",
+      "codex-cli",
+      "--capability",
+      "chat",
+      "--max-complexity",
+      "7",
+    ]);
+    const logs = await captureLogs(() => AgentsCommands.run(["details", "detail-agent", "--json"]));
+    const parsed = JSON.parse(logs.join("\n"));
+    assert.equal(parsed.slug, "detail-agent");
+    assert.equal(parsed.maxComplexity, 7);
+    assert.ok(Array.isArray(parsed.capabilities));
+  });
+});
+
+test("agent details renders command prompts in text output", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "detail-prompts", "--adapter", "codex-cli", "--capability", "chat"]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("detail-prompts");
+    assert.ok(agent);
+    await repo.setAgentPrompts(agent.id, {
+      commandPrompts: {
+        "code-review": "Follow checklist",
+        "qa-tasks": "QA prompt",
+      },
+    });
+    await repo.close();
+
+    const logs = await captureLogs(() => AgentsCommands.run(["details", "detail-prompts"]));
+    const output = logs.join("\n");
+    assert.match(output, /Command prompts\s*: code-review=Follow checklist; qa-tasks=QA prompt/);
   });
 });
 

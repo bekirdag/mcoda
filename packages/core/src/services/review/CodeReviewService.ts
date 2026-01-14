@@ -1700,6 +1700,14 @@ export class CodeReviewService {
         gitCommitSha: task.vcsLastCommitSha ?? null,
       });
 
+      const statusContext = {
+        commandName: "code-review",
+        jobId,
+        taskRunId: taskRun.id,
+        agentId: agent.id,
+        metadata: { lane: "review" },
+      };
+
       const findings: ReviewFinding[] = [];
       let decision: ReviewAgentResult["decision"] | undefined;
       let statusAfter: string | undefined;
@@ -1746,7 +1754,7 @@ export class CodeReviewService {
             message,
           });
           if (!request.dryRun) {
-            await this.stateService.markBlocked(task, "review_empty_diff");
+            await this.stateService.markBlocked(task, "review_empty_diff", statusContext);
             statusAfter = "blocked";
           }
           await this.writeReviewSummaryComment({
@@ -1877,6 +1885,7 @@ export class CodeReviewService {
           durationSeconds: number,
           tokenMeta?: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number; model?: string | null },
           agentUsed: Agent = agent,
+          attempt = 1,
         ) => {
           const tokensPrompt = tokenMeta?.tokensPrompt ?? estimateTokens(promptText);
           const tokensCompletion = tokenMeta?.tokensCompletion ?? estimateTokens(outputText);
@@ -1896,7 +1905,7 @@ export class CodeReviewService {
             tokensTotal: entryTotal,
             durationSeconds,
             timestamp: new Date().toISOString(),
-            metadata: { commandName: "code-review", phase, action: phase },
+            metadata: { commandName: "code-review", phase, action: phase, attempt },
           });
         };
 
@@ -1950,7 +1959,7 @@ export class CodeReviewService {
               model: (lastStreamMeta.model ?? lastStreamMeta.model_name ?? null) as string | null,
             }
           : undefined;
-        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain);
+        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain, agent, 1);
 
         const primaryOutput = agentOutput;
         let retryOutput: string | undefined;
@@ -2016,7 +2025,7 @@ export class CodeReviewService {
                 model: (retryResp.metadata.model ?? retryResp.metadata.model_name ?? null) as string | null,
               }
             : undefined;
-          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed);
+          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed, 2);
           parsed = parseJsonOutput(retryOutput);
           validationError = parsed ? validateReviewOutput(parsed) : undefined;
           if (parsed && validationError) {
@@ -2148,18 +2157,18 @@ export class CodeReviewService {
         let taskStatusUpdate = statusBefore;
         if (!request.dryRun) {
           if (invalidJson) {
-            await this.stateService.markBlocked(task, "review_invalid_output");
+            await this.stateService.markBlocked(task, "review_invalid_output", statusContext);
             taskStatusUpdate = "blocked";
           } else {
             const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
             if (approveDecision) {
-              await this.stateService.markReadyToQa(task);
+              await this.stateService.markReadyToQa(task, undefined, statusContext);
               taskStatusUpdate = "ready_to_qa";
             } else if (parsed.decision === "changes_requested") {
-              await this.stateService.returnToInProgress(task);
+              await this.stateService.returnToInProgress(task, undefined, statusContext);
               taskStatusUpdate = "in_progress";
             } else if (parsed.decision === "block") {
-              await this.stateService.markBlocked(task, "review_blocked");
+              await this.stateService.markBlocked(task, "review_blocked", statusContext);
               taskStatusUpdate = "blocked";
             }
           }

@@ -223,4 +223,22 @@ describe("estimate output rendering", () => {
       Date.now = originalNow;
     }
   });
+
+  it("emits JSON output when requested", async () => {
+    const logs = await captureLogs(() =>
+      EstimateCommands.run([
+        "--workspace-root",
+        workspaceRoot,
+        "--project",
+        "PROJ",
+        "--sp-per-hour",
+        "10",
+        "--json",
+      ]),
+    );
+    const parsed = JSON.parse(logs.join("\n"));
+    assert.ok(parsed.backlogTotals);
+    assert.ok(parsed.durationsHours);
+    assert.ok(parsed.etas);
+  });
 });

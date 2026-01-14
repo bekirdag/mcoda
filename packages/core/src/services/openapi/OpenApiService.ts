@@ -554,7 +554,12 @@ export class OpenApiService {
             action: attempt === 0 ? "draft_openapi" : "draft_openapi_retry",
             promptTokens: estimateTokens(prompt),
             completionTokens: estimateTokens(output),
-            metadata: { adapter, provider: adapter, attempt },
+            metadata: {
+              adapter,
+              provider: adapter,
+              attempt: attempt + 1,
+              phase: attempt === 0 ? "draft_openapi" : "draft_openapi_retry",
+            },
           });
           if (errors.length === 0) {
             specYaml = YAML.stringify(parsed);

@@ -995,7 +995,13 @@ export class GatewayAgentService {
       ]
         .filter(Boolean)
         .join("\n\n");
-      const recordUsage = async (promptText: string, outputText: string, durationSeconds: number, action: string) => {
+      const recordUsage = async (
+        promptText: string,
+        outputText: string,
+        durationSeconds: number,
+        action: string,
+        attempt: number,
+      ) => {
         const promptTokens = estimateTokens(promptText);
         const completionTokens = estimateTokens(outputText ?? "");
         await this.deps.jobService.recordTokenUsage({
@@ -1011,7 +1017,7 @@ export class GatewayAgentService {
           tokensCompletion: completionTokens,
           tokensTotal: promptTokens + completionTokens,
           durationSeconds,
-          metadata: { action, job: normalizedJob },
+          metadata: { action, job: normalizedJob, phase: action, attempt },
         });
       };
 
@@ -1019,7 +1025,7 @@ export class GatewayAgentService {
         stream: request.agentStream !== false,
         onChunk: request.onStreamChunk,
       });
-      await recordUsage(prompt, response.output ?? "", response.durationSeconds, "gateway_summary");
+      await recordUsage(prompt, response.output ?? "", response.durationSeconds, "gateway_summary", 1);
 
       let parsed = extractJson(response.output);
       let missingFields = parsed
@@ -1046,7 +1052,7 @@ export class GatewayAgentService {
           stream: request.agentStream !== false,
           onChunk: request.onStreamChunk,
         });
-        await recordUsage(repairPrompt, repairResponse.output ?? "", repairResponse.durationSeconds, "gateway_summary_repair");
+        await recordUsage(repairPrompt, repairResponse.output ?? "", repairResponse.durationSeconds, "gateway_summary_repair", 2);
         const repaired = extractJson(repairResponse.output);
         if (repaired) {
           parsed = repaired;

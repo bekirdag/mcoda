@@ -1219,6 +1219,12 @@ mcoda exposes a **small, canonical command surface**; legacy or overlapping comm
 
   * `tokens_prompt`, `tokens_completion`, `tokens_total`,
 
+  * optional cached token fields (`tokens_cached`, `tokens_cache_read`, `tokens_cache_write`),
+
+  * optional timing fields (`started_at`, `finished_at`, `duration_ms`),
+
+  * optional invocation metadata (`invocation_kind`, `provider`, `currency`),
+
   * optional `cost_estimate`,
 
   * `timestamp`.
@@ -7447,37 +7453,37 @@ stored in global/workspace config and exposed via `VelocityConfig`.
 
 #### **17.4.3 Deriving empirical SP/hour from history** {#17.4.3-deriving-empirical-sp/hour-from-history}
 
-The **VelocityService** computes empirical SP/h from recent history using `command_runs` \+ `tasks` (and optionally `task_runs`):
+The **VelocityService** computes empirical SP/h from recent history using `task_status_events` (preferred) and `task_runs` as fallback, with `command_runs` as a last resort:
 
 1. **Collect samples per lane**
 
     For each lane:
 
-   * Select `command_runs` rows with:
+   * Select tasks with status transitions:
 
-     * `command_name` in `{work-on-tasks, code-review, qa-tasks}`,
+     * `in_progress -> ready_to_review` (implementation),
 
-     * `status = 'success'`,
+     * `ready_to_review -> ready_to_qa` (review),
 
-     * optionally filtered by:
+     * `ready_to_qa -> completed` (QA).
 
-       * project / epic / story,
+   * Optionally filter by:
 
-       * time window (`since`), or
+     * project / epic / story,
 
-       * last **N** tasks (window \= 10, 20, 50).
+     * time window (`since`), or
 
-   * For each `command_run`, determine **SP processed**:
+     * last **N** tasks (window \= 10, 20, 50).
 
-     * Prefer `command_runs.sp_processed` (if populated).
+   * Determine **SP processed** per sample from `tasks.story_points`.
 
-     * Else sum `tasks.story_points` for all tasks associated to that run (via join or join table).
+   * Determine **duration** per sample:
 
-   * Determine **duration** for the run:
+     * Prefer elapsed time between status transitions in `task_status_events`.
 
-     * Prefer `command_runs.duration_seconds`.
+     * Else use `task_runs` duration for that task and lane.
 
-     * Else `completed_at - started_at`.
+     * Else fall back to `command_runs` duration.
 
 2. **Compute lane‑level throughput**
 
@@ -7662,7 +7668,9 @@ mcoda estimate \
 
 * If `--velocity-mode` requests history (`empirical`/`mixed`), calls `VelocityService` to:
 
-  * read recent `command_runs` / `tasks` (window `--velocity-window` \= 10/20/50 tasks),
+  * read recent `task_status_events` for lane transitions (window `--velocity-window` \= 10/20/50 tasks),
+
+  * fall back to `task_runs` (and then `command_runs`) when events are missing,
 
   * compute `v_empirical_lane`,
 
@@ -7673,19 +7681,19 @@ mcoda estimate \
 * Computes:
 
 ```
-T_impl   = S_impl   / v_impl
-T_review = S_review / v_review
-T_qa     = S_qa     / v_qa
+T_impl            = S_impl / v_impl
+T_review_pipeline = (S_impl + S_review) / v_review
+T_qa_pipeline     = (S_impl + S_review + S_qa) / v_qa
 ```
 
 *   
-  Derives pipeline milestones:
+  Derives pipeline milestones (subtract elapsed in-progress time from `T_impl` when status events are available):
 
   * `ready_to_review_eta` from `T_impl`,
 
-  * `ready_to_qa_eta` from `max(T_impl, T_review)`,
+  * `ready_to_qa_eta` from `max(T_impl, T_review_pipeline)`,
 
-  * `complete_eta` from `max(T_impl, T_review, T_qa)`.
+  * `complete_eta` from `max(T_impl, T_review_pipeline, T_qa_pipeline)`.
 
 * Optionally converts hours to wall‑clock timestamps relative to “now” (configurable working‑hours calendar in future versions).
 

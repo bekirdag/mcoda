@@ -72,6 +72,10 @@ export interface TokenUsageSummary {
   tokensPrompt?: number | null;
   tokensCompletion?: number | null;
   tokensTotal?: number | null;
+  tokensCached?: number | null;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
+  durationMs?: number | null;
   cost?: number | null;
 }
 
@@ -317,6 +321,10 @@ export class JobInsightsService {
         tokensPrompt: row.tokens_prompt ?? null,
         tokensCompletion: row.tokens_completion ?? null,
         tokensTotal: row.tokens_total ?? null,
+        tokensCached: row.tokens_cached ?? null,
+        tokensCacheRead: row.tokens_cache_read ?? null,
+        tokensCacheWrite: row.tokens_cache_write ?? null,
+        durationMs: row.duration_ms ?? null,
         cost: row.cost_estimate ?? null,
       }));
     } finally {

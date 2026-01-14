@@ -1565,7 +1565,12 @@ export class DocsService {
           action: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
           promptTokens: estimateTokens(prompt),
           completionTokens: estimateTokens(agentOutput),
-          metadata: { adapter, docdexAvailable: context.docdexAvailable, attempt },
+          metadata: {
+            adapter,
+            docdexAvailable: context.docdexAvailable,
+            attempt: attempt + 1,
+            phase: attempt === 0 ? "draft_pdr" : "draft_pdr_retry",
+          },
         });
         if (valid) {
           draft = structured;
@@ -1934,7 +1939,8 @@ export class DocsService {
               provider: adapter,
               docdexAvailable: context.docdexAvailable,
               template: template.name,
-              attempt,
+              attempt: attempt + 1,
+              phase: attempt === 0 ? "draft_sds" : "draft_sds_retry",
             },
           });
           if (valid) break;
@@ -1983,7 +1989,14 @@ export class DocsService {
           action: "draft_sds_resume_regenerate",
           promptTokens: estimateTokens(prompt),
           completionTokens: estimateTokens(agentOutput),
-          metadata: { adapter, provider: adapter, docdexAvailable: context.docdexAvailable, template: template.name },
+          metadata: {
+            adapter,
+            provider: adapter,
+            docdexAvailable: context.docdexAvailable,
+            template: template.name,
+            phase: "draft_sds_resume_regenerate",
+            attempt: 1,
+          },
         });
       }
       if (fastMode) {

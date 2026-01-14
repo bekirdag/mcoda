@@ -9,7 +9,7 @@ import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { WorkspaceResolution } from '../../workspace/WorkspaceManager.js';
 import { JobService, JobState } from '../jobs/JobService.js';
 import { TaskSelectionFilters, TaskSelectionPlan, TaskSelectionService } from './TaskSelectionService.js';
-import { TaskStateService } from './TaskStateService.js';
+import { TaskStateService, type TaskStatusEventContext } from './TaskStateService.js';
 import { QaProfileService } from './QaProfileService.js';
 import { QaFollowupService, FollowupSuggestion } from './QaFollowupService.js';
 import { QaAdapter } from '@mcoda/integrations/qa/QaAdapter.js';
@@ -988,6 +988,8 @@ export class QaTasksService {
           metadata: {
             commandName: 'qa-tasks',
             action: 'qa-interpret-results',
+            phase: 'qa-interpret',
+            attempt: 1,
             taskKey: task.task.key,
             streaming: stream,
             streamChunks: chunkCount || undefined,
@@ -1050,6 +1052,8 @@ export class QaTasksService {
           metadata: {
             commandName: 'qa-tasks',
             action: 'qa-interpret-retry',
+            phase: 'qa-interpret-retry',
+            attempt: 2,
             taskKey: task.task.key,
           },
         });
@@ -1308,16 +1312,17 @@ export class QaTasksService {
   private async applyStateTransition(
     task: TaskRow,
     outcome: 'pass' | 'fix_required' | 'infra_issue' | 'unclear',
+    context?: TaskStatusEventContext,
   ): Promise<void> {
     const timestamp = { last_qa: new Date().toISOString() };
     if (outcome === 'pass') {
-      await this.stateService.markCompleted(task, timestamp);
+      await this.stateService.markCompleted(task, timestamp, context);
     } else if (outcome === 'fix_required') {
-      await this.stateService.returnToInProgress(task, timestamp);
+      await this.stateService.returnToInProgress(task, timestamp, context);
     } else if (outcome === 'infra_issue') {
-      await this.stateService.markBlocked(task, 'qa_infra_issue');
+      await this.stateService.markBlocked(task, 'qa_infra_issue', context);
     } else if (outcome === 'unclear') {
-      await this.stateService.markBlocked(task, 'qa_unclear');
+      await this.stateService.markBlocked(task, 'qa_unclear', context);
     }
   }
 
@@ -1493,6 +1498,12 @@ export class QaTasksService {
     },
   ): Promise<QaTaskResult> {
     const taskRun = await this.createTaskRun(task.task, ctx.jobId, ctx.commandRunId);
+    const statusContextBase = {
+      commandName: 'qa-tasks',
+      jobId: ctx.jobId,
+      taskRunId: taskRun.id,
+      metadata: { lane: 'qa' },
+    };
     await this.logTask(taskRun.id, 'Starting QA', 'qa-start');
     const allowedStatuses = new Set(ctx.request.statusFilter ?? ['ready_to_qa']);
     if (task.task.status && !allowedStatuses.has(task.task.status)) {
@@ -1520,7 +1531,7 @@ export class QaTasksService {
     const branchCheck = await this.ensureTaskBranch(task, taskRun.id, ctx.request.allowDirty ?? false);
     if (!branchCheck.ok) {
       if (!this.dryRunGuard) {
-        await this.applyStateTransition(task.task, 'infra_issue');
+        await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
         await this.finishTaskRun(taskRun, 'failed');
         await this.deps.workspaceRepo.createTaskQaRun({
           taskId: task.task.id,
@@ -1638,7 +1649,7 @@ export class QaTasksService {
         missingEnv: preflight.missingEnv,
       });
       if (!this.dryRunGuard) {
-        await this.applyStateTransition(task.task, 'infra_issue');
+        await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
         await this.finishTaskRun(taskRun, 'failed');
         await this.deps.workspaceRepo.createTaskQaRun({
           taskId: task.task.id,
@@ -1696,7 +1707,7 @@ export class QaTasksService {
         : `${installMessage} ${guidance}`;
       await this.logTask(taskRun.id, installMessageWithGuidance, 'qa-install');
       if (!this.dryRunGuard) {
-        await this.applyStateTransition(task.task, 'infra_issue');
+        await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
         await this.finishTaskRun(taskRun, 'failed');
         await this.deps.workspaceRepo.createTaskQaRun({
           taskId: task.task.id,
@@ -1815,7 +1826,11 @@ export class QaTasksService {
     }
 
     if (!this.dryRunGuard) {
-      await this.applyStateTransition(task.task, outcome);
+      const statusContext = {
+        ...statusContextBase,
+        agentId: interpretation.agentId ?? undefined,
+      };
+      await this.applyStateTransition(task.task, outcome, statusContext);
       await this.finishTaskRun(taskRun, outcome === 'pass' ? 'succeeded' : 'failed');
     }
 
@@ -1972,6 +1987,12 @@ export class QaTasksService {
     },
   ): Promise<QaTaskResult> {
     const taskRun = await this.createTaskRun(task.task, ctx.jobId, ctx.commandRunId);
+    const statusContext: TaskStatusEventContext = {
+      commandName: 'qa-tasks',
+      jobId: ctx.jobId,
+      taskRunId: taskRun.id,
+      metadata: { lane: 'qa' },
+    };
     const result = ctx.request.result ?? 'pass';
     const notes = ctx.request.notes;
     const outcome: 'pass' | 'fix_required' | 'infra_issue' =
@@ -1985,7 +2006,7 @@ export class QaTasksService {
     }
 
     if (!ctx.request.dryRun) {
-      await this.applyStateTransition(task.task, outcome);
+      await this.applyStateTransition(task.task, outcome, statusContext);
       await this.finishTaskRun(taskRun, outcome === 'pass' ? 'succeeded' : 'failed');
     }
     const followups: string[] = [];

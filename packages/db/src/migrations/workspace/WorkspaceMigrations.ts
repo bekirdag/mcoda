@@ -90,6 +90,8 @@ export class WorkspaceMigrations {
         type TEXT NOT NULL,
         state TEXT NOT NULL,
         command_name TEXT,
+        agent_id TEXT,
+        agent_ids_json TEXT,
         payload_json TEXT,
         total_items INTEGER,
         processed_items INTEGER,
@@ -105,6 +107,7 @@ export class WorkspaceMigrations {
         workspace_id TEXT NOT NULL,
         command_name TEXT NOT NULL,
         job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        agent_id TEXT,
         task_ids_json TEXT,
         git_branch TEXT,
         git_base_branch TEXT,
@@ -134,6 +137,19 @@ export class WorkspaceMigrations {
         run_context_json TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS task_status_events (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        from_status TEXT,
+        to_status TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        command_name TEXT,
+        job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        task_run_id TEXT REFERENCES task_runs(id) ON DELETE SET NULL,
+        agent_id TEXT,
+        metadata_json TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS task_locks (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
         task_run_id TEXT NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
@@ -143,6 +159,7 @@ export class WorkspaceMigrations {
       );
 
       CREATE INDEX IF NOT EXISTS idx_task_locks_expires_at ON task_locks(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_task_status_events_task_id_timestamp ON task_status_events(task_id, timestamp);
 
       CREATE TABLE IF NOT EXISTS task_qa_runs (
         id TEXT PRIMARY KEY,
@@ -237,15 +254,41 @@ export class WorkspaceMigrations {
         project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
         epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL,
         user_story_id TEXT REFERENCES user_stories(id) ON DELETE SET NULL,
+        command_name TEXT,
+        action TEXT,
+        invocation_kind TEXT,
+        provider TEXT,
+        currency TEXT,
         tokens_prompt INTEGER,
         tokens_completion INTEGER,
         tokens_total INTEGER,
+        tokens_cached INTEGER,
+        tokens_cache_read INTEGER,
+        tokens_cache_write INTEGER,
         cost_estimate REAL,
         duration_seconds REAL,
+        duration_ms REAL,
+        started_at TEXT,
+        finished_at TEXT,
         timestamp TEXT NOT NULL,
         metadata_json TEXT
       );
     `);
+
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "command_name TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "action TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "invocation_kind TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "provider TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "currency TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "tokens_cached INTEGER");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "tokens_cache_read INTEGER");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "tokens_cache_write INTEGER");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "duration_ms REAL");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "started_at TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "token_usage", "finished_at TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "jobs", "agent_id TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "jobs", "agent_ids_json TEXT");
+    await WorkspaceMigrations.ensureColumn(db, "command_runs", "agent_id TEXT");
 
     await WorkspaceMigrations.ensureColumn(db, "task_comments", "slug TEXT");
     await WorkspaceMigrations.ensureColumn(db, "task_comments", "status TEXT");

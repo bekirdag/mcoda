@@ -101,14 +101,28 @@ test("records command runs and token usage", async () => {
     status: "running",
     payload: { agentId: created.id },
   });
+  const startedAt = new Date().toISOString();
+  const finishedAt = new Date(Date.now() + 1000).toISOString();
   await repo.recordTokenUsage({
     agentId: created.id,
     commandRunId: run.id,
     modelName: "test-model",
+    commandName: "agent.test",
+    action: "sample",
+    invocationKind: "chat",
+    provider: "test-provider",
+    currency: "USD",
     tokensPrompt: 0,
     tokensCompletion: 0,
     tokensTotal: 0,
+    tokensCached: 4,
+    tokensCacheRead: 2,
+    tokensCacheWrite: 1,
     timestamp: new Date().toISOString(),
+    durationSeconds: 1,
+    durationMs: 1000,
+    startedAt,
+    finishedAt,
     metadata: { reason: "test" },
   });
   await repo.completeCommandRun(run.id, {
@@ -120,6 +134,39 @@ test("records command runs and token usage", async () => {
   assert.equal(runs.length, 1);
   const usage = await (repo as any).db.all("SELECT agent_id FROM token_usage WHERE command_run_id = ?", run.id);
   assert.equal(usage.length, 1);
+  const usageRow = await (repo as any).db.get(
+    `SELECT command_name, action, invocation_kind, provider, currency, tokens_cached, tokens_cache_read, tokens_cache_write, duration_ms, started_at, finished_at
+     FROM token_usage
+     WHERE command_run_id = ?`,
+    run.id,
+  );
+  assert.equal(usageRow.command_name, "agent.test");
+  assert.equal(usageRow.action, "sample");
+  assert.equal(usageRow.invocation_kind, "chat");
+  assert.equal(usageRow.provider, "test-provider");
+  assert.equal(usageRow.currency, "USD");
+  assert.equal(usageRow.tokens_cached, 4);
+  assert.equal(usageRow.tokens_cache_read, 2);
+  assert.equal(usageRow.tokens_cache_write, 1);
+  assert.equal(usageRow.duration_ms, 1000);
+  assert.equal(usageRow.started_at, startedAt);
+  assert.equal(usageRow.finished_at, finishedAt);
+
+  const tokenUsageColumns = await (repo as any).db.all("PRAGMA table_info(token_usage)");
+  const tokenUsageNames = new Set(tokenUsageColumns.map((col: any) => col.name));
+  [
+    "command_name",
+    "action",
+    "invocation_kind",
+    "provider",
+    "currency",
+    "tokens_cached",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "duration_ms",
+    "started_at",
+    "finished_at",
+  ].forEach((name) => assert.ok(tokenUsageNames.has(name), `missing token_usage column ${name}`));
 });
 
 test("stores agent run ratings", async () => {

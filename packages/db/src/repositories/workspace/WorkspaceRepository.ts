@@ -99,6 +99,8 @@ export interface JobInsert {
   totalItems?: number | null;
   processedItems?: number | null;
   lastCheckpoint?: string | null;
+  agentId?: string | null;
+  agentIds?: string[] | null;
 }
 
 export interface JobRow extends JobInsert {
@@ -113,6 +115,7 @@ export interface CommandRunInsert {
   workspaceId: string;
   commandName: string;
   jobId?: string | null;
+  agentId?: string | null;
   taskIds?: string[];
   gitBranch?: string | null;
   gitBaseBranch?: string | null;
@@ -147,6 +150,18 @@ export interface TaskRunInsert {
 
 export interface TaskRunRow extends TaskRunInsert {
   id: string;
+}
+
+export interface TaskStatusEventInsert {
+  taskId: string;
+  fromStatus?: string | null;
+  toStatus: string;
+  timestamp: string;
+  commandName?: string | null;
+  jobId?: string | null;
+  taskRunId?: string | null;
+  agentId?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface TaskLockRow {
@@ -194,11 +209,22 @@ export interface TokenUsageInsert {
   projectId?: string | null;
   epicId?: string | null;
   userStoryId?: string | null;
+  commandName?: string | null;
+  action?: string | null;
+  invocationKind?: string | null;
+  provider?: string | null;
+  currency?: string | null;
   tokensPrompt?: number | null;
   tokensCompletion?: number | null;
   tokensTotal?: number | null;
+  tokensCached?: number | null;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
   costEstimate?: number | null;
   durationSeconds?: number | null;
+  durationMs?: number | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
   timestamp: string;
   metadata?: Record<string, unknown>;
 }
@@ -659,6 +685,24 @@ export class WorkspaceRepository {
     await this.db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, ...params);
   }
 
+  async recordTaskStatusEvent(entry: TaskStatusEventInsert): Promise<void> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO task_status_events (id, task_id, from_status, to_status, timestamp, command_name, job_id, task_run_id, agent_id, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      entry.taskId,
+      entry.fromStatus ?? null,
+      entry.toStatus,
+      entry.timestamp,
+      entry.commandName ?? null,
+      entry.jobId ?? null,
+      entry.taskRunId ?? null,
+      entry.agentId ?? null,
+      entry.metadata ? JSON.stringify(entry.metadata) : null,
+    );
+  }
+
   async getTaskById(taskId: string): Promise<TaskRow | undefined> {
     const row = await this.db.get(
       `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
@@ -804,8 +848,8 @@ export class WorkspaceRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO jobs (id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.workspaceId,
       record.type,
@@ -815,6 +859,8 @@ export class WorkspaceRepository {
       record.totalItems ?? null,
       record.processedItems ?? null,
       record.lastCheckpoint ?? null,
+      record.agentId ?? null,
+      record.agentIds ? JSON.stringify(record.agentIds) : null,
       now,
       now,
     );
@@ -830,7 +876,7 @@ export class WorkspaceRepository {
 
   async listJobs(): Promise<JobRow[]> {
     const rows = await this.db.all(
-      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at, completed_at, error_summary
        FROM jobs ORDER BY updated_at DESC`,
     );
     return rows.map((row: any) => ({
@@ -843,6 +889,8 @@ export class WorkspaceRepository {
       totalItems: row.total_items ?? undefined,
       processedItems: row.processed_items ?? undefined,
       lastCheckpoint: row.last_checkpoint ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      agentIds: row.agent_ids_json ? JSON.parse(row.agent_ids_json) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at ?? undefined,
@@ -852,7 +900,7 @@ export class WorkspaceRepository {
 
   async getJob(id: string): Promise<JobRow | undefined> {
     const row = await this.db.get(
-      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at, completed_at, error_summary
        FROM jobs WHERE id = ?`,
       id,
     );
@@ -867,6 +915,8 @@ export class WorkspaceRepository {
       totalItems: row.total_items ?? undefined,
       processedItems: row.processed_items ?? undefined,
       lastCheckpoint: row.last_checkpoint ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      agentIds: row.agent_ids_json ? JSON.parse(row.agent_ids_json) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at ?? undefined,
@@ -901,6 +951,14 @@ export class WorkspaceRepository {
       fields.push("last_checkpoint = ?");
       params.push(update.lastCheckpoint ?? null);
     }
+    if (update.agentId !== undefined) {
+      fields.push("agent_id = ?");
+      params.push(update.agentId ?? null);
+    }
+    if (update.agentIds !== undefined) {
+      fields.push("agent_ids_json = ?");
+      params.push(update.agentIds ? JSON.stringify(update.agentIds) : null);
+    }
     if (update.errorSummary !== undefined) {
       fields.push("error_summary = ?");
       params.push(update.errorSummary ?? null);
@@ -922,12 +980,13 @@ export class WorkspaceRepository {
   async createCommandRun(record: CommandRunInsert): Promise<CommandRunRow> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO command_runs (id, workspace_id, command_name, job_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO command_runs (id, workspace_id, command_name, job_id, agent_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.workspaceId,
       record.commandName,
       record.jobId ?? null,
+      record.agentId ?? null,
       record.taskIds ? JSON.stringify(record.taskIds) : null,
       record.gitBranch ?? null,
       record.gitBaseBranch ?? null,
@@ -940,6 +999,27 @@ export class WorkspaceRepository {
 
   async setCommandRunJobId(id: string, jobId: string): Promise<void> {
     await this.db.run(`UPDATE command_runs SET job_id = ? WHERE id = ?`, jobId, id);
+  }
+
+  async setCommandRunAgentId(id: string, agentId: string): Promise<void> {
+    await this.db.run(`UPDATE command_runs SET agent_id = COALESCE(agent_id, ?) WHERE id = ?`, agentId, id);
+  }
+
+  async setJobAgentIds(id: string, agentId: string): Promise<void> {
+    const row = await this.db.get(`SELECT agent_id, agent_ids_json FROM jobs WHERE id = ?`, id);
+    if (!row) return;
+    let existing: string[] = [];
+    if (row.agent_ids_json) {
+      try {
+        const parsed = JSON.parse(row.agent_ids_json);
+        if (Array.isArray(parsed)) existing = parsed;
+      } catch {
+        existing = [];
+      }
+    }
+    const merged = Array.from(new Set([...existing, agentId]));
+    const primary = row.agent_id ?? merged[0] ?? agentId;
+    await this.db.run(`UPDATE jobs SET agent_id = ?, agent_ids_json = ? WHERE id = ?`, primary, JSON.stringify(merged), id);
   }
 
   async completeCommandRun(
@@ -1518,8 +1598,37 @@ export class WorkspaceRepository {
   async recordTokenUsage(entry: TokenUsageInsert): Promise<void> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO token_usage (id, workspace_id, agent_id, model_name, job_id, command_run_id, task_run_id, task_id, project_id, epic_id, user_story_id, tokens_prompt, tokens_completion, tokens_total, cost_estimate, duration_seconds, timestamp, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO token_usage (
+        id,
+        workspace_id,
+        agent_id,
+        model_name,
+        job_id,
+        command_run_id,
+        task_run_id,
+        task_id,
+        project_id,
+        epic_id,
+        user_story_id,
+        command_name,
+        action,
+        invocation_kind,
+        provider,
+        currency,
+        tokens_prompt,
+        tokens_completion,
+        tokens_total,
+        tokens_cached,
+        tokens_cache_read,
+        tokens_cache_write,
+        cost_estimate,
+        duration_seconds,
+        duration_ms,
+        started_at,
+        finished_at,
+        timestamp,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       entry.workspaceId,
       entry.agentId ?? null,
@@ -1531,11 +1640,22 @@ export class WorkspaceRepository {
       entry.projectId ?? null,
       entry.epicId ?? null,
       entry.userStoryId ?? null,
+      entry.commandName ?? null,
+      entry.action ?? null,
+      entry.invocationKind ?? null,
+      entry.provider ?? null,
+      entry.currency ?? null,
       entry.tokensPrompt ?? null,
       entry.tokensCompletion ?? null,
       entry.tokensTotal ?? null,
+      entry.tokensCached ?? null,
+      entry.tokensCacheRead ?? null,
+      entry.tokensCacheWrite ?? null,
       entry.costEstimate ?? null,
       entry.durationSeconds ?? null,
+      entry.durationMs ?? null,
+      entry.startedAt ?? null,
+      entry.finishedAt ?? null,
       entry.timestamp,
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     );

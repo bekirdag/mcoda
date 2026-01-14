@@ -155,6 +155,7 @@ mcoda estimate --project WEB --sp-per-hour-implementation 12 --velocity-mode mix
 ```
 
 - Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--sp-per-hour <FLOAT>`, `--sp-per-hour-implementation <FLOAT>`, `--sp-per-hour-review <FLOAT>`, `--sp-per-hour-qa <FLOAT>`, `--velocity-mode config|empirical|mixed`, `--velocity-window 10|20|50`, `--json`, `--workspace-root <path>`.
+- ETAs use lane status transitions (`in_progress -> ready_to_review -> ready_to_qa -> completed`) and subtract elapsed in-progress time when status history is available.
 - Output includes DONE/TOTAL rows, velocity samples with the window used, and ETA values formatted as ISO + local time + relative duration.
 
 ### Dependency-aware ordering
@@ -238,6 +239,7 @@ mcoda tokens --group-by project,command,agent --since 7d --format table
 ```
 
 - Filters: `--project`, `--agent`, `--command`, `--job`, `--since/--until`, `--group-by <project|agent|command|day|model|job|action>`, `--format <table|json>`.
+- Table output includes cached-token columns and duration when adapters report them.
 
 Inspect or toggle telemetry settings:
 

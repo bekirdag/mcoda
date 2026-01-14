@@ -96,11 +96,22 @@ export class GlobalMigrations {
         agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
         command_run_id TEXT REFERENCES command_runs(id) ON DELETE SET NULL,
         model_name TEXT,
+        command_name TEXT,
+        action TEXT,
+        invocation_kind TEXT,
+        provider TEXT,
+        currency TEXT,
         tokens_prompt INTEGER,
         tokens_completion INTEGER,
         tokens_total INTEGER,
+        tokens_cached INTEGER,
+        tokens_cache_read INTEGER,
+        tokens_cache_write INTEGER,
         cost_estimate REAL,
         duration_seconds REAL,
+        duration_ms REAL,
+        started_at TEXT,
+        finished_at TEXT,
         timestamp TEXT NOT NULL,
         metadata_json TEXT
       );
@@ -197,6 +208,24 @@ export class GlobalMigrations {
     if (!hasAgentComplexityUpdatedAt) {
       await db.exec("ALTER TABLE agents ADD COLUMN complexity_updated_at TEXT");
     }
+
+    const tokenUsageInfo = await db.all<any[]>("PRAGMA table_info(token_usage)");
+    const tokenUsageColumns = new Set(tokenUsageInfo.map((col) => col.name));
+    const ensureTokenUsageColumn = async (columnDef: string, name: string): Promise<void> => {
+      if (tokenUsageColumns.has(name)) return;
+      await db.exec(`ALTER TABLE token_usage ADD COLUMN ${columnDef}`);
+    };
+    await ensureTokenUsageColumn("command_name TEXT", "command_name");
+    await ensureTokenUsageColumn("action TEXT", "action");
+    await ensureTokenUsageColumn("invocation_kind TEXT", "invocation_kind");
+    await ensureTokenUsageColumn("provider TEXT", "provider");
+    await ensureTokenUsageColumn("currency TEXT", "currency");
+    await ensureTokenUsageColumn("tokens_cached INTEGER", "tokens_cached");
+    await ensureTokenUsageColumn("tokens_cache_read INTEGER", "tokens_cache_read");
+    await ensureTokenUsageColumn("tokens_cache_write INTEGER", "tokens_cache_write");
+    await ensureTokenUsageColumn("duration_ms REAL", "duration_ms");
+    await ensureTokenUsageColumn("started_at TEXT", "started_at");
+    await ensureTokenUsageColumn("finished_at TEXT", "finished_at");
 
     await db.exec(`
       UPDATE agents

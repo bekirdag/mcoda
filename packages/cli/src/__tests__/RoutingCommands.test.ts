@@ -32,6 +32,20 @@ const captureLogs = async (fn: () => Promise<void>): Promise<string[]> => {
   return logs;
 };
 
+const captureErrors = async (fn: () => Promise<void>): Promise<string[]> => {
+  const logs: string[] = [];
+  const original = console.error;
+  (console as any).error = (...args: any[]) => {
+    logs.push(args.join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    (console as any).error = original;
+  }
+  return logs;
+};
+
 const workspace = {
   workspaceRoot: "/tmp/ws-routing",
   workspaceId: "ws-routing",
@@ -81,6 +95,41 @@ describe("RoutingCommands", () => {
     });
   });
 
+  it("lists defaults with show-ids", async () => {
+    const stubRouting: any = {
+      normalizeCommand: (c: string) => c,
+      getWorkspaceDefaults: async (id: string) =>
+        id === "__GLOBAL__"
+          ? [{ workspaceId: "__GLOBAL__", commandName: "create-tasks", agentId: "agent-global", updatedAt: "t1" }]
+          : [{ workspaceId: workspace.workspaceId, commandName: "create-tasks", agentId: "agent-local", updatedAt: "t2" }],
+      getAgentSummary: async (agentId: string) => ({
+        id: `${agentId}-id`,
+        slug: `${agentId}-slug`,
+        adapter: "local-model",
+        createdAt: "t",
+        updatedAt: "t",
+      }),
+      close: async () => {},
+    };
+
+    await withPatched(RoutingService as any, "create", async () => stubRouting, async () => {
+      await withPatched(WorkspaceResolver as any, "resolveWorkspace", async () => workspace, async () => {
+        await withPatched(JobService.prototype as any, "startCommandRun", async () => ({ id: "cmd-ids" }), async () => {
+          await withPatched(JobService.prototype as any, "finishCommandRun", async () => {}, async () => {
+            await withPatched(JobService.prototype as any, "close", async () => {}, async () => {
+              const logs = await captureLogs(async () =>
+                RoutingCommands.run(["defaults", "--list", "--show-ids"]),
+              );
+              const output = logs.join("\n");
+              assert.ok(output.includes("agent-local-slug (agent-local-id)"));
+              assert.ok(output.includes("agent-global-slug (agent-global-id)"));
+            });
+          });
+        });
+      });
+    });
+  });
+
   it("updates defaults with set-command", async () => {
     const calls: any[] = [];
     const stubRouting: any = {
@@ -105,6 +154,62 @@ describe("RoutingCommands", () => {
         });
       });
     });
+  });
+
+  it("rejects unknown set-command names", async () => {
+    const calls: any[] = [];
+    const stubRouting: any = {
+      normalizeCommand: (c: string) => c,
+      updateWorkspaceDefaults: async () => {
+        calls.push("update");
+        return [];
+      },
+      close: async () => {},
+    };
+    const originalExit = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withPatched(RoutingService as any, "create", async () => stubRouting, async () => {
+        await withPatched(WorkspaceResolver as any, "resolveWorkspace", async () => workspace, async () => {
+          await withPatched(JobService.prototype as any, "startCommandRun", async () => ({ id: "cmd-bad" }), async () => {
+            await withPatched(JobService.prototype as any, "finishCommandRun", async () => {}, async () => {
+              await withPatched(JobService.prototype as any, "close", async () => {}, async () => {
+                const errors = await captureErrors(async () =>
+                  RoutingCommands.run(["defaults", "--set-command", "not-a-command=codex", "--json"]),
+                );
+                assert.match(errors.join("\n"), /Unknown command not-a-command/);
+                assert.equal(calls.length, 0);
+                assert.equal(process.exitCode, 1);
+              });
+            });
+          });
+        });
+      });
+    } finally {
+      process.exitCode = originalExit;
+    }
+  });
+
+  it("rejects unknown preview command names", async () => {
+    const stubRouting: any = {
+      normalizeCommand: (c: string) => c,
+      close: async () => {},
+    };
+    const originalExit = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withPatched(RoutingService as any, "create", async () => stubRouting, async () => {
+        await withPatched(WorkspaceResolver as any, "resolveWorkspace", async () => workspace, async () => {
+          const errors = await captureErrors(async () =>
+            RoutingCommands.run(["preview", "--command", "does-not-exist"]),
+          );
+          assert.match(errors.join("\n"), /Unknown command does-not-exist/);
+          assert.equal(process.exitCode, 1);
+        });
+      });
+    } finally {
+      process.exitCode = originalExit;
+    }
   });
 
   it("updates qa/doc defaults", async () => {
@@ -145,7 +250,7 @@ describe("RoutingCommands", () => {
         healthStatus: "healthy",
         source: "workspace_default",
         routingPreview: { workspaceId: workspace.workspaceId, commandName: "work-on-tasks" },
-        requiredCapabilities: ["code_write"],
+        requiredCapabilities: ["code_review"],
       }),
       close: async () => {},
     };
@@ -161,7 +266,10 @@ describe("RoutingCommands", () => {
                 const logs = await captureLogs(async () =>
                   RoutingCommands.run(["preview", "--command", "work-on-tasks"]),
                 );
-                assert.ok(logs.join("\n").includes("agent-one"));
+                const output = logs.join("\n");
+                assert.ok(output.includes("agent-one"));
+                assert.ok(output.includes("Required Capabilities"));
+                assert.ok(output.includes("code_review"));
                 assert.equal(tokenCalls.length, 1);
               });
             });

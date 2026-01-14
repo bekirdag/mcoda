@@ -45,11 +45,22 @@ interface DbTokenUsageRow {
   project_id: string | null;
   epic_id: string | null;
   user_story_id: string | null;
+  command_name?: string | null;
+  action?: string | null;
+  invocation_kind?: string | null;
+  provider?: string | null;
+  currency?: string | null;
   tokens_prompt: number | null;
   tokens_completion: number | null;
   tokens_total: number | null;
+  tokens_cached?: number | null;
+  tokens_cache_read?: number | null;
+  tokens_cache_write?: number | null;
   cost_estimate: number | null;
   duration_seconds: number | null;
+  duration_ms?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
   timestamp: string;
   metadata_json?: string | null;
 }
@@ -228,6 +239,7 @@ export class TelemetryService {
     for (const row of rows) {
       const metadata = parseMetadata(row.metadata_json);
       const commandName =
+        row.command_name ??
         (metadata.commandName as string | undefined) ??
         (metadata.command_name as string | undefined) ??
         (metadata.command as string | undefined);
@@ -305,11 +317,16 @@ export class TelemetryService {
     const summary = new Map<string, TokenUsageSummaryRow>();
     for (const { row, metadata } of filtered) {
       const commandName =
+        row.command_name ??
         (metadata.commandName as string | undefined) ??
         (metadata.command_name as string | undefined) ??
         (metadata.command as string | undefined) ??
         null;
-      const action = (metadata.action as string | undefined) ?? (metadata.phase as string | undefined) ?? null;
+      const action =
+        row.action ??
+        (metadata.action as string | undefined) ??
+        (metadata.phase as string | undefined) ??
+        null;
       const keyParts = groupBy.map((dim) => {
         switch (dim) {
           case "project":
@@ -346,6 +363,10 @@ export class TelemetryService {
           tokens_prompt: 0,
           tokens_completion: 0,
           tokens_total: 0,
+          tokens_cached: 0,
+          tokens_cache_read: 0,
+          tokens_cache_write: 0,
+          duration_ms: 0,
           cost_estimate: null,
         };
         summary.set(key, record);
@@ -354,6 +375,15 @@ export class TelemetryService {
       record.tokens_prompt += row.tokens_prompt ?? 0;
       record.tokens_completion += row.tokens_completion ?? 0;
       record.tokens_total += row.tokens_total ?? 0;
+      record.tokens_cached = (record.tokens_cached ?? 0) + (row.tokens_cached ?? 0);
+      record.tokens_cache_read = (record.tokens_cache_read ?? 0) + (row.tokens_cache_read ?? 0);
+      record.tokens_cache_write = (record.tokens_cache_write ?? 0) + (row.tokens_cache_write ?? 0);
+      const durationMs =
+        row.duration_ms ??
+        (row.duration_seconds != null ? Math.round(row.duration_seconds * 1000) : null);
+      if (durationMs != null) {
+        record.duration_ms = (record.duration_ms ?? 0) + durationMs;
+      }
       record.cost_estimate = addCost(record.cost_estimate, row.cost_estimate);
     }
     return Array.from(summary.values());
@@ -416,16 +446,24 @@ export class TelemetryService {
     const mapped: TokenUsageRow[] = filtered
       .map(({ row, metadata }) => {
         const commandName =
+          row.command_name ??
           (metadata.commandName as string | undefined) ??
           (metadata.command_name as string | undefined) ??
           (metadata.command as string | undefined) ??
           null;
-        const action = (metadata.action as string | undefined) ?? (metadata.phase as string | undefined) ?? null;
+        const action =
+          row.action ??
+          (metadata.action as string | undefined) ??
+          (metadata.phase as string | undefined) ??
+          null;
         const errorKind =
           (metadata.error_kind as string | undefined) ??
           (metadata.errorKind as string | undefined) ??
           (metadata.error as string | undefined) ??
           null;
+        const durationMs =
+          row.duration_ms ??
+          (row.duration_seconds != null ? Math.round(row.duration_seconds * 1000) : null);
         return {
           workspace_id: row.workspace_id,
           agent_id: row.agent_id,
@@ -437,14 +475,23 @@ export class TelemetryService {
           project_id: row.project_id,
           epic_id: row.epic_id,
           user_story_id: row.user_story_id,
+          command_name: commandName,
+          action,
+          invocation_kind: row.invocation_kind ?? null,
+          provider: row.provider ?? null,
+          currency: row.currency ?? null,
           tokens_prompt: row.tokens_prompt,
           tokens_completion: row.tokens_completion,
           tokens_total: row.tokens_total,
+          tokens_cached: row.tokens_cached ?? null,
+          tokens_cache_read: row.tokens_cache_read ?? null,
+          tokens_cache_write: row.tokens_cache_write ?? null,
           cost_estimate: row.cost_estimate,
           duration_seconds: row.duration_seconds,
+          duration_ms: durationMs ?? null,
+          started_at: row.started_at ?? null,
+          finished_at: row.finished_at ?? null,
           timestamp: row.timestamp,
-          command_name: commandName,
-          action,
           error_kind: errorKind,
           metadata,
         };

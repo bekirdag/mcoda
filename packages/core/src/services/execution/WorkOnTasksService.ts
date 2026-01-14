@@ -1382,6 +1382,7 @@ export class WorkOnTasksService {
     tokensPrompt: number;
     tokensCompletion: number;
     phase?: string;
+    attempt?: number;
     durationSeconds?: number;
   }) {
     const total = params.tokensPrompt + params.tokensCompletion;
@@ -1399,7 +1400,12 @@ export class WorkOnTasksService {
       tokensTotal: total,
       durationSeconds: params.durationSeconds ?? null,
       timestamp: new Date().toISOString(),
-      metadata: { commandName: "work-on-tasks", phase: params.phase ?? "agent", action: params.phase ?? "agent" },
+      metadata: {
+        commandName: "work-on-tasks",
+        phase: params.phase ?? "agent",
+        action: params.phase ?? "agent",
+        attempt: params.attempt ?? 1,
+      },
     });
   }
 
@@ -2394,6 +2400,14 @@ export class WorkOnTasksService {
           gitCommitSha: task.task.vcsLastCommitSha ?? null,
         });
 
+        const statusContext = {
+          commandName: "work-on-tasks",
+          jobId: job.id,
+          taskRunId: taskRun.id,
+          agentId: agent.id,
+          metadata: { lane: "work" },
+        };
+
         const sessionId = formatSessionId(startedAt);
         const initialStatus = (task.task.status ?? "").toLowerCase().trim();
         const taskAlias = `Working on task ${task.task.key}`;
@@ -2502,7 +2516,7 @@ export class WorkOnTasksService {
             await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "selection", "error", {
               blockedReason: task.blockedReason,
             });
-            await this.stateService.markBlocked(task.task, task.blockedReason);
+            await this.stateService.markBlocked(task.task, task.blockedReason, statusContext);
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
               status: "failed",
               finishedAt: new Date().toISOString(),
@@ -2642,7 +2656,7 @@ export class WorkOnTasksService {
             const message = "Task has test requirements but no test command is configured.";
             await this.logTask(taskRun.id, message, "tests", { testRequirements });
             await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "tests", "error", { error: "tests_not_configured" });
-            await this.stateService.markBlocked(task.task, "tests_not_configured");
+            await this.stateService.markBlocked(task.task, "tests_not_configured", statusContext);
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
               status: "failed",
               finishedAt: new Date().toISOString(),
@@ -2668,7 +2682,7 @@ export class WorkOnTasksService {
               await this.logTask(taskRun.id, `Using branch ${branchInfo.branch} (base ${branchInfo.base})`, "vcs");
               if (mergeConflicts.length) {
                 await this.logTask(taskRun.id, `Blocking task due to merge conflicts: ${mergeConflicts.join(", ")}`, "vcs");
-                await this.stateService.markBlocked(task.task, "merge_conflict");
+                await this.stateService.markBlocked(task.task, "merge_conflict", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
@@ -2750,7 +2764,7 @@ export class WorkOnTasksService {
           }
 
           try {
-            await this.stateService.transitionToInProgress(task.task);
+            await this.stateService.transitionToInProgress(task.task, statusContext);
           } catch (error) {
             await this.logTask(taskRun.id, `Failed to move task to in_progress: ${(error as Error).message}`, "state");
           }
@@ -2890,6 +2904,7 @@ export class WorkOnTasksService {
             durationSeconds: number,
             promptText: string,
             agentUsed?: { id: string; defaultModel?: string },
+            attempt?: number,
           ) => {
             const promptTokens = estimateTokens(promptText);
             const completionTokens = estimateTokens(output);
@@ -2908,6 +2923,7 @@ export class WorkOnTasksService {
               tokensPrompt: promptTokens,
               tokensCompletion: completionTokens,
               phase,
+              attempt,
               durationSeconds,
             });
           };
@@ -2970,7 +2986,7 @@ export class WorkOnTasksService {
             if (!agentInvocation) {
               throw new Error("Agent invocation did not return a response.");
             }
-            await recordUsage("agent", agentOutput, agentDuration, agentInput, agentInvocation.agentUsed);
+            await recordUsage("agent", agentOutput, agentDuration, agentInput, agentInvocation.agentUsed, attempt);
 
             let { patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput);
             if (fileBlocks.length && patches.length) {
@@ -2999,7 +3015,7 @@ export class WorkOnTasksService {
                 const retry = await invokeAgentOnce(retryInput, "agent", retryAgent);
                 agentOutput = retry.output;
                 agentDuration += retry.durationSeconds;
-                await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput, retry.agentUsed);
+                await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput, retry.agentUsed, attempt);
                 ({ patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput));
                 if (fileBlocks.length && patches.length) {
                   const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
@@ -3018,7 +3034,7 @@ export class WorkOnTasksService {
               const message = "Agent output did not include a patch or file blocks.";
               await this.logTask(taskRun.id, message, "agent");
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-              await this.stateService.markBlocked(task.task, "missing_patch");
+              await this.stateService.markBlocked(task.task, "missing_patch", statusContext);
               results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -3035,7 +3051,7 @@ export class WorkOnTasksService {
                   outOfScope,
                   attempt,
                 });
-                await this.stateService.markBlocked(task.task, "scope_violation");
+                await this.stateService.markBlocked(task.task, "scope_violation", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
@@ -3116,7 +3132,7 @@ export class WorkOnTasksService {
                   }
                   if (patchApplyError && !fileBlocks.length) {
                     await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
-                    await this.stateService.markBlocked(task.task, "patch_failed");
+                    await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
                     await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                     results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                     taskStatus = "failed";
@@ -3165,7 +3181,7 @@ export class WorkOnTasksService {
                   if (applied.error) {
                     await this.logTask(taskRun.id, `Direct file apply failed: ${applied.error}`, "patch");
                     await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
-                    await this.stateService.markBlocked(task.task, "patch_failed");
+                    await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
                     await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                     results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                     taskStatus = "failed";
@@ -3193,7 +3209,7 @@ export class WorkOnTasksService {
                 }
                 if (patchApplyError) {
                   await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: patchApplyError, attempt });
-                  await this.stateService.markBlocked(task.task, "patch_failed");
+                  await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                   results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                   taskStatus = "failed";
@@ -3223,7 +3239,7 @@ export class WorkOnTasksService {
                 const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, dirtyAfterApply));
                 if (!scopeCheck.ok) {
                   await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
-                  await this.stateService.markBlocked(task.task, "scope_violation");
+                  await this.stateService.markBlocked(task.task, "scope_violation", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                   results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
                   taskStatus = "failed";
@@ -3328,7 +3344,7 @@ export class WorkOnTasksService {
                 error: failureReason,
                 attempts: testAttemptCount,
               });
-              await this.stateService.markBlocked(task.task, failureReason);
+              await this.stateService.markBlocked(task.task, failureReason, statusContext);
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
               results.push({ taskKey: task.task.key, status: "failed", notes: failureReason });
               taskStatus = "failed";
@@ -3391,7 +3407,7 @@ export class WorkOnTasksService {
                   `No changes detected; unresolved comments remain (${slugList}).`,
                   "execution",
                 );
-                await this.stateService.markBlocked(task.task, "no_changes");
+                await this.stateService.markBlocked(task.task, "no_changes", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                 results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
                 taskStatus = "failed";
@@ -3418,7 +3434,7 @@ export class WorkOnTasksService {
                   metadata: { reason: "no_changes", initialStatus, justification: noChangeJustification, dirtyPaths },
                 });
                 await this.logTask(taskRun.id, "No changes detected; blocking task for escalation.", "execution");
-                await this.stateService.markBlocked(task.task, "no_changes");
+                await this.stateService.markBlocked(task.task, "no_changes", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                 results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
                 taskStatus = "failed";
@@ -3528,7 +3544,7 @@ export class WorkOnTasksService {
                     },
                   );
                   await this.vcs.abortMerge(this.workspace.workspaceRoot);
-                  await this.stateService.markBlocked(task.task, "merge_conflict");
+                  await this.stateService.markBlocked(task.task, "merge_conflict", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                     status: "failed",
                     finishedAt: new Date().toISOString(),
@@ -3594,7 +3610,7 @@ export class WorkOnTasksService {
             }
             await this.logTask(taskRun.id, `VCS commit/push failed: ${message}`, "vcs");
             await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: message });
-            await this.stateService.markBlocked(task.task, "vcs_failed");
+            await this.stateService.markBlocked(task.task, "vcs_failed", statusContext);
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
             results.push({ taskKey: task.task.key, status: "failed", notes: "vcs_failed" });
             taskStatus = "failed";
@@ -3622,7 +3638,7 @@ export class WorkOnTasksService {
           reviewMetadata.test_commands = combinedCommands;
           reviewMetadata.run_all_tests_command = runAllTestsCommand ?? null;
         }
-        await this.stateService.markReadyToReview(task.task, reviewMetadata);
+        await this.stateService.markReadyToReview(task.task, reviewMetadata, statusContext);
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
           status: "succeeded",
           finishedAt,
@@ -3649,7 +3665,7 @@ export class WorkOnTasksService {
           if (isAbortError(message)) {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "execution");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-            await this.stateService.markBlocked(task.task, "agent_timeout");
+            await this.stateService.markBlocked(task.task, "agent_timeout", statusContext);
             taskStatus = "failed";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
             throw error;
@@ -3657,7 +3673,7 @@ export class WorkOnTasksService {
           if (/task lock lost/i.test(message)) {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "vcs");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-            await this.stateService.markBlocked(task.task, "task_lock_lost");
+            await this.stateService.markBlocked(task.task, "task_lock_lost", statusContext);
             if (!request.dryRun && request.noCommit !== true) {
               await this.commitPendingChanges(branchInfo, task.task.key, task.task.title, "auto-save (lock_lost)", task.task.id, taskRun.id);
             }
