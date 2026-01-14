@@ -747,6 +747,7 @@ export class CreateTasksService {
     }
     let parsed = extractJson(output);
     if (!parsed) {
+      const attempt = 2;
       const fixPrompt = [
         "Rewrite the previous response into valid JSON matching the expected schema.",
         `Schema hint:\n${action === "epics" ? EPIC_SCHEMA_SNIPPET : action === "stories" ? STORY_SCHEMA_SNIPPET : TASK_SCHEMA_SNIPPET}`,
@@ -757,6 +758,32 @@ export class CreateTasksService {
         const fix = await this.agentService.invoke(agent.id, { input: fixPrompt });
         output = fix.output ?? "";
         parsed = extractJson(output);
+        if (parsed) {
+          const promptTokens = estimateTokens(prompt);
+          const completionTokens = estimateTokens(output);
+          const durationSeconds = (Date.now() - startedAt) / 1000;
+          await this.jobService.recordTokenUsage({
+            timestamp: new Date().toISOString(),
+            workspaceId: this.workspace.workspaceId,
+            jobId,
+            commandRunId,
+            agentId: agent.id,
+            modelName: agent.defaultModel,
+            promptTokens,
+            completionTokens,
+            tokensPrompt: promptTokens,
+            tokensCompletion: completionTokens,
+            tokensTotal: promptTokens + completionTokens,
+            durationSeconds,
+            metadata: {
+              action: `create_tasks_${action}`,
+              phase: `create_tasks_${action}`,
+              attempt,
+              ...(metadata ?? {}),
+            },
+          });
+          return { output, promptTokens, completionTokens };
+        }
       } catch (error) {
         throw new Error(`Agent retry failed (${action}): ${(error as Error).message}`);
       }
@@ -780,7 +807,12 @@ export class CreateTasksService {
       tokensCompletion: completionTokens,
       tokensTotal: promptTokens + completionTokens,
       durationSeconds,
-      metadata: { action: `create_tasks_${action}`, ...(metadata ?? {}) },
+      metadata: {
+        action: `create_tasks_${action}`,
+        phase: `create_tasks_${action}`,
+        attempt: 1,
+        ...(metadata ?? {}),
+      },
     });
     return { output, promptTokens, completionTokens };
   }

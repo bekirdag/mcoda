@@ -795,6 +795,8 @@ export class TaskOrderingService {
                 statusFilter: statuses,
                 agentSlug: agent.slug,
                 modelName: agent.defaultModel,
+                phase: "agent_ordering",
+                attempt: 1,
               },
             });
           }

@@ -55,11 +55,22 @@ export interface GlobalTokenUsageInsert {
   agentId?: string | null;
   commandRunId?: string | null;
   modelName?: string | null;
+  commandName?: string | null;
+  action?: string | null;
+  invocationKind?: string | null;
+  provider?: string | null;
+  currency?: string | null;
   tokensPrompt?: number | null;
   tokensCompletion?: number | null;
   tokensTotal?: number | null;
+  tokensCached?: number | null;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
   costEstimate?: number | null;
   durationSeconds?: number | null;
+  durationMs?: number | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
   timestamp: string;
   metadata?: Record<string, unknown>;
 }
@@ -533,18 +544,49 @@ export class GlobalRepository {
     const id = randomUUID();
     await this.db.run(
       `INSERT INTO token_usage (
-        id, agent_id, command_run_id, model_name, tokens_prompt, tokens_completion, tokens_total,
-        cost_estimate, duration_seconds, timestamp, metadata_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        agent_id,
+        command_run_id,
+        model_name,
+        command_name,
+        action,
+        invocation_kind,
+        provider,
+        currency,
+        tokens_prompt,
+        tokens_completion,
+        tokens_total,
+        tokens_cached,
+        tokens_cache_read,
+        tokens_cache_write,
+        cost_estimate,
+        duration_seconds,
+        duration_ms,
+        started_at,
+        finished_at,
+        timestamp,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       entry.agentId ?? null,
       entry.commandRunId ?? null,
       entry.modelName ?? null,
+      entry.commandName ?? null,
+      entry.action ?? null,
+      entry.invocationKind ?? null,
+      entry.provider ?? null,
+      entry.currency ?? null,
       entry.tokensPrompt ?? null,
       entry.tokensCompletion ?? null,
       entry.tokensTotal ?? null,
+      entry.tokensCached ?? null,
+      entry.tokensCacheRead ?? null,
+      entry.tokensCacheWrite ?? null,
       entry.costEstimate ?? null,
       entry.durationSeconds ?? null,
+      entry.durationMs ?? null,
+      entry.startedAt ?? null,
+      entry.finishedAt ?? null,
       entry.timestamp,
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     );

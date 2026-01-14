@@ -246,11 +246,11 @@ export class BacklogService {
           priority: row.epic_priority ?? null,
           description: row.epic_description ?? undefined,
           totals: emptyTotals(),
-        stories: [],
-        storiesMap: new Map(),
-      };
-      epics.set(row.epic_id, epicSummary);
-    }
+          stories: [],
+          storiesMap: new Map(),
+        };
+        epics.set(row.epic_id, epicSummary);
+      }
       this.epicPriority.set(row.epic_key, row.epic_priority ?? null);
       addToTotals(epicSummary.totals, lane, row.task_story_points);
 
@@ -331,8 +331,11 @@ export class BacklogService {
             });
           this.warnings.push(...ordering.warnings);
         } catch (error) {
+          const prefix = "Dependency ordering failed; falling back to heuristic ordering.";
           if (options.verbose) {
-            this.warnings.push(`Dependency ordering failed; falling back to heuristic ordering. ${(error as Error).message}`);
+            this.warnings.push(`${prefix} ${(error as Error).message}`);
+          } else {
+            this.warnings.push(prefix);
           }
           orderingMeta.applied = false;
           orderingMeta.reason = "heuristic_fallback";

@@ -1345,7 +1345,13 @@ export class RefineTasksService {
       tokensTotal: promptTokens + completionTokens,
       durationSeconds,
       timestamp: new Date().toISOString(),
-      metadata: { command: "refine-tasks", action: "agent_refine", ...(metadata ?? {}) },
+      metadata: {
+        command: "refine-tasks",
+        action: "agent_refine",
+        phase: "agent_refine",
+        attempt: 1,
+        ...(metadata ?? {}),
+      },
     });
     return { raw: output, promptTokens, completionTokens, agentId: agent.id };
   }

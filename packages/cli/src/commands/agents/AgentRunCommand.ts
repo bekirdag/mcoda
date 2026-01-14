@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { AgentsApi } from "@mcoda/core";
 
 const USAGE =
-  "Usage: mcoda agent-run <NAME> [--prompt \"<text>\"] [--prompt-file <PATH>] [--task-file <PATH>] [--json]";
+  "Usage: mcoda agent-run <NAME> [--prompt \"<text>\"] [--prompt-file <PATH>] [--task-file <PATH>] [--stdin] [--json]";
 
 const parseArgs = (argv: string[]): { flags: Record<string, string | boolean | string[]>; positionals: string[] } => {
   const flags: Record<string, string | boolean | string[]> = {};
@@ -62,6 +62,15 @@ export class AgentRunCommand {
     if (!name || parsed.flags.help) {
       throw new Error(USAGE);
     }
+    if (parsed.flags.prompt === true) {
+      throw new Error("agent-run: missing value for --prompt");
+    }
+    if (parsed.flags["prompt-file"] === true) {
+      throw new Error("agent-run: missing value for --prompt-file");
+    }
+    if (parsed.flags["task-file"] === true) {
+      throw new Error("agent-run: missing value for --task-file");
+    }
 
     const prompts: string[] = [];
     const inlinePrompts = toArray(parsed.flags.prompt);
@@ -85,7 +94,10 @@ export class AgentRunCommand {
       }
     }
 
-    if (prompts.length === 0) {
+    if (parsed.flags.stdin) {
+      const stdinPrompt = await readStdinIfProvided();
+      if (stdinPrompt) prompts.push(stdinPrompt);
+    } else if (prompts.length === 0) {
       const stdinPrompt = await readStdinIfProvided();
       if (stdinPrompt) prompts.push(stdinPrompt);
     }

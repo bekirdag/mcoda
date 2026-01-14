@@ -210,7 +210,7 @@ const statusExitCode = (state: string | undefined): number => {
   return 0;
 };
 
-const renderJobTokens = (rows: TokenUsageRow[]): void => {
+export const renderJobTokens = (rows: TokenUsageRow[]): void => {
   if (rows.length === 0) {
     // eslint-disable-next-line no-console
     console.log("No telemetry data for this job.");
@@ -227,6 +227,9 @@ const renderJobTokens = (rows: TokenUsageRow[]): void => {
     "TOKENS_IN",
     "TOKENS_OUT",
     "TOKENS_TOTAL",
+    "TOKENS_CACHED",
+    "CACHE_READ",
+    "CACHE_WRITE",
     "DURATION_MS",
     "ERROR_KIND",
   ];
@@ -241,7 +244,14 @@ const renderJobTokens = (rows: TokenUsageRow[]): void => {
     row.tokens_prompt != null ? `${row.tokens_prompt}` : "-",
     row.tokens_completion != null ? `${row.tokens_completion}` : "-",
     row.tokens_total != null ? `${row.tokens_total}` : "-",
-    row.duration_seconds != null ? `${Math.round(row.duration_seconds * 1000)}` : "-",
+    row.tokens_cached != null ? `${row.tokens_cached}` : "-",
+    row.tokens_cache_read != null ? `${row.tokens_cache_read}` : "-",
+    row.tokens_cache_write != null ? `${row.tokens_cache_write}` : "-",
+    row.duration_ms != null
+      ? `${row.duration_ms}`
+      : row.duration_seconds != null
+        ? `${Math.round(row.duration_seconds * 1000)}`
+        : "-",
     row.error_kind ?? "-",
   ]);
   // eslint-disable-next-line no-console
@@ -552,9 +562,15 @@ export class JobsCommands {
             console.log("\nToken usage:");
             tokens.forEach((row) => {
               const r: any = row as any;
+              const cached = row.tokensCached ?? null;
+              const durationMs = row.durationMs ?? null;
               // eslint-disable-next-line no-console
               console.log(
                 `- command=${r.commandName ?? job.commandName ?? "-"} agent=${row.agentId ?? "-"} model=${row.modelName ?? "-"} tokens=${row.tokensTotal ?? row.tokensPrompt ?? 0}` +
+                  (cached != null ? ` cached=${cached}` : "") +
+                  (row.tokensCacheRead != null ? ` cache_read=${row.tokensCacheRead}` : "") +
+                  (row.tokensCacheWrite != null ? ` cache_write=${row.tokensCacheWrite}` : "") +
+                  (durationMs != null ? ` duration_ms=${durationMs}` : "") +
                   (row.cost != null ? ` cost=${row.cost}` : "") +
                   (r.commandRunId ? ` cmd_run=${r.commandRunId}` : "") +
                   (r.taskId ? ` task=${r.taskId}` : ""),

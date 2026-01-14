@@ -11,6 +11,10 @@ export interface TokenUsageSummaryRow {
   tokens_prompt: number;
   tokens_completion: number;
   tokens_total: number;
+  tokens_cached?: number;
+  tokens_cache_read?: number;
+  tokens_cache_write?: number;
+  duration_ms?: number;
   cost_estimate: number | null;
 }
 
@@ -28,11 +32,20 @@ export interface TokenUsageRow {
   tokens_prompt: number | null;
   tokens_completion: number | null;
   tokens_total: number | null;
+  tokens_cached?: number | null;
+  tokens_cache_read?: number | null;
+  tokens_cache_write?: number | null;
   cost_estimate: number | null;
   duration_seconds: number | null;
+  duration_ms?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
   timestamp: string;
   command_name?: string | null;
   action?: string | null;
+  invocation_kind?: string | null;
+  provider?: string | null;
+  currency?: string | null;
   error_kind?: string | null;
   metadata?: Record<string, unknown>;
 }

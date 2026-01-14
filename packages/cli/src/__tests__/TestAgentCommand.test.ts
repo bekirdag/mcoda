@@ -39,3 +39,32 @@ test("mcoda test-agent records health, command_runs, and token_usage", { concurr
     await repo.close();
   });
 });
+
+test("mcoda test-agent validates missing prompt value", async () => {
+  await assert.rejects(() => TestAgentCommand.run(["qa", "--prompt"]), {
+    message: "test-agent: missing value for --prompt",
+  });
+});
+
+test("mcoda test-agent emits JSON output", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "json-test-agent", "--adapter", "qa-cli", "--capability", "chat"]);
+
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.join(" "));
+    };
+    try {
+      await TestAgentCommand.run(["json-test-agent", "--json"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    assert.ok(parsed.health);
+    assert.ok(parsed.prompt);
+    assert.ok(parsed.response);
+    assert.equal(typeof parsed.response.output, "string");
+  });
+});

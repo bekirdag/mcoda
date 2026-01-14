@@ -379,7 +379,7 @@ export class BacklogCommands {
           { label: "limit", value: parsed.limit },
         ]);
         renderBacklog(summary, { view: parsed.view, limit: parsed.limit, verbose: parsed.verbose });
-        if (parsed.verbose && warnings.length > 0) {
+        if (warnings.length > 0) {
           // eslint-disable-next-line no-console
           console.error("\nWarnings:");
           for (const warning of warnings) {

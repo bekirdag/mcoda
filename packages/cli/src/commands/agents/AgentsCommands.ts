@@ -44,10 +44,11 @@ const readSecret = async (promptText: string): Promise<string> =>
   });
 
 const USAGE = `
-Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
+Usage: mcoda agent <list|details|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
 
 Subcommands:
   list                       List agents (supports --json)
+  details <NAME>             Show agent details (supports --json)
   add <NAME>                 Create a global agent
     --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
@@ -224,13 +225,54 @@ const formatBoxTable = (
   return [top, headerLine, mid, body, bottom].join("\n");
 };
 
+const formatCapabilitiesFull = (caps: string[] | undefined): string => {
+  const list = (caps ?? []).slice().sort();
+  return list.length === 0 ? "none" : list.join(", ");
+};
+
+const formatModels = (models: AgentResponse["models"]): string => {
+  if (!models || models.length === 0) return "-";
+  const names = models
+    .map((model) => (model.isDefault ? `${model.modelName}*` : model.modelName))
+    .sort();
+  return names.join(", ");
+};
+
+const formatCommandPrompts = (prompts?: Record<string, string>): string => {
+  if (!prompts || Object.keys(prompts).length === 0) return "-";
+  return Object.entries(prompts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("; ");
+};
+
+const formatLatency = (value?: number | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  return `${Math.round(value)}ms`;
+};
+
+const renderKeyValues = (entries: Array<[string, string]>): void => {
+  const width = entries.reduce((max, [label]) => Math.max(max, label.length), 0);
+  const lines = entries.map(([label, value]) => `${pad(label, width)} : ${value}`);
+  // eslint-disable-next-line no-console
+  console.log(lines.join("\n"));
+};
+
 export class AgentsCommands {
   static async run(argv: string[]): Promise<void> {
     const [rawSubcommand, ...rest] = argv;
     const subcommand =
-      rawSubcommand === "use" ? "set-default" : rawSubcommand === "remove" ? "delete" : rawSubcommand;
-    if (!subcommand || rest.includes("--help")) {
-      throw new Error(USAGE);
+      rawSubcommand === "use"
+        ? "set-default"
+        : rawSubcommand === "remove"
+          ? "delete"
+          : rawSubcommand === "detail" || rawSubcommand === "show"
+            ? "details"
+            : rawSubcommand;
+    if (!subcommand || argv.includes("--help") || argv.includes("-h")) {
+      // eslint-disable-next-line no-console
+      console.log(USAGE);
+      return;
     }
 
     const api = await AgentsApi.create();
@@ -277,6 +319,46 @@ export class AgentsCommands {
               // eslint-disable-next-line no-console
               console.log(formatBoxTable(headers, rows, maxWidths));
             }
+          }
+          break;
+        }
+        case "details": {
+          const name = parsed.positionals[0];
+          if (!name) throw new Error("Usage: mcoda agent details <NAME> [--json]");
+          const agent = await api.getAgent(name);
+          if (parsed.flags.json) {
+            // eslint-disable-next-line no-console
+            console.log(JSON.stringify(agent, null, 2));
+          } else {
+            renderKeyValues([
+              ["Slug", agent.slug],
+              ["Adapter", agent.adapter],
+              ["Default model", agent.defaultModel ?? "-"],
+              ["Rating", formatNumber(agent.rating)],
+              ["Reasoning rating", formatNumber(agent.reasoningRating)],
+              ["Max complexity", formatNumber(agent.maxComplexity)],
+              ["Best usage", agent.bestUsage ?? "-"],
+              ["Cost per 1M", formatCost(agent.costPerMillion)],
+              ["Rating samples", formatNumber(agent.ratingSamples)],
+              ["Rating last score", formatNumber(agent.ratingLastScore)],
+              ["Rating updated", formatDate(agent.ratingUpdatedAt)],
+              ["Complexity samples", formatNumber(agent.complexitySamples)],
+              ["Complexity updated", formatDate(agent.complexityUpdatedAt)],
+              ["Capabilities", formatCapabilitiesFull(agent.capabilities)],
+              ["Models", formatModels(agent.models)],
+              ["Health status", agent.health?.status ?? "unknown"],
+              ["Health last checked", formatDate(agent.health?.lastCheckedAt)],
+              ["Health latency", formatLatency(agent.health?.latencyMs)],
+              ["Auth configured", agent.auth?.configured ? "yes" : "no"],
+              ["Auth last updated", formatDate(agent.auth?.lastUpdatedAt)],
+              ["Auth last verified", formatDate(agent.auth?.lastVerifiedAt)],
+              ["Command prompts", formatCommandPrompts(agent.prompts?.commandPrompts)],
+              ["Job prompt path", agent.prompts?.jobPath ?? "-"],
+              ["Character prompt path", agent.prompts?.characterPath ?? "-"],
+              ["Config", agent.config ? JSON.stringify(agent.config) : "-"],
+              ["Created", formatDate(agent.createdAt)],
+              ["Updated", formatDate(agent.updatedAt)],
+            ]);
           }
           break;
         }

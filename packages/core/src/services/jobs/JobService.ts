@@ -18,6 +18,7 @@ export interface CommandRunRecord {
   workspaceId: string;
   projectKey?: string;
   jobId?: string;
+  agentId?: string;
   taskIds?: string[];
   gitBranch?: string;
   gitBaseBranch?: string;
@@ -40,6 +41,8 @@ export interface JobRecord {
   workspaceId: string;
   projectKey?: string;
   payload?: Record<string, unknown>;
+  agentId?: string;
+  agentIds?: string[];
   totalItems?: number;
   processedItems?: number;
   totalUnits?: number;
@@ -55,9 +58,18 @@ export interface JobRecord {
 export interface TokenUsageRecord extends TokenUsageInsert {
   commandName?: string;
   action?: string;
+  invocationKind?: string;
+  provider?: string;
+  currency?: string;
   promptTokens?: number;
   completionTokens?: number;
+  tokensCached?: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
   costUsd?: number;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -321,7 +333,7 @@ export class JobService {
   async startCommandRun(
     commandName: string,
     projectKey?: string,
-    options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[]; jobId?: string },
+    options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[]; jobId?: string; agentId?: string },
   ): Promise<CommandRunRecord> {
     await this.ensureMcoda();
     const startedAt = nowIso();
@@ -331,6 +343,7 @@ export class JobService {
       workspaceId: this.workspaceId,
       projectKey,
       jobId: options?.jobId,
+      agentId: options?.agentId,
       taskIds: options?.taskIds,
       gitBranch: options?.gitBranch,
       gitBaseBranch: options?.gitBaseBranch,
@@ -343,6 +356,7 @@ export class JobService {
         workspaceId: this.workspaceId,
         commandName,
         jobId: record.jobId,
+        agentId: record.agentId ?? null,
         taskIds: record.taskIds,
         gitBranch: record.gitBranch,
         gitBaseBranch: record.gitBaseBranch,
@@ -379,7 +393,14 @@ export class JobService {
     type: string,
     commandRunId?: string,
     projectKey?: string,
-    options: { payload?: Record<string, unknown>; commandName?: string; totalItems?: number; processedItems?: number } = {},
+    options: {
+      payload?: Record<string, unknown>;
+      commandName?: string;
+      totalItems?: number;
+      processedItems?: number;
+      agentId?: string;
+      agentIds?: string[];
+    } = {},
   ): Promise<JobRecord> {
     await this.ensureMcoda();
     const createdAt = nowIso();
@@ -392,6 +413,8 @@ export class JobService {
       workspaceId: this.workspaceId,
       projectKey,
       payload: options.payload,
+      agentId: options.agentId,
+      agentIds: options.agentIds ?? (options.agentId ? [options.agentId] : undefined),
       totalItems: options.totalItems,
       processedItems: options.processedItems,
       totalUnits: options.totalItems,
@@ -406,6 +429,8 @@ export class JobService {
         state: "running",
         commandName: record.commandName,
         payload: options.payload,
+        agentId: record.agentId ?? null,
+        agentIds: record.agentIds ?? null,
         totalItems: record.totalItems,
         processedItems: record.processedItems,
       });
@@ -602,26 +627,65 @@ export class JobService {
       projectId: entry.projectId ?? null,
       epicId: entry.epicId ?? null,
       userStoryId: entry.userStoryId ?? null,
+      commandName: entry.commandName ?? null,
+      action: entry.action ?? null,
+      invocationKind: entry.invocationKind ?? null,
+      provider: entry.provider ?? null,
+      currency: entry.currency ?? null,
       tokensPrompt: entry.tokensPrompt ?? entry.promptTokens ?? null,
       tokensCompletion: entry.tokensCompletion ?? entry.completionTokens ?? null,
       tokensTotal: entry.tokensTotal ?? null,
+      tokensCached: entry.tokensCached ?? null,
+      tokensCacheRead: entry.tokensCacheRead ?? null,
+      tokensCacheWrite: entry.tokensCacheWrite ?? null,
       costEstimate: entry.costEstimate ?? entry.costUsd ?? null,
       durationSeconds: entry.durationSeconds ?? null,
+      durationMs: entry.durationMs ?? null,
+      startedAt: entry.startedAt ?? null,
+      finishedAt: entry.finishedAt ?? null,
       timestamp: entry.timestamp,
       metadata: {
         ...(entry.metadata ?? {}),
         ...(entry.commandName ? { commandName: entry.commandName } : {}),
         ...(entry.action ? { action: entry.action } : {}),
+        ...(entry.invocationKind ? { invocationKind: entry.invocationKind } : {}),
+        ...(entry.provider ? { provider: entry.provider } : {}),
+        ...(entry.currency ? { currency: entry.currency } : {}),
       },
     };
     const fileRecord = {
       ...normalized,
       ...(entry.commandName ? { commandName: entry.commandName } : {}),
       ...(entry.action ? { action: entry.action } : {}),
+      ...(entry.invocationKind ? { invocationKind: entry.invocationKind } : {}),
+      ...(entry.provider ? { provider: entry.provider } : {}),
+      ...(entry.currency ? { currency: entry.currency } : {}),
+      ...(entry.tokensCached !== undefined && entry.tokensCached !== null ? { tokensCached: entry.tokensCached } : {}),
+      ...(entry.tokensCacheRead !== undefined && entry.tokensCacheRead !== null ? { tokensCacheRead: entry.tokensCacheRead } : {}),
+      ...(entry.tokensCacheWrite !== undefined && entry.tokensCacheWrite !== null ? { tokensCacheWrite: entry.tokensCacheWrite } : {}),
+      ...(entry.durationMs !== undefined && entry.durationMs !== null ? { durationMs: entry.durationMs } : {}),
+      ...(entry.startedAt ? { startedAt: entry.startedAt } : {}),
+      ...(entry.finishedAt ? { finishedAt: entry.finishedAt } : {}),
     };
     await this.appendJsonArray(this.tokenUsagePath, fileRecord as any);
     if (this.workspaceRepo) {
       await this.workspaceRepo.recordTokenUsage(normalized);
+      if (entry.agentId) {
+        if (entry.commandRunId) {
+          try {
+            await this.workspaceRepo.setCommandRunAgentId(entry.commandRunId, entry.agentId);
+          } catch {
+            // ignore attribution failures
+          }
+        }
+        if (entry.jobId) {
+          try {
+            await this.workspaceRepo.setJobAgentIds(entry.jobId, entry.agentId);
+          } catch {
+            // ignore attribution failures
+          }
+        }
+      }
     }
   }
 

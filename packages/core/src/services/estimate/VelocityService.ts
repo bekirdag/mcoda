@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { Connection, type Database } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
@@ -138,61 +139,190 @@ export class VelocityService {
     return { clause: `AND ${clauses.join(" AND ")}`, params };
   }
 
-  private async computeLaneVelocity(
+  private async insertStatusEvent(entry: {
+    taskId: string;
+    fromStatus?: string | null;
+    toStatus: string;
+    timestamp: string;
+    commandName?: string | null;
+    jobId?: string | null;
+    taskRunId?: string | null;
+    agentId?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<void> {
+    await this.db.run(
+      `INSERT INTO task_status_events (id, task_id, from_status, to_status, timestamp, command_name, job_id, task_run_id, agent_id, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      randomUUID(),
+      entry.taskId,
+      entry.fromStatus ?? null,
+      entry.toStatus,
+      entry.timestamp,
+      entry.commandName ?? null,
+      entry.jobId ?? null,
+      entry.taskRunId ?? null,
+      entry.agentId ?? null,
+      entry.metadata ? JSON.stringify(entry.metadata) : null,
+    );
+  }
+
+  private async maybeBackfillStatusEvents(
+    commandName: string,
+    transition: { startStatus: string; endStatus: string },
+    scope: VelocityScopeIds,
+    assignee: string | undefined,
+    windowTasks: number,
+  ): Promise<void> {
+    const { startStatus, endStatus } = transition;
+    try {
+      const filters = this.buildTaskFilters(scope, assignee);
+      const existingRow = await this.db.get<{ count: number } | undefined>(
+        `
+        SELECT COUNT(1) as count
+        FROM task_status_events e
+        INNER JOIN tasks t ON t.id = e.task_id
+        WHERE e.from_status = ?
+          AND e.to_status = ?
+          ${filters.clause}
+      `,
+        startStatus,
+        endStatus,
+        ...filters.params,
+      );
+      const existingCount = existingRow?.count ?? 0;
+      if (existingCount >= windowTasks) return;
+
+      const limit = Math.max(windowTasks * 3, windowTasks);
+      const runs = await this.db.all<
+        {
+          id: string;
+          task_id: string;
+          job_id: string | null;
+          agent_id: string | null;
+          started_at: string | null;
+          finished_at: string | null;
+        }[]
+      >(
+        `
+        SELECT tr.id, tr.task_id, tr.job_id, tr.agent_id, tr.started_at, tr.finished_at
+        FROM task_runs tr
+        INNER JOIN tasks t ON t.id = tr.task_id
+        WHERE tr.command = ?
+          AND tr.status IN ('success','succeeded')
+          AND tr.started_at IS NOT NULL
+          AND tr.finished_at IS NOT NULL
+          ${filters.clause}
+        ORDER BY datetime(tr.finished_at) DESC
+        LIMIT ?
+      `,
+        commandName,
+        ...filters.params,
+        limit,
+      );
+
+      let inserted = 0;
+      for (const run of runs) {
+        if (existingCount + inserted >= windowTasks) break;
+        const startedAt = run.started_at;
+        const finishedAt = run.finished_at;
+        if (!startedAt || !finishedAt) continue;
+
+        const startExists = await this.db.get<{ id: string } | undefined>(
+          `SELECT id FROM task_status_events WHERE task_id = ? AND to_status = ? AND timestamp = ? LIMIT 1`,
+          run.task_id,
+          startStatus,
+          startedAt,
+        );
+        if (!startExists) {
+          await this.insertStatusEvent({
+            taskId: run.task_id,
+            fromStatus: null,
+            toStatus: startStatus,
+            timestamp: startedAt,
+            commandName,
+            jobId: run.job_id ?? null,
+            taskRunId: run.id,
+            agentId: run.agent_id ?? null,
+            metadata: {
+              backfilled: true,
+              source: "task_runs",
+              phase: "start",
+              transition: `${startStatus}->${endStatus}`,
+            },
+          });
+        }
+
+        const endExists = await this.db.get<{ id: string } | undefined>(
+          `SELECT id FROM task_status_events WHERE task_id = ? AND from_status = ? AND to_status = ? AND timestamp = ? LIMIT 1`,
+          run.task_id,
+          startStatus,
+          endStatus,
+          finishedAt,
+        );
+        if (!endExists) {
+          await this.insertStatusEvent({
+            taskId: run.task_id,
+            fromStatus: startStatus,
+            toStatus: endStatus,
+            timestamp: finishedAt,
+            commandName,
+            jobId: run.job_id ?? null,
+            taskRunId: run.id,
+            agentId: run.agent_id ?? null,
+            metadata: {
+              backfilled: true,
+              source: "task_runs",
+              phase: "end",
+              transition: `${startStatus}->${endStatus}`,
+            },
+          });
+          inserted += 1;
+        }
+      }
+    } catch {
+      // ignore backfill errors
+    }
+  }
+
+  private async computeLaneVelocityFromTaskRuns(
     commandName: string,
     scope: VelocityScopeIds,
     assignee: string | undefined,
     windowTasks: number,
   ): Promise<{ spPerHour?: number; samples: number }> {
+    const filters = this.buildTaskFilters(scope, assignee);
     const runs = await this.db.all<
-      { id: string; started_at?: string | null; completed_at?: string | null; duration_seconds?: number | null }[]
+      { story_points: number | null; started_at?: string | null; finished_at?: string | null }[]
     >(
       `
-      SELECT id, started_at, completed_at, duration_seconds
-      FROM command_runs
-      WHERE command_name = ?
-        AND status IN ('success','succeeded')
-      ORDER BY COALESCE(completed_at, started_at) DESC
+      SELECT
+        COALESCE(tr.story_points_at_run, t.story_points, 0) as story_points,
+        tr.started_at,
+        tr.finished_at
+      FROM task_runs tr
+      INNER JOIN tasks t ON t.id = tr.task_id
+      WHERE tr.command = ?
+        AND tr.status IN ('success','succeeded')
+        ${filters.clause}
+      ORDER BY COALESCE(tr.finished_at, tr.started_at) DESC
     `,
       commandName,
+      ...filters.params,
     );
 
     let totalSp = 0;
     let totalDurationSeconds = 0;
     let samples = 0;
-    const filters = this.buildTaskFilters(scope, assignee);
 
     for (const run of runs) {
-      const aggregation = await this.db.get<{ sp: number | null; tasks: number }>(
-        `
-        SELECT
-          SUM(COALESCE(t.story_points, 0)) as sp,
-          COUNT(*) as tasks
-        FROM task_runs tr
-        INNER JOIN tasks t ON t.id = tr.task_id
-        WHERE tr.command_run_id = ?
-        ${filters.clause}
-      `,
-        run.id,
-        ...filters.params,
-      );
-
-      const taskCount = aggregation?.tasks ?? 0;
-      const sp = aggregation?.sp ?? 0;
-      if (taskCount === 0) {
-        continue;
-      }
-      const durationSeconds =
-        typeof run.duration_seconds === "number" && Number.isFinite(run.duration_seconds)
-          ? run.duration_seconds
-          : this.deriveDurationSeconds(run.started_at, run.completed_at);
+      if (samples >= windowTasks) break;
+      const durationSeconds = this.deriveDurationSeconds(run.started_at, run.finished_at);
       if (!durationSeconds || durationSeconds <= 0) {
         continue;
       }
-      totalSp += sp;
+      totalSp += run.story_points ?? 0;
       totalDurationSeconds += durationSeconds;
-      samples += taskCount;
-      if (samples >= windowTasks) break;
+      samples += 1;
     }
 
     if (samples === 0 || totalDurationSeconds <= 0 || totalSp <= 0) {
@@ -203,6 +333,95 @@ export class VelocityService {
       spPerHour: totalSp / (totalDurationSeconds / 3600),
       samples,
     };
+  }
+
+  private async computeLaneVelocityFromStatusEvents(
+    startStatus: string,
+    endStatus: string,
+    scope: VelocityScopeIds,
+    assignee: string | undefined,
+    windowTasks: number,
+  ): Promise<{ spPerHour?: number; samples: number }> {
+    const filters = this.buildTaskFilters(scope, assignee);
+    let rows: { task_id: string; story_points?: number | null; start_ts?: string | null; end_ts?: string | null }[] = [];
+    try {
+      rows = await this.db.all<
+        { task_id: string; story_points?: number | null; start_ts?: string | null; end_ts?: string | null }[]
+      >(
+        `
+        SELECT
+          t.id as task_id,
+          t.story_points as story_points,
+          end_event.timestamp as end_ts,
+          (
+            SELECT e2.timestamp
+            FROM task_status_events e2
+            WHERE e2.task_id = end_event.task_id
+              AND e2.to_status = ?
+              AND datetime(e2.timestamp) <= datetime(end_event.timestamp)
+            ORDER BY datetime(e2.timestamp) DESC
+            LIMIT 1
+          ) as start_ts
+        FROM task_status_events end_event
+        INNER JOIN tasks t ON t.id = end_event.task_id
+        WHERE end_event.from_status = ?
+          AND end_event.to_status = ?
+          ${filters.clause}
+        ORDER BY datetime(end_event.timestamp) DESC
+      `,
+        startStatus,
+        startStatus,
+        endStatus,
+        ...filters.params,
+      );
+    } catch {
+      return { samples: 0 };
+    }
+
+    let totalSp = 0;
+    let totalDurationSeconds = 0;
+    let samples = 0;
+
+    for (const row of rows) {
+      if (samples >= windowTasks) break;
+      const durationSeconds = this.deriveDurationSeconds(row.start_ts ?? undefined, row.end_ts ?? undefined);
+      if (!durationSeconds || durationSeconds <= 0) {
+        continue;
+      }
+      totalSp += row.story_points ?? 0;
+      totalDurationSeconds += durationSeconds;
+      samples += 1;
+    }
+
+    if (samples === 0 || totalDurationSeconds <= 0 || totalSp <= 0) {
+      return { samples: 0 };
+    }
+
+    return {
+      spPerHour: totalSp / (totalDurationSeconds / 3600),
+      samples,
+    };
+  }
+
+  private async computeLaneVelocity(
+    commandName: string,
+    transition: { startStatus: string; endStatus: string },
+    scope: VelocityScopeIds,
+    assignee: string | undefined,
+    windowTasks: number,
+  ): Promise<{ spPerHour?: number; samples: number }> {
+    await this.maybeBackfillStatusEvents(commandName, transition, scope, assignee, windowTasks);
+    const statusSamples = await this.computeLaneVelocityFromStatusEvents(
+      transition.startStatus,
+      transition.endStatus,
+      scope,
+      assignee,
+      windowTasks,
+    );
+    if (statusSamples.samples > 0) {
+      return statusSamples;
+    }
+    return this.computeLaneVelocityFromTaskRuns(commandName, scope, assignee, windowTasks);
   }
 
   private deriveDurationSeconds(started?: string | null, completed?: string | null): number | undefined {
@@ -232,9 +451,27 @@ export class VelocityService {
     }
 
     const scope = await this.resolveScopeIds(options);
-    const implementation = await this.computeLaneVelocity("work-on-tasks", scope, options.assignee, windowTasks);
-    const review = await this.computeLaneVelocity("code-review", scope, options.assignee, windowTasks);
-    const qa = await this.computeLaneVelocity("qa-tasks", scope, options.assignee, windowTasks);
+    const implementation = await this.computeLaneVelocity(
+      "work-on-tasks",
+      { startStatus: "in_progress", endStatus: "ready_to_review" },
+      scope,
+      options.assignee,
+      windowTasks,
+    );
+    const review = await this.computeLaneVelocity(
+      "code-review",
+      { startStatus: "ready_to_review", endStatus: "ready_to_qa" },
+      scope,
+      options.assignee,
+      windowTasks,
+    );
+    const qa = await this.computeLaneVelocity(
+      "qa-tasks",
+      { startStatus: "ready_to_qa", endStatus: "completed" },
+      scope,
+      options.assignee,
+      windowTasks,
+    );
 
     const alpha = config.alpha ?? DEFAULT_ALPHA;
 

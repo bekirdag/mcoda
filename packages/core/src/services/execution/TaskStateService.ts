@@ -6,48 +6,105 @@ const mergeMetadata = (existing: Record<string, unknown> | undefined, patch?: Re
   return { ...(existing ?? {}), ...patch };
 };
 
+export type TaskStatusEventContext = {
+  commandName?: string | null;
+  jobId?: string | null;
+  taskRunId?: string | null;
+  agentId?: string | null;
+  metadata?: Record<string, unknown> | null;
+  timestamp?: string | null;
+};
+
 export class TaskStateService {
   constructor(private workspaceRepo: WorkspaceRepository) {}
 
-  async transitionToInProgress(task: TaskRow): Promise<void> {
-    if (task.status === "in_progress") return;
-    await this.workspaceRepo.updateTask(task.id, { status: "in_progress" });
+  private async recordStatusEvent(
+    task: TaskRow,
+    fromStatus: string | undefined,
+    toStatus: string,
+    context?: TaskStatusEventContext,
+  ): Promise<void> {
+    if (fromStatus === toStatus) return;
+    await this.workspaceRepo.recordTaskStatusEvent({
+      taskId: task.id,
+      fromStatus: fromStatus ?? null,
+      toStatus,
+      timestamp: context?.timestamp ?? new Date().toISOString(),
+      commandName: context?.commandName ?? null,
+      jobId: context?.jobId ?? null,
+      taskRunId: context?.taskRunId ?? null,
+      agentId: context?.agentId ?? null,
+      metadata: context?.metadata ?? undefined,
+    });
   }
 
-  async markReadyToReview(task: TaskRow, metadataPatch?: Record<string, unknown>): Promise<void> {
+  async transitionToInProgress(task: TaskRow, context?: TaskStatusEventContext): Promise<void> {
+    if (task.status === "in_progress") return;
+    const fromStatus = task.status;
+    await this.workspaceRepo.updateTask(task.id, { status: "in_progress" });
+    await this.recordStatusEvent(task, fromStatus, "in_progress", context);
+    task.status = "in_progress";
+  }
+
+  async markReadyToReview(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
+    const fromStatus = task.status;
+    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
     await this.workspaceRepo.updateTask(task.id, {
       status: "ready_to_review",
-      metadata: mergeMetadata(task.metadata, metadataPatch ?? undefined) ?? undefined,
+      metadata: mergedMetadata ?? undefined,
     });
+    await this.recordStatusEvent(task, fromStatus, "ready_to_review", context);
+    task.status = "ready_to_review";
+    task.metadata = mergedMetadata ?? undefined;
   }
 
-  async markReadyToQa(task: TaskRow, metadataPatch?: Record<string, unknown>): Promise<void> {
+  async markReadyToQa(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
+    const fromStatus = task.status;
+    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
     await this.workspaceRepo.updateTask(task.id, {
       status: "ready_to_qa",
-      metadata: mergeMetadata(task.metadata, metadataPatch ?? undefined) ?? undefined,
+      metadata: mergedMetadata ?? undefined,
     });
+    await this.recordStatusEvent(task, fromStatus, "ready_to_qa", context);
+    task.status = "ready_to_qa";
+    task.metadata = mergedMetadata ?? undefined;
   }
 
-  async markCompleted(task: TaskRow, metadataPatch?: Record<string, unknown>): Promise<void> {
+  async markCompleted(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
+    const fromStatus = task.status;
+    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
     await this.workspaceRepo.updateTask(task.id, {
       status: "completed",
-      metadata: mergeMetadata(task.metadata, metadataPatch ?? undefined) ?? undefined,
+      metadata: mergedMetadata ?? undefined,
     });
+    await this.recordStatusEvent(task, fromStatus, "completed", context);
+    task.status = "completed";
+    task.metadata = mergedMetadata ?? undefined;
   }
 
-  async returnToInProgress(task: TaskRow, metadataPatch?: Record<string, unknown>): Promise<void> {
+  async returnToInProgress(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
+    const fromStatus = task.status;
+    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
     await this.workspaceRepo.updateTask(task.id, {
       status: "in_progress",
-      metadata: mergeMetadata(task.metadata, metadataPatch ?? undefined) ?? undefined,
+      metadata: mergedMetadata ?? undefined,
     });
+    await this.recordStatusEvent(task, fromStatus, "in_progress", context);
+    task.status = "in_progress";
+    task.metadata = mergedMetadata ?? undefined;
   }
 
-  async markBlocked(task: TaskRow, reason: string): Promise<void> {
+  async markBlocked(task: TaskRow, reason: string, context?: TaskStatusEventContext): Promise<void> {
+    const fromStatus = task.status;
     const metadata = mergeMetadata(task.metadata, { blocked_reason: reason }) ?? { blocked_reason: reason };
     await this.workspaceRepo.updateTask(task.id, {
       status: "blocked",
       metadata,
     });
+    const eventMetadata =
+      mergeMetadata(context?.metadata ?? undefined, { blocked_reason: reason }) ?? { blocked_reason: reason };
+    const eventContext = context ? { ...context, metadata: eventMetadata } : { metadata: eventMetadata };
+    await this.recordStatusEvent(task, fromStatus, "blocked", eventContext);
     task.status = "blocked";
     task.metadata = metadata;
   }

@@ -66,7 +66,13 @@ test("AgentRatingService records run rating and updates agent fields", async () 
     tokensPrompt: 500,
     tokensCompletion: 500,
     tokensTotal: 1000,
+    tokensCached: 120,
+    tokensCacheRead: 80,
+    tokensCacheWrite: 40,
     durationSeconds: 12,
+    durationMs: 12000,
+    startedAt: new Date(Date.now() - 12000).toISOString(),
+    finishedAt: new Date().toISOString(),
     timestamp: new Date().toISOString(),
     metadata: { commandName: "work-on-tasks", action: "agent" },
   });
