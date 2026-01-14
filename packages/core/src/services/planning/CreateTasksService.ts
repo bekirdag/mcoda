@@ -475,9 +475,12 @@ export class CreateTasksService {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const jobService = new JobService(workspace);
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);

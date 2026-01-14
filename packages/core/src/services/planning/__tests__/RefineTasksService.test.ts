@@ -25,8 +25,16 @@ describe("RefineTasksService", () => {
   let service: RefineTasksService;
   let storyId: string;
   let epicId: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-refine-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-refine-"));
     workspace = await WorkspaceResolver.resolveWorkspace({ cwd: workspaceDir, explicitWorkspace: workspaceDir });
     service = await RefineTasksService.create(workspace);
@@ -67,9 +75,14 @@ describe("RefineTasksService", () => {
   afterEach(async () => {
     await service?.close();
     await fs.rm(workspaceDir, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalProfile;
   });
 
-  it("applies plan-in operations without invoking an agent", async () => {
+  it("applies plan-in operations without invoking an agent", { concurrency: false }, async () => {
     const result = await service.refineTasks({
       workspace,
       projectKey: "demo",
@@ -88,7 +101,7 @@ describe("RefineTasksService", () => {
     assert.equal(row?.story_points, 5);
   });
 
-  it("updates rollups on estimate changes", async () => {
+  it("updates rollups on estimate changes", { concurrency: false }, async () => {
     const plan: RefineTasksPlan = {
       strategy: "estimate",
       operations: [{ op: "update_estimate", taskKey, storyPoints: 3 }],
@@ -117,7 +130,7 @@ describe("RefineTasksService", () => {
     assert.equal(epicRow?.total, 3);
   });
 
-  it("skips operations outside status filter", async () => {
+  it("skips operations outside status filter", { concurrency: false }, async () => {
     // Mark original task as blocked and create another eligible task to keep selection non-empty.
     await repo.getDb().run(`UPDATE tasks SET status = 'blocked' WHERE key = ?`, taskKey);
     const [eligible] = await repo.insertTasks([
@@ -159,7 +172,7 @@ describe("RefineTasksService", () => {
     assert.equal(okRow?.key, eligible.key);
   });
 
-  it("falls back to an available agent when routing defaults are missing", async () => {
+  it("falls back to an available agent when routing defaults are missing", { concurrency: false }, async () => {
     const fallbackAgent = {
       id: "agent-fallback",
       slug: "agent-fallback",
@@ -201,7 +214,7 @@ describe("RefineTasksService", () => {
     assert.ok(result.plan.operations.length >= 1);
   });
 
-  it("rejects plan-in operations targeting unknown tasks", async () => {
+  it("rejects plan-in operations targeting unknown tasks", { concurrency: false }, async () => {
     const plan: RefineTasksPlan = {
       strategy: "estimate",
       operations: [{ op: "update_estimate", taskKey: "does-not-exist", storyPoints: 2 }],
@@ -220,7 +233,7 @@ describe("RefineTasksService", () => {
     assert.ok(result.plan.warnings?.some((w) => w.includes("not in selection")));
   });
 
-  it("invokes agent rating when enabled", async () => {
+  it("invokes agent rating when enabled", { concurrency: false }, async () => {
     await service.close();
     repo = await WorkspaceRepository.create(workspaceDir);
     const ratingService = new StubRatingService();

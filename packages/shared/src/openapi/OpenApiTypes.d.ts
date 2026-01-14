@@ -94,6 +94,7 @@ export interface EffectiveVelocity {
     reviewSpPerHour: number;
     qaSpPerHour: number;
     source: VelocitySource;
+    requestedMode?: VelocitySource;
     windowTasks?: 10 | 20 | 50;
     samples?: {
         implementation?: number;

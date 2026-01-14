@@ -187,9 +187,12 @@ export class TaskOrderingService {
     const globalRepo = await GlobalRepository.create();
     const agentService = new AgentService(globalRepo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     return new TaskOrderingService(
       workspace,

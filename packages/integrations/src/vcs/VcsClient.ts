@@ -124,6 +124,23 @@ export class VcsClient {
     }
   }
 
+  async applyPatchWithReject(cwd: string, patch: string): Promise<{ stdout?: string; stderr?: string; error?: string }> {
+    const opts: ExecOptions = { cwd, shell: true } as any;
+    const applyCmd = `cat <<'__PATCH__' | git apply --reject --whitespace=nowarn\n${patch}\n__PATCH__`;
+    try {
+      const { stdout, stderr } = await exec(applyCmd, opts as any);
+      return {
+        stdout: typeof stdout === "string" ? stdout : stdout?.toString?.() ?? "",
+        stderr: typeof stderr === "string" ? stderr : stderr?.toString?.() ?? "",
+      };
+    } catch (error: any) {
+      const stdout = typeof error?.stdout === "string" ? error.stdout : error?.stdout?.toString?.() ?? "";
+      const stderr = typeof error?.stderr === "string" ? error.stderr : error?.stderr?.toString?.() ?? "";
+      const message = error instanceof Error ? error.message : String(error);
+      return { stdout, stderr, error: stderr || message };
+    }
+  }
+
   async stage(cwd: string, paths: string[]): Promise<void> {
     await this.runGit(cwd, ["add", ...paths]);
   }

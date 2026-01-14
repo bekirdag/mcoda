@@ -17,6 +17,12 @@ export interface DocdexCheckResult {
   }>;
 }
 
+export interface DocdexHealthSummary {
+  ok: boolean;
+  message?: string;
+  failedChecks?: Array<{ name?: string; status?: string; message?: string }>;
+}
+
 export interface DocdexBrowserInfo {
   ok: boolean;
   message?: string;
@@ -108,6 +114,30 @@ export const readDocdexCheck = async (options: { cwd?: string; env?: NodeJS.Proc
   } catch (error) {
     throw new Error(`Docdex check returned invalid JSON: ${(error as Error).message}`);
   }
+};
+
+export const summarizeDocdexCheck = (check: DocdexCheckResult): DocdexHealthSummary => {
+  const failures =
+    check.checks?.filter((item) => item?.status && item.status !== "ok")?.map((item) => ({
+      name: item.name,
+      status: item.status,
+      message: item.message,
+    })) ?? [];
+  if (check.success === false || failures.length > 0) {
+    const details = failures
+      .map((item) => {
+        const head = item.name ? `${item.name}=${item.status ?? "error"}` : item.status ?? "error";
+        const tail = item.message ? ` (${item.message})` : "";
+        return `${head}${tail}`;
+      })
+      .join("; ");
+    return {
+      ok: false,
+      message: details || "Docdex check failed.",
+      failedChecks: failures,
+    };
+  }
+  return { ok: true };
 };
 
 export const resolveDocdexBaseUrl = async (options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<string | undefined> => {

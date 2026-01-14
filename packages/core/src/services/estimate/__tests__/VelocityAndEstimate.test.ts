@@ -36,9 +36,28 @@ test("VelocityService falls back to config when no history", async () => {
   const velocityService = await VelocityService.create(workspace);
   const velocity = await velocityService.getEffectiveVelocity({ mode: "empirical" });
   assert.equal(velocity.source, "config");
+  assert.equal(velocity.requestedMode, "empirical");
   assert.equal(velocity.implementationSpPerHour, 10);
   assert.equal(velocity.reviewSpPerHour, 12);
   assert.equal(velocity.qaSpPerHour, 8);
+  assert.equal(velocity.windowTasks, 10);
+  assert.deepEqual(velocity.samples, { implementation: 0, review: 0, qa: 0 });
+  await velocityService.close();
+  await repo.close();
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("VelocityService honors implementation override", async () => {
+  const { repo, workspace, dir } = await createWorkspace();
+  const velocityService = await VelocityService.create(workspace);
+  const velocity = await velocityService.getEffectiveVelocity({ mode: "config", spPerHourImplementation: 22 });
+  assert.equal(velocity.implementationSpPerHour, 22);
+  assert.equal(velocity.reviewSpPerHour, 12);
+  assert.equal(velocity.qaSpPerHour, 8);
+  assert.equal(velocity.source, "config");
+  assert.equal(velocity.requestedMode, "config");
+  assert.equal(velocity.windowTasks, 10);
+  assert.deepEqual(velocity.samples, { implementation: 0, review: 0, qa: 0 });
   await velocityService.close();
   await repo.close();
   await fs.rm(dir, { recursive: true, force: true });
@@ -127,6 +146,9 @@ test("VelocityService computes empirical SP/hour per lane", async () => {
   });
   assert.equal(Math.round((velocity.implementationSpPerHour ?? 0) * 100) / 100, 8);
   assert.equal(velocity.source, "empirical");
+  assert.equal(velocity.requestedMode, "empirical");
+  assert.equal(velocity.windowTasks, 10);
+  assert.deepEqual(velocity.samples, { implementation: 2, review: 0, qa: 0 });
   await velocityService.close();
   await repo.close();
   await fs.rm(dir, { recursive: true, force: true });

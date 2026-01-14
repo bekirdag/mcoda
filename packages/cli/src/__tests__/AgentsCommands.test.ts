@@ -37,10 +37,20 @@ const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> 
 
 test("agent add/list surfaces health from agent_health", { concurrency: false }, async () => {
   await withTempHome(async () => {
-    await AgentsCommands.run(["add", "codex", "--adapter", "codex-cli", "--capability", "chat"]);
+    const slug = "codex-super-long-agent-name";
+    await AgentsCommands.run([
+      "add",
+      slug,
+      "--adapter",
+      "codex-cli",
+      "--capability",
+      "chat",
+      "--max-complexity",
+      "8",
+    ]);
 
     const repo = await GlobalRepository.create();
-    const agent = await repo.getAgentBySlug("codex");
+    const agent = await repo.getAgentBySlug(slug);
     assert.ok(agent);
     await repo.setAgentHealth({
       agentId: agent.id,
@@ -52,8 +62,13 @@ test("agent add/list surfaces health from agent_health", { concurrency: false },
 
     const logs = await captureLogs(() => AgentsCommands.run(["list"]));
     const output = logs.join("\n");
-    assert.match(output, /codex/);
+    assert.match(output, new RegExp(slug));
     assert.match(output, /healthy/);
+    assert.match(output, /MAX CX/);
+    const row = output.split("\n").find((line) => line.includes(slug));
+    assert.ok(row);
+    const cells = row.split("│").map((cell) => cell.trim()).filter(Boolean);
+    assert.equal(cells[5], "8");
   });
 });
 

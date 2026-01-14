@@ -80,6 +80,7 @@ export class EstimateService {
         mode: options.mode,
         windowTasks: options.windowTasks,
         spPerHourAll: options.spPerHourAll,
+        spPerHourImplementation: options.spPerHourImplementation,
         spPerHourReview: options.spPerHourReview,
         spPerHourQa: options.spPerHourQa,
       });

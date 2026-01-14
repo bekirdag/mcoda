@@ -71,6 +71,80 @@ test("GatewayAgentService returns analysis and agent decision", async () => {
   }
 });
 
+test("GatewayAgentService downgrades non-SDS paths labeled SDS", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+
+  const agent = { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub", rating: 6, reasoningRating: 6 };
+  const service = new (GatewayAgentService as any)(workspace, {
+    agentService: {
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "gateway-agent": "Prompt" },
+      }),
+      invoke: async () => ({
+        output: JSON.stringify({
+          summary: "Update docs",
+          reasoningSummary: "Docs work",
+          currentState: "Unknown",
+          todo: "Update README",
+          understanding: "Docs updated",
+          plan: ["Review", "Edit", "Verify"],
+          complexity: 3,
+          discipline: "docs",
+          filesLikelyTouched: ["README.md"],
+          filesToCreate: [],
+          assumptions: [],
+          risks: [],
+          docdexNotes: ["No matching docs"],
+        }),
+      }),
+    },
+    docdex: {
+      search: async () => [
+        {
+          id: "doc-1",
+          docType: "SDS",
+          path: "docs/architecture.md",
+          title: "Architecture",
+          content: "No frontmatter here.",
+        },
+      ],
+    },
+    globalRepo: {
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan", "docdex_query", "code_write"],
+    },
+    jobService: {
+      startCommandRun: async () => ({ id: "run-1" }),
+      recordTokenUsage: async () => {},
+      finishCommandRun: async () => {},
+    },
+    workspaceRepo: {},
+    routingService: {
+      resolveAgentForCommand: async () => ({ agent }),
+    },
+  });
+
+  try {
+    const result = await service.run({
+      workspace,
+      job: "work-on-tasks",
+      inputText: "Review SDS architecture",
+      agentStream: false,
+    });
+
+    assert.equal(result.docdex.length, 1);
+    assert.equal(result.docdex[0]?.docType, "DOC");
+    assert.ok(result.warnings.some((warning: string) => warning.includes("docType downgraded")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayAgentService keeps gateway schema prompt content", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });

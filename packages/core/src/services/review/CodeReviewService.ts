@@ -12,7 +12,7 @@ import {
   type TaskInsert,
   type TaskRow,
 } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, type Agent } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { TaskSelectionFilters, TaskSelectionService } from "../execution/TaskSelectionService.js";
@@ -22,7 +22,7 @@ import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
-import { isDocContextExcluded, loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
@@ -236,6 +236,12 @@ const JSON_CONTRACT = `{
   "unresolvedSlugs": ["Optional list of comment slugs still open or reintroduced"]
 }`;
 
+const JSON_RETRY_RULES = [
+  "Return ONLY valid JSON. No markdown, no prose, no code fences.",
+  "The response must start with '{' and end with '}'.",
+  "Match the schema exactly; use empty arrays when no items apply.",
+].join("\n");
+
 const normalizeSingleLine = (value: string | undefined, fallback: string): string => {
   const trimmed = (value ?? "").replace(/\s+/g, " ").trim();
   return trimmed || fallback;
@@ -430,9 +436,12 @@ export class CodeReviewService {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
     const jobService = new JobService(workspace, workspaceRepo);
@@ -468,6 +477,14 @@ export class CodeReviewService {
     await maybeClose(this.deps.workspaceRepo);
     await maybeClose(this.deps.routingService);
     await maybeClose(this.deps.docdex);
+  }
+
+  setDocdexAvailability(available: boolean, reason?: string): void {
+    if (available) return;
+    const docdex = this.deps.docdex as any;
+    if (docdex && typeof docdex.disable === "function") {
+      docdex.disable(reason);
+    }
   }
 
   private async readPromptFiles(paths: string[]): Promise<string[]> {
@@ -687,6 +704,24 @@ export class CodeReviewService {
     }
     const queries = [...new Set([...(paths.length ? this.componentHintsFromPaths(paths) : []), taskTitle, ...(acceptance ?? [])])].slice(0, 8);
     let reindexed = false;
+    const resolveDocType = (
+      doc: { docType?: string; path?: string; title?: string; content?: string; segments?: Array<{ content?: string }> },
+      pathOverride?: string,
+    ) => {
+      const content = doc.segments?.[0]?.content ?? doc.content ?? "";
+      const normalized = normalizeDocType({
+        docType: doc.docType,
+        path: doc.path ?? pathOverride,
+        title: doc.title,
+        content,
+      });
+      if (normalized.downgraded) {
+        warnings.push(
+          `Docdex docType downgraded from SDS to DOC for ${doc.path ?? doc.title ?? doc.docType ?? "unknown"}: ${normalized.reason ?? "not_sds"}`,
+        );
+      }
+      return normalized.docType;
+    };
     for (const query of queries) {
       try {
         const docs = await withTimeout(
@@ -702,7 +737,7 @@ export class CodeReviewService {
           ...filteredDocs.slice(0, 2).map((doc) => {
             const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
             const ref = doc.path ?? doc.id ?? doc.title ?? query;
-            return `- [${doc.docType ?? "doc"}] ${ref}: ${content}`;
+            return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
           }),
         );
       } catch (error) {
@@ -723,7 +758,7 @@ export class CodeReviewService {
               ...filteredDocs.slice(0, 2).map((doc) => {
                 const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
                 const ref = doc.path ?? doc.id ?? doc.title ?? query;
-                return `- [${doc.docType ?? "doc"}] ${ref}: ${content}`;
+                return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
               }),
             );
             continue;
@@ -766,7 +801,7 @@ export class CodeReviewService {
         }
         const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
         const refLabel = doc.path ?? doc.id ?? doc.title ?? link;
-        snippets.push(`- [linked:${doc.docType ?? "doc"}] ${refLabel}: ${content}`);
+        snippets.push(`- [linked:${resolveDocType(doc, type === "path" ? ref : undefined)}] ${refLabel}: ${content}`);
       } catch (error) {
         const message = (error as Error).message;
         warnings.push(`docdex fetch failed for ${link}: ${message}`);
@@ -1231,6 +1266,14 @@ export class CodeReviewService {
     await fs.writeFile(path.join(dir, `${taskId}.json`), JSON.stringify({ schema_version: 1, task_id: taskId, files }, null, 2), "utf8");
   }
 
+  private async persistReviewOutput(jobId: string, taskId: string, payload: Record<string, unknown>): Promise<string> {
+    const dir = path.join(REVIEW_DIR(this.workspace.workspaceRoot, jobId), "outputs");
+    await fs.mkdir(dir, { recursive: true });
+    const target = path.join(dir, `${taskId}.json`);
+    await fs.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
+    return path.relative(this.workspace.workspaceRoot, target);
+  }
+
   private severityToPriority(severity?: string): number | null {
     if (!severity) return null;
     const normalized = severity.toLowerCase();
@@ -1556,6 +1599,23 @@ export class CodeReviewService {
         ? selectedTasks
         : await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
     const agent = await this.resolveAgent(request.agentName);
+    const reviewJsonAgentOverride =
+      this.workspace.config?.reviewJsonAgent ??
+      process.env.MCODA_REVIEW_JSON_AGENT ??
+      process.env.MCODA_REVIEW_JSON_AGENT_NAME;
+    let reviewJsonAgent: Agent | undefined;
+    if (
+      reviewJsonAgentOverride &&
+      reviewJsonAgentOverride !== agent.id &&
+      reviewJsonAgentOverride !== agent.slug
+    ) {
+      try {
+        reviewJsonAgent = await this.resolveAgent(reviewJsonAgentOverride);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(`Review JSON agent override (${reviewJsonAgentOverride}) failed: ${message}`);
+      }
+    }
     const prompts = await this.loadPrompts(agent.id);
     const extras = await this.loadRunbookAndChecklists();
     const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
@@ -1816,6 +1876,7 @@ export class CodeReviewService {
           outputText: string,
           durationSeconds: number,
           tokenMeta?: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number; model?: string | null },
+          agentUsed: Agent = agent,
         ) => {
           const tokensPrompt = tokenMeta?.tokensPrompt ?? estimateTokens(promptText);
           const tokensCompletion = tokenMeta?.tokensCompletion ?? estimateTokens(outputText);
@@ -1823,8 +1884,8 @@ export class CodeReviewService {
           tokensTotal += entryTotal;
           await this.deps.jobService.recordTokenUsage({
             workspaceId: this.workspace.workspaceId,
-            agentId: agent.id,
-            modelName: tokenMeta?.model ?? (agent as any).defaultModel ?? undefined,
+            agentId: agentUsed.id,
+            modelName: tokenMeta?.model ?? (agentUsed as any).defaultModel ?? undefined,
             jobId,
             commandRunId: commandRun.id,
             taskRunId: taskRun.id,
@@ -1891,6 +1952,9 @@ export class CodeReviewService {
           : undefined;
         await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain);
 
+        const primaryOutput = agentOutput;
+        let retryOutput: string | undefined;
+        let retryAgentUsed: Agent | undefined;
         let parsed = parseJsonOutput(agentOutput);
         let validationError = parsed ? validateReviewOutput(parsed) : undefined;
         if (parsed && validationError) {
@@ -1911,12 +1975,22 @@ export class CodeReviewService {
             source: "agent",
             message: "Invalid JSON from agent; retrying once with stricter instructions.",
           });
-          const retryPrompt = `${prompt}\n\nRespond ONLY with valid JSON matching the schema above. Do not include prose or fences.`;
+          const retryPrompt = `${prompt}\n\n${JSON_RETRY_RULES}`;
           const retryStarted = Date.now();
+          retryAgentUsed = reviewJsonAgent ?? agent;
+          if (retryAgentUsed.id !== agent.id) {
+            await this.deps.workspaceRepo.insertTaskLog({
+              taskRunId: taskRun.id,
+              sequence: this.sequenceForTask(taskRun.id),
+              timestamp: new Date().toISOString(),
+              source: "agent_retry",
+              message: `Retrying with JSON-only agent override: ${retryAgentUsed.slug ?? retryAgentUsed.id}`,
+            });
+          }
           const retryResp = await withAbort(
-            this.deps.agentService.invoke(agent.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
+            this.deps.agentService.invoke(retryAgentUsed.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
           );
-          const retryOutput = retryResp.output ?? "";
+          retryOutput = retryResp.output ?? "";
           const retryDuration = Math.round(((Date.now() - retryStarted) / 1000) * 1000) / 1000;
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
@@ -1942,7 +2016,7 @@ export class CodeReviewService {
                 model: (retryResp.metadata.model ?? retryResp.metadata.model_name ?? null) as string | null,
               }
             : undefined;
-          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta);
+          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed);
           parsed = parseJsonOutput(retryOutput);
           validationError = parsed ? validateReviewOutput(parsed) : undefined;
           if (parsed && validationError) {
@@ -1968,6 +2042,23 @@ export class CodeReviewService {
             source: "review_warning",
             message: fallbackSummary,
           });
+          try {
+            const artifactPath = await this.persistReviewOutput(jobId, task.id, {
+              schema_version: 1,
+              task_key: task.key,
+              created_at: new Date().toISOString(),
+              agent_id: agent.id,
+              retry_agent_id: retryAgentUsed?.id ?? agent.id,
+              primary_output: primaryOutput,
+              retry_output: retryOutput ?? agentOutput,
+              validation_error: validationError ?? null,
+            });
+            warnings.push(`Review output saved to ${artifactPath} for ${task.key}.`);
+          } catch (persistError) {
+            warnings.push(
+              `Failed to persist review output for ${task.key}: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
+            );
+          }
           parsed = {
             decision: "block",
             summary: fallbackSummary,

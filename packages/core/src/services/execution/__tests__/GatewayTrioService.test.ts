@@ -6,6 +6,8 @@ import path from "node:path";
 import { GatewayTrioService } from "../GatewayTrioService.js";
 import { JobService } from "../../jobs/JobService.js";
 
+type DocdexCheckFn = (options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => Promise<any>;
+
 type TaskStatusStore = {
   get: (key: string) => string | undefined;
   set: (key: string, status: string) => void;
@@ -123,6 +125,7 @@ const makeService = async (options: {
   workNotesSequence?: Array<string | undefined>;
   workCalls?: string[];
   reviewSequence?: Array<"approve" | "changes_requested" | "block" | "info_only">;
+  reviewErrorSequence?: Array<string | undefined>;
   qaSequence?: Array<"pass" | "fix_required" | "infra_issue">;
   selectionSequence?: SelectionSnapshot[];
   gatewayRequests?: any[];
@@ -130,6 +133,7 @@ const makeService = async (options: {
   jobStatusUpdates?: Array<{ state: string; payload: Record<string, unknown> }>;
   recordTokenUsage?: boolean;
   tokenUsageOverride?: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number };
+  docdexCheck?: DocdexCheckFn;
 }) => {
   const { dir, workspace } = await makeWorkspace();
   const jobService = new JobService(workspace);
@@ -207,6 +211,7 @@ const makeService = async (options: {
     };
     },
     close: async () => {},
+    setDocdexAvailability: () => {},
   };
 
   const routingService = {
@@ -245,14 +250,16 @@ const makeService = async (options: {
       };
     },
     close: async () => {},
+    setDocdexAvailability: () => {},
   };
 
   const reviewService = {
     reviewTasks: async ({ taskKeys, dryRun }: any) => {
       const key = taskKeys[0];
+      const error = options.reviewErrorSequence?.[reviewIndex];
       const decision = options.reviewSequence?.[reviewIndex] ?? "approve";
       reviewIndex += 1;
-      if (!dryRun) {
+      if (!dryRun && !error) {
         const next =
           decision === "approve" || decision === "info_only"
             ? "ready_to_qa"
@@ -265,11 +272,14 @@ const makeService = async (options: {
       return {
         jobId: "review-job",
         commandRunId: "review-run",
-        tasks: [{ taskId: `task-${key}`, taskKey: key, statusBefore: "in_progress", decision, findings: [] }],
+        tasks: [
+          { taskId: `task-${key}`, taskKey: key, statusBefore: "in_progress", decision, error, findings: [] },
+        ],
         warnings: [],
       };
     },
     close: async () => {},
+    setDocdexAvailability: () => {},
   };
 
   const qaService = {
@@ -291,6 +301,7 @@ const makeService = async (options: {
       };
     },
     close: async () => {},
+    setDocdexAvailability: () => {},
   };
 
   const workspaceRepo = {
@@ -404,6 +415,7 @@ const makeService = async (options: {
     reviewService,
     qaService,
     selectionService,
+    docdexCheck: options.docdexCheck ?? (async () => ({ success: true, checks: [] })),
   });
 
   return { service, dir, workspace, jobService };
@@ -422,6 +434,27 @@ test("GatewayTrioService completes work-review-qa successfully", async () => {
     const job = await jobService.getJob(result.jobId);
     assert.equal((job?.payload as any)?.maxIterations, undefined);
     assert.equal((job?.payload as any)?.maxCycles, undefined);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService records docdex preflight failures", async () => {
+  const statusStore = makeStatusStore({ "TASK-DOCDEX": "in_progress" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-DOCDEX"],
+    docdexCheck: async () => ({
+      success: false,
+      checks: [{ name: "bind", status: "error", message: "bind blocked" }],
+    }),
+  });
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
+    assert.ok(result.warnings.some((warning: string) => warning.includes("Docdex unavailable")));
+    const artifactPath = path.join(dir, ".mcoda", "jobs", result.jobId, "gateway-trio", "docdex", "docdex-check.json");
+    await fs.access(artifactPath);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -545,6 +578,27 @@ test("GatewayTrioService advances processedItems after failed attempts", async (
       .map((entry) => entry.payload.processedItems)
       .filter((value) => typeof value === "number") as number[];
     assert.ok(processedUpdates.some((value) => value >= 1));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService updates job_state_detail with heartbeat context", async () => {
+  const statusStore = makeStatusStore({ "TASK-HB": "in_progress" });
+  const jobStatusUpdates: Array<{ state: string; payload: Record<string, unknown> }> = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-HB"],
+    jobStatusUpdates,
+  });
+  try {
+    await service.run({ workspace, maxIterations: 1, maxCycles: 1 });
+    const details = jobStatusUpdates
+      .map((entry) => entry.payload.job_state_detail)
+      .filter((value): value is string => typeof value === "string");
+    assert.ok(details.some((detail) => detail.includes("task:TASK-HB") && detail.includes("step:work")));
+    assert.ok(details.some((detail) => detail.includes("last:")));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -837,6 +891,38 @@ test("GatewayTrioService avoids failing agents on retryable errors", async () =>
     assert.ok(workCalls.length >= 2);
     assert.deepEqual(workCalls[1].avoidAgents, ["agent-1"]);
     assert.equal(workCalls[1].forceStronger, true);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService escalates reviewer after invalid JSON output", async () => {
+  const statusStore = makeStatusStore({ "TASK-RJ": "in_progress" });
+  const gatewayRequests: any[] = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-RJ"],
+    workSequence: ["succeeded", "succeeded"],
+    reviewSequence: ["block", "approve"],
+    reviewErrorSequence: ["review_invalid_output", undefined],
+    qaSequence: ["pass"],
+    gatewayRequests,
+  });
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: "proj-1",
+      maxIterations: 2,
+      maxCycles: 2,
+      agentStream: false,
+    });
+
+    const reviewCalls = gatewayRequests.filter((req) => req.job === "code-review");
+    assert.ok(reviewCalls.length >= 1);
+    assert.deepEqual(reviewCalls[0].avoidAgents, ["agent-1"]);
+    assert.equal(reviewCalls[0].forceStronger, true);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

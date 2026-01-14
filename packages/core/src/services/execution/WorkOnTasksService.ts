@@ -13,7 +13,7 @@ import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from ".
 import { TaskStateService } from "./TaskStateService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
-import { isDocContextExcluded, loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
 import { createTaskCommentSlug } from "../tasks/TaskCommentFormatter.js";
 
 const exec = promisify(execCb);
@@ -528,8 +528,9 @@ const detectScopedTestCommand = (workspaceRoot: string, files: string[]): string
 };
 
 const resolveNodeCommand = (): string => {
-  const execPath = process.execPath;
-  return execPath.includes(" ") ? `"${execPath}"` : execPath;
+  const override = process.env.NODE_BIN?.trim();
+  const resolved = override || (process.platform === "win32" ? "node.exe" : "node");
+  return resolved.includes(" ") ? `"${resolved}"` : resolved;
 };
 
 const detectRunAllTestsCommand = (workspaceRoot: string): string | undefined => {
@@ -1246,6 +1247,16 @@ export class WorkOnTasksService {
     await fs.promises.writeFile(target, JSON.stringify({ ...data, updatedAt: new Date().toISOString() }, null, 2), "utf8");
   }
 
+  private async persistPatchArtifact(jobId: string, taskKey: string, payload: Record<string, unknown>): Promise<string> {
+    const dir = path.join(WORK_DIR(jobId, this.workspace.workspaceRoot), "patches");
+    await fs.promises.mkdir(dir, { recursive: true });
+    const safeKey = taskKey.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const target = path.join(dir, `${safeKey}-${stamp}.json`);
+    await fs.promises.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
+    return path.relative(this.workspace.workspaceRoot, target);
+  }
+
   private async checkpoint(jobId: string, stage: string, details?: Record<string, unknown>): Promise<void> {
     const timestamp = new Date().toISOString();
     await this.deps.jobService.writeCheckpoint(jobId, {
@@ -1260,9 +1271,12 @@ export class WorkOnTasksService {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
     const jobService = new JobService(workspace, workspaceRepo);
@@ -1298,6 +1312,14 @@ export class WorkOnTasksService {
     await maybeClose(this.deps.workspaceRepo);
     await maybeClose(this.deps.routingService);
     await maybeClose(this.deps.docdex);
+  }
+
+  setDocdexAvailability(available: boolean, reason?: string): void {
+    if (available) return;
+    const docdex = this.deps.docdex as any;
+    if (docdex && typeof docdex.disable === "function") {
+      docdex.disable(reason);
+    }
   }
 
   private async resolveAgent(agentName?: string) {
@@ -1411,10 +1433,25 @@ export class WorkOnTasksService {
       const filteredDocs = docs.filter(
         (doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false),
       );
+      const resolveDocType = (doc: { docType?: string; path?: string; title?: string; content?: string; segments?: Array<{ content?: string }> }) => {
+        const content = doc.segments?.[0]?.content ?? doc.content ?? "";
+        const normalized = normalizeDocType({
+          docType: doc.docType,
+          path: doc.path,
+          title: doc.title,
+          content,
+        });
+        if (normalized.downgraded) {
+          warnings.push(
+            `Docdex docType downgraded from SDS to DOC for ${doc.path ?? doc.title ?? doc.docType ?? "unknown"}: ${normalized.reason ?? "not_sds"}`,
+          );
+        }
+        return normalized.docType;
+      };
       parts.push(
         ...filteredDocs
           .slice(0, 5)
-          .map((doc) => `- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}`),
+          .map((doc) => `- [${resolveDocType(doc)}] ${doc.title ?? doc.path ?? doc.id}`),
       );
     } catch (error) {
       warnings.push(`docdex search failed: ${(error as Error).message}`);
@@ -1448,8 +1485,23 @@ export class WorkOnTasksService {
           parts.push(`- [linked:missing] ${link} — no docdex entry found`);
           continue;
         }
+        const docType = (() => {
+          const content = doc.segments?.[0]?.content ?? doc.content ?? "";
+          const normalized = normalizeDocType({
+            docType: doc.docType,
+            path: doc.path,
+            title: doc.title,
+            content,
+          });
+          if (normalized.downgraded) {
+            warnings.push(
+              `Docdex docType downgraded from SDS to DOC for ${doc.path ?? doc.title ?? doc.id}: ${normalized.reason ?? "not_sds"}`,
+            );
+          }
+          return normalized.docType;
+        })();
         const excerpt = doc.segments?.[0]?.content?.slice(0, 240);
-        parts.push(`- [linked:${doc.docType}] ${doc.title ?? doc.id}${excerpt ? ` — ${excerpt}` : ""}`);
+        parts.push(`- [linked:${docType}] ${doc.title ?? doc.id}${excerpt ? ` — ${excerpt}` : ""}`);
       } catch (error) {
         const message = (error as Error).message;
         warnings.push(`docdex fetch failed for ${link}: ${message}`);
@@ -1765,11 +1817,31 @@ export class WorkOnTasksService {
     patches: string[],
     cwd: string,
     dryRun: boolean,
+    context: { jobId: string; taskKey: string; attempt: number },
   ): Promise<{ touched: string[]; error?: string; warnings?: string[] }> {
     const touched = new Set<string>();
     const warnings: string[] = [];
     let applied = 0;
-    for (const patch of patches) {
+    const { jobId, taskKey, attempt } = context;
+    const recordPatchIssue = async (details: Record<string, unknown>, message?: string): Promise<void> => {
+      try {
+        const artifactPath = await this.persistPatchArtifact(jobId, taskKey, {
+          schema_version: 1,
+          task_key: taskKey,
+          attempt,
+          created_at: new Date().toISOString(),
+          ...details,
+        });
+        const warnMessage = message ? `${message} (artifact: ${artifactPath})` : `Patch artifact saved to ${artifactPath}.`;
+        warnings.push(warnMessage);
+      } catch (persistError) {
+        warnings.push(
+          `Failed to persist patch artifact for ${taskKey}: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
+        );
+      }
+    };
+
+    for (const [patchIndex, patch] of patches.entries()) {
       const normalized = maybeConvertApplyPatch(patch);
       const withHeader = ensureDiffHeader(normalized);
       const withPaths = normalizeDiffPaths(withHeader, cwd);
@@ -1778,16 +1850,36 @@ export class WorkOnTasksService {
       const withPrefixes = fixMissingPrefixesInHunks(withHunks);
       const sanitized = stripInvalidIndexLines(withPrefixes);
       if (isPlaceholderPatch(sanitized)) {
-        warnings.push("Skipped placeholder patch that contained ??? or 'rest of existing code'.");
+        const message = "Skipped placeholder patch that contained ??? or 'rest of existing code'.";
+        warnings.push(message);
+        await recordPatchIssue(
+          {
+            reason: "placeholder_patch",
+            patch_index: patchIndex,
+            raw_patch: patch,
+            normalized_patch: sanitized,
+          },
+          message,
+        );
         continue;
       }
       const files = touchedFilesFromPatch(sanitized);
       if (!files.length) {
-        warnings.push("Skipped patch with no recognizable file paths.");
+        const message = "Skipped patch with no recognizable file paths.";
+        warnings.push(message);
+        await recordPatchIssue(
+          {
+            reason: "missing_file_paths",
+            patch_index: patchIndex,
+            raw_patch: patch,
+            normalized_patch: sanitized,
+          },
+          message,
+        );
         continue;
       }
       const segments = splitPatchIntoDiffs(sanitized);
-      for (const segment of segments) {
+      for (const [segmentIndex, segment] of segments.entries()) {
         const segmentFiles = touchedFilesFromPatch(segment);
         const existingFiles = new Set(segmentFiles.map((f) => path.join(cwd, f)).filter((f) => fs.existsSync(f)));
         let patchToApply = segment;
@@ -1795,7 +1887,20 @@ export class WorkOnTasksService {
           const { patch: converted, skipped } = updateAddPatchForExistingFile(segment, existingFiles, cwd);
           patchToApply = converted;
           if (skipped.length) {
-            warnings.push(`Skipped add patch for existing files: ${skipped.join(", ")}`);
+            const message = `Skipped add patch for existing files: ${skipped.join(", ")}`;
+            warnings.push(message);
+            await recordPatchIssue(
+              {
+                reason: "existing_files",
+                patch_index: patchIndex,
+                segment_index: segmentIndex,
+                raw_patch: patch,
+                normalized_patch: sanitized,
+                segment_patch: patchToApply,
+                segment_files: segmentFiles,
+              },
+              message,
+            );
             continue;
           }
         }
@@ -1834,13 +1939,105 @@ export class WorkOnTasksService {
               warnings.push(`Applied add-only segment by writing files directly: ${addTargets.join(", ")}`);
               continue;
             } catch (writeError) {
-              warnings.push(
-                `Patch segment failed and fallback write failed (${segmentFiles.join(", ") || "unknown files"}): ${(writeError as Error).message}`,
+              const message = `Patch segment failed and fallback write failed (${segmentFiles.join(", ") || "unknown files"}): ${(writeError as Error).message}`;
+              warnings.push(message);
+              await recordPatchIssue(
+                {
+                  reason: "add_write_failed",
+                  patch_index: patchIndex,
+                  segment_index: segmentIndex,
+                  raw_patch: patch,
+                  normalized_patch: sanitized,
+                  segment_patch: patchToApply,
+                  segment_files: segmentFiles,
+                  error: message,
+                },
+                message,
               );
               continue;
             }
           }
-          warnings.push(`Patch segment failed (${segmentFiles.join(", ") || "unknown files"}): ${(error as Error).message}`);
+          const rejectResult = await this.vcs.applyPatchWithReject(cwd, patchToApply);
+          let touchedByReject: string[] = [];
+          try {
+            const dirtyAfter = await this.vcs.dirtyPaths(cwd);
+            const normalizedDirty = new Set(normalizePaths(cwd, dirtyAfter));
+            touchedByReject = segmentFiles.filter((file) => normalizedDirty.has(file));
+          } catch (rejectError) {
+            const message = `Patch reject fallback failed to read dirty paths (${segmentFiles.join(", ") || "unknown files"}): ${
+              rejectError instanceof Error ? rejectError.message : String(rejectError)
+            }`;
+            warnings.push(message);
+            await recordPatchIssue(
+              {
+                reason: "reject_dirty_check_failed",
+                patch_index: patchIndex,
+                segment_index: segmentIndex,
+                raw_patch: patch,
+                normalized_patch: sanitized,
+                segment_patch: patchToApply,
+                segment_files: segmentFiles,
+                error: message,
+              },
+              message,
+            );
+          }
+          if (touchedByReject.length) {
+            touchedByReject.forEach((file) => touched.add(file));
+            applied += 1;
+            const message = `Applied patch segment with rejects; review .rej files for ${touchedByReject.join(", ")}`;
+            warnings.push(message);
+            if (rejectResult?.error) {
+              await recordPatchIssue(
+                {
+                  reason: "reject_partial",
+                  patch_index: patchIndex,
+                  segment_index: segmentIndex,
+                  raw_patch: patch,
+                  normalized_patch: sanitized,
+                  segment_patch: patchToApply,
+                  segment_files: segmentFiles,
+                  error: rejectResult.error,
+                },
+                `Patch segment applied with rejects: ${rejectResult.error}`,
+              );
+            }
+            continue;
+          }
+          if (rejectResult?.error) {
+            const message = `Patch reject fallback failed (${segmentFiles.join(", ") || "unknown files"}): ${rejectResult.error}`;
+            warnings.push(message);
+            await recordPatchIssue(
+              {
+                reason: "reject_failed",
+                patch_index: patchIndex,
+                segment_index: segmentIndex,
+                raw_patch: patch,
+                normalized_patch: sanitized,
+                segment_patch: patchToApply,
+                segment_files: segmentFiles,
+                error: message,
+              },
+              message,
+            );
+          }
+          const message = `Patch segment failed (${segmentFiles.join(", ") || "unknown files"}): ${
+            (error as Error).message
+          }`;
+          warnings.push(message);
+          await recordPatchIssue(
+            {
+              reason: "apply_failed",
+              patch_index: patchIndex,
+              segment_index: segmentIndex,
+              raw_patch: patch,
+              normalized_patch: sanitized,
+              segment_patch: patchToApply,
+              segment_files: segmentFiles,
+              error: message,
+            },
+            message,
+          );
         }
       }
     }
@@ -2866,6 +3063,7 @@ export class WorkOnTasksService {
                   patches,
                   this.workspace.workspaceRoot,
                   request.dryRun ?? false,
+                  { jobId: job.id, taskKey: task.task.key, attempt },
                 );
                 if (applied.touched.length) {
                   const merged = new Set([...touched, ...applied.touched]);
@@ -2908,6 +3106,7 @@ export class WorkOnTasksService {
                           patches = [];
                           patchApplyError = null;
                           await this.logTask(taskRun.id, "Recovered from patch failure using FILE blocks.", "patch");
+                          warnings.push(`Recovered from patch failure using FILE blocks for ${task.task.key}.`);
                         }
                       } catch (error) {
                         const message = error instanceof Error ? error.message : String(error);

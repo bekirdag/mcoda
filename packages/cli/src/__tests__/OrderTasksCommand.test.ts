@@ -7,6 +7,29 @@ import { Connection, WorkspaceMigrations, WorkspaceRepository } from "@mcoda/db"
 import { PathHelper } from "@mcoda/shared";
 import { parseOrderTasksArgs, OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
 
+const withTempHome = async <T>(fn: () => Promise<T>) => {
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-test-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  try {
+    return await fn();
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+};
+
 const setupWorkspace = async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-order-"));
   const mcodaDir = path.join(dir, ".mcoda");
@@ -121,32 +144,34 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
   assert.equal(parsed.json, true);
 });
 
-test("order-tasks command prints ordering and records telemetry", async () => {
-  const ctx = await setupWorkspace();
-  const logs: string[] = [];
-  const origLog = console.log;
-  console.log = (...args: unknown[]) => logs.push(args.join(" "));
-  try {
-    await OrderTasksCommand.run([
-      "--workspace-root",
-      ctx.dir,
-      "--project",
-      ctx.project.key,
-      "--status",
-      "not_started,completed",
-    ]);
-  } finally {
-    console.log = origLog;
-  }
+test("order-tasks command prints ordering and records telemetry", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.join(" "));
+    try {
+      await OrderTasksCommand.run([
+        "--workspace-root",
+        ctx.dir,
+        "--project",
+        ctx.project.key,
+        "--status",
+        "not_started,completed",
+      ]);
+    } finally {
+      console.log = origLog;
+    }
 
-  const output = logs.join("\n");
-  assert.ok(output.includes("CLI-01-T01"));
-  assert.ok(output.includes("CLI-01-T02"));
+    const output = logs.join("\n");
+    assert.ok(output.includes("CLI-01-T01"));
+    assert.ok(output.includes("CLI-01-T02"));
 
-  const commandRuns = await ctx.repo
-    .getDb()
-    .all<{ command_name: string }[]>("SELECT command_name FROM command_runs WHERE command_name = 'order-tasks'");
-  assert.ok(commandRuns.length >= 1);
+    const commandRuns = await ctx.repo
+      .getDb()
+      .all<{ command_name: string }[]>("SELECT command_name FROM command_runs WHERE command_name = 'order-tasks'");
+    assert.ok(commandRuns.length >= 1);
 
-  await cleanupWorkspace(ctx.dir, ctx.repo);
+    await cleanupWorkspace(ctx.dir, ctx.repo);
+  });
 });
