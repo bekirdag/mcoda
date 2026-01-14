@@ -25,7 +25,7 @@ import { GlobalRepository } from '@mcoda/db';
 import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
 import { AgentRatingService } from '../agents/AgentRatingService.js';
-import { isDocContextExcluded, loadProjectGuidance } from '../shared/ProjectGuidance.js';
+import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from '../shared/ProjectGuidance.js';
 import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
@@ -294,9 +294,12 @@ export class QaTasksService {
   static async create(workspace: WorkspaceResolution, options: { noTelemetry?: boolean } = {}): Promise<QaTasksService> {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const routingService = await RoutingService.create();
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -339,6 +342,14 @@ export class QaTasksService {
     await maybeClose(this.repo);
     await maybeClose(this.docdex);
     await maybeClose(this.deps.routingService);
+  }
+
+  setDocdexAvailability(available: boolean, reason?: string): void {
+    if (available) return;
+    const docdex = this.docdex as any;
+    if (docdex && typeof docdex.disable === "function") {
+      docdex.disable(reason);
+    }
   }
 
   private async readPromptFiles(paths: string[]): Promise<string[]> {
@@ -508,6 +519,23 @@ export class QaTasksService {
         query: querySeeds,
       });
       const snippets: string[] = [];
+      const resolveDocType = async (doc: { docType?: string; path?: string; title?: string; content?: string; segments?: Array<{ content?: string }> }) => {
+        const content = doc.segments?.[0]?.content ?? doc.content ?? '';
+        const normalized = normalizeDocType({
+          docType: doc.docType,
+          path: doc.path,
+          title: doc.title,
+          content,
+        });
+        if (normalized.downgraded && taskRunId) {
+          await this.logTask(
+            taskRunId,
+            `Docdex docType downgraded from SDS to DOC for ${doc.path ?? doc.title ?? doc.docType ?? 'unknown'}: ${normalized.reason ?? 'not_sds'}`,
+            'docdex',
+          );
+        }
+        return normalized.docType;
+      };
       const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, true));
       for (const doc of filteredDocs.slice(0, 5)) {
         const segments = (doc.segments ?? []).slice(0, 2);
@@ -518,7 +546,8 @@ export class QaTasksService {
           : doc.content
             ? doc.content.slice(0, 600)
             : '';
-        snippets.push(`- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
+        const docType = await resolveDocType(doc);
+        snippets.push(`- [${docType}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
       }
       const normalizeDocLink = (value: string): { type: 'id' | 'path'; ref: string } => {
         const trimmed = value.trim();
@@ -544,15 +573,16 @@ export class QaTasksService {
           if (!doc) {
             doc = await this.docdex.fetchDocumentById(ref);
           }
-          if (!doc) {
-            snippets.push(`- [linked:missing] ${link} — no docdex entry found`);
-            continue;
-          }
-          const body = (doc.segments?.[0]?.content ?? doc.content ?? '').slice(0, 600);
-          snippets.push(`- [linked:${doc.docType ?? 'doc'}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
-        } catch (error: any) {
-          snippets.push(`- [linked:missing] ${link} — ${error?.message ?? error}`);
+        if (!doc) {
+          snippets.push(`- [linked:missing] ${link} — no docdex entry found`);
+          continue;
         }
+        const body = (doc.segments?.[0]?.content ?? doc.content ?? '').slice(0, 600);
+        const docType = await resolveDocType(doc);
+        snippets.push(`- [linked:${docType}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
+      } catch (error: any) {
+        snippets.push(`- [linked:missing] ${link} — ${error?.message ?? error}`);
+      }
       }
       return snippets.join('\n\n');
     } catch (error: any) {

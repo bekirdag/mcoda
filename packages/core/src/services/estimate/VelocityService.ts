@@ -71,6 +71,9 @@ export class VelocityService {
       base.reviewSpPerHour = options.spPerHourAll;
       base.qaSpPerHour = options.spPerHourAll;
     }
+    if (options.spPerHourImplementation !== undefined) {
+      base.implementationSpPerHour = options.spPerHourImplementation;
+    }
     if (options.spPerHourReview !== undefined) {
       base.reviewSpPerHour = options.spPerHourReview;
     }
@@ -214,6 +217,7 @@ export class VelocityService {
     const mode = options.mode ?? "config";
     const windowTasks = options.windowTasks ?? 10;
     const config = this.resolveConfig(options);
+    const defaultSamples = { implementation: 0, review: 0, qa: 0 };
 
     if (mode === "config") {
       return {
@@ -221,6 +225,9 @@ export class VelocityService {
         reviewSpPerHour: config.reviewSpPerHour,
         qaSpPerHour: config.qaSpPerHour,
         source: "config",
+        requestedMode: mode,
+        windowTasks,
+        samples: defaultSamples,
       };
     }
 
@@ -250,6 +257,11 @@ export class VelocityService {
     const implementationSpPerHour = resolveLane(implementation.spPerHour);
     const reviewSpPerHour = resolveReviewLane(review.spPerHour);
     const qaSpPerHour = resolveQaLane(qa.spPerHour);
+    const samples = {
+      implementation: implementation.samples,
+      review: review.samples,
+      qa: qa.samples,
+    };
 
     const usedEmpirical =
       (implementation.spPerHour && implementation.spPerHour > 0) ||
@@ -261,12 +273,9 @@ export class VelocityService {
       reviewSpPerHour,
       qaSpPerHour,
       source: usedEmpirical ? mode : "config",
+      requestedMode: mode,
       windowTasks,
-      samples: {
-        implementation: implementation.samples,
-        review: review.samples,
-        qa: qa.samples,
-      },
+      samples,
     };
   }
 }

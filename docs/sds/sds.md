@@ -4833,9 +4833,22 @@ Inspect the backlog of epics, stories, and tasks with filters and optional depen
 mcoda backlog \
   [--project <PROJECT_KEY>] \
   [--epic <EPIC_KEY>] \
-  [--status <STATUS_FILTER>] \
-  [--order-by <default|dependencies|story_points>] \
+  [--story <STORY_KEY>] \
+  [--assignee <USER>] \
+  [--status <STATUS_FILTER>|all] \
+  [--include-done] \
+  [--include-cancelled] \
+  [--view summary|epics|stories|tasks] \
+  [--limit <N> | --top <N>] \
+  [--order dependencies] \
+  [--verbose] \
   [--json]
+```
+
+**Example**
+
+```shell
+mcoda backlog --project WEB --view tasks --limit 10 --include-done --order dependencies --verbose
 ```
 
 **Behavior**
@@ -4844,9 +4857,16 @@ mcoda backlog \
 
 * Aggregates SP totals per status and hierarchy (epic/story/task).
 
-* When `--order-by dependencies` is set:
+* Defaults to active statuses only; use `--status all` or include flags to show done/cancelled items.
+
+* `--view` controls which sections print, and `--limit`/`--top` caps the visible rows after ordering.
+
+* `--verbose` adds task descriptions to the task table.
+
+* When `--order dependencies` is set:
 
   * Uses the dependency graph (`task_dependencies`) to return tasks in an order where tasks that unlock others are prioritized appropriately (topological ordering).
+  * Emits ordering metadata and warnings (JSON mode) when dependency ordering is skipped or cross‑lane dependencies are detected.
 
 ---
 
@@ -4862,8 +4882,21 @@ Estimate throughput and timelines based on story points, SP/h defaults, and lear
 mcoda estimate \
   [--project <PROJECT_KEY>] \
   [--epic <EPIC_KEY>] \
-  [--window <10|20|50>] \
+  [--story <STORY_KEY>] \
+  [--assignee <USER>] \
+  [--sp-per-hour <FLOAT>] \
+  [--sp-per-hour-implementation <FLOAT>] \
+  [--sp-per-hour-review <FLOAT>] \
+  [--sp-per-hour-qa <FLOAT>] \
+  [--velocity-mode config|empirical|mixed] \
+  [--velocity-window 10|20|50] \
   [--json]
+```
+
+**Example**
+
+```shell
+mcoda estimate --project WEB --sp-per-hour-implementation 12 --velocity-mode mixed --velocity-window 20
 ```
 
 **Behavior**
@@ -4880,6 +4913,8 @@ mcoda estimate \
      from `task_runs` and `token_usage`, using sliding windows (last N completed tasks).
 
 * If insufficient history, falls back to the **15 SP/h** default and gradually replaces it with learned SP/h as data accumulates.
+
+* Output includes DONE/TOTAL rows, velocity sample counts (with window), and ETA values as ISO + local time + relative duration.
 
 **State & side‑effects**
 
@@ -7546,7 +7581,11 @@ mcoda backlog \
   [--epic <EPIC_KEY>] \
   [--story <STORY_KEY>] \
   [--assignee <USER>] \
-  [--status <STATUS_FILTER>] \
+  [--status <STATUS_FILTER>|all] \
+  [--include-done] \
+  [--include-cancelled] \
+  [--view summary|epics|stories|tasks] \
+  [--limit <N> | --top <N>] \
   [--order dependencies] \
   [--json] \
   [--verbose]
@@ -7568,7 +7607,15 @@ mcoda backlog \
 
 * Aggregates **counts** and **SP totals** per bucket and per epic/story as needed.
 
+* Defaults to active statuses only; use `--status all` or include flags to include done/cancelled in the results.
+
+* `--view` limits which sections print; `--limit`/`--top` caps the visible rows after ordering.
+
+* Tasks table shows a TITLE column by default; descriptions only render with `--verbose`.
+
 * Returns a `BacklogSummary` DTO in JSON mode; renders a table in human mode.
+
+  * JSON output also includes warnings and ordering metadata (for dependency ordering and cross‑lane dependencies).
 
 It never touches `token_usage` or `command_runs`; those are only used by reporting/velocity and `estimate`.
 
@@ -7583,6 +7630,7 @@ mcoda estimate \
   [--story <STORY_KEY>] \
   [--assignee <USER>] \
   [--sp-per-hour <FLOAT>] \
+  [--sp-per-hour-implementation <FLOAT>] \
   [--sp-per-hour-review <FLOAT>] \
   [--sp-per-hour-qa <FLOAT>] \
   [--velocity-mode config|empirical|mixed] \
@@ -7607,6 +7655,8 @@ mcoda estimate \
 * Applies overrides:
 
   * `--sp-per-hour` sets **all** lanes.
+
+  * `--sp-per-hour-implementation` overrides implementation only.
 
   * `--sp-per-hour-review`, `--sp-per-hour-qa` override per lane.
 
@@ -7647,7 +7697,9 @@ T_qa     = S_qa     / v_qa
 
   * effective SP/h per lane (including whether they’re config/empirical/mixed),
 
-  * hours per lane and approximate calendar ETAs.
+  * velocity sample counts with the window used,
+
+  * hours per lane and ETAs formatted as ISO + local time + relative duration.
 
 * **`--json`** returns an `EstimateResult` DTO containing:
 
@@ -11645,7 +11697,7 @@ mcoda backlog --project PLATFORM-X --epic EP-API-GW
 Dependency‑aware ordering (via dedicated command/flag):
 
 ```shell
-mcoda backlog --project PLATFORM-X --epic EP-API-GW --order-by dependencies
+mcoda backlog --project PLATFORM-X --epic EP-API-GW --order dependencies
 # or:
 mcoda order-tasks --project PLATFORM-X --epic EP-API-GW
 ```
@@ -12024,7 +12076,7 @@ paths:
                       $ref: '#/components/schemas/Task'
 ```
 
-`mcoda order-tasks` (and `mcoda backlog --order-by dependencies`) call this endpoint to sort tasks so that the most depended‑on tasks are prioritized first in scheduling.
+`mcoda order-tasks` (and `mcoda backlog --order dependencies`) call this endpoint to sort tasks so that the most depended‑on tasks are prioritized first in scheduling.
 
 ### **23.3.5 System: update check & apply** {#23.3.5-system:-update-check-&-apply}
 

@@ -45,6 +45,7 @@ const resolveNode = () => {
 
 const pnpm = resolvePnpm();
 const nodeBin = resolveNode();
+console.log(`[tests] using node: ${nodeBin}`);
 let failed = false;
 let markerPrinted = false;
 let winTestHome;
@@ -184,11 +185,14 @@ const extraWorkspaceTests = [
   path.join("packages", "core", "dist", "services", "docs", "__tests__", "DocsService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "WorkOnTasksService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "QaTasksService.test.js"),
+  path.join("packages", "core", "dist", "services", "estimate", "__tests__", "VelocityAndEstimate.test.js"),
   path.join("packages", "core", "dist", "services", "review", "__tests__", "CodeReviewService.test.js"),
   path.join("packages", "core", "dist", "services", "shared", "__tests__", "ProjectGuidance.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "GatewayTrioService.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "GatewayTrioCommand.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "AgentRunCommand.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "BacklogCommands.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "EstimateCommands.test.js"),
   path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexRuntime.test.js"),
 ];
 

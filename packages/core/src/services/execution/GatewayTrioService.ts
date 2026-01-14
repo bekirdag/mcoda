@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
+import { readDocdexCheck, summarizeDocdexCheck, type DocdexCheckResult, type DocdexHealthSummary } from "@mcoda/integrations";
 import { GatewayAgentService, type GatewayAgentResult } from "../agents/GatewayAgentService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import {
@@ -50,6 +51,8 @@ type AgentSelectionOptions = {
   avoidAgents?: string[];
   forceStronger?: boolean;
 };
+
+type DocdexCheckFn = (options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => Promise<DocdexCheckResult>;
 
 type StepOutcome = {
   step: StepName;
@@ -167,6 +170,7 @@ export class GatewayTrioService {
       reviewService: CodeReviewService;
       qaService: QaTasksService;
       selectionService?: TaskSelectionService;
+      docdexCheck?: DocdexCheckFn;
     },
   ) {
     this.selectionService =
@@ -210,6 +214,65 @@ export class GatewayTrioService {
     await maybeClose(this.deps.qaService);
     await maybeClose(this.deps.jobService);
     await maybeClose(this.deps.workspaceRepo);
+  }
+
+  private disableDocdex(reason: string): void {
+    this.deps.gatewayService.setDocdexAvailability(false, reason);
+    this.deps.workService.setDocdexAvailability(false, reason);
+    this.deps.reviewService.setDocdexAvailability(false, reason);
+    this.deps.qaService.setDocdexAvailability(false, reason);
+  }
+
+  private async writeDocdexCheckArtifact(jobId: string, payload: Record<string, unknown>): Promise<string> {
+    const dir = path.join(this.trioDir(jobId), "docdex");
+    await PathHelper.ensureDir(dir);
+    const target = path.join(dir, "docdex-check.json");
+    await fs.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
+    return path.relative(this.workspace.workspaceRoot, target);
+  }
+
+  private async runDocdexPreflight(jobId: string, warnings: string[]): Promise<void> {
+    if (process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" || process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS === "1") {
+      return;
+    }
+    const checkFn = this.deps.docdexCheck ?? readDocdexCheck;
+    let summary: DocdexHealthSummary | undefined;
+    let artifactPath: string | undefined;
+    try {
+      const check = await checkFn({ cwd: this.workspace.workspaceRoot });
+      summary = summarizeDocdexCheck(check);
+      artifactPath = await this.writeDocdexCheckArtifact(jobId, {
+        ok: summary.ok,
+        summary,
+        check,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      summary = { ok: false, message };
+      artifactPath = await this.writeDocdexCheckArtifact(jobId, {
+        ok: false,
+        error: message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    await this.deps.jobService.writeCheckpoint(jobId, {
+      stage: "docdex:check",
+      timestamp: new Date().toISOString(),
+      details: {
+        ok: summary?.ok ?? false,
+        message: summary?.message,
+        artifactPath,
+      },
+    });
+
+    if (!summary?.ok) {
+      const hint = "Run `docdex check` to diagnose; ensure docdexd and ollama are running.";
+      const detail = summary?.message ? `Docdex unavailable: ${summary.message}.` : "Docdex unavailable.";
+      warnings.push(artifactPath ? `${detail} ${hint} (artifact: ${artifactPath})` : `${detail} ${hint}`);
+      this.disableDocdex(summary?.message ?? "docdex unavailable");
+    }
   }
 
   private trioDir(jobId: string): string {
@@ -716,6 +779,31 @@ export class GatewayTrioService {
     }
   }
 
+  private async updateJobHeartbeat(params: {
+    jobId: string;
+    taskKey: string;
+    step: StepName;
+    attempt: number;
+    activity?: string;
+  }): Promise<void> {
+    const timestamp = new Date().toISOString();
+    const detail = `task:${params.taskKey} step:${params.step} attempt:${params.attempt} last:${timestamp}`;
+    try {
+      await this.deps.jobService.updateJobStatus(params.jobId, "running", {
+        job_state_detail: detail,
+        payload: {
+          current_task: params.taskKey,
+          current_step: params.step,
+          attempt: params.attempt,
+          last_activity: timestamp,
+          activity: params.activity ?? "heartbeat",
+        },
+      });
+    } catch {
+      // Avoid failing the run if heartbeat updates cannot be persisted.
+    }
+  }
+
   private async runStepWithTimeout(
     step: StepName,
     jobId: string,
@@ -724,6 +812,7 @@ export class GatewayTrioService {
     maxAgentSeconds: number | undefined,
     fn: (signal: AbortSignal) => Promise<StepOutcome>,
   ): Promise<StepOutcome> {
+    await this.updateJobHeartbeat({ jobId, taskKey, step, attempt, activity: "start" });
     await this.deps.jobService.writeCheckpoint(jobId, {
       stage: `task:${taskKey}:${step}:start`,
       timestamp: new Date().toISOString(),
@@ -733,6 +822,7 @@ export class GatewayTrioService {
     let timeoutHandle: NodeJS.Timeout | undefined;
     const controller = new AbortController();
     const heartbeat = setInterval(() => {
+      void this.updateJobHeartbeat({ jobId, taskKey, step, attempt, activity: "heartbeat" }).catch(() => {});
       void this.deps.jobService.writeCheckpoint(jobId, {
         stage: `task:${taskKey}:${step}:heartbeat`,
         timestamp: new Date().toISOString(),
@@ -862,24 +952,33 @@ export class GatewayTrioService {
     abortSignal?: AbortSignal,
     onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
+    const shouldUseGateway =
+      !request.reviewAgentName &&
+      ((agentOptions.avoidAgents?.length ?? 0) > 0 || agentOptions.forceStronger);
     let handoff: string;
     let resolvedAgent: string | undefined;
     try {
-      const resolved = await this.deps.routingService.resolveAgentForCommand({
-        workspace: this.workspace,
-        commandName: "code-review",
-        overrideAgentSlug: request.reviewAgentName,
-        projectKey,
-      });
-      resolvedAgent = resolved.agentSlug;
-      handoff = [
-        "# Gateway Handoff",
-        "",
-        "Gateway planning skipped for code-review; using routing defaults.",
-        `Resolved agent: ${resolved.agentSlug} (${resolved.source}).`,
-        "",
-        buildGatewayHandoffDocdexUsage(),
-      ].join("\n");
+      if (shouldUseGateway) {
+        const gateway = await this.runGateway("code-review", taskKey, projectKey, request, agentOptions);
+        handoff = buildGatewayHandoffContent(gateway);
+        resolvedAgent = gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
+      } else {
+        const resolved = await this.deps.routingService.resolveAgentForCommand({
+          workspace: this.workspace,
+          commandName: "code-review",
+          overrideAgentSlug: request.reviewAgentName,
+          projectKey,
+        });
+        resolvedAgent = resolved.agentSlug;
+        handoff = [
+          "# Gateway Handoff",
+          "",
+          "Gateway planning skipped for code-review; using routing defaults.",
+          `Resolved agent: ${resolved.agentSlug} (${resolved.source}).`,
+          "",
+          buildGatewayHandoffDocdexUsage(),
+        ].join("\n");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!request.reviewAgentName) throw error;
@@ -1130,6 +1229,7 @@ export class GatewayTrioService {
       resolvedRequest.onJobStart(jobId, commandRun.id);
     }
 
+    await this.runDocdexPreflight(jobId, warnings);
     await this.cleanupExpiredTaskLocks(warnings);
 
     const explicitTasks = new Set(explicitTaskKeysProvided ? filteredTaskKeys : []);

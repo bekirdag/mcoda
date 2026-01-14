@@ -359,6 +359,7 @@ class StubDocdexWithLinks {
       return {
         id: "doc-1",
         docType: "SDS",
+        path: "docs/sds/project.md",
         title: "project.md",
         segments: [{ id: "doc-1-seg-1", docId: "doc-1", index: 0, content: "SDS excerpt" }],
         createdAt: new Date().toISOString(),
@@ -419,6 +420,9 @@ class StubVcs {
   async checkoutBranch(_cwd: string, _branch: string) {}
   async createOrCheckoutBranch(_cwd: string, _branch: string, _base: string) {}
   async applyPatch(_cwd: string, _patch: string) {}
+  async applyPatchWithReject(_cwd: string, _patch: string) {
+    return {};
+  }
   async pull(_cwd: string, _remote: string, _branch: string, _ffOnly = true) {}
   async conflictPaths(_cwd?: string): Promise<string[]> {
     return [];
@@ -463,6 +467,17 @@ class RecordingVcs extends StubVcs {
   }
   override async status() {
     return "";
+  }
+}
+
+class RejectRecordingVcs extends StubVcs {
+  rejectCalls = 0;
+  override async applyPatch(_cwd: string, _patch: string) {
+    throw new Error("apply failed");
+  }
+  override async applyPatchWithReject(_cwd: string, _patch: string) {
+    this.rejectCalls += 1;
+    return { error: "reject failed" };
   }
 }
 
@@ -578,8 +593,9 @@ const cleanupWorkspace = async (dir: string, repo: WorkspaceRepository) => {
 };
 
 const resolveNodeCommand = () => {
-  const execPath = process.execPath;
-  return execPath.includes(" ") ? `"${execPath}"` : execPath;
+  const override = process.env.NODE_BIN?.trim();
+  const resolved = override || (process.platform === "win32" ? "node.exe" : "node");
+  return resolved.includes(" ") ? `"${resolved}"` : resolved;
 };
 
 const writeTestCheckScript = async (dir: string) => {
@@ -962,6 +978,47 @@ test("workOnTasks converts add patches for missing files into new-file patches",
   }
 });
 
+test("workOnTasks persists patch artifacts when apply fails", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new RejectRecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "patch_failed");
+    assert.ok(vcs.rejectCalls >= 1);
+
+    const patchDir = path.join(dir, ".mcoda", "jobs", result.jobId, "work", "patches");
+    const entries = await fs.readdir(patchDir);
+    assert.ok(entries.length > 0);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks prepends project guidance to agent input", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -1125,6 +1182,76 @@ test("workOnTasks resolves docdex path links via findDocumentByPath", async () =
     assert.ok(docdex.findByPathCalls.includes("docs/sds/project.md"));
     assert.ok(input.includes("[linked:SDS]"));
     assert.ok(input.includes("SDS excerpt"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks downgrades SDS doc types outside docs/sds in doc context", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  await repo.updateTask(tasks[0].id, {
+    metadata: { doc_links: ["docdex:docs/architecture.md"] },
+  });
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const now = new Date().toISOString();
+  const docdex = {
+    search: async () => [
+      {
+        id: "doc-arch",
+        docType: "SDS",
+        path: "docs/architecture.md",
+        title: "Architecture",
+        segments: [{ id: "doc-arch-seg-1", docId: "doc-arch", index: 0, content: "Architecture excerpt" }],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    findDocumentByPath: async () => ({
+      id: "doc-arch-link",
+      docType: "SDS",
+      path: "docs/architecture.md",
+      title: "Architecture",
+      segments: [{ id: "doc-arch-link-seg-1", docId: "doc-arch-link", index: 0, content: "Link excerpt" }],
+      createdAt: now,
+      updatedAt: now,
+    }),
+    fetchDocumentById: async (id: string) => ({
+      id,
+      docType: "DOC",
+      title: id,
+      createdAt: now,
+      updatedAt: now,
+    }),
+    close: async () => {},
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: docdex as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    const input = agent.lastInput ?? "";
+    assert.ok(input.includes("[DOC] Architecture"));
+    assert.ok(input.includes("[linked:DOC] Architecture"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

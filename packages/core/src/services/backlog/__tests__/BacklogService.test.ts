@@ -20,8 +20,16 @@ const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
 
 describe("BacklogService", () => {
   let workspaceRoot: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-backlog-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-backlog-"));
     await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
@@ -165,14 +173,24 @@ describe("BacklogService", () => {
 
   afterEach(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalProfile;
   });
 
-  it("aggregates backlog buckets and orders dependencies per bucket", async () => {
+  it("aggregates backlog buckets and orders dependencies per bucket", { concurrency: false }, async () => {
     const workspace = workspaceFromRoot(workspaceRoot);
     const service = await BacklogService.create(workspace);
-    const { summary, warnings } = await service.getBacklog({ projectKey: "WEB", orderByDependencies: true });
+    const { summary, warnings, meta } = await service.getBacklog({ projectKey: "WEB", orderByDependencies: true });
 
-    assert.equal(warnings.length, 0);
+    assert.ok(warnings.some((warning) => warning.includes("Cross-lane dependencies detected")));
+    assert.equal(meta.ordering.requested, true);
+    assert.equal(meta.ordering.applied, true);
+    assert.equal(meta.ordering.reason, "dependency_graph");
+    assert.ok(meta.crossLaneDependencies.count > 0);
+    assert.ok(meta.crossLaneDependencies.dependencies.length > 0);
     assert.equal(summary.scope.project_key, "WEB");
     assert.equal(summary.totals.implementation.tasks, 3);
     assert.equal(summary.totals.implementation.story_points, 5);
@@ -205,7 +223,19 @@ describe("BacklogService", () => {
     await service.close();
   });
 
-  it("filters by status when requested", async () => {
+  it("records skipped ordering when dependency ordering lacks project scope", { concurrency: false }, async () => {
+    const workspace = workspaceFromRoot(workspaceRoot);
+    const service = await BacklogService.create(workspace);
+    const { meta, warnings } = await service.getBacklog({ orderByDependencies: true });
+
+    assert.equal(meta.ordering.requested, true);
+    assert.equal(meta.ordering.applied, false);
+    assert.equal(meta.ordering.reason, "missing_project_scope");
+    assert.ok(warnings.some((warning) => warning.includes("Dependency ordering requires a project scope")));
+    await service.close();
+  });
+
+  it("filters by status when requested", { concurrency: false }, async () => {
     const workspace = workspaceFromRoot(workspaceRoot);
     const service = await BacklogService.create(workspace);
     const { summary } = await service.getBacklog({ projectKey: "WEB", statuses: ["ready_to_review"] });

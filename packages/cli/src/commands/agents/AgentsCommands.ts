@@ -53,6 +53,7 @@ Subcommands:
     --model <MODEL>          Default model name
     --rating <N>             Relative capability rating (higher is stronger)
     --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
+    --max-complexity <N>     Max task complexity the agent should handle (1-10)
     --best-usage <TEXT>      Primary usage area (e.g., code_write, ui_ux_docs)
     --cost-per-million <N>   Cost per 1M tokens (0 for local models)
     --capability <CAP>       Repeatable capabilities to attach
@@ -62,6 +63,7 @@ Subcommands:
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
+    --max-complexity <N>     Max task complexity the agent should handle (1-10)
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
     --force                  Force deletion even if referenced
   auth set <NAME>            Store credentials (use --api-key or interactive prompt)
@@ -107,6 +109,17 @@ const parseReasoningRating = (value: string | string[] | boolean | undefined): n
   const parsed = Number.parseFloat(String(raw));
   if (!Number.isFinite(parsed)) {
     throw new Error("Invalid --reasoning-rating; expected a number");
+  }
+  return parsed;
+};
+
+const parseMaxComplexity = (value: string | string[] | boolean | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") return undefined;
+  const parsed = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 10) {
+    throw new Error("Invalid --max-complexity; expected an integer 1-10");
   }
   return parsed;
 };
@@ -192,7 +205,11 @@ const formatCapabilities = (caps: string[] | undefined): string => {
   return `${shown.join(", ")}${suffix}`;
 };
 
-const formatBoxTable = (headers: string[], rows: string[][], maxWidths: number[]): string => {
+const formatBoxTable = (
+  headers: string[],
+  rows: string[][],
+  maxWidths: Array<number | undefined>,
+): string => {
   if (rows.length === 0) return headers.join(" | ");
   const rawWidths = headers.map((header, idx) =>
     Math.max(header.length, ...rows.map((row) => (row[idx] ?? "").length)),
@@ -236,19 +253,21 @@ export class AgentsCommands {
                 "MODEL",
                 "RATING",
                 "REASON",
+                "MAX CX",
                 "USAGE",
                 "COST/1M",
                 "HEALTH",
                 "LAST CHECK",
                 "CAPABILITIES",
               ];
-              const maxWidths = [14, 14, 24, 6, 9, 10, 12, 10, 16, 36];
+              const maxWidths: Array<number | undefined> = [undefined, 14, 24, 6, 9, 6, 10, 12, 10, 16, 36];
               const rows = agents.map((agent) => [
                 agent.slug,
                 agent.adapter,
                 agent.defaultModel ?? "-",
                 agent.rating !== undefined ? String(agent.rating) : "-",
                 agent.reasoningRating !== undefined ? String(agent.reasoningRating) : "-",
+                formatNumber(agent.maxComplexity),
                 agent.bestUsage ?? "-",
                 formatCost(agent.costPerMillion),
                 agent.health?.status ?? "unknown",
@@ -271,6 +290,7 @@ export class AgentsCommands {
           const config = parseConfig(parsed.flags);
           const rating = parseRating(parsed.flags.rating);
           const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
+          const maxComplexity = parseMaxComplexity(parsed.flags["max-complexity"]);
           const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
           const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
           const agent = await api.createAgent({
@@ -279,6 +299,7 @@ export class AgentsCommands {
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             rating,
             reasoningRating,
+            maxComplexity,
             bestUsage,
             costPerMillion,
             capabilities,
@@ -297,6 +318,7 @@ export class AgentsCommands {
           const config = parseConfig(parsed.flags);
           const rating = parseRating(parsed.flags.rating);
           const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
+          const maxComplexity = parseMaxComplexity(parsed.flags["max-complexity"]);
           const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
           const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
           const agent = await api.updateAgent(name, {
@@ -304,6 +326,7 @@ export class AgentsCommands {
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             rating,
             reasoningRating,
+            maxComplexity,
             bestUsage,
             costPerMillion,
             capabilities,

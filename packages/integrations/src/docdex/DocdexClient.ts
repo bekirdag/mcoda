@@ -83,6 +83,7 @@ export class DocdexClient {
   private resolvedBaseUrl?: string;
   private repoId?: string;
   private initializing = false;
+  private disabledReason?: string;
 
   constructor(
     private options: {
@@ -93,6 +94,14 @@ export class DocdexClient {
     } = {},
   ) {
     this.repoId = options.repoId;
+  }
+
+  disable(reason?: string): void {
+    this.disabledReason = reason?.trim() || "docdex unavailable";
+  }
+
+  isAvailable(): boolean {
+    return !this.disabledReason;
   }
 
   private normalizePath(inputPath?: string): string | undefined {
@@ -108,6 +117,7 @@ export class DocdexClient {
   }
 
   private async resolveBaseUrl(): Promise<string | undefined> {
+    if (this.disabledReason) return undefined;
     if (this.options.baseUrl !== undefined) {
       const trimmed = this.options.baseUrl.trim();
       return trimmed ? normalizeBaseUrl(trimmed) : undefined;
@@ -120,7 +130,7 @@ export class DocdexClient {
 
   private buildMissingRepoMessage(): string {
     const root = this.options.workspaceRoot ? path.resolve(this.options.workspaceRoot) : "unknown workspace";
-    return `Docdex repo scope missing for ${root}. Ensure docdexd is running and initialized for this repo, or set MCODA_DOCDEX_URL to a daemon that already indexed it.`;
+    return `Docdex repo scope missing for ${root}. Ensure docdexd is running and initialized for this repo, or set MCODA_DOCDEX_URL and MCODA_DOCDEX_REPO_ID.`;
   }
 
   async ensureRepoScope(): Promise<void> {
@@ -161,12 +171,21 @@ export class DocdexClient {
   }
 
   private async fetchRemote(pathname: string, init?: RequestInit): Promise<Response> {
+    if (this.disabledReason) {
+      throw new Error(`Docdex unavailable: ${this.disabledReason}`);
+    }
     const baseUrl = await this.resolveBaseUrl();
     if (!baseUrl) {
       throw new Error("Docdex baseUrl not configured. Run docdex setup or set MCODA_DOCDEX_URL.");
     }
     await this.ensureRepoScope();
     const url = new URL(pathname, baseUrl);
+    if (this.repoId && !url.searchParams.has("repo_id")) {
+      url.searchParams.set("repo_id", this.repoId);
+    }
+    if (this.options.workspaceRoot && !url.searchParams.has("repo_root")) {
+      url.searchParams.set("repo_root", path.resolve(this.options.workspaceRoot));
+    }
     const buildHeaders = () => {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;

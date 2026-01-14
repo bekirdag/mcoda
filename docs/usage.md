@@ -140,11 +140,22 @@ mcoda openapi-from-docs --workspace-root . --agent codex --force
 List SP buckets and tasks already stored in the workspace SQLite DB:
 
 ```sh
-mcoda backlog --project WEB --order dependencies --verbose
+mcoda backlog --project WEB --order dependencies --view tasks --limit 10 --include-done --verbose
 ```
 
-- Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--status <STATUS[,STATUS...]>`, `--order dependencies`, `--json`, `--verbose`, `--workspace-root <path>`.
+- Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--status <STATUS[,STATUS...]>`, `--include-done`, `--include-cancelled`, `--view summary|epics|stories|tasks`, `--limit <N>`/`--top <N>`, `--order dependencies`, `--json`, `--verbose`, `--workspace-root <path>`.
+- Defaults to active statuses only; use `--status all` or the include flags to show done/cancelled items.
 - No agents or docdex are called; output comes purely from `.mcoda/mcoda.db`.
+
+### Estimate the backlog
+Compute SP totals, effective SP/h per lane, and ETA projections:
+
+```sh
+mcoda estimate --project WEB --sp-per-hour-implementation 12 --velocity-mode mixed --velocity-window 20
+```
+
+- Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--sp-per-hour <FLOAT>`, `--sp-per-hour-implementation <FLOAT>`, `--sp-per-hour-review <FLOAT>`, `--sp-per-hour-qa <FLOAT>`, `--velocity-mode config|empirical|mixed`, `--velocity-window 10|20|50`, `--json`, `--workspace-root <path>`.
+- Output includes DONE/TOTAL rows, velocity samples with the window used, and ETA values formatted as ISO + local time + relative duration.
 
 ### Dependency-aware ordering
 Compute a deterministic, dependency-aware order (most depended-on first, topo-safe) and persist global priorities:

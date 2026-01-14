@@ -561,10 +561,123 @@ test("CodeReviewService blocks after invalid JSON retry", async () => {
     assert.equal(result.tasks[0]?.error, "review_invalid_output");
     assert.ok(result.warnings.some((warning) => warning.includes("non-JSON output")));
 
+    const artifactPath = path.join(
+      workspace.workspaceRoot,
+      ".mcoda",
+      "jobs",
+      result.jobId,
+      "review",
+      "outputs",
+      `${task.id}.json`,
+    );
+    const artifact = JSON.parse(await fs.readFile(artifactPath, "utf8"));
+    assert.equal(artifact.primary_output, "not json");
+    assert.equal(artifact.retry_output, "still not json");
+
     const updated = await repo.getTaskByKey(task.key);
     assert.equal(updated?.status, "blocked");
     assert.equal((updated?.metadata as any)?.blocked_reason, "review_invalid_output");
   } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CodeReviewService retries with JSON-only agent override", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+
+  const diffStub = [
+    "diff --git a/file.txt b/file.txt",
+    "index 1111111..2222222 100644",
+    "--- a/file.txt",
+    "+++ b/file.txt",
+    "@@ -1 +1 @@",
+    "-foo",
+    "+bar",
+    "",
+  ].join("\n");
+
+  const invokeCalls: Array<{ agentId: string; input: string }> = [];
+  const service = new CodeReviewService(workspace, {
+    agentService: {
+      invoke: async (agentId: string, request: { input: string }) => {
+        invokeCalls.push({ agentId, input: request.input });
+        if (invokeCalls.length === 1) {
+          return { output: "not json", adapter: "local" };
+        }
+        return { output: '{"decision":"approve","summary":"ok","findings":[]}', adapter: "local" };
+      },
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "code-review": "Review prompt" },
+      }),
+    } as any,
+    docdex: { search: async () => [] } as any,
+    jobService,
+    workspaceRepo: repo,
+    repo: { close: async () => {} } as any,
+    routingService: {
+      resolveAgentForCommand: async ({ overrideAgentSlug }: any) => ({
+        agent:
+          overrideAgentSlug === "review-json"
+            ? { id: "agent-2", slug: "review-json", adapter: "local", defaultModel: "strict" }
+            : { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any,
+    vcsClient: {
+      ensureRepo: async () => {},
+      diff: async () => diffStub,
+    } as any,
+  });
+
+  const prevOverride = process.env.MCODA_REVIEW_JSON_AGENT;
+  process.env.MCODA_REVIEW_JSON_AGENT = "review-json";
+  try {
+    const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const [epic] = await repo.insertEpics([
+      { projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 },
+    ]);
+    const [story] = await repo.insertStories([
+      { projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" },
+    ]);
+    const [task] = await repo.insertTasks([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task",
+        description: "",
+        status: "ready_to_review",
+      },
+    ]);
+    await repo.updateTask(task.id, { vcsBranch: "feature/task" });
+
+    const result = await service.reviewTasks({
+      workspace,
+      projectKey: project.key,
+      agentStream: false,
+      dryRun: false,
+    });
+
+    assert.equal(result.tasks.length, 1);
+    assert.equal(result.tasks[0]?.decision, "approve");
+    assert.equal(invokeCalls.length, 2);
+    assert.equal(invokeCalls[1]?.agentId, "agent-2");
+    assert.ok(invokeCalls[1]?.input.includes("Return ONLY valid JSON"));
+
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "ready_to_qa");
+  } finally {
+    if (prevOverride === undefined) {
+      delete process.env.MCODA_REVIEW_JSON_AGENT;
+    } else {
+      process.env.MCODA_REVIEW_JSON_AGENT = prevOverride;
+    }
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }

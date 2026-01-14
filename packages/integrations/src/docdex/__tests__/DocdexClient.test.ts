@@ -56,7 +56,19 @@ const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<vo
     res.statusCode = 404;
     res.end("Not found");
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.removeListener("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.removeListener("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Failed to bind test server");
@@ -79,7 +91,16 @@ test("DocdexClient searches via docdex daemon and fetches snippets", async (t) =
     t.skip("docdex client tests can hang on Windows CI");
     return;
   }
-  const server = await startServer();
+  let server: Awaited<ReturnType<typeof startServer>>;
+  try {
+    server = await startServer();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EPERM") {
+      t.skip("network listeners are not permitted in this environment");
+      return;
+    }
+    throw error;
+  }
   try {
     const client = new DocdexClient({ baseUrl: server.baseUrl, workspaceRoot: "/tmp/ws" });
     const search = await client.search({ docType: "SDS", query: "demo" });

@@ -81,6 +81,32 @@ const renderIoChunk = (chunk: InvocationResult): void => {
   }
 };
 
+const createStreamIoRenderer = () => {
+  let buffer = "";
+  const flushLine = (line: string) => {
+    const cleaned = line.endsWith("\r") ? line.slice(0, -1) : line;
+    emitIoLine(`${IO_PREFIX} output ${cleaned}`);
+  };
+  return {
+    push: (chunk: InvocationResult) => {
+      if (!chunk.output) return;
+      buffer += chunk.output;
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        flushLine(line);
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
+      }
+    },
+    flush: () => {
+      if (!buffer) return;
+      flushLine(buffer);
+      buffer = "";
+    },
+  };
+};
+
 const renderIoEnd = (): void => {
   emitIoLine(`${IO_PREFIX} end`);
 };
@@ -120,6 +146,21 @@ const stripJsonOnlyGuidance = (guidance: string): string => {
   const lines = guidance.split(/\r?\n/);
   const filtered = lines.filter((line) => !DOCDEX_JSON_ONLY_MARKERS.some((marker) => marker.test(line)));
   return filtered.join("\n").trim();
+};
+
+const normalizeDocdexGuidanceInput = (input: string, prefix: string): string => {
+  const trimmed = input.trimStart();
+  if (!trimmed.startsWith(DOCDEX_GUIDANCE_HEADER)) {
+    return `${prefix}${input}`;
+  }
+  if (!trimmed.startsWith(prefix)) {
+    return trimmed;
+  }
+  let remainder = trimmed.slice(prefix.length);
+  while (remainder.startsWith(prefix)) {
+    remainder = remainder.slice(prefix.length);
+  }
+  return `${prefix}${remainder}`;
 };
 
 export class AgentService {
@@ -310,16 +351,18 @@ export class AgentService {
     const ioEnabled = isIoEnabled();
     const generator = await adapter.invokeStream(enriched);
     async function* wrap(): AsyncGenerator<InvocationResult, void, unknown> {
+      const streamIo = ioEnabled ? createStreamIoRenderer() : undefined;
       if (ioEnabled) {
         renderIoHeader(agent, enriched, "stream");
       }
       for await (const chunk of generator) {
         if (ioEnabled) {
-          renderIoChunk(chunk);
+          streamIo?.push(chunk);
         }
         yield chunk;
       }
       if (ioEnabled) {
+        streamIo?.flush();
         renderIoEnd();
       }
     }
@@ -343,6 +386,9 @@ export class AgentService {
     const cleaned = command === "gateway-agent" ? guidance : stripJsonOnlyGuidance(guidance);
     if (!cleaned) return request;
     const prefix = `${DOCDEX_GUIDANCE_HEADER}\n${cleaned}\n\n`;
-    return { ...request, input: `${prefix}${request.input ?? ""}` };
+    const currentInput = request.input ?? "";
+    const nextInput = normalizeDocdexGuidanceInput(currentInput, prefix);
+    if (nextInput === currentInput) return request;
+    return { ...request, input: nextInput };
   }
 }

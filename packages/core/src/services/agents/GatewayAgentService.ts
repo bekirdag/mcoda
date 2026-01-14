@@ -9,6 +9,7 @@ import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, SelectedTask } from "../execution/TaskSelectionService.js";
 import { RoutingService } from "./RoutingService.js";
+import { isDocContextExcluded, normalizeDocType } from "../shared/ProjectGuidance.js";
 
 const DEFAULT_GATEWAY_PROMPT = [
   "You are the gateway agent. Read the task context and docdex snippets, digest the task, decide what is done vs. remaining, and plan the work.",
@@ -209,13 +210,24 @@ const DEFAULT_STATUS_FILTER = [
   "skipped",
 ];
 
-const summarizeDoc = (doc: DocdexDocument, index: number): GatewayDocSummary => {
+const summarizeDoc = (doc: DocdexDocument, index: number, warnings?: string[]): GatewayDocSummary => {
   const title = doc.title ?? doc.path ?? doc.id ?? `doc-${index + 1}`;
   const excerptSource = doc.segments?.[0]?.content ?? doc.content ?? "";
   const excerpt = excerptSource ? (excerptSource.length > 480 ? `${excerptSource.slice(0, 480)}...` : excerptSource) : undefined;
+  const normalized = normalizeDocType({
+    docType: doc.docType,
+    path: doc.path,
+    title: doc.title,
+    content: excerptSource,
+  });
+  if (normalized.downgraded && warnings) {
+    warnings.push(
+      `Docdex docType downgraded from SDS to DOC for ${doc.path ?? doc.title ?? doc.id}: ${normalized.reason ?? "not_sds"}`,
+    );
+  }
   return {
     id: doc.id ?? `doc-${index + 1}`,
-    docType: doc.docType,
+    docType: normalized.docType,
     title,
     path: doc.path,
     excerpt,
@@ -361,9 +373,12 @@ export class GatewayAgentService {
     const globalRepo = await GlobalRepository.create();
     const agentService = new AgentService(globalRepo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
     const jobService = new JobService(workspace, workspaceRepo);
@@ -410,6 +425,14 @@ export class GatewayAgentService {
     await maybeClose(this.deps.jobService);
     await maybeClose(this.deps.workspaceRepo);
     await maybeClose(this.deps.routingService);
+  }
+
+  setDocdexAvailability(available: boolean, reason?: string): void {
+    if (available) return;
+    const docdex = this.deps.docdex as any;
+    if (docdex && typeof docdex.disable === "function") {
+      docdex.disable(reason);
+    }
   }
 
   private async loadGatewayPrompts(agentId: string): Promise<{ jobPrompt: string; characterPrompt: string; commandPrompt: string }> {
@@ -664,7 +687,12 @@ export class GatewayAgentService {
         });
         for (const doc of docs) {
           if (summaries.length >= maxDocs) break;
-          summaries.push(summarizeDoc(doc, summaries.length));
+          const ref = doc.path ?? doc.title ?? doc.id;
+          if (isDocContextExcluded(ref, false)) {
+            warnings.push(`Docdex doc filtered from gateway context: ${ref}`);
+            continue;
+          }
+          summaries.push(summarizeDoc(doc, summaries.length, warnings));
         }
       } catch (error) {
         warnings.push(`Docdex search failed (${docType}): ${(error as Error).message}`);

@@ -25,6 +25,8 @@ export interface WorkspaceConfig {
   mirrorDocs?: boolean;
   branch?: string;
   docdexUrl?: string;
+  docdexRepoId?: string;
+  reviewJsonAgent?: string;
   projectKey?: string;
   restrictAutoMergeWithoutScope?: boolean;
   autoMerge?: boolean;

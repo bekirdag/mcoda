@@ -7,6 +7,7 @@ import {
   resolveDocdexBinary,
   resolveDocdexBrowserInfo,
   resolvePlaywrightCli,
+  summarizeDocdexCheck,
 } from "../DocdexRuntime.js";
 
 const shouldSkipDocdexCheck = process.platform === "win32" || process.env.MCODA_SKIP_DOCDEX_CHECKS === "1";
@@ -80,4 +81,18 @@ test("resolveDocdexBrowserInfo reports missing Playwright CLI", async () => {
     if (prev === undefined) delete process.env.MCODA_FORCE_NO_PLAYWRIGHT;
     else process.env.MCODA_FORCE_NO_PLAYWRIGHT = prev;
   }
+});
+
+test("summarizeDocdexCheck reports failures", () => {
+  const summary = summarizeDocdexCheck({
+    success: false,
+    checks: [
+      { name: "bind", status: "error", message: "bind blocked" },
+      { name: "ollama", status: "error", message: "ollama unreachable" },
+    ],
+  });
+  assert.equal(summary.ok, false);
+  assert.ok(summary.message?.includes("bind"));
+  assert.ok(summary.message?.includes("ollama"));
+  assert.equal(summary.failedChecks?.length, 2);
 });
