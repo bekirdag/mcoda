@@ -23,11 +23,22 @@ export interface DocdexHealthSummary {
   failedChecks?: Array<{ name?: string; status?: string; message?: string }>;
 }
 
+export interface DocdexChromiumDetails {
+  path?: string;
+  manifestPath?: string;
+  installedAt?: string;
+  version?: string;
+  platform?: string;
+  downloadUrl?: string;
+}
+
 export interface DocdexBrowserInfo {
   ok: boolean;
   message?: string;
-  browsersPath?: string;
-  browsers?: Array<{ name?: string; path?: string; version?: string }>;
+  installHint?: string;
+  autoInstallEnabled?: boolean;
+  configuredKind?: string;
+  chromium?: DocdexChromiumDetails;
 }
 
 const DOCDEX_ENV_URLS = ["MCODA_DOCDEX_URL", "DOCDEX_URL"];
@@ -55,26 +66,6 @@ export const resolveDocdexBinary = (): string | undefined => {
   const root = resolveDocdexPackageRoot();
   if (!root) return undefined;
   return path.join(root, "bin", "docdex.js");
-};
-
-export const resolvePlaywrightCli = (): string | undefined => {
-  if (process.env.MCODA_FORCE_NO_PLAYWRIGHT === "1") {
-    return undefined;
-  }
-  const require = createRequire(import.meta.url);
-  try {
-    return require.resolve("playwright/cli.js");
-  } catch {
-    // fall through to docdex-local resolution
-  }
-  const root = resolveDocdexPackageRoot();
-  if (!root) return undefined;
-  try {
-    const requireFromDocdex = createRequire(path.join(root, "package.json"));
-    return requireFromDocdex.resolve("playwright/cli.js");
-  } catch {
-    return undefined;
-  }
 };
 
 export const runDocdex = async (
@@ -164,41 +155,76 @@ export const resolveDocdexBaseUrl = async (options: { cwd?: string; env?: NodeJS
   }
 };
 
+const coerceString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+const coerceChromiumDetails = (value: unknown): DocdexChromiumDetails | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const details = value as Record<string, unknown>;
+  return {
+    path: coerceString(details.path),
+    manifestPath: coerceString(details.manifest_path ?? details.manifestPath),
+    installedAt: coerceString(details.installed_at ?? details.installedAt),
+    version: coerceString(details.version),
+    platform: coerceString(details.platform),
+    downloadUrl: coerceString(details.download_url ?? details.downloadUrl),
+  };
+};
+
+const buildBrowserSetupHint = (installHint?: string): string => {
+  const hint = installHint ?? "docdexd browser install";
+  return `Run \`${hint}\` to install the headless Chromium browser.`;
+};
+
+export const parseDocdexBrowserCheck = (check: DocdexCheckResult): DocdexBrowserInfo => {
+  const browserCheck = check.checks?.find((c) => c.name === "browser");
+  const details = browserCheck?.details as Record<string, unknown> | undefined;
+  const chromium = coerceChromiumDetails(details?.chromium);
+  const installHint = coerceString(details?.install_hint);
+  const autoInstallEnabled = typeof details?.auto_install_enabled === "boolean" ? details.auto_install_enabled : undefined;
+  const configuredKind = coerceString(details?.configured_kind);
+  if (!browserCheck) {
+    const setupHint = buildBrowserSetupHint(installHint);
+    return {
+      ok: false,
+      message: `Docdex browser check unavailable. ${setupHint}`,
+      chromium,
+      installHint,
+      autoInstallEnabled,
+      configuredKind,
+    };
+  }
+  if (browserCheck.status !== "ok") {
+    const setupHint = buildBrowserSetupHint(installHint);
+    return {
+      ok: false,
+      message: `${browserCheck.message ?? "Docdex browser check failed."} ${setupHint}`,
+      chromium,
+      installHint,
+      autoInstallEnabled,
+      configuredKind,
+    };
+  }
+  return {
+    ok: true,
+    chromium,
+    installHint,
+    autoInstallEnabled,
+    configuredKind,
+  };
+};
+
 export const resolveDocdexBrowserInfo = async (
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<DocdexBrowserInfo> => {
-  const setupHint = "Run `docdex setup` to install Playwright and at least one browser.";
-  if (!resolvePlaywrightCli()) {
-    return {
-      ok: false,
-      message: `Playwright CLI not available. ${setupHint}`,
-    };
-  }
   try {
     const check = await readDocdexCheck(options);
-    const browserCheck = check.checks?.find((c) => c.name === "browser");
-    if (!browserCheck || browserCheck.status !== "ok") {
-      return {
-        ok: false,
-        message: `${browserCheck?.message ?? "Docdex browser check failed."} ${setupHint}`,
-      };
-    }
-    const details = browserCheck.details ?? {};
-    const playwright = (details.playwright as Record<string, unknown>) ?? {};
-    const browsers = Array.isArray(playwright.browsers) ? playwright.browsers : [];
-    if (!browsers.length) {
-      return {
-        ok: false,
-        message: `Docdex has no Playwright browsers configured. ${setupHint}`,
-      };
-    }
-    const browsersPath = typeof playwright.browsers_path === "string" ? playwright.browsers_path : undefined;
-    return {
-      ok: true,
-      browsersPath,
-      browsers,
-    };
+    return parseDocdexBrowserCheck(check);
   } catch (error) {
+    const setupHint = buildBrowserSetupHint();
     return {
       ok: false,
       message: `Docdex check failed: ${(error as Error).message}. ${setupHint}`,

@@ -3169,7 +3169,7 @@ Key adapter families:
 
   * **CLI runner** – executes test commands (`npm test`, `pytest`, etc.) with scoped environment and working directory.
 
-  * **Chromium adapter** – runs browser‑based QA suites (Playwright/Cypress‑style).
+  * **Chromium adapter** – runs browser‑based QA suites (Chromium/Playwright/Cypress‑style).
 
   * **Maestro/mobile adapter** – runs mobile flows on devices/emulators (e.g. `maestro test`).
 
@@ -6744,7 +6744,7 @@ interface QaProfile {
 *   
   `runner = "cli"` – shell command (e.g. Jest, pytest, Maven).
 
-* `runner = "chromium"` – browser/UI flows via a Chromium QA adapter (Playwright/Cypress, etc.).
+* `runner = "chromium"` – browser/UI flows via a Chromium QA adapter (Chromium/Playwright/Cypress, etc.).
 
 * `runner = "maestro"` – mobile/device flows via a Maestro‑style adapter.
 

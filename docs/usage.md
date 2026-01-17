@@ -8,13 +8,13 @@ This guide covers installation, workspace setup, and common CLI workflows.
 - Verify: `mcoda --version`
 
 ## Docdex setup
-mcoda relies on docdex for document search/context and Playwright provisioning.
+mcoda relies on docdex for document search/context and the headless Chromium browser used for web enrichment.
 
 ```sh
 docdex setup
 ```
 
-- Installs Playwright and at least one browser used by `qa-tasks`.
+- Installs the headless Chromium browser used by docdex web enrichment (or run `docdexd browser install` later).
 - Docdex state lives under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run (gateway, work-on-tasks, code-review, QA, docs).
 
@@ -342,7 +342,7 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_qa` (override for regression runs).
 - Modes: `--mode auto` (default; runs CLI/Chromium/Maestro via QA profiles) or `--mode manual --result pass|fail|blocked [--notes "..."] [--evidence-url "..."]`.
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`. Add `--rate-agents` to score QA agent performance.
-- Playwright: auto QA uses the Chromium runner and Playwright browsers provisioned by `docdex setup`. If Playwright or browsers are missing, run `docdex setup` before QA.
+- Chromium runner: auto QA uses the Chromium runner. Install Playwright in the repo or provide `--test-command` so browser tests can run.
 - CLI marker: when `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE` or QA marks the run as `infra_issue` with guidance in task comments.
 - Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
 - Invalid JSON: if the QA agent returns invalid JSON after retry, the outcome is treated as `unclear` (`qa_unclear`) and a manual QA follow-up can be created.

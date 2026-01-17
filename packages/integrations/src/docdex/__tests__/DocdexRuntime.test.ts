@@ -6,7 +6,7 @@ import {
   resolveDocdexBaseUrl,
   resolveDocdexBinary,
   resolveDocdexBrowserInfo,
-  resolvePlaywrightCli,
+  parseDocdexBrowserCheck,
   summarizeDocdexCheck,
 } from "../DocdexRuntime.js";
 
@@ -16,13 +16,6 @@ test("resolveDocdexBinary returns an existing binary path when docdex is install
   const binary = resolveDocdexBinary();
   assert.ok(binary, "expected docdex binary to resolve");
   assert.ok(existsSync(binary), "expected docdex binary to exist on disk");
-});
-
-test("resolvePlaywrightCli returns an existing path when available", () => {
-  const cli = resolvePlaywrightCli();
-  if (cli) {
-    assert.ok(existsSync(cli), "expected playwright cli to exist on disk");
-  }
 });
 
 test("resolveDocdexBaseUrl respects explicit env overrides", async () => {
@@ -63,24 +56,48 @@ test("resolveDocdexBrowserInfo returns a stable shape", async (t) => {
   const info = await resolveDocdexBrowserInfo();
   assert.equal(typeof info.ok, "boolean");
   if (info.ok) {
-    assert.ok(Array.isArray(info.browsers), "expected browsers array when ok");
+    if (info.chromium) {
+      assert.equal(typeof info.chromium, "object");
+    }
   } else {
-    assert.ok(info.message?.includes("docdex setup"), "expected setup hint in failure message");
+    assert.ok(info.message?.toLowerCase().includes("docdex"), "expected setup hint in failure message");
   }
 });
 
-test("resolveDocdexBrowserInfo reports missing Playwright CLI", async () => {
-  const prev = process.env.MCODA_FORCE_NO_PLAYWRIGHT;
-  process.env.MCODA_FORCE_NO_PLAYWRIGHT = "1";
-  try {
-    const info = await resolveDocdexBrowserInfo();
-    assert.equal(info.ok, false);
-    assert.ok(info.message?.toLowerCase().includes("playwright cli"));
-    assert.ok(info.message?.toLowerCase().includes("docdex setup"));
-  } finally {
-    if (prev === undefined) delete process.env.MCODA_FORCE_NO_PLAYWRIGHT;
-    else process.env.MCODA_FORCE_NO_PLAYWRIGHT = prev;
-  }
+test("parseDocdexBrowserCheck captures chromium details", () => {
+  const info = parseDocdexBrowserCheck({
+    checks: [
+      {
+        name: "browser",
+        status: "ok",
+        details: {
+          install_hint: "docdexd browser install",
+          auto_install_enabled: true,
+          configured_kind: "chromium",
+          chromium: {
+            path: "/tmp/chromium",
+            manifest_path: "/tmp/manifest.json",
+            version: "123.0.0",
+            platform: "darwin",
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(info.ok, true);
+  assert.equal(info.installHint, "docdexd browser install");
+  assert.equal(info.autoInstallEnabled, true);
+  assert.equal(info.configuredKind, "chromium");
+  assert.equal(info.chromium?.path, "/tmp/chromium");
+  assert.equal(info.chromium?.manifestPath, "/tmp/manifest.json");
+  assert.equal(info.chromium?.version, "123.0.0");
+  assert.equal(info.chromium?.platform, "darwin");
+});
+
+test("parseDocdexBrowserCheck reports missing browser check", () => {
+  const info = parseDocdexBrowserCheck({ checks: [] });
+  assert.equal(info.ok, false);
+  assert.ok(info.message?.toLowerCase().includes("docdex"));
 });
 
 test("summarizeDocdexCheck reports failures", () => {

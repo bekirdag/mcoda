@@ -19,6 +19,7 @@ This document defines baseline quality gates for mcoda releases. Use it for rele
 - Tests:
   - Unit and integration tests pass across workspace packages.
   - Packaging guardrails pass (no accidental artifacts in npm tarball).
+  - `node tests/all.js` covers run-all suites (add standalone scripts there when needed).
 
 ## Nightly checks
 - `pnpm -r run build`

@@ -1,0 +1,165 @@
+# Work-on-Tasks Workflow
+
+This document describes the current `work-on-tasks` command flow as implemented in `WorkOnTasksService` (`packages/core/src/services/execution/WorkOnTasksService.ts`).
+
+## Overview
+`work-on-tasks` selects tasks from the backlog, builds an execution prompt with docdex + project guidance, invokes a work agent to generate patches or file blocks, applies those changes, runs task-specific tests + run-all tests, and then moves the task to `ready_to_review` if everything passes. It also manages task locks, VCS branches, and logs/telemetry for each run.
+
+## Inputs and defaults
+- Task scope: `projectKey`, `epicKey`, `storyKey`, `taskKeys`, `statusFilter`, `limit`, `parallel`.
+- Execution flags: `dryRun`, `noCommit`, `agentName`, `agentStream`, `maxAgentSeconds`, `autoMerge`, `autoPush`.
+- Base branch: uses workspace config branch when set; defaults to `mcoda-dev`.
+- Tests: driven from task metadata (`tests`, `test_requirements`) and the presence of `tests/all.js` (auto-created when missing and tests are required).
+
+## High-level phases
+1. Init + selection
+2. Per-task execution
+3. Finalize and report
+
+## Detailed workflow
+
+### 1) Init + selection
+1. Ensure `.mcoda/` exists and is in `.gitignore`.
+2. Start a `command_run` and a `job` for `work-on-tasks`.
+3. Checkout base branch (workspace config branch or `mcoda-dev`).
+4. Select tasks with `TaskSelectionService` and checkpoint selection.
+5. Resolve the work agent (routing + optional override) and load prompts.
+
+### 2) Per-task execution (for each selected task)
+
+#### 2.1 Task run and gating
+1. Create a `task_run` row (status: `running`).
+2. If the task already has a blocked reason and this is not a dry run, mark the task `blocked` and skip execution.
+3. Acquire a task lock (TTL derived from `maxAgentSeconds`).
+   - If the lock is taken by another run, mark this run as `skipped` and move on.
+
+#### 2.2 Metadata + test configuration
+1. Read metadata:
+   - `files` → allowed file scope
+   - `doc_links` → docs to query via docdex
+   - `tests` and `test_requirements`
+2. Normalize test commands; detect `tests/all.js` as the run‑all tests script.
+3. If `test_requirements` exist but no test command is configured, block the task with `tests_not_configured`.
+
+#### 2.3 Branch preparation (non‑dry run)
+1. Create or reuse a task branch and merge base into it.
+2. Record `vcsBranch` / `vcsBaseBranch` on the task.
+3. If merge conflicts exist, the conflict paths are added to allowed file scope.
+
+#### 2.4 Context building
+1. Query docdex for doc context (using metadata `doc_links`).
+2. Load project guidance (`docs/project-guidance.md` or `.mcoda/docs/project-guidance.md`).
+3. Load unresolved comment backlog from `code-review` and `qa-tasks` (up to 20).
+
+#### 2.5 Prompt assembly
+1. Build a task prompt with:
+   - Task metadata (epic/story, description, acceptance criteria).
+   - Dependencies and comment backlog.
+   - Allowed file scope and docdex context summary.
+2. Append test requirements + test commands.
+3. Append run‑all tests guidance (`tests/all.js` expected).
+4. Add explicit output requirements:
+   - Unified diff inside ```patch``` fences for edits.
+   - FILE blocks for new files.
+   - No JSON unless runtime forces it.
+
+#### 2.6 Agent execution loop
+1. Move task to `in_progress`.
+2. Invoke the agent (streaming or sync) and capture output.
+3. Parse output for unified diff patches and FILE blocks.
+4. If no patch or file blocks are found:
+   - Retry once with stricter instructions.
+   - If still empty: block task with `missing_patch`.
+5. Apply patches:
+   - If patch apply fails, attempt fallback to FILE blocks for touched files.
+   - If still failing, block with `patch_failed`.
+6. Enforce allowed file scope (if set); out‑of‑scope changes block the task with `scope_violation`.
+
+#### 2.7 Tests
+1. Run task-specific test commands (from metadata) followed by run‑all tests (`tests/all.js`).
+2. If `tests/all.js` is missing and tests are required, attempt to create a minimal run‑all script before continuing.
+3. If run‑all tests are still missing, treat as `tests_not_configured`.
+4. If tests fail, retry up to `MAX_TEST_FIX_ATTEMPTS` by looping agent → apply → tests.
+5. If all attempts fail, block with `tests_failed`.
+
+#### 2.8 No-change handling
+1. If there are **no changes** (no touched files and no dirty paths):
+   - If unresolved comments exist, block with `no_changes` and add a comment backlog summary.
+   - Otherwise, block with `no_changes` and add a `no_changes` comment.
+
+#### 2.9 VCS commit/merge/push (non‑dry run)
+1. Stage changes, commit with `[TASK_KEY] <title>`.
+2. Merge task branch back into base (skipped when `autoMerge` is false).
+3. Push branch and base if a remote exists (skipped when `autoPush` is false).
+4. If VCS fails, block with `vcs_failed`.
+
+#### 2.10 Finalize task
+1. Mark task `ready_to_review` and record test metadata (`test_attempts`, `test_commands`, `run_all_tests_command`).
+2. Update task run to `succeeded`.
+3. Write checkpoints and update job progress.
+4. Record agent rating (if `rateAgents` enabled).
+5. Release task lock.
+
+### 3) Finalize and report
+1. Compute job state (`completed`, `failed`, or `partial`) based on per‑task results.
+2. Finish command run with error summary if any failures.
+3. Checkout base branch again (best effort).
+
+## Common block reasons
+- `missing_patch`: no patch/file output after retry.
+- `patch_failed`: patch or file apply failed.
+- `tests_not_configured`: task requires tests but no command/run‑all script exists.
+- `tests_failed`: tests failed after all attempts.
+- `scope_violation`: change outside allowed file scope.
+- `no_changes`: no diffs produced.
+- `vcs_failed`: commit/merge/push failed.
+- `agent_timeout`: abort/timeout triggered.
+- `task_lock_lost`: lock was stolen or expired.
+- `merge_conflict`: merge conflict detected while syncing branches; task is blocked for manual resolution.
+
+## Gateway-trio integration notes
+- `gateway-trio` invokes `work-on-tasks` per task and reuses the same run-all tests gating.
+- Escalation reasons include `missing_patch`, `patch_failed`, `tests_failed`, `agent_timeout`, and `no_changes` (default).
+- `tests_failed` triggers one retry with a stronger agent before the task is left blocked.
+- Task locks are cleaned up by gateway-trio on start/resume if expired.
+
+## Mermaid diagram
+```mermaid
+flowchart TD
+  A[Start work-on-tasks] --> B[Ensure .mcoda + start job]
+  B --> C[Checkout base branch]
+  C --> D[Select tasks]
+  D --> E{For each task}
+  E --> F[Create task_run]
+  F --> G{Blocked reason?}
+  G -->|Yes| G1[Mark blocked + skip]
+  G -->|No| H[Acquire lock]
+  H --> I{Lock acquired?}
+  I -->|No| I1[Skip task]
+  I -->|Yes| J[Load metadata + tests]
+  J --> K{Tests configured?}
+  K -->|No| K1[Block tests_not_configured]
+  K -->|Yes| L[Prepare branch]
+  L --> M[Docdex + guidance + backlog]
+  M --> N[Build prompt]
+  N --> O{dryRun?}
+  O -->|Yes| O1[Skip execution]
+  O -->|No| P[Invoke agent]
+  P --> Q{Patch/file output?}
+  Q -->|No| Q1[Retry once -> missing_patch]
+  Q -->|Yes| R[Apply patch/file]
+  R --> S{Apply ok?}
+  S -->|No| S1[Fallback -> patch_failed]
+  S -->|Yes| T{Scope ok?}
+  T -->|No| T1[Block scope_violation]
+  T -->|Yes| U[Run tests + run-all]
+  U --> V{Tests pass?}
+  V -->|No| V1[Retry loop -> tests_failed]
+  V -->|Yes| W{Changes exist?}
+  W -->|No| W1[Block no_changes]
+  W -->|Yes| X[Commit/Merge/Push]
+  X --> Y{VCS ok?}
+  Y -->|No| Y1[Block vcs_failed]
+  Y -->|Yes| Z[Mark ready_to_review]
+  Z --> AA[Update job + release lock]
+```

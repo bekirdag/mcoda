@@ -15,7 +15,7 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 
 ## Docdex & QA
 - mcoda depends on the `docdex` CLI for doc search and context stitching.
-- Run `docdex setup` to install Playwright and at least one browser for `qa-tasks`.
+- Run `docdex setup` (or `docdexd browser install`) to install the headless Chromium browser used for web enrichment.
 - Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run.
 
