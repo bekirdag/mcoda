@@ -1,15 +1,34 @@
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { QaAdapter } from './QaAdapter.js';
 import { QaContext, QaEnsureResult, QaRunResult } from './QaTypes.js';
 import fs from 'node:fs/promises';
-import { resolveDocdexBrowserInfo, resolvePlaywrightCli } from '../docdex/DocdexRuntime.js';
-
 const exec = promisify(execCb);
 const shouldSkipInstall = (ctx: QaContext) =>
   process.env.MCODA_QA_SKIP_INSTALL === '1' || ctx.env?.MCODA_QA_SKIP_INSTALL === '1';
+const PLAYWRIGHT_MISSING_MESSAGE =
+  'Playwright CLI not available. Install Playwright in the repo or set a chromium QA test_command.';
+
+const resolvePlaywrightCli = (cwd: string): string | undefined => {
+  if (process.env.MCODA_FORCE_NO_PLAYWRIGHT === '1') {
+    return undefined;
+  }
+  try {
+    const requireFromCwd = createRequire(path.join(cwd, 'package.json'));
+    return requireFromCwd.resolve('playwright/cli.js');
+  } catch {
+    // fall through to local resolution
+  }
+  try {
+    const requireFromSelf = createRequire(import.meta.url);
+    return requireFromSelf.resolve('playwright/cli.js');
+  } catch {
+    return undefined;
+  }
+};
 
 export class ChromiumQaAdapter implements QaAdapter {
   private resolveCwd(profile: QaProfile, ctx: QaContext): string {
@@ -21,32 +40,24 @@ export class ChromiumQaAdapter implements QaAdapter {
     return ctx.workspaceRoot;
   }
 
+  private resolveCommand(profile: QaProfile, ctx: QaContext, cwd: string): string {
+    const override = ctx.testCommandOverride ?? profile.test_command;
+    if (override) return override;
+    const playwrightCli = resolvePlaywrightCli(cwd);
+    return playwrightCli ? `node ${playwrightCli} test --reporter=list` : '';
+  }
+
   async ensureInstalled(profile: QaProfile, ctx: QaContext): Promise<QaEnsureResult> {
     if (shouldSkipInstall(ctx)) return { ok: true, details: { skipped: true } };
     const cwd = this.resolveCwd(profile, ctx);
-    const playwrightCli = resolvePlaywrightCli();
-    if (!playwrightCli) {
+    const command = this.resolveCommand(profile, ctx, cwd);
+    if (!command) {
       return {
         ok: false,
-        message: 'Playwright CLI not available. Run `docdex setup` and install Playwright with at least one browser.',
+        message: PLAYWRIGHT_MISSING_MESSAGE,
       };
     }
-    const browserInfo = await resolveDocdexBrowserInfo({ cwd });
-    if (!browserInfo.ok) {
-      return {
-        ok: false,
-        message:
-          browserInfo.message ??
-          'Playwright browsers not installed. Run `docdex setup` and install Playwright with at least one browser.',
-      };
-    }
-    return {
-      ok: true,
-      details: {
-        playwrightBrowsersPath: browserInfo.browsersPath,
-        browsers: browserInfo.browsers,
-      },
-    };
+    return { ok: true };
   }
 
   private async persistLogs(ctx: QaContext, stdout: string, stderr: string): Promise<string[]> {
@@ -62,13 +73,11 @@ export class ChromiumQaAdapter implements QaAdapter {
   }
 
   async invoke(profile: QaProfile, ctx: QaContext): Promise<QaRunResult> {
-    const playwrightCli = resolvePlaywrightCli();
-    const defaultCommand = playwrightCli ? `node ${playwrightCli} test --reporter=list` : '';
-    const command = ctx.testCommandOverride ?? profile.test_command ?? defaultCommand;
-    const startedAt = new Date().toISOString();
     const cwd = this.resolveCwd(profile, ctx);
+    const command = this.resolveCommand(profile, ctx, cwd);
+    const startedAt = new Date().toISOString();
     if (!command) {
-      const message = 'Playwright CLI not available. Run `docdex setup` and install Playwright with at least one browser.';
+      const message = PLAYWRIGHT_MISSING_MESSAGE;
       const finishedAt = new Date().toISOString();
       return {
         outcome: 'infra_issue',

@@ -30,12 +30,12 @@ import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskComme
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
-  'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
+  'QA policy: always run automated tests. Use browser (Chromium/Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
 ].join('\n');
 const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const QA_TEST_POLICY =
-  'QA policy: always run automated tests. Use browser (Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
+  'QA policy: always run automated tests. Use browser (Chromium/Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
 const QA_REQUIRED_DEPS = ['argon2', 'pg', 'ioredis', '@jest/globals'];
 const QA_REQUIRED_ENV = [
   { dep: 'pg', env: 'TEST_DB_URL' },
@@ -1700,11 +1700,16 @@ export class QaTasksService {
 
     const ensure = await adapter.ensureInstalled(profile, qaCtx);
     if (!ensure.ok) {
-      const guidance = 'Run "docdex setup" to install Playwright and at least one browser.';
       const installMessage = ensure.message ?? 'QA install failed';
-      const installMessageWithGuidance = installMessage.includes('docdex setup')
-        ? installMessage
-        : `${installMessage} ${guidance}`;
+      const guidance =
+        profile.runner === 'chromium'
+          ? 'Install Playwright in the repo or set a chromium QA test_command.'
+          : undefined;
+      const installLower = installMessage.toLowerCase();
+      const alreadyGuided =
+        installLower.includes('playwright') || installLower.includes('test_command');
+      const installMessageWithGuidance =
+        guidance && !alreadyGuided ? `${installMessage} ${guidance}` : installMessage;
       await this.logTask(taskRun.id, installMessageWithGuidance, 'qa-install');
       if (!this.dryRunGuard) {
         await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
@@ -1756,10 +1761,6 @@ export class QaTasksService {
     const artifactDir = path.join(this.workspace.workspaceRoot, '.mcoda', 'jobs', ctx.jobId, 'qa', task.task.key);
     await PathHelper.ensureDir(artifactDir);
     const qaEnv: NodeJS.ProcessEnv = { ...qaCtx.env };
-    const browsersPath = ensure.details?.playwrightBrowsersPath;
-    if (typeof browsersPath === 'string' && browsersPath.trim().length > 0) {
-      qaEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
-    }
     let result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
     result = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
     await this.logTask(taskRun.id, `QA run completed with outcome ${result.outcome}`, 'qa-exec', {

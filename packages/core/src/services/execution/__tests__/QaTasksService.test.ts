@@ -1139,7 +1139,7 @@ test("qa-tasks preflight blocks missing dependencies and env vars", async () => 
   }
 });
 
-test("qa-tasks install failure includes docdex setup guidance", async () => {
+test("qa-tasks install failure includes Playwright guidance for chromium runner", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -1180,12 +1180,18 @@ test("qa-tasks install failure includes docdex setup guidance", async () => {
     }
   }
 
+  class ChromiumProfileService {
+    async resolveProfileForTask() {
+      return { name: "ui", runner: "chromium" };
+    }
+  }
+
   const service = new QaTasksService(workspace, {
     workspaceRepo: repo,
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new ChromiumProfileService() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
     agentService: new StubAgentService() as any,
@@ -1210,11 +1216,11 @@ test("qa-tasks install failure includes docdex setup guidance", async () => {
     assert.equal(updated?.status, "blocked");
 
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
-    assert.ok(comments.some((comment) => comment.body.includes("docdex setup")));
+    assert.ok(comments.some((comment) => comment.body.includes("Playwright")));
 
     const db = repo.getDb();
     const logs = await db.all<{ message: string }[]>("SELECT message FROM task_logs");
-    assert.ok(logs.some((log) => log.message.includes("docdex setup")));
+    assert.ok(logs.some((log) => log.message.includes("Playwright")));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

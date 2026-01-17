@@ -41,7 +41,7 @@ mcoda --help
 ```
 
 ## 🧰 Docdex & QA
-- mcoda ships with the `docdex` CLI. Run `docdex setup` to configure docdex and install Playwright + at least one browser for QA.
+- mcoda ships with the `docdex` CLI. Run `docdex setup` (or `docdexd browser install`) to configure docdex and install the headless Chromium browser used for web enrichment.
 - Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run (gateway, work-on-tasks, code-review, QA, docs).
 
