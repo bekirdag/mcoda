@@ -8,6 +8,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Docdex usage:
   - Docdex context is injected by mcoda; do not run docdexd directly.
   - If more context is needed, list the exact docdex queries in task notes and always scope to the repo (example: `docdexd search --repo <workspaceRoot> --query "<query>"` or `DOCDEX_REPO=<workspaceRoot> docdexd search --query "<query>"`).
+  - If docdex is unavailable or returns no results, say so in task notes and fall back to local docs.
 - Map the target area: inspect the relevant folder/package, list likely entry points, and open nearby tests/utilities. Favor existing slices/stores/adapters over creating new ones; note the current data shape (fields, enums, persistence model).
 - Search for prior art with the repo’s code search (e.g., ripgrep) to reuse patterns for validation, errors, logging, and tests.
 - Read task comments and ensure unresolved comment slugs are addressed in your changes.

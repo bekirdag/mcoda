@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   GATEWAY_HANDOFF_ENV_PATH,
+  buildGatewayHandoffDocdexUsage,
   buildGatewayHandoffContent,
   withGatewayHandoff,
   writeGatewayHandoffFile,
@@ -48,14 +49,43 @@ test("buildGatewayHandoffContent renders core sections", () => {
   assert.ok(content.includes("- src/new.ts"));
 });
 
+test("buildGatewayHandoffDocdexUsage uses unified guidance", () => {
+  const guidance = buildGatewayHandoffDocdexUsage();
+  assert.ok(guidance.includes("Docdex context is injected by mcoda; do not run docdexd directly."));
+  assert.ok(guidance.includes("--repo <workspaceRoot>"));
+  assert.ok(guidance.includes("DOCDEX_REPO=<workspaceRoot>"));
+});
+
+test("buildGatewayHandoffContent includes docdex guidance once", () => {
+  const content = buildGatewayHandoffContent(sampleResult as any);
+  const marker = "Docdex context is injected by mcoda; do not run docdexd directly.";
+  assert.equal(content.split(marker).length - 1, 1);
+});
+
 test("writeGatewayHandoffFile writes content and returns path", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-handoff-"));
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-handoff-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
   try {
     const handoffPath = await writeGatewayHandoffFile(dir, "run-1", "content");
     const onDisk = await fs.readFile(handoffPath, "utf8");
     assert.equal(onDisk, "content");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
   }
 });
 

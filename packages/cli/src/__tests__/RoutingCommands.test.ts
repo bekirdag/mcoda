@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { RoutingCommands } from "../commands/routing/RoutingCommands.js";
 import { RoutingService, WorkspaceResolver, JobService } from "@mcoda/core";
+import { PathHelper } from "@mcoda/shared";
 
 const withPatched = async <T, K extends keyof T>(
   target: T,
@@ -51,9 +52,9 @@ const workspace = {
   workspaceId: "ws-routing",
   id: "ws-routing",
   legacyWorkspaceIds: [],
-  mcodaDir: "/tmp/ws-routing/.mcoda",
-  workspaceDbPath: "/tmp/ws-routing/.mcoda/mcoda.db",
-  globalDbPath: "/tmp/global/mcoda.db",
+  mcodaDir: PathHelper.getWorkspaceDir("/tmp/ws-routing"),
+  workspaceDbPath: PathHelper.getWorkspaceDbPath("/tmp/ws-routing"),
+  globalDbPath: PathHelper.getGlobalDbPath(),
 };
 
 describe("RoutingCommands", () => {

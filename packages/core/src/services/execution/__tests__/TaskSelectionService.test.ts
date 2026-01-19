@@ -123,10 +123,64 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
 
   const selection = new TaskSelectionService(workspace, repo);
   const plan = await selection.selectTasks({ projectKey: "proj" });
-  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t03", "proj-epic-us-01-t01"]);
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t01", "proj-epic-us-01-t03"]);
   assert.equal(plan.blocked.length, 2);
   assert.ok(plan.blocked.some((b) => b.task.key === "proj-epic-us-01-t04"));
   assert.ok(plan.blocked.some((b) => b.task.key === "proj-epic-us-01-t02"));
+  await cleanupWorkspace(dir, repo);
+});
+
+test("selectTasks blocks tasks with open missing_context comments", async () => {
+  const ctx = await setupWorkspace();
+  const { repo, story, project, dir, workspace } = ctx;
+
+  const [t1, t2] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t20",
+        title: "Setup project scaffold",
+        description: "",
+        status: "not_started",
+      },
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t21",
+        title: "Implement API route",
+        description: "",
+        status: "not_started",
+      },
+    ],
+    false,
+  );
+
+  await repo.createTaskComment({
+    taskId: t2.id,
+    sourceCommand: "gateway-trio",
+    authorType: "agent",
+    category: "missing_context",
+    body: "Missing API shape details.",
+    createdAt: new Date().toISOString(),
+  });
+
+  const selection = new TaskSelectionService(workspace, repo);
+  const plan = await selection.selectTasks({ projectKey: "proj" });
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t20"]);
+  assert.equal(plan.blocked.length, 1);
+  assert.equal(plan.blocked[0].task.key, "proj-epic-us-01-t21");
+  assert.equal(plan.blocked[0].blockedReason, "missing_context");
+
+  const explicitPlan = await selection.selectTasks({
+    projectKey: "proj",
+    taskKeys: ["proj-epic-us-01-t21"],
+  });
+  assert.deepStrictEqual(explicitPlan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t21"]);
+  assert.equal(explicitPlan.blocked.length, 0);
+  assert.equal(explicitPlan.ordered[0].blockedReason, "missing_context");
   await cleanupWorkspace(dir, repo);
 });
 

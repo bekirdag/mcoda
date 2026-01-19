@@ -7,8 +7,28 @@ import { PathHelper } from "../../packages/shared/src/paths/PathHelper.js";
 
 test("PathHelper workspace paths derive from cwd", () => {
   const cwd = path.join(os.tmpdir(), "mcoda-path-helper");
-  assert.equal(PathHelper.getWorkspaceDir(cwd), path.join(cwd, ".mcoda"));
-  assert.equal(PathHelper.getWorkspaceDbPath(cwd), path.join(cwd, ".mcoda", "mcoda.db"));
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = path.join(os.tmpdir(), "mcoda-path-helper-home");
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  try {
+    const workspaceDir = PathHelper.getWorkspaceDir(cwd);
+    assert.ok(workspaceDir.startsWith(path.join(tempHome, ".mcoda", "workspaces")));
+    assert.equal(workspaceDir, PathHelper.getGlobalWorkspaceDir(cwd));
+    assert.equal(PathHelper.getWorkspaceDbPath(cwd), path.join(workspaceDir, "mcoda.db"));
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
+  }
 });
 
 test("PathHelper.ensureDir creates nested directories", async () => {

@@ -34,7 +34,7 @@ const usage = `mcoda code-review \\
   [--rate-agents] \\
   [--json]
 
-Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks when --create-followup-tasks=true, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under .mcoda/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
+Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks when --create-followup-tasks=true, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under ~/.mcoda/workspaces/<fingerprint>/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -217,6 +217,7 @@ export class CodeReviewCommand {
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
+      noRepoWrites: true,
     });
     const service = await CodeReviewService.create(workspace);
     try {

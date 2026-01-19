@@ -7,6 +7,7 @@ import {
   resolveDocdexBinary,
   resolveDocdexBrowserInfo,
   parseDocdexBrowserCheck,
+  parseDocdexCheckOutput,
   summarizeDocdexCheck,
 } from "../DocdexRuntime.js";
 
@@ -43,9 +44,18 @@ test("readDocdexCheck returns parsed JSON output", async (t) => {
     t.skip("docdex binary not available in this environment");
     return;
   }
-  const result = await readDocdexCheck();
-  assert.ok(result);
-  assert.ok(Array.isArray(result.checks), "expected checks array");
+  try {
+    const result = await readDocdexCheck();
+    assert.ok(result);
+    assert.ok(Array.isArray(result.checks), "expected checks array");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Missing binary") || message.includes("Expected target triple")) {
+      t.skip("docdexd binary not available for this platform");
+      return;
+    }
+    throw error;
+  }
 });
 
 test("resolveDocdexBrowserInfo returns a stable shape", async (t) => {
@@ -98,6 +108,27 @@ test("parseDocdexBrowserCheck reports missing browser check", () => {
   const info = parseDocdexBrowserCheck({ checks: [] });
   assert.equal(info.ok, false);
   assert.ok(info.message?.toLowerCase().includes("docdex"));
+});
+
+test("parseDocdexCheckOutput extracts JSON with log prefix", () => {
+  const output = [
+    "[docdex] Starting check",
+    "[docdex] Ready",
+    '{"success":true,"checks":[{"name":"bind","status":"ok"}]}',
+  ].join("\n");
+  const parsed = parseDocdexCheckOutput(output);
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.checks?.[0]?.name, "bind");
+});
+
+test("parseDocdexCheckOutput throws with snippet on invalid output", () => {
+  const output = "[docdex] Missing config: no daemon";
+  assert.throws(() => parseDocdexCheckOutput(output), (error) => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.message.includes("Output:"));
+    assert.ok(error.message.includes("Missing config"));
+    return true;
+  });
 });
 
 test("summarizeDocdexCheck reports failures", () => {

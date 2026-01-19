@@ -192,6 +192,8 @@ const extraWorkspaceTests = [
   path.join("packages", "core", "dist", "services", "review", "__tests__", "CodeReviewService.test.js"),
   path.join("packages", "core", "dist", "services", "telemetry", "__tests__", "TelemetryService.test.js"),
   path.join("packages", "core", "dist", "services", "shared", "__tests__", "ProjectGuidance.test.js"),
+  path.join("packages", "core", "dist", "services", "backlog", "__tests__", "TaskOrderingHeuristics.test.js"),
+  path.join("packages", "core", "dist", "services", "backlog", "__tests__", "TaskOrderingService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "GatewayTrioService.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "GatewayTrioCommand.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "AgentRunCommand.test.js"),
@@ -203,6 +205,7 @@ const extraWorkspaceTests = [
   path.join("packages", "cli", "dist", "__tests__", "BacklogCommands.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "EstimateCommands.test.js"),
   path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexRuntime.test.js"),
+  path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexClient.test.js"),
 ];
 
 const repoOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")

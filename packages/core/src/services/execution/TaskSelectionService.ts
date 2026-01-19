@@ -230,6 +230,23 @@ export class TaskSelectionService {
     return grouped;
   }
 
+  private async loadMissingContext(taskIds: string[]): Promise<Set<string>> {
+    if (!taskIds.length) return new Set();
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const db = this.workspaceRepo.getDb();
+    const rows = await db.all<{ task_id: string }[]>(
+      `
+        SELECT DISTINCT task_id
+        FROM task_comments
+        WHERE task_id IN (${placeholders})
+          AND LOWER(category) = 'missing_context'
+          AND (status IS NULL OR LOWER(status) = 'open')
+      `,
+      ...taskIds,
+    );
+    return new Set(rows.map((row) => row.task_id));
+  }
+
   private topologicalOrder(
     tasks: SelectedTask[],
     deps: Map<string, DependencyRow[]>,
@@ -261,9 +278,9 @@ export class TaskSelectionService {
     const ordered: SelectedTask[] = [];
     while (queue.length) {
       queue.sort((a, b) => {
-        const pa = a.task.priority ?? Number.NEGATIVE_INFINITY;
-        const pb = b.task.priority ?? Number.NEGATIVE_INFINITY;
-        if (pa !== pb) return pb - pa;
+        const pa = a.task.priority ?? Number.POSITIVE_INFINITY;
+        const pb = b.task.priority ?? Number.POSITIVE_INFINITY;
+        if (pa !== pb) return pa - pb;
         const spa = a.task.storyPoints ?? Number.POSITIVE_INFINITY;
         const spb = b.task.storyPoints ?? Number.POSITIVE_INFINITY;
         if (spa !== spb) return spa - spb;
@@ -305,6 +322,7 @@ export class TaskSelectionService {
     const filteredTasks = tasks.filter((task) => effectiveStatuses.includes(task.task_status.toLowerCase()));
     const candidateIds = filteredTasks.map((t) => t.task_id);
     const deps = await this.loadDependencies(candidateIds);
+    const missingContext = await this.loadMissingContext(candidateIds);
     const taskMap = new Map<string, SelectedTask>();
     for (const row of filteredTasks) {
       const task = this.buildTaskFromRow(row);
@@ -317,6 +335,8 @@ export class TaskSelectionService {
     const blocked: SelectedTask[] = [];
     const eligible: SelectedTask[] = [];
     for (const [taskId, entry] of taskMap.entries()) {
+      const explicit = (filters.taskKeys ?? []).includes(entry.task.key);
+      const hasMissingContext = missingContext.has(taskId);
       const depRows = deps.get(taskId) ?? [];
       const ids: string[] = [];
       const keys: string[] = [];
@@ -339,8 +359,14 @@ export class TaskSelectionService {
           blocking.push(dep.dependsOnTaskId);
         }
       }
+      if (hasMissingContext) {
+        blockedReason = "missing_context";
+      }
       entry.dependencies = { ids, keys, blocking };
-      if (blockedReason && !(allowBlocked || (filters.taskKeys ?? []).includes(entry.task.key))) {
+      if (hasMissingContext && !explicit) {
+        entry.blockedReason = blockedReason;
+        blocked.push(entry);
+      } else if (blockedReason && !(allowBlocked || explicit)) {
         entry.blockedReason = blockedReason;
         blocked.push(entry);
       } else {

@@ -11,6 +11,7 @@ export interface WorkspaceResolution {
   mcodaDir: string;
   workspaceDbPath: string;
   globalDbPath: string;
+  noRepoWrites?: boolean;
   config?: WorkspaceConfig;
 }
 
@@ -31,6 +32,10 @@ export interface WorkspaceConfig {
   restrictAutoMergeWithoutScope?: boolean;
   autoMerge?: boolean;
   autoPush?: boolean;
+  qa?: {
+    cleanIgnorePaths?: string[];
+    runAllMarkerRequired?: boolean;
+  };
   velocity?: {
     implementationSpPerHour?: number;
     reviewSpPerHour?: number;
@@ -46,6 +51,25 @@ const fileExists = async (candidate: string): Promise<boolean> => {
     return true;
   } catch {
     return false;
+  }
+};
+
+const dirHasEntries = async (candidate: string): Promise<boolean> => {
+  try {
+    const entries = await fs.readdir(candidate);
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+};
+
+const maybeCopyLegacyWorkspace = async (sourceDir: string, targetDir: string): Promise<void> => {
+  if (!(await fileExists(sourceDir))) return;
+  if (await dirHasEntries(targetDir)) return;
+  try {
+    await fs.cp(sourceDir, targetDir, { recursive: true });
+  } catch {
+    /* best effort */
   }
 };
 
@@ -67,26 +91,22 @@ const findWorkspaceMarker = async (start: string): Promise<string | undefined> =
   return undefined;
 };
 
-const ensureGitignore = async (workspaceRoot: string): Promise<void> => {
-  const gitignorePath = path.join(workspaceRoot, ".gitignore");
-  const entry = ".mcoda/\n";
-  try {
-    const content = await fs.readFile(gitignorePath, "utf8");
-    if (content.includes(".mcoda/")) return;
-    await fs.writeFile(gitignorePath, `${content.trimEnd()}\n${entry}`, "utf8");
-  } catch {
-    await fs.writeFile(gitignorePath, entry, "utf8");
+const readWorkspaceConfig = async (mcodaDir: string, fallbackDir?: string): Promise<WorkspaceConfig | undefined> => {
+  const readConfig = async (dir: string): Promise<WorkspaceConfig | undefined> => {
+    const configPath = path.join(dir, "config.json");
+    try {
+      const raw = await fs.readFile(configPath, "utf8");
+      return JSON.parse(raw) as WorkspaceConfig;
+    } catch {
+      return undefined;
+    }
+  };
+  const primary = await readConfig(mcodaDir);
+  if (primary) return primary;
+  if (fallbackDir && fallbackDir !== mcodaDir) {
+    return readConfig(fallbackDir);
   }
-};
-
-const readWorkspaceConfig = async (mcodaDir: string): Promise<WorkspaceConfig | undefined> => {
-  const configPath = path.join(mcodaDir, "config.json");
-  try {
-    const raw = await fs.readFile(configPath, "utf8");
-    return JSON.parse(raw) as WorkspaceConfig;
-  } catch {
-    return undefined;
-  }
+  return undefined;
 };
 
 type WorkspaceIdentity = { id: string; name?: string; createdAt?: string; legacyIds?: string[] };
@@ -162,13 +182,18 @@ const migrateWorkspaceDbIds = async (workspace: WorkspaceResolution, legacyIds: 
       /* ignore */
     }
   };
-  await updateJsonArray(path.join(workspace.workspaceRoot, ".mcoda", "command_runs.json"));
-  await updateJsonArray(path.join(workspace.workspaceRoot, ".mcoda", "token_usage.json"));
+  await updateJsonArray(path.join(workspace.mcodaDir, "command_runs.json"));
+  await updateJsonArray(path.join(workspace.mcodaDir, "token_usage.json"));
 };
 
 export class WorkspaceResolver {
-  static async resolveWorkspace(input: { cwd?: string; explicitWorkspace?: string }): Promise<WorkspaceResolution> {
+  static async resolveWorkspace(input: {
+    cwd?: string;
+    explicitWorkspace?: string;
+    noRepoWrites?: boolean;
+  }): Promise<WorkspaceResolution> {
     const cwd = path.resolve(input.cwd ?? process.cwd());
+    const noRepoWrites = Boolean(input.noRepoWrites);
     let explicit = input.explicitWorkspace;
     let explicitPath: string | undefined;
     if (explicit) {
@@ -189,10 +214,13 @@ export class WorkspaceResolver {
     const fromMarker = await findWorkspaceMarker(explicitPath ?? cwd);
     const gitRoot = await findGitRoot(explicitPath ?? cwd);
     const workspaceRoot = explicitPath ?? fromMarker ?? gitRoot ?? cwd;
-    const mcodaDir = path.join(workspaceRoot, ".mcoda");
+    const repoMcodaDir = path.join(workspaceRoot, ".mcoda");
+    const mcodaDir = PathHelper.getGlobalWorkspaceDir(workspaceRoot);
     await PathHelper.ensureDir(mcodaDir);
-    await ensureGitignore(workspaceRoot);
-    const existingIdentity = await readWorkspaceIdentity(mcodaDir);
+    await maybeCopyLegacyWorkspace(repoMcodaDir, mcodaDir);
+    const repoIdentity = await readWorkspaceIdentity(repoMcodaDir);
+    const globalIdentity = await readWorkspaceIdentity(mcodaDir);
+    const existingIdentity = globalIdentity ?? repoIdentity;
     let identity: WorkspaceIdentity;
     let legacyIds: string[] = [];
     if (existingIdentity) {
@@ -203,6 +231,19 @@ export class WorkspaceResolver {
         legacyIds.push(workspaceRoot);
         updatedIdentity = true;
       }
+      if (repoIdentity) {
+        if (repoIdentity.id && repoIdentity.id !== existingIdentity.id) {
+          legacyIds.push(repoIdentity.id);
+          updatedIdentity = true;
+        }
+        if (repoIdentity.legacyIds?.length) {
+          legacyIds.push(...repoIdentity.legacyIds);
+          updatedIdentity = true;
+        }
+        if (!globalIdentity) {
+          updatedIdentity = true;
+        }
+      }
       if (!looksLikeWorkspaceId(existingIdentity.id)) {
         legacyIds.push(existingIdentity.id);
         identity = {
@@ -210,7 +251,7 @@ export class WorkspaceResolver {
           id: randomUUID(),
           legacyIds: Array.from(new Set(legacyIds)),
         };
-        await writeWorkspaceIdentity(mcodaDir, identity);
+        updatedIdentity = true;
       } else {
         identity = {
           ...existingIdentity,
@@ -219,9 +260,9 @@ export class WorkspaceResolver {
         if ((identity.legacyIds?.length ?? 0) !== existingLegacy.size) {
           updatedIdentity = true;
         }
-        if (updatedIdentity) {
-          await writeWorkspaceIdentity(mcodaDir, identity);
-        }
+      }
+      if (updatedIdentity) {
+        await writeWorkspaceIdentity(mcodaDir, identity);
       }
     } else {
       identity = {
@@ -233,19 +274,22 @@ export class WorkspaceResolver {
       await writeWorkspaceIdentity(mcodaDir, identity);
     }
     const legacyWorkspaceIds = Array.from(new Set([...(identity.legacyIds ?? []), workspaceRoot].filter(Boolean)));
-    const config = await readWorkspaceConfig(mcodaDir);
+    const config = await readWorkspaceConfig(mcodaDir, repoMcodaDir);
     const resolution: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: identity.id,
       id: identity.id,
       legacyWorkspaceIds,
       mcodaDir,
-      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      workspaceDbPath: path.join(mcodaDir, "mcoda.db"),
       globalDbPath: PathHelper.getGlobalDbPath(),
+      noRepoWrites,
       config,
     };
     // Best-effort migration of workspace_id columns and JSON logs from legacy IDs.
-    await migrateWorkspaceDbIds(resolution, legacyWorkspaceIds.filter((id) => id !== identity.id));
+    if (!noRepoWrites) {
+      await migrateWorkspaceDbIds(resolution, legacyWorkspaceIds.filter((id) => id !== identity.id));
+    }
     return resolution;
   }
 }

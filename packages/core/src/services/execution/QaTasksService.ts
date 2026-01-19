@@ -26,10 +26,12 @@ import { DocdexClient } from '@mcoda/integrations';
 import { RoutingService } from '../agents/RoutingService.js';
 import { AgentRatingService } from '../agents/AgentRatingService.js';
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from '../shared/ProjectGuidance.js';
+import { buildDocdexUsageGuidance } from '../shared/DocdexGuidance.js';
 import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
 const DEFAULT_QA_PROMPT = [
-  'You are the QA agent. Before testing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.',
-  'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions). Note if docdex is unavailable and fall back to local docs.',
+  'You are the QA agent.',
+  buildDocdexUsageGuidance({ contextLabel: 'the QA report', includeHeading: false, includeFallback: true }),
+  'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions).',
   'QA policy: always run automated tests. Use browser (Chromium/Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
 ].join('\n');
 const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import.meta.url));
@@ -76,6 +78,13 @@ const readPromptFile = async (promptPath: string, fallback: string): Promise<str
 const RUN_ALL_TESTS_MARKER = 'mcoda_run_all_tests_complete';
 const RUN_ALL_TESTS_GUIDANCE =
   'Run-all tests did not emit the expected marker. Ensure tests/all.js prints "MCODA_RUN_ALL_TESTS_COMPLETE".';
+const QA_CLEAN_IGNORE_DEFAULTS = ['test-results', 'playwright-report', 'repo_meta.json', 'logs/', '.docdexignore'];
+type RunAllMarkerPolicy = 'strict' | 'warn';
+type RunAllMarkerStatus = {
+  policy: RunAllMarkerPolicy;
+  present: boolean;
+  action: 'none' | 'warn' | 'block';
+};
 const normalizeSlugList = (input?: string[] | null): string[] => {
   if (!Array.isArray(input)) return [];
   const cleaned = new Set<string>();
@@ -92,6 +101,17 @@ const normalizePath = (value: string): string =>
     .replace(/\\/g, '/')
     .replace(/^\.\//, '')
     .replace(/^\/+/, '');
+
+const normalizeCleanIgnorePaths = (input: Array<string | undefined | null>): string[] => {
+  const normalized = new Set<string>();
+  for (const entry of input) {
+    if (!entry) continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    normalized.add(normalizePath(trimmed));
+  }
+  return Array.from(normalized).filter(Boolean);
+};
 
 const normalizeLineNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -188,6 +208,7 @@ export interface QaTasksRequest extends TaskSelectionFilters {
   notes?: string;
   evidenceUrl?: string;
   allowDirty?: boolean;
+  cleanIgnorePaths?: string[];
   abortSignal?: AbortSignal;
 }
 
@@ -210,7 +231,6 @@ export interface QaTasksResponse {
   warnings: string[];
 }
 
-const MCODA_GITIGNORE_ENTRY = '.mcoda/\n';
 
 type AgentFailure = { kind?: string; message: string; evidence?: string; file?: string; line?: number };
 type AgentFollowUp = {
@@ -280,7 +300,8 @@ export class QaTasksService {
   ) {
     this.selectionService = deps.selectionService ?? new TaskSelectionService(workspace, deps.workspaceRepo);
     this.stateService = deps.stateService ?? new TaskStateService(deps.workspaceRepo);
-    this.profileService = deps.profileService ?? new QaProfileService(workspace.workspaceRoot);
+    this.profileService =
+      deps.profileService ?? new QaProfileService(workspace.workspaceRoot, { noRepoWrites: workspace.noRepoWrites });
     this.followupService = deps.followupService ?? new QaFollowupService(deps.workspaceRepo, workspace.workspaceRoot);
     this.jobService = deps.jobService;
     this.vcs = deps.vcsClient ?? new VcsClient();
@@ -308,7 +329,7 @@ export class QaTasksService {
     });
     const selectionService = new TaskSelectionService(workspace, workspaceRepo);
     const stateService = new TaskStateService(workspaceRepo);
-    const profileService = new QaProfileService(workspace.workspaceRoot);
+    const profileService = new QaProfileService(workspace.workspaceRoot, { noRepoWrites: workspace.noRepoWrites });
     const followupService = new QaFollowupService(workspaceRepo, workspace.workspaceRoot);
     const vcsClient = new VcsClient();
     return new QaTasksService(workspace, {
@@ -371,7 +392,7 @@ export class QaTasksService {
   }
 
   private async loadPrompts(agentId: string): Promise<PromptBundle> {
-    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, '.mcoda', 'prompts', 'qa-agent.md');
+    const mcodaPromptPath = path.join(this.workspace.mcodaDir, 'prompts', 'qa-agent.md');
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, 'prompts', 'qa-agent.md');
     const repoPromptPath = resolveRepoPromptPath('qa-agent.md');
     try {
@@ -419,11 +440,16 @@ export class QaTasksService {
     task: TaskSelectionPlan['ordered'][number],
     taskRunId: string,
     allowDirty: boolean,
+    cleanIgnorePaths?: string[],
   ): Promise<{ ok: boolean; message?: string }> {
     try {
       await this.vcs.ensureRepo(this.workspace.workspaceRoot);
       if (!allowDirty) {
-        await this.vcs.ensureClean(this.workspace.workspaceRoot, true, ["test-results", "playwright-report"]);
+        const ignorePaths = this.buildCleanIgnorePaths(cleanIgnorePaths);
+        if (ignorePaths.length) {
+          await this.logTask(taskRunId, `VCS clean ignore paths: ${ignorePaths.join(", ")}`, 'vcs', { ignorePaths });
+        }
+        await this.vcs.ensureClean(this.workspace.workspaceRoot, true, ignorePaths);
       }
       if (task.task.vcsBranch) {
         const exists = await this.vcs.branchExists(this.workspace.workspaceRoot, task.task.vcsBranch);
@@ -444,15 +470,20 @@ export class QaTasksService {
 
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
-    const gitignorePath = `${this.workspace.workspaceRoot}/.gitignore`;
-    try {
-      const content = await fs.readFile(gitignorePath, 'utf8');
-      if (!content.includes('.mcoda/')) {
-        await fs.writeFile(gitignorePath, `${content.trimEnd()}\n${MCODA_GITIGNORE_ENTRY}`, 'utf8');
-      }
-    } catch {
-      await fs.writeFile(gitignorePath, MCODA_GITIGNORE_ENTRY, 'utf8');
-    }
+  }
+
+  private buildCleanIgnorePaths(extra?: string[]): string[] {
+    const configPaths = this.workspace.config?.qa?.cleanIgnorePaths ?? [];
+    const envPaths = (process.env.MCODA_QA_CLEAN_IGNORE ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    return normalizeCleanIgnorePaths([
+      ...QA_CLEAN_IGNORE_DEFAULTS,
+      ...configPaths,
+      ...envPaths,
+      ...(extra ?? []),
+    ]);
   }
 
   private adapterForProfile(profile?: QaProfile): QaAdapter | undefined {
@@ -469,21 +500,49 @@ export class QaTasksService {
     return 'fix_required';
   }
 
-  private adjustOutcomeForSkippedTests(profile: QaProfile, result: QaRunResult, testCommand?: string): QaRunResult {
-    if ((profile.runner ?? 'cli') !== 'cli') return result;
+  private resolveRunAllMarkerPolicy(): RunAllMarkerPolicy {
+    return this.workspace.config?.qa?.runAllMarkerRequired === false ? 'warn' : 'strict';
+  }
+
+  private adjustOutcomeForSkippedTests(
+    profile: QaProfile,
+    result: QaRunResult,
+    testCommand?: string,
+  ): { result: QaRunResult; markerStatus?: RunAllMarkerStatus } {
+    if ((profile.runner ?? 'cli') !== 'cli') return { result };
     const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     const outputLower = output.toLowerCase();
     const markers = ['no test script configured', 'skipping tests', 'no tests found'];
     if (markers.some((marker) => outputLower.includes(marker))) {
-      return { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1 };
+      return { result: { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1 } };
     }
+    let markerStatus: RunAllMarkerStatus | undefined;
     if (testCommand && testCommand.includes('tests/all.js')) {
-      if (!outputLower.includes(RUN_ALL_TESTS_MARKER)) {
-        const stderr = [result.stderr, RUN_ALL_TESTS_GUIDANCE].filter(Boolean).join('\n');
-        return { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1, stderr };
+      const present = outputLower.includes(RUN_ALL_TESTS_MARKER);
+      const policy = this.resolveRunAllMarkerPolicy();
+      markerStatus = {
+        policy,
+        present,
+        action: present ? 'none' : policy === 'strict' ? 'block' : 'warn',
+      };
+      if (!present) {
+        if (policy === 'strict') {
+          const stderr = [result.stderr, RUN_ALL_TESTS_GUIDANCE].filter(Boolean).join('\n');
+          return {
+            result: { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1, stderr },
+            markerStatus,
+          };
+        }
+        if (result.outcome === 'pass') {
+          const warning = `Warning: ${RUN_ALL_TESTS_GUIDANCE}`;
+          const stderr = result.stderr?.includes(RUN_ALL_TESTS_GUIDANCE)
+            ? result.stderr
+            : [result.stderr, warning].filter(Boolean).join('\n');
+          return { result: { ...result, stderr }, markerStatus };
+        }
       }
     }
-    return result;
+    return { result, markerStatus };
   }
 
   private combineOutcome(
@@ -505,6 +564,13 @@ export class QaTasksService {
     docLinks: string[] = [],
   ): Promise<string> {
     if (!this.docdex) return '';
+    let openApiIncluded = false;
+    const shouldIncludeDocType = (docType: string): boolean => {
+      if (docType.toUpperCase() !== 'OPENAPI') return true;
+      if (openApiIncluded) return false;
+      openApiIncluded = true;
+      return true;
+    };
     try {
       if (typeof (this.docdex as any)?.ensureRepoScope === 'function') {
         await (this.docdex as any).ensureRepoScope();
@@ -547,6 +613,7 @@ export class QaTasksService {
             ? doc.content.slice(0, 600)
             : '';
         const docType = await resolveDocType(doc);
+        if (!shouldIncludeDocType(docType)) continue;
         snippets.push(`- [${docType}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
       }
       const normalizeDocLink = (value: string): { type: 'id' | 'path'; ref: string } => {
@@ -579,6 +646,7 @@ export class QaTasksService {
         }
         const body = (doc.segments?.[0]?.content ?? doc.content ?? '').slice(0, 600);
         const docType = await resolveDocType(doc);
+        if (!shouldIncludeDocType(docType)) continue;
         snippets.push(`- [linked:${docType}] ${doc.title ?? doc.path ?? doc.id}\n${body}`.trim());
       } catch (error: any) {
         snippets.push(`- [linked:missing] ${link} — ${error?.message ?? error}`);
@@ -890,7 +958,7 @@ export class QaTasksService {
       abortIfSignaled();
       const agent = await this.resolveAgent(agentName);
       const prompts = await this.loadPrompts(agent.id);
-      const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+      const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
       if (projectGuidance && taskRunId) {
         await this.logTask(taskRunId, `Loaded project guidance from ${projectGuidance.source}`, 'project_guidance');
       }
@@ -1415,7 +1483,7 @@ export class QaTasksService {
     if (!this.agentService) return [];
     const agent = await this.resolveAgent(undefined);
     const prompts = await this.loadPrompts(agent.id);
-    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
     if (projectGuidance && taskRunId) {
       await this.logTask(taskRunId, `Loaded project guidance from ${projectGuidance.source}`, 'project_guidance');
     }
@@ -1528,7 +1596,12 @@ export class QaTasksService {
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'status_gating' };
     }
 
-    const branchCheck = await this.ensureTaskBranch(task, taskRun.id, ctx.request.allowDirty ?? false);
+    const branchCheck = await this.ensureTaskBranch(
+      task,
+      taskRun.id,
+      ctx.request.allowDirty ?? false,
+      ctx.request.cleanIgnorePaths,
+    );
     if (!branchCheck.ok) {
       if (!this.dryRunGuard) {
         await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
@@ -1758,11 +1831,27 @@ export class QaTasksService {
       };
     }
 
-    const artifactDir = path.join(this.workspace.workspaceRoot, '.mcoda', 'jobs', ctx.jobId, 'qa', task.task.key);
+    const artifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key);
     await PathHelper.ensureDir(artifactDir);
     const qaEnv: NodeJS.ProcessEnv = { ...qaCtx.env };
     let result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
-    result = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
+    const adjusted = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
+    result = adjusted.result;
+    if (adjusted.markerStatus) {
+      const marker = adjusted.markerStatus;
+      const statusLabel = marker.present ? 'present' : 'missing';
+      await this.logTask(
+        taskRun.id,
+        `Run-all marker ${statusLabel} (policy=${marker.policy}, action=${marker.action}).`,
+        'qa-marker',
+        {
+          policy: marker.policy,
+          status: statusLabel,
+          action: marker.action,
+          marker: RUN_ALL_TESTS_MARKER,
+        },
+      );
+    }
     await this.logTask(taskRun.id, `QA run completed with outcome ${result.outcome}`, 'qa-exec', {
       exitCode: result.exitCode,
     });
@@ -1780,7 +1869,8 @@ export class QaTasksService {
       commentBacklog,
       ctx.request.abortSignal,
     );
-    const outcome = this.combineOutcome(result, interpretation.recommendation);
+    const invalidJson = interpretation.invalidJson === true;
+    const outcome = invalidJson ? 'unclear' : this.combineOutcome(result, interpretation.recommendation);
     const artifacts = result.artifacts ?? [];
     const commentResolution = await this.applyCommentResolutions({
       task: task.task,
@@ -1831,8 +1921,12 @@ export class QaTasksService {
         ...statusContextBase,
         agentId: interpretation.agentId ?? undefined,
       };
-      await this.applyStateTransition(task.task, outcome, statusContext);
-      await this.finishTaskRun(taskRun, outcome === 'pass' ? 'succeeded' : 'failed');
+      if (invalidJson) {
+        await this.stateService.markBlocked(task.task, 'qa_invalid_output', statusContext);
+      } else {
+        await this.applyStateTransition(task.task, outcome, statusContext);
+      }
+      await this.finishTaskRun(taskRun, invalidJson ? 'failed' : outcome === 'pass' ? 'succeeded' : 'failed');
     }
 
     const followups: string[] = [];
@@ -1896,6 +1990,9 @@ export class QaTasksService {
         : '',
       commentResolution
         ? `Comment slugs: resolved ${commentResolution.resolved.length}, reopened ${commentResolution.reopened.length}, open ${commentResolution.open.length}`
+        : '',
+      interpretation.invalidJson
+        ? 'QA agent output invalid; task blocked (qa_invalid_output).'
         : '',
       interpretation.invalidJson && interpretation.rawOutput
         ? `QA agent output (invalid JSON):\n${interpretation.rawOutput.slice(0, 4000)}`
@@ -2292,6 +2389,77 @@ export class QaTasksService {
 
     const warnings = [...selection.warnings];
     const results: QaTaskResult[] = [];
+    const formatSessionId = (iso: string): string => {
+      const date = new Date(iso);
+      const pad = (value: number) => String(value).padStart(2, '0');
+      return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(
+        date.getMinutes(),
+      )}${pad(date.getSeconds())}`;
+    };
+    const formatDuration = (ms: number): string => {
+      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+      const seconds = totalSeconds % 60;
+      const minutesTotal = Math.floor(totalSeconds / 60);
+      const minutes = minutesTotal % 60;
+      const hours = Math.floor(minutesTotal / 60);
+      if (hours > 0) return `${hours}H ${minutes}M ${seconds}S`;
+      return `${minutes}M ${seconds}S`;
+    };
+    const emitLine = (line: string): void => {
+      console.info(line);
+    };
+    const emitBlank = (): void => emitLine('');
+    const emitQaStart = (details: {
+      taskKey: string;
+      alias: string;
+      summary: string;
+      agent: string;
+      provider: string;
+      mode: string;
+      workdir: string;
+      sessionId: string;
+      startedAt: string;
+    }): void => {
+      emitLine('╭──────────────────────────────────────────────────────────╮');
+      emitLine('│                   START OF QA TASK                       │');
+      emitLine('╰──────────────────────────────────────────────────────────╯');
+      emitLine(`  [🪪] QA Task ID:     ${details.taskKey}`);
+      emitLine(`  [👹] Alias:          ${details.alias}`);
+      emitLine(`  [ℹ️] Summary:        ${details.summary}`);
+      emitLine(`  [🤖] Agent:          ${details.agent}`);
+      emitLine(`  [🕹️] Provider:       ${details.provider}`);
+      emitLine(`  [🧩] Step:           qa`);
+      emitLine(`  [🧪] Mode:           ${details.mode}`);
+      emitLine(`  [📁] Workdir:        ${details.workdir}`);
+      emitLine(`  [🔑] Session:        ${details.sessionId}`);
+      emitLine(`  [🕒] Started:        ${details.startedAt}`);
+      emitBlank();
+      emitLine('    ░░░░░ START OF QA TASK ░░░░░');
+      emitBlank();
+    };
+    const emitQaEnd = (details: {
+      taskKey: string;
+      statusLabel: string;
+      outcome: string;
+      profile?: string;
+      runner?: string;
+      elapsedMs: number;
+      startedAt: string;
+      endedAt: string;
+    }): void => {
+      emitLine('╭──────────────────────────────────────────────────────────╮');
+      emitLine('│                    END OF QA TASK                        │');
+      emitLine('╰──────────────────────────────────────────────────────────╯');
+      emitLine(
+        `  🧪 QA TASK ${details.taskKey} | 📜 STATUS ${details.statusLabel} | 🧭 OUTCOME ${details.outcome} | ⌛ TIME ${formatDuration(details.elapsedMs)}`,
+      );
+      emitLine(`  [🕒] Started:        ${details.startedAt}`);
+      emitLine(`  [🕒] Ended:          ${details.endedAt}`);
+      emitLine(`  [🧰] Profile:        ${details.profile ?? 'n/a'} (${details.runner ?? 'n/a'})`);
+      emitBlank();
+      emitLine('    ░░░░░ END OF QA TASK ░░░░░');
+      emitBlank();
+    };
     for (const task of selection.ordered) {
       if (completedKeys.has(task.task.key)) {
         results.push(
@@ -2305,11 +2473,54 @@ export class QaTasksService {
       for (const [index, task] of filteredRemaining.entries()) {
         abortIfSignaled();
         const mode = request.mode ?? 'auto';
-        if (mode === 'manual') {
-          results.push(await this.runManual(task, { jobId: job.id, commandRunId: commandRun.id, request }));
-        } else {
-          results.push(await this.runAuto(task, { jobId: job.id, commandRunId: commandRun.id, request, warnings }));
+        const startedAt = new Date().toISOString();
+        const taskStartMs = Date.now();
+        const sessionId = formatSessionId(startedAt);
+        const qaAgentLabel = request.agentName ?? '(auto)';
+        emitQaStart({
+          taskKey: task.task.key,
+          alias: `QA task ${task.task.key}`,
+          summary: task.task.title ?? task.task.description ?? '(none)',
+          agent: qaAgentLabel,
+          provider: qaAgentLabel === '(auto)' ? 'routing' : 'qa',
+          mode,
+          workdir: this.workspace.workspaceRoot,
+          sessionId,
+          startedAt,
+        });
+        let result: QaTaskResult;
+        try {
+          if (mode === 'manual') {
+            result = await this.runManual(task, { jobId: job.id, commandRunId: commandRun.id, request });
+          } else {
+            result = await this.runAuto(task, { jobId: job.id, commandRunId: commandRun.id, request, warnings });
+          }
+        } catch (error: any) {
+          emitQaEnd({
+            taskKey: task.task.key,
+            statusLabel: 'FAILED',
+            outcome: error instanceof Error ? error.message : String(error),
+            profile: undefined,
+            runner: undefined,
+            elapsedMs: Date.now() - taskStartMs,
+            startedAt,
+            endedAt: new Date().toISOString(),
+          });
+          throw error;
         }
+        results.push(result);
+        const statusLabel =
+          result.outcome === 'pass' ? 'COMPLETED' : result.outcome === 'infra_issue' ? 'BLOCKED' : 'FAILED';
+        emitQaEnd({
+          taskKey: task.task.key,
+          statusLabel,
+          outcome: result.outcome,
+          profile: result.profile,
+          runner: result.runner,
+          elapsedMs: Date.now() - taskStartMs,
+          startedAt,
+          endedAt: new Date().toISOString(),
+        });
         completedKeys.add(task.task.key);
         processedCount = completedKeys.size;
         await this.deps.jobService.updateJobStatus(job.id, 'running', { processedItems: processedCount });

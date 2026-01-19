@@ -83,6 +83,49 @@ export const runDocdex = async (
   return { stdout: stdout ?? "", stderr: stderr ?? "" };
 };
 
+const MAX_DOCDEX_SNIPPET = 240;
+
+const formatDocdexSnippet = (value: string): string => {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= MAX_DOCDEX_SNIPPET) return trimmed;
+  return `${trimmed.slice(0, MAX_DOCDEX_SNIPPET)}...`;
+};
+
+export const parseDocdexCheckOutput = (output: string): DocdexCheckResult => {
+  const trimmed = output.trim();
+  if (!trimmed) {
+    throw new Error("Docdex check returned empty output");
+  }
+
+  const attempts: Array<{ label: string; candidate: string }> = [{ label: "full", candidate: trimmed }];
+  const braceStart = trimmed.indexOf("{");
+  const braceEnd = trimmed.lastIndexOf("}");
+  if (braceStart !== -1 && braceEnd > braceStart) {
+    attempts.push({ label: "brace-slice", candidate: trimmed.slice(braceStart, braceEnd + 1) });
+  }
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line.startsWith("{")) continue;
+    const joined = lines.slice(i).join("\n").trim();
+    attempts.push({ label: "line-join", candidate: joined });
+    break;
+  }
+
+  let lastError: Error | undefined;
+  for (const attempt of attempts) {
+    try {
+      return JSON.parse(attempt.candidate) as DocdexCheckResult;
+    } catch (error) {
+      lastError = error as Error;
+    }
+  }
+
+  const snippet = formatDocdexSnippet(trimmed);
+  const message = lastError?.message ? `${lastError.message}. ` : "";
+  throw new Error(`Docdex check returned invalid JSON: ${message}Output: "${snippet}"`);
+};
+
 export const readDocdexCheck = async (options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<DocdexCheckResult> => {
   let stdout = "";
   let stderr = "";
@@ -97,14 +140,7 @@ export const readDocdexCheck = async (options: { cwd?: string; env?: NodeJS.Proc
     }
   }
   const trimmed = stdout.trim() || stderr.trim();
-  if (!trimmed) {
-    throw new Error("Docdex check returned empty output");
-  }
-  try {
-    return JSON.parse(trimmed) as DocdexCheckResult;
-  } catch (error) {
-    throw new Error(`Docdex check returned invalid JSON: ${(error as Error).message}`);
-  }
+  return parseDocdexCheckOutput(trimmed);
 };
 
 export const summarizeDocdexCheck = (check: DocdexCheckResult): DocdexHealthSummary => {

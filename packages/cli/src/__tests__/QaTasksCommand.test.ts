@@ -12,6 +12,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.createFollowupTasks, "auto");
     assert.equal(parsed.rateAgents, false);
+    assert.deepEqual(parsed.cleanIgnorePaths, []);
   });
 
   it("parses manual flags, statuses, and overrides", () => {
@@ -39,6 +40,8 @@ describe("qa-tasks argument parsing", () => {
       "needs fix",
       "--evidence-url",
       "https://ci.example",
+      "--clean-ignore",
+      "logs/,repo_meta.json",
     ]);
     assert.equal(parsed.mode, "manual");
     assert.equal(parsed.result, "fail");
@@ -52,6 +55,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.allowDirty, true);
     assert.equal(parsed.notes, "needs fix");
     assert.equal(parsed.evidenceUrl, "https://ci.example");
+    assert.deepEqual(parsed.cleanIgnorePaths, ["logs/", "repo_meta.json"]);
   });
 
   it("captures task selection and workspace metadata", () => {

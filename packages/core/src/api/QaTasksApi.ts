@@ -8,6 +8,7 @@ export class QaTasksApi {
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: request.workspaceRoot,
+      noRepoWrites: true,
     });
     const service = await QaTasksService.create(workspace, { noTelemetry: request.noTelemetry ?? false });
     try {
@@ -32,6 +33,7 @@ export class QaTasksApi {
         notes: request.notes,
         evidenceUrl: request.evidenceUrl,
         allowDirty: request.allowDirty,
+        cleanIgnorePaths: request.cleanIgnorePaths,
       });
     } finally {
       await service.close();

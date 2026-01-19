@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { GatewayTrioService, JobService, WorkspaceResolver } from "@mcoda/core";
+import { GatewayTrioService, JobService, WorkspaceResolver, type GatewayLogDetails } from "@mcoda/core";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -95,6 +95,79 @@ const resolvePollIntervalMs = (): number => {
   const parsed = raw ? Number(raw) : NaN;
   if (Number.isFinite(parsed) && parsed > 0) return parsed;
   return 15000;
+};
+
+const formatSessionId = (iso: string): string => {
+  const date = new Date(iso);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(
+    date.getMinutes(),
+  )}${pad(date.getSeconds())}`;
+};
+
+const formatDuration = (ms: number): string => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const seconds = totalSeconds % 60;
+  const minutesTotal = Math.floor(totalSeconds / 60);
+  const minutes = minutesTotal % 60;
+  const hours = Math.floor(minutesTotal / 60);
+  if (hours > 0) return `${hours}H ${minutes}M ${seconds}S`;
+  return `${minutes}M ${seconds}S`;
+};
+
+const createGatewayLogger = (options: { agentStream: boolean }) => {
+  const emitLine = (line: string): void => {
+    console.info(line);
+  };
+  const emitBlank = (): void => emitLine("");
+  const onGatewayChunk = options.agentStream
+    ? (chunk: string) => {
+        if (!chunk) return;
+        process.stdout.write(chunk);
+      }
+    : undefined;
+  const onGatewayStart = (details: GatewayLogDetails): void => {
+    const sessionId = formatSessionId(details.startedAt);
+    emitLine("╭──────────────────────────────────────────────────────────╮");
+    emitLine("│                START OF GATEWAY TASK                     │");
+    emitLine("╰──────────────────────────────────────────────────────────╯");
+    emitLine(`  [🪪] Gateway Task ID: ${details.taskKey}`);
+    emitLine(`  [👹] Alias:          Gateway task ${details.taskKey}`);
+    emitLine(`  [ℹ️] Summary:        Gateway ${details.job}`);
+    emitLine(`  [🤖] Agent:          ${details.gatewayAgent ?? "auto"}`);
+    emitLine(`  [🧩] Job:            ${details.job}`);
+    emitLine(`  [🔑] Session:        ${sessionId}`);
+    emitLine(`  [🕒] Started:        ${details.startedAt}`);
+    emitBlank();
+    emitLine("    ░░░░░ START OF GATEWAY TASK ░░░░░");
+    emitBlank();
+    emitLine(`    [JOB ${details.job}]`);
+    emitBlank();
+    emitBlank();
+  };
+  const onGatewayEnd = (details: GatewayLogDetails): void => {
+    const endedAt = details.endedAt ?? new Date().toISOString();
+    const elapsedMs = new Date(endedAt).getTime() - new Date(details.startedAt).getTime();
+    const statusLabel = details.status === "failed" ? "FAILED" : "COMPLETED";
+    const agentLabel = details.gatewayAgent ?? "auto";
+    const chosenLabel = details.chosenAgent ?? "n/a";
+    emitLine("╭──────────────────────────────────────────────────────────╮");
+    emitLine("│                 END OF GATEWAY TASK                      │");
+    emitLine("╰──────────────────────────────────────────────────────────╯");
+    emitLine(
+      `  🧭 GATEWAY TASK ${details.taskKey} | 📜 STATUS ${statusLabel} | 🤖 AGENT ${agentLabel} | 🎯 CHOSEN ${chosenLabel} | ⌛ TIME ${formatDuration(
+        elapsedMs,
+      )}`,
+    );
+    emitLine(`  [🕒] Started:        ${details.startedAt}`);
+    emitLine(`  [🕒] Ended:          ${endedAt}`);
+    if (details.error) {
+      emitLine(`  ❗ Error:           ${details.error}`);
+    }
+    emitBlank();
+    emitLine("    ░░░░░ END OF GATEWAY TASK ░░░░░");
+  };
+  return { onGatewayStart, onGatewayChunk, onGatewayEnd };
 };
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -838,6 +911,7 @@ export class GatewayTrioCommand {
         })();
       }
 
+      const gatewayLogger = createGatewayLogger({ agentStream: parsed.agentStream !== false });
       const result = await service.run({
         workspace,
         projectKey: parsed.projectKey,
@@ -868,6 +942,9 @@ export class GatewayTrioCommand {
         resumeJobId: parsed.resumeJobId,
         rateAgents: parsed.rateAgents,
         escalateOnNoChange: parsed.escalateOnNoChange,
+        onGatewayStart: gatewayLogger.onGatewayStart,
+        onGatewayChunk: gatewayLogger.onGatewayChunk,
+        onGatewayEnd: gatewayLogger.onGatewayEnd,
         onJobStart: (jobId, commandRunId) => {
           if (watchResolve) {
             watchResolve({ jobId, commandRunId });

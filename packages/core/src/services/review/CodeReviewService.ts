@@ -23,11 +23,12 @@ import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
+import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
-const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
-const STATE_PATH = (workspaceRoot: string, jobId: string) => path.join(REVIEW_DIR(workspaceRoot, jobId), "state.json");
+const REVIEW_DIR = (mcodaDir: string, jobId: string) => path.join(mcodaDir, "jobs", jobId, "review");
+const STATE_PATH = (mcodaDir: string, jobId: string) => path.join(REVIEW_DIR(mcodaDir, jobId), "state.json");
 const REVIEW_PROMPT_LIMITS = {
   diff: 12000,
   history: 3000,
@@ -37,7 +38,8 @@ const REVIEW_PROMPT_LIMITS = {
 };
 const DOCDEX_TIMEOUT_MS = 8000;
 const DEFAULT_CODE_REVIEW_PROMPT = [
-  "You are the code-review agent. Before reviewing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
+  "You are the code-review agent.",
+  buildDocdexUsageGuidance({ contextLabel: "the review", includeHeading: false, includeFallback: true }),
   "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
   "When recommending tests, prefer the repo's existing runner (tests/all.js or package manager scripts). Avoid suggesting new Jest configs unless the repo explicitly documents them.",
 ].join("\n");
@@ -74,6 +76,27 @@ const readPromptFile = async (promptPath: string, fallback: string): Promise<str
     // fall through to fallback
   }
   return fallback;
+};
+
+const filterOpenApiContext = (entries: string[], hasOpenApiSnippet: boolean): string[] => {
+  let openApiIncluded = false;
+  const filtered: string[] = [];
+  for (const entry of entries) {
+    const isOpenApi = /\[linked:openapi\]|\[openapi\]/i.test(entry);
+    if (!isOpenApi) {
+      filtered.push(entry);
+      continue;
+    }
+    if (hasOpenApiSnippet) {
+      continue;
+    }
+    if (openApiIncluded) {
+      continue;
+    }
+    openApiIncluded = true;
+    filtered.push(entry);
+  }
+  return filtered;
 };
 
 export interface CodeReviewRequest extends TaskSelectionFilters {
@@ -507,20 +530,10 @@ export class CodeReviewService {
 
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
-    const gitignorePath = path.join(this.workspace.workspaceRoot, ".gitignore");
-    const entry = ".mcoda/\n";
-    try {
-      const content = await fs.readFile(gitignorePath, "utf8");
-      if (!content.includes(".mcoda/")) {
-        await fs.writeFile(gitignorePath, `${content.trimEnd()}\n${entry}`, "utf8");
-      }
-    } catch {
-      await fs.writeFile(gitignorePath, entry, "utf8");
-    }
   }
 
   private async loadPrompts(agentId: string): Promise<{ jobPrompt?: string; characterPrompt?: string; commandPrompt?: string }> {
-    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-reviewer.md");
+    const mcodaPromptPath = path.join(this.workspace.mcodaDir, "prompts", "code-reviewer.md");
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-reviewer.md");
     const repoPromptPath = resolveRepoPromptPath("code-reviewer.md");
     try {
@@ -558,14 +571,14 @@ export class CodeReviewService {
 
   private async loadRunbookAndChecklists(): Promise<string[]> {
     const extras: string[] = [];
-    const runbookPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "commands", "code-review.md");
+    const runbookPath = path.join(this.workspace.mcodaDir, "prompts", "commands", "code-review.md");
     try {
       const content = await fs.readFile(runbookPath, "utf8");
       extras.push(content);
     } catch {
       /* optional */
     }
-    const checklistDir = path.join(this.workspace.workspaceRoot, ".mcoda", "checklists");
+    const checklistDir = path.join(this.workspace.mcodaDir, "checklists");
     try {
       const entries = await fs.readdir(checklistDir);
       for (const entry of entries) {
@@ -647,10 +660,10 @@ export class CodeReviewService {
   }
 
   private async persistState(jobId: string, state: ReviewJobState): Promise<void> {
-    const dir = REVIEW_DIR(this.workspace.workspaceRoot, jobId);
+    const dir = REVIEW_DIR(this.workspace.mcodaDir, jobId);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
-      STATE_PATH(this.workspace.workspaceRoot, jobId),
+      STATE_PATH(this.workspace.mcodaDir, jobId),
       JSON.stringify({ schema_version: 1, job_id: jobId, updated_at: new Date().toISOString(), ...state }, null, 2),
       "utf8",
     );
@@ -658,7 +671,7 @@ export class CodeReviewService {
 
   private async loadState(jobId: string): Promise<ReviewJobState | undefined> {
     try {
-      const raw = await fs.readFile(STATE_PATH(this.workspace.workspaceRoot, jobId), "utf8");
+      const raw = await fs.readFile(STATE_PATH(this.workspace.mcodaDir, jobId), "utf8");
       return JSON.parse(raw) as ReviewJobState;
     } catch {
       return undefined;
@@ -832,7 +845,10 @@ export class CodeReviewService {
     const commentBacklog = params.commentBacklog
       ? truncateSection("comment backlog", params.commentBacklog, REVIEW_PROMPT_LIMITS.history)
       : "";
-    const docContextText = params.docContext.length ? truncateSection("doc context", params.docContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext) : "";
+    const filteredDocContext = filterOpenApiContext(params.docContext, Boolean(params.openapiSnippet));
+    const docContextText = filteredDocContext.length
+      ? truncateSection("doc context", filteredDocContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext)
+      : "";
     const openapiSnippet = params.openapiSnippet ? truncateSection("openapi", params.openapiSnippet, REVIEW_PROMPT_LIMITS.openapi) : undefined;
     const checklistsText = params.checklists?.length
       ? truncateSection("checklists", params.checklists.join("\n\n"), REVIEW_PROMPT_LIMITS.checklist)
@@ -1226,7 +1242,7 @@ export class CodeReviewService {
   }
 
   private async persistContext(jobId: string, taskId: string, context: Record<string, unknown>): Promise<void> {
-    const dir = path.join(REVIEW_DIR(this.workspace.workspaceRoot, jobId), "context");
+    const dir = path.join(REVIEW_DIR(this.workspace.mcodaDir, jobId), "context");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
       path.join(dir, `${taskId}.json`),
@@ -1236,7 +1252,7 @@ export class CodeReviewService {
   }
 
   private async persistDiff(jobId: string, taskId: string, diff: string): Promise<void> {
-    const dir = path.join(REVIEW_DIR(this.workspace.workspaceRoot, jobId), "diffs");
+    const dir = path.join(REVIEW_DIR(this.workspace.mcodaDir, jobId), "diffs");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${taskId}.diff`), diff, "utf8");
     // structured review diff snapshot
@@ -1267,11 +1283,11 @@ export class CodeReviewService {
   }
 
   private async persistReviewOutput(jobId: string, taskId: string, payload: Record<string, unknown>): Promise<string> {
-    const dir = path.join(REVIEW_DIR(this.workspace.workspaceRoot, jobId), "outputs");
+    const dir = path.join(REVIEW_DIR(this.workspace.mcodaDir, jobId), "outputs");
     await fs.mkdir(dir, { recursive: true });
     const target = path.join(dir, `${taskId}.json`);
     await fs.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
-    return path.relative(this.workspace.workspaceRoot, target);
+    return path.relative(this.workspace.mcodaDir, target);
   }
 
   private severityToPriority(severity?: string): number | null {
@@ -1618,7 +1634,7 @@ export class CodeReviewService {
     }
     const prompts = await this.loadPrompts(agent.id);
     const extras = await this.loadRunbookAndChecklists();
-    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
     if (projectGuidance) {
       console.info(`[code-review] loaded project guidance from ${projectGuidance.source}`);
     }
@@ -1651,6 +1667,95 @@ export class CodeReviewService {
     };
 
     const results: TaskReviewResult[] = [];
+    const formatSessionId = (iso: string): string => {
+      const date = new Date(iso);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(
+        date.getMinutes(),
+      )}${pad(date.getSeconds())}`;
+    };
+    const formatDuration = (ms: number): string => {
+      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+      const seconds = totalSeconds % 60;
+      const minutesTotal = Math.floor(totalSeconds / 60);
+      const minutes = minutesTotal % 60;
+      const hours = Math.floor(minutesTotal / 60);
+      if (hours > 0) return `${hours}H ${minutes}M ${seconds}S`;
+      return `${minutes}M ${seconds}S`;
+    };
+    const resolveProvider = (adapter?: string): string => {
+      if (!adapter) return "n/a";
+      const trimmed = adapter.trim();
+      if (!trimmed) return "n/a";
+      if (trimmed.includes("-")) return trimmed.split("-")[0];
+      return trimmed;
+    };
+    const resolveReasoning = (config?: Record<string, unknown>): string => {
+      if (!config) return "n/a";
+      const raw = (config as Record<string, unknown>).reasoning ?? (config as Record<string, unknown>).thinking;
+      if (typeof raw === "string") return raw;
+      if (typeof raw === "boolean") return raw ? "enabled" : "disabled";
+      return "n/a";
+    };
+    const emitLine = (line: string): void => {
+      console.info(line);
+    };
+    const emitBlank = (): void => emitLine("");
+    const emitReviewStart = (details: {
+      taskKey: string;
+      alias: string;
+      summary: string;
+      model: string;
+      provider: string;
+      step: string;
+      reasoning: string;
+      workdir: string;
+      sessionId: string;
+      startedAt: string;
+    }): void => {
+      emitLine("╭──────────────────────────────────────────────────────────╮");
+      emitLine("│              START OF CODE REVIEW TASK                   │");
+      emitLine("╰──────────────────────────────────────────────────────────╯");
+      emitLine(`  [🪪] Code Review Task ID: ${details.taskKey}`);
+      emitLine(`  [👹] Alias:          ${details.alias}`);
+      emitLine(`  [ℹ️] Summary:        ${details.summary}`);
+      emitLine(`  [🤖] Model:          ${details.model}`);
+      emitLine(`  [🕹️] Provider:       ${details.provider}`);
+      emitLine(`  [🧩] Step:           ${details.step}`);
+      emitLine(`  [🧠] Reasoning:      ${details.reasoning}`);
+      emitLine(`  [📁] Workdir:        ${details.workdir}`);
+      emitLine(`  [🔑] Session:        ${details.sessionId}`);
+      emitLine(`  [🕒] Started:        ${details.startedAt}`);
+      emitBlank();
+      emitLine("    ░░░░░ START OF CODE REVIEW TASK ░░░░░");
+      emitBlank();
+      emitLine(`    [STEP ${details.step}]  [MODEL ${details.model}]`);
+      emitBlank();
+      emitBlank();
+    };
+    const emitReviewEnd = (details: {
+      taskKey: string;
+      statusLabel: string;
+      decision?: string;
+      findingsCount: number;
+      elapsedMs: number;
+      tokensTotal: number;
+      startedAt: string;
+      endedAt: string;
+    }): void => {
+      emitLine("╭──────────────────────────────────────────────────────────╮");
+      emitLine("│                END OF CODE REVIEW TASK                   │");
+      emitLine("╰──────────────────────────────────────────────────────────╯");
+      emitLine(
+        `  👀 CODE REVIEW TASK ${details.taskKey} | 📜 STATUS ${details.statusLabel} | ✅ DECISION ${details.decision ?? "n/a"} | 🔎 FINDINGS ${details.findingsCount} | ⌛ TIME ${formatDuration(details.elapsedMs)}`,
+      );
+      emitLine(`  [🕒] Started:        ${details.startedAt}`);
+      emitLine(`  [🕒] Ended:          ${details.endedAt}`);
+      emitLine(`  Tokens used:  ${details.tokensTotal.toLocaleString("en-US")}`);
+      emitBlank();
+      emitLine("    ░░░░░ END OF CODE REVIEW TASK ░░░░░");
+      emitBlank();
+    };
     const maybeRateTask = async (task: TaskRow, taskRunId: string, tokensTotal: number): Promise<void> => {
       if (!request.rateAgents || tokensTotal <= 0) return;
       try {
@@ -1685,6 +1790,35 @@ export class CodeReviewService {
 
     for (const task of tasks) {
       abortIfSignaled();
+      const startedAt = new Date().toISOString();
+      const taskStartMs = Date.now();
+      const sessionId = formatSessionId(startedAt);
+      const taskAlias = `Reviewing task ${task.key}`;
+      const taskSummary = task.title ?? task.description ?? "(none)";
+      const modelLabel = agent.defaultModel ?? "(default)";
+      const providerLabel = resolveProvider(agent.adapter);
+      const reasoningLabel = resolveReasoning(agent.config as Record<string, unknown> | undefined);
+      const stepLabel = "review";
+      let endEmitted = false;
+      const emitReviewEndOnce = (details: {
+        statusLabel: string;
+        decision?: string;
+        findingsCount: number;
+        tokensTotal: number;
+      }): void => {
+        if (endEmitted) return;
+        endEmitted = true;
+        emitReviewEnd({
+          taskKey: task.key,
+          statusLabel: details.statusLabel,
+          decision: details.decision,
+          findingsCount: details.findingsCount,
+          elapsedMs: Date.now() - taskStartMs,
+          tokensTotal: details.tokensTotal,
+          startedAt,
+          endedAt: new Date().toISOString(),
+        });
+      };
       const statusBefore = task.status;
       const taskRun = await this.deps.workspaceRepo.createTaskRun({
         taskId: task.id,
@@ -1693,7 +1827,7 @@ export class CodeReviewService {
         commandRunId: commandRun.id,
         agentId: agent.id,
         status: "running",
-        startedAt: new Date().toISOString(),
+        startedAt,
         storyPointsAtRun: task.storyPoints ?? null,
         gitBranch: task.vcsBranch ?? null,
         gitBaseBranch: task.vcsBaseBranch ?? null,
@@ -1722,6 +1856,18 @@ export class CodeReviewService {
       let agentOutput = "";
 
       try {
+        emitReviewStart({
+          taskKey: task.key,
+          alias: taskAlias,
+          summary: taskSummary,
+          model: modelLabel,
+          provider: providerLabel,
+          step: stepLabel,
+          reasoning: reasoningLabel,
+          workdir: this.workspace.workspaceRoot,
+          sessionId,
+          startedAt,
+        });
         const metadata = (task.metadata as any) ?? {};
         const allowedFiles: string[] = Array.isArray(metadata.files) ? metadata.files : [];
         const diffResult = await this.buildDiff(task, state?.baseRef ?? baseRef, allowedFiles);
@@ -1784,6 +1930,12 @@ export class CodeReviewService {
             decision: "block",
             findings,
             followupTasks: followupCreated,
+          });
+          emitReviewEndOnce({
+            statusLabel: "BLOCKED",
+            decision: "block",
+            findingsCount: findings.length,
+            tokensTotal,
           });
           await this.deps.jobService.updateJobStatus(jobId, "running", {
             processedItems: state?.reviewed.length ?? 0,
@@ -1852,7 +2004,6 @@ export class CodeReviewService {
               ? ((task.metadata as any).depends_on as string[])
               : [];
         console.info(separator);
-        console.info("[code-review] START OF TASK");
         console.info(`[code-review] Task key: ${task.key}`);
         console.info(`[code-review] Title: ${task.title ?? "(none)"}`);
         console.info(`[code-review] Description: ${task.description ?? "(none)"}`);
@@ -2267,6 +2418,12 @@ export class CodeReviewService {
         await this.deps.jobService.updateJobStatus(jobId, "running", {
           processedItems: state?.reviewed.length ?? 0,
         });
+        emitReviewEndOnce({
+          statusLabel: "FAILED",
+          decision: "error",
+          findingsCount: findings.length,
+          tokensTotal,
+        });
         await maybeRateTask(task, taskRun.id, tokensTotal);
         continue;
       }
@@ -2286,6 +2443,21 @@ export class CodeReviewService {
         findings,
         error: reviewErrorCode,
         followupTasks: followupCreated,
+      });
+      const statusLabel = reviewErrorCode
+        ? "FAILED"
+        : decision === "approve" || decision === "info_only"
+          ? "APPROVED"
+          : decision === "block"
+            ? "BLOCKED"
+            : decision === "changes_requested"
+              ? "CHANGES_REQUESTED"
+              : "FAILED";
+      emitReviewEndOnce({
+        statusLabel,
+        decision,
+        findingsCount: findings.length,
+        tokensTotal,
       });
 
       await this.deps.jobService.updateJobStatus(jobId, "running", {

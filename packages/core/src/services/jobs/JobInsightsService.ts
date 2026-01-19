@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobRecord, JobService, JobState } from "./JobService.js";
 import { JobsApiClient } from "./JobsApiClient.js";
@@ -337,7 +336,7 @@ export class JobInsightsService {
   }
 
   async readJobLogTail(jobId: string, offset: number): Promise<{ content: string; nextOffset: number }> {
-    const logPath = path.join(PathHelper.getWorkspaceDir(this.workspace.workspaceRoot), "jobs", jobId, "logs", "stream.log");
+    const logPath = path.join(this.workspace.mcodaDir, "jobs", jobId, "logs", "stream.log");
     try {
       const content = await fs.readFile(logPath, "utf8");
       const slice = offset > 0 ? content.slice(offset) : content;

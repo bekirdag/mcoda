@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { CodeReviewService } from "@mcoda/core";
+import { PathHelper } from "@mcoda/shared";
 import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
 import { parseCodeReviewArgs } from "../commands/review/CodeReviewCommand.js";
 
@@ -251,7 +252,7 @@ const makeWorkspace = async () => {
   return {
     workspaceRoot: dir,
     workspaceId: dir,
-    mcodaDir: path.join(dir, ".mcoda"),
+    mcodaDir: PathHelper.getWorkspaceDir(dir),
   };
 };
 
@@ -309,8 +310,16 @@ describe("code-review service flow", () => {
   let fakeWorkspaceRepo: FakeWorkspaceRepo;
   let fakeJobService: FakeJobService;
   let fakeStateService: FakeStateService;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspace = await makeWorkspace();
     task = {
       id: "task-1",
@@ -345,6 +354,19 @@ describe("code-review service flow", () => {
   afterEach(async () => {
     if (workspace?.workspaceRoot) {
       await fs.rm(workspace.workspaceRoot, { recursive: true, force: true });
+    }
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
     }
   });
 
@@ -521,9 +543,9 @@ describe("code-review service flow", () => {
     const resumeJob = { id: "job-1", commandName: "code-review", type: "review", payload: { selection: [task.id] }, totalItems: 1 };
     fakeJobService = new FakeJobService(resumeJob);
     fakeWorkspaceRepo = new FakeWorkspaceRepo([task]);
-    await fs.mkdir(path.join(workspace.workspaceRoot, ".mcoda", "jobs", "job-1", "review"), { recursive: true });
+    await fs.mkdir(path.join(workspace.mcodaDir, "jobs", "job-1", "review"), { recursive: true });
     await fs.writeFile(
-      path.join(workspace.workspaceRoot, ".mcoda", "jobs", "job-1", "review", "state.json"),
+      path.join(workspace.mcodaDir, "jobs", "job-1", "review", "state.json"),
       JSON.stringify({ schema_version: 1, job_id: "job-1", selectedTaskIds: [task.id], contextBuilt: [], reviewed: [] }, null, 2),
       "utf8",
     );

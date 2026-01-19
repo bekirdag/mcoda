@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { QaProfileService } from "../QaProfileService.js";
+import { PathHelper } from "@mcoda/shared";
 
 const makeTask = (key: string, type?: string, metadata?: Record<string, unknown>) =>
   ({
@@ -24,8 +25,13 @@ const makeTask = (key: string, type?: string, metadata?: Record<string, unknown>
   }) as any;
 
 test("QaProfileService resolves by tag/type and falls back to default", async () => {
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-profile-"));
-  const configDir = path.join(dir, ".mcoda");
+  const configDir = PathHelper.getWorkspaceDir(dir);
   await fs.mkdir(configDir, { recursive: true });
   const profiles = [
     { name: "unit", runner: "cli", default: true, matcher: { task_types: ["backend"] } },
@@ -45,5 +51,16 @@ test("QaProfileService resolves by tag/type and falls back to default", async ()
     assert.equal(fallback?.name, "unit");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
   }
 });

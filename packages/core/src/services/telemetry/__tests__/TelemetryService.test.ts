@@ -12,7 +12,7 @@ import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
   workspaceRoot,
   workspaceId: workspaceRoot,
-  mcodaDir: path.join(workspaceRoot, ".mcoda"),
+  mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
   id: workspaceRoot,
   legacyWorkspaceIds: [],
   workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
@@ -30,10 +30,18 @@ describe("TelemetryService", () => {
   let cachedTokenStartedAt: string;
   let cachedTokenFinishedAt: string;
   let cachedTokenDurationMs: number;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-telemetry-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-telemetry-"));
-    await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
+    await fs.mkdir(PathHelper.getWorkspaceDir(workspaceRoot), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
     connection = await Connection.open(dbPath);
     await WorkspaceMigrations.run(connection.db);
@@ -111,6 +119,19 @@ describe("TelemetryService", () => {
   afterEach(async () => {
     await repo.close();
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
   });
 
   it("aggregates token usage with default grouping and window", async () => {
@@ -246,7 +267,7 @@ describe("TelemetryService", () => {
     assert.equal(row.started_at, startedAt);
     assert.equal(row.finished_at, finishedAt);
 
-    const logPath = path.join(workspaceRoot, ".mcoda", "token_usage.json");
+    const logPath = path.join(workspace.mcodaDir, "token_usage.json");
     const logged = JSON.parse(await fs.readFile(logPath, "utf8")) as Array<Record<string, unknown>>;
     const entry = logged.find((item) => item.jobId === job1 && item.agentId === "agent-3");
     assert.ok(entry);

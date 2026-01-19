@@ -20,7 +20,7 @@ export class JobResumeService {
   }
 
   private async readManifest(jobId: string): Promise<Record<string, unknown> | undefined> {
-    const manifestPath = path.join(this.workspace.workspaceRoot, ".mcoda", "jobs", jobId, "manifest.json");
+    const manifestPath = path.join(this.workspace.mcodaDir, "jobs", jobId, "manifest.json");
     try {
       const raw = await fs.readFile(manifestPath, "utf8");
       return JSON.parse(raw) as Record<string, unknown>;

@@ -238,7 +238,7 @@ For QA agents:
 - Use actual test results and task comments (pass/fail notes).
 
 ## 10) Telemetry and Auditability
-- Write an evaluation summary into `.mcoda/jobs/<jobId>/rating.json`.
+- Write an evaluation summary into `<workspace-dir>/jobs/<jobId>/rating.json`.
 - Link rating records to job and command_run ids.
 - Add a CLI view: `mcoda agent ratings --agent <slug> --last 50`.
 

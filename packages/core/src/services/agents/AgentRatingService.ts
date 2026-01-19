@@ -106,7 +106,7 @@ export class AgentRatingService {
   }
 
   private ratingPromptPath(): string {
-    return path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "agent-rating.md");
+    return path.join(this.workspace.mcodaDir, "prompts", "agent-rating.md");
   }
 
   private async loadRatingPrompt(): Promise<string> {
@@ -353,7 +353,7 @@ export class AgentRatingService {
 
   private async writeRatingArtifact(jobId: string | undefined, payload: Record<string, unknown>): Promise<void> {
     if (!jobId) return;
-    const outDir = path.join(this.workspace.workspaceRoot, ".mcoda", "jobs", jobId);
+    const outDir = path.join(this.workspace.mcodaDir, "jobs", jobId);
     await fs.mkdir(outDir, { recursive: true });
     const filePath = path.join(outDir, "rating.json");
     await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");

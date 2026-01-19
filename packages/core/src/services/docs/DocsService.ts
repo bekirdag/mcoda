@@ -252,9 +252,27 @@ class DocContextAssembler {
 
   private async findLatestLocalDoc(docType: string): Promise<DocdexDocument | undefined> {
     const candidates: { path: string; mtime: number }[] = [];
+    const lower = docType.toLowerCase();
+    const explicitFiles = [
+      path.join(this.workspace.mcodaDir, "docs", `${lower}.md`),
+      path.join(this.workspace.workspaceRoot, "docs", `${lower}.md`),
+    ];
+    const addCandidate = async (candidatePath: string) => {
+      try {
+        const stat = await fs.stat(candidatePath);
+        if (stat.isFile()) {
+          candidates.push({ path: candidatePath, mtime: stat.mtimeMs });
+        }
+      } catch {
+        // ignore
+      }
+    };
+    for (const filePath of explicitFiles) {
+      await addCandidate(filePath);
+    }
     const dirs = [
-      path.join(this.workspace.mcodaDir, "docs", docType.toLowerCase()),
-      path.join(this.workspace.workspaceRoot, "docs", docType.toLowerCase()),
+      path.join(this.workspace.mcodaDir, "docs", lower),
+      path.join(this.workspace.workspaceRoot, "docs", lower),
     ];
     for (const dir of dirs) {
       try {
@@ -387,7 +405,11 @@ class DocContextAssembler {
 
     if (!pdrs.length && !rfp) {
       throw new Error(
-        "No PDR or RFP content could be resolved. Ensure docdex is reachable with an sds_default profile or add local docs under .mcoda/docs/pdr and docs/rfp.",
+        `No PDR or RFP content could be resolved. Ensure docdex is reachable with an sds_default profile or add local docs under ${path.join(
+          this.workspace.mcodaDir,
+          "docs",
+          "pdr",
+        )} and docs/rfp (or docs/rfp.md).`,
       );
     }
 
@@ -1413,15 +1435,17 @@ export class DocsService {
     await fs.writeFile(outPath, content, "utf8");
   }
 
-  private async assertSdsDocdexProfile(): Promise<void> {
+  private async checkSdsDocdexProfile(warnings: string[]): Promise<void> {
     const base = this.workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL;
     if (base) return;
-    const localStore = path.join(this.workspace.workspaceRoot, ".mcoda", "docdex", "documents.json");
+    const localStore = path.join(this.workspace.mcodaDir, "docdex", "documents.json");
     try {
       await fs.access(localStore);
+      return;
     } catch {
-      throw new Error(
-        "Docdex is not configured for SDS retrieval (missing docdexUrl and no local store). Configure docdexUrl or index docs with an sds_default profile.",
+      // No docdex URL or local store; continue with local docs if present.
+      warnings.push(
+        "Docdex is not configured for SDS retrieval; attempting local docs (no local docdex store found).",
       );
     }
   }
@@ -1795,9 +1819,9 @@ export class DocsService {
   }
 
   async generateSds(options: GenerateSdsOptions): Promise<GenerateSdsResult> {
-    await this.assertSdsDocdexProfile();
-    const assembler = new DocContextAssembler(this.docdex, this.workspace);
     const warnings: string[] = [];
+    await this.checkSdsDocdexProfile(warnings);
+    const assembler = new DocContextAssembler(this.docdex, this.workspace);
     const commandRun = await this.jobService.startCommandRun("docs-sds-generate", options.projectKey);
     let job: any;
     let resumeDraft: string | undefined;

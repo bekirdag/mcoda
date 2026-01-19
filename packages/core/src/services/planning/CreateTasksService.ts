@@ -20,6 +20,8 @@ import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
+import { classifyTask } from "../backlog/TaskOrderingHeuristics.js";
+import { TaskOrderingService } from "../backlog/TaskOrderingService.js";
 import {
   createEpicKeyGenerator,
   createStoryKeyGenerator,
@@ -109,6 +111,12 @@ interface GeneratedPlan {
   stories: PlanStory[];
   tasks: PlanTask[];
 }
+
+type TaskOrderingClient = Pick<TaskOrderingService, "orderTasks" | "close">;
+type TaskOrderingFactory = (
+  workspace: WorkspaceResolution,
+  options?: { recordTelemetry?: boolean },
+) => Promise<TaskOrderingClient>;
 
 const formatBullets = (items: string[] | undefined, fallback: string): string => {
   if (!items || items.length === 0) return `- ${fallback}`;
@@ -448,6 +456,7 @@ export class CreateTasksService {
   private routingService: RoutingService;
   private workspace: WorkspaceResolution;
   private ratingService?: AgentRatingService;
+  private taskOrderingFactory: TaskOrderingFactory;
 
   constructor(
     workspace: WorkspaceResolution,
@@ -459,6 +468,7 @@ export class CreateTasksService {
       workspaceRepo: WorkspaceRepository;
       routingService: RoutingService;
       ratingService?: AgentRatingService;
+      taskOrderingFactory?: TaskOrderingFactory;
     },
   ) {
     this.workspace = workspace;
@@ -469,6 +479,7 @@ export class CreateTasksService {
     this.workspaceRepo = deps.workspaceRepo;
     this.routingService = deps.routingService;
     this.ratingService = deps.ratingService;
+    this.taskOrderingFactory = deps.taskOrderingFactory ?? TaskOrderingService.create;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CreateTasksService> {
@@ -509,6 +520,20 @@ export class CreateTasksService {
     await swallow((this.routingService as any).close?.bind(this.routingService));
     const docdex = this.docdex as any;
     await swallow(docdex?.close?.bind(docdex));
+  }
+
+  private async seedPriorities(projectKey: string): Promise<void> {
+    const ordering = await this.taskOrderingFactory(this.workspace, { recordTelemetry: false });
+    try {
+      await ordering.orderTasks({
+        projectKey,
+        includeBlocked: true,
+        blockOnDependencies: false,
+        blockOnMissingContext: false,
+      });
+    } finally {
+      await ordering.close();
+    }
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {
@@ -1012,7 +1037,7 @@ export class CreateTasksService {
     plan: GeneratedPlan,
     docSummary: string,
   ): Promise<{ folder: string }> {
-    const baseDir = path.join(this.workspace.workspaceRoot, ".mcoda", "tasks", projectKey);
+    const baseDir = path.join(this.workspace.mcodaDir, "tasks", projectKey);
     await fs.mkdir(baseDir, { recursive: true });
     const write = async (file: string, data: unknown) => {
       const target = path.join(baseDir, file);
@@ -1133,6 +1158,11 @@ export class CreateTasksService {
         const storyId = storyIdByKey.get(task.storyKey);
         const epicId = epicIdByKey.get(task.epicKey);
         if (!storyId || !epicId) continue;
+        const classification = classifyTask({
+          title: task.plan.title ?? `Task ${task.key}`,
+          description: task.plan.description,
+          type: task.plan.type,
+        });
         const depSlugs = (task.plan.dependsOnKeys ?? [])
           .map((dep) => localToKey.get(dep))
           .filter((value): value is string => Boolean(value));
@@ -1169,6 +1199,8 @@ export class CreateTasksService {
               integration: task.plan.integrationTests ?? [],
               api: task.plan.apiTests ?? [],
             },
+            stage: classification.stage,
+            foundation: classification.foundation,
           },
         });
       }
@@ -1327,10 +1359,11 @@ export class CreateTasksService {
         });
 
         const { epics: epicRows, stories: storyRows, tasks: taskRows, dependencies: dependencyRows } =
-        await this.persistPlanToDb(project.id, options.projectKey, plan, job.id, commandRun.id, {
-          force: options.force,
-          resetKeys: options.force,
-        });
+          await this.persistPlanToDb(project.id, options.projectKey, plan, job.id, commandRun.id, {
+            force: options.force,
+            resetKeys: options.force,
+          });
+        await this.seedPriorities(options.projectKey);
 
         await this.jobService.updateJobStatus(job.id, "completed", {
           payload: {
@@ -1413,7 +1446,7 @@ export class CreateTasksService {
       payload: { projectKey, planDir: options.planDir },
     });
     const planDir =
-      options.planDir ?? path.join(this.workspace.workspaceRoot, ".mcoda", "tasks", projectKey);
+      options.planDir ?? path.join(this.workspace.mcodaDir, "tasks", projectKey);
     try {
       const planPath = path.join(planDir, "plan.json");
       const loadJson = async <T>(file: string): Promise<T | undefined> => {

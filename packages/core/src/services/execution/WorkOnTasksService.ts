@@ -14,7 +14,8 @@ import { TaskStateService } from "./TaskStateService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
-import { createTaskCommentSlug } from "../tasks/TaskCommentFormatter.js";
+import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
+import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const exec = promisify(execCb);
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
@@ -25,8 +26,9 @@ const DEFAULT_TEST_OUTPUT_CHARS = 1200;
 const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_CODE_WRITER_PROMPT = [
-  "You are the code-writing agent. Before coding, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run search. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
-  "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria). Note when docdex is unavailable and fall back to local docs.",
+  "You are the code-writing agent.",
+  buildDocdexUsageGuidance({ contextLabel: "task notes", includeHeading: false, includeFallback: true }),
+  "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria).",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
   "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
   "If a target file does not exist, create it by outputting a FILE block (not a diff): `FILE: path/to/file.ext` followed by a fenced code block containing the full file contents. Do not respond with JSON-only output; if the runtime forces JSON, include a top-level `patch` string (unified diff) or `files` array of {path, content}.",
@@ -96,6 +98,20 @@ export interface WorkOnTasksResult {
 }
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
+
+const normalizeSlugList = (input?: unknown): string[] => {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((slug) => (typeof slug === "string" ? slug.trim() : ""))
+    .filter((slug) => slug.length > 0);
+};
+
+const formatSlugList = (slugs: string[], limit = 12): string => {
+  if (!slugs.length) return "(none)";
+  const slice = slugs.slice(0, limit);
+  const suffix = slugs.length > limit ? ` (+${slugs.length - limit} more)` : "";
+  return `${slice.join(", ")}${suffix}`;
+};
 
 const looksLikeUnifiedDiff = (value: string): boolean => {
   if (/^diff --git /m.test(value) || /\*\*\* Begin Patch/.test(value)) return true;
@@ -319,13 +335,38 @@ const extractFileBlocksFromJson = (payload: unknown): Array<{ path: string; cont
   return Array.from(files.entries()).map(([filePath, content]) => ({ path: filePath, content }));
 };
 
+const extractCommentResolutionFromJson = (
+  payload: unknown,
+): { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string } | null => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const resolved = normalizeSlugList(record.resolvedSlugs ?? record.resolved_slugs);
+  const unresolved = normalizeSlugList(record.unresolvedSlugs ?? record.unresolved_slugs);
+  const rawStatus =
+    (typeof record.commentBacklogStatus === "string" ? record.commentBacklogStatus : undefined) ??
+    (typeof record.comment_backlog_status === "string" ? record.comment_backlog_status : undefined);
+  const status = rawStatus?.trim();
+  if (!resolved.length && !unresolved.length && !status) return null;
+  return {
+    resolvedSlugs: resolved.length ? resolved : undefined,
+    unresolvedSlugs: unresolved.length ? unresolved : undefined,
+    commentBacklogStatus: status || undefined,
+  };
+};
+
 const extractAgentChanges = (
   output: string,
-): { patches: string[]; fileBlocks: Array<{ path: string; content: string }>; jsonDetected: boolean } => {
+): {
+  patches: string[];
+  fileBlocks: Array<{ path: string; content: string }>;
+  jsonDetected: boolean;
+  commentResolution?: { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string };
+} => {
   const placeholderRegex = /\?\?\?|rest of existing code/i;
   let patches = extractPatches(output);
   let fileBlocks = extractFileBlocks(output);
   let jsonDetected = false;
+  let commentResolution: { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string } | undefined;
   if (patches.length) {
     patches = patches.filter((patch) => !placeholderRegex.test(patch));
   }
@@ -335,6 +376,7 @@ const extractAgentChanges = (
       jsonDetected = true;
       patches = extractPatchesFromJson(payload);
       fileBlocks = extractFileBlocksFromJson(payload);
+      commentResolution = extractCommentResolutionFromJson(payload) ?? undefined;
       if (patches.length) {
         patches = patches.filter((patch) => !placeholderRegex.test(patch));
       }
@@ -342,7 +384,7 @@ const extractAgentChanges = (
       jsonDetected = true;
     }
   }
-  return { patches, fileBlocks, jsonDetected };
+  return { patches, fileBlocks, jsonDetected, commentResolution };
 };
 
 const splitFileBlocksByExistence = (
@@ -675,8 +717,7 @@ const resolveLockTtlSeconds = (maxAgentSeconds?: number): number => {
   if (!maxAgentSeconds || maxAgentSeconds <= 0) return TASK_LOCK_TTL_SECONDS;
   return Math.max(1, Math.min(TASK_LOCK_TTL_SECONDS, maxAgentSeconds + 60));
 };
-const MCODA_GITIGNORE_ENTRY = ".mcoda/\n";
-const WORK_DIR = (jobId: string, workspaceRoot: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "work");
+const WORK_DIR = (jobId: string, mcodaDir: string) => path.join(mcodaDir, "jobs", jobId, "work");
 
 const maybeConvertApplyPatch = (patch: string): string => {
   if (!patch.trimStart().startsWith("*** Begin Patch")) return patch;
@@ -842,6 +883,118 @@ const normalizeDiffPaths = (patch: string, workspaceRoot: string): string => {
       return line;
     })
     .join("\n");
+};
+
+const DOC_GUARD_DIRS = ["docs/sds", "docs/rfp", "openapi"];
+const DOC_GUARD_FILES = ["openapi.yaml", "openapi.yml", "openapi.json"];
+
+const isGuardedDocPath = (filePath: string): boolean => {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
+  if (DOC_GUARD_FILES.includes(normalized)) return true;
+  return DOC_GUARD_DIRS.some((dir) => normalized === dir || normalized.startsWith(`${dir}/`));
+};
+
+const countLines = (content: string): number => {
+  if (!content) return 0;
+  return content.split(/\r?\n/).length;
+};
+
+const docDeletionThreshold = (totalLines: number): number => Math.max(50, Math.ceil(totalLines * 0.5));
+
+const collectDocPatchDeletions = (patch: string, workspaceRoot: string): Record<string, number> => {
+  const normalized = normalizeDiffPaths(ensureDiffHeader(maybeConvertApplyPatch(patch)), workspaceRoot);
+  const lines = normalized.split(/\r?\n/);
+  const deletions: Record<string, number> = {};
+  let currentFile: string | null = null;
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      const parts = line.split(" ");
+      const rawPath = parts[3] ?? "";
+      const pathValue = rawPath.startsWith("b/") ? rawPath.slice(2) : rawPath;
+      currentFile = pathValue || null;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      const raw = line.slice(4).trim();
+      if (raw === "/dev/null") continue;
+      currentFile = raw.startsWith("b/") ? raw.slice(2) : raw;
+      continue;
+    }
+    if (!currentFile || !isGuardedDocPath(currentFile)) continue;
+    if (line.startsWith("---")) continue;
+    if (line.startsWith("-")) {
+      deletions[currentFile] = (deletions[currentFile] ?? 0) + 1;
+    }
+  }
+  return deletions;
+};
+
+const detectLargeDocEdits = async (
+  patches: string[],
+  fileBlocks: Array<{ path: string; content: string }>,
+  workspaceRoot: string,
+): Promise<
+  Array<{
+    path: string;
+    removedLines: number;
+    beforeLines: number;
+    afterLines?: number;
+    threshold: number;
+    mode: "patch" | "file";
+  }>
+> => {
+  const violations: Array<{
+    path: string;
+    removedLines: number;
+    beforeLines: number;
+    afterLines?: number;
+    threshold: number;
+    mode: "patch" | "file";
+  }> = [];
+
+  for (const patch of patches) {
+    const deletions = collectDocPatchDeletions(patch, workspaceRoot);
+    for (const [filePath, removedLines] of Object.entries(deletions)) {
+      if (!isGuardedDocPath(filePath)) continue;
+      const resolved = path.join(workspaceRoot, filePath);
+      let beforeLines = 0;
+      try {
+        const content = await fs.promises.readFile(resolved, "utf8");
+        beforeLines = countLines(content);
+      } catch {
+        beforeLines = 0;
+      }
+      if (!beforeLines) continue;
+      const threshold = docDeletionThreshold(beforeLines);
+      if (removedLines >= threshold) {
+        violations.push({ path: filePath, removedLines, beforeLines, threshold, mode: "patch" });
+      }
+    }
+  }
+
+  for (const block of fileBlocks) {
+    const rawPath = block.path?.trim();
+    if (!rawPath) continue;
+    const resolved = path.resolve(workspaceRoot, rawPath);
+    const relative = path.relative(workspaceRoot, resolved).replace(/\\/g, "/");
+    if (!isGuardedDocPath(relative)) continue;
+    let beforeLines = 0;
+    try {
+      const content = await fs.promises.readFile(resolved, "utf8");
+      beforeLines = countLines(content);
+    } catch {
+      beforeLines = 0;
+    }
+    if (!beforeLines) continue;
+    const afterLines = countLines(block.content ?? "");
+    const removedLines = Math.max(0, beforeLines - afterLines);
+    const threshold = docDeletionThreshold(beforeLines);
+    if (removedLines >= threshold) {
+      violations.push({ path: relative, removedLines, beforeLines, afterLines, threshold, mode: "file" });
+    }
+  }
+
+  return violations;
 };
 
 const convertMissingFilePatchToAdd = (patch: string, workspaceRoot: string): string => {
@@ -1193,7 +1346,7 @@ export class WorkOnTasksService {
   }> {
     const agentPrompts =
       "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
-    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-writer.md");
+    const mcodaPromptPath = path.join(this.workspace.mcodaDir, "prompts", "code-writer.md");
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-writer.md");
     const repoPromptPath = resolveRepoPromptPath("code-writer.md");
     try {
@@ -1229,32 +1382,23 @@ export class WorkOnTasksService {
 
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
-    const gitignorePath = path.join(this.workspace.workspaceRoot, ".gitignore");
-    try {
-      const content = await fs.promises.readFile(gitignorePath, "utf8");
-      if (!content.includes(".mcoda/")) {
-        await fs.promises.writeFile(gitignorePath, `${content.trimEnd()}\n${MCODA_GITIGNORE_ENTRY}`, "utf8");
-      }
-    } catch {
-      await fs.promises.writeFile(gitignorePath, MCODA_GITIGNORE_ENTRY, "utf8");
-    }
   }
 
   private async writeWorkCheckpoint(jobId: string, data: Record<string, unknown>): Promise<void> {
-    const dir = WORK_DIR(jobId, this.workspace.workspaceRoot);
+    const dir = WORK_DIR(jobId, this.workspace.mcodaDir);
     await fs.promises.mkdir(dir, { recursive: true });
     const target = path.join(dir, "state.json");
     await fs.promises.writeFile(target, JSON.stringify({ ...data, updatedAt: new Date().toISOString() }, null, 2), "utf8");
   }
 
   private async persistPatchArtifact(jobId: string, taskKey: string, payload: Record<string, unknown>): Promise<string> {
-    const dir = path.join(WORK_DIR(jobId, this.workspace.workspaceRoot), "patches");
+    const dir = path.join(WORK_DIR(jobId, this.workspace.mcodaDir), "patches");
     await fs.promises.mkdir(dir, { recursive: true });
     const safeKey = taskKey.replace(/[^a-zA-Z0-9._-]+/g, "_");
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const target = path.join(dir, `${safeKey}-${stamp}.json`);
     await fs.promises.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
-    return path.relative(this.workspace.workspaceRoot, target);
+    return path.relative(this.workspace.mcodaDir, target);
   }
 
   private async checkpoint(jobId: string, stage: string, details?: Record<string, unknown>): Promise<void> {
@@ -1426,6 +1570,13 @@ export class WorkOnTasksService {
   private async gatherDocContext(projectKey?: string, docLinks: string[] = []): Promise<{ summary: string; warnings: string[] }> {
     const warnings: string[] = [];
     const parts: string[] = [];
+    let openApiIncluded = false;
+    const shouldIncludeDocType = (docType: string): boolean => {
+      if (docType.toUpperCase() !== "OPENAPI") return true;
+      if (openApiIncluded) return false;
+      openApiIncluded = true;
+      return true;
+    };
     if (typeof (this.deps.docdex as any)?.ensureRepoScope === "function") {
       try {
         await (this.deps.docdex as any).ensureRepoScope();
@@ -1454,11 +1605,11 @@ export class WorkOnTasksService {
         }
         return normalized.docType;
       };
-      parts.push(
-        ...filteredDocs
-          .slice(0, 5)
-          .map((doc) => `- [${resolveDocType(doc)}] ${doc.title ?? doc.path ?? doc.id}`),
-      );
+      for (const doc of filteredDocs.slice(0, 5)) {
+        const docType = resolveDocType(doc);
+        if (!shouldIncludeDocType(docType)) continue;
+        parts.push(`- [${docType}] ${doc.title ?? doc.path ?? doc.id}`);
+      }
     } catch (error) {
       warnings.push(`docdex search failed: ${(error as Error).message}`);
     }
@@ -1506,6 +1657,7 @@ export class WorkOnTasksService {
           }
           return normalized.docType;
         })();
+        if (!shouldIncludeDocType(docType)) continue;
         const excerpt = doc.segments?.[0]?.content?.slice(0, 240);
         parts.push(`- [linked:${docType}] ${doc.title ?? doc.id}${excerpt ? ` — ${excerpt}` : ""}`);
       } catch (error) {
@@ -1580,12 +1732,114 @@ export class WorkOnTasksService {
     return lines.join("\n");
   }
 
-  private async loadUnresolvedComments(taskId: string): Promise<TaskCommentRow[]> {
-    return this.deps.workspaceRepo.listTaskComments(taskId, {
+  private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
+    const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
       sourceCommands: ["code-review", "qa-tasks"],
-      resolved: false,
-      limit: 20,
+      limit: 50,
     });
+    const unresolved = comments.filter((comment) => !comment.resolvedAt);
+    return { comments, unresolved };
+  }
+
+  private async applyCommentResolutions(params: {
+    taskId: string;
+    taskRunId: string;
+    jobId: string;
+    agentId: string;
+    resolvedSlugs?: string[] | null;
+    unresolvedSlugs?: string[] | null;
+    existingComments: TaskCommentRow[];
+    dryRun: boolean;
+  }): Promise<{ resolved: string[]; reopened: string[]; open: string[] }> {
+    const existingBySlug = new Map<string, TaskCommentRow>();
+    const openBySlug = new Set<string>();
+    const resolvedBySlug = new Set<string>();
+    for (const comment of params.existingComments) {
+      if (!comment.slug) continue;
+      if (!existingBySlug.has(comment.slug)) {
+        existingBySlug.set(comment.slug, comment);
+      }
+      if (comment.resolvedAt) {
+        resolvedBySlug.add(comment.slug);
+      } else {
+        openBySlug.add(comment.slug);
+      }
+    }
+
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const resolvedSet = new Set(resolvedSlugs);
+    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+    for (const slug of resolvedSet) {
+      unresolvedSet.delete(slug);
+    }
+
+    const toResolve = resolvedSlugs.filter((slug) => openBySlug.has(slug));
+    const toReopen = Array.from(unresolvedSet).filter((slug) => resolvedBySlug.has(slug));
+
+    if (!params.dryRun) {
+      for (const slug of toResolve) {
+        await this.deps.workspaceRepo.resolveTaskComment({
+          taskId: params.taskId,
+          slug,
+          resolvedAt: new Date().toISOString(),
+          resolvedBy: params.agentId,
+        });
+      }
+      for (const slug of toReopen) {
+        await this.deps.workspaceRepo.reopenTaskComment({ taskId: params.taskId, slug });
+      }
+    }
+
+    const openSet = new Set(openBySlug);
+    for (const slug of unresolvedSet) {
+      openSet.add(slug);
+    }
+    for (const slug of resolvedSet) {
+      openSet.delete(slug);
+    }
+
+    if ((resolvedSlugs.length || toReopen.length || unresolvedSet.size) && !params.dryRun) {
+      const resolutionMessage = [
+        `Resolved slugs: ${formatSlugList(toResolve)}`,
+        `Reopened slugs: ${formatSlugList(toReopen)}`,
+        `Open slugs: ${formatSlugList(Array.from(openSet))}`,
+      ].join("\n");
+      const resolutionSlug = createTaskCommentSlug({
+        source: "work-on-tasks",
+        message: resolutionMessage,
+        category: "comment_resolution",
+      });
+      const resolutionBody = formatTaskCommentBody({
+        slug: resolutionSlug,
+        source: "work-on-tasks",
+        message: resolutionMessage,
+        status: "resolved",
+        category: "comment_resolution",
+      });
+      const createdAt = new Date().toISOString();
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: params.taskId,
+        taskRunId: params.taskRunId,
+        jobId: params.jobId,
+        sourceCommand: "work-on-tasks",
+        authorType: "agent",
+        authorAgentId: params.agentId,
+        category: "comment_resolution",
+        slug: resolutionSlug,
+        status: "resolved",
+        body: resolutionBody,
+        createdAt,
+        resolvedAt: createdAt,
+        resolvedBy: params.agentId,
+        metadata: {
+          resolvedSlugs: toResolve,
+          reopenedSlugs: toReopen,
+          openSlugs: Array.from(openSet),
+        },
+      });
+    }
+
+    return { resolved: toResolve, reopened: toReopen, open: Array.from(openSet) };
   }
 
   private buildPrompt(
@@ -1824,7 +2078,13 @@ export class WorkOnTasksService {
     cwd: string,
     dryRun: boolean,
     context: { jobId: string; taskKey: string; attempt: number },
-  ): Promise<{ touched: string[]; error?: string; warnings?: string[] }> {
+  ): Promise<{
+    touched: string[];
+    error?: string;
+    warnings?: string[];
+    hardFailure?: boolean;
+    rejectDetails?: { files: string[]; message: string; removedRejects: string[]; cleanupErrors: string[] };
+  }> {
     const touched = new Set<string>();
     const warnings: string[] = [];
     let applied = 0;
@@ -1845,6 +2105,20 @@ export class WorkOnTasksService {
           `Failed to persist patch artifact for ${taskKey}: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
         );
       }
+    };
+
+    const removeRejectFiles = async (rejectPaths: string[]): Promise<{ removed: string[]; errors: string[] }> => {
+      const removed: string[] = [];
+      const errors: string[] = [];
+      for (const rejectPath of rejectPaths) {
+        try {
+          await fs.promises.rm(rejectPath, { force: true });
+          removed.push(rejectPath);
+        } catch (error) {
+          errors.push(`${rejectPath}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      return { removed, errors };
     };
 
     for (const [patchIndex, patch] of patches.entries()) {
@@ -1964,69 +2238,45 @@ export class WorkOnTasksService {
             }
           }
           const rejectResult = await this.vcs.applyPatchWithReject(cwd, patchToApply);
-          let touchedByReject: string[] = [];
-          try {
-            const dirtyAfter = await this.vcs.dirtyPaths(cwd);
-            const normalizedDirty = new Set(normalizePaths(cwd, dirtyAfter));
-            touchedByReject = segmentFiles.filter((file) => normalizedDirty.has(file));
-          } catch (rejectError) {
-            const message = `Patch reject fallback failed to read dirty paths (${segmentFiles.join(", ") || "unknown files"}): ${
-              rejectError instanceof Error ? rejectError.message : String(rejectError)
-            }`;
-            warnings.push(message);
-            await recordPatchIssue(
-              {
-                reason: "reject_dirty_check_failed",
-                patch_index: patchIndex,
-                segment_index: segmentIndex,
-                raw_patch: patch,
-                normalized_patch: sanitized,
-                segment_patch: patchToApply,
-                segment_files: segmentFiles,
-                error: message,
-              },
-              message,
-            );
-          }
-          if (touchedByReject.length) {
-            touchedByReject.forEach((file) => touched.add(file));
-            applied += 1;
-            const message = `Applied patch segment with rejects; review .rej files for ${touchedByReject.join(", ")}`;
-            warnings.push(message);
-            if (rejectResult?.error) {
-              await recordPatchIssue(
-                {
-                  reason: "reject_partial",
-                  patch_index: patchIndex,
-                  segment_index: segmentIndex,
-                  raw_patch: patch,
-                  normalized_patch: sanitized,
-                  segment_patch: patchToApply,
-                  segment_files: segmentFiles,
-                  error: rejectResult.error,
-                },
-                `Patch segment applied with rejects: ${rejectResult.error}`,
-              );
-            }
-            continue;
-          }
-          if (rejectResult?.error) {
-            const message = `Patch reject fallback failed (${segmentFiles.join(", ") || "unknown files"}): ${rejectResult.error}`;
-            warnings.push(message);
-            await recordPatchIssue(
-              {
-                reason: "reject_failed",
-                patch_index: patchIndex,
-                segment_index: segmentIndex,
-                raw_patch: patch,
-                normalized_patch: sanitized,
-                segment_patch: patchToApply,
-                segment_files: segmentFiles,
-                error: message,
-              },
-              message,
-            );
-          }
+          const rejectPaths = segmentFiles
+            .map((file) => path.join(cwd, `${file}.rej`))
+            .filter((rejectPath) => fs.existsSync(rejectPath));
+          const cleanup = await removeRejectFiles(rejectPaths);
+          const messageParts = [
+            `Patch rejected for ${segmentFiles.join(", ") || "unknown files"}.`,
+            cleanup.removed.length ? `Removed ${cleanup.removed.length} reject file(s).` : "No reject files found.",
+            cleanup.errors.length ? `Reject cleanup errors: ${cleanup.errors.join("; ")}` : "",
+            rejectResult?.error ? `Git error: ${rejectResult.error}` : "",
+          ].filter(Boolean);
+          const rejectMessage = messageParts.join(" ");
+          warnings.push(rejectMessage);
+          await recordPatchIssue(
+            {
+              reason: "reject_failed",
+              patch_index: patchIndex,
+              segment_index: segmentIndex,
+              raw_patch: patch,
+              normalized_patch: sanitized,
+              segment_patch: patchToApply,
+              segment_files: segmentFiles,
+              reject_files: rejectPaths,
+              reject_cleanup_errors: cleanup.errors,
+              error: rejectMessage,
+            },
+            rejectMessage,
+          );
+          return {
+            touched: Array.from(touched),
+            warnings,
+            error: rejectMessage,
+            hardFailure: true,
+            rejectDetails: {
+              files: segmentFiles,
+              message: rejectMessage,
+              removedRejects: cleanup.removed,
+              cleanupErrors: cleanup.errors,
+            },
+          };
           const message = `Patch segment failed (${segmentFiles.join(", ") || "unknown files"}): ${
             (error as Error).message
           }`;
@@ -2298,9 +2548,10 @@ export class WorkOnTasksService {
         reasoning: string;
         workdir: string;
         sessionId: string;
+        startedAt: string;
       }): void => {
         emitLine("╭──────────────────────────────────────────────────────────╮");
-        emitLine("│                      START OF TASK                       │");
+        emitLine("│                  START OF WORK TASK                      │");
         emitLine("╰──────────────────────────────────────────────────────────╯");
         emitLine(`  [🪪] Start Task ID:  ${details.taskKey}`);
         emitLine(`  [👹] Alias:          ${details.alias}`);
@@ -2311,8 +2562,9 @@ export class WorkOnTasksService {
         emitLine(`  [🧠] Reasoning:      ${details.reasoning}`);
         emitLine(`  [📁] Workdir:        ${details.workdir}`);
         emitLine(`  [🔑] Session:        ${details.sessionId}`);
+        emitLine(`  [🕒] Started:        ${details.startedAt}`);
         emitBlank();
-        emitLine("    ░░░░░ START OF A NEW TASK ░░░░░");
+        emitLine("    ░░░░░ START OF WORK TASK ░░░░░");
         emitBlank();
         emitLine(`    [STEP ${details.step}]  [MODEL ${details.model}]`);
         emitBlank();
@@ -2331,7 +2583,11 @@ export class WorkOnTasksService {
         baseBranch?: string | null;
         touchedFiles: number;
         mergeStatus: "merged" | "skipped" | "failed";
+        mergeNote?: string | null;
+        failureReason?: string | null;
         headSha?: string | null;
+        startedAt: string;
+        endedAt: string;
       }): Promise<void> => {
         const tokensTotal = details.tokensPrompt + details.tokensCompletion;
         const promptEstimate = Math.max(1, details.promptEstimate);
@@ -2351,13 +2607,15 @@ export class WorkOnTasksService {
         const headSha = details.headSha ?? "n/a";
         const baseLabel = details.baseBranch ?? baseBranch;
         emitLine("╭──────────────────────────────────────────────────────────╮");
-        emitLine("│                       END OF TASK                        │");
+        emitLine("│                   END OF WORK TASK                       │");
         emitLine("╰──────────────────────────────────────────────────────────╯");
         emitLine(
           `  👏🏼 TASK ${details.taskKey} | 📜 STATUS ${statusLabel} | 🏠 TERMINAL ${details.terminal} | ⚡ SP ${
             details.storyPoints ?? 0
           } | ⌛ TIME ${formatDuration(details.elapsedMs)}`,
         );
+        emitLine(`  [🕒] Started:        ${details.startedAt}`);
+        emitLine(`  [🕒] Ended:          ${details.endedAt}`);
         emitBlank();
         emitLine(`  [${completionBar}] ${completion.toFixed(1)}% Complete`);
         emitLine(`  Tokens used:  ${formatCount(tokensTotal)}`);
@@ -2368,18 +2626,23 @@ export class WorkOnTasksService {
         emitLine("────────────────────────────────────────────────────────────");
         emitLine(`  [🎋] Task branch: ${details.taskBranch ?? "n/a"}`);
         emitLine(`  [🗿] Tracking:    ${tracking}`);
-        emitLine(`  [🚀] Merge→dev:   ${details.mergeStatus}`);
+        const mergeDetail = details.mergeNote ? ` (${details.mergeNote})` : "";
+        emitLine(`  [🚀] Merge→dev:   ${details.mergeStatus}${mergeDetail}`);
         emitLine(`  [🐲] HEAD:        ${headSha}`);
         emitLine(`  [♨️] Files:       ${details.touchedFiles}`);
         emitLine(`  [🔑] Base:        ${baseLabel}`);
         emitLine("  [🧾] Git log:    n/a");
         emitBlank();
+        if (details.failureReason) {
+          emitLine(`  [⚠️] Failure:     ${details.failureReason}`);
+          emitBlank();
+        }
         emitLine("🗂 Artifacts");
         emitLine("────────────────────────────────────────────────────────────");
         emitLine("  • History:    n/a");
         emitLine("  • Git log:    n/a");
         emitBlank();
-        emitLine("    ░░░░░ END OF THE TASK WORK ░░░░░");
+        emitLine("    ░░░░░ END OF WORK TASK ░░░░░");
         emitBlank();
       };
 
@@ -2423,10 +2686,16 @@ export class WorkOnTasksService {
         let promptEstimateBase = 0;
         let promptEstimateTotal = 0;
         let mergeStatus: "merged" | "skipped" | "failed" = "skipped";
+        let mergeNote: string | null = null;
+        let failureReason: string | null = null;
         let patchApplied = false;
         let runAllScriptCreated = false;
         let touched: string[] = [];
         let unresolvedComments: TaskCommentRow[] = [];
+        let commentContext: { comments: TaskCommentRow[]; unresolved: TaskCommentRow[] } | null = null;
+        let commentResolution:
+          | { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string }
+          | null = null;
         let taskBranchName: string | null = task.task.vcsBranch ?? null;
         let baseBranchName: string | null = task.task.vcsBaseBranch ?? baseBranch;
         let branchInfo: { branch: string; base: string; mergeConflicts?: string[]; remoteSyncNote?: string } | null = {
@@ -2435,6 +2704,12 @@ export class WorkOnTasksService {
         };
         let headSha: string | null = task.task.vcsLastCommitSha ?? null;
         let taskEndEmitted = false;
+        const setFailureReason = (reason: string | undefined | null): void => {
+          if (!failureReason && reason) failureReason = reason;
+        };
+        const setMergeNote = (note: string | undefined | null): void => {
+          if (!mergeNote && note) mergeNote = note;
+        };
 
         emitTaskStart({
           taskKey: task.task.key,
@@ -2446,6 +2721,7 @@ export class WorkOnTasksService {
           reasoning: reasoningLabel,
           workdir: this.workspace.workspaceRoot,
           sessionId,
+          startedAt,
         });
 
         const emitTaskEndOnce = async () => {
@@ -2483,7 +2759,11 @@ export class WorkOnTasksService {
             baseBranch: baseBranchName || baseBranch,
             touchedFiles: touched.length,
             mergeStatus,
+            mergeNote,
+            failureReason: status === "succeeded" ? null : failureReason,
             headSha: resolvedHead,
+            startedAt,
+            endedAt: new Date().toISOString(),
           });
         };
 
@@ -2521,6 +2801,7 @@ export class WorkOnTasksService {
               status: "failed",
               finishedAt: new Date().toISOString(),
             });
+            setFailureReason(task.blockedReason);
             results.push({ taskKey: task.task.key, status: "blocked", notes: task.blockedReason });
             taskStatus = "blocked";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -2540,6 +2821,7 @@ export class WorkOnTasksService {
             status: "failed",
             finishedAt: new Date().toISOString(),
           });
+          setFailureReason(message);
           results.push({ taskKey: task.task.key, status: "failed", notes: message });
           taskStatus = "failed";
           await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -2574,6 +2856,11 @@ export class WorkOnTasksService {
           const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
           const testRequirementsNote = formatTestRequirementsNote(testRequirements);
           let testCommands = normalizeTestCommands(metadata.tests);
+          const allowLargeDocEdits =
+            metadata.allow_large_doc_edits === true ||
+            metadata.allowLargeDocEdits === true ||
+            metadata.allow_large_doc_edits === "true" ||
+            metadata.allowLargeDocEdits === "true";
           const sanitized = sanitizeTestCommands(testCommands, this.workspace.workspaceRoot);
           testCommands = sanitized.commands;
           if (sanitized.skipped.length) {
@@ -2661,6 +2948,7 @@ export class WorkOnTasksService {
               status: "failed",
               finishedAt: new Date().toISOString(),
             });
+            setFailureReason("tests_not_configured");
             results.push({ taskKey: task.task.key, status: "failed", notes: "tests_not_configured" });
             taskStatus = "failed";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -2687,6 +2975,7 @@ export class WorkOnTasksService {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
                 });
+                setFailureReason("merge_conflict");
                 results.push({ taskKey: task.task.key, status: "failed", notes: "merge_conflict" });
                 taskStatus = "failed";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -2697,6 +2986,7 @@ export class WorkOnTasksService {
               const message = `Failed to prepare branches: ${(error as Error).message}`;
               await this.logTask(taskRun.id, message, "vcs");
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+              setFailureReason(message);
               results.push({ taskKey: task.task.key, status: "failed", notes: message });
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -2713,18 +3003,22 @@ export class WorkOnTasksService {
           }
           await endPhase("context", { docWarnings, docSummary: Boolean(docSummary) });
 
-          const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+          const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
           if (projectGuidance) {
             await this.logTask(taskRun.id, `Loaded project guidance from ${projectGuidance.source}`, "project_guidance");
           }
 
           await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
-          unresolvedComments = await this.loadUnresolvedComments(task.task.id);
+          commentContext = await this.loadCommentContext(task.task.id);
+          unresolvedComments = commentContext.unresolved;
           const commentBacklog = this.buildCommentBacklog(unresolvedComments);
           const promptBase = this.buildPrompt(task, docSummary, allowedFiles, commentBacklog);
           const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
           const testExpectationNote = shouldRunTests
             ? "Tests must pass before the task can be finalized. Run task-specific tests first, then run-all tests."
+            : "";
+          const commentBacklogNote = commentBacklog
+            ? "Comment backlog: resolve or reopen slugs as needed. If you return JSON, include resolvedSlugs/unresolvedSlugs. If no backlog was provided, set commentBacklogStatus to \"none\"."
             : "";
           const outputRequirementNote = [
             "Output requirements (strict):",
@@ -2735,9 +3029,16 @@ export class WorkOnTasksService {
             "  ```",
             "  <full file contents>",
             "  ```",
-            "- Do not include plans, narration, or JSON unless the runtime forces it; if forced, return JSON with a top-level `patch` string or `files` array of {path, content}.",
+            "- Do not include plans, narration, or JSON unless the runtime forces it; if forced, return JSON with a top-level `patch` string or `files` array of {path, content}. If comment backlog is present and you need to report comment resolution, you may wrap the patch/files in JSON with resolvedSlugs/unresolvedSlugs.",
           ].join("\n");
-          const promptExtras = [testRequirementsNote, testCommandNote, runAllTestsNote, testExpectationNote, outputRequirementNote]
+          const promptExtras = [
+            testRequirementsNote,
+            testCommandNote,
+            runAllTestsNote,
+            testExpectationNote,
+            commentBacklogNote,
+            outputRequirementNote,
+          ]
             .filter(Boolean)
             .join("\n");
           const promptWithTests = promptExtras ? `${promptBase}\n${promptExtras}` : promptBase;
@@ -2977,6 +3278,7 @@ export class WorkOnTasksService {
                 status: "failed",
                 finishedAt: new Date().toISOString(),
               });
+              setFailureReason(message);
               results.push({ taskKey: task.task.key, status: "failed", notes: message });
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -2988,7 +3290,13 @@ export class WorkOnTasksService {
             }
             await recordUsage("agent", agentOutput, agentDuration, agentInput, agentInvocation.agentUsed, attempt);
 
-            let { patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput);
+            let {
+              patches,
+              fileBlocks,
+              jsonDetected,
+              commentResolution: agentCommentResolution,
+            } = extractAgentChanges(agentOutput);
+            commentResolution = agentCommentResolution ?? null;
             if (fileBlocks.length && patches.length) {
               const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
               if (existing.length) {
@@ -3016,7 +3324,13 @@ export class WorkOnTasksService {
                 agentOutput = retry.output;
                 agentDuration += retry.durationSeconds;
                 await recordUsage("agent_retry", retry.output, retry.durationSeconds, retryInput, retry.agentUsed, attempt);
-                ({ patches, fileBlocks, jsonDetected } = extractAgentChanges(agentOutput));
+                ({
+                  patches,
+                  fileBlocks,
+                  jsonDetected,
+                  commentResolution: agentCommentResolution,
+                } = extractAgentChanges(agentOutput));
+                commentResolution = agentCommentResolution ?? null;
                 if (fileBlocks.length && patches.length) {
                   const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
                   if (existing.length) {
@@ -3030,11 +3344,60 @@ export class WorkOnTasksService {
               }
             }
 
+            if (unresolvedComments.length > 0) {
+              const statusValue = commentResolution?.commentBacklogStatus;
+              const normalizedStatus = typeof statusValue === "string" ? statusValue.trim().toLowerCase() : "";
+              const claimsNoBacklog =
+                normalizedStatus.length > 0 &&
+                (normalizedStatus === "none" ||
+                  normalizedStatus === "missing" ||
+                  normalizedStatus === "not provided" ||
+                  normalizedStatus === "no comments provided" ||
+                  normalizedStatus.includes("no comments"));
+              const outputClaimsNoBacklog = !normalizedStatus && /no comments provided/i.test(agentOutput);
+              if (claimsNoBacklog || outputClaimsNoBacklog) {
+                const openSlugs = unresolvedComments
+                  .map((comment) => comment.slug)
+                  .filter((slug): slug is string => Boolean(slug && slug.trim()));
+                const slugList = openSlugs.length ? openSlugs.join(", ") : "untracked";
+                const body = [
+                  "[work-on-tasks]",
+                  "Agent reported no comment backlog while unresolved review/QA comments exist.",
+                  `Open comment slugs: ${slugList}`,
+                  `Agent note: ${normalizedStatus || "no comments provided"}`,
+                ].join("\n");
+                await this.deps.workspaceRepo.createTaskComment({
+                  taskId: task.task.id,
+                  taskRunId: taskRun.id,
+                  jobId: job.id,
+                  sourceCommand: "work-on-tasks",
+                  authorType: "agent",
+                  authorAgentId: agent.id,
+                  category: "comment_backlog",
+                  body,
+                  createdAt: new Date().toISOString(),
+                  metadata: { reason: "comment_backlog_missing", openSlugs, status: normalizedStatus || "none" },
+                });
+                await this.logTask(taskRun.id, "Comment backlog missing in agent output; blocking task.", "execution");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                await this.stateService.markBlocked(task.task, "comment_backlog_missing", statusContext);
+                setFailureReason("comment_backlog_missing");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_missing" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+            }
+
             if (patches.length === 0 && fileBlocks.length === 0) {
               const message = "Agent output did not include a patch or file blocks.";
               await this.logTask(taskRun.id, message, "agent");
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
               await this.stateService.markBlocked(task.task, "missing_patch", statusContext);
+              setFailureReason("missing_patch");
               results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -3056,7 +3419,59 @@ export class WorkOnTasksService {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
                 });
+                setFailureReason("scope_violation");
                 results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+            }
+
+            if (!allowLargeDocEdits) {
+              const violations = await detectLargeDocEdits(patches, fileBlocks, this.workspace.workspaceRoot);
+              if (violations.length) {
+                const details = violations
+                  .map(
+                    (item) =>
+                      `${item.path} removed ${item.removedLines}/${item.beforeLines} lines (threshold ${item.threshold}, mode=${item.mode})`,
+                  )
+                  .join("\n");
+                const body = [
+                  "[work-on-tasks]",
+                  "Blocked destructive doc edit in SDS/RFP/OpenAPI content.",
+                  "Set metadata.allow_large_doc_edits=true on the task to allow this change.",
+                  "Violations:",
+                  details,
+                ].join("\n");
+                await this.deps.workspaceRepo.createTaskComment({
+                  taskId: task.task.id,
+                  taskRunId: taskRun.id,
+                  jobId: job.id,
+                  sourceCommand: "work-on-tasks",
+                  authorType: "agent",
+                  authorAgentId: agent.id,
+                  category: "doc_edit_guard",
+                  body,
+                  createdAt: new Date().toISOString(),
+                  metadata: { reason: "doc_edit_guard", violations },
+                });
+                await this.logTask(
+                  taskRun.id,
+                  "Blocked destructive doc edit; add allow_large_doc_edits=true to task metadata to override.",
+                  "scope",
+                );
+                await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
+                  error: "doc_edit_guard",
+                  violations,
+                  attempt,
+                });
+                await this.stateService.markBlocked(task.task, "doc_edit_guard", statusContext);
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                setFailureReason("doc_edit_guard");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "doc_edit_guard" });
                 taskStatus = "failed";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                 continue taskLoop;
@@ -3081,6 +3496,7 @@ export class WorkOnTasksService {
                   request.dryRun ?? false,
                   { jobId: job.id, taskKey: task.task.key, attempt },
                 );
+                const patchHardFailure = applied.hardFailure === true;
                 if (applied.touched.length) {
                   const merged = new Set([...touched, ...applied.touched]);
                   touched = Array.from(merged);
@@ -3091,7 +3507,33 @@ export class WorkOnTasksService {
                 if (applied.error) {
                   patchApplyError = applied.error;
                   await this.logTask(taskRun.id, `Patch apply failed: ${applied.error}`, "patch");
-                  if (!fileBlocks.length && !triedPatchFallback) {
+                  if (applied.rejectDetails) {
+                    const body = [
+                      "[work-on-tasks]",
+                      "Patch rejected while applying agent output.",
+                      `Files: ${applied.rejectDetails.files.join(", ") || "unknown"}`,
+                      `Details: ${applied.rejectDetails.message}`,
+                    ].join("\n");
+                    await this.deps.workspaceRepo.createTaskComment({
+                      taskId: task.task.id,
+                      taskRunId: taskRun.id,
+                      jobId: job.id,
+                      sourceCommand: "work-on-tasks",
+                      authorType: "agent",
+                      authorAgentId: agent.id,
+                      category: "patch_reject",
+                      body,
+                      createdAt: new Date().toISOString(),
+                      metadata: {
+                        reason: "patch_reject",
+                        files: applied.rejectDetails.files,
+                        removedRejects: applied.rejectDetails.removedRejects,
+                        cleanupErrors: applied.rejectDetails.cleanupErrors,
+                      },
+                    });
+                    await this.logTask(taskRun.id, "Patch rejected; blocking task after cleanup.", "patch");
+                  }
+                  if (!fileBlocks.length && !triedPatchFallback && !patchHardFailure) {
                     triedPatchFallback = true;
                     const files = Array.from(
                       new Set(patches.flatMap((patch) => touchedFilesFromPatch(patch))),
@@ -3130,22 +3572,13 @@ export class WorkOnTasksService {
                       }
                     }
                   }
-                  if (patchApplyError && !fileBlocks.length) {
+                  if (patchApplyError && (patchHardFailure || !fileBlocks.length)) {
                     await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
                     await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
                     await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                    setFailureReason("patch_failed");
                     results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                     taskStatus = "failed";
-                    if (!request.dryRun && request.noCommit !== true) {
-                      await this.commitPendingChanges(
-                        branchInfo,
-                        task.task.key,
-                        task.task.title,
-                        "auto-save (patch_failed)",
-                        task.task.id,
-                        taskRun.id,
-                      );
-                    }
                     await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                     continue taskLoop;
                   }
@@ -3183,18 +3616,9 @@ export class WorkOnTasksService {
                     await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
                     await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
                     await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                    setFailureReason("patch_failed");
                     results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                     taskStatus = "failed";
-                    if (!request.dryRun && request.noCommit !== true) {
-                      await this.commitPendingChanges(
-                        branchInfo,
-                        task.task.key,
-                        task.task.title,
-                        "auto-save (patch_failed)",
-                        task.task.id,
-                        taskRun.id,
-                      );
-                    }
                     await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                     continue taskLoop;
                   }
@@ -3211,18 +3635,9 @@ export class WorkOnTasksService {
                   await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: patchApplyError, attempt });
                   await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                  setFailureReason("patch_failed");
                   results.push({ taskKey: task.task.key, status: "failed", notes: "patch_failed" });
                   taskStatus = "failed";
-                  if (!request.dryRun && request.noCommit !== true) {
-                    await this.commitPendingChanges(
-                      branchInfo,
-                      task.task.key,
-                      task.task.title,
-                      "auto-save (patch_failed)",
-                      task.task.id,
-                      taskRun.id,
-                    );
-                  }
                   await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                   continue taskLoop;
                 }
@@ -3241,6 +3656,7 @@ export class WorkOnTasksService {
                   await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
                   await this.stateService.markBlocked(task.task, "scope_violation", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                  setFailureReason("scope_violation");
                   results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
                   taskStatus = "failed";
                   if (!request.dryRun && request.noCommit !== true && patchApplied) {
@@ -3346,18 +3762,9 @@ export class WorkOnTasksService {
               });
               await this.stateService.markBlocked(task.task, failureReason, statusContext);
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+              setFailureReason(failureReason);
               results.push({ taskKey: task.task.key, status: "failed", notes: failureReason });
               taskStatus = "failed";
-              if (!request.dryRun && request.noCommit !== true) {
-                await this.commitPendingChanges(
-                  branchInfo,
-                  task.task.key,
-                  task.task.title,
-                  "auto-save (tests_failed)",
-                  task.task.id,
-                  taskRun.id,
-                );
-              }
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
               continue taskLoop;
             }
@@ -3409,6 +3816,7 @@ export class WorkOnTasksService {
                 );
                 await this.stateService.markBlocked(task.task, "no_changes", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                setFailureReason("no_changes");
                 results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
                 taskStatus = "failed";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -3436,6 +3844,7 @@ export class WorkOnTasksService {
                 await this.logTask(taskRun.id, "No changes detected; blocking task for escalation.", "execution");
                 await this.stateService.markBlocked(task.task, "no_changes", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                setFailureReason("no_changes");
                 results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
                 taskStatus = "failed";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -3511,6 +3920,7 @@ export class WorkOnTasksService {
               const changedFiles = dirty.length ? dirty : touched.length ? touched : [];
               const changedNote = changedFiles.length ? `Changed files: ${changedFiles.join(", ")}` : "No changed files detected.";
               const reason = !autoMerge ? "auto_merge_disabled" : "no_file_scope";
+              setMergeNote(reason);
               const message = !autoMerge
                 ? `Auto-merge disabled; leaving branch ${branchInfo.branch} for manual PR. ${changedNote}`
                 : `Auto-merge skipped because task has no file scope (metadata.files empty). ${changedNote}`;
@@ -3549,6 +3959,7 @@ export class WorkOnTasksService {
                     status: "failed",
                     finishedAt: new Date().toISOString(),
                   });
+                  setFailureReason("merge_conflict");
                   results.push({ taskKey: task.task.key, status: "failed", notes: "merge_conflict" });
                   taskStatus = "failed";
                   await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -3601,6 +4012,9 @@ export class WorkOnTasksService {
                 mergeStatus === "skipped"
                   ? "No remote configured; auto-merge skipped due to missing file scope."
                   : "No remote configured; merge completed locally.";
+              if (mergeStatus === "skipped") {
+                setMergeNote("no_remote");
+              }
               await this.logTask(taskRun.id, message, "vcs");
             }
           } catch (error) {
@@ -3612,6 +4026,7 @@ export class WorkOnTasksService {
             await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: message });
             await this.stateService.markBlocked(task.task, "vcs_failed", statusContext);
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+            setFailureReason("vcs_failed");
             results.push({ taskKey: task.task.key, status: "failed", notes: "vcs_failed" });
             taskStatus = "failed";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -3623,7 +4038,26 @@ export class WorkOnTasksService {
         } else if (request.noCommit) {
           await this.logTask(taskRun.id, "no-commit set: skipped commit/push.", "vcs");
         }
-  
+
+        if (commentResolution?.resolvedSlugs?.length || commentResolution?.unresolvedSlugs?.length) {
+          const context = commentContext ?? (await this.loadCommentContext(task.task.id));
+          const applied = await this.applyCommentResolutions({
+            taskId: task.task.id,
+            taskRunId: taskRun.id,
+            jobId: job.id,
+            agentId: agent.id,
+            resolvedSlugs: commentResolution.resolvedSlugs ?? null,
+            unresolvedSlugs: commentResolution.unresolvedSlugs ?? null,
+            existingComments: context.comments,
+            dryRun: Boolean(request.dryRun),
+          });
+          await this.logTask(
+            taskRun.id,
+            `Applied comment resolution: resolved=${applied.resolved.length}, reopened=${applied.reopened.length}, open=${applied.open.length}`,
+            "comment_resolution",
+          );
+        }
+
         await startPhase("finalize");
         const finishedAt = new Date().toISOString();
         const elapsedSeconds = Math.max(1, (Date.parse(finishedAt) - Date.parse(startedAt)) / 1000);
@@ -3666,6 +4100,7 @@ export class WorkOnTasksService {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "execution");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
             await this.stateService.markBlocked(task.task, "agent_timeout", statusContext);
+            setFailureReason("agent_timeout");
             taskStatus = "failed";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
             throw error;
@@ -3674,6 +4109,7 @@ export class WorkOnTasksService {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "vcs");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
             await this.stateService.markBlocked(task.task, "task_lock_lost", statusContext);
+            setFailureReason("task_lock_lost");
             if (!request.dryRun && request.noCommit !== true) {
               await this.commitPendingChanges(branchInfo, task.task.key, task.task.title, "auto-save (lock_lost)", task.task.id, taskRun.id);
             }

@@ -138,3 +138,25 @@ test("DocdexClient falls back to local docs when baseUrl is missing", async (t) 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("DocdexClient findDocumentByPath falls back to local file", async (t) => {
+  if (shouldSkipDocdexClient) {
+    t.skip("docdex client tests can hang on Windows CI");
+    return;
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-docdex-path-"));
+  const docPath = path.join(dir, "docs", "sds", "tl.md");
+  await fs.mkdir(path.dirname(docPath), { recursive: true });
+  await fs.writeFile(docPath, "# SDS\nLocal content", "utf8");
+  const client = new DocdexClient({ workspaceRoot: dir });
+
+  try {
+    const doc = await client.findDocumentByPath("docs/sds/tl.md", "SDS");
+    assert.ok(doc);
+    assert.equal(doc?.docType, "SDS");
+    assert.equal(doc?.path, "docs/sds/tl.md");
+    assert.ok(doc?.content?.includes("Local content"));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

@@ -277,4 +277,57 @@ describe("gateway-trio CLI output shape", () => {
     assert.equal(logs.some((line) => line.includes("gateway-trio job job-123")), false);
     assert.equal(progressLines.some((line) => line.includes("0/0")), false);
   });
+
+  it("wraps gateway output in start/end markers", async () => {
+    const originalCreate = GatewayTrioService.create;
+    const originalWrite = process.stdout.write;
+    const captured: string[] = [];
+    process.stdout.write = ((chunk: any) => {
+      captured.push(String(chunk));
+      return true;
+    }) as any;
+    const fakeResult = {
+      jobId: "job-123",
+      commandRunId: "cmd-123",
+      tasks: [],
+      warnings: [],
+      blocked: [],
+      failed: [],
+      skipped: [],
+    };
+    // @ts-expect-error override for test
+    GatewayTrioService.create = async () => ({
+      run: async (request: any) => {
+        const startedAt = new Date().toISOString();
+        request.onGatewayStart?.({
+          taskKey: "TASK-1",
+          job: "work-on-tasks",
+          gatewayAgent: "gateway-router",
+          startedAt,
+        });
+        request.onGatewayChunk?.("gateway-output");
+        request.onGatewayEnd?.({
+          taskKey: "TASK-1",
+          job: "work-on-tasks",
+          gatewayAgent: "gateway-router",
+          chosenAgent: "worker-agent",
+          startedAt,
+          endedAt: new Date().toISOString(),
+          status: "completed",
+        });
+        return fakeResult;
+      },
+      close: async () => {},
+    });
+    try {
+      await GatewayTrioCommand.run([]);
+    } finally {
+      process.stdout.write = originalWrite;
+      GatewayTrioService.create = originalCreate;
+    }
+    const output = captured.join("");
+    assert.ok(output.includes("START OF GATEWAY TASK"));
+    assert.ok(output.includes("END OF GATEWAY TASK"));
+    assert.ok(output.includes("gateway-output"));
+  });
 });

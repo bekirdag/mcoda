@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 /**
  * Utility helpers for resolving mcoda paths in both global and workspace scopes.
  * The helpers intentionally avoid touching any other layer to keep shared free of deps.
@@ -29,8 +30,15 @@ export class PathHelper {
     static getGlobalDbPath() {
         return path.join(this.getGlobalMcodaDir(), "mcoda.db");
     }
-    static getWorkspaceDir(cwd = process.cwd()) {
-        return path.join(cwd, ".mcoda");
+    static getGlobalWorkspaceDir(workspaceRoot) {
+        const normalizedRoot = this.normalizePathCase(path.resolve(workspaceRoot));
+        const hash = createHash("sha256").update(normalizedRoot).digest("hex").slice(0, 12);
+        const rawName = path.basename(normalizedRoot) || "workspace";
+        const safeName = rawName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 32) || "workspace";
+        return path.join(this.getGlobalMcodaDir(), "workspaces", `${safeName}-${hash}`);
+    }
+    static getWorkspaceDir(workspaceRoot = process.cwd()) {
+        return this.getGlobalWorkspaceDir(workspaceRoot);
     }
     static getWorkspaceDbPath(cwd = process.cwd()) {
         return path.join(this.getWorkspaceDir(cwd), "mcoda.db");

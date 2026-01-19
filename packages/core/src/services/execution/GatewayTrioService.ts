@@ -17,6 +17,7 @@ import { TaskSelectionFilters, TaskSelectionPlan, TaskSelectionService } from ".
 import { WorkOnTasksService, type WorkOnTasksResult } from "./WorkOnTasksService.js";
 import { CodeReviewService, type CodeReviewResult } from "../review/CodeReviewService.js";
 import { QaTasksService, type QaTasksResponse } from "./QaTasksService.js";
+import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const DEFAULT_STATUS_FILTER = ["not_started", "in_progress", "ready_to_review", "ready_to_qa"];
 const TERMINAL_STATUSES = new Set(["completed", "cancelled", "failed"]);
@@ -37,6 +38,7 @@ const ESCALATION_REASONS = new Set([
   "tests_failed",
   "agent_timeout",
   "review_invalid_output",
+  "work_status_not_ready",
 ]);
 const NO_CHANGE_REASON = "no_changes";
 const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
@@ -98,6 +100,7 @@ type GatewayTrioState = {
   schema_version: 1;
   job_id: string;
   command_run_id: string;
+  run_list?: string[];
   cycle: number;
   tasks: Record<string, TaskProgress>;
 };
@@ -107,6 +110,9 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   maxIterations?: number;
   maxCycles?: number;
   onJobStart?: (jobId: string, commandRunId: string) => void;
+  onGatewayStart?: (details: GatewayLogDetails) => void;
+  onGatewayChunk?: (chunk: string) => void;
+  onGatewayEnd?: (details: GatewayLogDetails) => void;
   gatewayAgentName?: string;
   workAgentName?: string;
   reviewAgentName?: string;
@@ -130,6 +136,17 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   resumeJobId?: string;
   rateAgents?: boolean;
   escalateOnNoChange?: boolean;
+}
+
+export interface GatewayLogDetails {
+  taskKey: string;
+  job: string;
+  gatewayAgent?: string;
+  chosenAgent?: string;
+  startedAt: string;
+  endedAt?: string;
+  status?: "completed" | "failed";
+  error?: string;
 }
 
 export interface GatewayTrioTaskSummary {
@@ -228,11 +245,16 @@ export class GatewayTrioService {
     await PathHelper.ensureDir(dir);
     const target = path.join(dir, "docdex-check.json");
     await fs.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
-    return path.relative(this.workspace.workspaceRoot, target);
+    return path.relative(this.workspace.mcodaDir, target);
   }
 
   private async runDocdexPreflight(jobId: string, warnings: string[]): Promise<void> {
     if (process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" || process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS === "1") {
+      return;
+    }
+    const configuredUrl =
+      this.workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL ?? process.env.DOCDEX_URL;
+    if (configuredUrl) {
       return;
     }
     const checkFn = this.deps.docdexCheck ?? readDocdexCheck;
@@ -276,7 +298,7 @@ export class GatewayTrioService {
   }
 
   private trioDir(jobId: string): string {
-    return path.join(this.workspace.workspaceRoot, ".mcoda", "jobs", jobId, "gateway-trio");
+    return path.join(this.workspace.mcodaDir, "jobs", jobId, "gateway-trio");
   }
 
   private statePath(jobId: string): string {
@@ -298,7 +320,7 @@ export class GatewayTrioService {
   }
 
   private async readManifest(jobId: string): Promise<Record<string, unknown> | undefined> {
-    const manifestPath = path.join(this.workspace.workspaceRoot, ".mcoda", "jobs", jobId, "manifest.json");
+    const manifestPath = path.join(this.workspace.mcodaDir, "jobs", jobId, "manifest.json");
     try {
       const raw = await fs.readFile(manifestPath, "utf8");
       return JSON.parse(raw) as Record<string, unknown>;
@@ -321,7 +343,7 @@ export class GatewayTrioService {
 
   private async isTokenUsageCheckEnabled(): Promise<boolean> {
     if (this.tokenUsageCheckEnabled !== undefined) return this.tokenUsageCheckEnabled;
-    const configPath = path.join(this.workspace.workspaceRoot, ".mcoda", "config.json");
+    const configPath = path.join(this.workspace.mcodaDir, "config.json");
     try {
       const raw = await fs.readFile(configPath, "utf8");
       const parsed = JSON.parse(raw) as { telemetry?: { strict?: boolean } };
@@ -336,7 +358,7 @@ export class GatewayTrioService {
     if (!jobId) return undefined;
     const enabled = await this.isTokenUsageCheckEnabled();
     if (!enabled) return undefined;
-    const tokenPath = path.join(this.workspace.workspaceRoot, ".mcoda", "token_usage.json");
+    const tokenPath = path.join(this.workspace.mcodaDir, "token_usage.json");
     let raw: string;
     try {
       raw = await fs.readFile(tokenPath, "utf8");
@@ -479,6 +501,99 @@ export class GatewayTrioService {
     return created;
   }
 
+  private dedupeTaskKeys(keys: string[]): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const key of keys) {
+      const trimmed = key.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+    return result;
+  }
+
+  private buildRunListFromExplicit(
+    taskKeys: string[],
+    limit: number | undefined,
+    warnings: string[],
+  ): string[] {
+    const filtered = taskKeys.filter((key) => !this.isPseudoTaskKey(key));
+    let deduped = this.dedupeTaskKeys(filtered);
+    if (typeof limit === "number" && limit > 0 && deduped.length > limit) {
+      warnings.push(`Run list limited to ${limit} explicit tasks; skipping ${deduped.length - limit} task(s).`);
+      deduped = deduped.slice(0, limit);
+    }
+    return deduped;
+  }
+
+  private async buildRunListFromSelection(
+    filters: TaskSelectionFilters,
+    limit: number | undefined,
+    warnings: string[],
+  ): Promise<string[]> {
+    const selection = await this.selectionService.selectTasks(filters);
+    if (selection.warnings.length) warnings.push(...selection.warnings);
+    const orderedKeys = selection.ordered.map((entry) => entry.task.key).filter((key) => !this.isPseudoTaskKey(key));
+    let deduped = this.dedupeTaskKeys(orderedKeys);
+    if (typeof limit === "number" && limit > 0 && deduped.length > limit) {
+      warnings.push(`Run list limited to ${limit} tasks; skipping ${deduped.length - limit} task(s).`);
+      deduped = deduped.slice(0, limit);
+    }
+    return deduped;
+  }
+
+  private async guardMissingContext(
+    step: StepName,
+    jobId: string,
+    taskKey: string,
+    gateway: GatewayAgentResult,
+    warnings: string[],
+    resolvedAgent?: string,
+  ): Promise<StepOutcome | undefined> {
+    const filesMissing = gateway.analysis.filesLikelyTouched.length === 0 && gateway.analysis.filesToCreate.length === 0;
+    const docdexMissing = gateway.docdex.length === 0;
+    if (!filesMissing || !docdexMissing) return undefined;
+
+    const messageLines = [
+      "Gateway analysis returned no file paths and no docdex context.",
+      gateway.analysis.docdexNotes.length ? `Docdex notes: ${gateway.analysis.docdexNotes.join(" | ")}` : "Docdex notes: (none)",
+      gateway.analysis.assumptions.length ? `Assumptions: ${gateway.analysis.assumptions.join(" | ")}` : undefined,
+      "Provide concrete file paths or ensure docdex context is available before retrying.",
+    ].filter(Boolean) as string[];
+    const message = messageLines.join("\n");
+
+    const task = await this.deps.workspaceRepo.getTaskByKey(taskKey);
+    if (task) {
+      const metadata = (task.metadata as Record<string, unknown> | undefined) ?? {};
+      const nextMetadata = { ...metadata, blocked_reason: "missing_context" };
+      await this.deps.workspaceRepo.updateTask(task.id, { status: "blocked", metadata: nextMetadata });
+      const slug = createTaskCommentSlug({ source: "gateway-trio", category: "missing_context", message });
+      const body = formatTaskCommentBody({
+        slug,
+        source: "gateway-trio",
+        category: "missing_context",
+        status: "open",
+        message,
+      });
+      await this.deps.workspaceRepo.createTaskComment({
+        taskId: task.id,
+        jobId,
+        sourceCommand: "gateway-trio",
+        authorType: "agent",
+        authorAgentId: gateway.gatewayAgent.id,
+        category: "missing_context",
+        slug,
+        status: "open",
+        body,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    warnings.push(`Task ${taskKey} blocked (${step}) due to missing file context.`);
+    return { step, status: "blocked", error: "missing_context", chosenAgent: resolvedAgent ?? gateway.chosenAgent.agentSlug };
+  }
+
   private hasReachedMaxIterations(progress: TaskProgress | undefined, maxIterations?: number): boolean {
     if (maxIterations === undefined) return false;
     const attempts = progress?.attempts ?? 0;
@@ -500,10 +615,30 @@ export class GatewayTrioService {
     for (const taskKey of keys) {
       const progress = state.tasks[taskKey];
       if (progress?.status === "completed") continue;
-      if (this.hasReachedMaxIterations(progress, maxIterations)) continue;
       const task = await this.deps.workspaceRepo.getTaskByKey(taskKey);
       if (!task) continue;
       const status = this.normalizeStatus(task.status);
+      if (status === "completed" || status === "cancelled") {
+        const terminalProgress = progress ?? this.ensureProgress(state, taskKey);
+        terminalProgress.status = status === "completed" ? "completed" : "skipped";
+        terminalProgress.lastError = status === "completed" ? "completed_in_db" : "cancelled_in_db";
+        state.tasks[taskKey] = terminalProgress;
+        warnings.push(`Task ${taskKey} is ${status}; skipping reopen.`);
+        continue;
+      }
+      if (this.hasReachedMaxIterations(progress, maxIterations)) {
+        if (progress) {
+          progress.status = "failed";
+          if (!progress.lastError) {
+            progress.lastError = "max_iterations_reached";
+          }
+          state.tasks[taskKey] = progress;
+        }
+        if (maxIterations !== undefined) {
+          warnings.push(`Task ${taskKey} hit max iterations (${maxIterations}); skipping reopen.`);
+        }
+        continue;
+      }
       const metadata = (task.metadata as Record<string, unknown> | undefined) ?? {};
       const blockedReason = typeof metadata.blocked_reason === "string" ? metadata.blocked_reason : undefined;
       if (status === "blocked") {
@@ -741,11 +876,12 @@ export class GatewayTrioService {
     request: GatewayTrioRequest,
   ): { avoidAgents: string[]; forceStronger: boolean } {
     const reasons = this.escalationReasons(request.escalateOnNoChange !== false);
+    const escalateAllFailures = step === "work";
     const avoid = new Set<string>();
     const history = progress.failureHistory ?? [];
     for (const failure of history) {
       if (failure.step !== step) continue;
-      if (!reasons.has(failure.reason)) continue;
+      if (!escalateAllFailures && !reasons.has(failure.reason)) continue;
       avoid.add(failure.agent);
     }
     const avoidAgents = Array.from(avoid);
@@ -767,7 +903,7 @@ export class GatewayTrioService {
   ): Promise<RatingSummary | undefined> {
     if (!jobId) return undefined;
     try {
-      const payload = await fs.readFile(path.join(this.workspace.workspaceRoot, ".mcoda", "jobs", jobId, "rating.json"), "utf8");
+      const payload = await fs.readFile(path.join(this.workspace.mcodaDir, "jobs", jobId, "rating.json"), "utf8");
       const parsed = JSON.parse(payload) as Record<string, unknown>;
       const rating = typeof parsed.rating === "number" ? parsed.rating : undefined;
       const maxComplexity = typeof parsed.maxComplexity === "number" ? parsed.maxComplexity : undefined;
@@ -859,18 +995,78 @@ export class GatewayTrioService {
     request: GatewayTrioRequest,
     agentOptions?: AgentSelectionOptions,
   ): Promise<GatewayAgentResult> {
-    return this.deps.gatewayService.run({
-      workspace: this.workspace,
+    const startedAt = new Date().toISOString();
+    const shouldSuppressIo = Boolean(request.onGatewayStart || request.onGatewayEnd || request.onGatewayChunk);
+    request.onGatewayStart?.({
+      taskKey,
       job,
-      projectKey,
-      taskKeys: [taskKey],
-      gatewayAgentName: request.gatewayAgentName,
-      maxDocs: request.maxDocs,
-      agentStream: request.agentStream,
-      rateAgents: request.rateAgents,
-      avoidAgents: agentOptions?.avoidAgents,
-      forceStronger: agentOptions?.forceStronger,
+      gatewayAgent: request.gatewayAgentName ?? "auto",
+      startedAt,
     });
+    const invoke = () =>
+      this.deps.gatewayService.run({
+        workspace: this.workspace,
+        job,
+        projectKey,
+        taskKeys: [taskKey],
+        gatewayAgentName: request.gatewayAgentName,
+        maxDocs: request.maxDocs,
+        agentStream: request.agentStream,
+        onStreamChunk: request.onGatewayChunk,
+        rateAgents: request.rateAgents,
+        avoidAgents: agentOptions?.avoidAgents,
+        forceStronger: agentOptions?.forceStronger,
+      });
+    try {
+      const result = shouldSuppressIo ? await this.withGatewayIoSuppressed(invoke) : await invoke();
+      const gatewaySlug = result.gatewayAgent.slug ?? result.gatewayAgent.id;
+      const chosenSlug = result.chosenAgent.agentSlug ?? result.chosenAgent.agentId;
+      request.onGatewayEnd?.({
+        taskKey,
+        job,
+        gatewayAgent: gatewaySlug,
+        chosenAgent: chosenSlug,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        status: "completed",
+      });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      request.onGatewayEnd?.({
+        taskKey,
+        job,
+        gatewayAgent: request.gatewayAgentName ?? "auto",
+        startedAt,
+        endedAt: new Date().toISOString(),
+        status: "failed",
+        error: message,
+      });
+      throw error;
+    }
+  }
+
+  private async withGatewayIoSuppressed<T>(fn: () => Promise<T>): Promise<T> {
+    const ioEnv = "MCODA_STREAM_IO";
+    const promptEnv = "MCODA_STREAM_IO_PROMPT";
+    const prevIo = process.env[ioEnv];
+    const prevPrompt = process.env[promptEnv];
+    process.env[ioEnv] = "0";
+    process.env[promptEnv] = "0";
+    try {
+      return await fn();
+    } finally {
+      if (prevIo === undefined) {
+        delete process.env[ioEnv];
+      } else {
+        process.env[ioEnv] = prevIo;
+      }
+      if (prevPrompt === undefined) {
+        delete process.env[promptEnv];
+      } else {
+        process.env[promptEnv] = prevPrompt;
+      }
+    }
   }
 
   private async runWorkStep(
@@ -890,8 +1086,12 @@ export class GatewayTrioService {
     let resolvedAgent: string | undefined;
     try {
       gateway = await this.runGateway("work-on-tasks", taskKey, projectKey, request, agentOptions);
-      handoff = buildGatewayHandoffContent(gateway);
       resolvedAgent = request.workAgentName ?? gateway.chosenAgent.agentSlug;
+      const missingContext = await this.guardMissingContext("work", jobId, taskKey, gateway, warnings, resolvedAgent);
+      if (missingContext) {
+        return missingContext;
+      }
+      handoff = buildGatewayHandoffContent(gateway);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!request.workAgentName) throw error;
@@ -952,33 +1152,17 @@ export class GatewayTrioService {
     abortSignal?: AbortSignal,
     onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
-    const shouldUseGateway =
-      !request.reviewAgentName &&
-      ((agentOptions.avoidAgents?.length ?? 0) > 0 || agentOptions.forceStronger);
+    let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
     try {
-      if (shouldUseGateway) {
-        const gateway = await this.runGateway("code-review", taskKey, projectKey, request, agentOptions);
-        handoff = buildGatewayHandoffContent(gateway);
-        resolvedAgent = gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
-      } else {
-        const resolved = await this.deps.routingService.resolveAgentForCommand({
-          workspace: this.workspace,
-          commandName: "code-review",
-          overrideAgentSlug: request.reviewAgentName,
-          projectKey,
-        });
-        resolvedAgent = resolved.agentSlug;
-        handoff = [
-          "# Gateway Handoff",
-          "",
-          "Gateway planning skipped for code-review; using routing defaults.",
-          `Resolved agent: ${resolved.agentSlug} (${resolved.source}).`,
-          "",
-          buildGatewayHandoffDocdexUsage(),
-        ].join("\n");
+      gateway = await this.runGateway("code-review", taskKey, projectKey, request, agentOptions);
+      resolvedAgent = request.reviewAgentName ?? gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
+      const missingContext = await this.guardMissingContext("review", jobId, taskKey, gateway, warnings, resolvedAgent);
+      if (missingContext) {
+        return missingContext;
       }
+      handoff = buildGatewayHandoffContent(gateway);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!request.reviewAgentName) throw error;
@@ -991,7 +1175,7 @@ export class GatewayTrioService {
         "",
         buildGatewayHandoffDocdexUsage(),
       ].join("\n");
-      warnings.push(`Routing failed for review ${taskKey}; using override ${resolvedAgent}: ${message}`);
+      warnings.push(`Gateway agent failed for review ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for review step on ${taskKey}`);
@@ -1038,24 +1222,17 @@ export class GatewayTrioService {
     abortSignal?: AbortSignal,
     onResolvedAgent?: (agent: string) => Promise<void> | void,
   ): Promise<StepOutcome> {
+    let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
     try {
-      const resolved = await this.deps.routingService.resolveAgentForCommand({
-        workspace: this.workspace,
-        commandName: "qa-tasks",
-        overrideAgentSlug: request.qaAgentName,
-        projectKey,
-      });
-      resolvedAgent = resolved.agentSlug;
-      handoff = [
-        "# Gateway Handoff",
-        "",
-        "Gateway planning skipped for qa-tasks; using routing defaults.",
-        `Resolved agent: ${resolved.agentSlug} (${resolved.source}).`,
-        "",
-        buildGatewayHandoffDocdexUsage(),
-      ].join("\n");
+      gateway = await this.runGateway("qa-tasks", taskKey, projectKey, request, agentOptions);
+      resolvedAgent = request.qaAgentName ?? gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
+      const missingContext = await this.guardMissingContext("qa", jobId, taskKey, gateway, warnings, resolvedAgent);
+      if (missingContext) {
+        return missingContext;
+      }
+      handoff = buildGatewayHandoffContent(gateway);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!request.qaAgentName) throw error;
@@ -1068,7 +1245,7 @@ export class GatewayTrioService {
         "",
         buildGatewayHandoffDocdexUsage(),
       ].join("\n");
-      warnings.push(`Routing failed for QA ${taskKey}; using override ${resolvedAgent}: ${message}`);
+      warnings.push(`Gateway agent failed for QA ${taskKey}; using override ${resolvedAgent}: ${message}`);
     }
     if (!resolvedAgent) {
       throw new Error(`No agent resolved for QA step on ${taskKey}`);
@@ -1157,20 +1334,52 @@ export class GatewayTrioService {
     if (explicitTaskFilterEmpty) {
       warnings.push("All requested tasks were pseudo entries; nothing to run.");
     }
-    const taskKeysForRun = explicitTaskKeysProvided ? filteredTaskKeys : resolvedRequest.taskKeys;
+    const baseTaskKeys = explicitTaskKeysProvided ? filteredTaskKeys : resolvedRequest.taskKeys;
+    const shouldFixRunList = explicitTaskKeysProvided || (typeof resolvedRequest.limit === "number" && resolvedRequest.limit > 0);
+    let jobId = request.resumeJobId;
+    let state: GatewayTrioState | undefined;
+    let runList: string[] | undefined;
+    if (request.resumeJobId) {
+      state = await this.loadState(request.resumeJobId);
+      if (!state) throw new Error(`Missing gateway-trio state for job ${request.resumeJobId}`);
+      if (shouldFixRunList) {
+        runList = state.run_list;
+      }
+    }
+    if (shouldFixRunList && !runList) {
+      if (explicitTaskFilterEmpty) {
+        runList = [];
+      } else if (explicitTaskKeysProvided) {
+        runList = this.buildRunListFromExplicit(filteredTaskKeys, resolvedRequest.limit, warnings);
+      } else {
+        runList = await this.buildRunListFromSelection(
+          {
+            projectKey: resolvedRequest.projectKey,
+            epicKey: resolvedRequest.epicKey,
+            storyKey: resolvedRequest.storyKey,
+            taskKeys: baseTaskKeys,
+            statusFilter,
+            limit: resolvedRequest.limit,
+            parallel: resolvedRequest.parallel,
+          },
+          resolvedRequest.limit,
+          warnings,
+        );
+      }
+    }
+    const taskKeysForRun = runList ?? baseTaskKeys;
     const commandRun = await this.deps.jobService.startCommandRun("gateway-trio", resolvedRequest.projectKey, {
       taskIds: taskKeysForRun,
       jobId: request.resumeJobId,
     });
-
-    let jobId = request.resumeJobId;
-    let state: GatewayTrioState | undefined;
     if (request.resumeJobId) {
-      state = await this.loadState(request.resumeJobId);
-      if (!state) throw new Error(`Missing gateway-trio state for job ${request.resumeJobId}`);
       await this.deps.jobService.updateJobStatus(request.resumeJobId, "running", {
         job_state_detail: "resuming",
       } as any);
+      if (shouldFixRunList && runList && state && !state.run_list) {
+        state.run_list = runList;
+        await this.writeState(state);
+      }
     } else {
       const job = await this.deps.jobService.startJob("gateway-trio", commandRun.id, resolvedRequest.projectKey, {
         commandName: "gateway-trio",
@@ -1213,6 +1422,7 @@ export class GatewayTrioService {
         schema_version: 1,
         job_id: job.id,
         command_run_id: commandRun.id,
+        run_list: runList,
         cycle: 0,
         tasks: {},
       };
@@ -1221,18 +1431,15 @@ export class GatewayTrioService {
         job_state_detail: "loading_tasks",
       } as any);
     }
-
     if (!jobId || !state) {
       throw new Error("gateway-trio job initialization failed");
     }
     if (resolvedRequest.onJobStart) {
       resolvedRequest.onJobStart(jobId, commandRun.id);
     }
-
     await this.runDocdexPreflight(jobId, warnings);
     await this.cleanupExpiredTaskLocks(warnings);
-
-    const explicitTasks = new Set(explicitTaskKeysProvided ? filteredTaskKeys : []);
+    const explicitTasks = new Set(explicitTaskKeysProvided ? (runList ?? filteredTaskKeys) : []);
     if (pseudoTaskKeys.length) {
       for (const key of pseudoTaskKeys) {
         this.skipPseudoTask(state, key, warnings);
@@ -1246,22 +1453,23 @@ export class GatewayTrioService {
       while (maxCycles === undefined || cycle < maxCycles) {
         await this.reopenRetryableBlockedTasks(state, explicitTasks, maxIterations, warnings);
         await this.writeState(state);
-        const selection = explicitTaskFilterEmpty
-          ? ({
-              ordered: [],
-              blocked: [],
-              warnings: [],
-              filters: { effectiveStatuses: [] },
-            } as TaskSelectionPlan)
-          : await this.selectionService.selectTasks({
-              projectKey: resolvedRequest.projectKey,
-              epicKey: resolvedRequest.epicKey,
-              storyKey: resolvedRequest.storyKey,
-              taskKeys: taskKeysForRun,
-              statusFilter,
-              limit: resolvedRequest.limit,
-              parallel: resolvedRequest.parallel,
-            });
+        const selection =
+          explicitTaskFilterEmpty || (Array.isArray(runList) && runList.length === 0)
+            ? ({
+                ordered: [],
+                blocked: [],
+                warnings: [],
+                filters: { effectiveStatuses: [] },
+              } as TaskSelectionPlan)
+            : await this.selectionService.selectTasks({
+                projectKey: resolvedRequest.projectKey,
+                epicKey: resolvedRequest.epicKey,
+                storyKey: resolvedRequest.storyKey,
+                taskKeys: Array.isArray(runList) ? runList : taskKeysForRun,
+                statusFilter,
+                limit: resolvedRequest.limit,
+                parallel: resolvedRequest.parallel,
+              });
         const blockedKeys = new Set(selection.blocked.map((t) => t.task.key));
         if (selection.warnings.length) warnings.push(...selection.warnings);
 
@@ -1309,7 +1517,7 @@ export class GatewayTrioService {
         for (const entry of ordered) {
           let attempted = false;
           try {
-          const taskKey = entry.task.key;
+            const taskKey = entry.task.key;
           if (seenThisCycle.has(taskKey)) {
             warnings.push(`Task ${taskKey} appears multiple times in this cycle; skipping duplicate entry.`);
             continue;
@@ -1356,30 +1564,264 @@ export class GatewayTrioService {
             state.tasks[taskKey] = progress;
           }
 
-          if (this.hasReachedMaxIterations(progress, maxIterations)) {
-            progress.status = "failed";
-            progress.lastError = "max_iterations_reached";
-            state.tasks[taskKey] = progress;
-            if (maxIterations !== undefined) {
-              warnings.push(`Task ${taskKey} hit max iterations (${maxIterations}).`);
-            }
-            continue;
-          }
-
-          const attemptIndex = progress.attempts + 1;
-          attemptedThisCycle += 1;
-          attempted = true;
           const projectKey = await this.projectKeyForTask(entry.task.projectId);
-          const statusBefore = this.normalizeStatus(entry.task.status);
-          const workWasSkipped = statusBefore === "ready_to_review" || statusBefore === "ready_to_qa";
-          const reviewWasSkipped = statusBefore === "ready_to_qa";
+          let currentStatus = this.normalizeStatus(entry.task.status);
+          const readStatus = async (): Promise<string | undefined> => {
+            if (resolvedRequest.dryRun) return currentStatus;
+            return await this.refreshTaskStatus(taskKey, warnings);
+          };
+          const setDryRunStatus = (next?: string) => {
+            if (resolvedRequest.dryRun) {
+              currentStatus = next;
+            }
+          };
 
-          progress.attempts = attemptIndex;
-          progress.lastError = undefined;
-          state.tasks[taskKey] = progress;
-          await this.writeState(state);
+          let taskCompleted = false;
+          while (!taskCompleted) {
+            const statusNow = await readStatus();
+            if (!statusNow) {
+              progress.status = "failed";
+              progress.lastError = "status_unknown";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              warnings.push(`Task ${taskKey} status unknown; skipping.`);
+              break;
+            }
+            if (TERMINAL_STATUSES.has(statusNow)) {
+              progress.status = statusNow === "completed" ? "completed" : "skipped";
+              progress.lastError = statusNow === "completed" ? "completed_in_db" : "cancelled_in_db";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              if (statusNow === "completed") {
+                completedKeys.add(taskKey);
+                completedThisCycle += 1;
+              }
+              break;
+            }
+            if (statusNow === "blocked") {
+              progress.status = "blocked";
+              progress.lastError = progress.lastError ?? "blocked";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              break;
+            }
 
-          if (!workWasSkipped) {
+            if (!attempted) {
+              attemptedThisCycle += 1;
+              attempted = true;
+            }
+
+            if (statusNow === "ready_to_review") {
+              const attemptIndex = Math.max(progress.attempts, 1);
+              const reviewAgentOptions = this.buildAgentOptions(progress, "review", resolvedRequest);
+              progress.lastStep = "review";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              const reviewOutcome = await this.runStepWithTimeout(
+                "review",
+                jobId,
+                taskKey,
+                attemptIndex,
+                maxAgentSeconds,
+                (signal) =>
+                  this.runReviewStep(
+                    jobId,
+                    attemptIndex,
+                    taskKey,
+                    projectKey,
+                    ["ready_to_review"],
+                    resolvedRequest,
+                    warnings,
+                    reviewAgentOptions,
+                    signal,
+                    async (agent) => {
+                      progress.chosenAgents.review = agent;
+                      state.tasks[taskKey] = progress;
+                      await this.writeState(state);
+                    },
+                  ),
+              );
+              progress.lastStep = "review";
+              progress.lastDecision = reviewOutcome.decision;
+              progress.lastError = reviewOutcome.error;
+              progress.chosenAgents.review = reviewOutcome.chosenAgent ?? progress.chosenAgents.review;
+              this.recordFailure(progress, reviewOutcome, attemptIndex);
+              this.recordRating(progress, reviewOutcome.ratingSummary);
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              await this.deps.jobService.writeCheckpoint(jobId, {
+                stage: `task:${taskKey}:review`,
+                timestamp: new Date().toISOString(),
+                details: { taskKey, attempt: attemptIndex, outcome: reviewOutcome },
+              });
+
+              if (reviewOutcome.error === ZERO_TOKEN_ERROR) {
+                if (!resolvedRequest.dryRun) {
+                  await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "ready_to_review" });
+                }
+                const zeroTokenCount = this.countFailures(progress, "review", ZERO_TOKEN_ERROR);
+                if (zeroTokenCount >= 2) {
+                  progress.status = "failed";
+                  progress.lastError = ZERO_TOKEN_ERROR;
+                  state.tasks[taskKey] = progress;
+                  await this.writeState(state);
+                  warnings.push(`Task ${taskKey} failed after repeated zero-token review runs.`);
+                  break;
+                }
+                warnings.push(`Retrying ${taskKey} after zero-token review run.`);
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                await this.backoffZeroTokens(zeroTokenCount);
+                continue;
+              }
+
+              if (reviewOutcome.status === "blocked") {
+                progress.status = "blocked";
+                progress.lastError = reviewOutcome.error ?? "blocked";
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                break;
+              }
+              if (this.shouldRetryAfter(reviewOutcome)) {
+                warnings.push(`Retrying ${taskKey} after review (${reviewOutcome.decision ?? reviewOutcome.status}).`);
+                setDryRunStatus("in_progress");
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                continue;
+              }
+              if (resolvedRequest.dryRun) {
+                setDryRunStatus(reviewOutcome.status === "succeeded" ? "ready_to_qa" : "in_progress");
+                continue;
+              }
+              const statusAfterReview = await this.refreshTaskStatus(taskKey, warnings);
+              if (statusAfterReview && statusAfterReview === "completed") {
+                progress.status = "completed";
+                state.tasks[taskKey] = progress;
+                completedKeys.add(taskKey);
+                completedThisCycle += 1;
+                await this.writeState(state);
+                break;
+              }
+              if (statusAfterReview && !["ready_to_qa"].includes(statusAfterReview)) {
+                warnings.push(`Task ${taskKey} status ${statusAfterReview} after review; retrying work step.`);
+                continue;
+              }
+              continue;
+            }
+
+            if (statusNow === "ready_to_qa") {
+              const attemptIndex = Math.max(progress.attempts, 1);
+              progress.lastStep = "qa";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              const qaOutcome = await this.runStepWithTimeout(
+                "qa",
+                jobId,
+                taskKey,
+                attemptIndex,
+                maxAgentSeconds,
+                (signal) =>
+                  this.runQaStep(
+                    jobId,
+                    attemptIndex,
+                    taskKey,
+                    projectKey,
+                    ["ready_to_qa"],
+                    resolvedRequest,
+                    warnings,
+                    this.buildAgentOptions(progress, "qa", resolvedRequest),
+                    signal,
+                    async (agent) => {
+                      progress.chosenAgents.qa = agent;
+                      state.tasks[taskKey] = progress;
+                      await this.writeState(state);
+                    },
+                  ),
+              );
+              progress.lastStep = "qa";
+              progress.lastOutcome = qaOutcome.outcome;
+              progress.lastError = qaOutcome.error;
+              progress.chosenAgents.qa = qaOutcome.chosenAgent ?? progress.chosenAgents.qa;
+              this.recordFailure(progress, qaOutcome, attemptIndex);
+              this.recordRating(progress, qaOutcome.ratingSummary);
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              await this.deps.jobService.writeCheckpoint(jobId, {
+                stage: `task:${taskKey}:qa`,
+                timestamp: new Date().toISOString(),
+                details: { taskKey, attempt: attemptIndex, outcome: qaOutcome },
+              });
+
+              if (qaOutcome.error === ZERO_TOKEN_ERROR) {
+                if (!resolvedRequest.dryRun) {
+                  await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "ready_to_qa" });
+                }
+                const zeroTokenCount = this.countFailures(progress, "qa", ZERO_TOKEN_ERROR);
+                if (zeroTokenCount >= 2) {
+                  progress.status = "failed";
+                  progress.lastError = ZERO_TOKEN_ERROR;
+                  state.tasks[taskKey] = progress;
+                  await this.writeState(state);
+                  warnings.push(`Task ${taskKey} failed after repeated zero-token QA runs.`);
+                  break;
+                }
+                warnings.push(`Retrying ${taskKey} after zero-token QA run.`);
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                await this.backoffZeroTokens(zeroTokenCount);
+                continue;
+              }
+
+              if (qaOutcome.status === "blocked") {
+                progress.status = "blocked";
+                progress.lastError = qaOutcome.error ?? "blocked";
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                break;
+              }
+              if (this.shouldRetryAfter(qaOutcome)) {
+                warnings.push(`Retrying ${taskKey} after QA (${qaOutcome.outcome ?? qaOutcome.status}).`);
+                setDryRunStatus("in_progress");
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                continue;
+              }
+              if (resolvedRequest.dryRun) {
+                setDryRunStatus(qaOutcome.status === "succeeded" ? "completed" : "in_progress");
+              } else {
+                const statusAfterQa = await this.refreshTaskStatus(taskKey, warnings);
+                if (statusAfterQa && statusAfterQa !== "completed") {
+                  warnings.push(`Task ${taskKey} status ${statusAfterQa} after QA; retrying work step.`);
+                  continue;
+                }
+              }
+
+              progress.status = "completed";
+              state.tasks[taskKey] = progress;
+              completedKeys.add(taskKey);
+              await this.writeState(state);
+              completedThisCycle += 1;
+              taskCompleted = true;
+              continue;
+            }
+
+            if (this.hasReachedMaxIterations(progress, maxIterations)) {
+              progress.status = "failed";
+              progress.lastError = "max_iterations_reached";
+              state.tasks[taskKey] = progress;
+              if (maxIterations !== undefined) {
+                warnings.push(`Task ${taskKey} hit max iterations (${maxIterations}).`);
+              }
+              await this.writeState(state);
+              break;
+            }
+
+            const attemptIndex = progress.attempts + 1;
+            progress.attempts = attemptIndex;
+            progress.lastError = undefined;
+            state.tasks[taskKey] = progress;
+            await this.writeState(state);
+
             const workAgentOptions = this.buildAgentOptions(progress, "work", resolvedRequest);
             progress.lastStep = "work";
             state.tasks[taskKey] = progress;
@@ -1396,7 +1838,7 @@ export class GatewayTrioService {
                   attemptIndex,
                   taskKey,
                   projectKey,
-                  statusFilter,
+                  ["not_started", "in_progress"],
                   resolvedRequest,
                   warnings,
                   workAgentOptions,
@@ -1432,7 +1874,7 @@ export class GatewayTrioService {
                 state.tasks[taskKey] = progress;
                 await this.writeState(state);
                 warnings.push(`Task ${taskKey} failed after repeated zero-token work runs.`);
-                continue;
+                break;
               }
               warnings.push(`Retrying ${taskKey} after zero-token work run.`);
               state.tasks[taskKey] = progress;
@@ -1449,7 +1891,7 @@ export class GatewayTrioService {
                 state.tasks[taskKey] = progress;
                 await this.writeState(state);
                 warnings.push(`Task ${taskKey} blocked after repeated tests_failed.`);
-                continue;
+                break;
               }
               warnings.push(`Retrying ${taskKey} after tests_failed with stronger agent.`);
               state.tasks[taskKey] = progress;
@@ -1462,228 +1904,55 @@ export class GatewayTrioService {
               progress.lastError = workOutcome.error ?? "blocked";
               state.tasks[taskKey] = progress;
               await this.writeState(state);
-              continue;
+              break;
             }
             if (workOutcome.status === "skipped") {
               progress.status = "skipped";
               progress.lastError = workOutcome.error ?? "skipped";
               state.tasks[taskKey] = progress;
               await this.writeState(state);
-              continue;
+              break;
             }
-            if (workOutcome.status !== "succeeded") {
-              if (this.shouldRetryAfter(workOutcome)) {
-                warnings.push(`Retrying ${taskKey} after work step (${workOutcome.status}).`);
-                state.tasks[taskKey] = progress;
-                await this.writeState(state);
-                continue;
-              }
-            }
-
-            if (!resolvedRequest.dryRun) {
-              const statusAfterWork = await this.refreshTaskStatus(taskKey, warnings);
-              if (statusAfterWork && statusAfterWork !== "ready_to_review") {
-                warnings.push(`Task ${taskKey} status ${statusAfterWork} after work; retrying work step.`);
-                continue;
-              }
-            }
-          } else {
-            progress.lastStep = "work";
-            progress.lastError = undefined;
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            await this.deps.jobService.writeCheckpoint(jobId, {
-              stage: `task:${taskKey}:work:skipped`,
-              timestamp: new Date().toISOString(),
-              details: { taskKey, attempt: attemptIndex, reason: statusBefore ?? "ready" },
-            });
-          }
-
-          if (!reviewWasSkipped) {
-            const reviewAgentOptions = this.buildAgentOptions(progress, "review", resolvedRequest);
-            progress.lastStep = "review";
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            const reviewOutcome = await this.runStepWithTimeout(
-              "review",
-              jobId,
-              taskKey,
-              attemptIndex,
-              maxAgentSeconds,
-              (signal) =>
-                this.runReviewStep(
-                  jobId,
-                  attemptIndex,
-                  taskKey,
-                  projectKey,
-                  ["ready_to_review", ...statusFilter],
-                  resolvedRequest,
-                  warnings,
-                  reviewAgentOptions,
-                  signal,
-                  async (agent) => {
-                    progress.chosenAgents.review = agent;
-                    state.tasks[taskKey] = progress;
-                    await this.writeState(state);
-                  },
-                ),
-            );
-            progress.lastStep = "review";
-            progress.lastDecision = reviewOutcome.decision;
-            progress.lastError = reviewOutcome.error;
-            progress.chosenAgents.review = reviewOutcome.chosenAgent ?? progress.chosenAgents.review;
-            this.recordFailure(progress, reviewOutcome, attemptIndex);
-            this.recordRating(progress, reviewOutcome.ratingSummary);
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            await this.deps.jobService.writeCheckpoint(jobId, {
-              stage: `task:${taskKey}:review`,
-              timestamp: new Date().toISOString(),
-              details: { taskKey, attempt: attemptIndex, outcome: reviewOutcome },
-            });
-
-            if (reviewOutcome.error === ZERO_TOKEN_ERROR) {
-              if (!resolvedRequest.dryRun) {
-                await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "ready_to_review" });
-              }
-              const zeroTokenCount = this.countFailures(progress, "review", ZERO_TOKEN_ERROR);
-              if (zeroTokenCount >= 2) {
-                progress.status = "failed";
-                progress.lastError = ZERO_TOKEN_ERROR;
-                state.tasks[taskKey] = progress;
-                await this.writeState(state);
-                warnings.push(`Task ${taskKey} failed after repeated zero-token review runs.`);
-                continue;
-              }
-              warnings.push(`Retrying ${taskKey} after zero-token review run.`);
+            if (workOutcome.status !== "succeeded" && this.shouldRetryAfter(workOutcome)) {
+              warnings.push(`Retrying ${taskKey} after work step (${workOutcome.status}).`);
               state.tasks[taskKey] = progress;
               await this.writeState(state);
-              await this.backoffZeroTokens(zeroTokenCount);
               continue;
             }
 
-            if (reviewOutcome.status === "blocked") {
+            if (resolvedRequest.dryRun) {
+              setDryRunStatus("ready_to_review");
+              continue;
+            }
+            const statusAfterWork = await this.refreshTaskStatus(taskKey, warnings);
+            if (statusAfterWork && ["ready_to_review", "ready_to_qa", "completed"].includes(statusAfterWork)) {
+              currentStatus = statusAfterWork;
+              continue;
+            }
+            if (statusAfterWork && statusAfterWork === "blocked") {
               progress.status = "blocked";
-              progress.lastError = reviewOutcome.error ?? "blocked";
+              progress.lastError = "blocked";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+              break;
+            }
+            if (statusAfterWork) {
+              warnings.push(`Task ${taskKey} status ${statusAfterWork} after work; retrying work step.`);
+              progress.lastError = "work_status_not_ready";
+              const statusFailure: StepOutcome = {
+                step: "work",
+                status: "failed",
+                error: "work_status_not_ready",
+                chosenAgent: progress.chosenAgents.work,
+              };
+              this.recordFailure(progress, statusFailure, attemptIndex);
               state.tasks[taskKey] = progress;
               await this.writeState(state);
               continue;
             }
-            if (this.shouldRetryAfter(reviewOutcome)) {
-              warnings.push(`Retrying ${taskKey} after review (${reviewOutcome.decision ?? reviewOutcome.status}).`);
-              state.tasks[taskKey] = progress;
-              await this.writeState(state);
-              continue;
-            }
-            if (!resolvedRequest.dryRun) {
-              const statusAfterReview = await this.refreshTaskStatus(taskKey, warnings);
-              if (statusAfterReview && statusAfterReview !== "ready_to_qa") {
-                warnings.push(`Task ${taskKey} status ${statusAfterReview} after review; retrying work step.`);
-                continue;
-              }
-            }
-          } else {
-            progress.lastStep = "review";
-            progress.lastDecision = "skipped";
-            progress.lastError = undefined;
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            await this.deps.jobService.writeCheckpoint(jobId, {
-              stage: `task:${taskKey}:review:skipped`,
-              timestamp: new Date().toISOString(),
-              details: { taskKey, attempt: attemptIndex, reason: statusBefore ?? "ready_to_qa" },
-            });
-          }
-
-          progress.lastStep = "qa";
-          state.tasks[taskKey] = progress;
-          await this.writeState(state);
-          const qaOutcome = await this.runStepWithTimeout(
-            "qa",
-            jobId,
-            taskKey,
-            attemptIndex,
-            maxAgentSeconds,
-            (signal) =>
-              this.runQaStep(
-                jobId,
-                attemptIndex,
-                taskKey,
-                projectKey,
-                ["ready_to_qa", ...statusFilter],
-                resolvedRequest,
-                warnings,
-                this.buildAgentOptions(progress, "qa", resolvedRequest),
-                signal,
-                async (agent) => {
-                  progress.chosenAgents.qa = agent;
-                  state.tasks[taskKey] = progress;
-                  await this.writeState(state);
-                },
-              ),
-          );
-          progress.lastStep = "qa";
-            progress.lastOutcome = qaOutcome.outcome;
-            progress.lastError = qaOutcome.error;
-            progress.chosenAgents.qa = qaOutcome.chosenAgent ?? progress.chosenAgents.qa;
-            this.recordFailure(progress, qaOutcome, attemptIndex);
-            this.recordRating(progress, qaOutcome.ratingSummary);
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-          await this.deps.jobService.writeCheckpoint(jobId, {
-            stage: `task:${taskKey}:qa`,
-            timestamp: new Date().toISOString(),
-            details: { taskKey, attempt: attemptIndex, outcome: qaOutcome },
-          });
-
-          if (qaOutcome.error === ZERO_TOKEN_ERROR) {
-            if (!resolvedRequest.dryRun) {
-              await this.deps.workspaceRepo.updateTask(entry.task.id, { status: "ready_to_qa" });
-            }
-            const zeroTokenCount = this.countFailures(progress, "qa", ZERO_TOKEN_ERROR);
-            if (zeroTokenCount >= 2) {
-              progress.status = "failed";
-              progress.lastError = ZERO_TOKEN_ERROR;
-              state.tasks[taskKey] = progress;
-              await this.writeState(state);
-              warnings.push(`Task ${taskKey} failed after repeated zero-token QA runs.`);
-              continue;
-            }
-            warnings.push(`Retrying ${taskKey} after zero-token QA run.`);
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            await this.backoffZeroTokens(zeroTokenCount);
+            warnings.push(`Task ${taskKey} status missing after work; retrying work step.`);
             continue;
           }
-
-          if (qaOutcome.status === "blocked") {
-            progress.status = "blocked";
-            progress.lastError = qaOutcome.error ?? "blocked";
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            continue;
-          }
-          if (this.shouldRetryAfter(qaOutcome)) {
-            warnings.push(`Retrying ${taskKey} after QA (${qaOutcome.outcome ?? qaOutcome.status}).`);
-            state.tasks[taskKey] = progress;
-            await this.writeState(state);
-            continue;
-          }
-          if (!resolvedRequest.dryRun) {
-            const statusAfterQa = await this.refreshTaskStatus(taskKey, warnings);
-            if (statusAfterQa && statusAfterQa !== "completed") {
-              warnings.push(`Task ${taskKey} status ${statusAfterQa} after QA; retrying work step.`);
-              state.tasks[taskKey] = progress;
-              await this.writeState(state);
-              continue;
-            }
-          }
-
-          progress.status = "completed";
-          state.tasks[taskKey] = progress;
-          completedKeys.add(taskKey);
-          await this.writeState(state);
-          completedThisCycle += 1;
           } finally {
             if (attempted) {
               processedThisCycle += 1;

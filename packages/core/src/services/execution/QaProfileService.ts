@@ -31,8 +31,15 @@ export class QaProfileService {
     taskTypes?: Record<string, string>;
     tags?: Record<string, string>;
   };
+  private noRepoWrites: boolean;
 
-  constructor(private workspaceRoot: string) {}
+  constructor(private workspaceRoot: string, options: { noRepoWrites?: boolean } = {}) {
+    this.noRepoWrites = Boolean(options.noRepoWrites);
+  }
+
+  private get mcodaDir(): string {
+    return PathHelper.getWorkspaceDir(this.workspaceRoot);
+  }
 
   private async fileExists(targetPath: string): Promise<boolean> {
     try {
@@ -154,11 +161,11 @@ export class QaProfileService {
   }
 
   private get profilePath(): string {
-    return path.join(this.workspaceRoot, '.mcoda', 'qa-profiles.json');
+    return path.join(this.mcodaDir, 'qa-profiles.json');
   }
 
   private get workspaceConfigPath(): string {
-    return path.join(this.workspaceRoot, '.mcoda', 'config.json');
+    return path.join(this.mcodaDir, 'config.json');
   }
 
   private async getConfiguredDefaultProfileName(): Promise<string | undefined> {
@@ -197,7 +204,9 @@ export class QaProfileService {
 
   async loadProfiles(): Promise<QaProfile[]> {
     if (this.cache) return this.cache;
-    await PathHelper.ensureDir(path.join(this.workspaceRoot, '.mcoda'));
+    if (!this.noRepoWrites) {
+      await PathHelper.ensureDir(this.mcodaDir);
+    }
     try {
       const raw = await fs.readFile(this.profilePath, 'utf8');
       const parsed = JSON.parse(raw);

@@ -4,9 +4,33 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { test } from "node:test";
 import { WorkspaceRepository } from "@mcoda/db";
+import { PathHelper } from "@mcoda/shared";
 import type { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 import { VelocityService } from "../VelocityService.js";
 import { EstimateService } from "../EstimateService.js";
+
+const withTempHome = async <T>(fn: (home: string) => Promise<T>): Promise<T> => {
+  const originalHome = process.env.HOME;
+  const originalProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-estimate-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  try {
+    return await fn(tempHome);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+};
 
 const createWorkspace = async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-estimate-"));
@@ -14,11 +38,11 @@ const createWorkspace = async () => {
   const workspace: WorkspaceResolution = {
     workspaceRoot: dir,
     workspaceId: dir,
-    mcodaDir: path.join(dir, ".mcoda"),
+    mcodaDir: PathHelper.getWorkspaceDir(dir),
     id: dir,
     legacyWorkspaceIds: [],
-    workspaceDbPath: path.join(dir, ".mcoda", "mcoda.db"),
-    globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+    workspaceDbPath: PathHelper.getWorkspaceDbPath(dir),
+    globalDbPath: PathHelper.getGlobalDbPath(),
     config: {
       velocity: {
         implementationSpPerHour: 10,
@@ -32,35 +56,39 @@ const createWorkspace = async () => {
 };
 
 test("VelocityService falls back to config when no history", async () => {
-  const { repo, workspace, dir } = await createWorkspace();
-  const velocityService = await VelocityService.create(workspace);
-  const velocity = await velocityService.getEffectiveVelocity({ mode: "empirical" });
-  assert.equal(velocity.source, "config");
-  assert.equal(velocity.requestedMode, "empirical");
-  assert.equal(velocity.implementationSpPerHour, 10);
-  assert.equal(velocity.reviewSpPerHour, 12);
-  assert.equal(velocity.qaSpPerHour, 8);
-  assert.equal(velocity.windowTasks, 10);
-  assert.deepEqual(velocity.samples, { implementation: 0, review: 0, qa: 0 });
-  await velocityService.close();
-  await repo.close();
-  await fs.rm(dir, { recursive: true, force: true });
+  await withTempHome(async () => {
+    const { repo, workspace, dir } = await createWorkspace();
+    const velocityService = await VelocityService.create(workspace);
+    const velocity = await velocityService.getEffectiveVelocity({ mode: "empirical" });
+    assert.equal(velocity.source, "config");
+    assert.equal(velocity.requestedMode, "empirical");
+    assert.equal(velocity.implementationSpPerHour, 10);
+    assert.equal(velocity.reviewSpPerHour, 12);
+    assert.equal(velocity.qaSpPerHour, 8);
+    assert.equal(velocity.windowTasks, 10);
+    assert.deepEqual(velocity.samples, { implementation: 0, review: 0, qa: 0 });
+    await velocityService.close();
+    await repo.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });
 
 test("VelocityService honors implementation override", async () => {
-  const { repo, workspace, dir } = await createWorkspace();
-  const velocityService = await VelocityService.create(workspace);
-  const velocity = await velocityService.getEffectiveVelocity({ mode: "config", spPerHourImplementation: 22 });
-  assert.equal(velocity.implementationSpPerHour, 22);
-  assert.equal(velocity.reviewSpPerHour, 12);
-  assert.equal(velocity.qaSpPerHour, 8);
-  assert.equal(velocity.source, "config");
-  assert.equal(velocity.requestedMode, "config");
-  assert.equal(velocity.windowTasks, 10);
-  assert.deepEqual(velocity.samples, { implementation: 0, review: 0, qa: 0 });
-  await velocityService.close();
-  await repo.close();
-  await fs.rm(dir, { recursive: true, force: true });
+  await withTempHome(async () => {
+    const { repo, workspace, dir } = await createWorkspace();
+    const velocityService = await VelocityService.create(workspace);
+    const velocity = await velocityService.getEffectiveVelocity({ mode: "config", spPerHourImplementation: 22 });
+    assert.equal(velocity.implementationSpPerHour, 22);
+    assert.equal(velocity.reviewSpPerHour, 12);
+    assert.equal(velocity.qaSpPerHour, 8);
+    assert.equal(velocity.source, "config");
+    assert.equal(velocity.requestedMode, "config");
+    assert.equal(velocity.windowTasks, 10);
+    assert.deepEqual(velocity.samples, { implementation: 0, review: 0, qa: 0 });
+    await velocityService.close();
+    await repo.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });
 
 test("VelocityService computes empirical SP/hour per lane", async () => {
