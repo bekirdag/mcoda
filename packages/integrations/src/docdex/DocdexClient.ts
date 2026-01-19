@@ -116,6 +116,27 @@ export class DocdexClient {
     return absolute;
   }
 
+  private resolveLocalDocPath(docPath: string): { absolute: string; relative?: string } | undefined {
+    if (!this.options.workspaceRoot) return undefined;
+    const root = path.resolve(this.options.workspaceRoot);
+    const absolute = path.resolve(path.isAbsolute(docPath) ? docPath : path.join(root, docPath));
+    if (!absolute.startsWith(root)) return undefined;
+    const relative = path.relative(root, absolute);
+    return { absolute, relative: relative || undefined };
+  }
+
+  private async loadLocalDoc(docPath: string, docType?: string): Promise<DocdexDocument | undefined> {
+    const resolved = this.resolveLocalDocPath(docPath);
+    if (!resolved) return undefined;
+    try {
+      const content = await fs.readFile(resolved.absolute, "utf8");
+      const inferred = docType || inferDocType(resolved.relative ?? docPath);
+      return this.buildLocalDoc(inferred, resolved.relative ?? docPath, content);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async resolveBaseUrl(): Promise<string | undefined> {
     if (this.disabledReason) return undefined;
     if (this.options.baseUrl !== undefined) {
@@ -308,8 +329,17 @@ export class DocdexClient {
   async findDocumentByPath(docPath: string, docType?: string): Promise<DocdexDocument | undefined> {
     const normalized = this.normalizePath(docPath);
     const query = normalized ?? docPath;
-    const docs = await this.search({ query, docType });
-    if (!docs.length) return undefined;
+    let docs: DocdexDocument[] = [];
+    try {
+      docs = await this.search({ query, docType });
+    } catch (error) {
+      const local = await this.loadLocalDoc(docPath, docType);
+      if (local) return local;
+      throw error;
+    }
+    if (!docs.length) {
+      return await this.loadLocalDoc(docPath, docType);
+    }
     if (!normalized) return docs[0];
     return docs.find((doc) => doc.path === normalized) ?? docs[0];
   }

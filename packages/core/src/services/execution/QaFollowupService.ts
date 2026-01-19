@@ -63,8 +63,12 @@ const FOLLOWUP_DESCRIPTION_TEMPLATE = (
 export class QaFollowupService {
   constructor(private workspaceRepo: WorkspaceRepository, private workspaceRoot: string) {}
 
+  private get mcodaDir(): string {
+    return PathHelper.getWorkspaceDir(this.workspaceRoot);
+  }
+
   private get cachePath(): string {
-    return path.join(this.workspaceRoot, '.mcoda', 'qa-containers.json');
+    return path.join(this.mcodaDir, 'qa-containers.json');
   }
 
   private async readCache(): Promise<Record<string, { epicId: string; storyId: string; epicKey: string; storyKey: string }>> {

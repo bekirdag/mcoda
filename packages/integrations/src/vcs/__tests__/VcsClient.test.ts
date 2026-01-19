@@ -24,3 +24,26 @@ describe("VcsClient.dirtyPaths", () => {
   });
 });
 
+describe("VcsClient.ensureClean", () => {
+  it("ignores configured paths and .mcoda entries", async () => {
+    const client = new VcsClient();
+    (client as any).dirtyPaths = async () => [
+      "repo_meta.json",
+      "logs/output.log",
+      ".docdexignore",
+      ".mcoda/jobs/job.json",
+    ];
+
+    await client.ensureClean("/repo", true, ["repo_meta.json", "logs/", ".docdexignore"]);
+  });
+
+  it("throws when non-ignored paths remain", async () => {
+    const client = new VcsClient();
+    (client as any).dirtyPaths = async () => ["repo_meta.json", "src/index.ts"];
+
+    await assert.rejects(
+      () => client.ensureClean("/repo", true, ["repo_meta.json"]),
+      /src\/index\.ts/,
+    );
+  });
+});

@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,6 +8,34 @@ import { WorkspaceResolver } from "../../../workspace/WorkspaceManager.js";
 import { JobService } from "../../jobs/JobService.js";
 import { CodeReviewService } from "../CodeReviewService.js";
 import { formatTaskCommentBody } from "../../tasks/TaskCommentFormatter.js";
+
+let tempHome: string | undefined;
+let originalHome: string | undefined;
+let originalProfile: string | undefined;
+
+beforeEach(async () => {
+  originalHome = process.env.HOME;
+  originalProfile = process.env.USERPROFILE;
+  tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+});
+
+afterEach(async () => {
+  if (tempHome) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (originalProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalProfile;
+  }
+});
 
 test("CodeReviewService records approvals and updates status", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
@@ -84,6 +112,92 @@ test("CodeReviewService records approvals and updates status", async () => {
 
     const updated = await repo.getTaskByKey(task.key);
     assert.equal(updated?.status, "ready_to_qa");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CodeReviewService avoids repo prompt/job writes when noRepoWrites is set", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-norepo-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir, noRepoWrites: true });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace, repo);
+
+  const diffStub = [
+    "diff --git a/file.txt b/file.txt",
+    "index 1111111..2222222 100644",
+    "--- a/file.txt",
+    "+++ b/file.txt",
+    "@@ -1 +1 @@",
+    "-foo",
+    "+bar",
+    "",
+  ].join("\n");
+
+  const service = new CodeReviewService(workspace, {
+    agentService: {
+      invoke: async () => ({ output: '{"decision":"approve","summary":"ok","findings":[]}', adapter: "local" }),
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "code-review": "Review prompt" },
+      }),
+    } as any,
+    docdex: { search: async () => [] } as any,
+    jobService,
+    workspaceRepo: repo,
+    repo: { close: async () => {} } as any,
+    routingService: {
+      resolveAgentForCommand: async () => ({
+        agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any,
+    vcsClient: {
+      ensureRepo: async () => {},
+      diff: async () => diffStub,
+    } as any,
+  });
+
+  const exists = async (target: string) => {
+    try {
+      await fs.access(target);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const [epic] = await repo.insertEpics([
+      { projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 },
+    ]);
+    const [story] = await repo.insertStories([
+      { projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" },
+    ]);
+    const [task] = await repo.insertTasks([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task",
+        description: "",
+        status: "ready_to_review",
+      },
+    ]);
+    await repo.updateTask(task.id, { vcsBranch: "feature/task" });
+
+    await service.reviewTasks({
+      workspace,
+      projectKey: project.key,
+      agentStream: false,
+      dryRun: false,
+    });
+
+    assert.equal(await exists(path.join(dir, ".mcoda", "prompts")), false);
+    assert.equal(await exists(path.join(dir, ".mcoda", "jobs")), false);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -254,7 +368,7 @@ test("CodeReviewService resume skips terminal tasks", async () => {
       processedItems: 0,
     });
 
-    const stateDir = path.join(workspace.workspaceRoot, ".mcoda", "jobs", job.id, "review");
+    const stateDir = path.join(workspace.mcodaDir, "jobs", job.id, "review");
     await fs.mkdir(stateDir, { recursive: true });
     await fs.writeFile(
       path.join(stateDir, "state.json"),
@@ -562,8 +676,7 @@ test("CodeReviewService blocks after invalid JSON retry", async () => {
     assert.ok(result.warnings.some((warning) => warning.includes("non-JSON output")));
 
     const artifactPath = path.join(
-      workspace.workspaceRoot,
-      ".mcoda",
+      workspace.mcodaDir,
       "jobs",
       result.jobId,
       "review",

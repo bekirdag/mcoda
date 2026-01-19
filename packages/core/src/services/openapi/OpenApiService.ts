@@ -86,9 +86,12 @@ class OpenapiContextAssembler {
 
   private async findLatestLocalDoc(docType: string): Promise<DocdexDocument | undefined> {
     const candidates: { path: string; mtime: number }[] = [];
-    const dirNames = [".mcoda/docs", "docs"];
-    for (const dir of dirNames) {
-      const target = path.join(this.workspace.workspaceRoot, dir, docType.toLowerCase());
+    const docDirs = [
+      path.join(this.workspace.mcodaDir, "docs"),
+      path.join(this.workspace.workspaceRoot, "docs"),
+    ];
+    for (const dir of docDirs) {
+      const target = path.join(dir, docType.toLowerCase());
       try {
         const entries = await fs.readdir(target);
         for (const entry of entries.filter((e) => e.endsWith(".md"))) {

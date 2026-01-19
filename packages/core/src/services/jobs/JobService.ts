@@ -102,6 +102,14 @@ export interface TaskRunSnapshotRow {
 
 const nowIso = (): string => new Date().toISOString();
 
+type JobServiceWorkspace =
+  | string
+  | {
+      workspaceRoot: string;
+      workspaceId?: string;
+      mcodaDir?: string;
+    };
+
 export class JobService {
   private checkpointCounters = new Map<string, number>();
   private workspaceRepoInit = false;
@@ -113,22 +121,24 @@ export class JobService {
   private requireRepo: boolean;
   private workspaceRoot: string;
   private workspaceId: string;
+  private mcodaDirOverride?: string;
 
   constructor(
-    workspace: string | { workspaceRoot: string; workspaceId?: string },
+    workspace: JobServiceWorkspace,
     private workspaceRepo?: WorkspaceRepository,
     options: { noTelemetry?: boolean; requireRepo?: boolean } = {},
   ) {
     const resolvedRoot = typeof workspace === "string" ? workspace : workspace.workspaceRoot;
     this.workspaceRoot = resolvedRoot;
     this.workspaceId = typeof workspace === "string" ? resolvedRoot : workspace.workspaceId ?? resolvedRoot;
+    this.mcodaDirOverride = typeof workspace === "string" ? undefined : workspace.mcodaDir;
     this.perRunTelemetryDisabled = options.noTelemetry ?? false;
     this.envTelemetryDisabled = (process.env.MCODA_TELEMETRY ?? "").toLowerCase() === "off";
     this.requireRepo = options.requireRepo ?? false;
   }
 
   private get mcodaDir(): string {
-    return path.join(this.workspaceRoot, ".mcoda");
+    return this.mcodaDirOverride ?? PathHelper.getWorkspaceDir(this.workspaceRoot);
   }
 
   private get commandRunsPath(): string {

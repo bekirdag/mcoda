@@ -1,10 +1,11 @@
-import test from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { WorkspaceRepository } from "@mcoda/db";
+import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolver } from "../../../workspace/WorkspaceManager.js";
 import { TaskSelectionService } from "../TaskSelectionService.js";
 import { TaskStateService } from "../TaskStateService.js";
@@ -13,18 +14,49 @@ import { QaProfileService } from "../QaProfileService.js";
 import { JobService } from "../../jobs/JobService.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../../tasks/TaskCommentFormatter.js";
 
+let tempHome: string | undefined;
+let originalHome: string | undefined;
+let originalProfile: string | undefined;
+
+beforeEach(async () => {
+  originalHome = process.env.HOME;
+  originalProfile = process.env.USERPROFILE;
+  tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+});
+
+afterEach(async () => {
+  if (tempHome) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (originalProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalProfile;
+  }
+});
+
 class StubQaAdapter {
   async ensureInstalled() {
     return { ok: true };
   }
   async invoke(_profile: any, ctx: any) {
     const now = new Date().toISOString();
+    const artifactDir =
+      ctx.artifactDir ??
+      path.join(PathHelper.getWorkspaceDir(ctx.workspaceRoot), "jobs", ctx.jobId, "qa", ctx.taskKey);
     return {
       outcome: "pass",
       exitCode: 0,
       stdout: "ok",
       stderr: "",
-      artifacts: [path.join(ctx.workspaceRoot, ".mcoda", "jobs", ctx.jobId, "qa", ctx.taskKey, "stdout.log")],
+      artifacts: [path.join(artifactDir, "stdout.log")],
       startedAt: now,
       finishedAt: now,
     };
@@ -80,8 +112,11 @@ class CapturingAgentService {
 }
 
 class StubVcs {
+  cleanCalls: Array<{ cwd: string; ignoreDotMcoda: boolean; ignorePaths: string[] }> = [];
   async ensureRepo() {}
-  async ensureClean() {}
+  async ensureClean(cwd: string, ignoreDotMcoda = true, ignorePaths: string[] = []) {
+    this.cleanCalls.push({ cwd, ignoreDotMcoda, ignorePaths });
+  }
   async branchExists() {
     return true;
   }
@@ -93,6 +128,30 @@ class StubRatingService {
   calls: any[] = [];
   async rate(request: any) {
     this.calls.push(request);
+  }
+}
+
+class MarkerProfileService {
+  async resolveProfileForTask() {
+    return { name: "unit", runner: "cli", test_command: "node tests/all.js" };
+  }
+}
+
+class MarkerAdapter {
+  async ensureInstalled() {
+    return { ok: true };
+  }
+  async invoke(_profile: any, ctx: any) {
+    const now = new Date().toISOString();
+    return {
+      outcome: "pass",
+      exitCode: 0,
+      stdout: `Tests finished for ${ctx.taskKey}`,
+      stderr: "",
+      artifacts: [],
+      startedAt: now,
+      finishedAt: now,
+    };
   }
 }
 
@@ -171,6 +230,151 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
 
     const jobs = await db.all<{ state: string }[]>("SELECT state FROM jobs WHERE id = ?", result.jobId);
     assert.equal(jobs[0]?.state, "completed");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks passes clean ignore paths to VCS", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  workspace.config = {
+    ...(workspace.config ?? {}),
+    qa: { cleanIgnorePaths: ["cache/"] },
+  };
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+      },
+    ],
+    false,
+  );
+
+  const vcs = new StubVcs();
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: vcs as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+      cleanIgnorePaths: ["scratch/"],
+    });
+
+    assert.ok(vcs.cleanCalls.length > 0);
+    const ignorePaths = vcs.cleanCalls[0]?.ignorePaths ?? [];
+    assert.ok(ignorePaths.includes("repo_meta.json"));
+    assert.ok(ignorePaths.includes("logs/"));
+    assert.ok(ignorePaths.includes(".docdexignore"));
+    assert.ok(ignorePaths.includes("cache/"));
+    assert.ok(ignorePaths.includes("scratch/"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks avoids repo prompt/job writes when noRepoWrites is set", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-norepo-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir, noRepoWrites: true });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+      },
+    ],
+    false,
+  );
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  const exists = async (target: string) => {
+    try {
+      await fs.access(target);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(await exists(path.join(dir, ".mcoda", "prompts")), false);
+    assert.equal(await exists(path.join(dir, ".mcoda", "jobs")), false);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -425,9 +629,9 @@ test("qa-tasks selects Playwright profile for UI-tagged tasks", async () => {
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
-  await fs.mkdir(path.join(dir, ".mcoda"), { recursive: true });
+  await fs.mkdir(workspace.mcodaDir, { recursive: true });
   await fs.writeFile(
-    path.join(dir, ".mcoda", "qa-profiles.json"),
+    path.join(workspace.mcodaDir, "qa-profiles.json"),
     JSON.stringify(
       [
         { name: "cli", runner: "cli", default: true, test_command: "echo ok" },
@@ -573,11 +777,92 @@ test("qa-tasks treats invalid JSON as unclear and records raw output", async () 
     assert.equal(result.results[0]?.outcome, "unclear");
     const updated = await repo.getTaskByKey(task.key);
     assert.equal(updated?.status, "blocked");
+    assert.equal((updated?.metadata as any)?.blocked_reason, "qa_invalid_output");
     assert.ok(followups.length >= 1);
 
     const comments = await repo.listTaskComments(task.id);
     const summary = comments.find((comment) => (comment.body ?? "").includes("QA agent output (invalid JSON)"));
     assert.ok(summary);
+    assert.ok((summary?.body ?? "").includes("qa_invalid_output"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks blocks when QA output is missing required fields", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t02",
+        title: "Task QA missing fields",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  let invokeCount = 0;
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: {
+      resolveAgent: async () => ({ id: "qa-agent", defaultModel: "stub" } as any),
+      invoke: async () => {
+        invokeCount += 1;
+        return {
+          output: JSON.stringify({
+            recommendation: "fix_required",
+            failures: [{ message: "missing file and line" }],
+          }),
+        };
+      },
+    } as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.outcome, "unclear");
+    assert.ok(invokeCount >= 2);
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "blocked");
+    assert.equal((updated?.metadata as any)?.blocked_reason, "qa_invalid_output");
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -963,30 +1248,6 @@ test("qa-tasks flags missing run-all marker as infra issue", async () => {
     false,
   );
 
-  class MarkerProfileService {
-    async resolveProfileForTask() {
-      return { name: "unit", runner: "cli", test_command: "node tests/all.js" };
-    }
-  }
-
-  class MarkerAdapter {
-    async ensureInstalled() {
-      return { ok: true };
-    }
-    async invoke(_profile: any, ctx: any) {
-      const now = new Date().toISOString();
-      return {
-        outcome: "pass",
-        exitCode: 0,
-        stdout: `Tests finished for ${ctx.taskKey}`,
-        stderr: "",
-        artifacts: [],
-        startedAt: now,
-        finishedAt: now,
-      };
-    }
-  }
-
   const service = new QaTasksService(workspace, {
     workspaceRepo: repo,
     jobService,
@@ -1017,6 +1278,76 @@ test("qa-tasks flags missing run-all marker as infra issue", async () => {
 
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
     assert.ok(comments.some((comment) => comment.body.includes("MCODA_RUN_ALL_TESTS_COMPLETE")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks warns on missing run-all marker when policy is relaxed", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  workspace.config = { ...(workspace.config ?? {}), qa: { ...(workspace.config?.qa ?? {}), runAllMarkerRequired: false } };
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t07",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new MarkerProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new MarkerAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.outcome, "pass");
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "completed");
+
+    const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
+    const summary = comments.find((comment) => comment.category === "qa_result");
+    assert.ok(summary?.body.includes("MCODA_RUN_ALL_TESTS_COMPLETE"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

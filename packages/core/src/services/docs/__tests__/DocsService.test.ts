@@ -1,9 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { Agent } from "@mcoda/shared";
+import { Agent, PathHelper } from "@mcoda/shared";
 import { DocdexClient } from "@mcoda/integrations";
 import { DocsService } from "../DocsService.js";
 import { JobService } from "../../jobs/JobService.js";
@@ -11,6 +11,34 @@ import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 
 // Disable sqlite usage in tests to avoid FK constraints from incomplete fixtures.
 process.env.MCODA_DISABLE_DB = "1";
+
+let tempHome: string | undefined;
+let originalHome: string | undefined;
+let originalProfile: string | undefined;
+
+before(async () => {
+  originalHome = process.env.HOME;
+  originalProfile = process.env.USERPROFILE;
+  tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-docs-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+});
+
+after(async () => {
+  if (tempHome) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (originalProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalProfile;
+  }
+});
 
 class FakeAgentService {
   constructor(private agent: Agent, private response?: string) {}
@@ -155,11 +183,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-1",
@@ -215,11 +243,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-2",
@@ -265,11 +293,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-rate",
@@ -322,11 +350,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-3",
@@ -368,11 +396,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-4",
@@ -427,11 +455,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-5",
@@ -487,11 +515,11 @@ describe("DocsService.generatePdr", () => {
     const workspace: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: workspaceRoot,
-      mcodaDir: path.join(workspaceRoot, ".mcoda"),
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
       id: workspaceRoot,
       legacyWorkspaceIds: [],
-      workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-      globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
     };
     const agent: Agent = {
       id: "agent-sds",
@@ -534,10 +562,10 @@ describe("DocsService.generatePdr", () => {
     const routingService = new FakeRoutingService(agent);
     const jobService = new JobService(workspace);
     const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
-    const docdexDir = path.join(workspaceRoot, ".mcoda", "docdex");
+    const docdexDir = path.join(PathHelper.getWorkspaceDir(workspaceRoot), "docdex");
     await fs.mkdir(docdexDir, { recursive: true });
     await fs.writeFile(path.join(docdexDir, "documents.json"), "[]", "utf8");
-    const localPdrDir = path.join(workspaceRoot, ".mcoda", "docs", "pdr");
+    const localPdrDir = path.join(PathHelper.getWorkspaceDir(workspaceRoot), "docs", "pdr");
     await fs.mkdir(localPdrDir, { recursive: true });
     await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- goal from pdr", "utf8");
     await docdex.registerDocument({

@@ -1,21 +1,55 @@
-import test from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs/promises";
 import { CreateTasksService } from "../CreateTasksService.js";
 import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 import { createEpicKeyGenerator, createStoryKeyGenerator, createTaskKeyGenerator } from "../KeyHelpers.js";
+import { PathHelper } from "@mcoda/shared";
 
-const workspaceRoot = "/tmp/mcoda-test";
-const workspace: WorkspaceResolution = {
-  workspaceRoot,
-  workspaceId: workspaceRoot,
-  mcodaDir: path.join(workspaceRoot, ".mcoda"),
-  id: workspaceRoot,
-  legacyWorkspaceIds: [],
-  workspaceDbPath: path.join(workspaceRoot, ".mcoda", "mcoda.db"),
-  globalDbPath: path.join(os.homedir(), ".mcoda", "mcoda.db"),
-};
+let workspaceRoot: string;
+let workspace: WorkspaceResolution;
+let tempHome: string | undefined;
+let originalHome: string | undefined;
+let originalProfile: string | undefined;
+
+beforeEach(async () => {
+  originalHome = process.env.HOME;
+  originalProfile = process.env.USERPROFILE;
+  tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-create-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-test-"));
+  workspace = {
+    workspaceRoot,
+    workspaceId: workspaceRoot,
+    mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+    id: workspaceRoot,
+    legacyWorkspaceIds: [],
+    workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+    globalDbPath: PathHelper.getGlobalDbPath(),
+  };
+});
+
+afterEach(async () => {
+  if (workspaceRoot) {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+  if (tempHome) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (originalProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalProfile;
+  }
+});
 
 const fakeDoc = {
   id: "doc-1",
@@ -79,6 +113,7 @@ class StubWorkspaceRepo {
   deps: any[] = [];
   storyTotals: Record<string, number | null> = {};
   epicTotals: Record<string, number | null> = {};
+  lastOrderRequest: any;
   async withTransaction<T>(fn: () => Promise<T>): Promise<T> {
     return fn();
   }
@@ -149,6 +184,17 @@ class StubWorkspaceRepo {
   }
   async close() {}
 }
+
+const createOrderingFactory = (workspaceRepo: StubWorkspaceRepo) => async () => ({
+  orderTasks: async (request: any) => {
+    workspaceRepo.lastOrderRequest = request;
+    workspaceRepo.tasks.forEach((task, idx) => {
+      task.priority = idx + 1;
+    });
+    return { project: { id: "p-1", key: "web" }, ordered: [], blocked: [], warnings: [] } as any;
+  },
+  close: async () => {},
+});
 
 class StubJobService {
   commandRuns: any[] = [];
@@ -251,13 +297,15 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
       ],
     }),
   ];
+  const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdex() as any,
     jobService: new StubJobService() as any,
     agentService: new StubAgentService(outputs) as any,
     routingService: new StubRoutingService() as any,
     repo: new StubRepo() as any,
-    workspaceRepo: new StubWorkspaceRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
 
   const result = await service.createTasks({
@@ -273,6 +321,7 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.equal(result.dependencies.length, 0);
   assert.equal(result.tasks[0].status, "not_started");
   assert.equal(result.tasks[0].storyPoints, 3);
+  assert.equal(typeof result.tasks[0].priority, "number");
   const metadata = result.tasks[0].metadata as any;
   assert.deepEqual(metadata?.test_requirements, {
     unit: ["Add unit coverage for task path"],
@@ -280,10 +329,14 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
     integration: ["Run integration flow A"],
     api: ["Validate API response contract"],
   });
+  assert.equal(metadata?.stage, "other");
+  assert.equal(metadata?.foundation, false);
   assert.ok(result.tasks[0].description.includes("Unit tests: Add unit coverage for task path"));
   assert.ok(result.tasks[0].description.includes("Component tests: Not applicable"));
   assert.ok(result.tasks[0].description.includes("Integration tests: Run integration flow A"));
   assert.ok(result.tasks[0].description.includes("API tests: Validate API response contract"));
+  assert.equal(workspaceRepo.lastOrderRequest?.blockOnDependencies, false);
+  assert.equal(workspaceRepo.lastOrderRequest?.blockOnMissingContext, false);
 });
 
 test("createTasks invokes agent rating when enabled", async () => {
@@ -328,14 +381,16 @@ test("createTasks invokes agent rating when enabled", async () => {
     }),
   ];
   const ratingService = new StubRatingService();
+  const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdex() as any,
     jobService: new StubJobService() as any,
     agentService: new StubAgentService(outputs) as any,
     routingService: new StubRoutingService() as any,
     repo: new StubRepo() as any,
-    workspaceRepo: new StubWorkspaceRepo() as any,
+    workspaceRepo: workspaceRepo as any,
     ratingService: ratingService as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
 
   await service.createTasks({
@@ -395,13 +450,15 @@ test("createTasks tolerates JSON wrapped in think tags", async () => {
     `<think>${JSON.stringify(story)}</think>\n${JSON.stringify(story)}`,
     `<think>${JSON.stringify(task)}</think>\n${JSON.stringify(task)}`,
   ];
+  const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdex() as any,
     jobService: new StubJobService() as any,
     agentService: new StubAgentService(outputs) as any,
     routingService: new StubRoutingService() as any,
     repo: new StubRepo() as any,
-    workspaceRepo: new StubWorkspaceRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
 
   const result = await service.createTasks({
@@ -419,13 +476,15 @@ test("createTasks tolerates JSON wrapped in think tags", async () => {
 test("createTasks fails on invalid agent output", async () => {
   const outputs = ["not json"];
   const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdex() as any,
     jobService: jobService as any,
     agentService: new StubAgentService(outputs) as any,
     routingService: new StubRoutingService() as any,
     repo: new StubRepo() as any,
-    workspaceRepo: new StubWorkspaceRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
   await assert.rejects(
     () =>

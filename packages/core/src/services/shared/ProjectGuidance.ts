@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { PathHelper } from "@mcoda/shared";
 
 export type ProjectGuidance = {
   content: string;
@@ -11,10 +12,13 @@ const MCODA_DOC_PATTERN = /(^|[\\/])\.mcoda([\\/]|$)/i;
 const SDS_DOC_PATTERN = /(^|[\\/])docs[\\/]+sds([\\/]|$)/i;
 const FRONTMATTER_BLOCK = /^---[\s\S]*?\n---/;
 
-const guidanceCandidates = (workspaceRoot: string): string[] => [
-  path.join(workspaceRoot, ".mcoda", "docs", "project-guidance.md"),
-  path.join(workspaceRoot, "docs", "project-guidance.md"),
-];
+const guidanceCandidates = (workspaceRoot: string, mcodaDir?: string): string[] => {
+  const resolvedMcodaDir = mcodaDir ?? PathHelper.getWorkspaceDir(workspaceRoot);
+  return [
+    path.join(resolvedMcodaDir, "docs", "project-guidance.md"),
+    path.join(workspaceRoot, "docs", "project-guidance.md"),
+  ];
+};
 
 export const isDocContextExcluded = (value: string | undefined, allowQaDocs = false): boolean => {
   if (!value) return false;
@@ -64,8 +68,11 @@ export const normalizeDocType = (params: {
   return { docType: "DOC", downgraded: true, reason: reason || "not_sds" };
 };
 
-export const loadProjectGuidance = async (workspaceRoot: string): Promise<ProjectGuidance | null> => {
-  for (const candidate of guidanceCandidates(workspaceRoot)) {
+export const loadProjectGuidance = async (
+  workspaceRoot: string,
+  mcodaDir?: string,
+): Promise<ProjectGuidance | null> => {
+  for (const candidate of guidanceCandidates(workspaceRoot, mcodaDir)) {
     try {
       const content = (await fs.readFile(candidate, "utf8")).trim();
       if (!content) continue;
@@ -74,6 +81,8 @@ export const loadProjectGuidance = async (workspaceRoot: string): Promise<Projec
       // ignore missing file
     }
   }
-  console.warn(`[project-guidance] no project guidance found; searched: ${guidanceCandidates(workspaceRoot).join(", ")}`);
+  console.warn(
+    `[project-guidance] no project guidance found; searched: ${guidanceCandidates(workspaceRoot, mcodaDir).join(", ")}`,
+  );
   return null;
 };

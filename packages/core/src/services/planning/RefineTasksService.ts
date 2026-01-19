@@ -18,6 +18,8 @@ import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
+import { classifyTask } from "../backlog/TaskOrderingHeuristics.js";
+import { TaskOrderingService } from "../backlog/TaskOrderingService.js";
 import { createTaskKeyGenerator } from "./KeyHelpers.js";
 
 interface RefineTasksOptions extends RefineTasksRequest {
@@ -63,6 +65,10 @@ interface StoryGroup {
 
 const DEFAULT_STRATEGY: RefineStrategy = "auto";
 const FORBIDDEN_TARGET_STATUSES = new Set(["ready_to_review", "ready_to_qa", "completed"]);
+const normalizeCreateStatus = (status?: string): string => {
+  if (!status) return "not_started";
+  return status.toLowerCase() === "blocked" ? "not_started" : status;
+};
 const DEFAULT_MAX_TASKS = 250;
 const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
 
@@ -284,6 +290,20 @@ export class RefineTasksService {
     await tryClose(this.workspaceRepo);
     await tryClose(this.routingService);
     await tryClose(this.docdex);
+  }
+
+  private async seedPriorities(projectKey: string): Promise<void> {
+    const ordering = await TaskOrderingService.create(this.workspace, { recordTelemetry: false });
+    try {
+      await ordering.orderTasks({
+        projectKey,
+        includeBlocked: true,
+        blockOnDependencies: false,
+        blockOnMissingContext: false,
+      });
+    } finally {
+      await ordering.close();
+    }
   }
 
   private async resolveAgent(agentName?: string): Promise<Agent> {
@@ -677,6 +697,7 @@ export class RefineTasksService {
     const updates = (seed?.updates as Record<string, unknown>) ?? (seed?.fields as Record<string, unknown>) ?? {};
     const epic = await ensureEpic();
     const story = await ensureStory(epic.id);
+    const status = normalizeCreateStatus(updates.status as string | undefined);
 
     const [task] = await this.workspaceRepo.insertTasks(
       [
@@ -688,7 +709,7 @@ export class RefineTasksService {
           title: (updates.title as string | undefined) ?? `Task ${taskKey}`,
           description: (updates.description as string | undefined) ?? "",
           type: (updates.type as string | undefined) ?? "feature",
-          status: (updates.status as string | undefined) ?? "not_started",
+          status,
           storyPoints: (updates.storyPoints as number | undefined) ?? null,
           priority: (updates.priority as number | undefined) ?? null,
           metadata: (updates.metadata as Record<string, unknown> | undefined) ?? undefined,
@@ -861,6 +882,24 @@ export class RefineTasksService {
     return { ...(existing ?? {}), ...updates };
   }
 
+  private applyStageMetadata(
+    metadata: Record<string, unknown> | undefined,
+    content: { title: string; description?: string | null; type?: string | null },
+    shouldUpdate: boolean,
+  ): Record<string, unknown> | undefined {
+    if (!shouldUpdate) return metadata;
+    const classification = classifyTask({
+      title: content.title,
+      description: content.description ?? undefined,
+      type: content.type ?? undefined,
+    });
+    return {
+      ...(metadata ?? {}),
+      stage: classification.stage,
+      foundation: classification.foundation,
+    };
+  }
+
   private validateOperation(group: StoryGroup, op: RefineOperation): { valid: boolean; reason?: string } {
     const allowedOps = new Set(["update_task", "split_task", "merge_tasks", "update_estimate"]);
     if (!op || typeof (op as any).op !== "string" || !allowedOps.has((op as any).op)) {
@@ -1000,7 +1039,18 @@ export class RefineTasksService {
             const target = taskByKey.get(op.taskKey);
             if (!target) continue;
             const before = { ...target };
-            const metadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+            const mergedMetadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+            const contentUpdated =
+              op.updates.title !== undefined || op.updates.description !== undefined || op.updates.type !== undefined;
+            const metadata = this.applyStageMetadata(
+              mergedMetadata,
+              {
+                title: op.updates.title ?? target.title,
+                description: op.updates.description ?? target.description ?? null,
+                type: op.updates.type ?? target.type ?? null,
+              },
+              contentUpdated,
+            );
             const beforeSp = target.storyPoints ?? 0;
             const afterSp = op.updates.storyPoints ?? target.storyPoints ?? null;
             storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
@@ -1027,13 +1077,27 @@ export class RefineTasksService {
             if (!target) continue;
             if (op.parentUpdates) {
               const before = { ...target };
+              const mergedMetadata = this.mergeMetadata(target.metadata, op.parentUpdates.metadata);
+              const contentUpdated =
+                op.parentUpdates.title !== undefined ||
+                op.parentUpdates.description !== undefined ||
+                op.parentUpdates.type !== undefined;
+              const metadata = this.applyStageMetadata(
+                mergedMetadata,
+                {
+                  title: op.parentUpdates.title ?? target.title,
+                  description: op.parentUpdates.description ?? target.description ?? null,
+                  type: op.parentUpdates.type ?? target.type ?? null,
+                },
+                contentUpdated,
+              );
               await this.workspaceRepo.updateTask(target.id, {
                 title: op.parentUpdates.title ?? target.title,
                 description: op.parentUpdates.description ?? target.description ?? null,
                 type: op.parentUpdates.type ?? target.type ?? null,
                 storyPoints: op.parentUpdates.storyPoints ?? target.storyPoints ?? null,
                 priority: op.parentUpdates.priority ?? target.priority ?? null,
-                metadata: this.mergeMetadata(target.metadata, op.parentUpdates.metadata),
+                metadata,
               });
               updated.push(target.key);
               await this.workspaceRepo.insertTaskRevision({
@@ -1045,7 +1109,7 @@ export class RefineTasksService {
                   ...before,
                   ...op.parentUpdates,
                   storyPoints: op.parentUpdates.storyPoints ?? before.storyPoints,
-                  metadata: this.mergeMetadata(before.metadata, op.parentUpdates.metadata),
+                  metadata,
                 },
                 createdAt: new Date().toISOString(),
               });
@@ -1056,6 +1120,13 @@ export class RefineTasksService {
               if (childSp) {
                 storyPointsDelta += childSp;
               }
+              const childMetadata = this.mergeMetadata({}, child.metadata);
+              const childContent = {
+                title: child.title,
+                description: child.description ?? target.description ?? "",
+                type: child.type ?? target.type ?? "feature",
+              };
+              const resolvedChildMetadata = this.applyStageMetadata(childMetadata, childContent, true);
               const childInsert: TaskInsert = {
                 projectId,
                 epicId: target.epicId,
@@ -1067,7 +1138,7 @@ export class RefineTasksService {
                 status: "not_started",
                 storyPoints: childSp,
                 priority: child.priority ?? target.priority ?? null,
-                metadata: this.mergeMetadata({}, child.metadata),
+                metadata: resolvedChildMetadata,
                 assignedAgentId: target.assignedAgentId ?? null,
                 assigneeHuman: target.assigneeHuman ?? null,
                 vcsBranch: null,
@@ -1100,13 +1171,25 @@ export class RefineTasksService {
             if (!target) continue;
             if (op.updates) {
               const before = { ...target };
+              const mergedMetadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+              const contentUpdated =
+                op.updates.title !== undefined || op.updates.description !== undefined || op.updates.type !== undefined;
+              const metadata = this.applyStageMetadata(
+                mergedMetadata,
+                {
+                  title: op.updates.title ?? target.title,
+                  description: op.updates.description ?? target.description ?? null,
+                  type: op.updates.type ?? target.type ?? null,
+                },
+                contentUpdated,
+              );
               await this.workspaceRepo.updateTask(target.id, {
                 title: op.updates.title ?? target.title,
                 description: op.updates.description ?? target.description ?? null,
                 type: op.updates.type ?? target.type ?? null,
                 storyPoints: op.updates.storyPoints ?? target.storyPoints ?? null,
                 priority: op.updates.priority ?? target.priority ?? null,
-                metadata: this.mergeMetadata(target.metadata, op.updates.metadata),
+                metadata,
               });
               updated.push(target.key);
               await this.workspaceRepo.insertTaskRevision({
@@ -1118,7 +1201,7 @@ export class RefineTasksService {
                   ...before,
                   ...op.updates,
                   storyPoints: op.updates.storyPoints ?? before.storyPoints,
-                  metadata: this.mergeMetadata(before.metadata, op.updates.metadata),
+                  metadata,
                 },
                 createdAt: new Date().toISOString(),
               });
@@ -1148,10 +1231,21 @@ export class RefineTasksService {
             const beforeSp = target.storyPoints ?? 0;
             const afterSp = op.storyPoints ?? target.storyPoints ?? null;
             storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
+            const contentUpdated = op.type !== undefined;
+            const metadata = this.applyStageMetadata(
+              target.metadata,
+              {
+                title: target.title,
+                description: target.description ?? null,
+                type: op.type ?? target.type ?? null,
+              },
+              contentUpdated,
+            );
             await this.workspaceRepo.updateTask(target.id, {
               storyPoints: afterSp,
               type: op.type ?? target.type ?? null,
               priority: op.priority ?? target.priority ?? null,
+              metadata: contentUpdated ? metadata : undefined,
             });
             updated.push(target.key);
             await this.workspaceRepo.insertTaskRevision({
@@ -1159,7 +1253,13 @@ export class RefineTasksService {
               jobId,
               commandRunId,
               snapshotBefore: { ...target },
-              snapshotAfter: { ...target, storyPoints: afterSp, type: op.type ?? target.type ?? null, priority: op.priority ?? target.priority ?? null },
+              snapshotAfter: {
+                ...target,
+                storyPoints: afterSp,
+                type: op.type ?? target.type ?? null,
+                priority: op.priority ?? target.priority ?? null,
+                metadata: contentUpdated ? metadata : target.metadata,
+              },
               createdAt: new Date().toISOString(),
             });
           }
@@ -1629,8 +1729,7 @@ export class RefineTasksService {
       };
 
       const defaultPlanPath = path.join(
-        this.workspace.workspaceRoot,
-        ".mcoda",
+        this.workspace.mcodaDir,
         "tasks",
         options.projectKey,
         "refinements",
@@ -1738,6 +1837,8 @@ export class RefineTasksService {
         cancelled.push(...x);
         storyPointsDelta += delta;
       }
+
+      await this.seedPriorities(options.projectKey);
 
       await this.jobService.updateJobStatus(job.id, "completed", {
         payload: {

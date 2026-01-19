@@ -221,10 +221,24 @@ export class VcsClient {
 
   async ensureClean(cwd: string, ignoreDotMcoda = true, ignorePaths: string[] = []): Promise<void> {
     const dirty = await this.dirtyPaths(cwd);
-    const filtered = dirty.filter((p) => {
-      if (ignoreDotMcoda && p.startsWith(".mcoda")) return false;
-      return !ignorePaths.some((prefix) => p.startsWith(prefix));
-    });
+    const normalize = (value: string): string =>
+      value.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+    const normalizedIgnore = ignorePaths
+      .map((entry) => normalize(entry.trim()))
+      .filter(Boolean)
+      .map((entry) => (entry.endsWith("/") ? `${entry.replace(/\/+$/, "")}/` : entry));
+    const isIgnored = (value: string): boolean => {
+      const normalized = normalize(value);
+      if (ignoreDotMcoda && normalized.startsWith(".mcoda")) return true;
+      return normalizedIgnore.some((entry) => {
+        if (entry.endsWith("/")) {
+          const dir = entry.slice(0, -1);
+          return normalized === dir || normalized.startsWith(entry);
+        }
+        return normalized === entry || normalized.startsWith(`${entry}/`);
+      });
+    };
+    const filtered = dirty.filter((p) => !isIgnored(p));
     if (filtered.length) {
       throw new Error(`Working tree dirty: ${filtered.join(", ")}`);
     }

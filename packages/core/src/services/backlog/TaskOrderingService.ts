@@ -7,11 +7,13 @@ import type { Agent } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { classifyTask, TaskStage } from "./TaskOrderingHeuristics.js";
 
 type StatusRank = Record<string, number>;
 
 const DEFAULT_STATUSES = ["not_started", "in_progress", "blocked", "ready_to_review", "ready_to_qa"];
 const DONE_STATUSES = new Set(["completed", "cancelled"]);
+const DEFAULT_STAGE_ORDER: TaskStage[] = ["foundation", "backend", "frontend", "other"];
 const STATUS_RANK: StatusRank = {
   in_progress: 0,
   not_started: 1,
@@ -133,6 +135,11 @@ export interface TaskOrderingResult {
   commandRunId?: string;
 }
 
+export interface InferredDependency {
+  taskKey: string;
+  dependsOnKeys: string[];
+}
+
 export interface TaskOrderingRequest {
   projectKey: string;
   epicKey?: string;
@@ -140,9 +147,14 @@ export interface TaskOrderingRequest {
   assignee?: string;
   statusFilter?: string[];
   includeBlocked?: boolean;
+  blockOnDependencies?: boolean;
+  blockOnMissingContext?: boolean;
   agentName?: string;
   agentStream?: boolean;
   rateAgents?: boolean;
+  stageOrder?: TaskStage[];
+  injectFoundationDeps?: boolean;
+  inferDependencies?: boolean;
 }
 
 type TaskNode = TaskRow & {
@@ -152,6 +164,82 @@ type TaskNode = TaskRow & {
 };
 
 type AgentRanking = Map<string, number>;
+
+export const parseDependencyInferenceOutput = (
+  output: string,
+  validTaskKeys: Set<string>,
+  warnings: string[],
+): InferredDependency[] => {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    warnings.push("Agent dependency inference output could not be parsed; skipping.");
+    return [];
+  }
+  if (!Array.isArray(parsed?.dependencies)) {
+    warnings.push("Agent dependency inference missing dependencies list; skipping.");
+    return [];
+  }
+  const dependenciesByTask = new Map<string, Set<string>>();
+  let invalidTasks = 0;
+  let invalidDeps = 0;
+  let selfDeps = 0;
+  for (const entry of parsed.dependencies) {
+    const taskKey =
+      typeof entry?.task_key === "string"
+        ? entry.task_key
+        : typeof entry?.taskKey === "string"
+          ? entry.taskKey
+          : undefined;
+    if (!taskKey || !validTaskKeys.has(taskKey)) {
+      invalidTasks += 1;
+      continue;
+    }
+    const rawDepends = entry?.depends_on ?? entry?.dependsOn;
+    if (rawDepends === undefined) {
+      continue;
+    }
+    if (!Array.isArray(rawDepends)) {
+      invalidDeps += 1;
+      continue;
+    }
+    const dependsRaw = rawDepends as unknown[];
+    const deps = dependenciesByTask.get(taskKey) ?? new Set<string>();
+    for (const dep of dependsRaw) {
+      if (typeof dep !== "string") {
+        invalidDeps += 1;
+        continue;
+      }
+      if (dep === taskKey) {
+        selfDeps += 1;
+        continue;
+      }
+      if (!validTaskKeys.has(dep)) {
+        invalidDeps += 1;
+        continue;
+      }
+      deps.add(dep);
+    }
+    if (deps.size > 0) {
+      dependenciesByTask.set(taskKey, deps);
+    }
+  }
+  if (invalidTasks > 0) {
+    warnings.push(`Agent dependency inference ignored ${invalidTasks} invalid task keys.`);
+  }
+  if (invalidDeps > 0) {
+    warnings.push(`Agent dependency inference ignored ${invalidDeps} invalid dependency keys.`);
+  }
+  if (selfDeps > 0) {
+    warnings.push(`Agent dependency inference ignored ${selfDeps} self-dependencies.`);
+  }
+  const inferred: InferredDependency[] = [];
+  for (const [taskKey, deps] of dependenciesByTask.entries()) {
+    inferred.push({ taskKey, dependsOnKeys: Array.from(deps) });
+  }
+  return inferred;
+};
 
 export class TaskOrderingService {
   private constructor(
@@ -368,6 +456,22 @@ export class TaskOrderingService {
     return grouped;
   }
 
+  private async loadMissingContext(taskIds: string[]): Promise<Set<string>> {
+    if (!taskIds.length) return new Set();
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const rows = await this.db.all<{ task_id: string }[]>(
+      `
+        SELECT DISTINCT task_id
+        FROM task_comments
+        WHERE task_id IN (${placeholders})
+          AND LOWER(category) = 'missing_context'
+          AND (status IS NULL OR LOWER(status) = 'open')
+      `,
+      ...taskIds,
+    );
+    return new Set(rows.map((row) => row.task_id));
+  }
+
   private dependencyImpactMap(dependents: Map<string, string[]>): Map<string, DependencyImpact> {
     const memo = new Map<string, DependencyImpact>();
     const visit = (taskId: string, stack: Set<string>): DependencyImpact => {
@@ -398,12 +502,210 @@ export class TaskOrderingService {
     return memo;
   }
 
+  private resolveClassification(
+    task: Pick<TaskRow, "metadata" | "title" | "description" | "type">,
+  ): { stage: TaskStage; foundation: boolean } {
+    const metadata = task.metadata ?? {};
+    const stage = typeof metadata.stage === "string" ? metadata.stage.toLowerCase() : undefined;
+    const foundation = typeof metadata.foundation === "boolean" ? metadata.foundation : undefined;
+    if (stage && ["foundation", "backend", "frontend", "other"].includes(stage)) {
+      return {
+        stage: stage as TaskStage,
+        foundation: foundation ?? stage === "foundation",
+      };
+    }
+    const inferred = classifyTask({ title: task.title, description: task.description, type: task.type ?? undefined });
+    return { stage: inferred.stage, foundation: inferred.foundation };
+  }
+
+  private buildDependencyGraph(tasks: TaskRow[], deps: Map<string, DependencyRow[]>): Map<string, Set<string>> {
+    const taskIds = new Set(tasks.map((task) => task.id));
+    const graph = new Map<string, Set<string>>();
+    for (const task of tasks) {
+      const rows = deps.get(task.id) ?? [];
+      const edges = new Set<string>();
+      for (const dep of rows) {
+        if (!dep.depends_on_task_id) continue;
+        if (!taskIds.has(dep.depends_on_task_id)) continue;
+        edges.add(dep.depends_on_task_id);
+      }
+      if (edges.size > 0) {
+        graph.set(task.id, edges);
+      }
+    }
+    return graph;
+  }
+
+  private hasDependencyPath(graph: Map<string, Set<string>>, fromId: string, toId: string): boolean {
+    if (fromId === toId) return true;
+    const visited = new Set<string>();
+    const stack = [fromId];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      if (current === toId) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const neighbors = graph.get(current);
+      if (!neighbors) continue;
+      for (const next of neighbors) {
+        if (!visited.has(next)) stack.push(next);
+      }
+    }
+    return false;
+  }
+
+  private async injectFoundationDependencies(
+    tasks: TaskRow[],
+    deps: Map<string, DependencyRow[]>,
+    warnings: string[],
+  ): Promise<void> {
+    const classification = new Map<string, { foundation: boolean }>();
+    for (const task of tasks) {
+      classification.set(task.id, this.resolveClassification(task));
+    }
+    const foundationTasks = tasks.filter((task) => classification.get(task.id)?.foundation);
+    const nonFoundationTasks = tasks.filter((task) => !classification.get(task.id)?.foundation);
+    if (foundationTasks.length === 0 || nonFoundationTasks.length === 0) return;
+
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const dependencyGraph = this.buildDependencyGraph(tasks, deps);
+    const inserts: { taskId: string; dependsOnTaskId: string; relationType: string }[] = [];
+    let skippedCycles = 0;
+
+    for (const task of nonFoundationTasks) {
+      const existing = new Set(
+        (deps.get(task.id) ?? [])
+          .map((dep) => dep.depends_on_task_id ?? "")
+          .filter(Boolean),
+      );
+      for (const foundation of foundationTasks) {
+        if (task.id === foundation.id) continue;
+        if (existing.has(foundation.id)) continue;
+        if (this.hasDependencyPath(dependencyGraph, foundation.id, task.id)) {
+          skippedCycles += 1;
+          continue;
+        }
+        inserts.push({
+          taskId: task.id,
+          dependsOnTaskId: foundation.id,
+          relationType: "inferred_foundation",
+        });
+        existing.add(foundation.id);
+        const edges = dependencyGraph.get(task.id) ?? new Set<string>();
+        edges.add(foundation.id);
+        dependencyGraph.set(task.id, edges);
+      }
+    }
+
+    if (inserts.length === 0) {
+      if (skippedCycles > 0) {
+        warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
+      }
+      return;
+    }
+
+    await this.repo.insertTaskDependencies(inserts, true);
+    for (const insert of inserts) {
+      const depList = deps.get(insert.taskId) ?? [];
+      const dependsOn = taskById.get(insert.dependsOnTaskId);
+      depList.push({
+        task_id: insert.taskId,
+        depends_on_task_id: insert.dependsOnTaskId,
+        depends_on_key: dependsOn?.key,
+        depends_on_status: dependsOn?.status,
+      });
+      deps.set(insert.taskId, depList);
+    }
+    warnings.push(`Injected ${inserts.length} inferred foundation deps.`);
+    if (skippedCycles > 0) {
+      warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
+    }
+  }
+
+  private async applyInferredDependencies(
+    tasks: TaskRow[],
+    deps: Map<string, DependencyRow[]>,
+    inferred: InferredDependency[],
+    warnings: string[],
+  ): Promise<void> {
+    if (inferred.length === 0) return;
+    const taskByKey = new Map(tasks.map((task) => [task.key, task]));
+    const dependencyGraph = this.buildDependencyGraph(tasks, deps);
+    const inserts: { taskId: string; dependsOnTaskId: string; relationType: string }[] = [];
+    let skippedCycles = 0;
+
+    for (const entry of inferred) {
+      const task = taskByKey.get(entry.taskKey);
+      if (!task) continue;
+      const existing = new Set(
+        (deps.get(task.id) ?? [])
+          .map((dep) => dep.depends_on_task_id ?? "")
+          .filter(Boolean),
+      );
+      for (const depKey of entry.dependsOnKeys) {
+        const dependsOn = taskByKey.get(depKey);
+        if (!dependsOn) continue;
+        if (dependsOn.id === task.id) continue;
+        if (existing.has(dependsOn.id)) continue;
+        if (this.hasDependencyPath(dependencyGraph, dependsOn.id, task.id)) {
+          skippedCycles += 1;
+          continue;
+        }
+        inserts.push({
+          taskId: task.id,
+          dependsOnTaskId: dependsOn.id,
+          relationType: "inferred_agent",
+        });
+        existing.add(dependsOn.id);
+        const edges = dependencyGraph.get(task.id) ?? new Set<string>();
+        edges.add(dependsOn.id);
+        dependencyGraph.set(task.id, edges);
+      }
+    }
+
+    if (inserts.length === 0) {
+      if (skippedCycles > 0) {
+        warnings.push(`Skipped ${skippedCycles} inferred agent deps due to cycles.`);
+      }
+      return;
+    }
+
+    await this.repo.insertTaskDependencies(inserts, true);
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    for (const insert of inserts) {
+      const depList = deps.get(insert.taskId) ?? [];
+      const dependsOn = taskById.get(insert.dependsOnTaskId);
+      depList.push({
+        task_id: insert.taskId,
+        depends_on_task_id: insert.dependsOnTaskId,
+        depends_on_key: dependsOn?.key,
+        depends_on_status: dependsOn?.status,
+      });
+      deps.set(insert.taskId, depList);
+    }
+    warnings.push(`Applied ${inserts.length} inferred agent deps.`);
+    if (skippedCycles > 0) {
+      warnings.push(`Skipped ${skippedCycles} inferred agent deps due to cycles.`);
+    }
+  }
+
   private compareTasks(
     a: TaskNode,
     b: TaskNode,
     impact: Map<string, DependencyImpact>,
     agentRank?: AgentRanking,
+    stageOrderMap?: Map<TaskStage, number>,
   ): number {
+    const classA = this.resolveClassification(a);
+    const classB = this.resolveClassification(b);
+    if (classA.foundation !== classB.foundation) {
+      return classA.foundation ? -1 : 1;
+    }
+    if (stageOrderMap) {
+      const stageA = stageOrderMap.get(classA.stage) ?? stageOrderMap.get("other") ?? Number.MAX_SAFE_INTEGER;
+      const stageB = stageOrderMap.get(classB.stage) ?? stageOrderMap.get("other") ?? Number.MAX_SAFE_INTEGER;
+      if (stageA !== stageB) return stageA - stageB;
+    }
     const rankA = agentRank?.get(a.id);
     const rankB = agentRank?.get(b.id);
     if (rankA !== undefined || rankB !== undefined) {
@@ -434,6 +736,7 @@ export class TaskOrderingService {
     edges: Map<string, string[]>,
     impact: Map<string, DependencyImpact>,
     agentRank?: AgentRanking,
+    stageOrderMap?: Map<TaskStage, number>,
   ): { ordered: TaskNode[]; cycle: boolean; cycleMembers: Set<string> } {
     const indegree = new Map<string, number>();
     const taskMap = new Map(tasks.map((t) => [t.id, t]));
@@ -447,7 +750,7 @@ export class TaskOrderingService {
       }
     }
     const queue = tasks.filter((t) => (indegree.get(t.id) ?? 0) === 0);
-    const sortQueue = () => queue.sort((a, b) => this.compareTasks(a, b, impact, agentRank));
+    const sortQueue = () => queue.sort((a, b) => this.compareTasks(a, b, impact, agentRank, stageOrderMap));
     sortQueue();
     const ordered: TaskNode[] = [];
     const visited = new Set<string>();
@@ -474,7 +777,7 @@ export class TaskOrderingService {
         }
       }
       const remaining = tasks.filter((t) => !visited.has(t.id));
-      remaining.sort((a, b) => this.compareTasks(a, b, impact, agentRank));
+      remaining.sort((a, b) => this.compareTasks(a, b, impact, agentRank, stageOrderMap));
       ordered.push(...remaining);
     }
     return { ordered, cycle, cycleMembers };
@@ -483,6 +786,7 @@ export class TaskOrderingService {
   private buildNodes(
     tasks: TaskRow[],
     deps: Map<string, DependencyRow[]>,
+    options: { blockOnDependencies: boolean },
   ): { nodes: TaskNode[]; dependents: Map<string, string[]>; missingRefs: Set<string> } {
     const taskIds = new Set(tasks.map((t) => t.id));
     const dependents = new Map<string, string[]>();
@@ -496,20 +800,24 @@ export class TaskOrderingService {
         if (!dep.depends_on_task_id) {
           missing.push(dep.depends_on_key ?? "unknown");
           missingRefs.add(dep.depends_on_key ?? "unknown");
-          blockedBy.push(dep.depends_on_key ?? "unknown");
+          if (options.blockOnDependencies) {
+            blockedBy.push(dep.depends_on_key ?? "unknown");
+          }
           continue;
         }
         const inScope = taskIds.has(dep.depends_on_task_id);
         const isDone = DONE_STATUSES.has(status ?? "");
         if (!inScope) {
           if (!isDone) {
-            blockedBy.push(dep.depends_on_key ?? dep.depends_on_task_id);
+            if (options.blockOnDependencies) {
+              blockedBy.push(dep.depends_on_key ?? dep.depends_on_task_id);
+            }
             missing.push(dep.depends_on_key ?? dep.depends_on_task_id);
             missingRefs.add(dep.depends_on_key ?? dep.depends_on_task_id);
           }
           continue;
         }
-        if (!isDone) {
+        if (!isDone && options.blockOnDependencies) {
           blockedBy.push(dep.depends_on_key ?? dep.depends_on_task_id);
         }
         const list = dependents.get(dep.depends_on_task_id) ?? [];
@@ -582,6 +890,57 @@ export class TaskOrderingService {
       warnings.push("Agent output could not be parsed; using dependency-only ordering.");
       return undefined;
     }
+  }
+
+  private async inferDependenciesWithAgent(
+    agent: Agent,
+    tasks: TaskNode[],
+    context: {
+      project: ProjectRow;
+      epic?: EpicRow;
+      story?: StoryRow;
+      docContext?: DocContext;
+      stream: boolean;
+      warnings: string[];
+    },
+  ): Promise<InferredDependency[]> {
+    const summary = {
+      project: context.project.key,
+      epic: context.epic?.key,
+      story: context.story?.key,
+      tasks: tasks.map((task) => ({
+        task_key: task.key,
+        epic_key: task.epic_key,
+        story_key: task.story_key,
+        title: task.title,
+        description: task.description,
+        type: task.type,
+        depends_on: (task.dependencies ?? [])
+          .map((dep) => dep.depends_on_key ?? dep.depends_on_task_id)
+          .filter(Boolean),
+      })),
+    };
+    const prompt = [
+      "You are inferring dependencies across epics, stories, and tasks.",
+      "Return ONLY JSON matching:",
+      `{"dependencies":[{"task_key":"<key>","depends_on":["<key>"]}]}`,
+      "Only include task_key values from the input.",
+      "Do not add self-dependencies. Omit empty depends_on arrays.",
+      context.docContext ? `Doc context:\n${context.docContext.content}` : undefined,
+      "Task summary:",
+      JSON.stringify(summary, null, 2),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const { output } = await this.invokeAgent(agent, prompt, context.stream, {
+      command: "order-tasks",
+      phase: "infer_dependencies",
+      project: context.project.key,
+      epic: context.epic?.key,
+      story: context.story?.key,
+    });
+    const taskKeys = new Set(tasks.map((task) => task.key));
+    return parseDependencyInferenceOutput(output, taskKeys, context.warnings);
   }
 
   private async persistPriorities(
@@ -693,26 +1052,18 @@ export class TaskOrderingService {
       }
       const tasks = await this.fetchTasks(project.id, epic?.id, statuses, story?.id, request.assignee);
       const deps = await this.fetchDependencies(tasks.map((t) => t.id));
-      const { nodes, dependents, missingRefs } = this.buildNodes(tasks, deps);
-      if (missingRefs.size > 0) {
-        warnings.push(`Missing dependencies referenced: ${Array.from(missingRefs).join(", ")}`);
+      if (request.injectFoundationDeps !== false) {
+        await this.injectFoundationDependencies(tasks, deps, warnings);
       }
-      const blockedSet = new Set<string>();
-      for (const node of nodes) {
-        if (node.blockedBy.length > 0 || node.status.toLowerCase() === "blocked") {
-          blockedSet.add(node.id);
-        }
-      }
-      const impact = this.dependencyImpactMap(dependents);
-      const { ordered: initialOrder, cycle, cycleMembers } = this.topologicalSort(nodes, dependents, impact);
-      if (cycle) {
-        warnings.push("Dependency cycle detected; ordering may be partial.");
-      }
-
-      let agentRank: AgentRanking | undefined;
-      const enableAgent = Boolean(request.agentName);
+      const blockOnDependencies = request.blockOnDependencies !== false;
+      const blockOnMissingContext = request.blockOnMissingContext !== false;
+      let { nodes, dependents, missingRefs } = this.buildNodes(tasks, deps, { blockOnDependencies });
+      const enableAgentRanking = Boolean(request.agentName);
+      const enableInference = request.inferDependencies === true;
+      const useAgent = enableAgentRanking || enableInference;
+      const agentStream = request.agentStream !== false;
       let docContext: DocContext | undefined;
-      if (enableAgent) {
+      if (useAgent) {
         docContext = await this.buildDocContext(project.key, warnings);
         if (docContext && commandRun && this.recordTelemetry) {
           const contextTokens = estimateTokens(docContext.content);
@@ -730,9 +1081,80 @@ export class TaskOrderingService {
           });
         }
       }
-      if (enableAgent) {
+      let resolvedAgent: Agent | undefined;
+      if (useAgent) {
         try {
-          const agent = await this.resolveAgent(request.agentName);
+          resolvedAgent = await this.resolveAgent(request.agentName);
+        } catch (error) {
+          warnings.push(`Agent resolution failed: ${(error as Error).message}`);
+        }
+      }
+      if (enableInference && resolvedAgent) {
+        try {
+          const inferred = await this.inferDependenciesWithAgent(resolvedAgent, nodes, {
+            project,
+            epic,
+            story,
+            docContext,
+            stream: agentStream,
+            warnings,
+          });
+          await this.applyInferredDependencies(tasks, deps, inferred, warnings);
+          ({ nodes, dependents, missingRefs } = this.buildNodes(tasks, deps, { blockOnDependencies }));
+        } catch (error) {
+          warnings.push(`Dependency inference skipped: ${(error as Error).message}`);
+        }
+      } else if (enableInference && !resolvedAgent) {
+        warnings.push("Dependency inference skipped: no agent resolved.");
+      }
+
+      if (missingRefs.size > 0) {
+        warnings.push(`Missing dependencies referenced: ${Array.from(missingRefs).join(", ")}`);
+      }
+      const missingContext = await this.loadMissingContext(nodes.map((node) => node.id));
+      if (missingContext.size > 0) {
+        warnings.push(
+          blockOnMissingContext
+            ? `Tasks blocked by missing_context: ${Array.from(missingContext).length}`
+            : `Tasks with open missing_context comments: ${Array.from(missingContext).length}`,
+        );
+      }
+      const blockedSet = new Set<string>();
+      for (const node of nodes) {
+        if (blockOnMissingContext && missingContext.has(node.id) && !node.blockedBy.includes("missing_context")) {
+          node.blockedBy.push("missing_context");
+        }
+        if (node.blockedBy.length > 0 || node.status.toLowerCase() === "blocked") {
+          blockedSet.add(node.id);
+        }
+      }
+      const stageOrder = (request.stageOrder && request.stageOrder.length > 0
+        ? request.stageOrder
+        : DEFAULT_STAGE_ORDER) as TaskStage[];
+      const stageOrderMap = new Map<TaskStage, number>();
+      for (const [idx, stage] of stageOrder.entries()) {
+        if (["foundation", "backend", "frontend", "other"].includes(stage)) {
+          stageOrderMap.set(stage, idx);
+        }
+      }
+      if (stageOrderMap.size === 0) {
+        DEFAULT_STAGE_ORDER.forEach((stage, idx) => stageOrderMap.set(stage, idx));
+      }
+      const impact = this.dependencyImpactMap(dependents);
+      const { ordered: initialOrder, cycle, cycleMembers } = this.topologicalSort(
+        nodes,
+        dependents,
+        impact,
+        undefined,
+        stageOrderMap,
+      );
+      if (cycle) {
+        warnings.push("Dependency cycle detected; ordering may be partial.");
+      }
+
+      let agentRank: AgentRanking | undefined;
+      if (enableAgentRanking && resolvedAgent) {
+        try {
           const summary = {
             project: project.key,
             epic: epic?.key,
@@ -761,7 +1183,7 @@ export class TaskOrderingService {
           ]
             .filter(Boolean)
             .join("\n\n");
-          const { output } = await this.invokeAgent(agent, prompt, request.agentStream !== false, {
+          const { output } = await this.invokeAgent(resolvedAgent, prompt, agentStream, {
             command: "order-tasks",
             project: project.key,
             epic: epic?.key,
@@ -777,8 +1199,8 @@ export class TaskOrderingService {
               projectId: project.id,
               commandRunId: commandRun.id,
               jobId: job?.id,
-              agentId: agent.id,
-              modelName: agent.defaultModel,
+              agentId: resolvedAgent.id,
+              modelName: resolvedAgent.defaultModel,
               timestamp: new Date().toISOString(),
               commandName: "order-tasks",
               action: "ordering_tasks",
@@ -788,13 +1210,13 @@ export class TaskOrderingService {
               tokensCompletion: completionTokens,
               tokensTotal: promptTokens + completionTokens,
               metadata: {
-                adapter: agent.adapter,
+                adapter: resolvedAgent.adapter,
                 epicKey: epic?.key,
                 storyKey: story?.key,
                 includeBlocked: request.includeBlocked === true,
                 statusFilter: statuses,
-                agentSlug: agent.slug,
-                modelName: agent.defaultModel,
+                agentSlug: resolvedAgent.slug,
+                modelName: resolvedAgent.defaultModel,
                 phase: "agent_ordering",
                 attempt: 1,
               },
@@ -804,6 +1226,8 @@ export class TaskOrderingService {
         } catch (error) {
           warnings.push(`Agent refinement skipped: ${(error as Error).message}`);
         }
+      } else if (enableAgentRanking && !resolvedAgent) {
+        warnings.push("Agent refinement skipped: no agent resolved.");
       }
 
       const { ordered, cycle: cycleAfterAgent, cycleMembers: agentCycleMembers } = this.topologicalSort(
@@ -811,6 +1235,7 @@ export class TaskOrderingService {
         dependents,
         impact,
         agentRank,
+        stageOrderMap,
       );
       const finalCycleMembers = new Set<string>([...cycleMembers, ...agentCycleMembers]);
       if (cycleAfterAgent && !cycle) {

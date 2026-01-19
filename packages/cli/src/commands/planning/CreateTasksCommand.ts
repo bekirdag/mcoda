@@ -90,7 +90,7 @@ export const pickCreateTasksProjectKey = (options: {
   if (options.configuredKey) {
     if (options.requestedKey && options.requestedKey !== options.configuredKey) {
       warnings.push(
-        `Using configured project key "${options.configuredKey}" from .mcoda/config.json; ignoring requested "${options.requestedKey}".`,
+        `Using configured project key "${options.configuredKey}" from workspace config; ignoring requested "${options.requestedKey}".`,
       );
     }
     if (existing.length > 1) {
@@ -108,11 +108,11 @@ export const pickCreateTasksProjectKey = (options: {
     const selected = requestedMatches ? (options.requestedKey ?? latestExisting) : latestExisting;
     if (options.requestedKey && !requestedMatches) {
       warnings.push(
-        `Found existing project key "${latestExisting}" under .mcoda/tasks; ignoring requested "${options.requestedKey}".`,
+        `Found existing project key "${latestExisting}" under workspace task plans; ignoring requested "${options.requestedKey}".`,
       );
     }
     if (!options.requestedKey && selected !== derivedKey) {
-      warnings.push(`Reusing existing project key "${selected}" from .mcoda/tasks.`);
+      warnings.push(`Reusing existing project key "${selected}" from workspace task plans.`);
     }
     if (existing.length > 1) {
       warnings.push(

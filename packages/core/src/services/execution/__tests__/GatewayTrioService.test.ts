@@ -1,10 +1,39 @@
-import test from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { GatewayTrioService } from "../GatewayTrioService.js";
 import { JobService } from "../../jobs/JobService.js";
+import { PathHelper } from "@mcoda/shared";
+
+let tempHome: string | undefined;
+let originalHome: string | undefined;
+let originalProfile: string | undefined;
+
+beforeEach(async () => {
+  originalHome = process.env.HOME;
+  originalProfile = process.env.USERPROFILE;
+  tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+});
+
+afterEach(async () => {
+  if (tempHome) {
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (originalProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalProfile;
+  }
+});
 
 type DocdexCheckFn = (options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => Promise<any>;
 
@@ -46,7 +75,15 @@ const makeWorkspace = async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-trio-"));
   return {
     dir,
-    workspace: { workspaceRoot: dir, workspaceId: "ws-1" },
+    workspace: {
+      workspaceRoot: dir,
+      workspaceId: "ws-1",
+      mcodaDir: PathHelper.getWorkspaceDir(dir),
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(dir),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+      legacyWorkspaceIds: [],
+      id: "ws-1",
+    },
   };
 };
 
@@ -124,11 +161,15 @@ const makeService = async (options: {
   workSequence?: Array<"succeeded" | "failed">;
   workNotesSequence?: Array<string | undefined>;
   workCalls?: string[];
+  stepCalls?: string[];
   reviewSequence?: Array<"approve" | "changes_requested" | "block" | "info_only">;
   reviewErrorSequence?: Array<string | undefined>;
   qaSequence?: Array<"pass" | "fix_required" | "infra_issue">;
   selectionSequence?: SelectionSnapshot[];
   gatewayRequests?: any[];
+  gatewayAnalysisOverride?: Record<string, unknown>;
+  gatewayDocdex?: any[];
+  commentCalls?: Array<any>;
   cleanupExpiredLocks?: string[];
   jobStatusUpdates?: Array<{ state: string; payload: Record<string, unknown> }>;
   recordTokenUsage?: boolean;
@@ -147,7 +188,7 @@ const makeService = async (options: {
     const tokensCompletion = options.tokenUsageOverride?.tokensCompletion ?? 5;
     const tokensTotal =
       options.tokenUsageOverride?.tokensTotal ?? tokensPrompt + tokensCompletion;
-    const tokenPath = path.join(dir, ".mcoda", "token_usage.json");
+    const tokenPath = path.join(workspace.mcodaDir, "token_usage.json");
     const entry = {
       workspaceId: workspace.workspaceId,
       commandName,
@@ -170,12 +211,22 @@ const makeService = async (options: {
     }
   };
   const selectionService = {
-    selectTasks: async () => {
+    selectTasks: async (filters?: { taskKeys?: string[]; limit?: number }) => {
       const entry = options.selectionSequence?.length
         ? options.selectionSequence[Math.min(selectionIndex, options.selectionSequence.length - 1)]
         : { ordered: options.selectionKeys, blocked: options.blockedKeys };
       selectionIndex += 1;
-      return buildSelection(entry.ordered, entry.blocked, entry.warnings, statusStore, metadataStore) as any;
+      const filterSet = filters?.taskKeys?.length ? new Set(filters.taskKeys) : undefined;
+      let ordered = entry.ordered;
+      let blocked = entry.blocked ?? [];
+      if (filterSet) {
+        ordered = ordered.filter((key) => filterSet.has(key));
+        blocked = blocked.filter((key) => filterSet.has(key));
+      }
+      if (typeof filters?.limit === "number" && filters.limit > 0) {
+        ordered = ordered.slice(0, filters.limit);
+      }
+      return buildSelection(ordered, blocked, entry.warnings, statusStore, metadataStore) as any;
     },
     close: async () => {},
   };
@@ -185,13 +236,7 @@ const makeService = async (options: {
       if (options.gatewayRequests) {
         options.gatewayRequests.push(req);
       }
-      return {
-      commandRunId: `gw-${req.job}`,
-      job: req.job,
-      gatewayAgent: { id: "gw", slug: "gateway" },
-      tasks: [],
-      docdex: [],
-      analysis: {
+      const analysis = {
         summary: "Summary",
         reasoningSummary: "Reason",
         currentState: "Current",
@@ -205,7 +250,15 @@ const makeService = async (options: {
         assumptions: [],
         risks: [],
         docdexNotes: [],
-      },
+        ...(options.gatewayAnalysisOverride ?? {}),
+      };
+      return {
+      commandRunId: `gw-${req.job}`,
+      job: req.job,
+      gatewayAgent: { id: "gw", slug: "gateway" },
+      tasks: [],
+      docdex: options.gatewayDocdex ?? [],
+      analysis,
       chosenAgent: { agentId: "agent-1", agentSlug: "agent-1", rationale: "Fit" },
       warnings: [],
     };
@@ -231,6 +284,7 @@ const makeService = async (options: {
     workOnTasks: async ({ taskKeys, dryRun }: any) => {
       const key = taskKeys[0];
       if (options.workCalls) options.workCalls.push(key);
+      if (options.stepCalls) options.stepCalls.push("work");
       const sequence = options.workSequence ?? (options.workOutcome ? [options.workOutcome] : ["succeeded"]);
       const outcome = sequence[Math.min(workIndex, sequence.length - 1)];
       const notes =
@@ -259,6 +313,7 @@ const makeService = async (options: {
       const error = options.reviewErrorSequence?.[reviewIndex];
       const decision = options.reviewSequence?.[reviewIndex] ?? "approve";
       reviewIndex += 1;
+      if (options.stepCalls) options.stepCalls.push("review");
       if (!dryRun && !error) {
         const next =
           decision === "approve" || decision === "info_only"
@@ -287,6 +342,7 @@ const makeService = async (options: {
       const key = taskKeys[0];
       const outcome = options.qaSequence?.[qaIndex] ?? "pass";
       qaIndex += 1;
+      if (options.stepCalls) options.stepCalls.push("qa");
       if (!dryRun) {
         const next = outcome === "pass" ? "completed" : outcome === "infra_issue" ? "blocked" : "in_progress";
         statusStore.set(key, next);
@@ -385,6 +441,10 @@ const makeService = async (options: {
         metadataStore?.set(key, updates.metadata ?? undefined);
       }
     },
+    createTaskComment: async (record: any) => {
+      options.commentCalls?.push(record);
+      return { ...record, id: `comment-${options.commentCalls?.length ?? 1}`, status: record.status ?? "open" };
+    },
     getProjectById: async () => ({
       id: "proj-1",
       key: "PROJ",
@@ -440,9 +500,45 @@ test("GatewayTrioService completes work-review-qa successfully", async () => {
   }
 });
 
+test("GatewayTrioService skips work when task is ready_to_review", async () => {
+  const statusStore = makeStatusStore({ "TASK-R": "ready_to_review" });
+  const stepCalls: string[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-R"],
+    stepCalls,
+  });
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
+    assert.equal(result.tasks[0].status, "completed");
+    assert.deepEqual(stepCalls, ["review", "qa"]);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService skips work and review when task is ready_to_qa", async () => {
+  const statusStore = makeStatusStore({ "TASK-QA": "ready_to_qa" });
+  const stepCalls: string[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-QA"],
+    stepCalls,
+  });
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
+    assert.equal(result.tasks[0].status, "completed");
+    assert.deepEqual(stepCalls, ["qa"]);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService records docdex preflight failures", async () => {
   const statusStore = makeStatusStore({ "TASK-DOCDEX": "in_progress" });
-  const { service, dir } = await makeService({
+  const { service, dir, workspace } = await makeService({
     statusStore,
     selectionKeys: ["TASK-DOCDEX"],
     docdexCheck: async () => ({
@@ -453,7 +549,7 @@ test("GatewayTrioService records docdex preflight failures", async () => {
   try {
     const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
     assert.ok(result.warnings.some((warning: string) => warning.includes("Docdex unavailable")));
-    const artifactPath = path.join(dir, ".mcoda", "jobs", result.jobId, "gateway-trio", "docdex", "docdex-check.json");
+    const artifactPath = path.join(workspace.mcodaDir, "jobs", result.jobId, "gateway-trio", "docdex", "docdex-check.json");
     await fs.access(artifactPath);
   } finally {
     await service.close();
@@ -461,7 +557,7 @@ test("GatewayTrioService records docdex preflight failures", async () => {
   }
 });
 
-test("GatewayTrioService skips gateway planning for review and QA steps", async () => {
+test("GatewayTrioService uses gateway planning for review and QA steps", async () => {
   const statusStore = makeStatusStore({ "TASK-1": "in_progress" });
   const gatewayRequests: any[] = [];
   const { service, dir } = await makeService({
@@ -472,7 +568,7 @@ test("GatewayTrioService skips gateway planning for review and QA steps", async 
   try {
     await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
     const jobs = gatewayRequests.map((req) => req.job);
-    assert.deepEqual(jobs, ["work-on-tasks"]);
+    assert.deepEqual(jobs, ["work-on-tasks", "code-review", "qa-tasks"]);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -735,6 +831,60 @@ test("GatewayTrioService picks up new tasks on later cycles", async () => {
   }
 });
 
+test("GatewayTrioService respects limit across cycles", async () => {
+  const statusStore = makeStatusStore({
+    "TASK-L1": "in_progress",
+    "TASK-L2": "in_progress",
+    "TASK-L3": "in_progress",
+    "TASK-L4": "in_progress",
+  });
+  const workCalls: string[] = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: [],
+    selectionSequence: [{ ordered: ["TASK-L1", "TASK-L2", "TASK-L3", "TASK-L4"] }],
+    workCalls,
+  });
+  try {
+    const result = await service.run({ workspace, maxCycles: 2, limit: 3 });
+    const keys = result.tasks.map((task: { taskKey: string }) => task.taskKey);
+    assert.deepEqual(keys.sort(), ["TASK-L1", "TASK-L2", "TASK-L3"].sort());
+    assert.equal(workCalls.length, 3);
+    assert.ok(!workCalls.includes("TASK-L4"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService blocks when gateway lacks file paths and docdex context", async () => {
+  const statusStore = makeStatusStore({ "TASK-NOCTX": "in_progress" });
+  const metadataStore = makeMetadataStore();
+  const commentCalls: Array<Record<string, unknown>> = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    metadataStore,
+    selectionKeys: ["TASK-NOCTX"],
+    gatewayAnalysisOverride: { filesLikelyTouched: [], filesToCreate: [], assumptions: [], docdexNotes: [] },
+    gatewayDocdex: [],
+    commentCalls,
+  });
+  try {
+    const result = await service.run({ workspace, maxCycles: 1, maxIterations: 1 });
+    const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-NOCTX");
+    assert.equal(summary?.status, "blocked");
+    assert.equal(summary?.lastError, "missing_context");
+    assert.equal(statusStore.get("TASK-NOCTX"), "blocked");
+    assert.equal((metadataStore.get("TASK-NOCTX") as any)?.blocked_reason, "missing_context");
+    assert.equal(commentCalls.length, 1);
+    assert.equal(commentCalls[0].sourceCommand, "gateway-trio");
+    assert.ok(String(commentCalls[0].body).includes("no file paths"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService retries blocked tasks when dependencies clear", async () => {
   const statusStore = makeStatusStore({ "TASK-11": "in_progress", "TASK-12": "in_progress" });
   const { service, dir } = await makeService({
@@ -822,6 +972,33 @@ test("GatewayTrioService reopens dependency-blocked tasks only when deps complet
   }
 });
 
+test("GatewayTrioService does not reopen tasks completed in DB", async () => {
+  const statusStore = makeStatusStore({ "TASK-DONE": "completed" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: [],
+  });
+  try {
+    const state: any = {
+      schema_version: 1,
+      job_id: "job-3",
+      command_run_id: "run-3",
+      cycle: 0,
+      tasks: {
+        "TASK-DONE": { taskKey: "TASK-DONE", attempts: 1, status: "failed", chosenAgents: {} },
+      },
+    };
+    const warnings: string[] = [];
+    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-DONE"]), 3, warnings);
+    assert.equal(state.tasks["TASK-DONE"].status, "completed");
+    assert.equal(state.tasks["TASK-DONE"].lastError, "completed_in_db");
+    assert.ok(warnings.some((warning) => warning.includes("TASK-DONE") && warning.includes("completed")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService reopens failed tasks when max iterations increases", async () => {
   const statusStore = makeStatusStore({ "TASK-40": "in_progress" });
   const { service, dir } = await makeService({
@@ -842,6 +1019,35 @@ test("GatewayTrioService reopens failed tasks when max iterations increases", as
     await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-40"]), 5, warnings);
     assert.equal(state.tasks["TASK-40"].status, "pending");
     assert.equal(statusStore.get("TASK-40"), "in_progress");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService marks max-iteration tasks as failed when reopening", async () => {
+  const statusStore = makeStatusStore({ "TASK-MAX": "blocked" });
+  const metadataStore = makeMetadataStore({ "TASK-MAX": { blocked_reason: "tests_failed" } });
+  const { service, dir } = await makeService({
+    statusStore,
+    metadataStore,
+    selectionKeys: [],
+  });
+  try {
+    const state: any = {
+      schema_version: 1,
+      job_id: "job-4",
+      command_run_id: "run-4",
+      cycle: 0,
+      tasks: {
+        "TASK-MAX": { taskKey: "TASK-MAX", attempts: 2, status: "failed", chosenAgents: {} },
+      },
+    };
+    const warnings: string[] = [];
+    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-MAX"]), 2, warnings);
+    assert.equal(state.tasks["TASK-MAX"].status, "failed");
+    assert.equal(state.tasks["TASK-MAX"].lastError, "max_iterations_reached");
+    assert.ok(warnings.some((warning) => warning.includes("TASK-MAX") && warning.includes("max iterations")));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -920,9 +1126,10 @@ test("GatewayTrioService escalates reviewer after invalid JSON output", async ()
     });
 
     const reviewCalls = gatewayRequests.filter((req) => req.job === "code-review");
-    assert.ok(reviewCalls.length >= 1);
-    assert.deepEqual(reviewCalls[0].avoidAgents, ["agent-1"]);
-    assert.equal(reviewCalls[0].forceStronger, true);
+    assert.ok(reviewCalls.length >= 2);
+    const escalated = reviewCalls[reviewCalls.length - 1];
+    assert.deepEqual(escalated.avoidAgents, ["agent-1"]);
+    assert.equal(escalated.forceStronger, true);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -977,12 +1184,17 @@ test("GatewayTrioService resumes a partial job from saved state", async () => {
     reviewSequence: ["changes_requested", "approve"],
   });
   try {
-    const first = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
-    assert.equal(first.tasks[0].status, "pending");
+    const first = await service.run({
+      workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any,
+      maxCycles: 1,
+      maxIterations: 1,
+    });
+    assert.equal(first.tasks[0].status, "failed");
     const resumed = await service.run({
       workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any,
       resumeJobId: first.jobId,
       maxCycles: 3,
+      maxIterations: 3,
     });
     assert.equal(resumed.jobId, first.jobId);
     assert.equal(resumed.tasks[0].status, "completed");
@@ -995,14 +1207,18 @@ test("GatewayTrioService resumes a partial job from saved state", async () => {
 
 test("GatewayTrioService rejects resume when manifest command mismatches", async () => {
   const statusStore = makeStatusStore({ "TASK-8": "in_progress" });
-  const { service, dir } = await makeService({
+  const { service, dir, workspace } = await makeService({
     statusStore,
     selectionKeys: ["TASK-8"],
     reviewSequence: ["changes_requested"],
   });
   try {
-    const first = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
-    const manifestPath = path.join(dir, ".mcoda", "jobs", first.jobId, "manifest.json");
+    const first = await service.run({
+      workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any,
+      maxCycles: 1,
+      maxIterations: 1,
+    });
+    const manifestPath = path.join(workspace.mcodaDir, "jobs", first.jobId, "manifest.json");
     const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
     manifest.commandName = "not-gateway-trio";
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
@@ -1022,12 +1238,12 @@ test("GatewayTrioService rejects resume when manifest command mismatches", async
 
 test("GatewayTrioService records rating summaries when enabled", async () => {
   const statusStore = makeStatusStore({ "TASK-13": "in_progress" });
-  const { service, dir } = await makeService({
+  const { service, dir, workspace } = await makeService({
     statusStore,
     selectionKeys: ["TASK-13"],
   });
   try {
-    const jobRoot = path.join(dir, ".mcoda", "jobs");
+    const jobRoot = path.join(workspace.mcodaDir, "jobs");
     await fs.mkdir(path.join(jobRoot, "work-job"), { recursive: true });
     await fs.mkdir(path.join(jobRoot, "review-job"), { recursive: true });
     await fs.mkdir(path.join(jobRoot, "qa-job"), { recursive: true });

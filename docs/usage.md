@@ -19,15 +19,17 @@ docdex setup
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run (gateway, work-on-tasks, code-review, QA, docs).
 
 ## Workspace setup
-Initialize a workspace to create the `.mcoda` directory, seed the SQLite DB, and (optionally) wire docdex.
+Initialize a workspace to create the workspace data directory under `~/.mcoda/workspaces/<name>-<hash>`, seed the SQLite DB, and (optionally) wire docdex.
 
 ```sh
 mcoda set-workspace --workspace-root .
 ```
 
+The command prints the workspace data directory. The examples below use `<workspace-dir>` to refer to that path (for example: `~/.mcoda/workspaces/<name>-<hash>`).
+
 Key files:
-- `.mcoda/config.json` for workspace defaults (docdex URL, branch metadata).
-- `.mcoda/mcoda.db` for backlog, jobs, and telemetry.
+- `<workspace-dir>/config.json` for workspace defaults (docdex URL, branch metadata).
+- `<workspace-dir>/mcoda.db` for backlog, jobs, and telemetry.
 
 ## Docs and specs
 Generate documentation and specs from local or docdex context.
@@ -44,9 +46,9 @@ mcoda openapi-from-docs --workspace-root . --agent codex --force
 Create tasks, refine them, and order them by dependencies.
 
 ```sh
-mcoda create-tasks --workspace-root . --project WEB --agent codex --doc .mcoda/docs/sds/web.md --openapi openapi/mcoda.yaml
+mcoda create-tasks --workspace-root . --project WEB --agent codex --doc <workspace-dir>/docs/sds/web.md --openapi openapi/mcoda.yaml
 mcoda refine-tasks --workspace-root . --project WEB --agent codex
-mcoda migrate-tasks --workspace-root . --project WEB --plan-dir .mcoda/tasks/WEB
+mcoda migrate-tasks --workspace-root . --project WEB --plan-dir <workspace-dir>/tasks/WEB
 mcoda order-tasks --workspace-root . --project WEB
 mcoda backlog --workspace-root . --project WEB --order dependencies
 ```
@@ -83,7 +85,7 @@ mcoda update --force --channel stable
 ## Troubleshooting
 - Use `--debug` and `--json` to capture detailed output.
 - If docdex is unavailable, commands fall back to local docs and print a warning.
-- Ensure `.mcoda/` is in `.gitignore` to avoid committing workspace state.
+- If you still have a legacy `.mcoda/` folder inside the repo, remove it after migration or add it to `.gitignore`.
 
 For full CLI reference, see `README.md`.
 
@@ -100,12 +102,12 @@ mcoda docs pdr generate \
   --agent codex
 ```
 
-Add `--agent-stream false` for a quieter run, or `--rfp-id <DOCDEX_ID>` to pull an RFP already registered in docdex. The PDR is written under `.mcoda/docs/pdr/` by default.
+Add `--agent-stream false` for a quieter run, or `--rfp-id <DOCDEX_ID>` to pull an RFP already registered in docdex. The PDR is written under `<workspace-dir>/docs/pdr/` by default.
 
 - If docdex is unavailable, the command runs in a degraded "local RFP only" mode and warns you.
 - Agent selection uses the workspace default for `docs-pdr-generate` (or any agent with `docdex_query` + `doc_generation` capabilities); override with `--agent <name>`.
 - Flags: `--debug`, `--quiet`, `--no-color`, `--agent-stream false`, `--rate-agents`, `--json`, `--dry-run`, `--fast`, `--workspace-root <path>`, `--project <KEY>`, `--rfp-id` or `--rfp-path`.
-- Workspace config: `.mcoda/config.json` supports `docdexUrl`, `mirrorDocs` (default true), `branch` metadata for docdex registration, and `projectKey` for the default planning scope.
+- Workspace config: `<workspace-dir>/config.json` supports `docdexUrl`, `mirrorDocs` (default true), `branch` metadata for docdex registration, and `projectKey` for the default planning scope.
 - Docdex state lives under `~/.docdex` (managed by the `docdex` CLI). mcoda does not write repo-local `.docdex` data.
 
 ### Generate an SDS from your PDR/RFP context
@@ -119,7 +121,7 @@ mcoda docs sds generate \
 ```
 
 - Streams agent output by default; pass `--agent-stream false` for quiet mode.
-- Default output: `.mcoda/docs/sds/<project>.md` (override with `--out <FILE>`). Use `--force` to overwrite an existing SDS.
+- Default output: `<workspace-dir>/docs/sds/<project>.md` (override with `--out <FILE>`). Use `--force` to overwrite an existing SDS.
 - Context comes from docdex (RFP + PDR + any existing SDS + OpenAPI); if docdex is down the command falls back to local docs and warns.
 - Flags: `--template <NAME>`, `--agent <NAME>`, `--workspace-root <path>`, `--project <KEY>`, `--agent-stream <true|false>`, `--rate-agents`, `--fast`, `--force`, `--resume <JOB_ID>`, `--dry-run`, `--json`, `--debug`, `--no-color`, `--quiet`.
 - Alias: `mcoda sds ...` forwards to `mcoda docs sds generate`.
@@ -145,7 +147,7 @@ mcoda backlog --project WEB --order dependencies --view tasks --limit 10 --inclu
 
 - Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--status <STATUS[,STATUS...]>`, `--include-done`, `--include-cancelled`, `--view summary|epics|stories|tasks`, `--limit <N>`/`--top <N>`, `--order dependencies`, `--json`, `--verbose`, `--workspace-root <path>`.
 - Defaults to active statuses only; use `--status all` or the include flags to show done/cancelled items.
-- No agents or docdex are called; output comes purely from `.mcoda/mcoda.db`.
+- No agents or docdex are called; output comes purely from `<workspace-dir>/mcoda.db`.
 
 ### Estimate the backlog
 Compute SP totals, effective SP/h per lane, and ETA projections:
@@ -178,19 +180,19 @@ mcoda create-tasks \
   --workspace-root . \
   --project TODO \
   --agent openai \
-  --doc .mcoda/docs/sds/todo.md \
+  --doc <workspace-dir>/docs/sds/todo.md \
   --openapi openapi/mcoda.yaml
 ```
 
-Writes plan artifacts to `.mcoda/tasks/<PROJECT>/plan.json` plus `epics.json`, `stories.json`, `tasks.json`. If the DB is busy, the files still persist for later import.
-Project key is sticky: after the first run, `create-tasks` reuses the workspace `projectKey` from `.mcoda/config.json` or an existing `.mcoda/tasks/<PROJECT>` folder to avoid creating new slugs. Edit `.mcoda/config.json` if you need to change it.
+Writes plan artifacts to `<workspace-dir>/tasks/<PROJECT>/plan.json` plus `epics.json`, `stories.json`, `tasks.json`. If the DB is busy, the files still persist for later import.
+Project key is sticky: after the first run, `create-tasks` reuses the workspace `projectKey` from `<workspace-dir>/config.json` or an existing `<workspace-dir>/tasks/<PROJECT>` folder to avoid creating new slugs. Edit `<workspace-dir>/config.json` if you need to change it.
 Use `--force` to wipe and replace the existing backlog for the project. Add `--rate-agents` to score the planning agent.
 
 Import (or re-import) the plan into the workspace DB:
 
 ```sh
-mcoda migrate-tasks --workspace-root . --project TODO --plan-dir .mcoda/tasks/TODO
-mcoda migrate-tasks --workspace-root . --project TODO --plan-dir .mcoda/tasks/TODO --force  # wipes and replaces epics/stories/tasks
+mcoda migrate-tasks --workspace-root . --project TODO --plan-dir <workspace-dir>/tasks/TODO
+mcoda migrate-tasks --workspace-root . --project TODO --plan-dir <workspace-dir>/tasks/TODO --force  # wipes and replaces epics/stories/tasks
 ```
 
 `--force` deletes the project backlog (deps/runs/tasks/stories/epics) before inserting to avoid duplicates.
@@ -201,8 +203,8 @@ Optionally apply all saved refinement plans after migrating the base backlog:
 mcoda migrate-tasks \
   --workspace-root . \
   --project TODO \
-  --plan-dir .mcoda/tasks/TODO \
-  --refine-plans-dir .mcoda/tasks/TODO/refinements
+  --plan-dir <workspace-dir>/tasks/TODO \
+  --refine-plans-dir <workspace-dir>/tasks/TODO/refinements
 ```
 
 ### Update the CLI
@@ -279,10 +281,10 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, or `--story <KEY>`. Default statuses: `not_started,in_progress` (override with `--status ...`).
 - Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--max-agent-seconds <N>`, `--json`.
 - Selection & ordering: dependency-aware (skips/reroutes blocked tasks), topo + priority + SP + created_at, with in-progress tie-breaks. Blocked tasks are listed in JSON output (`blocked`).
-- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `.mcoda/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_review`. Checkpoints live under `.mcoda/jobs/<jobId>/work/state.json` for resume/debug.
+- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_review`. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
 - Scope & safety: enforces allowed files/tests from task metadata; scope violations are blocked and logged.
 - Tests: if test requirements exist and `tests/all.js` is missing, `work-on-tasks` attempts to create it and reruns tests.
-- VCS: ensures `.mcoda` exists and is gitignored, creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
+- VCS: creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
 
 ### Use a remote Ollama agent (GPU offload)
 Point mcoda at a remote Ollama host (e.g., `sukunahikona` on your LAN/VPN):
@@ -329,7 +331,7 @@ mcoda code-review --workspace . --project WEB --status ready_to_review --limit 5
 
 - Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_review` (override with `--status ...`), optional `--limit <N>`.
 - Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default true), `--rate-agents`, `--json`.
-- Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_review → ready_to_qa/in_progress/blocked` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `.mcoda/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
+- Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_review → ready_to_qa/in_progress/blocked` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `<workspace-dir>/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
 - Invalid JSON after retry blocks the task with `review_invalid_output`. Empty diffs block review with `review_empty_diff`.
 
 ### QA tasks (QA pipeline)
@@ -344,7 +346,7 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`. Add `--rate-agents` to score QA agent performance.
 - Chromium runner: auto QA uses the Chromium runner. Install Playwright in the repo or provide `--test-command` so browser tests can run.
 - CLI marker: when `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE` or QA marks the run as `infra_issue` with guidance in task comments.
-- Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `.mcoda/jobs/<jobId>/qa/<task_key>/`.
+- Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `<workspace-dir>/jobs/<jobId>/qa/<task_key>/`.
 - Invalid JSON: if the QA agent returns invalid JSON after retry, the outcome is treated as `unclear` (`qa_unclear`) and a manual QA follow-up can be created.
 - Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.
 

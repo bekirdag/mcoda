@@ -97,8 +97,74 @@ describe("RefineTasksService", () => {
     assert.equal(result.applied, true);
     assert.ok(result.updatedTasks?.includes(taskKey));
 
-    const row = await repo.getDb().get<{ story_points: number }>(`SELECT story_points FROM tasks WHERE key = ?`, taskKey);
+    const row = await repo.getDb().get<{ story_points: number; priority: number | null }>(
+      `SELECT story_points, priority FROM tasks WHERE key = ?`,
+      taskKey,
+    );
     assert.equal(row?.story_points, 5);
+    assert.equal(row?.priority, 1);
+  });
+
+  it("recomputes stage metadata when title changes", { concurrency: false }, async () => {
+    const taskRow = await repo.getTaskByKey(taskKey);
+    assert.ok(taskRow);
+    await repo.updateTask(taskRow!.id, { metadata: { stage: "frontend", foundation: false } });
+
+    const plan: RefineTasksPlan = {
+      strategy: "auto",
+      operations: [
+        {
+          op: "update_task",
+          taskKey,
+          updates: { title: "Implement API endpoint" },
+        },
+      ],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-stage.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+    await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "auto",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    const row = await repo.getDb().get<{ metadata_json: string }>(`SELECT metadata_json FROM tasks WHERE key = ?`, taskKey);
+    const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+    assert.equal(metadata.stage, "backend");
+    assert.equal(metadata.foundation, false);
+  });
+
+  it("keeps stage metadata when only estimates change", { concurrency: false }, async () => {
+    const taskRow = await repo.getTaskByKey(taskKey);
+    assert.ok(taskRow);
+    await repo.updateTask(taskRow!.id, { metadata: { stage: "frontend", foundation: false } });
+
+    const plan: RefineTasksPlan = {
+      strategy: "estimate",
+      operations: [{ op: "update_estimate", taskKey, storyPoints: 8 }],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-estimate.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+    await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "estimate",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    const row = await repo.getDb().get<{ metadata_json: string }>(`SELECT metadata_json FROM tasks WHERE key = ?`, taskKey);
+    const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+    assert.equal(metadata.stage, "frontend");
+    assert.equal(metadata.foundation, false);
   });
 
   it("updates rollups on estimate changes", { concurrency: false }, async () => {

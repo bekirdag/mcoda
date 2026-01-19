@@ -6,6 +6,7 @@ Goal: verify the change meets its acceptance criteria and guard against regressi
 - Docdex usage:
   - Docdex context is injected by mcoda; do not run docdexd directly.
   - If more context is needed, list the exact docdex queries in the QA report and always scope to the repo (example: `docdexd search --repo <workspaceRoot> --query "<query>"` or `DOCDEX_REPO=<workspaceRoot> docdexd search --query "<query>"`).
+  - If docdex is unavailable or returns no results, say so in the QA report and fall back to local docs.
 - Read the task/request and extract explicit acceptance criteria. If unclear, infer from related docs (`docs/pdr/`, `docs/sds/`, `openapi/mcoda.yaml`) and existing behavior in the relevant package.
 - Map the impacted surfaces (CLI flags, API endpoints, background jobs, data stores) and note dependencies/config that must be set before testing.
 - Read task comments and verify unresolved comment slugs are addressed or still valid.

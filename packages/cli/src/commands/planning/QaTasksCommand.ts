@@ -26,10 +26,11 @@ interface ParsedArgs {
   notes?: string;
   evidenceUrl?: string;
   allowDirty: boolean;
+  cleanIgnorePaths: string[];
   quiet?: boolean;
 }
 
-const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--dry-run] [--json]`;
+const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--clean-ignore "<path[,path]...>"] [--dry-run] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -60,6 +61,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   let noTelemetry = false;
   let resumeJobId: string | undefined;
   let allowDirty = false;
+  let cleanIgnorePaths: string[] = [];
   let result: "pass" | "fail" | "blocked" | undefined;
   let notes: string | undefined;
   let evidenceUrl: string | undefined;
@@ -165,6 +167,17 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
           allowDirty = parseBooleanFlag(argv[i + 1], allowDirty);
           i += 1;
           break;
+        case "--clean-ignore":
+          if (argv[i + 1] && !argv[i + 1].startsWith("--")) {
+            cleanIgnorePaths.push(
+              ...argv[i + 1]
+                .split(",")
+                .map((entry) => entry.trim())
+                .filter(Boolean),
+            );
+          }
+          i += 1;
+          break;
         case "--result":
           result = argv[i + 1] as any;
           i += 1;
@@ -213,6 +226,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     noTelemetry,
     resumeJobId,
     allowDirty,
+    cleanIgnorePaths,
     result,
     notes,
     evidenceUrl,
@@ -250,6 +264,7 @@ export class QaTasksCommand {
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
+      noRepoWrites: true,
     });
     const derivedKey = path.basename(workspace.workspaceRoot).replace(/[^a-z0-9]+/gi, "").toLowerCase();
     const projectKey = parsed.projectKey ?? (derivedKey || undefined);
@@ -281,6 +296,7 @@ export class QaTasksCommand {
         notes: parsed.notes,
         evidenceUrl: parsed.evidenceUrl,
         allowDirty: parsed.allowDirty,
+        cleanIgnorePaths: parsed.cleanIgnorePaths,
         noTelemetry: parsed.noTelemetry,
       });
 

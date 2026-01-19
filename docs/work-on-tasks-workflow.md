@@ -19,7 +19,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 ## Detailed workflow
 
 ### 1) Init + selection
-1. Ensure `.mcoda/` exists and is in `.gitignore`.
+1. Ensure the workspace data directory exists under `~/.mcoda/workspaces/<name>-<hash>`.
 2. Start a `command_run` and a `job` for `work-on-tasks`.
 3. Checkout base branch (workspace config branch or `mcoda-dev`).
 4. Select tasks with `TaskSelectionService` and checkpoint selection.
@@ -48,7 +48,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 
 #### 2.4 Context building
 1. Query docdex for doc context (using metadata `doc_links`).
-2. Load project guidance (`docs/project-guidance.md` or `.mcoda/docs/project-guidance.md`).
+2. Load project guidance (`docs/project-guidance.md` or `~/.mcoda/workspaces/<name>-<hash>/docs/project-guidance.md`).
 3. Load unresolved comment backlog from `code-review` and `qa-tasks` (up to 20).
 
 #### 2.5 Prompt assembly
@@ -126,7 +126,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 ## Mermaid diagram
 ```mermaid
 flowchart TD
-  A[Start work-on-tasks] --> B[Ensure .mcoda + start job]
+  A[Start work-on-tasks] --> B[Ensure workspace dir + start job]
   B --> C[Checkout base branch]
   C --> D[Select tasks]
   D --> E{For each task}

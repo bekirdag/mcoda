@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Agent, RoutingPreview } from "@mcoda/shared";
+import { Agent, RoutingPreview, PathHelper } from "@mcoda/shared";
 import { RoutingService } from "../RoutingService.js";
 
 class StubAgentService {
@@ -110,9 +110,9 @@ const workspace = {
   workspaceId: "ws-1",
   id: "ws-1",
   workspaceRoot: "/tmp/ws-1",
-  workspaceDbPath: "/tmp/ws-1/.mcoda/mcoda.db",
-  globalDbPath: "/tmp/global/mcoda.db",
-  mcodaDir: "/tmp/ws-1/.mcoda",
+  workspaceDbPath: PathHelper.getWorkspaceDbPath("/tmp/ws-1"),
+  globalDbPath: PathHelper.getGlobalDbPath(),
+  mcodaDir: PathHelper.getWorkspaceDir("/tmp/ws-1"),
   legacyWorkspaceIds: [],
 };
 

@@ -11,7 +11,7 @@ import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
   workspaceRoot,
   workspaceId: workspaceRoot,
-  mcodaDir: path.join(workspaceRoot, ".mcoda"),
+  mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
   id: workspaceRoot,
   legacyWorkspaceIds: [],
   workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
@@ -31,7 +31,7 @@ describe("BacklogService", () => {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-backlog-"));
-    await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
+    await fs.mkdir(PathHelper.getWorkspaceDir(workspaceRoot), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
     const connection = await Connection.open(dbPath);
     await WorkspaceMigrations.run(connection.db);
@@ -213,9 +213,9 @@ describe("BacklogService", () => {
     const orderedKeys = summary.tasks.map((t) => t.task_key);
     assert.deepEqual(orderedKeys, [
       "web-01-us-01-t01",
-      "web-02-us-01-t01",
       "web-01-us-01-t02",
       "web-01-us-02-t01",
+      "web-02-us-01-t01",
       "web-01-us-01-t03",
       "web-02-us-01-t02",
     ]);

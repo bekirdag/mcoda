@@ -1,5 +1,5 @@
 import path from "node:path";
-import { TaskOrderingService, WorkspaceResolver } from "@mcoda/core";
+import { TaskOrderingService, WorkspaceResolver, type TaskOrderingRequest } from "@mcoda/core";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -10,6 +10,9 @@ interface ParsedArgs {
   agentName?: string;
   agentStream?: boolean;
   rateAgents: boolean;
+  inferDeps: boolean;
+  apply: boolean;
+  stageOrder?: string[];
   json: boolean;
 }
 
@@ -21,6 +24,9 @@ const usage = `mcoda order-tasks \\
   [--include-blocked] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--infer-deps] \\
+  [--apply] \\
+  [--stage-order <foundation,backend,frontend,other>] \\
   [--rate-agents] \\
   [--json]`;
 
@@ -41,10 +47,21 @@ const parseStatuses = (value?: string): string[] | undefined => {
   return parts.length ? parts : undefined;
 };
 
+const parseStageOrder = (value?: string): string[] | undefined => {
+  if (!value) return undefined;
+  const parts = value
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return parts.length ? parts : undefined;
+};
+
 export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
   const parsed: ParsedArgs = {
     includeBlocked: false,
     rateAgents: false,
+    inferDeps: false,
+    apply: false,
     json: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -59,6 +76,18 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg.startsWith("--rate-agents=")) {
       parsed.rateAgents = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--infer-deps=")) {
+      parsed.inferDeps = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--apply=")) {
+      parsed.apply = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--stage-order=")) {
+      parsed.stageOrder = parseStageOrder(arg.split("=")[1]);
       continue;
     }
     switch (arg) {
@@ -95,6 +124,30 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--infer-deps": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          parsed.inferDeps = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          parsed.inferDeps = true;
+        }
+        break;
+      }
+      case "--apply": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          parsed.apply = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          parsed.apply = true;
+        }
+        break;
+      }
+      case "--stage-order":
+        parsed.stageOrder = parseStageOrder(argv[i + 1]);
+        i += 1;
+        break;
       case "--rate-agents": {
         const next = argv[i + 1];
         if (next && !next.startsWith("-")) {
@@ -217,6 +270,18 @@ export class OrderTasksCommand {
       process.exitCode = 1;
       return;
     }
+    if (parsed.inferDeps && !parsed.apply) {
+      // eslint-disable-next-line no-console
+      console.error("order-tasks requires --apply when --infer-deps is set");
+      process.exitCode = 1;
+      return;
+    }
+    const validStages = new Set(["foundation", "backend", "frontend", "other"]);
+    const stageOrder = parsed.stageOrder?.filter((stage) => validStages.has(stage));
+    const resolvedStageOrder =
+      stageOrder && stageOrder.length > 0
+        ? (stageOrder as TaskOrderingRequest["stageOrder"])
+        : undefined;
     const service = await TaskOrderingService.create(workspace);
     try {
       const result = await service.orderTasks({
@@ -227,6 +292,8 @@ export class OrderTasksCommand {
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
+        inferDependencies: parsed.inferDeps,
+        stageOrder: resolvedStageOrder,
       });
       if (parsed.json) {
         const payload: Record<string, unknown> = {

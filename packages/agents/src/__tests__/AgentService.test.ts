@@ -258,6 +258,89 @@ test("gateway handoff is appended to agent input when configured", async () => {
   }
 });
 
+test("gateway handoff is not duplicated when header already present", async () => {
+  const agent = await repo.createAgent({
+    slug: "handoff-dedupe",
+    adapter: "local-model",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  const prevInline = process.env.MCODA_GATEWAY_HANDOFF;
+  const prevPath = process.env.MCODA_GATEWAY_HANDOFF_PATH;
+  process.env.MCODA_GATEWAY_HANDOFF = "Handoff detail to skip";
+  delete process.env.MCODA_GATEWAY_HANDOFF_PATH;
+  // @ts-expect-error override for test
+  service.getAdapter = async () => ({
+    invoke: async (request: any) => ({
+      output: String(request.input ?? ""),
+      adapter: "stub",
+      model: "stub",
+    }),
+  });
+  try {
+    const input = "ping\n\n[Gateway handoff]\nAlready present";
+    const result = await service.invoke(agent.id, { input, metadata: { command: "work-on-tasks" } });
+    const output = String(result.output ?? "");
+    const matches = output.match(/\[Gateway handoff\]/g) ?? [];
+    assert.equal(matches.length, 1);
+    assert.ok(output.includes("Already present"));
+    assert.ok(!output.includes("Handoff detail to skip"));
+  } finally {
+    if (prevInline === undefined) {
+      delete process.env.MCODA_GATEWAY_HANDOFF;
+    } else {
+      process.env.MCODA_GATEWAY_HANDOFF = prevInline;
+    }
+    if (prevPath === undefined) {
+      delete process.env.MCODA_GATEWAY_HANDOFF_PATH;
+    } else {
+      process.env.MCODA_GATEWAY_HANDOFF_PATH = prevPath;
+    }
+  }
+});
+
+test("gateway handoff strips END OF FILE markers", async () => {
+  const agent = await repo.createAgent({
+    slug: "handoff-strip",
+    adapter: "local-model",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  const prevInline = process.env.MCODA_GATEWAY_HANDOFF;
+  const prevPath = process.env.MCODA_GATEWAY_HANDOFF_PATH;
+  process.env.MCODA_GATEWAY_HANDOFF = "Keep this\nEND OF FILE\nKeep that\n*** End of File\nFinal";
+  delete process.env.MCODA_GATEWAY_HANDOFF_PATH;
+  // @ts-expect-error override for test
+  service.getAdapter = async () => ({
+    invoke: async (request: any) => ({
+      output: String(request.input ?? ""),
+      adapter: "stub",
+      model: "stub",
+    }),
+  });
+  try {
+    const result = await service.invoke(agent.id, { input: "ping", metadata: { command: "work-on-tasks" } });
+    const output = String(result.output ?? "");
+    assert.match(output, /\[Gateway handoff\]/);
+    assert.ok(output.includes("Keep this"));
+    assert.ok(output.includes("Keep that"));
+    assert.ok(output.includes("Final"));
+    assert.ok(!/END OF FILE/i.test(output));
+    assert.ok(!/\*\*\* End of File/i.test(output));
+  } finally {
+    if (prevInline === undefined) {
+      delete process.env.MCODA_GATEWAY_HANDOFF;
+    } else {
+      process.env.MCODA_GATEWAY_HANDOFF = prevInline;
+    }
+    if (prevPath === undefined) {
+      delete process.env.MCODA_GATEWAY_HANDOFF_PATH;
+    } else {
+      process.env.MCODA_GATEWAY_HANDOFF_PATH = prevPath;
+    }
+  }
+});
+
 test("ollama-remote health returns unreachable on network error", async () => {
   const agent = await repo.createAgent({
     slug: "remote-health",
@@ -282,4 +365,68 @@ test("ollama-remote rejects when baseUrl is missing", async () => {
     capabilities: ["plan"],
   });
   await assert.rejects(() => service.invoke(agent.id, { input: "ping" }), /baseUrl/i);
+});
+
+test("agent io output lines stay atomic when streams overlap", async () => {
+  const agent = await repo.createAgent({
+    slug: "io-lines",
+    adapter: "local-model",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  const originalWrite = process.stderr.write;
+  const originalIo = process.env.MCODA_STREAM_IO;
+  const originalPrompt = process.env.MCODA_STREAM_IO_PROMPT;
+  process.env.MCODA_STREAM_IO = "1";
+  process.env.MCODA_STREAM_IO_PROMPT = "0";
+  const writes: string[] = [];
+  process.stderr.write = ((chunk: any, cb?: any) => {
+    const text = String(chunk);
+    const mid = Math.max(1, Math.floor(text.length / 2));
+    writes.push(text.slice(0, mid));
+    setTimeout(() => {
+      writes.push(text.slice(mid));
+      if (typeof cb === "function") cb();
+    }, 1);
+    return true;
+  }) as any;
+  // @ts-expect-error override for test
+  service.getAdapter = async () => ({
+    invokeStream: async function* (request: any) {
+      const label = String(request.input ?? "input");
+      yield { output: `${label}-one\n`, adapter: "stub", model: "stub" };
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      yield { output: `${label}-two\n`, adapter: "stub", model: "stub" };
+    },
+    invoke: async () => ({ output: "", adapter: "stub", model: "stub" }),
+  });
+  const runStream = async (label: string) => {
+    const generator = await service.invokeStream(agent.id, { input: label, metadata: { command: "work-on-tasks" } });
+    for await (const _ of generator) {
+      // consume
+    }
+  };
+  try {
+    await Promise.all([runStream("alpha"), runStream("beta")]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  } finally {
+    process.stderr.write = originalWrite;
+    if (originalIo === undefined) {
+      delete process.env.MCODA_STREAM_IO;
+    } else {
+      process.env.MCODA_STREAM_IO = originalIo;
+    }
+    if (originalPrompt === undefined) {
+      delete process.env.MCODA_STREAM_IO_PROMPT;
+    } else {
+      process.env.MCODA_STREAM_IO_PROMPT = originalPrompt;
+    }
+  }
+  const output = writes.join("");
+  const lines = output.split("\n").filter((line) => line.includes("[agent-io]"));
+  assert.ok(lines.length > 0);
+  for (const line of lines) {
+    assert.ok(line.startsWith("[agent-io]"));
+    assert.equal(line.indexOf("[agent-io]", 1), -1);
+  }
 });

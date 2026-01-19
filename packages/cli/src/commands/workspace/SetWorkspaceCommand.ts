@@ -7,6 +7,7 @@ import { WorkspaceResolver } from "@mcoda/core";
 import { WorkspaceRepository } from "@mcoda/db";
 
 const USAGE = "Usage: mcoda set-workspace [--workspace-root <path>] [--no-git] [--no-docdex]";
+const DOCDEX_ENV_URLS = ["MCODA_DOCDEX_URL", "DOCDEX_URL"];
 
 export const parseSetWorkspaceArgs = (argv: string[]): { workspaceRoot?: string; git: boolean; docdex: boolean } => {
   let workspaceRoot: string | undefined;
@@ -42,6 +43,96 @@ const ensureConfigFile = async (mcodaDir: string): Promise<void> => {
   } catch {
     await fs.writeFile(configPath, "{}", "utf8");
   }
+};
+
+const readWorkspaceConfig = async (mcodaDir: string): Promise<Record<string, unknown>> => {
+  const configPath = path.join(mcodaDir, "config.json");
+  try {
+    const raw = await fs.readFile(configPath, "utf8");
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+};
+
+const writeWorkspaceConfig = async (mcodaDir: string, config: Record<string, unknown>): Promise<void> => {
+  const configPath = path.join(mcodaDir, "config.json");
+  await fs.mkdir(mcodaDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+};
+
+const normalizeDocdexUrl = (value: string): string => {
+  const trimmed = value.trim();
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+};
+
+const extractDocdexUrlFromCheck = (output: string): string | undefined => {
+  const trimmed = output.trim();
+  if (!trimmed) return undefined;
+  const candidates = [trimmed];
+  const braceStart = trimmed.indexOf("{");
+  const braceEnd = trimmed.lastIndexOf("}");
+  if (braceStart !== -1 && braceEnd > braceStart) {
+    candidates.push(trimmed.slice(braceStart, braceEnd + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, any>;
+      const checks = Array.isArray(parsed.checks) ? parsed.checks : [];
+      const bind = checks.find((check: any) => check?.name === "bind");
+      const bindAddr = bind?.details?.bind_addr ?? bind?.details?.bindAddr;
+      if (typeof bindAddr === "string" && bindAddr.trim().length > 0) {
+        return bindAddr.startsWith("http://") || bindAddr.startsWith("https://")
+          ? bindAddr
+          : `http://${bindAddr}`;
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
+  const urlMatch = trimmed.match(/https?:\/\/[^\s]+/);
+  if (urlMatch) return urlMatch[0];
+  const onMatch = trimmed.match(/\bon\s+([^\s;]+:\d+)\b/i);
+  if (onMatch) {
+    return `http://${onMatch[1].replace(/[;,]$/, "")}`;
+  }
+  const hostPortMatch = trimmed.match(/\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|[a-zA-Z0-9.-]+):\d{2,5}\b/);
+  if (hostPortMatch) return `http://${hostPortMatch[0]}`;
+  const bindMatch = trimmed.match(/bind_addr[:=]\s*([0-9.:]+(?:\:\d+)?)/i);
+  if (bindMatch) return `http://${bindMatch[1]}`;
+  return undefined;
+};
+
+const resolveDocdexUrl = (workspaceRoot: string): string | undefined => {
+  for (const key of DOCDEX_ENV_URLS) {
+    const value = process.env[key];
+    if (value && value.trim().length > 0) return normalizeDocdexUrl(value);
+  }
+  try {
+    const stdout = execFileSync("docdexd", ["check"], {
+      cwd: workspaceRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const output = stdout ? stdout.toString() : "";
+    const parsed = extractDocdexUrlFromCheck(output);
+    if (parsed) return normalizeDocdexUrl(parsed);
+  } catch (error: any) {
+    const stdout = error?.stdout ? error.stdout.toString() : "";
+    const stderr = error?.stderr ? error.stderr.toString() : "";
+    const parsed = extractDocdexUrlFromCheck(stdout) ?? extractDocdexUrlFromCheck(stderr);
+    if (parsed) return normalizeDocdexUrl(parsed);
+  }
+  return undefined;
+};
+
+const ensureDocdexUrl = async (mcodaDir: string, workspaceRoot: string): Promise<string | undefined> => {
+  const config = await readWorkspaceConfig(mcodaDir);
+  const existing = typeof config.docdexUrl === "string" ? config.docdexUrl.trim() : "";
+  if (existing) return existing;
+  const resolved = resolveDocdexUrl(workspaceRoot);
+  if (!resolved) return undefined;
+  await writeWorkspaceConfig(mcodaDir, { ...config, docdexUrl: resolved });
+  return resolved;
 };
 
 const ensureDocsDirs = async (mcodaDir: string): Promise<void> => {
@@ -128,6 +219,7 @@ export class SetWorkspaceCommand {
     await ensureConfigFile(resolution.mcodaDir);
     await ensureDocsDirs(resolution.mcodaDir);
     await (await WorkspaceRepository.create(resolution.workspaceRoot)).close();
+    await ensureDocdexUrl(resolution.mcodaDir, resolution.workspaceRoot);
 
     let gitInited = false;
     if (parsed.git) {
@@ -151,7 +243,7 @@ export class SetWorkspaceCommand {
       console.log("Docdex index initialized for this workspace.");
     }
     // eslint-disable-next-line no-console
-    console.log(`.mcoda directory: ${resolution.mcodaDir}`);
+    console.log(`Workspace data directory: ${resolution.mcodaDir}`);
     // eslint-disable-next-line no-console
     console.log("You can now run mcoda commands here.");
   }

@@ -45,6 +45,7 @@ const DOCDEX_GUIDANCE_PATH = path.join(os.homedir(), ".docdex", "agents.md");
 let docdexGuidanceCache: string | undefined;
 let docdexGuidanceLoaded = false;
 const DOCDEX_JSON_ONLY_MARKERS = [/output json only/i, /return json only/i, /no prose, no analysis/i];
+const HANDOFF_END_MARKERS = [/^\s*END OF FILE\s*$/i, /^\s*\*\*\* End of File\s*$/i];
 
 const isIoEnabled = (): boolean => {
   const raw = process.env[IO_ENV];
@@ -60,9 +61,22 @@ const isIoPromptEnabled = (): boolean => {
   return !["0", "false", "off", "no"].includes(normalized);
 };
 
+let ioWriteQueue = Promise.resolve();
+
 const emitIoLine = (line: string): void => {
   const normalized = line.endsWith("\n") ? line : `${line}\n`;
-  process.stderr.write(normalized);
+  ioWriteQueue = ioWriteQueue
+    .then(
+      () =>
+        new Promise<void>((resolve) => {
+          try {
+            process.stderr.write(normalized, () => resolve());
+          } catch {
+            resolve();
+          }
+        }),
+    )
+    .catch(() => {});
 };
 
 const renderIoHeader = (agent: Agent, request: InvocationRequest, mode: "invoke" | "stream"): void => {
@@ -111,18 +125,26 @@ const renderIoEnd = (): void => {
   emitIoLine(`${IO_PREFIX} end`);
 };
 
+const stripHandoffEndMarkers = (content: string): string => {
+  const lines = content.split(/\r?\n/);
+  const filtered = lines.filter((line) => !HANDOFF_END_MARKERS.some((marker) => marker.test(line)));
+  return filtered.join("\n").trim();
+};
+
 const readGatewayHandoff = async (): Promise<string | undefined> => {
   const inline = process.env[HANDOFF_ENV_INLINE];
   if (inline && inline.trim()) {
-    return inline.trim().slice(0, MAX_HANDOFF_CHARS);
+    const normalized = stripHandoffEndMarkers(inline.trim());
+    if (!normalized) return undefined;
+    return normalized.slice(0, MAX_HANDOFF_CHARS);
   }
   const filePath = process.env[HANDOFF_ENV_PATH];
   if (!filePath) return undefined;
   try {
     const content = await fs.readFile(filePath, "utf8");
-    const trimmed = content.trim();
-    if (!trimmed) return undefined;
-    return trimmed.slice(0, MAX_HANDOFF_CHARS);
+    const normalized = stripHandoffEndMarkers(content.trim());
+    if (!normalized) return undefined;
+    return normalized.slice(0, MAX_HANDOFF_CHARS);
   } catch {
     return undefined;
   }
@@ -373,10 +395,18 @@ export class AgentService {
     if ((request.metadata as any)?.command === "gateway-agent") {
       return request;
     }
+    const currentInput = request.input ?? "";
+    if (currentInput.includes(HANDOFF_HEADER)) {
+      return request;
+    }
+    if ((request.metadata as any)?.gatewayHandoffApplied) {
+      return request;
+    }
     const handoff = await readGatewayHandoff();
     if (!handoff) return request;
     const suffix = `\n\n${HANDOFF_HEADER}\n${handoff}`;
-    return { ...request, input: `${request.input ?? ""}${suffix}` };
+    const metadata = { ...(request.metadata ?? {}), gatewayHandoffApplied: true };
+    return { ...request, input: `${currentInput}${suffix}`, metadata };
   }
 
   private async applyDocdexGuidance(request: InvocationRequest): Promise<InvocationRequest> {

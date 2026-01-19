@@ -76,10 +76,18 @@ describe("estimate argument parsing", () => {
 
 describe("estimate output rendering", () => {
   let workspaceRoot: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-estimate-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-estimate-"));
-    await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
+    await fs.mkdir(PathHelper.getWorkspaceDir(workspaceRoot), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
     const connection = await Connection.open(dbPath);
     await WorkspaceMigrations.run(connection.db);
@@ -163,6 +171,19 @@ describe("estimate output rendering", () => {
 
   afterEach(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
   });
 
   it("prints DONE/TOTAL lines and assumptions", async () => {

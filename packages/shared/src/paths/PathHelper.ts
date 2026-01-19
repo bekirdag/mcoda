@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 
 /**
  * Utility helpers for resolving mcoda paths in both global and workspace scopes.
@@ -34,12 +35,20 @@ export class PathHelper {
     return path.join(this.getGlobalMcodaDir(), "mcoda.db");
   }
 
-  static getWorkspaceDir(cwd: string = process.cwd()): string {
-    return path.join(cwd, ".mcoda");
+  static getGlobalWorkspaceDir(workspaceRoot: string): string {
+    const normalizedRoot = this.normalizePathCase(path.resolve(workspaceRoot));
+    const hash = createHash("sha256").update(normalizedRoot).digest("hex").slice(0, 12);
+    const rawName = path.basename(normalizedRoot) || "workspace";
+    const safeName = rawName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 32) || "workspace";
+    return path.join(this.getGlobalMcodaDir(), "workspaces", `${safeName}-${hash}`);
   }
 
-  static getWorkspaceDbPath(cwd: string = process.cwd()): string {
-    return path.join(this.getWorkspaceDir(cwd), "mcoda.db");
+  static getWorkspaceDir(workspaceRoot: string = process.cwd()): string {
+    return this.getGlobalWorkspaceDir(workspaceRoot);
+  }
+
+  static getWorkspaceDbPath(workspaceRoot: string = process.cwd()): string {
+    return path.join(this.getWorkspaceDir(workspaceRoot), "mcoda.db");
   }
 
   static async ensureDir(dir: string): Promise<void> {
