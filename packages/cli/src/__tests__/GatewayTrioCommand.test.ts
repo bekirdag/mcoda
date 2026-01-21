@@ -17,7 +17,7 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.qaMode, "auto");
     assert.equal(parsed.qaFollowups, "auto");
     assert.equal(parsed.reviewFollowups, false);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.escalateOnNoChange, true);
     assert.equal(parsed.watch, false);

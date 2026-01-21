@@ -224,7 +224,7 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     workspaceRoot,
     projectKey,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     maxEpics: Number.isFinite(maxEpics) ? maxEpics : undefined,
     maxStoriesPerEpic: Number.isFinite(maxStoriesPerEpic) ? maxStoriesPerEpic : undefined,

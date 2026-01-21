@@ -6,7 +6,7 @@ import { parseWorkOnTasksArgs } from "../commands/work/WorkOnTasksCommand.js";
 describe("work-on-tasks argument parsing", () => {
   it("applies defaults for booleans and statuses", () => {
     const parsed = parseWorkOnTasksArgs([]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.noCommit, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);

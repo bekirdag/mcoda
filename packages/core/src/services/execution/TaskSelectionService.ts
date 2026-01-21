@@ -316,15 +316,30 @@ export class TaskSelectionService {
     if (filters.projectKey && !project) {
       throw new Error(`Unknown project key: ${filters.projectKey}`);
     }
+    const dedupedTaskKeys = filters.taskKeys?.length
+      ? Array.from(new Set(filters.taskKeys.map((key) => key.trim()).filter(Boolean)))
+      : undefined;
     const effectiveStatuses = normalizeStatusList(filters.statusFilter);
     const allowBlocked = effectiveStatuses.includes("blocked");
-    const tasks = await this.loadTasks({ ...filters, project });
+    const tasks = await this.loadTasks({ ...filters, project, taskKeys: dedupedTaskKeys });
     const filteredTasks = tasks.filter((task) => effectiveStatuses.includes(task.task_status.toLowerCase()));
-    const candidateIds = filteredTasks.map((t) => t.task_id);
+    const dedupeWarnings: string[] = [];
+    const seenKeys = new Set<string>();
+    const dedupedTasks: RawTaskRow[] = [];
+    for (const row of filteredTasks) {
+      const key = row.task_key;
+      if (seenKeys.has(key)) {
+        dedupeWarnings.push(`Duplicate task key detected in selection: ${key}.`);
+        continue;
+      }
+      seenKeys.add(key);
+      dedupedTasks.push(row);
+    }
+    const candidateIds = dedupedTasks.map((t) => t.task_id);
     const deps = await this.loadDependencies(candidateIds);
     const missingContext = await this.loadMissingContext(candidateIds);
     const taskMap = new Map<string, SelectedTask>();
-    for (const row of filteredTasks) {
+    for (const row of dedupedTasks) {
       const task = this.buildTaskFromRow(row);
       taskMap.set(task.id, {
         task,
@@ -376,13 +391,14 @@ export class TaskSelectionService {
     }
 
     const { ordered, warnings } = this.topologicalOrder(eligible, deps);
+    const combinedWarnings = [...dedupeWarnings, ...warnings];
     const limited = typeof filters.limit === "number" && filters.limit > 0 ? ordered.slice(0, filters.limit) : ordered;
     return {
       project: project ?? undefined,
-      filters: { ...filters, effectiveStatuses },
+      filters: { ...filters, taskKeys: dedupedTaskKeys ?? filters.taskKeys, effectiveStatuses },
       ordered: limited,
       blocked,
-      warnings,
+      warnings: combinedWarnings,
     };
   }
 }

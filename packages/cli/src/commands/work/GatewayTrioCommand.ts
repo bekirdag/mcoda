@@ -811,7 +811,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     maxDocs: Number.isFinite(maxDocs) ? maxDocs : undefined,
     noCommit,
     dryRun,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     reviewBase,
     qaProfileName,
     qaLevel,

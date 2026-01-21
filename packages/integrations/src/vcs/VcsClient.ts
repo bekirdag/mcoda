@@ -21,6 +21,15 @@ export class VcsClient {
     }
   }
 
+  async isRepo(cwd: string): Promise<boolean> {
+    try {
+      await this.runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+      return true;
+    } catch {
+      return this.gitDirExists(cwd);
+    }
+  }
+
   async ensureRepo(cwd: string): Promise<void> {
     if (await this.gitDirExists(cwd)) return;
     await this.runGit(cwd, ["init"]);
@@ -242,6 +251,18 @@ export class VcsClient {
     if (filtered.length) {
       throw new Error(`Working tree dirty: ${filtered.join(", ")}`);
     }
+  }
+
+  async resetHard(cwd: string, options?: { exclude?: string[] }): Promise<void> {
+    await this.runGit(cwd, ["reset", "--hard"]);
+    const args = ["clean", "-fd"];
+    (options?.exclude ?? [])
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .forEach((entry) => {
+        args.push("-e", entry);
+      });
+    await this.runGit(cwd, args);
   }
 
   async lastCommitSha(cwd: string): Promise<string> {

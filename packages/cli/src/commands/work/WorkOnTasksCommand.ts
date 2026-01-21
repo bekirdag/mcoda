@@ -227,7 +227,7 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     noCommit,
     dryRun,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     autoMerge,
     autoPush,

@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+const { spawnSync } = require("node:child_process");
+const { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(__dirname, "..");
 
 const run = (label, cmd, args, options = {}) => {
   const start = Date.now();

@@ -46,6 +46,22 @@ const HEARTBEAT_INTERVAL_MS = 30000;
 const ZERO_TOKEN_BACKOFF_MS = 750;
 const PSEUDO_TASK_PREFIX = "[RUN]";
 const ZERO_TOKEN_ERROR = "zero_tokens";
+const FAILED_REOPEN_COOLDOWN_MS = 2 * 60 * 1000;
+const MAX_FAILURE_REOPENS_PER_REASON = 2;
+const NON_RETRYABLE_FAILURE_REASONS = new Set([
+  "patch_failed",
+  "scope_violation",
+  "doc_edit_guard",
+  "merge_conflict",
+  "vcs_failed",
+  "task_lock_lost",
+  "missing_context",
+  "missing_docdex",
+  "review_invalid_output",
+  "gateway_invalid_output",
+]);
+const DOCDEX_SKIP_PATTERN = /\b(?:not executed|would run|not run|skipped)\b/i;
+const DOCDEX_MISSING_PATTERN = /\b(?:docdex unavailable|docdex missing|no matching docs?|no matching documents?|no results|not provided)\b/i;
 
 type StepName = "work" | "review" | "qa";
 
@@ -553,10 +569,17 @@ export class GatewayTrioService {
   ): Promise<StepOutcome | undefined> {
     const filesMissing = gateway.analysis.filesLikelyTouched.length === 0 && gateway.analysis.filesToCreate.length === 0;
     const docdexMissing = gateway.docdex.length === 0;
-    if (!filesMissing || !docdexMissing) return undefined;
+    const docdexNotesText = gateway.analysis.docdexNotes.join(" ").toLowerCase();
+    const docdexSkipped = DOCDEX_SKIP_PATTERN.test(docdexNotesText);
+    const docdexExplicitMissing = DOCDEX_MISSING_PATTERN.test(docdexNotesText);
+    if ((!filesMissing || !docdexMissing) && !(docdexSkipped && !docdexExplicitMissing)) {
+      return undefined;
+    }
 
     const messageLines = [
-      "Gateway analysis returned no file paths and no docdex context.",
+      docdexSkipped && !docdexExplicitMissing
+        ? "Gateway analysis reported docdex work as not executed; missing required context."
+        : "Gateway analysis returned no file paths and no docdex context.",
       gateway.analysis.docdexNotes.length ? `Docdex notes: ${gateway.analysis.docdexNotes.join(" | ")}` : "Docdex notes: (none)",
       gateway.analysis.assumptions.length ? `Assumptions: ${gateway.analysis.assumptions.join(" | ")}` : undefined,
       "Provide concrete file paths or ensure docdex context is available before retrying.",
@@ -590,8 +613,13 @@ export class GatewayTrioService {
       });
     }
 
-    warnings.push(`Task ${taskKey} blocked (${step}) due to missing file context.`);
-    return { step, status: "blocked", error: "missing_context", chosenAgent: resolvedAgent ?? gateway.chosenAgent.agentSlug };
+    warnings.push(`Task ${taskKey} blocked (${step}) due to missing file or docdex context.`);
+    return {
+      step,
+      status: "blocked",
+      error: "missing_context",
+      chosenAgent: resolvedAgent ?? gateway.chosenAgent.agentSlug,
+    };
   }
 
   private hasReachedMaxIterations(progress: TaskProgress | undefined, maxIterations?: number): boolean {
@@ -603,6 +631,33 @@ export class GatewayTrioService {
   private hasIterationsRemaining(progress: TaskProgress, maxIterations?: number): boolean {
     if (maxIterations === undefined) return true;
     return progress.attempts < maxIterations;
+  }
+
+  private shouldReopenFailedTask(progress: TaskProgress | undefined, taskKey: string, warnings: string[]): boolean {
+    if (!progress) return true;
+    const lastFailure = progress.failureHistory?.[progress.failureHistory.length - 1];
+    const lastReason = (progress.lastError ?? lastFailure?.reason ?? "").toLowerCase();
+    if (lastReason) {
+      if (NON_RETRYABLE_FAILURE_REASONS.has(lastReason)) {
+        warnings.push(`Task ${taskKey} failed with non-retryable reason ${lastReason}; skipping reopen.`);
+        return false;
+      }
+      if (/no eligible agents|missing required capabilities|agent .* missing required capabilities/i.test(lastReason)) {
+        warnings.push(`Task ${taskKey} failed due to agent selection; skipping reopen.`);
+        return false;
+      }
+      const sameReasonCount = progress.failureHistory?.filter((failure) => failure.reason === lastReason).length ?? 0;
+      if (sameReasonCount >= MAX_FAILURE_REOPENS_PER_REASON) {
+        warnings.push(`Task ${taskKey} hit retry cap for ${lastReason}; skipping reopen.`);
+        return false;
+      }
+      const lastTimestamp = lastFailure?.timestamp ? Date.parse(lastFailure.timestamp) : undefined;
+      if (Number.isFinite(lastTimestamp) && Date.now() - (lastTimestamp as number) < FAILED_REOPEN_COOLDOWN_MS) {
+        warnings.push(`Task ${taskKey} failed recently (${lastReason}); cooling down before reopen.`);
+        return false;
+      }
+    }
+    return true;
   }
 
   private async reopenRetryableBlockedTasks(
@@ -656,6 +711,10 @@ export class GatewayTrioService {
         }
       } else if (progress?.status !== "failed") {
         continue;
+      } else {
+        if (!this.shouldReopenFailedTask(progress, taskKey, warnings)) {
+          continue;
+        }
       }
       const nextMetadata = { ...metadata };
       delete nextMetadata.blocked_reason;
@@ -877,15 +936,15 @@ export class GatewayTrioService {
   ): { avoidAgents: string[]; forceStronger: boolean } {
     const reasons = this.escalationReasons(request.escalateOnNoChange !== false);
     const escalateAllFailures = step === "work";
-    const avoid = new Set<string>();
-    const history = progress.failureHistory ?? [];
-    for (const failure of history) {
-      if (failure.step !== step) continue;
-      if (!escalateAllFailures && !reasons.has(failure.reason)) continue;
-      avoid.add(failure.agent);
-    }
-    const avoidAgents = Array.from(avoid);
-    return { avoidAgents, forceStronger: avoidAgents.length > 0 };
+    const history = (progress.failureHistory ?? []).filter((failure) => {
+      if (failure.step !== step) return false;
+      if (!escalateAllFailures && !reasons.has(failure.reason)) return false;
+      return true;
+    });
+    const forceStronger = history.length > 0;
+    const avoidAgents =
+      history.length > 1 ? Array.from(new Set(history.map((failure) => failure.agent))) : [];
+    return { avoidAgents, forceStronger };
   }
 
   private recordRating(progress: TaskProgress, summary: RatingSummary | undefined): void {
@@ -997,12 +1056,11 @@ export class GatewayTrioService {
   ): Promise<GatewayAgentResult> {
     const startedAt = new Date().toISOString();
     const shouldSuppressIo = Boolean(request.onGatewayStart || request.onGatewayEnd || request.onGatewayChunk);
-    request.onGatewayStart?.({
-      taskKey,
-      job,
-      gatewayAgent: request.gatewayAgentName ?? "auto",
-      startedAt,
-    });
+    let gatewaySlug = request.gatewayAgentName ?? "auto";
+    let chosenSlug: string | undefined;
+    let status: "completed" | "failed" = "failed";
+    let errorMessage: string | undefined;
+    let startEmitted = false;
     const invoke = () =>
       this.deps.gatewayService.run({
         workspace: this.workspace,
@@ -1018,9 +1076,23 @@ export class GatewayTrioService {
         forceStronger: agentOptions?.forceStronger,
       });
     try {
+      startEmitted = true;
+      request.onGatewayStart?.({
+        taskKey,
+        job,
+        gatewayAgent: gatewaySlug,
+        startedAt,
+      });
       const result = shouldSuppressIo ? await this.withGatewayIoSuppressed(invoke) : await invoke();
-      const gatewaySlug = result.gatewayAgent.slug ?? result.gatewayAgent.id;
-      const chosenSlug = result.chosenAgent.agentSlug ?? result.chosenAgent.agentId;
+      gatewaySlug = result.gatewayAgent.slug ?? result.gatewayAgent.id;
+      chosenSlug = result.chosenAgent.agentSlug ?? result.chosenAgent.agentId;
+      status = "completed";
+      return result;
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      if (!startEmitted) return;
       request.onGatewayEnd?.({
         taskKey,
         job,
@@ -1028,21 +1100,9 @@ export class GatewayTrioService {
         chosenAgent: chosenSlug,
         startedAt,
         endedAt: new Date().toISOString(),
-        status: "completed",
+        status,
+        error: errorMessage,
       });
-      return result;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      request.onGatewayEnd?.({
-        taskKey,
-        job,
-        gatewayAgent: request.gatewayAgentName ?? "auto",
-        startedAt,
-        endedAt: new Date().toISOString(),
-        status: "failed",
-        error: message,
-      });
-      throw error;
     }
   }
 
@@ -1084,6 +1144,7 @@ export class GatewayTrioService {
     let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
+    await this.deps.gatewayService.preflightExecutionAgents("work-on-tasks", request.workAgentName);
     try {
       gateway = await this.runGateway("work-on-tasks", taskKey, projectKey, request, agentOptions);
       resolvedAgent = request.workAgentName ?? gateway.chosenAgent.agentSlug;
@@ -1155,6 +1216,7 @@ export class GatewayTrioService {
     let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
+    await this.deps.gatewayService.preflightExecutionAgents("code-review", request.reviewAgentName);
     try {
       gateway = await this.runGateway("code-review", taskKey, projectKey, request, agentOptions);
       resolvedAgent = request.reviewAgentName ?? gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
@@ -1225,6 +1287,7 @@ export class GatewayTrioService {
     let gateway: GatewayAgentResult | undefined;
     let handoff: string;
     let resolvedAgent: string | undefined;
+    await this.deps.gatewayService.preflightExecutionAgents("qa-tasks", request.qaAgentName);
     try {
       gateway = await this.runGateway("qa-tasks", taskKey, projectKey, request, agentOptions);
       resolvedAgent = request.qaAgentName ?? gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
@@ -1323,7 +1386,7 @@ export class GatewayTrioService {
       warnings.push("Agent rating disabled; use --rate-agents to track rating/complexity updates.");
     }
     const statusFilter = await this.buildStatusFilter(resolvedRequest, warnings);
-    const explicitTaskKeys = resolvedRequest.taskKeys ?? [];
+    const explicitTaskKeys = resolvedRequest.taskKeys ? this.dedupeTaskKeys(resolvedRequest.taskKeys) : [];
     const pseudoTaskKeys = explicitTaskKeys.filter((key) => this.isPseudoTaskKey(key));
     const filteredTaskKeys = explicitTaskKeys.filter((key) => !this.isPseudoTaskKey(key));
     const explicitTaskKeysProvided = explicitTaskKeys.length > 0;
@@ -1448,6 +1511,12 @@ export class GatewayTrioService {
     await this.seedExplicitTasks(state, explicitTasks, warnings);
     await this.writeState(state);
     let cycle = state.cycle ?? 0;
+    const taskLimit = resolvedRequest.limit;
+    const startedTaskKeys = new Set(
+      Object.values(state.tasks)
+        .filter((task) => task.attempts > 0 || task.lastStep)
+        .map((task) => task.taskKey),
+    );
 
     try {
       while (maxCycles === undefined || cycle < maxCycles) {
@@ -1470,7 +1539,18 @@ export class GatewayTrioService {
                 limit: resolvedRequest.limit,
                 parallel: resolvedRequest.parallel,
               });
-        const blockedKeys = new Set(selection.blocked.map((t) => t.task.key));
+        const dedupedBlocked: TaskSelectionPlan["blocked"] = [];
+        const seenBlocked = new Set<string>();
+        for (const entry of selection.blocked) {
+          const key = entry.task.key;
+          if (seenBlocked.has(key)) {
+            warnings.push(`Task ${key} appears multiple times in blocked lane; skipping duplicate entry.`);
+            continue;
+          }
+          seenBlocked.add(key);
+          dedupedBlocked.push(entry);
+        }
+        const blockedKeys = new Set(dedupedBlocked.map((t) => t.task.key));
         if (selection.warnings.length) warnings.push(...selection.warnings);
 
         const completedKeys = new Set(
@@ -1478,19 +1558,27 @@ export class GatewayTrioService {
             .filter((task) => task.status === "completed")
             .map((task) => task.taskKey),
         );
-        const ordered = this.prioritizeFeedbackTasks(selection.ordered, state).filter((entry) => {
+        const orderedCandidates = this.prioritizeFeedbackTasks(selection.ordered, state);
+        const ordered: TaskSelectionPlan["ordered"] = [];
+        const seenOrdered = new Set<string>();
+        for (const entry of orderedCandidates) {
           const taskKey = entry.task.key;
+          if (seenOrdered.has(taskKey)) {
+            warnings.push(`Task ${taskKey} appears multiple times in this cycle; skipping duplicate entry.`);
+            continue;
+          }
+          seenOrdered.add(taskKey);
           if (completedKeys.has(taskKey)) {
             warnings.push(`Task ${taskKey} already completed earlier in this run; skipping.`);
-            return false;
+            continue;
           }
           if (this.isPseudoTaskKey(taskKey)) {
             this.skipPseudoTask(state, taskKey, warnings);
-            return false;
+            continue;
           }
-          return true;
-        });
-        for (const blocked of selection.blocked) {
+          ordered.push(entry);
+        }
+        for (const blocked of dedupedBlocked) {
           const taskKey = blocked.task.key;
           if (this.isPseudoTaskKey(taskKey)) {
             this.skipPseudoTask(state, taskKey, warnings);
@@ -1534,6 +1622,22 @@ export class GatewayTrioService {
             progress.lastError = "dependency_blocked";
             state.tasks[taskKey] = progress;
             await this.writeState(state);
+            continue;
+          }
+          if (
+            typeof taskLimit === "number" &&
+            taskLimit > 0 &&
+            startedTaskKeys.size >= taskLimit &&
+            !startedTaskKeys.has(taskKey)
+          ) {
+            warnings.push(`Task ${taskKey} skipped; limit ${taskLimit} reached.`);
+            const progress = this.ensureProgress(state, taskKey);
+            if (progress.status !== "completed") {
+              progress.status = "skipped";
+              progress.lastError = "limit_reached";
+              state.tasks[taskKey] = progress;
+              await this.writeState(state);
+            }
             continue;
           }
           const normalizedStatus = this.normalizeStatus(entry.task.status);
@@ -1609,6 +1713,9 @@ export class GatewayTrioService {
             if (!attempted) {
               attemptedThisCycle += 1;
               attempted = true;
+              if (!startedTaskKeys.has(taskKey)) {
+                startedTaskKeys.add(taskKey);
+              }
             }
 
             if (statusNow === "ready_to_review") {

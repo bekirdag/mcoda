@@ -253,7 +253,7 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
     maxTasks: Number.isFinite(maxTasks) ? maxTasks : undefined,
     strategy,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     fromDb: fromDb ?? true,
     dryRun,

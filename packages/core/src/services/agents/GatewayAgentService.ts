@@ -14,6 +14,7 @@ import { isDocContextExcluded, normalizeDocType } from "../shared/ProjectGuidanc
 const DEFAULT_GATEWAY_PROMPT = [
   "You are the gateway agent. Read the task context and docdex snippets, digest the task, decide what is done vs. remaining, and plan the work.",
   "You must identify concrete file paths to modify or create before offloading.",
+  "If new directories are required for planned files, list them explicitly in dirsToCreate.",
   "Do not use placeholders like (unknown), TBD, or glob patterns in file paths.",
   "Do not assume repository structure; only name paths grounded in provided file content or docdex context.",
   "If you add or modify tests, ensure tests/all.js is updated (or state that it already covers the new tests).",
@@ -34,6 +35,7 @@ const DEFAULT_GATEWAY_PROMPT = [
   '  "discipline": "backend|frontend|uiux|docs|architecture|qa|planning|ops|other",',
   '  "filesLikelyTouched": ["path/to/file.ext"],',
   '  "filesToCreate": ["path/to/new_file.ext"],',
+  '  "dirsToCreate": ["path/to/new_dir"],',
   '  "assumptions": ["assumption 1"],',
   '  "risks": ["risk 1"],',
   '  "docdexNotes": ["notes about docdex coverage/gaps"]',
@@ -51,6 +53,7 @@ const REQUIRED_PROMPT_MARKERS = [
   '"understanding"',
   '"filesLikelyTouched"',
   '"filesToCreate"',
+  '"dirsToCreate"',
 ];
 
 const hasRequiredPromptMarkers = (content: string): boolean =>
@@ -70,17 +73,39 @@ const ROUTING_PROMPT_MARKERS = [
   "complexity from 1 to 5",
 ];
 
-const extractJson = (raw: string): any | undefined => {
-  const fenced = raw.match(/```json([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1] : raw;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return undefined;
-  const body = candidate.slice(start, end + 1);
+const sanitizeAgentOutput = (output: string): string => {
+  if (!output.includes("[agent-io]")) return output;
+  const lines = output.split(/\r?\n/);
+  const cleaned: string[] = [];
+  for (const line of lines) {
+    if (!line.includes("[agent-io]")) {
+      cleaned.push(line);
+      continue;
+    }
+    if (/^\s*\[agent-io\]\s*(?:begin|input|meta)/i.test(line)) {
+      continue;
+    }
+    const stripped = line.replace(/^\s*\[agent-io\]\s*(?:output\s*)?/i, "");
+    if (stripped.trim()) cleaned.push(stripped);
+  }
+  return cleaned.join("\n");
+};
+
+const extractJsonOnly = (raw: string): { payload?: any; jsonOnly: boolean } => {
+  const trimmed = raw.trim();
+  if (!trimmed) return { jsonOnly: false };
+  let candidate = trimmed;
+  if (trimmed.startsWith("```")) {
+    const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+    if (!match) return { jsonOnly: false };
+    candidate = match[1].trim();
+  } else if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return { jsonOnly: false };
+  }
   try {
-    return JSON.parse(body);
+    return { payload: JSON.parse(candidate), jsonOnly: true };
   } catch {
-    return undefined;
+    return { jsonOnly: true };
   }
 };
 
@@ -131,33 +156,73 @@ const isPlaceholderPath = (value: string): boolean => {
 const normalizeFileList = (value: unknown): string[] =>
   normalizeList(value).map((item) => item.trim()).filter((item) => item.length > 0 && !isPlaceholderPath(item));
 
+const normalizeDirList = (value: unknown): string[] =>
+  normalizeList(value)
+    .map((item) => item.trim().replace(/[/\\]+$/, ""))
+    .filter((item) => item.length > 0 && !isPlaceholderPath(item));
+
+const isDirMarker = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/[/\\]$/.test(trimmed)) return true;
+  if (/^\s*(?:dir|directory)\s*:/i.test(trimmed)) return true;
+  if (/\(\s*dir\s*\)\s*$/i.test(trimmed)) return true;
+  return false;
+};
+
+const stripDirMarker = (value: string): string => {
+  let trimmed = value.trim();
+  trimmed = trimmed.replace(/^\s*(?:dir|directory)\s*:/i, "");
+  trimmed = trimmed.replace(/\(\s*dir\s*\)\s*$/i, "");
+  trimmed = trimmed.replace(/[/\\]+$/, "");
+  return trimmed.trim();
+};
+
+const splitFileAndDirEntries = (values: string[]): { files: string[]; dirs: string[] } => {
+  const files: string[] = [];
+  const dirs: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (isDirMarker(trimmed)) {
+      const cleaned = stripDirMarker(trimmed);
+      if (cleaned) dirs.push(cleaned);
+      continue;
+    }
+    files.push(trimmed);
+  }
+  return { files, dirs };
+};
+
 const hasFileContextJustification = (raw: any): boolean => {
   const notes = [...normalizeList(raw?.assumptions), ...normalizeList(raw?.docdexNotes)]
     .map((item) => item.toLowerCase())
     .join(" ");
   if (!notes.trim()) return false;
-  const keywords = [
-    "no file",
-    "no files",
-    "missing file",
-    "missing files",
-    "unknown file",
-    "unknown files",
-    "insufficient context",
-    "not enough context",
-    "not provided",
-    "docdex",
-    "no matching docs",
-    "no matching documents",
-    "no results",
+  const patterns = [
+    /\bno file(?:s)?\b/,
+    /\bmissing file(?:s)?\b/,
+    /\bunknown file(?:s)?\b/,
+    /\bfile context\b/,
+    /\binsufficient context\b/,
+    /\bnot enough context\b/,
+    /\bnot provided\b/,
+    /\bdocdex unavailable\b/,
+    /\bdocdex missing\b/,
+    /\bno matching docs?\b/,
+    /\bno matching documents?\b/,
+    /\bno results\b/,
   ];
-  return keywords.some((keyword) => notes.includes(keyword));
+  return patterns.some((pattern) => pattern.test(notes));
 };
 
 const assessFileListCoverage = (raw: any): { empty: boolean; justified: boolean } => {
   const filesLikelyTouched = normalizeFileList(raw?.filesLikelyTouched);
-  const filesToCreate = normalizeFileList(raw?.filesToCreate);
-  const empty = filesLikelyTouched.length === 0 && filesToCreate.length === 0;
+  const rawCreate = normalizeList(raw?.filesToCreate);
+  const splitCreate = splitFileAndDirEntries(rawCreate);
+  const filesToCreate = normalizeFileList(splitCreate.files);
+  const dirsToCreate = [...normalizeDirList(raw?.dirsToCreate), ...normalizeDirList(splitCreate.dirs)];
+  const empty = filesLikelyTouched.length === 0 && filesToCreate.length === 0 && dirsToCreate.length === 0;
   return { empty, justified: empty && hasFileContextJustification(raw) };
 };
 
@@ -170,7 +235,10 @@ const listMissingFields = (raw: any, options?: { allowEmptyFiles?: boolean }): s
   const understanding = normalizeTextField(raw?.understanding);
   const plan = normalizeList(raw?.plan);
   const filesLikelyTouched = normalizeFileList(raw?.filesLikelyTouched);
-  const filesToCreate = normalizeFileList(raw?.filesToCreate);
+  const rawCreate = normalizeList(raw?.filesToCreate);
+  const splitCreate = splitFileAndDirEntries(rawCreate);
+  const filesToCreate = normalizeFileList(splitCreate.files);
+  const dirsToCreate = [...normalizeDirList(raw?.dirsToCreate), ...normalizeDirList(splitCreate.dirs)];
   const allowEmptyFiles = options?.allowEmptyFiles ?? false;
   if (!summary) missing.push("summary");
   if (!reasoningSummary) missing.push("reasoningSummary");
@@ -178,8 +246,8 @@ const listMissingFields = (raw: any, options?: { allowEmptyFiles?: boolean }): s
   if (!todo) missing.push("todo");
   if (!understanding) missing.push("understanding");
   if (plan.length === 0) missing.push("plan");
-  if (!allowEmptyFiles && filesLikelyTouched.length === 0 && filesToCreate.length === 0) {
-    missing.push("filesLikelyTouched", "filesToCreate");
+  if (!allowEmptyFiles && filesLikelyTouched.length === 0 && filesToCreate.length === 0 && dirsToCreate.length === 0) {
+    missing.push("filesLikelyTouched", "filesToCreate", "dirsToCreate");
   }
   return missing;
 };
@@ -352,6 +420,7 @@ export interface GatewayAnalysis {
   discipline: string;
   filesLikelyTouched: string[];
   filesToCreate: string[];
+  dirsToCreate: string[];
   assumptions: string[];
   risks: string[];
   docdexNotes: string[];
@@ -621,7 +690,7 @@ export class GatewayAgentService {
           output += text;
           if (text && onChunk) onChunk(text);
         }
-        return { output, durationSeconds: (Date.now() - startedAt) / 1000 };
+        return { output: sanitizeAgentOutput(output), durationSeconds: (Date.now() - startedAt) / 1000 };
       }
     } catch (error) {
       const message = (error as Error).message ?? "";
@@ -633,7 +702,7 @@ export class GatewayAgentService {
       input: prompt,
       metadata: { command: "gateway-agent", job },
     });
-    const output = response.output ?? "";
+    const output = sanitizeAgentOutput(response.output ?? "");
     if (output && onChunk) onChunk(output);
     return { output, durationSeconds: (Date.now() - startedAt) / 1000 };
   }
@@ -777,7 +846,10 @@ export class GatewayAgentService {
     const understanding = normalizeTextField(raw?.understanding) ?? "";
     const plan = normalizeList(raw?.plan);
     const filesLikelyTouched = normalizeFileList(raw?.filesLikelyTouched);
-    const filesToCreate = normalizeFileList(raw?.filesToCreate);
+    const rawCreate = normalizeList(raw?.filesToCreate);
+    const splitCreate = splitFileAndDirEntries(rawCreate);
+    const filesToCreate = normalizeFileList(splitCreate.files);
+    const dirsToCreate = [...normalizeDirList(raw?.dirsToCreate), ...normalizeDirList(splitCreate.dirs)];
     const complexityRaw = Number(raw?.complexity);
     const complexity = Number.isFinite(complexityRaw) ? clamp(Math.round(complexityRaw), 1, 10) : 5;
     const discipline =
@@ -809,6 +881,7 @@ export class GatewayAgentService {
       discipline,
       filesLikelyTouched,
       filesToCreate,
+      dirsToCreate,
       assumptions: normalizeList(raw?.assumptions),
       risks: normalizeList(raw?.risks),
       docdexNotes: normalizeList(raw?.docdexNotes),
@@ -825,6 +898,35 @@ export class GatewayAgentService {
     const isInside = (relative: string): boolean => !relative.startsWith("..") && !path.isAbsolute(relative);
     const touched: string[] = [];
     const created: string[] = [];
+    const dirs: string[] = [];
+    const dirSet = new Set<string>();
+    for (const dir of analysis.dirsToCreate ?? []) {
+      const { relative, resolved } = normalize(dir);
+      if (!isInside(relative)) {
+        warnings.push(`Gateway directory path outside workspace ignored: ${dir}`);
+        continue;
+      }
+      try {
+        const stat = await fs.promises.stat(resolved);
+        if (stat.isDirectory()) {
+          const normalized = relative.replace(/\\/g, "/");
+          if (!dirSet.has(normalized)) {
+            dirSet.add(normalized);
+            dirs.push(normalized);
+          }
+          continue;
+        }
+        warnings.push(`Gateway directory path is not a directory: ${dir}`);
+        continue;
+      } catch {
+        const normalized = relative.replace(/\\/g, "/");
+        if (!dirSet.has(normalized)) {
+          dirSet.add(normalized);
+          dirs.push(normalized);
+        }
+      }
+    }
+    const dirPrefixes = Array.from(dirSet).map((dir) => (dir.endsWith("/") ? dir : `${dir}/`));
     for (const file of analysis.filesLikelyTouched) {
       const { relative, resolved } = normalize(file);
       if (!isInside(relative)) {
@@ -856,8 +958,15 @@ export class GatewayAgentService {
           continue;
         }
       } catch {
-        warnings.push(`Gateway create path parent does not exist: ${file}`);
-        continue;
+        const parentRelative = path.relative(root, parent).replace(/\\/g, "/");
+        const parentAllowed =
+          parentRelative === "" ||
+          dirSet.has(parentRelative) ||
+          dirPrefixes.some((prefix) => parentRelative.startsWith(prefix));
+        if (!parentAllowed) {
+          warnings.push(`Gateway create path parent does not exist: ${file}`);
+          continue;
+        }
       }
       try {
         const stat = await fs.promises.stat(resolved);
@@ -875,6 +984,7 @@ export class GatewayAgentService {
       ...analysis,
       filesLikelyTouched: touched,
       filesToCreate: created,
+      dirsToCreate: dirs,
     };
   }
 
@@ -1016,10 +1126,18 @@ export class GatewayAgentService {
     analysis: GatewayAnalysis,
     avoidAgents: string[] = [],
     forceStronger: boolean = false,
+    warnings: string[] = [],
   ): Promise<GatewayAgentDecision> {
     const normalizedJob = canonicalizeCommandName(job);
     const requiredCaps = getCommandRequiredCapabilities(normalizedJob);
-    const candidates = await this.listCandidates(requiredCaps, analysis.discipline, avoidAgents);
+    let candidates = await this.listCandidates(requiredCaps, analysis.discipline, avoidAgents);
+    if (!candidates.length && avoidAgents.length) {
+      const fallback = await this.listCandidates(requiredCaps, analysis.discipline, []);
+      if (fallback.length) {
+        candidates = fallback;
+        warnings.push("Avoid list removed all eligible agents; reusing available agent.");
+      }
+    }
     const boostedComplexity = forceStronger ? clamp(Math.round(analysis.complexity) + 1, 1, 10) : analysis.complexity;
     const { pick, rationale } = this.chooseCandidate(candidates, boostedComplexity, analysis.discipline);
     const finalRationale = forceStronger ? `${rationale} (force_stronger applied)` : rationale;
@@ -1032,6 +1150,26 @@ export class GatewayAgentService {
       costPerMillion: Number.isFinite(pick.cost) ? pick.cost : undefined,
       rationale: finalRationale,
     };
+  }
+
+  async preflightExecutionAgents(job: string, overrideAgent?: string): Promise<void> {
+    const normalizedJob = canonicalizeCommandName(job);
+    const requiredCaps = getCommandRequiredCapabilities(normalizedJob);
+    if (overrideAgent) {
+      const resolved = await this.deps.agentService.resolveAgent(overrideAgent);
+      const capabilities = await this.deps.globalRepo.getAgentCapabilities(resolved.id);
+      const missing = requiredCaps.filter((cap) => !capabilities.includes(cap));
+      if (missing.length) {
+        throw new Error(
+          `Agent ${overrideAgent} is missing required capabilities for ${normalizedJob}: ${missing.join(", ")}`,
+        );
+      }
+      return;
+    }
+    const candidates = await this.listCandidates(requiredCaps, "other");
+    if (!candidates.length) {
+      throw new Error(`No eligible execution agents available for ${normalizedJob}.`);
+    }
   }
 
   async run(request: GatewayAgentRequest): Promise<GatewayAgentResult> {
@@ -1083,13 +1221,18 @@ export class GatewayAgentService {
       });
       await recordUsage(prompt, response.output ?? "", response.durationSeconds, "gateway_summary", 1);
 
-      let parsed = extractJson(response.output);
+      const jsonResult = extractJsonOnly(response.output);
+      let parsed = jsonResult.payload;
       let fileListCoverage = parsed ? assessFileListCoverage(parsed) : { empty: false, justified: false };
       let missingFields = parsed
-        ? listMissingFields(parsed, { allowEmptyFiles: fileListCoverage.empty })
-        : ["summary", "reasoningSummary", "currentState", "todo", "understanding", "plan", "filesLikelyTouched", "filesToCreate"];
+        ? listMissingFields(parsed, { allowEmptyFiles: fileListCoverage.justified })
+        : ["summary", "reasoningSummary", "currentState", "todo", "understanding", "plan", "filesLikelyTouched", "filesToCreate", "dirsToCreate"];
       if (!parsed) {
-        warnings.push("Gateway analysis response was not valid JSON; falling back to defaults.");
+        warnings.push(
+          jsonResult.jsonOnly
+            ? "Gateway analysis response was invalid JSON."
+            : "Gateway analysis response was not JSON-only.",
+        );
       }
 
       if (missingFields.length) {
@@ -1099,7 +1242,7 @@ export class GatewayAgentService {
           "Your previous response was incomplete or invalid. Return JSON only with the exact schema.",
           `Missing fields: ${missingFields.join(", ")}.`,
           "Ensure reasoningSummary, currentState, todo, understanding, and plan are populated.",
-          "If file paths are unknown, leave filesLikelyTouched/filesToCreate empty and explain the gap in assumptions or docdexNotes.",
+          "If file paths are unknown, leave filesLikelyTouched/filesToCreate/dirsToCreate empty and explain the gap in assumptions or docdexNotes.",
           "Use real file paths only (no placeholders like (unknown), TBD, or glob patterns).",
           "If docdex returned no results, say so in docdexNotes.",
         ].join("\n");
@@ -1111,22 +1254,36 @@ export class GatewayAgentService {
           onChunk: request.onStreamChunk,
         });
         await recordUsage(repairPrompt, repairResponse.output ?? "", repairResponse.durationSeconds, "gateway_summary_repair", 2);
-        const repaired = extractJson(repairResponse.output);
-        if (repaired) {
-          parsed = repaired;
+        const repaired = extractJsonOnly(repairResponse.output);
+        if (repaired.payload) {
+          parsed = repaired.payload;
           fileListCoverage = assessFileListCoverage(parsed);
-          missingFields = listMissingFields(parsed, { allowEmptyFiles: fileListCoverage.empty });
+          missingFields = listMissingFields(parsed, { allowEmptyFiles: fileListCoverage.justified });
         } else {
-          warnings.push("Gateway repair response was not valid JSON; using fallback analysis.");
+          warnings.push(
+            repaired.jsonOnly
+              ? "Gateway repair response was invalid JSON."
+              : "Gateway repair response was not JSON-only.",
+          );
         }
       }
 
-      if (parsed && fileListCoverage.empty && !fileListCoverage.justified) {
-        warnings.push("Gateway analysis returned no file paths without justification in assumptions/docdexNotes.");
+      if (missingFields.length) {
+        throw new Error(`Gateway analysis missing required fields: ${missingFields.join(", ")}.`);
       }
 
-      if (missingFields.length) {
-        warnings.push(`Gateway analysis missing fields: ${missingFields.join(", ")}.`);
+      if (!parsed) {
+        throw new Error(
+          jsonResult.jsonOnly
+            ? "Gateway analysis response was invalid JSON."
+            : "Gateway analysis response was not JSON-only.",
+        );
+      }
+
+      if (fileListCoverage.empty && !fileListCoverage.justified) {
+        throw new Error(
+          "Gateway analysis returned no file paths and did not justify the missing file context in assumptions/docdexNotes.",
+        );
       }
 
       let analysis = this.normalizeAnalysis(parsed ?? {}, normalizedJob, tasks, request.inputText);
@@ -1145,6 +1302,7 @@ export class GatewayAgentService {
         analysis,
         request.avoidAgents ?? [],
         request.forceStronger ?? false,
+        warnings,
       );
       await this.deps.jobService.finishCommandRun(commandRun.id, "succeeded");
       return {

@@ -169,6 +169,7 @@ const makeService = async (options: {
   gatewayRequests?: any[];
   gatewayAnalysisOverride?: Record<string, unknown>;
   gatewayDocdex?: any[];
+  gatewayThrows?: string;
   commentCalls?: Array<any>;
   cleanupExpiredLocks?: string[];
   jobStatusUpdates?: Array<{ state: string; payload: Record<string, unknown> }>;
@@ -236,6 +237,9 @@ const makeService = async (options: {
       if (options.gatewayRequests) {
         options.gatewayRequests.push(req);
       }
+      if (options.gatewayThrows) {
+        throw new Error(options.gatewayThrows);
+      }
       const analysis = {
         summary: "Summary",
         reasoningSummary: "Reason",
@@ -264,6 +268,7 @@ const makeService = async (options: {
     };
     },
     close: async () => {},
+    preflightExecutionAgents: async () => {},
     setDocdexAvailability: () => {},
   };
 
@@ -557,6 +562,33 @@ test("GatewayTrioService records docdex preflight failures", async () => {
   }
 });
 
+test("GatewayTrioService emits gateway start/end callbacks when gateway fails", async () => {
+  const statusStore = makeStatusStore({ "TASK-GW": "in_progress" });
+  const startCalls: any[] = [];
+  const endCalls: any[] = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-GW"],
+    gatewayThrows: "gateway boom",
+  });
+  try {
+    await service.run({
+      workspace,
+      maxCycles: 1,
+      maxIterations: 1,
+      workAgentName: "agent-1",
+      onGatewayStart: (details) => startCalls.push(details),
+      onGatewayEnd: (details) => endCalls.push(details),
+    });
+    assert.equal(startCalls.length, 1);
+    assert.equal(endCalls.length, 1);
+    assert.equal(endCalls[0].status, "failed");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService uses gateway planning for review and QA steps", async () => {
   const statusStore = makeStatusStore({ "TASK-1": "in_progress" });
   const gatewayRequests: any[] = [];
@@ -740,7 +772,7 @@ test("GatewayTrioService retries tests_failed once before blocking", async () =>
     assert.equal(result.tasks[0].attempts, 2);
     const workCalls = gatewayRequests.filter((req) => req.job === "work-on-tasks");
     assert.ok(workCalls.length >= 2);
-    assert.deepEqual(workCalls[1].avoidAgents, ["agent-1"]);
+    assert.deepEqual(workCalls[1].avoidAgents, []);
     assert.equal(workCalls[1].forceStronger, true);
   } finally {
     await service.close();
@@ -879,6 +911,37 @@ test("GatewayTrioService blocks when gateway lacks file paths and docdex context
     assert.equal(commentCalls.length, 1);
     assert.equal(commentCalls[0].sourceCommand, "gateway-trio");
     assert.ok(String(commentCalls[0].body).includes("no file paths"));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService blocks when gateway reports docdex was skipped", async () => {
+  const statusStore = makeStatusStore({ "TASK-SKIP": "in_progress" });
+  const metadataStore = makeMetadataStore();
+  const commentCalls: Array<Record<string, unknown>> = [];
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    metadataStore,
+    selectionKeys: ["TASK-SKIP"],
+    gatewayAnalysisOverride: {
+      filesLikelyTouched: ["src/file.ts"],
+      filesToCreate: [],
+      assumptions: [],
+      docdexNotes: ["Docdex not executed; would run with proper repo scope."],
+    },
+    gatewayDocdex: [],
+    commentCalls,
+  });
+  try {
+    const result = await service.run({ workspace, maxCycles: 1, maxIterations: 1 });
+    const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-SKIP");
+    assert.equal(summary?.status, "blocked");
+    assert.equal(summary?.lastError, "missing_context");
+    assert.equal(statusStore.get("TASK-SKIP"), "blocked");
+    assert.equal((metadataStore.get("TASK-SKIP") as any)?.blocked_reason, "missing_context");
+    assert.ok(String(commentCalls[0].body).includes("not executed"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -1025,6 +1088,88 @@ test("GatewayTrioService reopens failed tasks when max iterations increases", as
   }
 });
 
+test("GatewayTrioService does not reopen non-retryable failed tasks", async () => {
+  const statusStore = makeStatusStore({ "TASK-NR": "in_progress" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: [],
+  });
+  try {
+    const state: any = {
+      schema_version: 1,
+      job_id: "job-nr",
+      command_run_id: "run-nr",
+      cycle: 0,
+      tasks: {
+        "TASK-NR": {
+          taskKey: "TASK-NR",
+          attempts: 1,
+          status: "failed",
+          lastError: "review_invalid_output",
+          chosenAgents: {},
+          failureHistory: [
+            {
+              step: "review",
+              agent: "agent-1",
+              reason: "review_invalid_output",
+              attempt: 1,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        },
+      },
+    };
+    const warnings: string[] = [];
+    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-NR"]), 3, warnings);
+    assert.equal(state.tasks["TASK-NR"].status, "failed");
+    assert.ok(warnings.some((warning) => warning.includes("non-retryable")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService cools down before reopening repeated failures", async () => {
+  const statusStore = makeStatusStore({ "TASK-CD": "in_progress" });
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: [],
+  });
+  try {
+    const state: any = {
+      schema_version: 1,
+      job_id: "job-cd",
+      command_run_id: "run-cd",
+      cycle: 0,
+      tasks: {
+        "TASK-CD": {
+          taskKey: "TASK-CD",
+          attempts: 1,
+          status: "failed",
+          lastError: "tests_failed",
+          chosenAgents: {},
+          failureHistory: [
+            {
+              step: "work",
+              agent: "agent-1",
+              reason: "tests_failed",
+              attempt: 1,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        },
+      },
+    };
+    const warnings: string[] = [];
+    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-CD"]), 3, warnings);
+    assert.equal(state.tasks["TASK-CD"].status, "failed");
+    assert.ok(warnings.some((warning) => warning.includes("cooling down")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService marks max-iteration tasks as failed when reopening", async () => {
   const statusStore = makeStatusStore({ "TASK-MAX": "blocked" });
   const metadataStore = makeMetadataStore({ "TASK-MAX": { blocked_reason: "tests_failed" } });
@@ -1095,7 +1240,7 @@ test("GatewayTrioService avoids failing agents on retryable errors", async () =>
 
     const workCalls = gatewayRequests.filter((req) => req.job === "work-on-tasks");
     assert.ok(workCalls.length >= 2);
-    assert.deepEqual(workCalls[1].avoidAgents, ["agent-1"]);
+    assert.deepEqual(workCalls[1].avoidAgents, []);
     assert.equal(workCalls[1].forceStronger, true);
   } finally {
     await service.close();
@@ -1128,7 +1273,7 @@ test("GatewayTrioService escalates reviewer after invalid JSON output", async ()
     const reviewCalls = gatewayRequests.filter((req) => req.job === "code-review");
     assert.ok(reviewCalls.length >= 2);
     const escalated = reviewCalls[reviewCalls.length - 1];
-    assert.deepEqual(escalated.avoidAgents, ["agent-1"]);
+    assert.deepEqual(escalated.avoidAgents, []);
     assert.equal(escalated.forceStronger, true);
   } finally {
     await service.close();
