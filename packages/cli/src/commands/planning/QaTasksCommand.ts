@@ -217,7 +217,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     level,
     testCommand,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     createFollowupTasks: followups,
     dryRun,

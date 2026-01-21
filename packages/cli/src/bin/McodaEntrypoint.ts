@@ -32,8 +32,12 @@ export class McodaEntrypoint {
     const wantsQuiet = argv.some((arg) => arg === "--quiet" || arg.startsWith("--quiet="));
     if (wantsJson || wantsQuiet) {
       process.env.MCODA_STREAM_IO = "0";
+      process.env.MCODA_STREAM_IO_PROMPT = "0";
     } else if (process.env.MCODA_STREAM_IO === undefined) {
-      process.env.MCODA_STREAM_IO = "1";
+      process.env.MCODA_STREAM_IO = "0";
+      if (process.env.MCODA_STREAM_IO_PROMPT === undefined) {
+        process.env.MCODA_STREAM_IO_PROMPT = "0";
+      }
     }
     if (command === "--version" || command === "-v" || command === "version") {
       // Keep this simple so `mcoda --version` works even in thin installs.

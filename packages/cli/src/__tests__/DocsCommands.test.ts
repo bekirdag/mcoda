@@ -4,9 +4,9 @@ import path from "node:path";
 import { parsePdrArgs, parseSdsArgs } from "../commands/docs/DocsCommands.js";
 
 describe("docs pdr argument parsing", () => {
-  it("defaults agentStream to true", () => {
+  it("defaults agentStream to false", () => {
     const parsed = parsePdrArgs(["--rfp-path", "/tmp/rfp.md"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
   });
 
@@ -56,9 +56,9 @@ describe("docs pdr argument parsing", () => {
     assert.equal(parsed.fast, true);
   });
 
-  it("defaults sds agentStream to true", () => {
+  it("defaults sds agentStream to false", () => {
     const parsed = parseSdsArgs(["--project", "SDS"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
   });
 });

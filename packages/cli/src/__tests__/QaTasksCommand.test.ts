@@ -4,11 +4,11 @@ import path from "node:path";
 import { parseQaTasksArgs } from "../commands/planning/QaTasksCommand.js";
 
 describe("qa-tasks argument parsing", () => {
-  it("defaults to auto mode, ready_to_qa status, and streaming", () => {
+  it("defaults to auto mode, ready_to_qa status, and streaming off", () => {
     const parsed = parseQaTasksArgs([]);
     assert.equal(parsed.mode, "auto");
     assert.deepEqual(parsed.statusFilter, ["ready_to_qa"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.createFollowupTasks, "auto");
     assert.equal(parsed.rateAgents, false);

@@ -4,9 +4,9 @@ import path from "node:path";
 import { parseCreateTasksArgs, pickCreateTasksProjectKey } from "../commands/planning/CreateTasksCommand.js";
 
 describe("create-tasks argument parsing", () => {
-  it("defaults agent stream to true and captures inputs", () => {
+  it("defaults agent stream to false and captures inputs", () => {
     const parsed = parseCreateTasksArgs(["Feature", "More", "--quiet"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.quiet, true);
     assert.deepEqual(parsed.inputs, ["Feature", "More"]);

@@ -257,10 +257,10 @@ const makeWorkspace = async () => {
 };
 
 describe("code-review argument parsing", () => {
-  it("defaults status to ready_to_review and agent streaming on", () => {
+  it("defaults status to ready_to_review and agent streaming off", () => {
     const parsed = parseCodeReviewArgs([]);
     assert.deepEqual(parsed.statusFilter, ["ready_to_review"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.createFollowupTasks, false);

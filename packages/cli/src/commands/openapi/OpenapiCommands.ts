@@ -101,7 +101,7 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
   return {
     workspaceRoot,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     force,
     dryRun,

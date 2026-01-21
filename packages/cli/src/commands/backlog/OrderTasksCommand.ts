@@ -59,6 +59,7 @@ const parseStageOrder = (value?: string): string[] | undefined => {
 export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
   const parsed: ParsedArgs = {
     includeBlocked: false,
+    agentStream: false,
     rateAgents: false,
     inferDeps: false,
     apply: false,

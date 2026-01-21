@@ -59,6 +59,13 @@ export const buildGatewayHandoffContent = (result: GatewayAgentResult): string =
   } else {
     lines.push("(none)");
   }
+  lines.push("");
+  lines.push("## Dirs To Create");
+  if (result.analysis.dirsToCreate.length) {
+    result.analysis.dirsToCreate.forEach((dir) => lines.push(`- ${dir}`));
+  } else {
+    lines.push("(none)");
+  }
   if (result.analysis.assumptions.length) {
     lines.push("");
     lines.push("## Assumptions");

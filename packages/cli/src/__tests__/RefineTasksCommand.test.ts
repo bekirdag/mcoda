@@ -6,7 +6,7 @@ import { parseRefineTasksArgs } from "../commands/planning/RefineTasksCommand.js
 describe("refine-tasks argument parsing", () => {
   it("defaults booleans correctly", () => {
     const parsed = parseRefineTasksArgs([]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.fromDb, true);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.apply, false);

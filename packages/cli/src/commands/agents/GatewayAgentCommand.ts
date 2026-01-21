@@ -430,7 +430,7 @@ export class GatewayAgentCommand {
 
     const service = await GatewayAgentService.create(workspace);
     try {
-      const streamEnabled = (gatewayArgs.agentStream ?? true) && !gatewayArgs.json;
+      const streamEnabled = (gatewayArgs.agentStream ?? false) && !gatewayArgs.json;
       const ioEnabled = isIoEnabled();
       const shouldPrintStream = streamEnabled && !ioEnabled;
       let streamStarted = false;

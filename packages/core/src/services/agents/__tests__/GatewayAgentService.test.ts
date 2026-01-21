@@ -71,6 +71,72 @@ test("GatewayAgentService returns analysis and agent decision", async () => {
   }
 });
 
+test("GatewayAgentService strips agent-io markers before JSON parse", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+
+  const agent = { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub", rating: 6, reasoningRating: 6 };
+  const payload = JSON.stringify({
+    summary: "Update docs",
+    reasoningSummary: "Docs work",
+    currentState: "Unknown",
+    todo: "Update README",
+    understanding: "Docs updated",
+    plan: ["Review", "Edit", "Verify"],
+    complexity: 3,
+    discipline: "docs",
+    filesLikelyTouched: ["README.md"],
+    filesToCreate: [],
+    assumptions: [],
+    risks: [],
+    docdexNotes: ["No matching docs"],
+  });
+  const service = new (GatewayAgentService as any)(workspace, {
+    agentService: {
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "gateway-agent": "Prompt" },
+      }),
+      invoke: async () => ({
+        output: ["[agent-io] begin agent=agent-1 adapter=local model=stub mode=invoke", `[agent-io] output ${payload}`].join(
+          "\n",
+        ),
+      }),
+    },
+    docdex: { search: async () => [] },
+    globalRepo: {
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan", "docdex_query", "code_write"],
+    },
+    jobService: {
+      startCommandRun: async () => ({ id: "run-1" }),
+      recordTokenUsage: async () => {},
+      finishCommandRun: async () => {},
+    },
+    workspaceRepo: {},
+    routingService: {
+      resolveAgentForCommand: async () => ({ agent }),
+    },
+  });
+
+  try {
+    const result = await service.run({
+      workspace,
+      job: "work-on-tasks",
+      inputText: "Update README",
+      agentStream: false,
+    });
+
+    assert.equal(result.analysis.summary, "Update docs");
+    assert.equal(result.analysis.discipline, "docs");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayAgentService downgrades non-SDS paths labeled SDS", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
@@ -301,7 +367,7 @@ test("GatewayAgentService repair prompt allows empty file lists with justificati
     const missingFields = missingLine
       ? missingLine.split(",").map((field) => field.trim().replace(/\.$/, ""))
       : [];
-    assert.ok(repairInput.includes("If file paths are unknown, leave filesLikelyTouched/filesToCreate empty"));
+    assert.ok(repairInput.includes("If file paths are unknown, leave filesLikelyTouched/filesToCreate/dirsToCreate empty"));
     assert.ok(missingFields.includes("summary"));
     assert.ok(!missingFields.includes("filesLikelyTouched"));
     assert.ok(!missingFields.includes("filesToCreate"));
@@ -363,16 +429,133 @@ test("GatewayAgentService warns on empty file lists without justification", asyn
   });
 
   try {
+    await assert.rejects(
+      async () => {
+        await service.run({
+          workspace,
+          job: "work-on-tasks",
+          inputText: "Update README",
+          agentStream: false,
+        });
+      },
+      /missing required fields/i,
+    );
+    assert.ok(inputs.length >= 2);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayAgentService rejects non-JSON responses", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const agent = { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub", rating: 6, reasoningRating: 6 };
+  let calls = 0;
+  const service = new (GatewayAgentService as any)(workspace, {
+    agentService: {
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "gateway-agent": "Prompt" },
+      }),
+      invoke: async () => {
+        calls += 1;
+        return { output: "What should I do next?" };
+      },
+    },
+    docdex: { search: async () => [] },
+    globalRepo: {
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan", "docdex_query", "code_write"],
+    },
+    jobService: {
+      startCommandRun: async () => ({ id: "run-3" }),
+      recordTokenUsage: async () => {},
+      finishCommandRun: async () => {},
+    },
+    workspaceRepo: {},
+    routingService: {
+      resolveAgentForCommand: async () => ({ agent }),
+    },
+  });
+
+  try {
+    await assert.rejects(
+      async () => {
+        await service.run({
+          workspace,
+          job: "work-on-tasks",
+          inputText: "Update README",
+          agentStream: false,
+        });
+      },
+      /missing required fields/i,
+    );
+    assert.ok(calls >= 2);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayAgentService preserves directory creation intent", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-gateway-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const agent = { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub", rating: 6, reasoningRating: 6 };
+  const service = new (GatewayAgentService as any)(workspace, {
+    agentService: {
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "gateway-agent": "Prompt" },
+      }),
+      invoke: async () => ({
+        output: JSON.stringify({
+          summary: "Scaffold",
+          reasoningSummary: "Need new directory",
+          currentState: "No docs",
+          todo: "Add directory",
+          understanding: "Dir created",
+          plan: ["Create dir"],
+          complexity: 2,
+          discipline: "docs",
+          filesLikelyTouched: [],
+          filesToCreate: ["src/new-dir/"],
+          dirsToCreate: [],
+          assumptions: [],
+          risks: [],
+          docdexNotes: ["No matching docs"],
+        }),
+      }),
+    },
+    docdex: { search: async () => [] },
+    globalRepo: {
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan", "docdex_query", "code_write"],
+    },
+    jobService: {
+      startCommandRun: async () => ({ id: "run-4" }),
+      recordTokenUsage: async () => {},
+      finishCommandRun: async () => {},
+    },
+    workspaceRepo: {},
+    routingService: {
+      resolveAgentForCommand: async () => ({ agent }),
+    },
+  });
+
+  try {
     const result = await service.run({
       workspace,
       job: "work-on-tasks",
-      inputText: "Update README",
+      inputText: "Create docs dir",
       agentStream: false,
     });
-    assert.equal(inputs.length, 1);
-    assert.ok(
-      result.warnings.some((warning: string) => warning.includes("no file paths") && warning.includes("justification")),
-    );
+    assert.deepEqual(result.analysis.dirsToCreate, ["src/new-dir"]);
+    assert.deepEqual(result.analysis.filesToCreate, []);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

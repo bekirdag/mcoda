@@ -204,7 +204,7 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     resumeJobId,
     limit: Number.isFinite(limit) ? limit : undefined,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     createFollowupTasks,
     json,

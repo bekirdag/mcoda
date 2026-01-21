@@ -4,9 +4,9 @@ import path from "node:path";
 import { parseOpenapiArgs } from "../commands/openapi/OpenapiCommands.js";
 
 describe("openapi-from-docs argument parsing", () => {
-  it("defaults agentStream to true", () => {
+  it("defaults agentStream to false", () => {
     const parsed = parseOpenapiArgs([]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
   });
 
