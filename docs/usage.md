@@ -59,7 +59,7 @@ Run the implementation loop and follow with review/QA.
 ```sh
 mcoda work-on-tasks --workspace-root . --project WEB --status not_started,in_progress --limit 3
 mcoda gateway-trio --workspace-root . --project WEB --max-iterations 10 --max-cycles 10 --review-base mcoda-dev --qa-profile integration
-mcoda code-review --workspace-root . --project WEB --status ready_to_review --limit 5 --base mcoda-dev
+mcoda code-review --workspace-root . --project WEB --status ready_to_code_review --limit 5 --base mcoda-dev
 mcoda qa-tasks --workspace-root . --project WEB --status ready_to_qa --profile integration
 ```
 
@@ -157,20 +157,20 @@ mcoda estimate --project WEB --sp-per-hour-implementation 12 --velocity-mode mix
 ```
 
 - Flags: `--project <KEY>`, `--epic <KEY>`, `--story <KEY>`, `--assignee <USER>`, `--sp-per-hour <FLOAT>`, `--sp-per-hour-implementation <FLOAT>`, `--sp-per-hour-review <FLOAT>`, `--sp-per-hour-qa <FLOAT>`, `--velocity-mode config|empirical|mixed`, `--velocity-window 10|20|50`, `--json`, `--workspace-root <path>`.
-- ETAs use lane status transitions (`in_progress -> ready_to_review -> ready_to_qa -> completed`) and subtract elapsed in-progress time when status history is available.
+- ETAs use lane status transitions (`in_progress -> ready_to_code_review -> ready_to_qa -> completed`) and subtract elapsed in-progress time when status history is available.
 - Output includes DONE/TOTAL rows, velocity samples with the window used, and ETA values formatted as ISO + local time + relative duration.
 
 ### Dependency-aware ordering
 Compute a deterministic, dependency-aware order (most depended-on first, topo-safe) and persist global priorities:
 
 ```sh
-mcoda order-tasks --project WEB --epic web-01 --include-blocked --json
+mcoda order-tasks --project WEB --epic web-01 --json
 mcoda tasks order-by-deps --project WEB --status not_started,in_progress
 mcoda backlog --project WEB --order dependencies       # same core ordering
 ```
 
-- Flags: `--workspace-root <path>`, `--project <KEY>` (required), `--epic <KEY>`, `--status <STATUS_FILTER>`, `--include-blocked`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--json`.
-- Behavior: topo order over `task_dependencies`, ties by dependency impact → priority → SP → age → status; blocked tasks are listed separately unless `--include-blocked` is set. Updates `priority` across tasks, stories, and epics in the scoped project.
+- Flags: `--workspace-root <path>`, `--project <KEY>` (required), `--epic <KEY>`, `--status <STATUS_FILTER>`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--json`.
+- Behavior: topo order over `task_dependencies`, ties by priority → dependency impact → SP → age → status. Updates `priority` across tasks, stories, and epics in the scoped project.
 
 ### Create tasks (plan files + DB), then migrate
 Generate epics/stories/tasks from SDS/OpenAPI into JSON plan files (and attempt DB insert):
@@ -280,9 +280,9 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, or `--story <KEY>`. Default statuses: `not_started,in_progress` (override with `--status ...`).
 - Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--max-agent-seconds <N>`, `--json`.
-- Selection & ordering: dependency-aware (skips/reroutes blocked tasks), topo + priority + SP + created_at, with in-progress tie-breaks. Blocked tasks are listed in JSON output (`blocked`).
-- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_review`. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
-- Scope & safety: enforces allowed files/tests from task metadata; scope violations are blocked and logged.
+- Selection & ordering: dependency-aware (skips tasks with unmet dependencies or missing_context), topo + priority + SP + created_at, with in-progress tie-breaks. Skips are reported as warnings.
+- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_code_review`. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
+- Scope & safety: enforces allowed files/tests from task metadata; scope violations fail the task and are logged.
 - Tests: if test requirements exist and `tests/all.js` is missing, `work-on-tasks` attempts to create it and reruns tests.
 - VCS: creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
 
@@ -326,13 +326,13 @@ mcoda agent ratings --agent codex --last 25 --json
 Run AI-assisted review on task branches and write findings to the workspace DB:
 
 ```sh
-mcoda code-review --workspace . --project WEB --status ready_to_review --limit 5 --base mcoda-dev --agent reviewer
+mcoda code-review --workspace . --project WEB --status ready_to_code_review --limit 5 --base mcoda-dev --agent reviewer
 ```
 
-- Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_review` (override with `--status ...`), optional `--limit <N>`.
+- Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_code_review` (override with `--status ...`), optional `--limit <N>`.
 - Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default true), `--rate-agents`, `--json`.
-- Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_review → ready_to_qa/in_progress/blocked` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `<workspace-dir>/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
-- Invalid JSON after retry blocks the task with `review_invalid_output`. Empty diffs block review with `review_empty_diff`.
+- Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_code_review → ready_to_qa/in_progress/failed` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `<workspace-dir>/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
+- Invalid JSON after retry fails the task with `review_invalid_output`. Empty diffs fail review with `review_empty_diff`.
 
 ### QA tasks (QA pipeline)
 Run automated or manual QA on tasks in the workspace DB:
@@ -342,11 +342,11 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 ```
 
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_qa` (override for regression runs).
-- Modes: `--mode auto` (default; runs CLI/Chromium/Maestro via QA profiles) or `--mode manual --result pass|fail|blocked [--notes "..."] [--evidence-url "..."]`.
+- Modes: `--mode auto` (default; runs CLI/Chromium/Maestro via QA profiles) or `--mode manual --result pass|fail [--notes "..."] [--evidence-url "..."]`.
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`. Add `--rate-agents` to score QA agent performance.
-- Chromium runner: auto QA uses the Chromium runner. Install Playwright in the repo or provide `--test-command` so browser tests can run.
+- Chromium runner: auto QA uses the Chromium runner. Install Docdex Chromium (`docdex setup`). Optional: target a specific app URL via `--test-command` (http[s]) or `MCODA_QA_BROWSER_URL`.
 - CLI marker: when `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE` or QA marks the run as `infra_issue` with guidance in task comments.
-- Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/blocked` unless `--dry-run`). Artifacts live under `<workspace-dir>/jobs/<jobId>/qa/<task_key>/`.
+- Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/failed` unless `--dry-run`). Artifacts live under `<workspace-dir>/jobs/<jobId>/qa/<task_key>/`.
 - Invalid JSON: if the QA agent returns invalid JSON after retry, the outcome is treated as `unclear` (`qa_unclear`) and a manual QA follow-up can be created.
 - Manual example: `mcoda qa-tasks --project WEB --task web-01-us-01-t01 --mode manual --result fail --notes "Checkout button unresponsive" --evidence-url https://ci.example/run/123`.
 

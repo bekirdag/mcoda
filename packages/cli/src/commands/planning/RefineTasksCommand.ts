@@ -242,6 +242,11 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
         break;
     }
   }
+  for (let i = statusFilter.length - 1; i >= 0; i -= 1) {
+    if (statusFilter[i]?.toLowerCase() === "blocked") {
+      statusFilter.splice(i, 1);
+    }
+  }
 
   return {
     workspaceRoot,

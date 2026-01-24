@@ -197,8 +197,8 @@ describe("RefineTasksService", () => {
   });
 
   it("skips operations outside status filter", { concurrency: false }, async () => {
-    // Mark original task as blocked and create another eligible task to keep selection non-empty.
-    await repo.getDb().run(`UPDATE tasks SET status = 'blocked' WHERE key = ?`, taskKey);
+    // Mark original task as failed and create another eligible task to keep selection non-empty.
+    await repo.getDb().run(`UPDATE tasks SET status = 'failed' WHERE key = ?`, taskKey);
     const [eligible] = await repo.insertTasks([
       {
         projectId: (await repo.getProjectByKey("demo"))!.id,

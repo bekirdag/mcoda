@@ -28,12 +28,12 @@ describe("backlog argument parsing", () => {
       "--workspace-root",
       root,
       "--status",
-      "ready_to_review,blocked",
+      "ready_to_code_review,blocked",
       "--order",
       "dependencies",
     ]);
     assert.equal(parsed.workspaceRoot, root);
-    assert.deepEqual(parsed.statuses, ["ready_to_review", "blocked"]);
+    assert.deepEqual(parsed.statuses, ["ready_to_code_review"]);
     assert.equal(parsed.orderDependencies, true);
   });
 

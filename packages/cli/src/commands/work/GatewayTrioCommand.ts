@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { GatewayTrioService, JobService, WorkspaceResolver, type GatewayLogDetails } from "@mcoda/core";
+import { READY_TO_CODE_REVIEW, normalizeReviewStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -788,8 +789,12 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   invalidTaskKeys.push(...normalized.invalid);
 
   if (statusFilter.length === 0) {
-    statusFilter.push("not_started", "in_progress", "ready_to_review", "ready_to_qa");
+    statusFilter.push(
+      ...normalizeReviewStatuses(["not_started", "in_progress", "changes_requested", READY_TO_CODE_REVIEW, "ready_to_qa"]),
+    );
   }
+  const normalizedStatuses = normalizeReviewStatuses(statusFilter);
+  statusFilter.splice(0, statusFilter.length, ...normalizedStatuses);
 
   return {
     workspaceRoot,
@@ -975,7 +980,6 @@ export class GatewayTrioCommand {
         {
           total: 0,
           completed: 0,
-          blocked: 0,
           failed: 0,
           skipped: 0,
           pending: 0,
@@ -998,16 +1002,14 @@ export class GatewayTrioCommand {
               summary: {
                 total: counts.total,
                 completed: counts.completed,
-                blocked: counts.blocked,
-              failed: counts.failed,
-              skipped: counts.skipped,
-              pending: counts.pending,
+                failed: counts.failed,
+                skipped: counts.skipped,
+                pending: counts.pending,
+              },
+              failed: result.failed,
+              skipped: result.skipped,
+              warnings,
             },
-            blocked: result.blocked,
-            failed: result.failed,
-            skipped: result.skipped,
-            warnings,
-          },
           null,
           2,
         ),
@@ -1016,7 +1018,7 @@ export class GatewayTrioCommand {
     }
 
       const header = `Job: ${result.jobId}, Command Run: ${result.commandRunId}`;
-      const summary = `Tasks: ${counts.total} (completed=${counts.completed}, blocked=${counts.blocked}, failed=${counts.failed}, skipped=${counts.skipped}, pending=${counts.pending})`;
+      const summary = `Tasks: ${counts.total} (completed=${counts.completed}, failed=${counts.failed}, skipped=${counts.skipped}, pending=${counts.pending})`;
       const taskLines = result.tasks.map((task) => {
         const ratingDetails = task.ratings?.length
           ? `ratings=${task.ratings

@@ -13,7 +13,7 @@ import {
 describe("gateway-trio argument parsing", () => {
   it("defaults status and qa flags", () => {
     const parsed = parseGatewayTrioArgs([]);
-    assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress", "ready_to_review", "ready_to_qa"]);
+    assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress", "changes_requested", "ready_to_code_review", "ready_to_qa"]);
     assert.equal(parsed.qaMode, "auto");
     assert.equal(parsed.qaFollowups, "auto");
     assert.equal(parsed.reviewFollowups, false);
@@ -28,7 +28,7 @@ describe("gateway-trio argument parsing", () => {
       "--task",
       "TASK-1",
       "--status",
-      "in_progress,ready_to_review",
+      "in_progress,ready_to_code_review",
       "--limit",
       "5",
       "--max-iterations",
@@ -37,7 +37,7 @@ describe("gateway-trio argument parsing", () => {
       "4",
     ]);
     assert.deepEqual(parsed.taskKeys, ["TASK-1"]);
-    assert.deepEqual(parsed.statusFilter, ["in_progress", "ready_to_review"]);
+    assert.deepEqual(parsed.statusFilter, ["in_progress", "ready_to_code_review"]);
     assert.equal(parsed.limit, 5);
     assert.equal(parsed.maxIterations, 2);
     assert.equal(parsed.maxCycles, 4);
@@ -170,7 +170,6 @@ describe("gateway-trio CLI output shape", () => {
         },
       ],
       warnings: [],
-      blocked: [],
       failed: [],
       skipped: [],
     };
@@ -234,7 +233,6 @@ describe("gateway-trio CLI output shape", () => {
       commandRunId: "cmd-123",
       tasks: [],
       warnings: [],
-      blocked: [],
       failed: [],
       skipped: [],
     };
@@ -291,7 +289,6 @@ describe("gateway-trio CLI output shape", () => {
       commandRunId: "cmd-123",
       tasks: [],
       warnings: [],
-      blocked: [],
       failed: [],
       skipped: [],
     };

@@ -23,6 +23,8 @@ describe("qa-tasks argument parsing", () => {
       "fail",
       "--status",
       "ready_to_qa,in_progress",
+      "--limit",
+      "3",
       "--agent-stream",
       "false",
       "--profile",
@@ -45,7 +47,8 @@ describe("qa-tasks argument parsing", () => {
     ]);
     assert.equal(parsed.mode, "manual");
     assert.equal(parsed.result, "fail");
-    assert.deepEqual(parsed.statusFilter, ["ready_to_qa", "in_progress"]);
+    assert.deepEqual(parsed.statusFilter, ["ready_to_qa"]);
+    assert.equal(parsed.limit, 3);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.profileName, "ui");
     assert.equal(parsed.level, "integration");

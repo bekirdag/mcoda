@@ -35,12 +35,10 @@ const DEFAULT_CHARACTER_PROMPT =
 const HANDOFF_ENV_INLINE = "MCODA_GATEWAY_HANDOFF";
 const HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
 const HANDOFF_HEADER = "[Gateway handoff]";
-const MAX_HANDOFF_CHARS = 8000;
 const IO_ENV = "MCODA_STREAM_IO";
 const IO_PROMPT_ENV = "MCODA_STREAM_IO_PROMPT";
 const IO_PREFIX = "[agent-io]";
 const DOCDEX_GUIDANCE_HEADER = "[Docdex guidance]";
-const DOCDEX_GUIDANCE_MAX_CHARS = 12000;
 const DOCDEX_GUIDANCE_PATH = path.join(os.homedir(), ".docdex", "agents.md");
 let docdexGuidanceCache: string | undefined;
 let docdexGuidanceLoaded = false;
@@ -136,7 +134,7 @@ const readGatewayHandoff = async (): Promise<string | undefined> => {
   if (inline && inline.trim()) {
     const normalized = stripHandoffEndMarkers(inline.trim());
     if (!normalized) return undefined;
-    return normalized.slice(0, MAX_HANDOFF_CHARS);
+    return normalized;
   }
   const filePath = process.env[HANDOFF_ENV_PATH];
   if (!filePath) return undefined;
@@ -144,7 +142,7 @@ const readGatewayHandoff = async (): Promise<string | undefined> => {
     const content = await fs.readFile(filePath, "utf8");
     const normalized = stripHandoffEndMarkers(content.trim());
     if (!normalized) return undefined;
-    return normalized.slice(0, MAX_HANDOFF_CHARS);
+    return normalized;
   } catch {
     return undefined;
   }
@@ -157,7 +155,7 @@ const readDocdexGuidance = async (): Promise<string | undefined> => {
     const content = await fs.readFile(DOCDEX_GUIDANCE_PATH, "utf8");
     const trimmed = content.trim();
     if (!trimmed) return undefined;
-    docdexGuidanceCache = trimmed.slice(0, DOCDEX_GUIDANCE_MAX_CHARS);
+    docdexGuidanceCache = trimmed;
     return docdexGuidanceCache;
   } catch {
     return undefined;

@@ -256,6 +256,9 @@ export class QaProfileService {
     };
     const explicit = pickByName(configuredDefault);
     if (explicit) {
+      if (options.profileName) {
+        return explicit;
+      }
       if (normalizeRunner(explicit) !== runnerPreference) {
         const fallback = pickByRunner();
         if (fallback) return fallback;

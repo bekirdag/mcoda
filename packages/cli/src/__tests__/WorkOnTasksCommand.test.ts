@@ -10,7 +10,7 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.noCommit, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
-    assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress"]);
+    assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress", "changes_requested"]);
   });
 
   it("captures tasks and explicit statuses", () => {
@@ -22,7 +22,7 @@ describe("work-on-tasks argument parsing", () => {
       "blocked,in_progress",
     ]);
     assert.deepEqual(parsed.taskKeys, ["alpha", "beta"]);
-    assert.deepEqual(parsed.statusFilter, ["blocked", "in_progress"]);
+    assert.deepEqual(parsed.statusFilter, ["in_progress"]);
   });
 
   it("parses numeric flags and agent stream overrides", () => {

@@ -39,6 +39,7 @@ const sampleResult = {
 test("buildGatewayHandoffContent renders core sections", () => {
   const content = buildGatewayHandoffContent(sampleResult as any);
   assert.ok(content.includes("# Gateway Handoff"));
+  assert.ok(!content.includes("## Task Context"));
   assert.ok(content.includes("## Summary"));
   assert.ok(content.includes("## Current State"));
   assert.ok(content.includes("## Todo"));
@@ -47,6 +48,26 @@ test("buildGatewayHandoffContent renders core sections", () => {
   assert.ok(content.includes("- src/file.ts"));
   assert.ok(content.includes("## Files To Create"));
   assert.ok(content.includes("- src/new.ts"));
+});
+
+test("buildGatewayHandoffContent includes task context when tasks are present", () => {
+  const content = buildGatewayHandoffContent({
+    ...sampleResult,
+    tasks: [
+      {
+        key: "TASK-1",
+        title: "Test Task",
+        description: "Task description",
+        acceptanceCriteria: ["Do thing A", "Do thing B"],
+        dependencies: ["TASK-0"],
+      },
+    ],
+  } as any);
+  assert.ok(content.includes("## Task Context"));
+  assert.ok(content.includes("- TASK-1: Test Task"));
+  assert.ok(content.includes("Description: Task description"));
+  assert.ok(content.includes("Acceptance: Do thing A | Do thing B"));
+  assert.ok(content.includes("Dependencies: TASK-0"));
 });
 
 test("buildGatewayHandoffDocdexUsage uses unified guidance", () => {

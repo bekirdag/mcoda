@@ -19,6 +19,7 @@ export class QaTasksApi {
         storyKey: request.storyKey,
         taskKeys: request.taskKeys,
         statusFilter: request.statusFilter,
+        limit: request.limit,
         mode: request.mode,
         resumeJobId: request.resumeJobId,
         profileName: request.profileName,

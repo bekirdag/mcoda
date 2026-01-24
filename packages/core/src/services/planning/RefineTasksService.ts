@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient } from "@mcoda/integrations";
+import { READY_TO_CODE_REVIEW } from "@mcoda/shared";
 import { GlobalRepository, TaskDependencyInsert, TaskInsert, TaskRow, WorkspaceRepository } from "@mcoda/db";
 import {
   RefineOperation,
@@ -64,10 +65,10 @@ interface StoryGroup {
 }
 
 const DEFAULT_STRATEGY: RefineStrategy = "auto";
-const FORBIDDEN_TARGET_STATUSES = new Set(["ready_to_review", "ready_to_qa", "completed"]);
+const FORBIDDEN_TARGET_STATUSES = new Set([READY_TO_CODE_REVIEW, "ready_to_qa", "completed"]);
 const normalizeCreateStatus = (status?: string): string => {
   if (!status) return "not_started";
-  return status.toLowerCase() === "blocked" ? "not_started" : status;
+  return status.toLowerCase();
 };
 const DEFAULT_MAX_TASKS = 250;
 const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
@@ -297,9 +298,6 @@ export class RefineTasksService {
     try {
       await ordering.orderTasks({
         projectKey,
-        includeBlocked: true,
-        blockOnDependencies: false,
-        blockOnMissingContext: false,
       });
     } finally {
       await ordering.close();
@@ -734,7 +732,7 @@ export class RefineTasksService {
     const taskList = group.tasks.map((t) => formatTaskSummary(t)).join("\n");
     const constraints = [
       "- Immutable: project_id, epic_id, user_story_id, task keys.",
-      "- Allowed edits: title, description, acceptanceCriteria, metadata/labels, type, priority, storyPoints, status (but NOT ready_to_review/qa/completed).",
+      "- Allowed edits: title, description, acceptanceCriteria, metadata/labels, type, priority, storyPoints, status (but NOT ready_to_code_review/qa/completed).",
       "- Splits: children stay under same story; keep parent unless keepParent=false; child dependsOn must reference existing tasks or siblings.",
       "- Merges: target and sources must be in same story; prefer cancelling redundant sources (status=cancelled) and preserve useful details in target updates.",
       "- Dependencies: maintain DAG; do not introduce cycles or cross-story edges.",

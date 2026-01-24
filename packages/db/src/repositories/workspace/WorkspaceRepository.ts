@@ -5,7 +5,7 @@ import { Connection } from "../../sqlite/connection.js";
 import { WorkspaceMigrations } from "../../migrations/workspace/WorkspaceMigrations.js";
 
 export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "partial";
-export type CommandStatus = "running" | "succeeded" | "failed";
+export type CommandStatus = "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface ProjectRow {
@@ -77,6 +77,63 @@ export interface TaskRow extends TaskInsert {
   createdAt: string;
   updatedAt: string;
 }
+
+const DOD_HEADER = /(definition of done|dod)\b/i;
+const SECTION_HEADER = /^(?:\*+\s*)?(?:\*\*)?\s*(objective|context|inputs|implementation plan|testing|dependencies|risks|references|related documentation|acceptance criteria)\b/i;
+
+const extractTaskDodCriteria = (description?: string | null): string[] => {
+  if (!description) return [];
+  const lines = description.split(/\r?\n/);
+  let startIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (DOD_HEADER.test(line)) {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex === -1) return [];
+  const results: string[] = [];
+  const addInline = (line: string) => {
+    const parts = line.split(":");
+    if (parts.length < 2) return;
+    const tail = parts.slice(1).join(":").trim();
+    if (!tail) return;
+    tail
+      .split(/\s*;\s*/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => results.push(item));
+  };
+  const isBullet = (line: string) => /^[-*]\s+/.test(line);
+  const isHeading = (line: string) =>
+    SECTION_HEADER.test(line) ||
+    (/^\*+\s*\*\*.+\*\*\s*:?\s*$/.test(line) && !DOD_HEADER.test(line)) ||
+    (/^[A-Z][A-Za-z0-9 &/]{2,}:\s*$/.test(line) && !DOD_HEADER.test(line));
+
+  const headerLine = lines[startIndex].trim();
+  addInline(headerLine);
+  for (let i = startIndex + 1; i < lines.length; i += 1) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    if (!line) {
+      if (results.length) break;
+      continue;
+    }
+    if (!isBullet(line) && isHeading(line)) break;
+    if (isBullet(line)) {
+      results.push(line.replace(/^[-*]\s+/, "").trim());
+      continue;
+    }
+    if (results.length) {
+      results[results.length - 1] = `${results[results.length - 1]} ${line}`.trim();
+    } else {
+      results.push(line);
+    }
+  }
+  return Array.from(new Set(results.filter(Boolean)));
+};
 
 export interface TaskDependencyInsert {
   taskId: string;
@@ -1097,40 +1154,44 @@ export class WorkspaceRepository {
       ...taskIds,
     );
 
-    return rows.map((row) => ({
-      id: row.task_id,
-      projectId: row.project_id,
-      epicId: row.epic_id,
-      userStoryId: row.story_id,
-      key: row.task_key,
-      title: row.task_title,
-      description: row.task_description ?? "",
-      type: row.task_type ?? undefined,
-      status: row.task_status,
-      storyPoints: row.task_story_points ?? undefined,
-      priority: row.task_priority ?? undefined,
-      assignedAgentId: row.task_assigned_agent_id ?? undefined,
-      assigneeHuman: row.task_assignee_human ?? undefined,
-      vcsBranch: row.task_vcs_branch ?? undefined,
-      vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
-      vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
-      metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
-      openapiVersionAtCreation: undefined,
-      createdAt: row.task_created_at,
-      updatedAt: row.task_updated_at,
-      epicKey: row.epic_key,
-      storyKey: row.story_key,
-      epicTitle: row.epic_title ?? undefined,
-      epicDescription: row.epic_description ?? undefined,
-      storyTitle: row.story_title ?? undefined,
-      storyDescription: row.story_description ?? undefined,
-      acceptanceCriteria: row.story_acceptance
+    return rows.map((row) => {
+      const taskDod = extractTaskDodCriteria(row.task_description ?? "");
+      const storyAcceptance = row.story_acceptance
         ? (row.story_acceptance as string)
             .split(/\r?\n/)
             .map((s) => s.trim())
             .filter(Boolean)
-        : undefined,
-    }));
+        : undefined;
+      return {
+        id: row.task_id,
+        projectId: row.project_id,
+        epicId: row.epic_id,
+        userStoryId: row.story_id,
+        key: row.task_key,
+        title: row.task_title,
+        description: row.task_description ?? "",
+        type: row.task_type ?? undefined,
+        status: row.task_status,
+        storyPoints: row.task_story_points ?? undefined,
+        priority: row.task_priority ?? undefined,
+        assignedAgentId: row.task_assigned_agent_id ?? undefined,
+        assigneeHuman: row.task_assignee_human ?? undefined,
+        vcsBranch: row.task_vcs_branch ?? undefined,
+        vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
+        vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
+        metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
+        openapiVersionAtCreation: undefined,
+        createdAt: row.task_created_at,
+        updatedAt: row.task_updated_at,
+        epicKey: row.epic_key,
+        storyKey: row.story_key,
+        epicTitle: row.epic_title ?? undefined,
+        epicDescription: row.epic_description ?? undefined,
+        storyTitle: row.story_title ?? undefined,
+        storyDescription: row.story_description ?? undefined,
+        acceptanceCriteria: taskDod.length ? taskDod : storyAcceptance,
+      };
+    });
   }
 
   async createTaskRun(record: TaskRunInsert): Promise<TaskRunRow> {
@@ -1183,6 +1244,21 @@ export class WorkspaceRepository {
       );
       if (!rows.length) return [];
       await this.db.run(`DELETE FROM task_locks WHERE expires_at < ?`, nowIso);
+      return rows.map((row) => row.task_key ?? row.task_id);
+    });
+  }
+
+  async releaseTaskLocksByJob(jobId: string): Promise<string[]> {
+    return this.withTransaction(async () => {
+      const rows = await this.db.all<{ task_key?: string | null; task_id: string }[]>(
+        `SELECT t.key as task_key, l.task_id as task_id
+         FROM task_locks l
+         LEFT JOIN tasks t ON t.id = l.task_id
+         WHERE l.job_id = ?`,
+        jobId,
+      );
+      if (!rows.length) return [];
+      await this.db.run(`DELETE FROM task_locks WHERE job_id = ?`, jobId);
       return rows.map((row) => row.task_key ?? row.task_id);
     });
   }

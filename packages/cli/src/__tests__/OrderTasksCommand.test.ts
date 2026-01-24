@@ -126,7 +126,6 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
     "E1",
     "--status",
     "not_started,in_progress",
-    "--include-blocked",
     "--agent",
     "codex",
     "--agent-stream",
@@ -142,7 +141,6 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
   assert.equal(parsed.project, "CLI");
   assert.equal(parsed.epic, "E1");
   assert.deepEqual(parsed.status, ["not_started", "in_progress"]);
-  assert.equal(parsed.includeBlocked, true);
   assert.equal(parsed.agentName, "codex");
   assert.equal(parsed.agentStream, false);
   assert.equal(parsed.rateAgents, true);
@@ -192,7 +190,6 @@ test("order-tasks passes inference flags to core service", { concurrency: false 
         return {
           project: { id: "proj", key: "CLI" },
           ordered: [],
-          blocked: [],
           warnings: [],
         };
       },

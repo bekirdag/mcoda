@@ -98,7 +98,7 @@ describe("TaskDetailService", () => {
           key: "web-01-us-01-t02",
           title: "Wire analytics",
           description: "Add tracking",
-          status: "blocked",
+          status: "not_started",
           storyPoints: 3,
           priority: 3,
         },

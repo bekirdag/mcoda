@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CodeReviewService, WorkspaceResolver } from "@mcoda/core";
+import { REVIEW_ALLOWED_STATUSES, filterTaskStatuses, normalizeReviewStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -23,7 +24,7 @@ const usage = `mcoda code-review \\
   [--workspace-root <PATH>] \\
   [--project <PROJECT_KEY>] \\
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
-  [--status ready_to_review] \\
+  [--status ready_to_code_review] \\
   [--base <BRANCH>] \\
   [--dry-run] \\
   [--resume <JOB_ID>] \\
@@ -34,7 +35,7 @@ const usage = `mcoda code-review \\
   [--rate-agents] \\
   [--json]
 
-Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks when --create-followup-tasks=true, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under ~/.mcoda/workspaces/<fingerprint>/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
+Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks when --create-followup-tasks=true, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under ~/.mcoda/workspaces/<fingerprint>/jobs/<job_id>/review/. Default status filter: ready_to_code_review. JSON output: { job, tasks, errors, warnings }.`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -188,9 +189,13 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     }
   }
 
-  if (statusFilter.length === 0) {
-    statusFilter.push("ready_to_review");
-  }
+  const { filtered } = filterTaskStatuses(
+    statusFilter.length ? statusFilter : undefined,
+    REVIEW_ALLOWED_STATUSES,
+    REVIEW_ALLOWED_STATUSES,
+  );
+  const normalized = normalizeReviewStatuses(filtered);
+  statusFilter.splice(0, statusFilter.length, ...normalized);
 
   return {
     workspaceRoot,

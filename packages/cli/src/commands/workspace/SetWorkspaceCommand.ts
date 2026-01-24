@@ -6,16 +6,38 @@ import { createRequire } from "node:module";
 import { WorkspaceResolver } from "@mcoda/core";
 import { WorkspaceRepository } from "@mcoda/db";
 
-const USAGE = "Usage: mcoda set-workspace [--workspace-root <path>] [--no-git] [--no-docdex]";
+const USAGE =
+  "Usage: mcoda set-workspace [--workspace-root <path>] [--no-git] [--no-docdex] [--codex-no-sandbox[=true|false]]";
 const DOCDEX_ENV_URLS = ["MCODA_DOCDEX_URL", "DOCDEX_URL"];
 
-export const parseSetWorkspaceArgs = (argv: string[]): { workspaceRoot?: string; git: boolean; docdex: boolean } => {
+const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
+  if (value === undefined) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (["0", "false", "off", "no"].includes(normalized)) return false;
+  if (["1", "true", "on", "yes"].includes(normalized)) return true;
+  return defaultValue;
+};
+
+export const parseSetWorkspaceArgs = (
+  argv: string[],
+): { workspaceRoot?: string; git: boolean; docdex: boolean; codexNoSandbox?: boolean } => {
   let workspaceRoot: string | undefined;
   let git = true;
   let docdex = true;
+  let codexNoSandbox: boolean | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     switch (arg) {
+      case "--codex-no-sandbox": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          codexNoSandbox = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          codexNoSandbox = true;
+        }
+        break;
+      }
       case "--workspace-root":
         workspaceRoot = argv[i + 1];
         i += 1;
@@ -30,10 +52,14 @@ export const parseSetWorkspaceArgs = (argv: string[]): { workspaceRoot?: string;
       case "-h":
         throw new Error(USAGE);
       default:
+        if (arg.startsWith("--codex-no-sandbox=")) {
+          const [, raw] = arg.split("=", 2);
+          codexNoSandbox = parseBooleanFlag(raw, true);
+        }
         break;
     }
   }
-  return { workspaceRoot, git, docdex };
+  return { workspaceRoot, git, docdex, codexNoSandbox };
 };
 
 const ensureConfigFile = async (mcodaDir: string): Promise<void> => {
@@ -217,6 +243,10 @@ export class SetWorkspaceCommand {
     });
 
     await ensureConfigFile(resolution.mcodaDir);
+    if (parsed.codexNoSandbox !== undefined) {
+      const config = await readWorkspaceConfig(resolution.mcodaDir);
+      await writeWorkspaceConfig(resolution.mcodaDir, { ...config, codexNoSandbox: parsed.codexNoSandbox });
+    }
     await ensureDocsDirs(resolution.mcodaDir);
     await (await WorkspaceRepository.create(resolution.workspaceRoot)).close();
     await ensureDocdexUrl(resolution.mcodaDir, resolution.workspaceRoot);

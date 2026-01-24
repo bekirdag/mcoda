@@ -106,7 +106,7 @@ describe("BacklogService", () => {
           key: "web-01-us-01-t02",
           title: "Hook login API",
           description: "Wire up API",
-          status: "blocked",
+          status: "not_started",
           storyPoints: 2,
           priority: 2,
           assigneeHuman: "bob",
@@ -118,7 +118,7 @@ describe("BacklogService", () => {
           key: "web-01-us-02-t01",
           title: "Add review gate",
           description: "Implement review checks",
-          status: "ready_to_review",
+          status: "ready_to_code_review",
           storyPoints: 5,
           priority: 1,
           assigneeHuman: "alice",
@@ -204,7 +204,7 @@ describe("BacklogService", () => {
       ["web-01", "web-02"],
     );
     const storyStatuses = summary.epics.flatMap((e) => e.stories.map((s) => s.status));
-    assert.deepEqual(storyStatuses.sort(), ["completed", "in_progress", "ready_to_review"].sort());
+    assert.deepEqual(storyStatuses.sort(), ["completed", "in_progress", "ready_to_code_review"].sort());
 
     const tasksByKey = new Map(summary.tasks.map((t) => [t.task_key, t]));
     assert.deepEqual(tasksByKey.get("web-01-us-01-t02")?.dependency_keys, ["web-01-us-01-t01"]);
@@ -238,7 +238,7 @@ describe("BacklogService", () => {
   it("filters by status when requested", { concurrency: false }, async () => {
     const workspace = workspaceFromRoot(workspaceRoot);
     const service = await BacklogService.create(workspace);
-    const { summary } = await service.getBacklog({ projectKey: "WEB", statuses: ["ready_to_review"] });
+    const { summary } = await service.getBacklog({ projectKey: "WEB", statuses: ["ready_to_code_review"] });
 
     assert.equal(summary.tasks.length, 1);
     assert.equal(summary.tasks[0]?.task_key, "web-01-us-02-t01");

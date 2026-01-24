@@ -26,7 +26,7 @@ describe("refine-tasks argument parsing", () => {
       "--status=blocked",
     ]);
     assert.deepEqual(parsed.taskKeys, ["alpha", "beta"]);
-    assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress", "blocked"]);
+    assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress"]);
   });
 
   it("parses boolean flags from inline values", () => {

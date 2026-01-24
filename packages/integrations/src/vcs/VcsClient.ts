@@ -108,6 +108,14 @@ export class VcsClient {
     await this.runGit(cwd, ["checkout", "-b", branch, base]);
   }
 
+  async cherryPick(cwd: string, commit: string): Promise<void> {
+    await this.runGit(cwd, ["cherry-pick", commit]);
+  }
+
+  async abortCherryPick(cwd: string): Promise<void> {
+    await this.runGit(cwd, ["cherry-pick", "--abort"]);
+  }
+
   async applyPatch(cwd: string, patch: string): Promise<void> {
     const opts: ExecOptions = { cwd, shell: true } as any;
     const applyCmd = `cat <<'__PATCH__' | git apply --whitespace=nowarn\n${patch}\n__PATCH__`;
@@ -179,6 +187,20 @@ export class VcsClient {
     } catch {
       // Ignore when no merge is in progress.
     }
+  }
+
+  async resolveMergeConflicts(
+    cwd: string,
+    strategy: "theirs" | "ours",
+    paths?: string[],
+  ): Promise<string[]> {
+    const conflicts = paths?.length ? paths : await this.conflictPaths(cwd);
+    if (!conflicts.length) return [];
+    const flag = strategy === "theirs" ? "--theirs" : "--ours";
+    await this.runGit(cwd, ["checkout", flag, "--", ...conflicts]);
+    await this.runGit(cwd, ["add", "--", ...conflicts]);
+    await this.runGit(cwd, ["commit", "--no-edit"]);
+    return conflicts;
   }
 
   async push(cwd: string, remote: string, branch: string): Promise<void> {

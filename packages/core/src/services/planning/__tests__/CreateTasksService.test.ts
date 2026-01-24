@@ -191,7 +191,7 @@ const createOrderingFactory = (workspaceRepo: StubWorkspaceRepo) => async () => 
     workspaceRepo.tasks.forEach((task, idx) => {
       task.priority = idx + 1;
     });
-    return { project: { id: "p-1", key: "web" }, ordered: [], blocked: [], warnings: [] } as any;
+    return { project: { id: "p-1", key: "web" }, ordered: [], warnings: [] } as any;
   },
   close: async () => {},
 });
@@ -335,8 +335,6 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.ok(result.tasks[0].description.includes("Component tests: Not applicable"));
   assert.ok(result.tasks[0].description.includes("Integration tests: Run integration flow A"));
   assert.ok(result.tasks[0].description.includes("API tests: Validate API response contract"));
-  assert.equal(workspaceRepo.lastOrderRequest?.blockOnDependencies, false);
-  assert.equal(workspaceRepo.lastOrderRequest?.blockOnMissingContext, false);
 });
 
 test("createTasks invokes agent rating when enabled", async () => {

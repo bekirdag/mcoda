@@ -86,7 +86,6 @@ class FakeSelectionService {
           dependencies: { ids: [], keys: [], blocking: [] },
         },
       ],
-      blocked: [],
       warnings: [],
     };
   }
@@ -96,15 +95,11 @@ class FakeSelectionService {
 class FakeStateService {
   readyToQaCalled = false;
   inProgressCalled = false;
-  blockedCalled = false;
   async markReadyToQa() {
     this.readyToQaCalled = true;
   }
   async returnToInProgress() {
     this.inProgressCalled = true;
-  }
-  async markBlocked() {
-    this.blockedCalled = true;
   }
   async recordReviewMetadata() {}
 }
@@ -257,9 +252,9 @@ const makeWorkspace = async () => {
 };
 
 describe("code-review argument parsing", () => {
-  it("defaults status to ready_to_review and agent streaming off", () => {
+  it("defaults status to ready_to_code_review and agent streaming off", () => {
     const parsed = parseCodeReviewArgs([]);
-    assert.deepEqual(parsed.statusFilter, ["ready_to_review"]);
+    assert.deepEqual(parsed.statusFilter, ["ready_to_code_review"]);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
@@ -278,7 +273,7 @@ describe("code-review argument parsing", () => {
       "S1",
       "--task=TASK-1",
       "--status",
-      "blocked,ready_to_review",
+      "ready_to_code_review",
       "--base",
       "main",
       "--resume",
@@ -299,7 +294,7 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.baseRef, "main");
     assert.equal(parsed.json, true);
     assert.deepEqual(parsed.taskKeys, ["TASK-1"]);
-    assert.deepEqual(parsed.statusFilter, ["blocked", "ready_to_review"]);
+    assert.deepEqual(parsed.statusFilter, ["ready_to_code_review"]);
   });
 });
 
@@ -330,7 +325,7 @@ describe("code-review service flow", () => {
       title: "Review demo",
       description: "",
       type: "feature",
-      status: "ready_to_review",
+      status: "ready_to_code_review",
       storyPoints: 3,
       priority: 1,
       assignedAgentId: null,
@@ -386,7 +381,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
     });
@@ -415,7 +410,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
     });
     assert.equal(result.tasks.length, 1);
@@ -453,7 +448,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
       createFollowupTasks: true,
@@ -505,7 +500,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
       createFollowupTasks: true,
@@ -530,7 +525,7 @@ describe("code-review service flow", () => {
     await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       limit: 1,
     });
@@ -563,7 +558,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       resumeJobId: "job-1",
     });
     assert.equal(result.jobId, "job-1");
@@ -590,7 +585,7 @@ describe("code-review service flow", () => {
     });
 
     assert.ok(fakeSelection.lastFilters);
-    assert.deepEqual(fakeSelection.lastFilters.statusFilter, ["ready_to_review"]);
+    assert.deepEqual(fakeSelection.lastFilters.statusFilter, ["ready_to_code_review"]);
   });
 });
 
@@ -605,7 +600,7 @@ describe("code-review CLI output shape", () => {
           taskId: "t1",
           taskKey: "TASK-1",
           decision: "approve",
-          statusBefore: "ready_to_review",
+          statusBefore: "ready_to_code_review",
           statusAfter: "ready_to_qa",
           findings: [],
         },

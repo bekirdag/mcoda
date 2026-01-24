@@ -527,9 +527,6 @@ export class CreateTasksService {
     try {
       await ordering.orderTasks({
         projectKey,
-        includeBlocked: true,
-        blockOnDependencies: false,
-        blockOnMissingContext: false,
       });
     } finally {
       await ordering.close();
