@@ -129,7 +129,18 @@ export class TaskStateService {
     task.metadata = metadata;
   }
 
-  async recordReviewMetadata(task: TaskRow, metadata: { decision: string; agentId?: string | null; modelName?: string | null; jobId?: string | null; reviewId?: string | null }) {
+  async recordReviewMetadata(
+    task: TaskRow,
+    metadata: {
+      decision: string;
+      agentId?: string | null;
+      modelName?: string | null;
+      jobId?: string | null;
+      reviewId?: string | null;
+      diffEmpty?: boolean;
+      changedPaths?: string[];
+    },
+  ) {
     const patch = mergeMetadata(task.metadata, {
       last_review_decision: metadata.decision,
       last_review_agent_id: metadata.agentId ?? null,
@@ -137,6 +148,10 @@ export class TaskStateService {
       last_review_job_id: metadata.jobId ?? null,
       last_review_id: metadata.reviewId ?? null,
       last_reviewed_at: new Date().toISOString(),
+      ...(metadata.diffEmpty !== undefined ? { last_review_diff_empty: metadata.diffEmpty } : {}),
+      ...(Array.isArray(metadata.changedPaths) && metadata.changedPaths.length
+        ? { last_review_changed_paths: metadata.changedPaths }
+        : {}),
     });
     await this.workspaceRepo.updateTask(task.id, { metadata: patch ?? undefined });
   }
