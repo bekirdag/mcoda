@@ -1990,6 +1990,7 @@ export class CodeReviewService {
         });
 
         const changedPaths = this.extractPathsFromDiff(diff);
+        const diffMeta = { diffEmpty, changedPaths };
         const docLinks = await this.gatherDocContext(
           task.title,
           changedPaths.length ? changedPaths : allowedFiles,
@@ -2497,7 +2498,7 @@ export class CodeReviewService {
           openCount: commentResolution?.open.length,
         });
 
-        await this.deps.workspaceRepo.createTaskReview({
+        const review = await this.deps.workspaceRepo.createTaskReview({
           taskId: task.id,
           jobId,
           agentId: agent.id,
@@ -2506,6 +2507,7 @@ export class CodeReviewService {
           summary: parsed.summary ?? undefined,
           findingsJson: parsed.findings ?? [],
           testRecommendationsJson: parsed.testRecommendations ?? [],
+          metadata: diffMeta,
           createdAt: new Date().toISOString(),
         });
         await this.stateService.recordReviewMetadata(task, {
@@ -2513,6 +2515,9 @@ export class CodeReviewService {
           agentId: agent.id,
           modelName: (agent as any).defaultModel ?? null,
           jobId,
+          reviewId: review.id,
+          diffEmpty,
+          changedPaths,
         });
 
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {

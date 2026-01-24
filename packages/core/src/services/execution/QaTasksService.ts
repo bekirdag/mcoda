@@ -806,6 +806,73 @@ export class QaTasksService {
     };
   }
 
+  private isHttpUrl(value?: string): boolean {
+    if (!value) return false;
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveProfilesForRequest(
+    task: TaskRow & { metadata?: any },
+    request: QaTasksRequest,
+  ): Promise<QaProfile[]> {
+    const profileName = request.profileName;
+    let profiles: QaProfile[] = [];
+    if (!profileName) {
+      const resolver = (this.profileService as any)?.resolveProfilesForTask;
+      if (typeof resolver === 'function') {
+        const resolved = await resolver.call(this.profileService, task, { level: request.level });
+        if (Array.isArray(resolved)) {
+          profiles = resolved.filter(Boolean) as QaProfile[];
+        }
+      }
+    }
+    if (!profiles.length) {
+      const profile = await this.profileService.resolveProfileForTask(task, {
+        profileName,
+        level: request.level,
+      });
+      if (profile) profiles = [profile];
+    }
+    return profiles;
+  }
+
+  private isApprovedReviewDecision(decision?: string): boolean {
+    if (!decision) return false;
+    const normalized = decision.toLowerCase();
+    return normalized === 'approve' || normalized === 'info_only';
+  }
+
+  private async shouldSkipQaForNoChanges(
+    task: TaskRow,
+  ): Promise<{ skip: boolean; decision?: string; reviewId?: string }> {
+    const metadata = (task.metadata as Record<string, unknown> | null | undefined) ?? {};
+    const diffEmptyValue = metadata.last_review_diff_empty;
+    const diffEmpty =
+      diffEmptyValue === true ||
+      diffEmptyValue === 'true' ||
+      diffEmptyValue === 1 ||
+      diffEmptyValue === '1';
+    const decision =
+      typeof metadata.last_review_decision === 'string' ? metadata.last_review_decision : undefined;
+    if (diffEmpty && this.isApprovedReviewDecision(decision)) {
+      return {
+        skip: true,
+        decision,
+        reviewId: typeof metadata.last_review_id === 'string' ? metadata.last_review_id : undefined,
+      };
+    }
+    const latestReview = await this.deps.workspaceRepo.getLatestTaskReview(task.id);
+    if (latestReview?.metadata?.diffEmpty === true && this.isApprovedReviewDecision(latestReview.decision)) {
+      return { skip: true, decision: latestReview.decision, reviewId: latestReview.id };
+    }
+    return { skip: false };
+  }
+
   private extractJsonCandidate(raw: string): any | undefined {
     const trimmed = raw.trim();
     if (!trimmed) return undefined;
@@ -1596,6 +1663,51 @@ export class QaTasksService {
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'status_gating' };
     }
 
+    const skipReview = await this.shouldSkipQaForNoChanges(task.task);
+    if (skipReview.skip) {
+      const message = 'QA skipped: code review reported no code changes to validate.';
+      await this.logTask(taskRun.id, message, 'qa-skip', { reason: 'review_no_changes', decision: skipReview.decision });
+      if (!this.dryRunGuard) {
+        await this.applyStateTransition(task.task, 'pass', statusContextBase);
+        await this.finishTaskRun(taskRun, 'succeeded');
+        await this.deps.workspaceRepo.createTaskQaRun({
+          taskId: task.task.id,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          commandRunId: ctx.commandRunId,
+          source: 'auto',
+          mode: 'auto',
+          rawOutcome: 'pass',
+          recommendation: 'pass',
+          profileName: undefined,
+          runner: undefined,
+          metadata: { reason: 'review_no_changes', decision: skipReview.decision, reviewId: skipReview.reviewId },
+        });
+        const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_result' });
+        const body = formatTaskCommentBody({
+          slug,
+          source: 'qa-tasks',
+          message,
+          status: 'resolved',
+          category: 'qa_result',
+        });
+        await this.deps.workspaceRepo.createTaskComment({
+          taskId: task.task.id,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          sourceCommand: 'qa-tasks',
+          authorType: 'agent',
+          category: 'qa_result',
+          slug,
+          status: 'resolved',
+          body,
+          createdAt: new Date().toISOString(),
+          resolvedAt: new Date().toISOString(),
+        });
+      }
+      return { taskKey: task.task.key, outcome: 'pass', notes: 'review_no_changes' };
+    }
+
     const branchCheck = await this.ensureTaskBranch(
       task,
       taskRun.id,
@@ -1641,12 +1753,9 @@ export class QaTasksService {
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'vcs_branch_missing' };
     }
-    let profile: QaProfile | undefined;
+    let profiles: QaProfile[] = [];
     try {
-      profile = await this.profileService.resolveProfileForTask(task.task, {
-        profileName: ctx.request.profileName,
-        level: ctx.request.level,
-      });
+      profiles = await this.resolveProfilesForRequest(task.task, ctx.request);
     } catch (error: any) {
       await this.logTask(taskRun.id, `Profile resolution failed: ${error?.message ?? error}`, 'qa-profile');
       await this.finishTaskRun(taskRun, 'failed');
@@ -1665,7 +1774,7 @@ export class QaTasksService {
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'profile_resolution_failed' };
     }
-    if (!profile) {
+    if (!profiles.length) {
       await this.logTask(taskRun.id, 'No QA profile available', 'qa-profile');
       await this.finishTaskRun(taskRun, 'failed');
       if (!this.dryRunGuard) {
@@ -1683,9 +1792,146 @@ export class QaTasksService {
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'no_profile' };
     }
-    const adapter = this.adapterForProfile(profile);
-    if (!adapter) {
-      await this.logTask(taskRun.id, 'No QA adapter for profile', 'qa-adapter');
+
+    const requestCommand = ctx.request.testCommand;
+    const requestCommandIsUrl = this.isHttpUrl(requestCommand);
+    const cliOverride = requestCommandIsUrl ? undefined : requestCommand;
+    const browserOverride = requestCommandIsUrl ? requestCommand : undefined;
+    const baseCtx: QaContext = {
+      workspaceRoot: this.workspace.workspaceRoot,
+      jobId: ctx.jobId,
+      taskKey: task.task.key,
+      env: process.env,
+    };
+    const runs: Array<{
+      profile: QaProfile;
+      runner: string;
+      command?: string;
+      testCommand?: string;
+      result: QaRunResult;
+      markerStatus?: RunAllMarkerStatus;
+    }> = [];
+    const runSummaries: string[] = [];
+    const artifactSet = new Set<string>();
+    const buildInfraResult = (message: string): QaRunResult => {
+      const now = new Date().toISOString();
+      return {
+        outcome: 'infra_issue',
+        exitCode: null,
+        stdout: '',
+        stderr: message,
+        artifacts: [],
+        startedAt: now,
+        finishedAt: now,
+      };
+    };
+
+    for (const profile of profiles) {
+      const runner = profile.runner ?? 'cli';
+      await this.logTask(taskRun.id, `Running QA profile ${profile.name} (${runner})`, 'qa-profile');
+      const adapter = this.adapterForProfile(profile);
+      if (!adapter) {
+        const message = `No QA adapter for profile ${profile.name} (${runner})`;
+        await this.logTask(taskRun.id, message, 'qa-adapter');
+        runs.push({ profile, runner, result: buildInfraResult(message) });
+        runSummaries.push(`- ${profile.name} (${runner}) infra_issue (no_adapter)`);
+        continue;
+      }
+
+      let testCommand: string | undefined;
+      if (runner === 'cli') {
+        testCommand = await this.resolveTestCommand(profile, cliOverride);
+        const preflight = await this.checkQaPreflight(testCommand);
+        if (!preflight.ok) {
+          const message = preflight.message ?? 'QA preflight failed.';
+          await this.logTask(taskRun.id, message, 'qa-preflight', {
+            missingDeps: preflight.missingDeps,
+            missingEnv: preflight.missingEnv,
+          });
+          runs.push({ profile, runner, testCommand, result: buildInfraResult(message) });
+          runSummaries.push(`- ${profile.name} (${runner}) infra_issue (preflight)`);
+          continue;
+        }
+      }
+
+      const runCtx: QaContext = {
+        ...baseCtx,
+        testCommandOverride: runner === 'cli' ? testCommand : runner === 'chromium' ? browserOverride : undefined,
+      };
+      let ensure: { ok: boolean; message?: string };
+      try {
+        ensure = await adapter.ensureInstalled(profile, runCtx);
+      } catch (error: any) {
+        ensure = { ok: false, message: error?.message ?? String(error) };
+      }
+      if (!ensure.ok) {
+        const installMessage = ensure.message ?? 'QA install failed';
+        const guidance =
+          profile.runner === 'chromium'
+            ? 'Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).'
+            : undefined;
+        const installLower = installMessage.toLowerCase();
+        const alreadyGuided =
+          installLower.includes('chromium') ||
+          installLower.includes('docdex') ||
+          installLower.includes('browser_url') ||
+          installLower.includes('test_command');
+        const installMessageWithGuidance =
+          guidance && !alreadyGuided ? `${installMessage} ${guidance}` : installMessage;
+        await this.logTask(taskRun.id, installMessageWithGuidance, 'qa-install');
+        runs.push({ profile, runner, testCommand, result: buildInfraResult(installMessageWithGuidance) });
+        runSummaries.push(`- ${profile.name} (${runner}) infra_issue (install)`);
+        continue;
+      }
+
+      const profileDir = profile.name.replace(/[\\/]/g, '_');
+      const artifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key, profileDir);
+      await PathHelper.ensureDir(artifactDir);
+      const qaEnv: NodeJS.ProcessEnv = { ...runCtx.env };
+      let result = await adapter.invoke(profile, { ...runCtx, env: qaEnv, artifactDir });
+      let markerStatus: RunAllMarkerStatus | undefined;
+      if (runner === 'cli') {
+        const adjusted = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
+        result = adjusted.result;
+        markerStatus = adjusted.markerStatus;
+        if (markerStatus) {
+          const statusLabel = markerStatus.present ? 'present' : 'missing';
+          await this.logTask(
+            taskRun.id,
+            `Run-all marker ${statusLabel} for ${profile.name} (policy=${markerStatus.policy}, action=${markerStatus.action}).`,
+            'qa-marker',
+            {
+              policy: markerStatus.policy,
+              status: statusLabel,
+              action: markerStatus.action,
+              marker: RUN_ALL_TESTS_MARKER,
+              profile: profile.name,
+            },
+          );
+        }
+      }
+      const command =
+        runner === 'chromium' ? browserOverride ?? profile.test_command : testCommand ?? profile.test_command;
+      runs.push({
+        profile,
+        runner,
+        testCommand,
+        command,
+        result,
+        markerStatus,
+      });
+      for (const artifact of result.artifacts ?? []) {
+        artifactSet.add(artifact);
+      }
+      runSummaries.push(
+        `- ${profile.name} (${runner}) outcome=${result.outcome} exit=${result.exitCode ?? 'null'}${
+          command ? ` cmd=${command}` : ''
+        }`,
+      );
+    }
+
+    if (!runs.length) {
+      await this.logTask(taskRun.id, 'No QA runs executed', 'qa-adapter');
       await this.finishTaskRun(taskRun, 'failed');
       if (!this.dryRunGuard) {
         await this.deps.workspaceRepo.createTaskQaRun({
@@ -1695,168 +1941,57 @@ export class QaTasksService {
           commandRunId: ctx.commandRunId,
           source: 'auto',
           mode: 'auto',
-          profileName: profile.name,
-          runner: profile.runner,
           rawOutcome: 'infra_issue',
           recommendation: 'infra_issue',
-          metadata: { reason: 'no_adapter' },
+          metadata: { reason: 'no_runs' },
         });
       }
-      return { taskKey: task.task.key, outcome: 'infra_issue', profile: profile.name, runner: profile.runner, notes: 'no_adapter' };
+      return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'no_runs' };
     }
 
-    const testCommand = await this.resolveTestCommand(profile, ctx.request.testCommand);
-    const qaCtx: QaContext = {
-      workspaceRoot: this.workspace.workspaceRoot,
-      jobId: ctx.jobId,
-      taskKey: task.task.key,
-      env: process.env,
-      testCommandOverride: testCommand,
+    const combinedOutcome = runs.some((run) => run.result.outcome === 'infra_issue')
+      ? 'infra_issue'
+      : runs.some((run) => run.result.outcome === 'fail')
+        ? 'fail'
+        : 'pass';
+    const combinedExitCode =
+      combinedOutcome === 'infra_issue'
+        ? null
+        : combinedOutcome === 'pass'
+          ? 0
+          : runs.find((run) => typeof run.result.exitCode === 'number' && run.result.exitCode !== 0)?.result.exitCode ?? 1;
+    const combineOutput = (field: 'stdout' | 'stderr') =>
+      runs
+        .map((run) => {
+          const header = `=== ${run.profile.name} (${run.runner}) outcome=${run.result.outcome} exit=${run.result.exitCode ?? 'null'}${
+            run.command ? ` cmd=${run.command}` : ''
+          } ===`;
+          const body = field === 'stdout' ? run.result.stdout : run.result.stderr;
+          return [header, body].filter(Boolean).join('\n');
+        })
+        .join('\n\n');
+    const startedAt = runs.reduce(
+      (min, run) => (run.result.startedAt < min ? run.result.startedAt : min),
+      runs[0].result.startedAt,
+    );
+    const finishedAt = runs.reduce(
+      (max, run) => (run.result.finishedAt > max ? run.result.finishedAt : max),
+      runs[0].result.finishedAt,
+    );
+    const result: QaRunResult = {
+      outcome: combinedOutcome,
+      exitCode: combinedExitCode,
+      stdout: combineOutput('stdout'),
+      stderr: combineOutput('stderr'),
+      artifacts: Array.from(artifactSet),
+      startedAt,
+      finishedAt,
     };
-
-    const preflight = await this.checkQaPreflight(testCommand);
-    if (!preflight.ok) {
-      const message = preflight.message ?? 'QA preflight failed.';
-      await this.logTask(taskRun.id, message, 'qa-preflight', {
-        missingDeps: preflight.missingDeps,
-        missingEnv: preflight.missingEnv,
-      });
-      if (!this.dryRunGuard) {
-        await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
-        await this.finishTaskRun(taskRun, 'failed');
-        await this.deps.workspaceRepo.createTaskQaRun({
-          taskId: task.task.id,
-          taskRunId: taskRun.id,
-          jobId: ctx.jobId,
-          commandRunId: ctx.commandRunId,
-          source: 'auto',
-          mode: 'auto',
-          profileName: profile.name,
-          runner: profile.runner,
-          rawOutcome: 'infra_issue',
-          recommendation: 'infra_issue',
-          metadata: {
-            preflight: message,
-            missingDeps: preflight.missingDeps,
-            missingEnv: preflight.missingEnv,
-          },
-        });
-        const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_issue' });
-        const body = formatTaskCommentBody({
-          slug,
-          source: 'qa-tasks',
-          message,
-          status: 'open',
-          category: 'qa_issue',
-        });
-        await this.deps.workspaceRepo.createTaskComment({
-          taskId: task.task.id,
-          taskRunId: taskRun.id,
-          jobId: ctx.jobId,
-          sourceCommand: 'qa-tasks',
-          authorType: 'agent',
-          category: 'qa_issue',
-          slug,
-          status: 'open',
-          body,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      return {
-        taskKey: task.task.key,
-        outcome: 'infra_issue',
-        profile: profile.name,
-        runner: profile.runner,
-        notes: message,
-      };
-    }
-
-    const ensure = await adapter.ensureInstalled(profile, qaCtx);
-    if (!ensure.ok) {
-      const installMessage = ensure.message ?? 'QA install failed';
-      const guidance =
-        profile.runner === 'chromium'
-          ? 'Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).'
-          : undefined;
-      const installLower = installMessage.toLowerCase();
-      const alreadyGuided =
-        installLower.includes('chromium') ||
-        installLower.includes('docdex') ||
-        installLower.includes('browser_url') ||
-        installLower.includes('test_command');
-      const installMessageWithGuidance =
-        guidance && !alreadyGuided ? `${installMessage} ${guidance}` : installMessage;
-      await this.logTask(taskRun.id, installMessageWithGuidance, 'qa-install');
-      if (!this.dryRunGuard) {
-        await this.applyStateTransition(task.task, 'infra_issue', statusContextBase);
-        await this.finishTaskRun(taskRun, 'failed');
-        await this.deps.workspaceRepo.createTaskQaRun({
-          taskId: task.task.id,
-          taskRunId: taskRun.id,
-          jobId: ctx.jobId,
-          commandRunId: ctx.commandRunId,
-          source: 'auto',
-          mode: 'auto',
-          profileName: profile.name,
-          runner: profile.runner,
-          rawOutcome: 'infra_issue',
-          recommendation: 'infra_issue',
-          metadata: { install: installMessageWithGuidance, adapter: profile.runner },
-        });
-        const message = `QA infra issue: ${installMessageWithGuidance}`;
-        const slug = createTaskCommentSlug({ source: 'qa-tasks', message, category: 'qa_issue' });
-        const body = formatTaskCommentBody({
-          slug,
-          source: 'qa-tasks',
-          message,
-          status: 'open',
-          category: 'qa_issue',
-        });
-        await this.deps.workspaceRepo.createTaskComment({
-          taskId: task.task.id,
-          taskRunId: taskRun.id,
-          jobId: ctx.jobId,
-          sourceCommand: 'qa-tasks',
-          authorType: 'agent',
-          category: 'qa_issue',
-          slug,
-          status: 'open',
-          body,
-          createdAt: new Date().toISOString(),
-        });
-      }
-      return {
-        taskKey: task.task.key,
-        outcome: 'infra_issue',
-        profile: profile.name,
-        runner: profile.runner,
-        notes: installMessageWithGuidance,
-      };
-    }
-
-    const artifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key);
-    await PathHelper.ensureDir(artifactDir);
-    const qaEnv: NodeJS.ProcessEnv = { ...qaCtx.env };
-    let result = await adapter.invoke(profile, { ...qaCtx, env: qaEnv, artifactDir });
-    const adjusted = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
-    result = adjusted.result;
-    if (adjusted.markerStatus) {
-      const marker = adjusted.markerStatus;
-      const statusLabel = marker.present ? 'present' : 'missing';
-      await this.logTask(
-        taskRun.id,
-        `Run-all marker ${statusLabel} (policy=${marker.policy}, action=${marker.action}).`,
-        'qa-marker',
-        {
-          policy: marker.policy,
-          status: statusLabel,
-          action: marker.action,
-          marker: RUN_ALL_TESTS_MARKER,
-        },
-      );
-    }
+    const profile = runs.length === 1 ? runs[0].profile : { name: 'auto', runner: 'multi' };
+    const runSummary = runSummaries.length ? runSummaries.join('\n') : undefined;
     await this.logTask(taskRun.id, `QA run completed with outcome ${result.outcome}`, 'qa-exec', {
       exitCode: result.exitCode,
+      runs: runs.length,
     });
     const commentContext = await this.loadCommentContext(task.task.id);
     const commentBacklog = buildCommentBacklog(commentContext.unresolved);
@@ -1914,6 +2049,13 @@ export class QaTasksService {
         artifacts,
         rawResult: {
           adapter: result,
+          adapterRuns: runs.map((run) => ({
+            profile: run.profile.name,
+            runner: run.runner,
+            command: run.command,
+            testCommand: run.testCommand,
+            result: run.result,
+          })),
           agent: interpretation.rawOutput,
         },
         startedAt: result.startedAt,
@@ -1925,6 +2067,9 @@ export class QaTasksService {
           coverageSummary: interpretation.coverageSummary,
           failures: interpretation.failures,
           invalidJson: interpretation.invalidJson ?? false,
+          runSummary,
+          runProfiles: runs.map((run) => run.profile.name),
+          runCount: runs.length,
         },
       });
     }
@@ -1997,6 +2142,7 @@ export class QaTasksService {
         ? 'QA outcome unclear: provide missing acceptance criteria, reproduction steps, and expected behavior.'
         : '',
       profile ? `Profile: ${profile.name} (${profile.runner ?? 'cli'})` : '',
+      runSummary ? `Runs:\n${runSummary}` : '',
       interpretation.coverageSummary ? `Coverage: ${interpretation.coverageSummary}` : '',
       interpretation.failures && interpretation.failures.length
         ? `Failures:\n${interpretation.failures.map((f) => `- [${f.kind ?? 'issue'}] ${f.message}${f.evidence ? ` (${f.evidence})` : ''}`).join('\n')}`

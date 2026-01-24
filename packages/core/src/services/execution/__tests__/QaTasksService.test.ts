@@ -242,6 +242,191 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
   }
 });
 
+test("qa-tasks skips execution when review shows no code changes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+        metadata: { last_review_diff_empty: true, last_review_decision: "approve" },
+      },
+    ],
+    false,
+  );
+  let adapterInvoked = false;
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => ({
+    async ensureInstalled() {
+      adapterInvoked = true;
+      return { ok: true };
+    },
+    async invoke() {
+      adapterInvoked = true;
+      const now = new Date().toISOString();
+      return {
+        outcome: "pass",
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+        artifacts: [],
+        startedAt: now,
+        finishedAt: now,
+      };
+    },
+  });
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].outcome, "pass");
+    assert.equal(adapterInvoked, false);
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "completed");
+    const qaRuns = await repo.listTaskQaRuns(task.id);
+    assert.equal(qaRuns.length, 1);
+    assert.equal((qaRuns[0].metadata as any)?.reason, "review_no_changes");
+  } finally {
+    await repo.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks aggregates multiple profiles when available", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t02",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  class MultiProfileService {
+    async resolveProfilesForTask() {
+      return [
+        { name: "cli", runner: "cli", test_command: "echo ok" },
+        { name: "chromium", runner: "chromium", test_command: "http://localhost" },
+      ];
+    }
+    async resolveProfileForTask() {
+      return { name: "cli", runner: "cli", test_command: "echo ok" };
+    }
+  }
+
+  class MultiAdapter {
+    async ensureInstalled() {
+      return { ok: true };
+    }
+    async invoke(profile: any) {
+      const now = new Date().toISOString();
+      return {
+        outcome: "pass",
+        exitCode: 0,
+        stdout: `${profile.name} ok`,
+        stderr: "",
+        artifacts: [],
+        startedAt: now,
+        finishedAt: now,
+      };
+    }
+  }
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new MultiProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new MultiAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].profile, "auto");
+    assert.equal(result.results[0].runner, "multi");
+    const qaRuns = await repo.listTaskQaRuns(task.id);
+    assert.equal(qaRuns.length, 1);
+    assert.equal((qaRuns[0].metadata as any)?.runCount, 2);
+  } finally {
+    await repo.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("qa-tasks passes clean ignore paths to VCS", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });

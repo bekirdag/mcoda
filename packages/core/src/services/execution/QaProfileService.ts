@@ -8,7 +8,10 @@ export interface QaProfileResolutionOptions {
   profileName?: string;
   level?: string;
   defaultLevel?: string;
+  runnerPreference?: 'cli' | 'chromium' | 'maestro';
 }
+
+type QaRunner = 'cli' | 'chromium' | 'maestro';
 
 const DEFAULT_QA_PROFILES: QaProfile[] = [
   {
@@ -134,6 +137,10 @@ export class QaProfileService {
     ]);
     if (tags.some((tag) => uiTags.has(tag))) return true;
     const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
+    const reviewFiles: string[] = Array.isArray(metadata.last_review_changed_paths)
+      ? metadata.last_review_changed_paths
+      : [];
+    const combined = [...files, ...reviewFiles];
     const uiHints = [
       '/ui/',
       '/frontend/',
@@ -146,12 +153,48 @@ export class QaProfileService {
       '/styles/',
     ];
     const uiExtensions = ['.tsx', '.jsx', '.vue', '.svelte', '.astro', '.html', '.css', '.scss', '.less'];
-    for (const file of files) {
+    for (const file of combined) {
       const normalized = String(file).toLowerCase();
       if (uiExtensions.some((ext) => normalized.endsWith(ext))) return true;
       if (uiHints.some((hint) => normalized.includes(hint))) return true;
     }
     return false;
+  }
+
+  private detectMobileTask(task: TaskRow & { metadata?: any }): boolean {
+    const metadata = (task.metadata as any) ?? {};
+    const tags: string[] = Array.isArray(metadata.tags) ? metadata.tags.map((t: string) => t.toLowerCase()) : [];
+    const type = typeof task.type === 'string' ? task.type.toLowerCase() : '';
+    const mobileTags = new Set(['mobile', 'ios', 'android', 'maestro', 'react-native', 'rn']);
+    if (tags.some((tag) => mobileTags.has(tag))) return true;
+    if (mobileTags.has(type)) return true;
+    const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
+    const reviewFiles: string[] = Array.isArray(metadata.last_review_changed_paths)
+      ? metadata.last_review_changed_paths
+      : [];
+    const combined = [...files, ...reviewFiles];
+    const mobileHints = ['/ios/', '/android/', '/mobile/'];
+    for (const file of combined) {
+      const normalized = String(file).toLowerCase();
+      if (mobileHints.some((hint) => normalized.includes(hint))) return true;
+      if (normalized.endsWith('.maestro.yml') || normalized.endsWith('.maestro.yaml')) return true;
+    }
+    return false;
+  }
+
+  private async resolveRunnerPlan(task: TaskRow & { metadata?: any }): Promise<{
+    runners: QaRunner[];
+    hasWebInterface: boolean;
+    uiTask: boolean;
+    mobileTask: boolean;
+  }> {
+    const hasWebInterface = await this.detectWebInterface();
+    const uiTask = this.detectUiTask(task);
+    const mobileTask = this.detectMobileTask(task);
+    const runners: QaRunner[] = ['cli'];
+    if (hasWebInterface) runners.push('chromium');
+    if (mobileTask) runners.push('maestro');
+    return { runners, hasWebInterface, uiTask, mobileTask };
   }
 
   private async resolveRunnerPreference(task?: TaskRow & { metadata?: any }): Promise<'chromium' | 'cli'> {
@@ -234,7 +277,7 @@ export class QaProfileService {
     if (!profiles.length) return undefined;
     const envProfile = process.env.MCODA_QA_PROFILE;
     const routing = await this.getRoutingConfig();
-    const runnerPreference = await this.resolveRunnerPreference(task);
+    const runnerPreference = options.runnerPreference ?? (await this.resolveRunnerPreference(task));
     const normalizeRunner = (profile: QaProfile): string => profile.runner ?? 'cli';
     const matchRunner = (profile: QaProfile): boolean =>
       normalizeRunner(profile) === runnerPreference || profile.name === runnerPreference;
@@ -327,5 +370,26 @@ export class QaProfileService {
       throw new Error('Multiple default QA profiles configured; please specify --profile.');
     }
     return undefined;
+  }
+
+  async resolveProfilesForTask(
+    task: TaskRow & { metadata?: any },
+    options: QaProfileResolutionOptions = {},
+  ): Promise<QaProfile[]> {
+    if (options.profileName) {
+      const explicit = await this.resolveProfileForTask(task, options);
+      return explicit ? [explicit] : [];
+    }
+    const plan = await this.resolveRunnerPlan(task);
+    const profiles: QaProfile[] = [];
+    const seen = new Set<string>();
+    for (const runner of plan.runners) {
+      const profile = await this.resolveProfileForTask(task, { ...options, runnerPreference: runner });
+      if (profile && !seen.has(profile.name)) {
+        profiles.push(profile);
+        seen.add(profile.name);
+      }
+    }
+    return profiles;
   }
 }

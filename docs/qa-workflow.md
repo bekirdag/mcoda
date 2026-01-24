@@ -33,26 +33,30 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 
 #### 2.1 Task run setup
 1. Create a `task_run` row (status: `running`).
-2. Resolve QA profile using `QaProfileService`:
-   - By `profileName`/`level` override if provided.
-   - Otherwise by task tags/type, then default profile.
+2. Resolve QA profiles using `QaProfileService`:
+   - If `profileName` is provided, run only that profile.
+   - Otherwise, auto-select multiple profiles:
+     - Always include a CLI profile.
+     - Include Chromium when the repo has a web UI.
+     - Include Maestro when the task is tagged as mobile.
+3. If the latest code review indicates an empty diff (no code changes) and the decision is `approve`/`info_only`, skip QA and mark the task as passed.
 
 #### 2.2 Adapter selection and install check
 1. Pick adapter by profile runner:
    - `cli`, `chromium` (headless Chromium via docdex), or `maestro`.
-2. Call `ensureInstalled` on the adapter.
-3. If install fails:
-   - Fail task with `qa_infra_issue`.
-   - Create a `qa_issue` comment.
-   - Record a QA run with `infra_issue` outcome.
+2. Call `ensureInstalled` on each adapter.
+3. If install/preflight fails:
+   - Record an `infra_issue` result for that run.
+   - Continue running other profiles if available.
 
 #### 2.3 Execute QA tests
-1. Resolve test command (profile + optional override).
+1. Resolve test command (per CLI profile + optional override).
 2. Build QA context (workspace root, job id, task key, env).
-3. Run tests via adapter (`invoke`).
-4. Normalize outcome:
+3. Run each adapter (`invoke`) and collect outputs.
+4. Normalize outcomes:
    - CLI adapter may treat “no tests found / skipping tests” as `infra_issue`.
    - If `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE`; missing markers are treated as `infra_issue`.
+5. Aggregate multiple runs into a single combined QA result for interpretation.
 
 #### 2.4 Interpret results with QA agent
 1. Load project guidance and docdex context.
