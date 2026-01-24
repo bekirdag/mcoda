@@ -1153,7 +1153,7 @@ mcoda exposes a **small, canonical command surface**; legacy or overlapping comm
 
   * each `user_stories` row references exactly one `epic`.
 
-* Task statuses are finite and normalized (e.g. `not_started`, `in_progress`, `ready_to_review`, `ready_to_qa`, `completed`, `blocked`, `cancelled`); state transitions are owned by commands like `work-on-tasks`, `code-review`, and `qa-tasks`.
+* Task statuses are finite and normalized (e.g. `not_started`, `in_progress`, `ready_to_code_review`, `ready_to_qa`, `completed`, `blocked`, `cancelled`); state transitions are owned by commands like `work-on-tasks`, `code-review`, and `qa-tasks`.
 
 **Task comments (inter‑agent communication)**
 
@@ -2891,7 +2891,7 @@ These tables define the planning hierarchy and are mostly inherited from v0.2 wi
 
     * Optional `metadata` JSON for extensibility (e.g. changed files, test coverage).
 
-  * Status enum enforced with `CHECK` (e.g. `not_started | in_progress | ready_to_review | ready_to_qa | completed | blocked | cancelled`).
+  * Status enum enforced with `CHECK` (e.g. `not_started | in_progress | ready_to_code_review | ready_to_qa | completed | blocked | cancelled`).
 
 * **`task_dependencies`** – explicit dependency graph:
 
@@ -3169,7 +3169,7 @@ Key adapter families:
 
   * **CLI runner** – executes test commands (`npm test`, `pytest`, etc.) with scoped environment and working directory.
 
-  * **Chromium adapter** – runs browser‑based QA suites (Chromium/Playwright/Cypress‑style).
+  * **Chromium adapter** – runs browser‑based QA suites (Chromium‑only).
 
   * **Maestro/mobile adapter** – runs mobile flows on devices/emulators (e.g. `maestro test`).
 
@@ -3984,7 +3984,7 @@ mcoda uses a **single finite task status set** across all commands:
 
 * `in_progress` – currently being implemented or reworked.
 
-* `ready_to_review` – implementation complete; awaiting `code-review`.
+* `ready_to_code_review` – implementation complete; awaiting `code-review`.
 
 * `ready_to_qa` – review approved; awaiting `qa-tasks`.
 
@@ -4014,7 +4014,7 @@ Status changes are owned by commands and are enforced through a TaskStateService
 
     * clear `blocked` → `not_started` when constraints are reclassified,
 
-  * but **never** sets `ready_to_review`, `ready_to_qa`, or `completed`. Those lanes are reserved for implementation, review, and QA commands.
+  * but **never** sets `ready_to_code_review`, `ready_to_qa`, or `completed`. Those lanes are reserved for implementation, review, and QA commands.
 
 **Implementation: `work-on-tasks`**
 
@@ -4028,7 +4028,7 @@ Status changes are owned by commands and are enforced through a TaskStateService
 
 * On successful run (patch applied, validations/tests as per policy):
 
-  * `in_progress → ready_to_review`.
+  * `in_progress → ready_to_code_review`.
 
 * On failure:
 
@@ -4042,19 +4042,19 @@ Status changes are owned by commands and are enforced through a TaskStateService
 
 **Review: `code-review`**
 
-Precondition: tasks are usually selected with `status = ready_to_review`.
+Precondition: tasks are usually selected with `status = ready_to_code_review`.
 
 * If LLM/human review **approves**:
 
-  * `ready_to_review → ready_to_qa`.
+  * `ready_to_code_review → ready_to_qa`.
 
 * If **changes requested**:
 
-  * `ready_to_review → in_progress`.
+  * `ready_to_code_review → in_progress`.
 
 * If **blocked** (design/SDS/OpenAPI misalignment, security concerns, etc.):
 
-  * `ready_to_review → blocked` plus review comments and a structured blocked reason.
+  * `ready_to_code_review → blocked` plus review comments and a structured blocked reason.
 
 `code-review` does not directly set `completed`; that is owned by QA.
 
@@ -4096,7 +4096,7 @@ Precondition: tasks are usually selected with `status = ready_to_qa`.
 
 * Commands are idempotent w.r.t. status:
 
-  * `work-on-tasks` will normally **skip** tasks already in `ready_to_review` unless `--allow-rework` is set.
+  * `work-on-tasks` will normally **skip** tasks already in `ready_to_code_review` unless `--allow-rework` is set.
 
   * `code-review` and `qa-tasks` refuse to advance tasks that are not in their expected input state unless explicitly overridden.
 
@@ -4688,7 +4688,7 @@ mcoda work-on-tasks \
 
   * Update `tasks.vcs_branch` / `tasks.vcs_commit`.
 
-  * Transition `not_started → in_progress → ready_to_review` on success, or to `blocked` with reason on failure.
+  * Transition `not_started → in_progress → ready_to_code_review` on success, or to `blocked` with reason on failure.
 
 **State & side‑effects**
 
@@ -4717,7 +4717,7 @@ mcoda code-review \
   [--workspace-root <PATH>] \
   [--project <PROJECT_KEY>] \
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \
-  [--status ready_to_review] \
+  [--status ready_to_code_review] \
   [--base <BRANCH>] \
   [--dry-run] \
   [--resume <JOB_ID>] \
@@ -4730,7 +4730,7 @@ mcoda code-review \
 **Behavior**
 
 * Starts a `review` job (`command_name = "code-review"`) and a `command_run`, writes checkpoints under `.mcoda/jobs/<job_id>/review/` (tasks_selected, context_built, review_applied), and records `token_usage` per agent call.
-* Task selection via Tasks/Backlog API filters (`project/epic/story/task`, default `status=ready_to_review`, optional `limit`); the task set is persisted in job payload/checkpoints for resume.
+* Task selection via Tasks/Backlog API filters (`project/epic/story/task`, default `status=ready_to_code_review`, optional `limit`); the task set is persisted in job payload/checkpoints for resume.
 * For each task, identify its branch and diff (from `tasks.vcs_branch` / repo), scoped to `tasks.metadata.files` when present, and store both raw diff and structured `ReviewDiff` JSON.
 * Build review prompts including:
   * SDS/PDR/API docs (via docdex) for changed components and acceptance criteria.
@@ -4740,9 +4740,9 @@ mcoda code-review \
   * Command runbook/checklists for code-review.
 * Agent produces structured JSON (decision, summary, findings, testRecommendations).
 * CLI writes findings into `task_comments` (`source_command = "code-review"`), inserts `task_reviews`, may auto-create follow-up tasks for critical/blocking findings, updates `task_runs`, and (unless `--dry-run`) transitions tasks:
-  * `ready_to_review → ready_to_qa` on approve,
-  * `ready_to_review → in_progress` on changes_requested,
-  * `ready_to_review → blocked` on block (with reason),
+  * `ready_to_code_review → ready_to_qa` on approve,
+  * `ready_to_code_review → in_progress` on changes_requested,
+  * `ready_to_code_review → blocked` on block (with reason),
   * transitions are skipped when `--dry-run` is set.
 
 **State & side-effects**
@@ -5563,7 +5563,7 @@ It must *not* break invariants:
 
 * Parentage (`epic_id`, `user_story_id`) is not changed by `refine-tasks`.
 
-* Statuses reserved for other commands (`ready_to_review`, `ready_to_qa`, `completed`) are never set directly here.
+* Statuses reserved for other commands (`ready_to_code_review`, `ready_to_qa`, `completed`) are never set directly here.
 
 **Strategies**
 
@@ -5593,7 +5593,7 @@ Strategies are explicit and map to an OpenAPI enum:
 
 * Changing `project_id`, `epic_id`, `user_story_id`, or `key`.
 
-* Setting status to `ready_to_review`, `ready_to_qa`, or `completed`.
+* Setting status to `ready_to_code_review`, `ready_to_qa`, or `completed`.
 
 * Deleting tasks except as part of a controlled merge (status → `cancelled` with reason).
 
@@ -5871,7 +5871,7 @@ Together, `jobs` \+ `task_revisions` \+ `task_run_logs` \+ `token_usage` provide
 
 ## 14\. work-on-tasks Command
 
- work-on-tasks is the primary “implementation” command. It pulls tasks from the backlog, orders them using dependency and status rules, prepares the local repo and `.mcoda` workspace, drives a code‑editing agent through a deterministic Git workflow, and advances tasks toward `ready_to_review`. Every invocation runs as a `jobs` row of type `work` with `command_name = "work-on-tasks"`, and every task touched produces structured DB records and disk logs so runs are resumable and auditable.
+ work-on-tasks is the primary “implementation” command. It pulls tasks from the backlog, orders them using dependency and status rules, prepares the local repo and `.mcoda` workspace, drives a code‑editing agent through a deterministic Git workflow, and advances tasks toward `ready_to_code_review`. Every invocation runs as a `jobs` row of type `work` with `command_name = "work-on-tasks"`, and every task touched produces structured DB records and disk logs so runs are resumable and auditable.
 
 ---
 
@@ -5896,7 +5896,7 @@ Given CLI/API input (project, epic, story, explicit task keys, `--status`, `--li
 
   * Ineligible unless explicitly overridden:
 
-    * `ready_to_review` (owned by `code-review`),
+    * `ready_to_code_review` (owned by `code-review`),
 
     * `ready_to_qa` (owned by `qa-tasks`),
 
@@ -6096,7 +6096,7 @@ For every task in the ordered list:
 
    * If tests fail, capture a concise failure summary, re‑invoke the agent to fix issues, and retry until tests pass or the max retry budget is exhausted.
 
-   * Only advance to `ready_to_review` once all required tests pass; otherwise mark `blocked` with `tests_failed`.
+   * Only advance to `ready_to_code_review` once all required tests pass; otherwise mark `blocked` with `tests_failed`.
 
 10. **Commit, push, merge & metrics**
 
@@ -6236,7 +6236,7 @@ Together, these rules ensure that work-on-tasks behaves predictably, keeps `.mco
 
 ---
 
-`code-review` is the dedicated review stage in the mcoda pipeline. It consumes diffs produced by `work-on-tasks`, evaluates them against project docs (RFP/PDR/SDS), the canonical OpenAPI spec, and task history, then writes structured findings back into `task_comments` and `task_reviews`. It owns the transition from `ready_to_review` toward `ready_to_qa` (or back to `in_progress` / `blocked`) within the shared task state machine.
+`code-review` is the dedicated review stage in the mcoda pipeline. It consumes diffs produced by `work-on-tasks`, evaluates them against project docs (RFP/PDR/SDS), the canonical OpenAPI spec, and task history, then writes structured findings back into `task_comments` and `task_reviews`. It owns the transition from `ready_to_code_review` toward `ready_to_qa` (or back to `in_progress` / `blocked`) within the shared task state machine.
 
 ---
 
@@ -6248,7 +6248,7 @@ Together, these rules ensure that work-on-tasks behaves predictably, keeps `.mco
 
 * Reviewing changes for one or more tasks selected by project/epic/story/task filters.
 
-* Operating only on tasks that are in `ready_to_review` by default.
+* Operating only on tasks that are in `ready_to_code_review` by default.
 
 * Using the workspace’s canonical OpenAPI (`openapi/mcoda.yaml`) and docdex‑backed docs as contract and design truth.
 
@@ -6326,7 +6326,7 @@ Together, these rules ensure that work-on-tasks behaves predictably, keeps `.mco
 mcoda code-review \
   [--project <PROJECT_KEY>] \
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \
-  [--status ready_to_review] \
+  [--status ready_to_code_review] \
   [--base <BRANCH>] \
   [--dry-run] \
   [--resume <JOB_ID>] \
@@ -6354,7 +6354,7 @@ mcoda code-review \
 
      * project/epic/story/task filters,
 
-     * default `status_filter = ["ready_to_review"]` unless overridden,
+     * default `status_filter = ["ready_to_code_review"]` unless overridden,
      * optional `--limit` to cap the selection,
      * deterministic ordering from the Tasks/Backlog API (priority/story points/updated_at).
 
@@ -6546,11 +6546,11 @@ For each task in the job:
 
    * If not in `--dry-run` or `--require-approval` mode:
 
-     * `ready_to_review → ready_to_qa` when `decision = "approve"` and no blocking findings,
+     * `ready_to_code_review → ready_to_qa` when `decision = "approve"` and no blocking findings,
 
-     * `ready_to_review → in_progress` when `decision = "changes_requested"`,
+     * `ready_to_code_review → in_progress` when `decision = "changes_requested"`,
 
-     * `ready_to_review → blocked` when `decision = "block"` with a machine‑readable reason.
+     * `ready_to_code_review → blocked` when `decision = "block"` with a machine‑readable reason.
 
    * All transitions go through TaskStateService and are logged in the task state history.
 
@@ -6744,7 +6744,7 @@ interface QaProfile {
 *   
   `runner = "cli"` – shell command (e.g. Jest, pytest, Maven).
 
-* `runner = "chromium"` – browser/UI flows via a Chromium QA adapter (Chromium/Playwright/Cypress, etc.).
+* `runner = "chromium"` – browser/UI flows via a Chromium QA adapter (Chromium‑only).
 
 * `runner = "maestro"` – mobile/device flows via a Maestro‑style adapter.
 
@@ -7143,7 +7143,7 @@ Within that scope, we partition tasks into **pipeline buckets**:
    `status IN ('not_started','in_progress','blocked')`
 
 * **Review bucket**  
-   `status = 'ready_to_review'`
+   `status = 'ready_to_code_review'`
 
 * **QA bucket**  
    `status = 'ready_to_qa'`
@@ -7352,9 +7352,9 @@ Velocity can come from two sources:
 
      * tasks that moved:
 
-       * `in_progress → ready_to_review` → implementation throughput,
+       * `in_progress → ready_to_code_review` → implementation throughput,
 
-       * `ready_to_review → ready_to_qa` → review throughput,
+       * `ready_to_code_review → ready_to_qa` → review throughput,
 
        * `ready_to_qa → completed` → QA throughput,
 
@@ -7461,9 +7461,9 @@ The **VelocityService** computes empirical SP/h from recent history using `task_
 
    * Select tasks with status transitions:
 
-     * `in_progress -> ready_to_review` (implementation),
+     * `in_progress -> ready_to_code_review` (implementation),
 
-     * `ready_to_review -> ready_to_qa` (review),
+     * `ready_to_code_review -> ready_to_qa` (review),
 
      * `ready_to_qa -> completed` (QA).
 
@@ -7605,7 +7605,7 @@ mcoda backlog \
 
   * Implementation: `not_started | in_progress | blocked`
 
-  * Review: `ready_to_review`
+  * Review: `ready_to_code_review`
 
   * QA: `ready_to_qa`
 
@@ -7689,7 +7689,7 @@ T_qa_pipeline     = (S_impl + S_review + S_qa) / v_qa
 *   
   Derives pipeline milestones (subtract elapsed in-progress time from `T_impl` when status events are available):
 
-  * `ready_to_review_eta` from `T_impl`,
+  * `ready_to_code_review_eta` from `T_impl`,
 
   * `ready_to_qa_eta` from `max(T_impl, T_review_pipeline)`,
 
@@ -8051,13 +8051,13 @@ Implementation:
 
    * Implementation lane:
 
-     * tasks that went `in_progress → ready_to_review`
+     * tasks that went `in_progress → ready_to_code_review`
 
      * attributable primarily to `work-on-tasks`.
 
    * Review lane:
 
-     * tasks that went `ready_to_review → ready_to_qa`
+     * tasks that went `ready_to_code_review → ready_to_qa`
 
      * attributable to `code-review`.
 
@@ -9617,7 +9617,7 @@ Provide an end‑to‑end flow for a single agent and single project/workspace, 
 
     * minimal `task_comments` schema (task‑scoped comments, even before full code review/QA exist).
 
-  * Basic task state machine, including `ready_to_review` and `ready_to_qa`.
+  * Basic task state machine, including `ready_to_code_review` and `ready_to_qa`.
 
   * All rows linked to `workspace_id` and `project_id`.
 
@@ -9657,7 +9657,7 @@ Provide an end‑to‑end flow for a single agent and single project/workspace, 
 
     * Applies small, targeted patches from the agent.
 
-    * Transitions `in_progress → ready_to_review` on success.
+    * Transitions `in_progress → ready_to_code_review` on success.
 
     * Writes detailed entries to `task_logs` for each run.
 
@@ -9707,7 +9707,7 @@ For a single real project:
 
   * modifies the repo safely,
 
-  * moves tasks to `ready_to_review`.
+  * moves tasks to `ready_to_code_review`.
 
 * `mcoda backlog` reports SP totals correctly.
 
@@ -9775,7 +9775,7 @@ Deliver the full mcoda pipeline (create → refine → work → review → QA), 
 
       * with severity and reviewer (agent/human).
 
-    * Transitions `ready_to_review → ready_to_qa` or reopens tasks to `in_progress`.
+    * Transitions `ready_to_code_review → ready_to_qa` or reopens tasks to `in_progress`.
 
   * `mcoda qa-tasks`
 
@@ -10083,7 +10083,7 @@ Leverage telemetry, dependency data, and multi‑agent features to optimize thro
 
 **User confusion around pipeline states**
 
-* **Risk**: users do not fully understand the pipeline (`not_started` → `in_progress` → `ready_to_review` → `ready_to_qa` → `completed`/`blocked`), leading to misuse of commands.
+* **Risk**: users do not fully understand the pipeline (`not_started` → `in_progress` → `ready_to_code_review` → `ready_to_qa` → `completed`/`blocked`), leading to misuse of commands.
 
 * **Mitigations**:
 
@@ -10636,7 +10636,7 @@ Provide an end‑to‑end flow for a single agent and single project/workspace, 
 
     * minimal `task_comments` schema (task‑scoped comments, even before full code review/QA exist).
 
-  * Basic task state machine, including `ready_to_review` and `ready_to_qa`.
+  * Basic task state machine, including `ready_to_code_review` and `ready_to_qa`.
 
   * All rows linked to `workspace_id` and `project_id`.
 
@@ -10676,7 +10676,7 @@ Provide an end‑to‑end flow for a single agent and single project/workspace, 
 
     * Applies small, targeted patches from the agent.
 
-    * Transitions `in_progress → ready_to_review` on success.
+    * Transitions `in_progress → ready_to_code_review` on success.
 
     * Writes detailed entries to `task_logs` for each run.
 
@@ -10726,7 +10726,7 @@ For a single real project:
 
   * modifies the repo safely,
 
-  * moves tasks to `ready_to_review`.
+  * moves tasks to `ready_to_code_review`.
 
 * `mcoda backlog` reports SP totals correctly.
 
@@ -10794,7 +10794,7 @@ Deliver the full mcoda pipeline (create → refine → work → review → QA), 
 
       * with severity and reviewer (agent/human).
 
-    * Transitions `ready_to_review → ready_to_qa` or reopens tasks to `in_progress`.
+    * Transitions `ready_to_code_review → ready_to_qa` or reopens tasks to `in_progress`.
 
   * `mcoda qa-tasks`
 
@@ -11102,7 +11102,7 @@ Leverage telemetry, dependency data, and multi‑agent features to optimize thro
 
 **User confusion around pipeline states**
 
-* **Risk**: users do not fully understand the pipeline (`not_started` → `in_progress` → `ready_to_review` → `ready_to_qa` → `completed`/`blocked`), leading to misuse of commands.
+* **Risk**: users do not fully understand the pipeline (`not_started` → `in_progress` → `ready_to_code_review` → `ready_to_qa` → `completed`/`blocked`), leading to misuse of commands.
 
 * **Mitigations**:
 
@@ -11487,9 +11487,9 @@ Leverage telemetry, dependency data, and multi‑agent features to optimize thro
 
 * `not_started → in_progress` (work begins).
 
-* `in_progress → ready_to_review` (via `work-on-tasks`).
+* `in_progress → ready_to_code_review` (via `work-on-tasks`).
 
-* `ready_to_review → ready_to_qa` (via `code-review`).
+* `ready_to_code_review → ready_to_qa` (via `code-review`).
 
 * `ready_to_qa → completed` (via `qa-tasks` on success).
 
@@ -11760,7 +11760,7 @@ The agent:
 
 * Writes structured findings into `task_comments`.
 
-* Moves tasks `ready_to_review → ready_to_qa` (approve) or `ready_to_review → in_progress` when changes are required.
+* Moves tasks `ready_to_code_review → ready_to_qa` (approve) or `ready_to_code_review → in_progress` when changes are required.
 
 **QA**
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
 import { GlobalRepository, WorkspaceRepository, type TaskCommentRow } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, READY_TO_CODE_REVIEW, WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from "./TaskSelectionService.js";
@@ -14,6 +14,7 @@ import { TaskStateService } from "./TaskStateService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
+import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
@@ -23,6 +24,7 @@ const DEFAULT_TASK_BRANCH_PREFIX = "mcoda/task/";
 const TASK_LOCK_TTL_SECONDS = 60 * 60;
 const MAX_TEST_FIX_ATTEMPTS = 3;
 const DEFAULT_TEST_OUTPUT_CHARS = 1200;
+const WORK_ON_TASKS_PATCH_MODE_ENV = "MCODA_WORK_ON_TASKS_PATCH_MODE";
 const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_CODE_WRITER_PROMPT = [
@@ -31,7 +33,7 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria).",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
   "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
-  "If a target file does not exist, create it by outputting a FILE block (not a diff): `FILE: path/to/file.ext` followed by a fenced code block containing the full file contents. Do not respond with JSON-only output; if the runtime forces JSON, include a top-level `patch` string (unified diff) or `files` array of {path, content}.",
+  "Work directly in the repo: edit files and run commands as needed. Do not output patches/diffs/FILE blocks; apply changes to the working tree.",
 ].join("\n");
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
@@ -84,7 +86,7 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
 
 export interface TaskExecutionResult {
   taskKey: string;
-  status: "succeeded" | "blocked" | "failed" | "skipped";
+  status: "succeeded" | "failed" | "skipped";
   notes?: string;
   branch?: string;
 }
@@ -98,6 +100,12 @@ export interface WorkOnTasksResult {
 }
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
+const isPatchModeEnabled = (): boolean => {
+  const raw = process.env[WORK_ON_TASKS_PATCH_MODE_ENV];
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(normalized);
+};
 
 const normalizeSlugList = (input?: unknown): string[] => {
   if (!Array.isArray(input)) return [];
@@ -2013,15 +2021,24 @@ export class WorkOnTasksService {
       .join("\n");
   }
 
-  private async checkoutBaseBranch(baseBranch: string): Promise<void> {
+  private async checkoutBaseBranch(baseBranch: string, options?: { allowDirty?: boolean }): Promise<void> {
     await this.vcs.ensureRepo(this.workspace.workspaceRoot);
     await this.vcs.ensureBaseBranch(this.workspace.workspaceRoot, baseBranch);
     const dirtyPaths = await this.vcs.dirtyPaths(this.workspace.workspaceRoot);
     const nonMcodaDirty = dirtyPaths.filter((p: string) => !p.startsWith(".mcoda"));
-    if (nonMcodaDirty.length) {
+    if (nonMcodaDirty.length && !options?.allowDirty) {
       throw new Error(`Working tree dirty: ${nonMcodaDirty.join(", ")}`);
     }
-    await this.vcs.checkoutBranch(this.workspace.workspaceRoot, baseBranch);
+    try {
+      await this.vcs.checkoutBranch(this.workspace.workspaceRoot, baseBranch);
+    } catch (error) {
+      const errorText = this.formatGitError(error);
+      if (options?.allowDirty && this.isDirtyCheckoutError(errorText)) {
+        // Leave current branch intact; caller will reconcile dirty changes later.
+        return;
+      }
+      throw error;
+    }
   }
 
   private async commitPendingChanges(
@@ -2031,56 +2048,127 @@ export class WorkOnTasksService {
     reason: string,
     taskId: string,
     taskRunId: string,
-  ): Promise<void> {
+    options?: { updateTask?: boolean },
+  ): Promise<string | null> {
     const dirty = await this.vcs.dirtyPaths(this.workspace.workspaceRoot);
     const nonMcoda = dirty.filter((p: string) => !p.startsWith(".mcoda"));
-    if (!nonMcoda.length) return;
+    if (!nonMcoda.length) return null;
     await this.vcs.stage(this.workspace.workspaceRoot, nonMcoda);
     const status = await this.vcs.status(this.workspace.workspaceRoot);
-    if (!status.trim().length) return;
+    if (!status.trim().length) return null;
     const message = `[${taskKey}] ${taskTitle} (${reason})`;
     await this.vcs.commit(this.workspace.workspaceRoot, message);
     const head = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
-    await this.deps.workspaceRepo.updateTask(taskId, {
-      vcsLastCommitSha: head,
-      vcsBranch: branchInfo?.branch ?? null,
-      vcsBaseBranch: branchInfo?.base ?? null,
-    });
+    if (options?.updateTask !== false) {
+      await this.deps.workspaceRepo.updateTask(taskId, {
+        vcsLastCommitSha: head,
+        vcsBranch: branchInfo?.branch ?? null,
+        vcsBaseBranch: branchInfo?.base ?? null,
+      });
+    }
     await this.logTask(taskRunId, `Auto-committed pending changes (${reason})`, "vcs", {
       branch: branchInfo?.branch,
       base: branchInfo?.base,
       head,
     });
+    return head;
   }
 
   private async ensureBranches(
     taskKey: string,
+    taskTitle: string,
+    taskId: string,
     baseBranch: string,
     taskRunId: string,
   ): Promise<{ branch: string; base: string; mergeConflicts?: string[]; remoteSyncNote?: string }> {
     const branch = `${DEFAULT_TASK_BRANCH_PREFIX}${taskKey}`;
-    await this.checkoutBaseBranch(baseBranch);
-    const hasRemote = await this.vcs.hasRemote(this.workspace.workspaceRoot);
+    const cwd = this.workspace.workspaceRoot;
+    let pendingCherryPickSha: string | null = null;
+    await this.vcs.ensureRepo(cwd);
+    const dirtyPaths = await this.vcs.dirtyPaths(cwd);
+    const nonMcodaDirty = dirtyPaths.filter((p: string) => !p.startsWith(".mcoda"));
+    if (nonMcodaDirty.length) {
+      const currentBranch = await this.vcs.currentBranch(cwd);
+      const taskBranchExists = await this.vcs.branchExists(cwd, branch);
+      if (currentBranch === branch) {
+        await this.commitPendingChanges(
+          { branch, base: baseBranch },
+          taskKey,
+          taskTitle,
+          "pre_existing_changes",
+          taskId,
+          taskRunId,
+        );
+      } else if (!taskBranchExists) {
+        pendingCherryPickSha = await this.commitPendingChanges(
+          { branch: currentBranch ?? branch, base: baseBranch },
+          taskKey,
+          taskTitle,
+          "pre_existing_changes",
+          taskId,
+          taskRunId,
+          { updateTask: false },
+        );
+      } else {
+        try {
+          await this.vcs.checkoutBranch(cwd, branch);
+          await this.commitPendingChanges(
+            { branch, base: baseBranch },
+            taskKey,
+            taskTitle,
+            "pre_existing_changes",
+            taskId,
+            taskRunId,
+          );
+        } catch (error) {
+          const errorText = this.formatGitError(error);
+          await this.logTask(
+            taskRunId,
+            `Warning: failed to checkout ${branch} with a dirty workspace; committing on ${
+              currentBranch ?? "HEAD"
+            } and cherry-picking onto ${branch}.`,
+            "vcs",
+            { error: errorText, dirtyPaths: nonMcodaDirty },
+          );
+          pendingCherryPickSha = await this.commitPendingChanges(
+            { branch: currentBranch ?? branch, base: baseBranch },
+            taskKey,
+            taskTitle,
+            "pre_existing_changes",
+            taskId,
+            taskRunId,
+            { updateTask: false },
+          );
+        }
+      }
+    }
+
+    await this.checkoutBaseBranch(baseBranch, { allowDirty: true });
+    const hasRemote = await this.vcs.hasRemote(cwd);
     if (hasRemote) {
       try {
-        await this.vcs.pull(this.workspace.workspaceRoot, "origin", baseBranch, true);
+        await this.vcs.pull(cwd, "origin", baseBranch, true);
       } catch (error) {
         await this.logTask(taskRunId, `Warning: failed to pull ${baseBranch} from origin; continuing with local base.`, "vcs", {
           error: (error as Error).message,
         });
       }
     }
-    const branchExists = await this.vcs.branchExists(this.workspace.workspaceRoot, branch);
+    const branchExists = await this.vcs.branchExists(cwd, branch);
     let remoteSyncNote = "";
     if (branchExists) {
-      await this.vcs.checkoutBranch(this.workspace.workspaceRoot, branch);
-      const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
-      if (dirty.length) {
-        throw new Error(`Task branch ${branch} has uncommitted changes: ${dirty.join(", ")}`);
-      }
+      await this.vcs.checkoutBranch(cwd, branch);
+      await this.commitPendingChanges(
+        { branch, base: baseBranch },
+        taskKey,
+        taskTitle,
+        "pre_existing_changes",
+        taskId,
+        taskRunId,
+      );
       if (hasRemote) {
         try {
-          await this.vcs.pull(this.workspace.workspaceRoot, "origin", branch, true);
+          await this.vcs.pull(cwd, "origin", branch, true);
         } catch (error) {
           const errorText = this.formatGitError(error);
           await this.logTask(taskRunId, `Warning: failed to pull ${branch} from origin; continuing with local branch.`, "vcs", {
@@ -2091,21 +2179,87 @@ export class WorkOnTasksService {
           }
         }
       }
-      try {
-        await this.vcs.merge(this.workspace.workspaceRoot, baseBranch, branch, true);
-      } catch (error) {
-        const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
-        if (conflicts.length) {
-          await this.logTask(taskRunId, `Merge conflicts detected while merging ${baseBranch} into ${branch}.`, "vcs", {
-            conflicts,
-          });
-          await this.vcs.abortMerge(this.workspace.workspaceRoot);
-          return { branch, base: baseBranch, mergeConflicts: conflicts, remoteSyncNote };
+      if (pendingCherryPickSha) {
+        try {
+          await this.vcs.cherryPick(cwd, pendingCherryPickSha);
+          await this.logTask(taskRunId, `Cherry-picked pre-existing changes (${pendingCherryPickSha}).`, "vcs");
+        } catch (error) {
+          const conflicts = await this.vcs.conflictPaths(cwd);
+          if (conflicts.length) {
+            await this.logTask(taskRunId, `Conflicts while cherry-picking pre-existing changes.`, "vcs", {
+              conflicts,
+              error: this.formatGitError(error),
+            });
+            try {
+              await this.vcs.abortCherryPick(cwd);
+            } catch {
+              // ignore abort failures
+            }
+            return { branch, base: baseBranch, mergeConflicts: conflicts, remoteSyncNote };
+          }
+          throw error;
         }
-        throw new Error(`Failed to merge ${baseBranch} into ${branch}: ${(error as Error).message}`);
+      }
+      try {
+        await this.vcs.merge(cwd, baseBranch, branch, true);
+      } catch (error) {
+        const conflicts = await this.vcs.conflictPaths(cwd);
+        if (conflicts.length) {
+          await this.logTask(
+            taskRunId,
+            `Merge conflicts detected while merging ${baseBranch} into ${branch}; auto-resolving by taking ${baseBranch}.`,
+            "vcs",
+            { conflicts },
+          );
+          try {
+            await this.vcs.resolveMergeConflicts(cwd, "theirs", conflicts);
+            await this.logTask(
+              taskRunId,
+              `Resolved merge conflicts by taking ${baseBranch} for ${conflicts.length} file(s).`,
+              "vcs",
+            );
+          } catch (resolveError) {
+            await this.logTask(taskRunId, "Auto-resolve failed; aborting merge.", "vcs", {
+              error: this.formatGitError(resolveError),
+            });
+            await this.vcs.abortMerge(cwd);
+            return { branch, base: baseBranch, mergeConflicts: conflicts, remoteSyncNote };
+          }
+        } else {
+          throw new Error(`Failed to merge ${baseBranch} into ${branch}: ${(error as Error).message}`);
+        }
       }
     } else {
-      await this.vcs.createOrCheckoutBranch(this.workspace.workspaceRoot, branch, baseBranch);
+      await this.vcs.createOrCheckoutBranch(cwd, branch, baseBranch);
+      if (pendingCherryPickSha) {
+        try {
+          await this.vcs.cherryPick(cwd, pendingCherryPickSha);
+          await this.logTask(taskRunId, `Cherry-picked pre-existing changes (${pendingCherryPickSha}).`, "vcs");
+        } catch (error) {
+          const conflicts = await this.vcs.conflictPaths(cwd);
+          if (conflicts.length) {
+            await this.logTask(taskRunId, `Conflicts while cherry-picking pre-existing changes.`, "vcs", {
+              conflicts,
+              error: this.formatGitError(error),
+            });
+            try {
+              await this.vcs.abortCherryPick(cwd);
+            } catch {
+              // ignore abort failures
+            }
+            return { branch, base: baseBranch, mergeConflicts: conflicts, remoteSyncNote };
+          }
+          throw error;
+        }
+      }
+      await this.commitPendingChanges(
+        { branch, base: baseBranch },
+        taskKey,
+        taskTitle,
+        "pre_existing_changes",
+        taskId,
+        taskRunId,
+      );
     }
     return { branch, base: baseBranch, remoteSyncNote: remoteSyncNote || undefined };
   }
@@ -2136,6 +2290,10 @@ export class WorkOnTasksService {
 
   private isGpgSignFailure(errorText: string): boolean {
     return /gpg|signing key|signing failed|gpg failed|no secret key/i.test(errorText);
+  }
+
+  private isDirtyCheckoutError(errorText: string): boolean {
+    return /would be overwritten by checkout|local changes|commit your changes or stash them/i.test(errorText);
   }
   private async pushWithRecovery(taskRunId: string, branch: string): Promise<{ pushed: boolean; skipped: boolean; reason?: string }> {
     const cwd = this.workspace.workspaceRoot;
@@ -2538,18 +2696,41 @@ export class WorkOnTasksService {
   async workOnTasks(request: WorkOnTasksRequest): Promise<WorkOnTasksResult> {
     await this.ensureMcoda();
     const agentStream = request.agentStream ?? process.env.MCODA_STREAM_IO === "1";
+    const patchModeEnabled = isPatchModeEnabled();
+    const directEditsEnabled = !patchModeEnabled;
     const configuredBaseBranch = this.workspace.config?.branch;
     const requestedBaseBranch = request.baseBranch;
     const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
-    const baseBranch = resolvedBaseBranch.length ? resolvedBaseBranch : DEFAULT_BASE_BRANCH;
+    const normalizedBaseBranch = resolvedBaseBranch === "dev" ? DEFAULT_BASE_BRANCH : resolvedBaseBranch;
+    const baseBranch = DEFAULT_BASE_BRANCH;
     const configuredAutoMerge = this.workspace.config?.autoMerge;
     const configuredAutoPush = this.workspace.config?.autoPush;
     const autoMerge = request.autoMerge ?? configuredAutoMerge ?? true;
     const autoPush = request.autoPush ?? configuredAutoPush ?? true;
-    const baseBranchWarnings =
-      requestedBaseBranch && configuredBaseBranch && requestedBaseBranch !== configuredBaseBranch
-        ? [`Base branch override ${requestedBaseBranch} differs from workspace config ${configuredBaseBranch}.`]
-        : [];
+    const baseBranchWarnings: string[] = [];
+    const statusWarnings: string[] = [];
+    const { filtered: statusFilter, rejected } = filterTaskStatuses(
+      request.statusFilter,
+      WORK_ALLOWED_STATUSES,
+      WORK_ALLOWED_STATUSES,
+    );
+    const includeTypes = request.includeTypes?.length ? request.includeTypes : undefined;
+    let excludeTypes = request.excludeTypes;
+    if (!excludeTypes && !includeTypes?.length && (!request.taskKeys || request.taskKeys.length === 0)) {
+      excludeTypes = ["qa_followup"];
+    }
+    if (rejected.length > 0) {
+      statusWarnings.push(
+        `work-on-tasks ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${WORK_ALLOWED_STATUSES.join(
+          ", ",
+        )}.`,
+      );
+    }
+    if (normalizedBaseBranch && normalizedBaseBranch !== DEFAULT_BASE_BRANCH) {
+      baseBranchWarnings.push(
+        `Base branch ${normalizedBaseBranch} ignored; work-on-tasks always uses ${DEFAULT_BASE_BRANCH}.`,
+      );
+    }
     const commandRun = await this.deps.jobService.startCommandRun("work-on-tasks", request.projectKey, {
       taskIds: request.taskKeys,
     });
@@ -2560,7 +2741,10 @@ export class WorkOnTasksService {
         epicKey: request.epicKey,
         storyKey: request.storyKey,
         tasks: request.taskKeys,
-        statusFilter: request.statusFilter,
+        statusFilter,
+        includeTypes,
+        excludeTypes,
+        ignoreDependencies: true,
         limit: request.limit,
         parallel: request.parallel,
         noCommit: request.noCommit ?? false,
@@ -2604,34 +2788,35 @@ export class WorkOnTasksService {
       return message === resolveAbortReason();
     };
     try {
-      await this.checkoutBaseBranch(baseBranch);
+      await this.checkoutBaseBranch(baseBranch, { allowDirty: true });
       selection = await this.selectionService.selectTasks({
         projectKey: request.projectKey,
         epicKey: request.epicKey,
         storyKey: request.storyKey,
         taskKeys: request.taskKeys,
-        statusFilter: request.statusFilter,
+        statusFilter,
+        includeTypes,
+        excludeTypes,
+        ignoreDependencies: true,
         limit: request.limit,
         parallel: request.parallel,
       });
 
       await this.checkpoint(job.id, "selection", {
         ordered: selection.ordered.map((t) => t.task.key),
-        blocked: selection.blocked.map((t) => t.task.key),
       });
 
       await this.deps.jobService.updateJobStatus(job.id, "running", {
         payload: {
           ...(job.payload ?? {}),
           selection: selection.ordered.map((t) => t.task.key),
-          blocked: selection.blocked.map((t) => t.task.key),
         },
         totalItems: selection.ordered.length,
         processedItems: 0,
       });
 
       const results: TaskExecutionResult[] = [];
-      const warnings: string[] = [...baseBranchWarnings, ...selection.warnings];
+      const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...selection.warnings];
       const agent = await this.resolveAgent(request.agentName);
       const prompts = await this.loadPrompts(agent.id);
       const formatSessionId = (iso: string): string => {
@@ -2731,12 +2916,10 @@ export class WorkOnTasksService {
         const completionBar = "💰".repeat(15);
         const statusLabel =
           details.status === "succeeded"
-            ? "COMPLETED"
+            ? READY_TO_CODE_REVIEW.toUpperCase()
             : details.status === "skipped"
               ? "SKIPPED"
-              : details.status === "blocked"
-                ? "BLOCKED"
-                : "FAILED";
+              : "FAILED";
         const hasRemote = await this.vcs.hasRemote(this.workspace.workspaceRoot);
         const tracking = details.taskBranch ? (hasRemote ? `origin/${details.taskBranch}` : "n/a") : "n/a";
         const headSha = details.headSha ?? "n/a";
@@ -2762,7 +2945,7 @@ export class WorkOnTasksService {
         emitLine(`  [🎋] Task branch: ${details.taskBranch ?? "n/a"}`);
         emitLine(`  [🗿] Tracking:    ${tracking}`);
         const mergeDetail = details.mergeNote ? ` (${details.mergeNote})` : "";
-        emitLine(`  [🚀] Merge→dev:   ${details.mergeStatus}${mergeDetail}`);
+        emitLine(`  [🚀] Merge→${baseLabel}:   ${details.mergeStatus}${mergeDetail}`);
         emitLine(`  [🐲] HEAD:        ${headSha}`);
         emitLine(`  [♨️] Files:       ${details.touchedFiles}`);
         emitLine(`  [🔑] Base:        ${baseLabel}`);
@@ -2781,7 +2964,9 @@ export class WorkOnTasksService {
         emitBlank();
       };
 
+      let abortRemainingReason: string | null = null;
       taskLoop: for (const [index, task] of selection.ordered.entries()) {
+        if (abortRemainingReason) break taskLoop;
         abortIfSignaled();
         const startedAt = new Date().toISOString();
         const taskRun = await this.deps.workspaceRepo.createTaskRun({
@@ -2813,7 +2998,7 @@ export class WorkOnTasksService {
         const modelLabel = agent.defaultModel ?? "(default)";
         const providerLabel = resolveProvider(agent.adapter);
         const reasoningLabel = resolveReasoning(agent.config as Record<string, unknown> | undefined);
-        const stepLabel = "patch";
+        const stepLabel = directEditsEnabled ? "direct" : "patch";
         const taskStartMs = Date.now();
         let taskStatus: TaskExecutionResult["status"] | null = null;
         let tokensPromptTotal = 0;
@@ -2825,12 +3010,15 @@ export class WorkOnTasksService {
         let failureReason: string | null = null;
         let patchApplied = false;
         let runAllScriptCreated = false;
+        let allowedFiles: string[] = [];
         let touched: string[] = [];
+        let dirtyBeforeAgent: string[] = [];
         let unresolvedComments: TaskCommentRow[] = [];
         let commentContext: { comments: TaskCommentRow[]; unresolved: TaskCommentRow[] } | null = null;
         let commentResolution:
           | { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string }
           | null = null;
+        let commentResolutionApplied = false;
         let taskBranchName: string | null = task.task.vcsBranch ?? null;
         let baseBranchName: string | null = task.task.vcsBaseBranch ?? baseBranch;
         let branchInfo: { branch: string; base: string; mergeConflicts?: string[]; remoteSyncNote?: string } | null = {
@@ -2839,11 +3027,44 @@ export class WorkOnTasksService {
         };
         let headSha: string | null = task.task.vcsLastCommitSha ?? null;
         let taskEndEmitted = false;
+        let vcsFinalized = false;
+        let runVcsPhase:
+          | ((options: { allowResultUpdate: boolean; reason: string }) => Promise<{ halt: boolean }>)
+          | null = null;
         const setFailureReason = (reason: string | undefined | null): void => {
           if (!failureReason && reason) failureReason = reason;
         };
         const setMergeNote = (note: string | undefined | null): void => {
           if (!mergeNote && note) mergeNote = note;
+        };
+        const applyCommentResolutionIfNeeded = async (): Promise<{
+          resolved: string[];
+          reopened: string[];
+          open: string[];
+        } | null> => {
+          if (commentResolutionApplied) return null;
+          if (!commentResolution?.resolvedSlugs?.length && !commentResolution?.unresolvedSlugs?.length) {
+            return null;
+          }
+          const context = commentContext ?? (await this.loadCommentContext(task.task.id));
+          commentContext = context;
+          const applied = await this.applyCommentResolutions({
+            taskId: task.task.id,
+            taskRunId: taskRun.id,
+            jobId: job.id,
+            agentId: agent.id,
+            resolvedSlugs: commentResolution.resolvedSlugs ?? null,
+            unresolvedSlugs: commentResolution.unresolvedSlugs ?? null,
+            existingComments: context.comments,
+            dryRun: Boolean(request.dryRun),
+          });
+          commentResolutionApplied = true;
+          await this.logTask(
+            taskRun.id,
+            `Applied comment resolution: resolved=${applied.resolved.length}, reopened=${applied.reopened.length}, open=${applied.open.length}`,
+            "comment_resolution",
+          );
+          return applied;
         };
 
         emitTaskStart({
@@ -2866,13 +3087,11 @@ export class WorkOnTasksService {
           const terminal =
             status === "succeeded"
               ? touched.length
-                ? "COMPLETED_WITH_CHANGES"
-                : "COMPLETED_NO_CHANGES"
-              : status === "blocked"
-                ? "BLOCKED"
-                : status === "skipped"
-                  ? "SKIPPED"
-                  : "FAILED";
+                ? "READY_TO_CODE_REVIEW_WITH_CHANGES"
+                : "READY_TO_CODE_REVIEW_NO_CHANGES"
+              : status === "skipped"
+                ? "SKIPPED"
+                : "FAILED";
           let resolvedHead = headSha;
           if (!resolvedHead) {
             try {
@@ -2921,29 +3140,10 @@ export class WorkOnTasksService {
           abortIfSignaled();
           await startPhase("selection", {
             dependencies: task.dependencies.keys,
-            blockedReason: task.blockedReason,
           });
           await this.logTask(taskRun.id, `Selected task ${task.task.key}`, "selection", {
             dependencies: task.dependencies.keys,
-            blockedReason: task.blockedReason,
           });
-
-          if (task.blockedReason && !request.dryRun) {
-            await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "selection", "error", {
-              blockedReason: task.blockedReason,
-            });
-            await this.stateService.markBlocked(task.task, task.blockedReason, statusContext);
-            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-              status: "failed",
-              finishedAt: new Date().toISOString(),
-            });
-            setFailureReason(task.blockedReason);
-            results.push({ taskKey: task.task.key, status: "blocked", notes: task.blockedReason });
-            taskStatus = "blocked";
-            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-            await emitTaskEndOnce();
-            continue taskLoop;
-          }
 
           await endPhase("selection");
         } catch (error) {
@@ -2988,7 +3188,7 @@ export class WorkOnTasksService {
         try {
           abortIfSignaled();
           const metadata = (task.task.metadata as any) ?? {};
-          let allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
+          allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
           const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
           const testRequirementsNote = formatTestRequirementsNote(testRequirements);
           const testsRequired = hasTestRequirements(testRequirements);
@@ -3086,6 +3286,253 @@ export class WorkOnTasksService {
             return true;
           };
 
+          runVcsPhase = async ({ allowResultUpdate, reason }) => {
+            if (vcsFinalized) return { halt: false };
+            vcsFinalized = true;
+            const hasResult = results.some((result) => result.taskKey === task.task.key);
+            const recordFailureResult = async (notes: string) => {
+              if (!allowResultUpdate || hasResult) return;
+              results.push({ taskKey: task.task.key, status: "failed", notes });
+              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+            };
+            let haltAfterPush = false;
+            if (request.dryRun) {
+              mergeStatus = "skipped";
+              setMergeNote("dry_run");
+              await this.logTask(taskRun.id, "Dry-run: skipped commit/merge.", "vcs");
+              return { halt: false };
+            }
+            if (request.noCommit) {
+              mergeStatus = "skipped";
+              setMergeNote("no_commit");
+              await this.logTask(taskRun.id, "no-commit set: skipped commit/merge.", "vcs");
+              return { halt: false };
+            }
+            if (!branchInfo?.branch || !branchInfo?.base) {
+              mergeStatus = "skipped";
+              setMergeNote("no_task_branch");
+              await this.logTask(taskRun.id, "No task branch available; skipped commit/merge.", "vcs");
+              return { halt: false };
+            }
+            if (!(await refreshLock("vcs_start", true))) {
+              await this.logTask(taskRun.id, "Aborting task: lock lost before VCS phase.", "vcs");
+              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: "task_lock_lost" });
+              await this.stateService.markFailed(task.task, "task_lock_lost", statusContext);
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                status: "failed",
+                finishedAt: new Date().toISOString(),
+              });
+              setFailureReason("task_lock_lost");
+              taskStatus = "failed";
+              await recordFailureResult("task_lock_lost");
+              return { halt: true };
+            }
+            await startPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base, reason });
+            try {
+              const restrictAutoMergeWithoutScope = Boolean(this.workspace.config?.restrictAutoMergeWithoutScope);
+              if (!autoMerge || (restrictAutoMergeWithoutScope && allowedFiles.length === 0)) {
+                const mergeReason = !autoMerge ? "auto_merge_disabled" : "no_file_scope";
+                setMergeNote(`${mergeReason}_forced`);
+                await this.logTask(
+                  taskRun.id,
+                  `Auto-merge setting ignored (${mergeReason}); merge is required for task branches.`,
+                  "vcs",
+                  { reason: mergeReason },
+                );
+              }
+
+              const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
+              const toStage = dirty.length ? dirty : touched.length ? touched : ["."];
+              await this.vcs.stage(this.workspace.workspaceRoot, toStage);
+              const status = await this.vcs.status(this.workspace.workspaceRoot);
+              const hasChanges = status.trim().length > 0;
+              if (hasChanges) {
+                const commitMessage = `[${task.task.key}] ${task.task.title}`;
+                let committed = false;
+                try {
+                  await this.vcs.commit(this.workspace.workspaceRoot, commitMessage);
+                  committed = true;
+                } catch (error) {
+                  const errorText = this.formatGitError(error);
+                  const hookFailure = this.isCommitHookFailure(errorText);
+                  const gpgFailure = this.isGpgSignFailure(errorText);
+                  if (hookFailure || gpgFailure) {
+                    const guidance = [
+                      hookFailure
+                        ? "Commit hook failed; run hooks manually or configure bypass (e.g., HUSKY=0) if policy allows."
+                        : "",
+                      gpgFailure
+                        ? "GPG signing failed; configure signing key or disable commit.gpgsign for this repo."
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ");
+                    await this.logTask(taskRun.id, `Commit failed; retrying with bypass flags. ${guidance}`, "vcs", {
+                      error: errorText,
+                    });
+                    try {
+                      await this.vcs.commit(this.workspace.workspaceRoot, commitMessage, {
+                        noVerify: hookFailure,
+                        noGpgSign: gpgFailure,
+                      });
+                      committed = true;
+                      await this.logTask(taskRun.id, "Commit succeeded after bypassing hook/signing checks.", "vcs");
+                    } catch (retryError) {
+                      const retryText = this.formatGitError(retryError);
+                      throw new Error(`Commit failed after retry: ${retryText}`);
+                    }
+                  } else {
+                    throw error;
+                  }
+                }
+                if (committed) {
+                  const head = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
+                  await this.deps.workspaceRepo.updateTask(task.task.id, { vcsLastCommitSha: head });
+                  await this.logTask(taskRun.id, `Committed changes (${head})`, "vcs");
+                  headSha = head;
+                }
+              } else {
+                await this.logTask(taskRun.id, "No changes to commit.", "vcs");
+              }
+
+              try {
+                await this.vcs.merge(this.workspace.workspaceRoot, branchInfo.branch, branchInfo.base);
+                mergeStatus = "merged";
+                try {
+                  headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
+                } catch {
+                  // Best-effort head capture.
+                }
+                await this.logTask(taskRun.id, `Merged ${branchInfo.branch} into ${branchInfo.base}`, "vcs");
+                if (!(await refreshLock("vcs_merge"))) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost after merge.", "vcs");
+                  await this.stateService.markFailed(task.task, "task_lock_lost", statusContext);
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                    status: "failed",
+                    finishedAt: new Date().toISOString(),
+                  });
+                  setFailureReason("task_lock_lost");
+                  taskStatus = "failed";
+                  await recordFailureResult("task_lock_lost");
+                  return { halt: true };
+                }
+              } catch (error) {
+                mergeStatus = "failed";
+                const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
+                if (conflicts.length) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Merge conflicts while merging ${branchInfo.branch} into ${branchInfo.base}; auto-resolving by taking ${branchInfo.branch}.`,
+                    "vcs",
+                    {
+                      conflicts,
+                    },
+                  );
+                  try {
+                    await this.vcs.resolveMergeConflicts(this.workspace.workspaceRoot, "theirs", conflicts);
+                    mergeStatus = "merged";
+                    try {
+                      headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
+                    } catch {
+                      // Best-effort head capture after conflict resolution.
+                    }
+                    await this.logTask(
+                      taskRun.id,
+                      `Resolved merge conflicts by taking ${branchInfo.branch} for ${conflicts.length} file(s).`,
+                      "vcs",
+                    );
+                  } catch (resolveError) {
+                    await this.logTask(taskRun.id, "Auto-resolve failed; aborting merge.", "vcs", {
+                      error: this.formatGitError(resolveError),
+                    });
+                    await this.vcs.abortMerge(this.workspace.workspaceRoot);
+                    await this.stateService.markFailed(task.task, "merge_conflict", statusContext);
+                    await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                      status: "failed",
+                      finishedAt: new Date().toISOString(),
+                    });
+                    setFailureReason("merge_conflict");
+                    taskStatus = "failed";
+                    await recordFailureResult("merge_conflict");
+                    haltAfterPush = true;
+                  }
+                } else {
+                  throw error;
+                }
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              if (/task lock lost/i.test(message)) {
+                return { halt: true };
+              }
+              await this.logTask(taskRun.id, `VCS commit/push failed: ${message}`, "vcs");
+              await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: message });
+              await this.stateService.markFailed(task.task, "vcs_failed", statusContext);
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+              setFailureReason("vcs_failed");
+              mergeStatus = "failed";
+              taskStatus = "failed";
+              await recordFailureResult("vcs_failed");
+              haltAfterPush = true;
+            } finally {
+              await endPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
+            }
+            const hasRemote = await this.vcs.hasRemote(this.workspace.workspaceRoot);
+            if (hasRemote) {
+              if (!autoPush) {
+                await this.logTask(
+                  taskRun.id,
+                  `Auto-push setting ignored; pushing ${branchInfo.branch} and ${branchInfo.base} to origin.`,
+                  "vcs",
+                  { reason: "auto_push_disabled" },
+                );
+              }
+              const branchPush = await this.pushWithRecovery(taskRun.id, branchInfo.branch);
+              if (branchPush.pushed) {
+                await this.logTask(taskRun.id, "Pushed branch to remote origin", "vcs");
+              } else if (branchPush.skipped) {
+                await this.logTask(taskRun.id, "Skipped pushing branch to remote origin due to permissions/protection.", "vcs");
+              }
+              if (!(await refreshLock("vcs_push_branch"))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
+                await this.stateService.markFailed(task.task, "task_lock_lost", statusContext);
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                setFailureReason("task_lock_lost");
+                taskStatus = "failed";
+                await recordFailureResult("task_lock_lost");
+                return { halt: true };
+              }
+              const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
+              if (basePush.pushed) {
+                await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
+              } else if (basePush.skipped) {
+                await this.logTask(
+                  taskRun.id,
+                  `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`,
+                  "vcs",
+                );
+              }
+              if (!(await refreshLock("vcs_push_base"))) {
+                await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
+                await this.stateService.markFailed(task.task, "task_lock_lost", statusContext);
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                setFailureReason("task_lock_lost");
+                taskStatus = "failed";
+                await recordFailureResult("task_lock_lost");
+                return { halt: true };
+              }
+            } else {
+              await this.logTask(taskRun.id, "No remote configured; skipping push to origin.", "vcs");
+            }
+            return { halt: haltAfterPush };
+          };
+
           if (!request.dryRun && testsRequired && testCommands.length === 0 && !runAllTestsCommandHint) {
             await this.logTask(
               taskRun.id,
@@ -3097,7 +3544,13 @@ export class WorkOnTasksService {
 
           if (!request.dryRun) {
             try {
-              branchInfo = await this.ensureBranches(task.task.key, baseBranch, taskRun.id);
+              branchInfo = await this.ensureBranches(
+                task.task.key,
+                task.task.title ?? "(untitled)",
+                task.task.id,
+                baseBranch,
+                taskRun.id,
+              );
               taskBranchName = branchInfo.branch || taskBranchName;
               baseBranchName = branchInfo.base || baseBranchName;
               mergeConflicts = branchInfo.mergeConflicts ?? [];
@@ -3108,8 +3561,8 @@ export class WorkOnTasksService {
               });
               await this.logTask(taskRun.id, `Using branch ${branchInfo.branch} (base ${branchInfo.base})`, "vcs");
               if (mergeConflicts.length) {
-                await this.logTask(taskRun.id, `Blocking task due to merge conflicts: ${mergeConflicts.join(", ")}`, "vcs");
-                await this.stateService.markBlocked(task.task, "merge_conflict", statusContext);
+                await this.logTask(taskRun.id, `Failing task due to merge conflicts: ${mergeConflicts.join(", ")}`, "vcs");
+                await this.stateService.markFailed(task.task, "merge_conflict", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
@@ -3150,7 +3603,7 @@ export class WorkOnTasksService {
             await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "context", "error", {
               error: "missing_docdex",
             });
-            await this.stateService.markBlocked(task.task, "missing_docdex", statusContext);
+            await this.stateService.markFailed(task.task, "missing_docdex", statusContext);
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
               status: "failed",
               finishedAt: new Date().toISOString(),
@@ -3185,14 +3638,10 @@ export class WorkOnTasksService {
             : "";
           const outputRequirementNote = [
             "Output requirements (strict):",
-            "- Return only code changes.",
-            "- For edits to existing files, output a unified diff inside ```patch fences.",
-            "- For new files, output FILE blocks in this format:",
-            "  FILE: path/to/file.ext",
-            "  ```",
-            "  <full file contents>",
-            "  ```",
-            "- Do not include plans, narration, or JSON unless the runtime forces it; if forced, return JSON with a top-level `patch` string or `files` array of {path, content}. If comment backlog is present and you need to report comment resolution, you may wrap the patch/files in JSON with resolvedSlugs/unresolvedSlugs.",
+            "- Apply changes directly in the repo; do not output patches/diffs/FILE blocks.",
+            "- Do not commit changes; leave the working tree for mcoda to stage and commit.",
+            "- Summarize what you changed and any test results.",
+            "- If comment backlog is present and you need to report comment resolution, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus (no patches/files).",
           ].join("\n");
           const promptExtras = [
             testRequirementsNote,
@@ -3280,84 +3729,104 @@ export class WorkOnTasksService {
             agentOverride?: { id: string; defaultModel?: string },
           ) => {
             abortIfSignaled();
+            const previousCwd = process.cwd();
+            const targetCwd = this.workspace.workspaceRoot;
+            const shouldChdir = previousCwd !== targetCwd;
             const activeAgent = agentOverride ?? agent;
             let output = "";
             const started = Date.now();
-            if (agentStream && this.deps.agentService.invokeStream) {
-              const stream = await withAbort(
-                this.deps.agentService.invokeStream(activeAgent.id, {
-                  input,
-                  metadata: { taskKey: task.task.key },
-                }),
-              );
-              let pollLockLost = false;
-              let aborted = false;
-              const onAbort = () => {
-                aborted = true;
-              };
-              abortSignal?.addEventListener("abort", onAbort, { once: true });
-              const refreshTimer = setInterval(() => {
-                void refreshLock("agent_stream_poll").then((ok) => {
-                  if (!ok) pollLockLost = true;
-                });
-              }, getLockRefreshIntervalMs());
-              try {
-                for await (const chunk of stream) {
-                  if (aborted) {
-                    throw new Error(resolveAbortReason());
+            try {
+              if (shouldChdir) {
+                process.chdir(targetCwd);
+              }
+              if (agentStream && this.deps.agentService.invokeStream) {
+                const stream = await withAbort(
+                  this.deps.agentService.invokeStream(activeAgent.id, {
+                    input,
+                    metadata: { taskKey: task.task.key },
+                  }),
+                );
+                let pollLockLost = false;
+                let aborted = false;
+                const onAbort = () => {
+                  aborted = true;
+                };
+                abortSignal?.addEventListener("abort", onAbort, { once: true });
+                const refreshTimer = setInterval(() => {
+                  void refreshLock("agent_stream_poll").then((ok) => {
+                    if (!ok) pollLockLost = true;
+                  });
+                }, getLockRefreshIntervalMs());
+                try {
+                  for await (const chunk of stream) {
+                    if (aborted) {
+                      throw new Error(resolveAbortReason());
+                    }
+                    output += chunk.output ?? "";
+                    streamChunk(chunk.output);
+                    await this.logTask(taskRun.id, chunk.output ?? "", phaseLabel);
+                    if (!(await refreshLock("agent_stream"))) {
+                      await this.logTask(taskRun.id, "Aborting task: lock lost during agent streaming.", "vcs");
+                      throw new Error("Task lock lost during agent stream.");
+                    }
                   }
-                  output += chunk.output ?? "";
-                  streamChunk(chunk.output);
-                  await this.logTask(taskRun.id, chunk.output ?? "", phaseLabel);
-                  if (!(await refreshLock("agent_stream"))) {
-                    await this.logTask(taskRun.id, "Aborting task: lock lost during agent streaming.", "vcs");
-                    throw new Error("Task lock lost during agent stream.");
-                  }
+                } finally {
+                  clearInterval(refreshTimer);
+                  abortSignal?.removeEventListener("abort", onAbort);
                 }
-              } finally {
-                clearInterval(refreshTimer);
-                abortSignal?.removeEventListener("abort", onAbort);
-              }
-              if (pollLockLost) {
-                await this.logTask(taskRun.id, "Aborting task: lock lost during agent stream.", "vcs");
-                throw new Error("Task lock lost during agent stream.");
-              }
-              if (aborted) {
-                throw new Error(resolveAbortReason());
-              }
-            } else {
-              let pollLockLost = false;
-              let rejectLockLost: ((error: Error) => void) | null = null;
-              const lockLostPromise = new Promise<never>((_, reject) => {
-                rejectLockLost = reject;
-              });
-              const refreshTimer = setInterval(() => {
-                void refreshLock("agent_poll").then((ok) => {
-                  if (ok || pollLockLost) return;
-                  pollLockLost = true;
-                  if (rejectLockLost) rejectLockLost(new Error("Task lock lost during agent invoke."));
+                if (pollLockLost) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost during agent stream.", "vcs");
+                  throw new Error("Task lock lost during agent stream.");
+                }
+                if (aborted) {
+                  throw new Error(resolveAbortReason());
+                }
+              } else {
+                let pollLockLost = false;
+                let rejectLockLost: ((error: Error) => void) | null = null;
+                const lockLostPromise = new Promise<never>((_, reject) => {
+                  rejectLockLost = reject;
                 });
-              }, getLockRefreshIntervalMs());
-              const invokePromise = withAbort(
-                this.deps.agentService.invoke(activeAgent.id, { input, metadata: { taskKey: task.task.key } }),
-              ).catch((error) => {
-                if (pollLockLost) return null as any;
-                throw error;
-              });
-              try {
-                const result = await Promise.race([invokePromise, lockLostPromise]);
-                if (result) {
-                  output = result.output ?? "";
+                const refreshTimer = setInterval(() => {
+                  void refreshLock("agent_poll").then((ok) => {
+                    if (ok || pollLockLost) return;
+                    pollLockLost = true;
+                    if (rejectLockLost) rejectLockLost(new Error("Task lock lost during agent invoke."));
+                  });
+                }, getLockRefreshIntervalMs());
+                const invokePromise = withAbort(
+                  this.deps.agentService.invoke(activeAgent.id, { input, metadata: { taskKey: task.task.key } }),
+                ).catch((error) => {
+                  if (pollLockLost) return null as any;
+                  throw error;
+                });
+                try {
+                  const result = await Promise.race([invokePromise, lockLostPromise]);
+                  if (result) {
+                    output = result.output ?? "";
+                  }
+                } finally {
+                  clearInterval(refreshTimer);
                 }
-              } finally {
-                clearInterval(refreshTimer);
+                if (pollLockLost) {
+                  await this.logTask(taskRun.id, "Aborting task: lock lost during agent invoke.", "vcs");
+                  throw new Error("Task lock lost during agent invoke.");
+                }
+                streamChunk(output);
+                await this.logTask(taskRun.id, output, phaseLabel);
               }
-              if (pollLockLost) {
-                await this.logTask(taskRun.id, "Aborting task: lock lost during agent invoke.", "vcs");
-                throw new Error("Task lock lost during agent invoke.");
+            } finally {
+              if (shouldChdir) {
+                try {
+                  process.chdir(previousCwd);
+                } catch (error) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Failed to restore working directory: ${error instanceof Error ? error.message : String(error)}`,
+                    "agent",
+                  );
+                }
               }
-              streamChunk(output);
-              await this.logTask(taskRun.id, output, phaseLabel);
             }
             return { output, durationSeconds: (Date.now() - started) / 1000, agentUsed: activeAgent };
           };
@@ -3397,6 +3866,15 @@ export class WorkOnTasksService {
           let lastTestFailureSummary = "";
           let lastTestResults: TestRunResult[] = [];
           let lastTestErrorType: "tests_failed" | "tests_not_configured" | null = null;
+          if (directEditsEnabled) {
+            try {
+              dirtyBeforeAgent = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter(
+                (p) => !p.startsWith(".mcoda"),
+              );
+            } catch {
+              dirtyBeforeAgent = [];
+            }
+          }
 
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             abortIfSignaled();
@@ -3446,6 +3924,11 @@ export class WorkOnTasksService {
               });
               setFailureReason(message);
               results.push({ taskKey: task.task.key, status: "failed", notes: message });
+              if (isAuthErrorMessage(message)) {
+                abortRemainingReason = message;
+                setFailureReason(AUTH_ERROR_REASON);
+                warnings.push(`Auth/rate limit error detected; stopping after ${task.task.key}. ${message}`);
+              }
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
               continue taskLoop;
@@ -3466,134 +3949,153 @@ export class WorkOnTasksService {
               invalidFileBlockPaths,
             } = extractAgentChanges(agentOutput);
             commentResolution = agentCommentResolution ?? null;
-            if (fileBlocks.length && patches.length) {
-              const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
-              if (existing.length) {
-                await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
-              }
-              fileBlocks = remaining;
-            }
-            if (placeholderFileBlocks) {
-              await this.logTask(
-                taskRun.id,
-                "Agent output contained placeholder content in FILE blocks; rejecting output and retrying.",
-                "agent",
-              );
-              patches = [];
-              fileBlocks = [];
-              jsonDetected = false;
-            }
-            if (unfencedFileHeader) {
-              await this.logTask(
-                taskRun.id,
-                "Agent output contained FILE headers without fenced blocks; rejecting output and retrying with strict formatting.",
-                "agent",
-              );
-              patches = [];
-              fileBlocks = [];
-              jsonDetected = false;
-            }
-            if (invalidFileBlockPaths.length) {
-              await this.logTask(
-                taskRun.id,
-                `Agent output contained FILE paths with diff metadata (${invalidFileBlockPaths.join(", ")}); rejecting output.`,
-                "agent",
-              );
-              patches = [];
-              fileBlocks = [];
-              jsonDetected = false;
-            }
-            if ((patches.length > 0 || fileBlocks.length > 0) && hasExtraneousOutput(agentOutput, jsonDetected)) {
-              await this.logTask(
-                taskRun.id,
-                "Agent output contained non-code text; rejecting patch/FILE blocks and retrying with strict output.",
-                "agent",
-              );
-              patches = [];
-              fileBlocks = [];
-              jsonDetected = false;
-            }
-            if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
-              triedRetry = true;
-              const retryReason = jsonDetected
-                ? "Agent output was JSON-only and did not include patch or file blocks; retrying with explicit output instructions."
-                : "Agent output did not include a patch or file blocks; retrying with explicit output instructions.";
-              await this.logTask(taskRun.id, retryReason, "agent");
-              try {
-                const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput ONLY code changes. If editing existing files, respond with a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, respond ONLY with FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis, narration, or extra text. Do not output JSON unless the runtime forces it; if forced, return a top-level JSON object with either a \`patch\` string (unified diff) or a \`files\` array of {path, content}.`;
-                const retryAgent = patchOnlyAgentSlug ? ((await resolvePatchOnlyAgent()) ?? agent) : agent;
-                if (retryAgent.id !== agent.id) {
-                  await this.logTask(
-                    taskRun.id,
-                    `Retrying with patch-only agent override: ${patchOnlyAgentSlug}`,
-                    "agent",
-                  );
+            const patchOutputDetected =
+              patches.length > 0 ||
+              fileBlocks.length > 0 ||
+              unfencedFileHeader ||
+              placeholderFileBlocks ||
+              invalidFileBlockPaths.length > 0;
+            if (patchModeEnabled) {
+              if (fileBlocks.length && patches.length) {
+                const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
+                if (existing.length) {
+                  await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
                 }
-                const retry = await invokeAgentOnce(retryInput, "agent", retryAgent);
-                agentOutput = sanitizeAgentOutput(retry.output ?? "");
-                agentDuration += retry.durationSeconds;
-                await recordUsage("agent_retry", retry.output ?? "", retry.durationSeconds, retryInput, retry.agentUsed, attempt);
-                ({
-                  patches,
-                  fileBlocks,
-                  jsonDetected,
-                  commentResolution: agentCommentResolution,
-                  unfencedFileHeader,
-                  placeholderFileBlocks,
-                  invalidFileBlockPaths,
-                } = extractAgentChanges(agentOutput));
-                commentResolution = agentCommentResolution ?? null;
-                if (fileBlocks.length && patches.length) {
-                  const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
-                  if (existing.length) {
-                    await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                fileBlocks = remaining;
+              }
+              if (placeholderFileBlocks) {
+                await this.logTask(
+                  taskRun.id,
+                  "Agent output contained placeholder content in FILE blocks; rejecting output and retrying.",
+                  "agent",
+                );
+                patches = [];
+                fileBlocks = [];
+                jsonDetected = false;
+              }
+              if (unfencedFileHeader) {
+                await this.logTask(
+                  taskRun.id,
+                  "Agent output contained FILE headers without fenced blocks; rejecting output and retrying with strict formatting.",
+                  "agent",
+                );
+                patches = [];
+                fileBlocks = [];
+                jsonDetected = false;
+              }
+              if (invalidFileBlockPaths.length) {
+                await this.logTask(
+                  taskRun.id,
+                  `Agent output contained FILE paths with diff metadata (${invalidFileBlockPaths.join(", ")}); rejecting output.`,
+                  "agent",
+                );
+                patches = [];
+                fileBlocks = [];
+                jsonDetected = false;
+              }
+              if ((patches.length > 0 || fileBlocks.length > 0) && hasExtraneousOutput(agentOutput, jsonDetected)) {
+                await this.logTask(
+                  taskRun.id,
+                  "Agent output contained non-code text; rejecting patch/FILE blocks and retrying with strict output.",
+                  "agent",
+                );
+                patches = [];
+                fileBlocks = [];
+                jsonDetected = false;
+              }
+              if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
+                triedRetry = true;
+                const retryReason = jsonDetected
+                  ? "Agent output was JSON-only and did not include patch or file blocks; retrying with explicit output instructions."
+                  : "Agent output did not include a patch or file blocks; retrying with explicit output instructions.";
+                await this.logTask(taskRun.id, retryReason, "agent");
+                try {
+                  const retryInput = `${systemPrompt}\n\n${attemptPrompt}\n\nOutput ONLY code changes. If editing existing files, respond with a unified diff inside \`\`\`patch\`\`\` fences. If creating new files, respond ONLY with FILE blocks in this format:\nFILE: path/to/file.ext\n\`\`\`\n<full file contents>\n\`\`\`\nDo not include analysis, narration, or extra text. Do not output JSON unless the runtime forces it; if forced, return a top-level JSON object with either a \`patch\` string (unified diff) or a \`files\` array of {path, content}.`;
+                  const retryAgent = patchOnlyAgentSlug ? ((await resolvePatchOnlyAgent()) ?? agent) : agent;
+                  if (retryAgent.id !== agent.id) {
+                    await this.logTask(
+                      taskRun.id,
+                      `Retrying with patch-only agent override: ${patchOnlyAgentSlug}`,
+                      "agent",
+                    );
                   }
-                  fileBlocks = remaining;
+                  const retry = await invokeAgentOnce(retryInput, "agent", retryAgent);
+                  agentOutput = sanitizeAgentOutput(retry.output ?? "");
+                  agentDuration += retry.durationSeconds;
+                  await recordUsage("agent_retry", retry.output ?? "", retry.durationSeconds, retryInput, retry.agentUsed, attempt);
+                  ({
+                    patches,
+                    fileBlocks,
+                    jsonDetected,
+                    commentResolution: agentCommentResolution,
+                    unfencedFileHeader,
+                    placeholderFileBlocks,
+                    invalidFileBlockPaths,
+                  } = extractAgentChanges(agentOutput));
+                  commentResolution = agentCommentResolution ?? null;
+                  if (fileBlocks.length && patches.length) {
+                    const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
+                    if (existing.length) {
+                      await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                    }
+                    fileBlocks = remaining;
+                  }
+                  if (placeholderFileBlocks) {
+                    await this.logTask(
+                      taskRun.id,
+                      "Agent retry output contained placeholder content in FILE blocks; rejecting output.",
+                      "agent",
+                    );
+                    patches = [];
+                    fileBlocks = [];
+                    jsonDetected = false;
+                  }
+                  if (unfencedFileHeader) {
+                    await this.logTask(
+                      taskRun.id,
+                      "Agent retry output contained FILE headers without fenced blocks; rejecting output.",
+                      "agent",
+                    );
+                    patches = [];
+                    fileBlocks = [];
+                    jsonDetected = false;
+                  }
+                  if (invalidFileBlockPaths.length) {
+                    await this.logTask(
+                      taskRun.id,
+                      `Agent retry output contained FILE paths with diff metadata (${invalidFileBlockPaths.join(", ")}); rejecting output.`,
+                      "agent",
+                    );
+                    patches = [];
+                    fileBlocks = [];
+                    jsonDetected = false;
+                  }
+                  if ((patches.length > 0 || fileBlocks.length > 0) && hasExtraneousOutput(agentOutput, jsonDetected)) {
+                    await this.logTask(
+                      taskRun.id,
+                      "Agent retry output contained non-code text; rejecting patch/FILE blocks.",
+                      "agent",
+                    );
+                    patches = [];
+                    fileBlocks = [];
+                    jsonDetected = false;
+                  }
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error);
+                  await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
                 }
-                if (placeholderFileBlocks) {
-                  await this.logTask(
-                    taskRun.id,
-                    "Agent retry output contained placeholder content in FILE blocks; rejecting output.",
-                    "agent",
-                  );
-                  patches = [];
-                  fileBlocks = [];
-                  jsonDetected = false;
-                }
-                if (unfencedFileHeader) {
-                  await this.logTask(
-                    taskRun.id,
-                    "Agent retry output contained FILE headers without fenced blocks; rejecting output.",
-                    "agent",
-                  );
-                  patches = [];
-                  fileBlocks = [];
-                  jsonDetected = false;
-                }
-                if (invalidFileBlockPaths.length) {
-                  await this.logTask(
-                    taskRun.id,
-                    `Agent retry output contained FILE paths with diff metadata (${invalidFileBlockPaths.join(", ")}); rejecting output.`,
-                    "agent",
-                  );
-                  patches = [];
-                  fileBlocks = [];
-                  jsonDetected = false;
-                }
-                if ((patches.length > 0 || fileBlocks.length > 0) && hasExtraneousOutput(agentOutput, jsonDetected)) {
-                  await this.logTask(
-                    taskRun.id,
-                    "Agent retry output contained non-code text; rejecting patch/FILE blocks.",
-                    "agent",
-                  );
-                  patches = [];
-                  fileBlocks = [];
-                  jsonDetected = false;
-                }
-              } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                await this.logTask(taskRun.id, `Agent retry failed: ${message}`, "agent");
               }
+            } else {
+              if (patchOutputDetected) {
+                await this.logTask(
+                  taskRun.id,
+                  "Agent output included patch/FILE content, but direct-edit mode is enabled; ignoring patch output.",
+                  "agent",
+                );
+              }
+              patches = [];
+              fileBlocks = [];
+              jsonDetected = false;
             }
 
             if (unresolvedComments.length > 0) {
@@ -3630,12 +4132,12 @@ export class WorkOnTasksService {
                   createdAt: new Date().toISOString(),
                   metadata: { reason: "comment_backlog_missing", openSlugs, status: normalizedStatus || "none" },
                 });
-                await this.logTask(taskRun.id, "Comment backlog missing in agent output; blocking task.", "execution");
+                await this.logTask(taskRun.id, "Comment backlog missing in agent output; failing task.", "execution");
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
                 });
-                await this.stateService.markBlocked(task.task, "comment_backlog_missing", statusContext);
+                await this.stateService.markFailed(task.task, "comment_backlog_missing", statusContext);
                 setFailureReason("comment_backlog_missing");
                 results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_missing" });
                 taskStatus = "failed";
@@ -3644,18 +4146,120 @@ export class WorkOnTasksService {
               }
             }
 
-            if (patches.length === 0 && fileBlocks.length === 0) {
-              const message = "Agent output did not include a patch or file blocks.";
-              await this.logTask(taskRun.id, message, "agent");
-              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-              setFailureReason("missing_patch");
-              results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
-              taskStatus = "failed";
-              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-              continue taskLoop;
+            if (directEditsEnabled) {
+              let dirtyAfterAgent: string[] = [];
+              try {
+                dirtyAfterAgent = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter(
+                  (p) => !p.startsWith(".mcoda"),
+                );
+              } catch {
+                dirtyAfterAgent = [];
+              }
+              const directTouched = dirtyBeforeAgent.length
+                ? dirtyAfterAgent.filter((p) => !dirtyBeforeAgent.includes(p))
+                : dirtyAfterAgent;
+              if (directTouched.length) {
+                const merged = new Set([...touched, ...directTouched]);
+                touched = Array.from(merged);
+                patchApplied = true;
+              }
+              if (!allowLargeDocEdits && directTouched.length) {
+                let diffText = "";
+                try {
+                  const { stdout } = await exec("git diff --no-color", { cwd: this.workspace.workspaceRoot });
+                  diffText = String(stdout ?? "");
+                } catch (error) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Failed to capture diff for doc edit guard: ${error instanceof Error ? error.message : String(error)}`,
+                    "scope",
+                  );
+                }
+                if (diffText.trim()) {
+                  const violations = await detectLargeDocEdits([diffText], [], this.workspace.workspaceRoot);
+                  if (violations.length) {
+                    const details = violations
+                      .map(
+                        (item) =>
+                          `${item.path} removed ${item.removedLines}/${item.beforeLines} lines (threshold ${item.threshold}, mode=${item.mode})`,
+                      )
+                      .join("\n");
+                    const body = [
+                      "[work-on-tasks]",
+                      "Blocked destructive doc edit in SDS/RFP/OpenAPI content.",
+                      "Set metadata.allow_large_doc_edits=true on the task to allow this change.",
+                      "Violations:",
+                      details,
+                    ].join("\n");
+                    await this.deps.workspaceRepo.createTaskComment({
+                      taskId: task.task.id,
+                      taskRunId: taskRun.id,
+                      jobId: job.id,
+                      sourceCommand: "work-on-tasks",
+                      authorType: "agent",
+                      authorAgentId: agent.id,
+                      category: "doc_edit_guard",
+                      body,
+                      createdAt: new Date().toISOString(),
+                      metadata: { reason: "doc_edit_guard", violations },
+                    });
+                    await this.logTask(
+                      taskRun.id,
+                      "Blocked destructive doc edit; add allow_large_doc_edits=true to task metadata to override.",
+                      "scope",
+                    );
+                    await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
+                      error: "doc_edit_guard",
+                      violations,
+                      attempt,
+                    });
+                    await this.stateService.markFailed(task.task, "doc_edit_guard", statusContext);
+                    await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                      status: "failed",
+                      finishedAt: new Date().toISOString(),
+                    });
+                    setFailureReason("doc_edit_guard");
+                    results.push({ taskKey: task.task.key, status: "failed", notes: "doc_edit_guard" });
+                    taskStatus = "failed";
+                    try {
+                      await this.vcs.resetHard(this.workspace.workspaceRoot, { exclude: [".mcoda"] });
+                      touched = [];
+                      patchApplied = false;
+                    } catch (error) {
+                      await this.logTask(
+                        taskRun.id,
+                        `Failed to rollback workspace after doc guard violation: ${
+                          error instanceof Error ? error.message : String(error)
+                        }`,
+                        "scope",
+                      );
+                    }
+                    await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                    continue taskLoop;
+                  }
+                }
+              }
             }
 
-            if (patches.length) {
+            if (patchModeEnabled && patches.length === 0 && fileBlocks.length === 0) {
+              if (!commentResolution) {
+                const message = "Agent output did not include a patch or file blocks.";
+                await this.logTask(taskRun.id, message, "agent");
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                setFailureReason("missing_patch");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+              await this.logTask(
+                taskRun.id,
+                "No patch output provided; proceeding with comment resolution only.",
+                "agent",
+              );
+            }
+
+            if (patchModeEnabled && patches.length) {
               const outOfScope = findOutOfScopePatchPaths(patches, this.workspace.workspaceRoot);
               if (outOfScope.length) {
                 const message = `Patch references paths outside workspace: ${outOfScope.join(", ")}`;
@@ -3665,7 +4269,7 @@ export class WorkOnTasksService {
                   outOfScope,
                   attempt,
                 });
-                await this.stateService.markBlocked(task.task, "scope_violation", statusContext);
+                await this.stateService.markFailed(task.task, "scope_violation", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
@@ -3678,7 +4282,7 @@ export class WorkOnTasksService {
               }
             }
 
-            if (!allowLargeDocEdits) {
+            if (patchModeEnabled && !allowLargeDocEdits) {
               const violations = await detectLargeDocEdits(patches, fileBlocks, this.workspace.workspaceRoot);
               if (violations.length) {
                 const details = violations
@@ -3716,7 +4320,7 @@ export class WorkOnTasksService {
                   violations,
                   attempt,
                 });
-                await this.stateService.markBlocked(task.task, "doc_edit_guard", statusContext);
+                await this.stateService.markFailed(task.task, "doc_edit_guard", statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
@@ -3729,7 +4333,7 @@ export class WorkOnTasksService {
               }
             }
 
-            if (patches.length || fileBlocks.length) {
+            if (patchModeEnabled && (patches.length || fileBlocks.length)) {
               if (!(await refreshLock("apply_start", true))) {
                 await this.logTask(taskRun.id, "Aborting task: lock lost before apply.", "vcs");
                 throw new Error("Task lock lost before apply.");
@@ -3832,7 +4436,7 @@ export class WorkOnTasksService {
                         cleanupErrors: applied.rejectDetails.cleanupErrors,
                       },
                     });
-                    await this.logTask(taskRun.id, "Patch rejected; blocking task after cleanup.", "patch");
+                    await this.logTask(taskRun.id, "Patch rejected; failing task after cleanup.", "patch");
                   }
                   await rollbackWorkspace(`patch apply failed: ${applied.error}`);
                   if (!fileBlocks.length && !triedPatchFallback) {
@@ -3946,14 +4550,12 @@ export class WorkOnTasksService {
                     }
                   }
                   if (patchApplyError && !fileBlocks.length) {
-                    const failureReason = fallbackOutputInvalid ? "missing_patch" : "patch_failed";
+                    const failureReason = "patch_failed";
                     await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
                       error: failureReason,
                       attempt,
                     });
-                    if (failureReason !== "missing_patch") {
-                      await this.stateService.markBlocked(task.task, failureReason, statusContext);
-                    }
+                    await this.stateService.markFailed(task.task, failureReason, statusContext);
                     await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                       status: "failed",
                       finishedAt: new Date().toISOString(),
@@ -3997,7 +4599,7 @@ export class WorkOnTasksService {
                   await this.logTask(taskRun.id, `Direct file apply failed: ${applied.error}`, "patch");
                   await rollbackWorkspace(`file apply failed: ${applied.error}`);
                   await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", { error: applied.error, attempt });
-                  await this.stateService.markBlocked(task.task, "patch_failed", statusContext);
+                  await this.stateService.markFailed(task.task, "patch_failed", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                     status: "failed",
                     finishedAt: new Date().toISOString(),
@@ -4018,14 +4620,12 @@ export class WorkOnTasksService {
                 }
               }
               if (patchApplyError) {
-                const failureReason = fallbackOutputInvalid ? "missing_patch" : "patch_failed";
+                const failureReason = "patch_failed";
                 await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
                   error: failureReason,
                   attempt,
                 });
-                if (failureReason !== "missing_patch") {
-                  await this.stateService.markBlocked(task.task, failureReason, statusContext);
-                }
+                await this.stateService.markFailed(task.task, failureReason, statusContext);
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                   status: "failed",
                   finishedAt: new Date().toISOString(),
@@ -4049,7 +4649,7 @@ export class WorkOnTasksService {
                 const scopeCheck = this.validateScope(allowedFiles, normalizePaths(this.workspace.workspaceRoot, dirtyAfterApply));
                 if (!scopeCheck.ok) {
                   await this.logTask(taskRun.id, scopeCheck.message ?? "Scope violation", "scope");
-                  await this.stateService.markBlocked(task.task, "scope_violation", statusContext);
+                  await this.stateService.markFailed(task.task, "scope_violation", statusContext);
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
                   setFailureReason("scope_violation");
                   results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
@@ -4122,7 +4722,7 @@ export class WorkOnTasksService {
                 error: failureReason,
                 attempts: testAttemptCount,
               });
-              await this.stateService.markBlocked(task.task, failureReason, statusContext);
+              await this.stateService.markFailed(task.task, failureReason, statusContext);
               await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
               setFailureReason(failureReason);
               results.push({ taskKey: task.task.key, status: "failed", notes: failureReason });
@@ -4149,13 +4749,40 @@ export class WorkOnTasksService {
                   : "No touched files detected after applying patches."
                 : undefined;
               if (!hasChanges && unresolvedComments.length > 0) {
-                const openSlugs = unresolvedComments
-                  .map((comment) => comment.slug)
-                  .filter((slug): slug is string => Boolean(slug && slug.trim()));
+                const appliedResolution = await applyCommentResolutionIfNeeded();
+                const openSlugs =
+                  appliedResolution?.open ??
+                  unresolvedComments.map((comment) => comment.slug).filter((slug): slug is string => Boolean(slug && slug.trim()));
                 const slugList = openSlugs.length ? openSlugs.join(", ") : "untracked";
+                if (openSlugs.length === 0) {
+                  const body = [
+                    "[work-on-tasks]",
+                    "No changes were required; task appears already satisfied.",
+                    `Justification: ${noChangeJustification ?? "No justification provided."}`,
+                  ].join("\n");
+                  await this.deps.workspaceRepo.createTaskComment({
+                    taskId: task.task.id,
+                    taskRunId: taskRun.id,
+                    jobId: job.id,
+                    sourceCommand: "work-on-tasks",
+                    authorType: "agent",
+                    authorAgentId: agent.id,
+                    category: "no_changes",
+                    body,
+                    createdAt: new Date().toISOString(),
+                    metadata: { reason: "no_changes_completed", initialStatus, justification: noChangeJustification, dirtyPaths },
+                  });
+                  await this.logTask(taskRun.id, "No changes required; marking task ready for code review.", "execution");
+                  await this.stateService.markReadyToReview(task.task, { completed_reason: "no_changes" }, statusContext);
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "succeeded", finishedAt: new Date().toISOString() });
+                  results.push({ taskKey: task.task.key, status: "succeeded", notes: "no_changes" });
+                  taskStatus = "succeeded";
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue taskLoop;
+                }
                 const body = [
                   "[work-on-tasks]",
-                  "No changes detected while unresolved review/QA comments remain.",
+                  "No changes were required; task appears already satisfied.",
                   `Open comment slugs: ${slugList}`,
                   `Justification: ${noChangeJustification ?? "No justification provided."}`,
                 ].join("\n");
@@ -4169,26 +4796,24 @@ export class WorkOnTasksService {
                   category: "comment_backlog",
                   body,
                   createdAt: new Date().toISOString(),
-                  metadata: { reason: "no_changes", openSlugs, justification: noChangeJustification, dirtyPaths },
+                  metadata: { reason: "no_changes_completed", openSlugs, justification: noChangeJustification, dirtyPaths },
                 });
                 await this.logTask(
                   taskRun.id,
-                  `No changes detected; unresolved comments remain (${slugList}).`,
+                  `No changes required; unresolved comments remain (${slugList}).`,
                   "execution",
                 );
-                await this.stateService.markBlocked(task.task, "no_changes", statusContext);
-                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-                setFailureReason("no_changes");
-                results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
-                taskStatus = "failed";
+                await this.stateService.markReadyToReview(task.task, { completed_reason: "no_changes" }, statusContext);
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "succeeded", finishedAt: new Date().toISOString() });
+                results.push({ taskKey: task.task.key, status: "succeeded", notes: "no_changes" });
+                taskStatus = "succeeded";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                 continue taskLoop;
               }
               if (!hasChanges) {
                 const body = [
                   "[work-on-tasks]",
-                  "No changes were applied for this task run.",
-                  "Re-run with a stronger agent or clarify the task requirements.",
+                  "No changes were required; task appears already satisfied.",
                   `Justification: ${noChangeJustification ?? "No justification provided."}`,
                 ].join("\n");
                 await this.deps.workspaceRepo.createTaskComment({
@@ -4201,223 +4826,29 @@ export class WorkOnTasksService {
                   category: "no_changes",
                   body,
                   createdAt: new Date().toISOString(),
-                  metadata: { reason: "no_changes", initialStatus, justification: noChangeJustification, dirtyPaths },
+                  metadata: { reason: "no_changes_completed", initialStatus, justification: noChangeJustification, dirtyPaths },
                 });
-                await this.logTask(taskRun.id, "No changes detected; blocking task for escalation.", "execution");
-                await this.stateService.markBlocked(task.task, "no_changes", statusContext);
-                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-                setFailureReason("no_changes");
-                results.push({ taskKey: task.task.key, status: "failed", notes: "no_changes" });
-                taskStatus = "failed";
+                await this.logTask(taskRun.id, "No changes required; marking task ready for code review.", "execution");
+                await this.stateService.markReadyToReview(task.task, { completed_reason: "no_changes" }, statusContext);
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "succeeded", finishedAt: new Date().toISOString() });
+                results.push({ taskKey: task.task.key, status: "succeeded", notes: "no_changes" });
+                taskStatus = "succeeded";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                 continue taskLoop;
               }
             }
   
-        if (!request.dryRun && request.noCommit !== true) {
-          if (!(await refreshLock("vcs_start", true))) {
-            await this.logTask(taskRun.id, "Aborting task: lock lost before VCS phase.", "vcs");
-            throw new Error("Task lock lost before VCS phase.");
-          }
-          await startPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
-          try {
-            const dirty = (await this.vcs.dirtyPaths(this.workspace.workspaceRoot)).filter((p) => !p.startsWith(".mcoda"));
-            const toStage = dirty.length ? dirty : touched.length ? touched : ["."];
-            await this.vcs.stage(this.workspace.workspaceRoot, toStage);
-            const status = await this.vcs.status(this.workspace.workspaceRoot);
-            const hasChanges = status.trim().length > 0;
-            if (hasChanges) {
-              const commitMessage = `[${task.task.key}] ${task.task.title}`;
-              let committed = false;
-              try {
-                await this.vcs.commit(this.workspace.workspaceRoot, commitMessage);
-                committed = true;
-              } catch (error) {
-                const errorText = this.formatGitError(error);
-                const hookFailure = this.isCommitHookFailure(errorText);
-                const gpgFailure = this.isGpgSignFailure(errorText);
-                if (hookFailure || gpgFailure) {
-                  const guidance = [
-                    hookFailure
-                      ? "Commit hook failed; run hooks manually or configure bypass (e.g., HUSKY=0) if policy allows."
-                      : "",
-                    gpgFailure
-                      ? "GPG signing failed; configure signing key or disable commit.gpgsign for this repo."
-                      : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ");
-                  await this.logTask(taskRun.id, `Commit failed; retrying with bypass flags. ${guidance}`, "vcs", {
-                    error: errorText,
-                  });
-                  try {
-                    await this.vcs.commit(this.workspace.workspaceRoot, commitMessage, {
-                      noVerify: hookFailure,
-                      noGpgSign: gpgFailure,
-                    });
-                    committed = true;
-                    await this.logTask(taskRun.id, "Commit succeeded after bypassing hook/signing checks.", "vcs");
-                  } catch (retryError) {
-                    const retryText = this.formatGitError(retryError);
-                    throw new Error(`Commit failed after retry: ${retryText}`);
-                  }
-                } else {
-                  throw error;
-                }
-              }
-              if (committed) {
-                const head = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
-                await this.deps.workspaceRepo.updateTask(task.task.id, { vcsLastCommitSha: head });
-                await this.logTask(taskRun.id, `Committed changes (${head})`, "vcs");
-                headSha = head;
-              }
-            } else {
-              await this.logTask(taskRun.id, "No changes to commit.", "vcs");
-            }
-  
-            const restrictAutoMergeWithoutScope = Boolean(this.workspace.config?.restrictAutoMergeWithoutScope);
-            const shouldSkipAutoMerge = !autoMerge || (restrictAutoMergeWithoutScope && allowedFiles.length === 0);
-            if (shouldSkipAutoMerge) {
-              mergeStatus = "skipped";
-              const changedFiles = dirty.length ? dirty : touched.length ? touched : [];
-              const changedNote = changedFiles.length ? `Changed files: ${changedFiles.join(", ")}` : "No changed files detected.";
-              const reason = !autoMerge ? "auto_merge_disabled" : "no_file_scope";
-              setMergeNote(reason);
-              const message = !autoMerge
-                ? `Auto-merge disabled; leaving branch ${branchInfo.branch} for manual PR. ${changedNote}`
-                : `Auto-merge skipped because task has no file scope (metadata.files empty). ${changedNote}`;
-              await this.logTask(taskRun.id, message, "vcs", { reason, changedFiles });
-              await this.vcs.checkoutBranch(this.workspace.workspaceRoot, branchInfo.base);
-            } else {
-              // Always merge back into base and end on base branch.
-              try {
-                await this.vcs.merge(this.workspace.workspaceRoot, branchInfo.branch, branchInfo.base);
-                mergeStatus = "merged";
-                try {
-                  headSha = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
-                } catch {
-                  // Best-effort head capture.
-                }
-                await this.logTask(taskRun.id, `Merged ${branchInfo.branch} into ${branchInfo.base}`, "vcs");
-                if (!(await refreshLock("vcs_merge"))) {
-                  await this.logTask(taskRun.id, "Aborting task: lock lost after merge.", "vcs");
-                  throw new Error("Task lock lost after merge.");
-                }
-              } catch (error) {
-                mergeStatus = "failed";
-                const conflicts = await this.vcs.conflictPaths(this.workspace.workspaceRoot);
-                if (conflicts.length) {
-                  await this.logTask(
-                    taskRun.id,
-                    `Merge conflicts while merging ${branchInfo.branch} into ${branchInfo.base}.`,
-                    "vcs",
-                    {
-                      conflicts,
-                    },
-                  );
-                  await this.vcs.abortMerge(this.workspace.workspaceRoot);
-                  await this.stateService.markBlocked(task.task, "merge_conflict", statusContext);
-                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-                    status: "failed",
-                    finishedAt: new Date().toISOString(),
-                  });
-                  setFailureReason("merge_conflict");
-                  results.push({ taskKey: task.task.key, status: "failed", notes: "merge_conflict" });
-                  taskStatus = "failed";
-                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                  continue taskLoop;
-                }
-                throw error;
-              }
-            }
-  
-            if (await this.vcs.hasRemote(this.workspace.workspaceRoot)) {
-              if (!autoPush) {
-                await this.logTask(
-                  taskRun.id,
-                  `Auto-push disabled; skipping remote push for ${branchInfo.branch} and ${branchInfo.base}.`,
-                  "vcs",
-                  { reason: "auto_push_disabled" },
-                );
-              } else {
-                const branchPush = await this.pushWithRecovery(taskRun.id, branchInfo.branch);
-                if (branchPush.pushed) {
-                  await this.logTask(taskRun.id, "Pushed branch to remote origin", "vcs");
-                } else if (branchPush.skipped) {
-                  await this.logTask(taskRun.id, "Skipped pushing branch to remote origin due to permissions/protection.", "vcs");
-                }
-                if (!(await refreshLock("vcs_push_branch"))) {
-                  await this.logTask(taskRun.id, "Aborting task: lock lost after pushing branch.", "vcs");
-                  throw new Error("Task lock lost after pushing branch.");
-                }
-                if (mergeStatus === "merged") {
-                  const basePush = await this.pushWithRecovery(taskRun.id, branchInfo.base);
-                  if (basePush.pushed) {
-                    await this.logTask(taskRun.id, `Pushed base branch ${branchInfo.base} to remote origin`, "vcs");
-                  } else if (basePush.skipped) {
-                    await this.logTask(
-                      taskRun.id,
-                      `Skipped pushing base branch ${branchInfo.base} due to permissions/protection.`,
-                      "vcs",
-                    );
-                  }
-                  if (!(await refreshLock("vcs_push_base"))) {
-                    await this.logTask(taskRun.id, "Aborting task: lock lost after pushing base branch.", "vcs");
-                    throw new Error("Task lock lost after pushing base branch.");
-                  }
-                } else {
-                  await this.logTask(taskRun.id, `Skipped pushing base branch ${branchInfo.base} because auto-merge was skipped.`, "vcs");
-                }
-              }
-            } else {
-              const message =
-                mergeStatus === "skipped"
-                  ? "No remote configured; auto-merge skipped due to missing file scope."
-                  : "No remote configured; merge completed locally.";
-              if (mergeStatus === "skipped") {
-                setMergeNote("no_remote");
-              }
-              await this.logTask(taskRun.id, message, "vcs");
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (/task lock lost/i.test(message)) {
-              throw error;
-            }
-            await this.logTask(taskRun.id, `VCS commit/push failed: ${message}`, "vcs");
-            await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "vcs", "error", { error: message });
-            await this.stateService.markBlocked(task.task, "vcs_failed", statusContext);
-            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-            setFailureReason("vcs_failed");
-            results.push({ taskKey: task.task.key, status: "failed", notes: "vcs_failed" });
-            taskStatus = "failed";
-            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+        if (runVcsPhase) {
+          const vcsOutcome = await runVcsPhase({ allowResultUpdate: true, reason: "primary" });
+          if (vcsOutcome.halt) {
             continue taskLoop;
           }
-          await endPhase("vcs", { branch: branchInfo.branch, base: branchInfo.base });
-        } else if (request.dryRun) {
-          await this.logTask(taskRun.id, "Dry-run: skipped commit/push.", "vcs");
-        } else if (request.noCommit) {
-          await this.logTask(taskRun.id, "no-commit set: skipped commit/push.", "vcs");
         }
 
         if (commentResolution?.resolvedSlugs?.length || commentResolution?.unresolvedSlugs?.length) {
-          const context = commentContext ?? (await this.loadCommentContext(task.task.id));
-          const applied = await this.applyCommentResolutions({
-            taskId: task.task.id,
-            taskRunId: taskRun.id,
-            jobId: job.id,
-            agentId: agent.id,
-            resolvedSlugs: commentResolution.resolvedSlugs ?? null,
-            unresolvedSlugs: commentResolution.unresolvedSlugs ?? null,
-            existingComments: context.comments,
-            dryRun: Boolean(request.dryRun),
-          });
-          await this.logTask(
-            taskRun.id,
-            `Applied comment resolution: resolved=${applied.resolved.length}, reopened=${applied.reopened.length}, open=${applied.open.length}`,
-            "comment_resolution",
-          );
+          if (!commentResolutionApplied) {
+            await applyCommentResolutionIfNeeded();
+          }
         }
 
         await startPhase("finalize");
@@ -4446,7 +4877,7 @@ export class WorkOnTasksService {
         storyPointsProcessed += task.task.storyPoints ?? 0;
         await endPhase("finalize", { spPerHour: spPerHour ?? undefined });
 
-        const resultNotes = "ready_to_review";
+        const resultNotes = READY_TO_CODE_REVIEW;
         taskStatus = "succeeded";
         results.push({
           taskKey: task.task.key,
@@ -4461,7 +4892,7 @@ export class WorkOnTasksService {
           if (isAbortError(message)) {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "execution");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-            await this.stateService.markBlocked(task.task, "agent_timeout", statusContext);
+            await this.stateService.markFailed(task.task, "agent_timeout", statusContext);
             setFailureReason("agent_timeout");
             taskStatus = "failed";
             await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
@@ -4470,7 +4901,7 @@ export class WorkOnTasksService {
           if (/task lock lost/i.test(message)) {
             await this.logTask(taskRun.id, `Task aborted: ${message}`, "vcs");
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-            await this.stateService.markBlocked(task.task, "task_lock_lost", statusContext);
+            await this.stateService.markFailed(task.task, "task_lock_lost", statusContext);
             setFailureReason("task_lock_lost");
             results.push({ taskKey: task.task.key, status: "failed", notes: "task_lock_lost" });
             taskStatus = "failed";
@@ -4479,6 +4910,14 @@ export class WorkOnTasksService {
           }
           throw error;
         } finally {
+          if (runVcsPhase && !vcsFinalized) {
+            try {
+              await runVcsPhase({ allowResultUpdate: false, reason: "finalize" });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              await this.logTask(taskRun.id, `Deferred VCS finalize failed: ${message}`, "vcs");
+            }
+          }
           if (lockAcquired) {
             await this.deps.workspaceRepo.releaseTaskLock(task.task.id, taskRun.id);
           }
@@ -4514,10 +4953,18 @@ export class WorkOnTasksService {
         }
     }
 
-    const failureCount = results.filter((r) => r.status === "failed" || r.status === "blocked").length;
-    const state: JobState =
-      failureCount === 0 ? "completed" : failureCount === results.length ? "failed" : ("partial" as JobState);
-    const errorSummary = failureCount ? `${failureCount} task(s) failed or blocked` : undefined;
+    if (abortRemainingReason) {
+      warnings.push(`Stopped remaining tasks due to auth/rate limit: ${abortRemainingReason}`);
+    }
+    const failureCount = results.filter((r) => r.status === "failed").length;
+    const state: JobState = abortRemainingReason
+      ? "failed"
+      : failureCount === 0
+        ? "completed"
+        : failureCount === results.length
+          ? "failed"
+          : ("partial" as JobState);
+    const errorSummary = abortRemainingReason ?? (failureCount ? `${failureCount} task(s) failed` : undefined);
     await this.deps.jobService.updateJobStatus(job.id, state, {
       processedItems: results.length,
       errorSummary,
@@ -4551,5 +4998,6 @@ export class WorkOnTasksService {
     } catch {
       // ignore if checkout fails (e.g., dirty tree); user can resolve manually.
     }
+  }
   }
 }

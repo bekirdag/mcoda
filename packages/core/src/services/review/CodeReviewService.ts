@@ -12,7 +12,14 @@ import {
   type TaskInsert,
   type TaskRow,
 } from "@mcoda/db";
-import { PathHelper, type Agent } from "@mcoda/shared";
+import {
+  PathHelper,
+  READY_TO_CODE_REVIEW,
+  REVIEW_ALLOWED_STATUSES,
+  filterTaskStatuses,
+  normalizeReviewStatuses,
+  type Agent,
+} from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { TaskSelectionFilters, TaskSelectionService } from "../execution/TaskSelectionService.js";
@@ -20,11 +27,12 @@ import { TaskStateService } from "../execution/TaskStateService.js";
 import { BacklogService } from "../backlog/BacklogService.js";
 import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
-import { RoutingService } from "../agents/RoutingService.js";
+import { RoutingService, type ResolvedAgent } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
+import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (mcodaDir: string, jobId: string) => path.join(mcodaDir, "jobs", jobId, "review");
@@ -158,55 +166,54 @@ interface ReviewJobState {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
-const extractJsonSlice = (candidate: string): string | undefined => {
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return undefined;
-  return candidate.slice(start, end + 1);
-};
-
-const sanitizeJsonCandidate = (value: string): string => {
-  const cleanedLines = value
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return true;
-      if (
-        trimmed.startsWith("{") ||
-        trimmed.startsWith("}") ||
-        trimmed.startsWith("[") ||
-        trimmed.startsWith("]") ||
-        trimmed.startsWith("\"")
-      ) {
-        return true;
-      }
-      return false;
-    })
-    .join("\n");
-  return cleanedLines.replace(/,\s*([}\]])/g, "$1");
-};
-
-const parseJsonOutput = (raw: string): ReviewAgentResult | undefined => {
+const extractJsonCandidate = (raw: string): string | undefined => {
   const trimmed = raw.trim();
-  const fenced = trimmed.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  const candidates = [trimmed, fenced];
-  for (const candidate of candidates) {
-    const slice = extractJsonSlice(candidate);
-    if (!slice) continue;
-    try {
-      const parsed = JSON.parse(slice) as ReviewAgentResult;
-      return { ...parsed, raw: raw };
-    } catch {
-      const sanitized = sanitizeJsonCandidate(slice);
-      try {
-        const parsed = JSON.parse(sanitized) as ReviewAgentResult;
-        return { ...parsed, raw: raw };
-      } catch {
-        /* ignore */
+  if (!trimmed) return undefined;
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    return fenceMatch[1].trim();
+  }
+  const start = trimmed.indexOf("{");
+  if (start === -1) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return trimmed.slice(start, i + 1);
       }
     }
   }
   return undefined;
+};
+
+const parseJsonOutput = (raw: string): ReviewAgentResult | undefined => {
+  const candidate = extractJsonCandidate(raw);
+  if (!candidate) return undefined;
+  try {
+    const parsed = JSON.parse(candidate) as ReviewAgentResult;
+    return { ...parsed, raw: raw };
+  } catch {
+    return undefined;
+  }
 };
 
 const summarizeComments = (comments: { category?: string; body: string; file?: string; line?: number }[]): string => {
@@ -298,9 +305,34 @@ const normalizeLineNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const validateReviewOutput = (result: ReviewAgentResult): string | undefined => {
+const summaryIndicatesNoChanges = (summary: string | undefined): boolean => {
+  const normalized = (summary ?? "").toLowerCase();
+  if (!normalized) return false;
+  const patterns = [
+    "no changes required",
+    "no changes needed",
+    "no change required",
+    "no change needed",
+    "no code changes",
+    "already complete",
+    "already completed",
+    "already satisfied",
+  ];
+  return patterns.some((pattern) => normalized.includes(pattern));
+};
+
+const validateReviewOutput = (
+  result: ReviewAgentResult,
+  options: { requireCommentSlugs?: boolean } = {},
+): string | undefined => {
+  if (!result.decision || !["approve", "changes_requested", "block", "info_only"].includes(result.decision)) {
+    return "Review decision is required.";
+  }
   if (!result.summary || !result.summary.trim()) {
     return "Review summary is required.";
+  }
+  if (options.requireCommentSlugs && result.resolvedSlugs === undefined && result.unresolvedSlugs === undefined) {
+    return "resolvedSlugs/unresolvedSlugs required when comment backlog exists.";
   }
   for (const finding of result.findings ?? []) {
     const message = (finding.message ?? "").trim();
@@ -592,13 +624,21 @@ export class CodeReviewService {
     return extras;
   }
 
-  private async resolveAgent(agentName?: string) {
+  private async resolveAgent(agentName?: string): Promise<ResolvedAgent> {
     const resolved = await this.routingService.resolveAgentForCommand({
       workspace: this.workspace,
       commandName: "code-review",
       overrideAgentSlug: agentName,
     });
-    return resolved.agent;
+    if (agentName) {
+      const matches = agentName === resolved.agent.id || agentName === resolved.agent.slug;
+      if (!matches) {
+        throw new Error(
+          `Review agent override "${agentName}" resolved to "${resolved.agent.slug}" (source: ${resolved.source}).`,
+        );
+      }
+    }
+    return resolved;
   }
 
   private ensureRatingService(): AgentRatingService {
@@ -828,6 +868,7 @@ export class CodeReviewService {
     systemPrompts: string[];
     task: TaskRow & { epicKey?: string; storyKey?: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] };
     diff: string;
+    diffEmpty: boolean;
     docContext: string[];
     openapiSnippet?: string;
     checklists?: string[];
@@ -854,8 +895,16 @@ export class CodeReviewService {
       ? truncateSection("checklists", params.checklists.join("\n\n"), REVIEW_PROMPT_LIMITS.checklist)
       : "";
     const diffText = truncateSection("diff", params.diff || "(no diff)", REVIEW_PROMPT_LIMITS.diff);
+    const reviewFocus = [
+      "Review focus:",
+      "- First validate the task requirements and the work-on-tasks actions (history/comments) rather than the diff.",
+      "- If the diff is empty, decide whether no code changes are required to satisfy the task.",
+      "- If no changes are required, use decision=approve or info_only and explicitly say no code changes are needed.",
+      "- If changes are required, use decision=changes_requested and explain exactly what is missing and why.",
+    ].join("\n");
     parts.push(
       [
+        reviewFocus,
         `Task ${params.task.key}: ${params.task.title}`,
         `Epic: ${params.task.epicKey ?? ""} ${params.task.epicTitle ?? ""}`.trim(),
         `Epic description: ${params.task.epicDescription ? params.task.epicDescription : "none"}`,
@@ -865,15 +914,15 @@ export class CodeReviewService {
         `Task description: ${params.task.description ? params.task.description : "none"}`,
         `History:\n${historySummary}`,
         commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : "Comment backlog: none",
-        `Acceptance criteria: ${acceptance}`,
+        `Task DoD / acceptance criteria: ${acceptance}`,
         docContextText ? `Doc context (docdex excerpts):\n${docContextText}` : "Doc context: none",
         openapiSnippet
           ? `OpenAPI (authoritative contract; do not invent endpoints outside this):\n${openapiSnippet}`
           : "OpenAPI: not provided; avoid inventing endpoints.",
         checklistsText ? `Review checklists/runbook:\n${checklistsText}` : "Checklists: none",
-        "Diff:\n" + diffText,
+        params.diffEmpty ? "Diff: (empty — no changes between base and branch)" : "Diff:\n" + diffText,
         "Respond with STRICT JSON only, matching:\n" + JSON_CONTRACT,
-        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for comment backlog items; do not add prose outside JSON.",
+        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for comment backlog items; do not add prose or markdown fences outside JSON.",
       ].join("\n"),
     );
     return parts.join("\n\n");
@@ -1482,7 +1531,14 @@ export class CodeReviewService {
     await this.ensureMcoda();
     const agentStream = request.agentStream !== false;
     const baseRef = request.baseRef ?? this.workspace.config?.branch ?? DEFAULT_BASE_BRANCH;
-    const statusFilter = request.statusFilter && request.statusFilter.length ? request.statusFilter : ["ready_to_review"];
+    const rawStatusFilter =
+      request.statusFilter && request.statusFilter.length ? request.statusFilter : [READY_TO_CODE_REVIEW];
+    const { filtered: allowedStatusFilter, rejected } = filterTaskStatuses(
+      rawStatusFilter,
+      REVIEW_ALLOWED_STATUSES,
+      REVIEW_ALLOWED_STATUSES,
+    );
+    const statusFilter = normalizeReviewStatuses(allowedStatusFilter);
     let state: ReviewJobState | undefined;
 
     const commandRun = await this.deps.jobService.startCommandRun("code-review", request.projectKey, {
@@ -1494,6 +1550,13 @@ export class CodeReviewService {
     let jobId = request.resumeJobId;
     let selectedTaskIds: string[] = [];
     let warnings: string[] = [];
+    if (rejected.length > 0) {
+      warnings.push(
+        `code-review ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${REVIEW_ALLOWED_STATUSES.join(
+          ", ",
+        )}.`,
+      );
+    }
     let allowFollowups = request.createFollowupTasks === true;
     let selectedTasks: Array<TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] }> =
       [];
@@ -1554,7 +1617,7 @@ export class CodeReviewService {
           statusFilter,
           limit: request.limit,
         });
-        warnings = [...selection.warnings];
+        warnings = [...warnings, ...selection.warnings];
         selectedTasks = selection.ordered.map((t) => t.task);
       }
 
@@ -1614,7 +1677,19 @@ export class CodeReviewService {
       selectedTasks.length && selectedTaskIds.length === selectedTasks.length
         ? selectedTasks
         : await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
-    const agent = await this.resolveAgent(request.agentName);
+    let resolvedAgent: ResolvedAgent;
+    try {
+      resolvedAgent = await this.resolveAgent(request.agentName);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (request.agentName) {
+        const warning = `Review agent override (${request.agentName}) failed: ${message}`;
+        warnings.push(warning);
+        console.warn(`[code-review] ${warning}`);
+      }
+      throw error;
+    }
+    const agent = resolvedAgent.agent;
     const reviewJsonAgentOverride =
       this.workspace.config?.reviewJsonAgent ??
       process.env.MCODA_REVIEW_JSON_AGENT ??
@@ -1626,7 +1701,7 @@ export class CodeReviewService {
       reviewJsonAgentOverride !== agent.slug
     ) {
       try {
-        reviewJsonAgent = await this.resolveAgent(reviewJsonAgentOverride);
+        reviewJsonAgent = (await this.resolveAgent(reviewJsonAgentOverride)).agent;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         warnings.push(`Review JSON agent override (${reviewJsonAgentOverride}) failed: ${message}`);
@@ -1788,7 +1863,9 @@ export class CodeReviewService {
       }
     };
 
+    let abortRemainingReason: string | null = null;
     for (const task of tasks) {
+      if (abortRemainingReason) break;
       abortIfSignaled();
       const startedAt = new Date().toISOString();
       const taskStartMs = Date.now();
@@ -1888,10 +1965,10 @@ export class CodeReviewService {
             allowedFiles,
           },
         });
-
-        if (!diff.trim()) {
-          const message = "Review diff is empty; blocking review until changes are produced.";
-          warnings.push(`Empty diff for ${task.key}; blocking review.`);
+        const diffEmpty = !diff.trim();
+        if (diffEmpty) {
+          const message = `Empty diff for ${task.key}; reviewing task requirements to confirm whether no changes are acceptable.`;
+          warnings.push(message);
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
@@ -1899,49 +1976,6 @@ export class CodeReviewService {
             source: "review_warning",
             message,
           });
-          if (!request.dryRun) {
-            await this.stateService.markBlocked(task, "review_empty_diff", statusContext);
-            statusAfter = "blocked";
-          }
-          await this.writeReviewSummaryComment({
-            task,
-            taskRunId: taskRun.id,
-            jobId,
-            agentId: agent.id,
-            statusBefore,
-            statusAfter: statusAfter ?? statusBefore,
-            decision: "block",
-            summary: message,
-            findingsCount: 0,
-          });
-          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-            status: "failed",
-            finishedAt: new Date().toISOString(),
-            runContext: { decision: "block", reason: "empty_diff" },
-          });
-          state?.reviewed.push({ taskId: task.id, decision: "block" });
-          await this.persistState(jobId, state!);
-          await this.writeCheckpoint(jobId, "review_applied", { reviewed: state?.reviewed ?? [], schema_version: 1 });
-          results.push({
-            taskId: task.id,
-            taskKey: task.key,
-            statusBefore,
-            statusAfter: statusAfter ?? statusBefore,
-            decision: "block",
-            findings,
-            followupTasks: followupCreated,
-          });
-          emitReviewEndOnce({
-            statusLabel: "BLOCKED",
-            decision: "block",
-            findingsCount: findings.length,
-            tokensTotal,
-          });
-          await this.deps.jobService.updateJobStatus(jobId, "running", {
-            processedItems: state?.reviewed.length ?? 0,
-          });
-          await maybeRateTask(task, taskRun.id, tokensTotal);
-          continue;
         }
 
         const historySummary = await this.buildHistorySummary(task.id);
@@ -1988,6 +2022,7 @@ export class CodeReviewService {
           systemPrompts,
           task,
           diff,
+          diffEmpty,
           docContext: docLinks.snippets,
           openapiSnippet,
           historySummary,
@@ -1995,6 +2030,7 @@ export class CodeReviewService {
           baseRef: state?.baseRef ?? baseRef,
           branch: task.vcsBranch ?? undefined,
         });
+        const requireCommentSlugs = Boolean(commentBacklog.trim());
 
         const separator = "============================================================";
         const deps =
@@ -2024,6 +2060,7 @@ export class CodeReviewService {
           docdex: docLinks.snippets,
           openapiSnippet,
           changedPaths,
+          diffEmpty,
         });
         state?.contextBuilt.push(task.id);
         await this.persistState(jobId, state!);
@@ -2116,7 +2153,22 @@ export class CodeReviewService {
         let retryOutput: string | undefined;
         let retryAgentUsed: Agent | undefined;
         let parsed = parseJsonOutput(agentOutput);
-        let validationError = parsed ? validateReviewOutput(parsed) : undefined;
+        let validationError = parsed ? validateReviewOutput(parsed, { requireCommentSlugs }) : undefined;
+        if (
+          parsed &&
+          validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists."
+        ) {
+          const warning = `Review output missing comment slugs for ${task.key}; assuming no backlog items resolved.`;
+          warnings.push(warning);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message: warning,
+          });
+          validationError = undefined;
+        }
         if (parsed && validationError) {
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
@@ -2178,7 +2230,22 @@ export class CodeReviewService {
             : undefined;
           await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed, 2);
           parsed = parseJsonOutput(retryOutput);
-          validationError = parsed ? validateReviewOutput(parsed) : undefined;
+          validationError = parsed ? validateReviewOutput(parsed, { requireCommentSlugs }) : undefined;
+          if (
+            parsed &&
+            validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists."
+          ) {
+            const warning = `Review output missing comment slugs for ${task.key} after retry; assuming no backlog items resolved.`;
+            warnings.push(warning);
+            await this.deps.workspaceRepo.insertTaskLog({
+              taskRunId: taskRun.id,
+              sequence: this.sequenceForTask(taskRun.id),
+              timestamp: new Date().toISOString(),
+              source: "review_warning",
+              message: warning,
+            });
+            validationError = undefined;
+          }
           if (parsed && validationError) {
             parsed = undefined;
           }
@@ -2232,6 +2299,19 @@ export class CodeReviewService {
         decision = parsed.decision;
         findings.push(...(parsed.findings ?? []));
 
+        const historySupportsNoChanges =
+          (task.metadata as any)?.completed_reason === "no_changes" ||
+          historySummary.toLowerCase().includes("no_changes") ||
+          historySummary.toLowerCase().includes("no changes");
+        const summarySupportsNoChanges = summaryIndicatesNoChanges(parsed.summary);
+        const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
+        let finalDecision = parsed.decision;
+        let emptyDiffOverride = false;
+        if (diffEmpty && approveDecision && !(summarySupportsNoChanges && historySupportsNoChanges)) {
+          finalDecision = "changes_requested";
+          emptyDiffOverride = true;
+        }
+
         commentResolution = await this.applyCommentResolutions({
           task,
           taskRunId: taskRun.id,
@@ -2240,11 +2320,9 @@ export class CodeReviewService {
           findings: parsed.findings ?? [],
           resolvedSlugs: parsed.resolvedSlugs ?? undefined,
           unresolvedSlugs: parsed.unresolvedSlugs ?? undefined,
-          decision: parsed.decision,
+          decision: finalDecision,
           existingComments: commentContext.comments,
         });
-
-        let finalDecision = parsed.decision;
         if (
           commentResolution?.open?.length &&
           (finalDecision === "approve" || finalDecision === "info_only")
@@ -2279,6 +2357,69 @@ export class CodeReviewService {
             createdAt: new Date().toISOString(),
           });
         }
+        if (emptyDiffOverride) {
+          const message = [
+            "Empty diff detected; approval requires an explicit no-changes justification",
+            "and task history indicating no changes were needed.",
+          ].join(" ");
+          const slug = createTaskCommentSlug({
+            source: "code-review",
+            message,
+            category: "review_empty_diff",
+          });
+          const body = formatTaskCommentBody({
+            slug,
+            source: "code-review",
+            message,
+            status: "open",
+            category: "review_empty_diff",
+          });
+          await this.deps.workspaceRepo.createTaskComment({
+            taskId: task.id,
+            taskRunId: taskRun.id,
+            jobId,
+            sourceCommand: "code-review",
+            authorType: "agent",
+            authorAgentId: agent.id,
+            category: "review_empty_diff",
+            slug,
+            status: "open",
+            body,
+            createdAt: new Date().toISOString(),
+          });
+          warnings.push(`Empty diff approval rejected for ${task.key}; requesting explicit no-changes justification.`);
+        }
+        const appendSyntheticFinding = (message: string, suggestedFix?: string) => {
+          const finding: ReviewFinding = {
+            type: "process",
+            severity: "info",
+            message,
+            suggestedFix,
+          };
+          if (!parsed.findings) {
+            parsed.findings = [];
+          }
+          parsed.findings.push(finding);
+          findings.push(finding);
+        };
+        if (finalDecision === "changes_requested" && (parsed.findings?.length ?? 0) === 0) {
+          if (emptyDiffOverride) {
+            appendSyntheticFinding(
+              "Empty diff lacks explicit no-changes justification; changes requested to confirm no code updates were required.",
+              "Update the review summary to state no changes were required and confirm task history reflects no_changes.",
+            );
+          } else if (commentResolution?.open?.length) {
+            appendSyntheticFinding(
+              `Unresolved comment backlog remains (${formatSlugList(commentResolution.open)}); approval requires resolving these items.`,
+              "Resolve or explicitly reopen the listed comment slugs before approving.",
+            );
+          } else {
+            finalDecision = "info_only";
+            warnings.push(
+              `Review requested changes for ${task.key} but provided no findings; downgrading to info_only.`,
+            );
+          }
+        }
         parsed.decision = finalDecision;
         decision = finalDecision;
 
@@ -2308,19 +2449,24 @@ export class CodeReviewService {
         let taskStatusUpdate = statusBefore;
         if (!request.dryRun) {
           if (invalidJson) {
-            await this.stateService.markBlocked(task, "review_invalid_output", statusContext);
-            taskStatusUpdate = "blocked";
+            await this.stateService.markFailed(task, "review_invalid_output", statusContext);
+            taskStatusUpdate = "failed";
           } else {
             const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
             if (approveDecision) {
-              await this.stateService.markReadyToQa(task, undefined, statusContext);
-              taskStatusUpdate = "ready_to_qa";
+              if (diffEmpty) {
+                await this.stateService.markCompleted(task, { review_no_changes: true }, statusContext);
+                taskStatusUpdate = "completed";
+              } else {
+                await this.stateService.markReadyToQa(task, undefined, statusContext);
+                taskStatusUpdate = "ready_to_qa";
+              }
             } else if (parsed.decision === "changes_requested") {
-              await this.stateService.returnToInProgress(task, undefined, statusContext);
-              taskStatusUpdate = "in_progress";
+              await this.stateService.markChangesRequested(task, undefined, statusContext);
+              taskStatusUpdate = "changes_requested";
             } else if (parsed.decision === "block") {
-              await this.stateService.markBlocked(task, "review_blocked", statusContext);
-              taskStatusUpdate = "blocked";
+              await this.stateService.markFailed(task, "review_blocked", statusContext);
+              taskStatusUpdate = "failed";
             }
           }
         } else {
@@ -2425,6 +2571,11 @@ export class CodeReviewService {
           tokensTotal,
         });
         await maybeRateTask(task, taskRun.id, tokensTotal);
+        if (isAuthErrorMessage(message)) {
+          abortRemainingReason = message;
+          warnings.push(`Auth/rate limit error detected; stopping after ${task.key}. ${message}`);
+          break;
+        }
         continue;
       }
 
@@ -2449,7 +2600,7 @@ export class CodeReviewService {
         : decision === "approve" || decision === "info_only"
           ? "APPROVED"
           : decision === "block"
-            ? "BLOCKED"
+            ? "FAILED"
             : decision === "changes_requested"
               ? "CHANGES_REQUESTED"
               : "FAILED";
@@ -2464,6 +2615,16 @@ export class CodeReviewService {
         processedItems: state?.reviewed.length ?? 0,
       });
       await maybeRateTask(task, taskRun.id, tokensTotal);
+    }
+
+    if (abortRemainingReason) {
+      await this.deps.jobService.updateJobStatus(jobId, "failed", {
+        processedItems: state?.reviewed.length ?? 0,
+        totalItems: selectedTaskIds.length,
+        errorSummary: AUTH_ERROR_REASON,
+      });
+      await this.deps.jobService.finishCommandRun(commandRun.id, "failed", abortRemainingReason);
+      return { jobId, commandRunId: commandRun.id, tasks: results, warnings };
     }
 
     await this.deps.jobService.updateJobStatus(jobId, "completed", {

@@ -17,15 +17,15 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Treat `gpt-creator` as legacy; do not reference or depend on it in plans, prompts, or code paths.
 
 ## Plan, then code
-- Plan internally before modifying anything; do not include the plan in your response output. The response must contain only patches or FILE blocks.
+- Plan internally before modifying anything; do not include the plan in your response output. Work directly in the repo and leave the working tree changed for mcoda to commit.
 - Match existing conventions: language/framework choices already in the repo, error handling, logging, naming, and file layout. Keep behavior backward-compatible unless told otherwise.
 - Confirm the data/persistence model from docs before coding (e.g., offline/local storage vs. network). Do not invent new APIs or backends if the design is client-only.
 - Extend the current store/state modules instead of bolting on parallel action/reducer files; wire bulk/selection flows through existing selectors/slices and persistence hooks. Use existing action creators/selectors rather than ad-hoc action type strings.
 - Keep data shapes consistent with the documented model and current store (e.g., status enums vs. boolean flags); don’t assume fields that aren’t in the schema.
 - Avoid writing partial/placeholder files—ensure every file has its imports, exports, and compiles in isolation before moving on.
 - If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.
-- If a target file does not exist, create it by emitting a new-file unified diff with full content (no placeholder edits to missing paths).
-- Output only code changes: unified diff inside ```patch``` fences for edits; `FILE:` blocks for new files. Do not output JSON unless forced; if forced, include a top-level `patch` string or `files` array.
+- If a target file does not exist, create it in the repo with full content (no placeholder edits to missing paths).
+- Apply changes directly in the repo; do not output patches/diffs/FILE blocks. Summarize changes and tests instead of emitting diffs.
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
 - Add or update tests alongside code, following the existing style and fixtures. For each task, identify the relevant unit/component/integration/API tests and implement them as part of the change.
 - If you create a new test script or suite entry point, register it in `tests/all.js` so the run-all script stays complete.

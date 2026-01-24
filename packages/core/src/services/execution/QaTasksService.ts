@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
-import { PathHelper } from '@mcoda/shared';
+import { PathHelper, QA_ALLOWED_STATUSES, filterTaskStatuses } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { WorkspaceResolution } from '../../workspace/WorkspaceManager.js';
 import { JobService, JobState } from '../jobs/JobService.js';
@@ -28,16 +28,17 @@ import { AgentRatingService } from '../agents/AgentRatingService.js';
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from '../shared/ProjectGuidance.js';
 import { buildDocdexUsageGuidance } from '../shared/DocdexGuidance.js';
 import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
+import { AUTH_ERROR_REASON, isAuthErrorMessage } from '../shared/AuthErrors.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent.',
   buildDocdexUsageGuidance({ contextLabel: 'the QA report', includeHeading: false, includeFallback: true }),
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions).',
-  'QA policy: always run automated tests. Use browser (Chromium/Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
+  'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
 ].join('\n');
 const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const QA_TEST_POLICY =
-  'QA policy: always run automated tests. Use browser (Chromium/Playwright) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
+  'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
 const QA_REQUIRED_DEPS = ['argon2', 'pg', 'ioredis', '@jest/globals'];
 const QA_REQUIRED_ENV = [
   { dep: 'pg', env: 'TEST_DB_URL' },
@@ -78,7 +79,7 @@ const readPromptFile = async (promptPath: string, fallback: string): Promise<str
 const RUN_ALL_TESTS_MARKER = 'mcoda_run_all_tests_complete';
 const RUN_ALL_TESTS_GUIDANCE =
   'Run-all tests did not emit the expected marker. Ensure tests/all.js prints "MCODA_RUN_ALL_TESTS_COMPLETE".';
-const QA_CLEAN_IGNORE_DEFAULTS = ['test-results', 'playwright-report', 'repo_meta.json', 'logs/', '.docdexignore'];
+const QA_CLEAN_IGNORE_DEFAULTS = ['test-results', 'repo_meta.json', 'logs/', '.docdexignore'];
 type RunAllMarkerPolicy = 'strict' | 'warn';
 type RunAllMarkerStatus = {
   policy: RunAllMarkerPolicy;
@@ -204,7 +205,7 @@ export interface QaTasksRequest extends TaskSelectionFilters {
   rateAgents?: boolean;
   createFollowupTasks?: 'auto' | 'none' | 'prompt';
   dryRun?: boolean;
-  result?: 'pass' | 'fail' | 'blocked';
+  result?: 'pass' | 'fail';
   notes?: string;
   evidenceUrl?: string;
   allowDirty?: boolean;
@@ -806,39 +807,15 @@ export class QaTasksService {
   }
 
   private extractJsonCandidate(raw: string): any | undefined {
-    const fenced = raw.match(/```json([\s\S]*?)```/i);
-    const candidate = fenced ? fenced[1] : raw;
-    const start = candidate.indexOf('{');
-    const end = candidate.lastIndexOf('}');
-    if (start === -1 || end === -1 || end <= start) return undefined;
-    const slice = candidate.slice(start, end + 1);
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+    const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+    if (!candidate.startsWith("{") || !candidate.endsWith("}")) return undefined;
     try {
-      return JSON.parse(slice);
+      return JSON.parse(candidate);
     } catch {
-      const cleanedLines = slice
-        .split(/\r?\n/)
-        .filter((line) => {
-          const trimmed = line.trim();
-          if (!trimmed) return true;
-          if (
-            trimmed.startsWith("{") ||
-            trimmed.startsWith("}") ||
-            trimmed.startsWith("[") ||
-            trimmed.startsWith("]") ||
-            trimmed.startsWith("\"")
-          ) {
-            return true;
-          }
-          return false;
-        })
-        .join("\n")
-        .replace(/,\s*([}\]])/g, "$1");
-      const withQuotedKeys = cleanedLines.replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":');
-      try {
-        return JSON.parse(withQuotedKeys);
-      } catch {
-        return undefined;
-      }
+      return undefined;
     }
   }
 
@@ -857,6 +834,8 @@ export class QaTasksService {
       Array.isArray(value) ? value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean) : undefined;
     const recommendation = parsed.recommendation as AgentInterpretation['recommendation'];
     if (!recommendation || !['pass', 'fix_required', 'infra_issue', 'unclear'].includes(recommendation)) return undefined;
+    const testedScope = asString(parsed.tested_scope ?? parsed.scope);
+    const coverageSummary = asString(parsed.coverage_summary ?? parsed.coverage);
     const rawFollowUps = Array.isArray(parsed.follow_up_tasks)
       ? parsed.follow_up_tasks
       : Array.isArray(parsed.follow_ups)
@@ -892,8 +871,8 @@ export class QaTasksService {
     const unresolvedSlugs = normalizeSlugList(parsed.unresolved_slugs ?? parsed.unresolvedSlugs);
     return {
       recommendation,
-      testedScope: parsed.tested_scope ?? parsed.scope,
-      coverageSummary: parsed.coverage_summary ?? parsed.coverage,
+      testedScope,
+      coverageSummary,
       failures,
       followUps,
       resolvedSlugs,
@@ -901,7 +880,19 @@ export class QaTasksService {
     };
   }
 
-  private validateInterpretation(result: AgentInterpretation): string | undefined {
+  private validateInterpretation(
+    result: AgentInterpretation,
+    options: { requireCommentSlugs?: boolean } = {},
+  ): string | undefined {
+    if (typeof result.testedScope !== "string" || !result.testedScope.trim()) {
+      return "tested_scope must be a non-empty string.";
+    }
+    if (typeof result.coverageSummary !== "string" || !result.coverageSummary.trim()) {
+      return "coverage_summary must be a non-empty string.";
+    }
+    if (options.requireCommentSlugs && result.resolvedSlugs === undefined && result.unresolvedSlugs === undefined) {
+      return "resolvedSlugs/unresolvedSlugs required when comment backlog exists.";
+    }
     if (!result.failures || result.failures.length === 0) return undefined;
     for (const failure of result.failures) {
       const file = failure.file?.trim();
@@ -976,7 +967,7 @@ export class QaTasksService {
         `Task type: ${task.task.type ?? 'n/a'}, status: ${task.task.status}`,
         task.task.description ? `Task description:\n${task.task.description}` : '',
         `Epic/Story: ${task.task.epicKey ?? task.task.epicId} / ${task.task.storyKey ?? task.task.userStoryId}`,
-        acceptance ? `Acceptance criteria:\n${acceptance}` : 'Acceptance criteria: (not provided)',
+        acceptance ? `Task DoD / acceptance criteria:\n${acceptance}` : 'Task DoD / acceptance criteria: (not provided)',
         commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : 'Comment backlog: none',
         `QA profile: ${profile.name} (${profile.runner ?? 'cli'})`,
         `Test command / runner outcome: exit=${result.exitCode} outcome=${result.outcome}`,
@@ -987,15 +978,15 @@ export class QaTasksService {
         [
           'Return strict JSON with keys:',
           '{',
-          '  "tested_scope": string,',
-          '  "coverage_summary": string,',
+          '  "tested_scope": string (single sentence),',
+          '  "coverage_summary": string (single paragraph),',
           '  "failures": [{ "kind": "functional|contract|perf|security|infra", "message": string, "file": string, "line": number, "evidence": string }],',
           '  "recommendation": "pass|fix_required|infra_issue|unclear",',
           '  "follow_up_tasks": [{ "title": string, "description": string, "type": "bug|qa_followup|chore", "priority": number, "story_points": number, "tags": string[], "related_task_key": string, "epic_key": string, "story_key": string, "doc_links": string[], "evidence_url": string, "artifacts": string[] }],',
           '  "resolvedSlugs": ["Optional list of comment slugs that are confirmed fixed"],',
           '  "unresolvedSlugs": ["Optional list of comment slugs still open or reintroduced"]',
           '}',
-          'Do not include prose outside the JSON. Include resolvedSlugs/unresolvedSlugs when reviewing comment backlog.',
+          'Do not include prose outside the JSON. No markdown fences or comments. Include resolvedSlugs/unresolvedSlugs when reviewing comment backlog.',
         ].join('\n'),
       ]
         .filter(Boolean)
@@ -1066,7 +1057,8 @@ export class QaTasksService {
       }
       const parsed = this.extractJsonCandidate(output);
       let normalized = this.normalizeAgentOutput(parsed);
-      let validationError = normalized ? this.validateInterpretation(normalized) : undefined;
+      const requireCommentSlugs = Boolean(commentBacklog && commentBacklog.trim());
+      let validationError = normalized ? this.validateInterpretation(normalized, { requireCommentSlugs }) : undefined;
       if (normalized && validationError) {
         if (taskRunId) {
           await this.logTask(taskRunId, `QA agent output missing required fields (${validationError}); retrying once.`, 'qa-agent');
@@ -1128,7 +1120,7 @@ export class QaTasksService {
       }
       const retryParsed = this.extractJsonCandidate(retryOutput);
       let retryNormalized = this.normalizeAgentOutput(retryParsed);
-      validationError = retryNormalized ? this.validateInterpretation(retryNormalized) : undefined;
+      validationError = retryNormalized ? this.validateInterpretation(retryNormalized, { requireCommentSlugs }) : undefined;
       if (retryNormalized && validationError) {
         retryNormalized = undefined;
       }
@@ -1158,8 +1150,12 @@ export class QaTasksService {
         invalidJson: true,
       };
     } catch (error: any) {
+      const message = error?.message ?? String(error);
       if (taskRunId) {
-        await this.logTask(taskRunId, `QA agent failed: ${error?.message ?? error}`, 'qa-agent');
+        await this.logTask(taskRunId, `QA agent failed: ${message}`, 'qa-agent');
+      }
+      if (isAuthErrorMessage(message)) {
+        throw error;
       }
       return { recommendation: this.mapOutcome(result) };
     }
@@ -1388,9 +1384,9 @@ export class QaTasksService {
     } else if (outcome === 'fix_required') {
       await this.stateService.returnToInProgress(task, timestamp, context);
     } else if (outcome === 'infra_issue') {
-      await this.stateService.markBlocked(task, 'qa_infra_issue', context);
+      await this.stateService.markFailed(task, 'qa_infra_issue', context);
     } else if (outcome === 'unclear') {
-      await this.stateService.markBlocked(task, 'qa_unclear', context);
+      await this.stateService.markFailed(task, 'qa_unclear', context);
     }
   }
 
@@ -1520,7 +1516,11 @@ export class QaTasksService {
         const res = await this.agentService.invoke(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } });
         output = res.output ?? '';
       }
-    } catch {
+    } catch (error: any) {
+      const message = error?.message ?? String(error);
+      if (isAuthErrorMessage(message)) {
+        throw error;
+      }
       return [];
     }
     const tokensPrompt = this.estimateTokens(prompt);
@@ -1776,11 +1776,14 @@ export class QaTasksService {
       const installMessage = ensure.message ?? 'QA install failed';
       const guidance =
         profile.runner === 'chromium'
-          ? 'Install Playwright in the repo or set a chromium QA test_command.'
+          ? 'Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).'
           : undefined;
       const installLower = installMessage.toLowerCase();
       const alreadyGuided =
-        installLower.includes('playwright') || installLower.includes('test_command');
+        installLower.includes('chromium') ||
+        installLower.includes('docdex') ||
+        installLower.includes('browser_url') ||
+        installLower.includes('test_command');
       const installMessageWithGuidance =
         guidance && !alreadyGuided ? `${installMessage} ${guidance}` : installMessage;
       await this.logTask(taskRun.id, installMessageWithGuidance, 'qa-install');
@@ -1857,18 +1860,28 @@ export class QaTasksService {
     });
     const commentContext = await this.loadCommentContext(task.task.id);
     const commentBacklog = buildCommentBacklog(commentContext.unresolved);
-    const interpretation = await this.interpretResult(
-      task,
-      profile,
-      result,
-      ctx.request.agentName,
-      ctx.request.agentStream ?? true,
-      ctx.jobId,
-      ctx.commandRunId,
-      taskRun.id,
-      commentBacklog,
-      ctx.request.abortSignal,
-    );
+    let interpretation: AgentInterpretation;
+    try {
+      interpretation = await this.interpretResult(
+        task,
+        profile,
+        result,
+        ctx.request.agentName,
+        ctx.request.agentStream ?? true,
+        ctx.jobId,
+        ctx.commandRunId,
+        taskRun.id,
+        commentBacklog,
+        ctx.request.abortSignal,
+      );
+    } catch (error: any) {
+      const message = error?.message ?? String(error);
+      if (isAuthErrorMessage(message) && !this.dryRunGuard) {
+        await this.stateService.markFailed(task.task, AUTH_ERROR_REASON, statusContextBase);
+        await this.finishTaskRun(taskRun, 'failed');
+      }
+      throw error;
+    }
     const invalidJson = interpretation.invalidJson === true;
     const outcome = invalidJson ? 'unclear' : this.combineOutcome(result, interpretation.recommendation);
     const artifacts = result.artifacts ?? [];
@@ -1922,7 +1935,7 @@ export class QaTasksService {
         agentId: interpretation.agentId ?? undefined,
       };
       if (invalidJson) {
-        await this.stateService.markBlocked(task.task, 'qa_invalid_output', statusContext);
+        await this.stateService.markFailed(task.task, 'qa_invalid_output', statusContext);
       } else {
         await this.applyStateTransition(task.task, outcome, statusContext);
       }
@@ -1992,7 +2005,7 @@ export class QaTasksService {
         ? `Comment slugs: resolved ${commentResolution.resolved.length}, reopened ${commentResolution.reopened.length}, open ${commentResolution.open.length}`
         : '',
       interpretation.invalidJson
-        ? 'QA agent output invalid; task blocked (qa_invalid_output).'
+        ? 'QA agent output invalid; task failed (qa_invalid_output).'
         : '',
       interpretation.invalidJson && interpretation.rawOutput
         ? `QA agent output (invalid JSON):\n${interpretation.rawOutput.slice(0, 4000)}`
@@ -2093,8 +2106,7 @@ export class QaTasksService {
     };
     const result = ctx.request.result ?? 'pass';
     const notes = ctx.request.notes;
-    const outcome: 'pass' | 'fix_required' | 'infra_issue' =
-      result === 'pass' ? 'pass' : result === 'blocked' ? 'infra_issue' : 'fix_required';
+    const outcome: 'pass' | 'fix_required' | 'infra_issue' = result === 'pass' ? 'pass' : 'fix_required';
     const allowedStatuses = new Set(ctx.request.statusFilter ?? ['ready_to_qa']);
     if (task.task.status && !allowedStatuses.has(task.task.status)) {
       const message = `Task status ${task.task.status} not allowed for manual QA`;
@@ -2245,14 +2257,27 @@ export class QaTasksService {
     const effectiveStory = request.storyKey ?? (resume?.payload as any)?.storyKey;
     const effectiveTasks = request.taskKeys?.length ? request.taskKeys : (resume?.payload as any)?.tasks;
     const effectiveStatus = request.statusFilter ?? (resume?.payload as any)?.statusFilter ?? ['ready_to_qa'];
+    const effectiveLimit = request.limit ?? (resume?.payload as any)?.limit;
+    const { filtered: statusFilter, rejected } = filterTaskStatuses(
+      effectiveStatus,
+      QA_ALLOWED_STATUSES,
+      QA_ALLOWED_STATUSES,
+    );
 
     const selection = await this.selectionService.selectTasks({
       projectKey: effectiveProject,
       epicKey: effectiveEpic,
       storyKey: effectiveStory,
       taskKeys: effectiveTasks,
-      statusFilter: effectiveStatus,
+      statusFilter,
+      limit: effectiveLimit,
+      ignoreDependencies: true,
     });
+    if (rejected.length > 0) {
+      selection.warnings.push(
+        `qa-tasks ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${QA_ALLOWED_STATUSES.join(", ")}.`,
+      );
+    }
     const abortSignal = request.abortSignal;
     const resolveAbortReason = () => {
       const reason = abortSignal?.reason;
@@ -2331,7 +2356,8 @@ export class QaTasksService {
               epicKey: effectiveEpic,
               storyKey: effectiveStory,
               tasks: effectiveTasks,
-              statusFilter: effectiveStatus,
+              statusFilter,
+              limit: effectiveLimit,
               mode: request.mode ?? 'auto',
               profile: request.profileName,
               level: request.level,
@@ -2361,8 +2387,8 @@ export class QaTasksService {
     }
     const remaining = selection.ordered.filter((t) => !completedKeys.has(t.task.key));
 
-    // Skip tasks that are already in a terminal QA state for this job (ready_to_qa -> completed/in_progress/blocked)
-    const terminalStatuses = new Set(['completed', 'in_progress', 'blocked']);
+    // Skip tasks that are already in a terminal QA state for this job (ready_to_qa -> completed/in_progress/failed)
+    const terminalStatuses = new Set(['completed', 'in_progress', 'failed']);
     const skippedTerminal: QaTaskResult[] = [];
     for (const t of remaining) {
       if (terminalStatuses.has(t.task.status?.toLowerCase?.() ?? '')) {
@@ -2383,12 +2409,12 @@ export class QaTasksService {
 
     await this.checkpoint(job.id, 'selection', {
       ordered: selection.ordered.map((t) => t.task.key),
-      blocked: selection.blocked.map((t) => t.task.key),
       completedTaskKeys: Array.from(completedKeys),
     });
 
     const warnings = [...selection.warnings];
     const results: QaTaskResult[] = [];
+    let abortRemainingReason: string | null = null;
     const formatSessionId = (iso: string): string => {
       const date = new Date(iso);
       const pad = (value: number) => String(value).padStart(2, '0');
@@ -2471,6 +2497,7 @@ export class QaTasksService {
     try {
       let processedCount = completedKeys.size;
       for (const [index, task] of filteredRemaining.entries()) {
+        if (abortRemainingReason) break;
         abortIfSignaled();
         const mode = request.mode ?? 'auto';
         const startedAt = new Date().toISOString();
@@ -2496,16 +2523,31 @@ export class QaTasksService {
             result = await this.runAuto(task, { jobId: job.id, commandRunId: commandRun.id, request, warnings });
           }
         } catch (error: any) {
+          const message = error instanceof Error ? error.message : String(error);
           emitQaEnd({
             taskKey: task.task.key,
             statusLabel: 'FAILED',
-            outcome: error instanceof Error ? error.message : String(error),
+            outcome: message,
             profile: undefined,
             runner: undefined,
             elapsedMs: Date.now() - taskStartMs,
             startedAt,
             endedAt: new Date().toISOString(),
           });
+          if (isAuthErrorMessage(message)) {
+            abortRemainingReason = message;
+            warnings.push(`Auth/rate limit error detected; stopping after ${task.task.key}. ${message}`);
+            results.push({ taskKey: task.task.key, outcome: 'infra_issue', notes: AUTH_ERROR_REASON });
+            completedKeys.add(task.task.key);
+            processedCount = completedKeys.size;
+            await this.deps.jobService.updateJobStatus(job.id, 'running', { processedItems: processedCount });
+            await this.checkpoint(job.id, `task:${task.task.key}:aborted`, {
+              processed: processedCount,
+              completedTaskKeys: Array.from(completedKeys),
+              taskResult: results[results.length - 1],
+            });
+            break;
+          }
           throw error;
         }
         results.push(result);
@@ -2530,10 +2572,18 @@ export class QaTasksService {
           taskResult: results[results.length - 1],
         });
       }
+      if (abortRemainingReason) {
+        warnings.push(`Stopped remaining tasks due to auth/rate limit: ${abortRemainingReason}`);
+      }
       const failureCount = results.filter((r) => r.outcome !== 'pass').length;
-      const state: JobState =
-        failureCount === 0 ? 'completed' : failureCount === results.length ? 'failed' : ('partial' as JobState);
-      const errorSummary = failureCount ? `${failureCount} task(s) not passed QA` : undefined;
+      const state: JobState = abortRemainingReason
+        ? 'failed'
+        : failureCount === 0
+          ? 'completed'
+          : failureCount === results.length
+            ? 'failed'
+            : ('partial' as JobState);
+      const errorSummary = abortRemainingReason ?? (failureCount ? `${failureCount} task(s) not passed QA` : undefined);
       await this.deps.jobService.updateJobStatus(job.id, state, { errorSummary });
       await this.deps.jobService.finishCommandRun(commandRun.id, state === 'completed' ? 'succeeded' : 'failed', errorSummary);
       await this.checkpoint(job.id, 'completed', {

@@ -74,7 +74,10 @@ class StubAgentService {
     return { id: "qa-agent", defaultModel: "stub" } as any;
   }
   async invoke() {
-    return { output: '{"recommendation":"pass"}' };
+    return {
+      output:
+        '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+    };
   }
 }
 
@@ -107,7 +110,10 @@ class CapturingAgentService {
   }
   async invoke(_id: string, req: any) {
     this.lastInput = req?.input ?? "";
-    return { output: '{"recommendation":"pass"}' };
+    return {
+      output:
+        '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+    };
   }
 }
 
@@ -513,7 +519,10 @@ test("qa-tasks prepends project guidance to agent prompt", async () => {
     agentService: {
       invoke: async (_id: string, { input }: { input: string }) => {
         lastInput = input;
-        return { output: '{"recommendation":"pass"}' };
+        return {
+          output:
+            '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+        };
       },
       getPrompts: async () => ({
         jobPrompt: "Job",
@@ -591,7 +600,10 @@ test("qa-tasks strips gateway-style prompts from agent profile", async () => {
     agentService: {
       invoke: async (_id: string, { input }: { input: string }) => {
         lastInput = input;
-        return { output: '{"recommendation":"pass"}' };
+        return {
+          output:
+            '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+        };
       },
       getPrompts: async () => ({
         jobPrompt: "You are the gateway agent. Return JSON only.",
@@ -622,7 +634,7 @@ test("qa-tasks strips gateway-style prompts from agent profile", async () => {
   }
 });
 
-test("qa-tasks selects Playwright profile for UI-tagged tasks", async () => {
+test("qa-tasks selects chromium profile for UI-tagged tasks", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -776,8 +788,8 @@ test("qa-tasks treats invalid JSON as unclear and records raw output", async () 
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.outcome, "unclear");
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "qa_invalid_output");
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "qa_invalid_output");
     assert.ok(followups.length >= 1);
 
     const comments = await repo.listTaskComments(task.id);
@@ -861,8 +873,8 @@ test("qa-tasks blocks when QA output is missing required fields", async () => {
     assert.equal(result.results[0]?.outcome, "unclear");
     assert.ok(invokeCount >= 2);
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "qa_invalid_output");
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "qa_invalid_output");
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -1205,8 +1217,8 @@ test("qa-tasks blocks unclear outcomes with guidance", async () => {
     assert.equal(result.results[0]?.outcome, "unclear");
 
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "qa_unclear");
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "qa_unclear");
 
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
     assert.ok(comments.some((comment) => comment.body.includes("QA outcome unclear")));
@@ -1274,7 +1286,7 @@ test("qa-tasks flags missing run-all marker as infra issue", async () => {
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.outcome, "infra_issue");
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "failed");
 
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
     assert.ok(comments.some((comment) => comment.body.includes("MCODA_RUN_ALL_TESTS_COMPLETE")));
@@ -1449,7 +1461,7 @@ test("qa-tasks preflight blocks missing dependencies and env vars", async () => 
     assert.equal(ensureCalled, false);
 
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "failed");
 
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
     assert.ok(comments.some((comment) => comment.body.includes("Missing QA dependencies")));
@@ -1470,7 +1482,7 @@ test("qa-tasks preflight blocks missing dependencies and env vars", async () => 
   }
 });
 
-test("qa-tasks install failure includes Playwright guidance for chromium runner", async () => {
+test("qa-tasks install failure includes chromium guidance for chromium runner", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -1504,7 +1516,7 @@ test("qa-tasks install failure includes Playwright guidance for chromium runner"
 
   class InstallFailAdapter {
     async ensureInstalled() {
-      return { ok: false, message: "Playwright missing" };
+      return { ok: false, message: "QA install failed" };
     }
     async invoke() {
       throw new Error("should not invoke when install fails");
@@ -1544,14 +1556,14 @@ test("qa-tasks install failure includes Playwright guidance for chromium runner"
     assert.equal(result.results[0]?.outcome, "infra_issue");
 
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "failed");
 
     const comments = await repo.listTaskComments(task.id, { sourceCommands: ["qa-tasks"] });
-    assert.ok(comments.some((comment) => comment.body.includes("Playwright")));
+    assert.ok(comments.some((comment) => comment.body.includes("Docdex Chromium")));
 
     const db = repo.getDb();
     const logs = await db.all<{ message: string }[]>("SELECT message FROM task_logs");
-    assert.ok(logs.some((log) => log.message.includes("Playwright")));
+    assert.ok(logs.some((log) => log.message.includes("Docdex Chromium")));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

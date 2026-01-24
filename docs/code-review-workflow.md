@@ -3,13 +3,13 @@
 This document describes the current `code-review` command flow as implemented in `CodeReviewService` (`packages/core/src/services/review/CodeReviewService.ts`).
 
 ## Overview
-`code-review` selects tasks in `ready_to_review`, builds a rich review prompt (diff + docdex + history + open comments), invokes a review agent, parses JSON findings, applies comment resolution, updates task status, and records review artifacts.
+`code-review` selects tasks in `ready_to_code_review`, builds a rich review prompt (diff + docdex + history + open comments), invokes a review agent, parses JSON findings, applies comment resolution, updates task status, and records review artifacts.
 
 ## Inputs and defaults
 - Task scope: `projectKey`, `epicKey`, `storyKey`, `taskKeys`, `statusFilter`, `limit`.
 - Base ref: `baseRef` (defaults to workspace config branch, then `mcoda-dev`).
 - Execution flags: `agentName`, `agentStream`, `dryRun`, `rateAgents`, `resumeJobId`.
-- Status default: `ready_to_review`.
+- Status default: `ready_to_code_review`.
 
 ## High-level phases
 1. Init + selection (including resume handling)
@@ -39,7 +39,7 @@ This document describes the current `code-review` command flow as implemented in
 
 #### 2.2 Context assembly
 1. Build git diff against `baseRef` (optionally scoped to `metadata.files`).
-   - If the diff is empty, block the task with `review_empty_diff` and skip agent invocation.
+   - If the diff is empty, fail the task with `review_empty_diff` and skip agent invocation.
 2. Build history summary from prior comments/reviews.
 3. Load unresolved comment backlog from `code-review` and `qa-tasks`.
 4. Query docdex for context based on:
@@ -65,7 +65,7 @@ This document describes the current `code-review` command flow as implemented in
 2. Record token usage for the main attempt.
 3. If JSON parsing fails, retry once with stricter instructions.
 4. If parsing still fails:
-   - Block the task with `review_invalid_output`.
+   - Fail the task with `review_invalid_output`.
    - Record a task comment requesting a re-run with a stricter model.
 
 #### 2.5 Apply results
@@ -78,7 +78,7 @@ This document describes the current `code-review` command flow as implemented in
 3. Update task state (unless `dryRun`):
    - `approve` or `info_only` → `ready_to_qa`
    - `changes_requested` → `in_progress`
-   - `block` → `blocked` with `review_blocked`
+   - `block` → `failed` with `review_blocked`
 4. Create a review summary comment and a task review record.
 5. Update the `task_run` to `succeeded`.
 6. Persist checkpoint (`review_applied`).
@@ -100,7 +100,7 @@ If `rateAgents` is enabled, record a rating for this review run.
 ## Gateway-trio integration notes
 - `gateway-trio` treats `approve` and `info_only` as success and advances to QA.
 - `changes_requested` causes a work retry in the next cycle; feedback tasks are prioritized.
-- `block` or `review_invalid_output` stop the task with `review_blocked` until manually reopened or resumed.
+- `block` or `review_invalid_output` fail the task with `review_blocked` until manually reopened or resumed.
 
 ## Mermaid diagram
 ```mermaid

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { BacklogService, BacklogSummary, WorkspaceResolver } from "@mcoda/core";
+import { READY_TO_CODE_REVIEW, normalizeReviewStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -36,11 +37,13 @@ const usage = `mcoda backlog \\
 
 const parseStatuses = (value: string | undefined): string[] | undefined => {
   if (!value) return undefined;
-  return value
+  const parsed = value
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((s) => s.toLowerCase());
+    .map((s) => s.toLowerCase())
+    .filter((s) => s !== "blocked");
+  return normalizeReviewStatuses(parsed);
 };
 
 export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
@@ -166,7 +169,7 @@ export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
 const resolveStatuses = (parsed: ParsedArgs): string[] | undefined => {
   if (parsed.statusAll) return undefined;
   if (parsed.statuses && parsed.statuses.length > 0) return parsed.statuses;
-  const active = ["not_started", "in_progress", "blocked", "ready_to_review", "ready_to_qa"];
+  const active = normalizeReviewStatuses(["not_started", "in_progress", READY_TO_CODE_REVIEW, "ready_to_qa"]);
   if (parsed.includeDone) active.push("completed");
   if (parsed.includeCancelled) active.push("cancelled");
   return active;

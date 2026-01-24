@@ -139,7 +139,7 @@ describe("estimate output rendering", () => {
           key: "proj-01-us-01-t02",
           title: "Review task",
           description: "Review work",
-          status: "ready_to_review",
+          status: "ready_to_code_review",
           storyPoints: 4,
         },
         {

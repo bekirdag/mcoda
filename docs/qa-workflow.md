@@ -39,10 +39,10 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 
 #### 2.2 Adapter selection and install check
 1. Pick adapter by profile runner:
-   - `cli`, `chromium` (headless Chromium/Playwright), or `maestro`.
+   - `cli`, `chromium` (headless Chromium via docdex), or `maestro`.
 2. Call `ensureInstalled` on the adapter.
 3. If install fails:
-   - Mark task `blocked` with `qa_infra_issue`.
+   - Fail task with `qa_infra_issue`.
    - Create a `qa_issue` comment.
    - Record a QA run with `infra_issue` outcome.
 
@@ -72,8 +72,8 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 2. Apply state transition:
    - `pass` → `completed`
    - `fix_required` → `in_progress`
-   - `infra_issue` → `blocked` with `qa_infra_issue`
-   - `unclear` → `blocked` with `qa_unclear`
+   - `infra_issue` → `failed` with `qa_infra_issue`
+   - `unclear` → `failed` with `qa_unclear`
 3. Resolve QA comment slugs:
    - Mark `resolvedSlugs`, reopen `unresolvedSlugs`.
    - Create new QA comment(s) for failures.
@@ -96,7 +96,7 @@ If `rateAgents` is enabled, record an agent rating for the QA interpretation run
 
 ## Gateway-trio integration notes
 - `gateway-trio` treats `pass` as completion and loops back on `fix_required` or `unclear`.
-- `qa_infra_issue` blocks the task; expired QA blocks are reopened on resume when allowed.
+- `qa_infra_issue` fails the task; failed QA tasks can be retried on resume when allowed.
 - Feedback tasks (QA fix requests) are prioritized in subsequent cycles.
 
 ## Mermaid diagram
@@ -111,7 +111,7 @@ flowchart TD
   F --> G[Resolve QA profile]
   G --> H[Pick adapter + ensureInstalled]
   H --> I{Install ok?}
-  I -->|No| I1[Block qa_infra_issue + comment]
+  I -->|No| I1[Fail qa_infra_issue + comment]
   I -->|Yes| J[Run tests via adapter]
   J --> K[Normalize outcome]
   K --> L[Interpret results with QA agent]

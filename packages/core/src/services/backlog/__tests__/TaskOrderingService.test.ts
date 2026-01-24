@@ -152,7 +152,6 @@ test("orders tasks by dependency impact and normalizes priorities", { concurrenc
       try {
         const result = await service.orderTasks({
           projectKey: ctx.project.key,
-          includeBlocked: true,
         });
         assert.equal(result.ordered.length, 4);
         assert.deepEqual(
@@ -185,7 +184,7 @@ test("orders tasks by dependency impact and normalizes priorities", { concurrenc
   });
 });
 
-test("excludes blocked tasks when includeBlocked is false and still assigns priorities", { concurrency: false }, async () => {
+test("orders tasks with dependencies and still assigns priorities", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
     try {
@@ -233,12 +232,9 @@ test("excludes blocked tasks when includeBlocked is false and still assigns prio
       try {
         const result = await service.orderTasks({
           projectKey: ctx.project.key,
-          includeBlocked: false,
           statusFilter: ["not_started", "completed"],
         });
-        assert.equal(result.ordered.length, 2);
-        assert.equal(result.blocked.length, 1);
-        assert.ok(result.blocked[0].taskKey.endsWith("T03"));
+        assert.equal(result.ordered.length, 3);
         const priorities = await Promise.all(
           [t1, t2, t3].map((task) => ctx.repo.getTaskByKey(task.key)),
         );
@@ -255,7 +251,7 @@ test("excludes blocked tasks when includeBlocked is false and still assigns prio
   });
 });
 
-test("prioritizes foundation and stage ordering before dependency impact", { concurrency: false }, async () => {
+test("uses stage ordering as a tie-breaker when priorities match", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
     try {
@@ -294,7 +290,7 @@ test("prioritizes foundation and stage ordering before dependency impact", { con
 
       const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
       try {
-        const result = await service.orderTasks({ projectKey: ctx.project.key, includeBlocked: true });
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
         assert.deepEqual(
           result.ordered.map((t) => t.taskKey),
           ["PROJ-01-US-01-T01", "PROJ-01-US-01-T02", "PROJ-01-US-01-T03"],
@@ -308,7 +304,7 @@ test("prioritizes foundation and stage ordering before dependency impact", { con
   });
 });
 
-test("blocks tasks with open missing_context comments", { concurrency: false }, async () => {
+test("warns on tasks with open missing_context comments", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
     try {
@@ -346,9 +342,9 @@ test("blocks tasks with open missing_context comments", { concurrency: false }, 
 
       const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
       try {
-        const result = await service.orderTasks({ projectKey: ctx.project.key, includeBlocked: false });
-        assert.deepEqual(result.ordered.map((t) => t.taskKey), ["PROJ-01-US-01-T01"]);
-        assert.deepEqual(result.blocked.map((t) => t.taskKey), ["PROJ-01-US-01-T02"]);
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
+        assert.equal(result.ordered.length, 2);
+        assert.ok(result.warnings.some((warning) => warning.includes("missing_context")));
       } finally {
         await service.close();
       }
@@ -389,7 +385,7 @@ test("injects inferred foundation dependencies for non-foundation tasks", { conc
 
       const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
       try {
-        const result = await service.orderTasks({ projectKey: ctx.project.key, includeBlocked: true });
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
         assert.deepEqual(
           result.ordered.map((t) => t.taskKey),
           ["PROJ-01-US-01-T01", "PROJ-01-US-01-T02"],
@@ -444,7 +440,7 @@ test("skips inferred foundation dependencies that introduce cycles", { concurren
 
       const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
       try {
-        const result = await service.orderTasks({ projectKey: ctx.project.key, includeBlocked: true });
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
         assert.ok(result.warnings.some((warning) => warning.includes("Skipped")));
         const deps = await ctx.repo.getTaskDependencies([foundation.id, nonFoundation.id]);
         const nonFoundationDeps = deps.filter((dep) => dep.taskId === nonFoundation.id);
@@ -502,7 +498,6 @@ test("applies inferred agent dependencies and reorders tasks", { concurrency: fa
         ];
         const result = await service.orderTasks({
           projectKey: ctx.project.key,
-          includeBlocked: true,
           inferDependencies: true,
         });
         assert.deepEqual(
@@ -569,7 +564,6 @@ test("skips inferred agent dependencies that introduce cycles", { concurrency: f
         ];
         const result = await service.orderTasks({
           projectKey: ctx.project.key,
-          includeBlocked: true,
           inferDependencies: true,
         });
         assert.ok(result.warnings.some((warning) => warning.includes("Skipped")));
@@ -624,7 +618,6 @@ test("handles dependency cycles gracefully", { concurrency: false }, async () =>
       try {
         const result = await service.orderTasks({
           projectKey: ctx.project.key,
-          includeBlocked: true,
         });
         assert.equal(result.ordered.length, 2);
         assert.ok(result.warnings.length > 0);

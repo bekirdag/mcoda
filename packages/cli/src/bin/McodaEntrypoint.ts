@@ -27,7 +27,41 @@ import { SetWorkspaceCommand } from "../commands/workspace/SetWorkspaceCommand.j
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
-    const [command, ...rest] = argv;
+    const applyCodexNoSandboxFlag = (value: string | undefined): void => {
+      if (value === undefined || value === "") {
+        process.env.MCODA_CODEX_NO_SANDBOX = "1";
+        return;
+      }
+      const normalized = value.trim().toLowerCase();
+      if (["0", "false", "off", "no"].includes(normalized)) {
+        process.env.MCODA_CODEX_NO_SANDBOX = "0";
+        return;
+      }
+      process.env.MCODA_CODEX_NO_SANDBOX = "1";
+    };
+
+    const filteredArgs: string[] = [];
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i];
+      if (arg === "--codex-no-sandbox") {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          applyCodexNoSandboxFlag(next);
+          i += 1;
+        } else {
+          applyCodexNoSandboxFlag(undefined);
+        }
+        continue;
+      }
+      if (arg.startsWith("--codex-no-sandbox=")) {
+        const [, raw] = arg.split("=", 2);
+        applyCodexNoSandboxFlag(raw);
+        continue;
+      }
+      filteredArgs.push(arg);
+    }
+
+    const [command, ...rest] = filteredArgs;
     const wantsJson = argv.some((arg) => arg === "--json" || arg.startsWith("--json="));
     const wantsQuiet = argv.some((arg) => arg === "--quiet" || arg.startsWith("--quiet="));
     if (wantsJson || wantsQuiet) {
@@ -118,7 +152,7 @@ export class McodaEntrypoint {
       if (rest.includes("--help") || rest.includes("-h")) {
         // eslint-disable-next-line no-console
         console.log(
-          "Usage: mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command \"<CMD>\"] [--agent <NAME>] [--agent-stream true|false] [--resume <JOB_ID>] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes \"<text>\"] [--evidence-url \"<url>\"] [--dry-run] [--json]",
+          "Usage: mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--limit N] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command \"<CMD>\"] [--agent <NAME>] [--agent-stream true|false] [--resume <JOB_ID>] [--create-followup-tasks auto|none|prompt] [--result pass|fail] [--notes \"<text>\"] [--evidence-url \"<url>\"] [--dry-run] [--json]",
         );
         return;
       }

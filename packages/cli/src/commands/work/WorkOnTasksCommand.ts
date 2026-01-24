@@ -1,5 +1,6 @@
 import path from "node:path";
 import { WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
+import { WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -24,7 +25,7 @@ const usage = `mcoda work-on-tasks \\
   [--workspace <PATH>] \\
   [--project <PROJECT_KEY>] \\
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
-  [--status not_started,in_progress] \\
+  [--status not_started,in_progress,changes_requested] \\
   [--limit N] \\
   [--parallel N] \\
   [--no-commit] \\
@@ -211,9 +212,12 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     }
   }
 
-  if (statusFilter.length === 0) {
-    statusFilter.push("not_started", "in_progress");
-  }
+  const { filtered } = filterTaskStatuses(
+    statusFilter.length ? statusFilter : undefined,
+    WORK_ALLOWED_STATUSES,
+    WORK_ALLOWED_STATUSES,
+  );
+  statusFilter.splice(0, statusFilter.length, ...filtered);
 
   return {
     workspaceRoot,
@@ -279,12 +283,8 @@ export class WorkOnTasksCommand {
       });
 
       const success = result.results.filter((r) => r.status === "succeeded").length;
-      const failed = result.results.filter((r) => r.status === "failed" || r.status === "blocked").length;
+      const failed = result.results.filter((r) => r.status === "failed").length;
       const skipped = result.results.filter((r) => r.status === "skipped").length;
-      const blockedKeys = [
-        ...result.selection.blocked.map((t) => t.task.key),
-        ...result.results.filter((r) => r.status === "blocked").map((r) => r.taskKey),
-      ];
       if (failed > 0) {
         process.exitCode = 1;
       }
@@ -300,7 +300,6 @@ export class WorkOnTasksCommand {
               succeeded: success,
               failed,
               skipped,
-              blocked: blockedKeys,
               warnings: result.warnings,
             },
             null,
@@ -313,7 +312,6 @@ export class WorkOnTasksCommand {
       const summary = [
         `Job: ${result.jobId}, Command Run: ${result.commandRunId}`,
         `Tasks processed: ${result.results.length} (succeeded=${success}, failed=${failed}, skipped=${skipped})`,
-        blockedKeys.length ? `Blocked: ${blockedKeys.join(", ")}` : undefined,
       ]
         .filter(Boolean)
         .join("\n");

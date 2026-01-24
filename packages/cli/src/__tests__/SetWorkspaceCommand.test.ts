@@ -15,4 +15,11 @@ describe("set-workspace argument parsing", () => {
     assert.equal(parsed.git, false);
     assert.equal(parsed.docdex, false);
   });
+
+  it("parses codex sandbox override", () => {
+    const parsed = parseSetWorkspaceArgs(["--codex-no-sandbox"]);
+    assert.equal(parsed.codexNoSandbox, true);
+    const parsedFalse = parseSetWorkspaceArgs(["--codex-no-sandbox=false"]);
+    assert.equal(parsedFalse.codexNoSandbox, false);
+  });
 });

@@ -318,8 +318,8 @@ test("VelocityService uses status events for lane durations", async () => {
   const t3 = new Date(base + 3.5 * 60 * 60 * 1000).toISOString();
 
   await repo.recordTaskStatusEvent({ taskId: task.id, fromStatus: "not_started", toStatus: "in_progress", timestamp: t0 });
-  await repo.recordTaskStatusEvent({ taskId: task.id, fromStatus: "in_progress", toStatus: "ready_to_review", timestamp: t1 });
-  await repo.recordTaskStatusEvent({ taskId: task.id, fromStatus: "ready_to_review", toStatus: "ready_to_qa", timestamp: t2 });
+  await repo.recordTaskStatusEvent({ taskId: task.id, fromStatus: "in_progress", toStatus: "ready_to_code_review", timestamp: t1 });
+  await repo.recordTaskStatusEvent({ taskId: task.id, fromStatus: "ready_to_code_review", toStatus: "ready_to_qa", timestamp: t2 });
   await repo.recordTaskStatusEvent({ taskId: task.id, fromStatus: "ready_to_qa", toStatus: "completed", timestamp: t3 });
 
   const velocityService = await VelocityService.create(workspace);
@@ -378,7 +378,7 @@ test("EstimateService combines backlog totals and velocity", async () => {
         key: "T2",
         title: "Task 2",
         description: "desc",
-        status: "ready_to_review",
+        status: "ready_to_code_review",
         storyPoints: 4,
       },
       {

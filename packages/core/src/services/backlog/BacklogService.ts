@@ -1,13 +1,12 @@
 import fs from "node:fs/promises";
 import { Connection, type Database } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, READY_TO_CODE_REVIEW, isReadyToReviewStatus } from "@mcoda/shared";
 import { TaskOrderingService } from "./TaskOrderingService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 
 type BacklogLane = "implementation" | "review" | "qa" | "done";
 
-const IMPLEMENTATION_STATUSES = new Set(["not_started", "in_progress", "blocked"]);
-const REVIEW_STATUSES = new Set(["ready_to_review"]);
+const IMPLEMENTATION_STATUSES = new Set(["not_started", "in_progress"]);
 const QA_STATUSES = new Set(["ready_to_qa"]);
 const DONE_STATUSES = new Set(["completed", "cancelled"]);
 
@@ -136,7 +135,7 @@ const emptyTotals = (): BacklogTotals => ({
 const bucketForStatus = (status: string): BacklogLane => {
   const normalized = status?.toLowerCase() ?? "";
   if (IMPLEMENTATION_STATUSES.has(normalized)) return "implementation";
-  if (REVIEW_STATUSES.has(normalized)) return "review";
+  if (isReadyToReviewStatus(normalized)) return "review";
   if (QA_STATUSES.has(normalized)) return "qa";
   if (DONE_STATUSES.has(normalized)) return "done";
   return "implementation";
@@ -165,7 +164,7 @@ const hasTables = async (db: Database, required: string[]): Promise<boolean> => 
 };
 
 const deriveStoryStatus = (statuses: Set<string>): string | undefined => {
-  const order = ["completed", "cancelled", "ready_to_qa", "ready_to_review", "in_progress", "blocked", "not_started"];
+  const order = ["completed", "cancelled", "ready_to_qa", READY_TO_CODE_REVIEW, "changes_requested", "in_progress", "not_started"];
   for (const status of order) {
     if (statuses.has(status)) return status;
   }
@@ -316,7 +315,6 @@ export class BacklogService {
             storyKey: story?.key,
             assignee: options.assignee,
             statusFilter: options.statuses,
-            includeBlocked: true,
           });
           orderingMeta.applied = true;
           orderingMeta.reason = "dependency_graph";

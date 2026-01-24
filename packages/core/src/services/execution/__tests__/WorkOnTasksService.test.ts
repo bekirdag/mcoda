@@ -13,13 +13,16 @@ import { JobService } from "../../jobs/JobService.js";
 let tempHome: string | undefined;
 let originalHome: string | undefined;
 let originalProfile: string | undefined;
+let originalPatchMode: string | undefined;
 
 beforeEach(async () => {
   originalHome = process.env.HOME;
   originalProfile = process.env.USERPROFILE;
+  originalPatchMode = process.env.MCODA_WORK_ON_TASKS_PATCH_MODE;
   tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-work-home-"));
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
+  process.env.MCODA_WORK_ON_TASKS_PATCH_MODE = "1";
 });
 
 afterEach(async () => {
@@ -35,6 +38,11 @@ afterEach(async () => {
     delete process.env.USERPROFILE;
   } else {
     process.env.USERPROFILE = originalProfile;
+  }
+  if (originalPatchMode === undefined) {
+    delete process.env.MCODA_WORK_ON_TASKS_PATCH_MODE;
+  } else {
+    process.env.MCODA_WORK_ON_TASKS_PATCH_MODE = originalPatchMode;
   }
 });
 
@@ -215,6 +223,28 @@ class StubAgentServiceCommentResolution {
         patch,
         resolvedSlugs: ["review-open"],
         unresolvedSlugs: ["qa-old"],
+      }),
+      adapter: "local-model",
+    };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceNoChangeCommentResolution {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    return {
+      output: JSON.stringify({
+        resolvedSlugs: ["review-open"],
+        unresolvedSlugs: [],
       }),
       adapter: "local-model",
     };
@@ -767,6 +797,8 @@ class StubVcs {
   }
   async checkoutBranch(_cwd: string, _branch: string) {}
   async createOrCheckoutBranch(_cwd: string, _branch: string, _base: string) {}
+  async cherryPick(_cwd: string, _commit: string) {}
+  async abortCherryPick(_cwd: string) {}
   async applyPatch(_cwd: string, _patch: string) {}
   async applyPatchWithReject(_cwd: string, _patch: string) {
     return {};
@@ -796,6 +828,13 @@ class StubVcs {
   async push(_cwd: string, _remote: string, _branch: string) {}
   async merge(_cwd: string, _source: string, _target: string) {}
   async abortMerge(_cwd: string) {}
+  async resolveMergeConflicts(
+    _cwd: string,
+    _strategy: "theirs" | "ours",
+    _paths?: string[],
+  ): Promise<string[]> {
+    return _paths ?? [];
+  }
   async resetHard(_cwd: string, _options?: { exclude?: string[] }) {}
 }
 
@@ -901,6 +940,8 @@ class MergeRecordingVcs extends StubVcs {
 class MergeConflictVcs extends StubVcs {
   conflicts: string[] = ["server/src/index.ts"];
   abortCalls = 0;
+  resolveCalls = 0;
+  resolveStrategy: "theirs" | "ours" | null = null;
   override async branchExists() {
     return true;
   }
@@ -912,6 +953,15 @@ class MergeConflictVcs extends StubVcs {
   }
   override async abortMerge() {
     this.abortCalls += 1;
+  }
+  override async resolveMergeConflicts(
+    _cwd: string,
+    strategy: "theirs" | "ours",
+    _paths?: string[],
+  ): Promise<string[]> {
+    this.resolveCalls += 1;
+    this.resolveStrategy = strategy;
+    return this.conflicts;
   }
 }
 
@@ -1035,7 +1085,7 @@ const writeNoopTestScript = async (dir: string) => {
   return `${resolveNodeCommand()} ./unit-test.js`;
 };
 
-test("workOnTasks marks tasks ready_to_review and records task runs", async () => {
+test("workOnTasks marks tasks ready_to_code_review and records task runs", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -1062,8 +1112,8 @@ test("workOnTasks marks tasks ready_to_review and records task runs", async () =
     assert.equal(result.results.length, 2);
     const updatedA = await repo.getTaskByKey(tasks[0].key);
     const updatedB = await repo.getTaskByKey(tasks[1].key);
-    assert.equal(updatedA?.status, "ready_to_review");
-    assert.equal(updatedB?.status, "ready_to_review");
+    assert.equal(updatedA?.status, "ready_to_code_review");
+    assert.equal(updatedB?.status, "ready_to_code_review");
     const db = repo.getDb();
     const taskRuns = await db.all<{ status: string }[]>("SELECT status FROM task_runs WHERE command = 'work-on-tasks'");
     assert.equal(taskRuns.length, 2);
@@ -1118,8 +1168,43 @@ test("workOnTasks blocks patches outside workspace", async () => {
     assert.equal(result.results[0]?.status, "failed");
     assert.equal(result.results[0]?.notes, "scope_violation");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "scope_violation");
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "scope_violation");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks merges task branch even when task fails", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const vcs = new MergeRecordingVcs();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceOutOfScopePatch() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: vcs as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(vcs.merges.length, 1);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -1573,8 +1658,8 @@ test("workOnTasks logs docdex scope failures before search", async () => {
     assert.equal(result.results[0]?.status, "failed");
     assert.equal(result.results[0]?.notes, "missing_docdex");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "missing_docdex");
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "missing_docdex");
     const logs = await repo.getDb().all<{ source: string; message: string }[]>(
       "SELECT source, message FROM task_logs",
     );
@@ -1783,7 +1868,7 @@ test("workOnTasks blocks destructive doc edits without allow flag", async () => 
     assert.equal(result.results[0]?.status, "failed");
     assert.equal(result.results[0]?.notes, "doc_edit_guard");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "failed");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const guardComment = comments.find((comment) => comment.category === "doc_edit_guard");
     assert.ok(guardComment?.body.includes("allow_large_doc_edits"));
@@ -2312,6 +2397,57 @@ test("workOnTasks applies comment resolutions from JSON output", async () => {
   }
 });
 
+test("workOnTasks completes no-change runs when comment backlog is resolved", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChangeCommentResolution() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await fs.writeFile(path.join(dir, "existing.txt"), "keep", "utf8");
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    slug: "review-open",
+    status: "open",
+    body: "Open review comment",
+    createdAt: new Date().toISOString(),
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.equal(result.results[0]?.notes, "no_changes");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_code_review");
+    const resolved = await repo.listTaskComments(tasks[0].id, { slug: "review-open", resolved: true });
+    assert.ok(resolved.length > 0);
+    const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
+    assert.ok(comments.some((comment) => comment.category === "comment_resolution"));
+    assert.ok(comments.some((comment) => comment.category === "no_changes"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks blocks when agent reports missing comment backlog", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -2351,7 +2487,7 @@ test("workOnTasks blocks when agent reports missing comment backlog", async () =
     assert.equal(result.results[0]?.status, "failed");
     assert.equal(result.results[0]?.notes, "comment_backlog_missing");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "failed");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const backlog = comments.find((comment) => comment.category === "comment_backlog");
     assert.ok(backlog?.body.includes("Open comment slugs: review-open"));
@@ -2361,7 +2497,7 @@ test("workOnTasks blocks when agent reports missing comment backlog", async () =
   }
 });
 
-test("workOnTasks blocks no-change runs when unresolved comments exist", async () => {
+test("workOnTasks completes no-change runs when unresolved comments exist", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2397,22 +2533,23 @@ test("workOnTasks blocks no-change runs when unresolved comments exist", async (
       noCommit: true,
       limit: 1,
     });
-    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.status, "succeeded");
     assert.equal(result.results[0]?.notes, "no_changes");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "ready_to_code_review");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const backlog = comments.find((comment) => comment.category === "comment_backlog");
     assert.ok(backlog?.body.includes("Open comment slugs: review-1"));
     assert.ok(backlog?.body.includes("Justification:"));
     assert.ok((backlog?.metadata as any)?.justification);
+    assert.equal((backlog?.metadata as any)?.reason, "no_changes_completed");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
 });
 
-test("workOnTasks honors workspace config base branch", async () => {
+test("workOnTasks ignores workspace config base branch and uses mcoda-dev", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   workspace.config = { ...(workspace.config ?? {}), branch: "main" };
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -2440,7 +2577,7 @@ test("workOnTasks honors workspace config base branch", async () => {
       noCommit: true,
       limit: 1,
     });
-    assert.ok(vcs.bases.includes("main"));
+    assert.ok(vcs.bases.includes("mcoda-dev"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -2482,7 +2619,7 @@ test("workOnTasks defaults base branch to mcoda-dev when config missing", async 
   }
 });
 
-test("workOnTasks blocks no-change runs without unresolved comments", async () => {
+test("workOnTasks completes no-change runs without unresolved comments", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2509,14 +2646,15 @@ test("workOnTasks blocks no-change runs without unresolved comments", async () =
       noCommit: true,
       limit: 1,
     });
-    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.status, "succeeded");
     assert.equal(result.results[0]?.notes, "no_changes");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "ready_to_code_review");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const noChange = comments.find((comment) => comment.category === "no_changes");
-    assert.ok(noChange?.body.includes("No changes were applied"));
+    assert.ok(noChange?.body.includes("No changes were required"));
     assert.ok(noChange?.body.includes("Justification:"));
+    assert.equal((noChange?.metadata as any)?.reason, "no_changes_completed");
     assert.ok((noChange?.metadata as any)?.justification);
   } finally {
     await service.close();
@@ -2596,11 +2734,11 @@ test("workOnTasks rejects patch fallback responses that are not FILE-only", asyn
       limit: 1,
     });
     assert.equal(result.results[0]?.status, "failed");
-    assert.equal(result.results[0]?.notes, "missing_patch");
+    assert.equal(result.results[0]?.notes, "patch_failed");
     assert.equal(agent.invocations, 2);
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "in_progress");
-    assert.equal((updated?.metadata as any)?.blocked_reason, undefined);
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "patch_failed");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -2686,7 +2824,7 @@ test("workOnTasks rejects FILE block paths with diff metadata suffixes", async (
   }
 });
 
-test("workOnTasks blocks no-change runs for ready_to_review status", async () => {
+test("workOnTasks allows no-change runs for in_progress status", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2703,7 +2841,7 @@ test("workOnTasks blocks no-change runs for ready_to_review status", async () =>
     vcsClient: new StubVcs() as any,
   });
   await fs.writeFile(path.join(dir, "existing.txt"), "keep", "utf8");
-  await repo.updateTask(tasks[0].id, { status: "ready_to_review" });
+  await repo.updateTask(tasks[0].id, { status: "in_progress" });
 
   try {
     const result = await service.workOnTasks({
@@ -2712,16 +2850,117 @@ test("workOnTasks blocks no-change runs for ready_to_review status", async () =>
       agentStream: false,
       dryRun: false,
       noCommit: true,
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["in_progress"],
       limit: 1,
     });
-    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.status, "succeeded");
     assert.equal(result.results[0]?.notes, "no_changes");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
+    assert.equal(updated?.status, "ready_to_code_review");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const noChange = comments.find((comment) => comment.category === "no_changes");
     assert.ok(noChange?.body.includes("Justification:"));
+    assert.equal((noChange?.metadata as any)?.reason, "no_changes_completed");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks skips qa_followup tasks during auto selection", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  const [qaFollowup] = await repo.insertTasks(
+    [
+      {
+        projectId: tasks[0].projectId,
+        epicId: tasks[0].epicId,
+        userStoryId: tasks[0].userStoryId,
+        key: "proj-epic-us-01-t99",
+        title: "QA follow-up task",
+        description: "",
+        status: "not_started",
+        type: "qa_followup",
+        priority: 1,
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.selection.ordered.length, 1);
+    assert.notEqual(result.selection.ordered[0]?.task.key, qaFollowup.key);
+    const qaTask = await repo.getTaskByKey(qaFollowup.key);
+    assert.equal(qaTask?.status, "not_started");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks ignores dependency readiness during selection", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await repo.updateTask(tasks[1].id, { status: "failed" });
+  await repo.insertTaskDependencies(
+    [
+      {
+        taskId: tasks[0].id,
+        dependsOnTaskId: tasks[1].id,
+        relationType: "blocks",
+      },
+    ],
+    false,
+  );
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.selection.ordered[0]?.task.key, tasks[0].key);
+    assert.ok(!result.selection.warnings.some((warning) => warning.includes("dependencies not ready")));
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_code_review");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -2844,7 +3083,7 @@ test("workOnTasks retries failing tests until they pass", async () => {
     assert.ok(agent.invocations >= 2);
     assert.equal(result.results[0]?.status, "succeeded");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "ready_to_review");
+    assert.equal(updated?.status, "ready_to_code_review");
     const passExists = await fs.stat(path.join(dir, "pass.flag")).then(
       () => true,
       () => false,
@@ -2982,7 +3221,7 @@ test("workOnTasks prefers nested package test command", async () => {
 });
 
 test("workOnTasks retries when run-all tests fail", async () => {
-  const { dir, workspace, repo } = await setupWorkspace();
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
@@ -2999,6 +3238,16 @@ test("workOnTasks retries when run-all tests fail", async () => {
       "",
     ].join("\n"),
   );
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      test_requirements: {
+        unit: ["run all tests"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
   const service = new WorkOnTasksService(workspace, {
     agentService: agent as any,
     docdex: new StubDocdex() as any,
@@ -3138,16 +3387,16 @@ test("workOnTasks blocks tasks when tests keep failing", async () => {
     assert.equal(result.results[0]?.status, "failed");
     assert.equal(result.results[0]?.notes, "tests_failed");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "tests_failed");
-    assert.equal(vcs.commitCalls, 0);
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "tests_failed");
+    assert.ok(vcs.commitCalls >= 1);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
 });
 
-test("workOnTasks blocks task when merge conflicts are detected", async () => {
+test("workOnTasks auto-resolves merge conflicts by taking latest (theirs)", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -3175,19 +3424,19 @@ test("workOnTasks blocks task when merge conflicts are detected", async () => {
       limit: 1,
     });
     assert.equal(result.results.length, 1);
-    assert.equal(result.results[0]?.status, "failed");
-    assert.equal(result.results[0]?.notes, "merge_conflict");
+    assert.equal(result.results[0]?.status, "succeeded");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "blocked");
-    assert.equal((updated?.metadata as any)?.blocked_reason, "merge_conflict");
-    assert.equal(vcs.abortCalls, 1);
+    assert.equal(updated?.status, "ready_to_code_review");
+    assert.equal(vcs.abortCalls, 0);
+    assert.ok(vcs.resolveCalls >= 1);
+    assert.equal(vcs.resolveStrategy, "theirs");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
 });
 
-test("workOnTasks skips auto-merge when file scope missing and config enabled", async () => {
+test("workOnTasks merges even when file scope missing and config enabled", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   workspace.config = { restrictAutoMergeWithoutScope: true };
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3217,19 +3466,19 @@ test("workOnTasks skips auto-merge when file scope missing and config enabled", 
     });
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.status, "succeeded");
-    assert.equal(vcs.merges.length, 0);
+    assert.equal(vcs.merges.length, 1);
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "ready_to_review");
+    assert.equal(updated?.status, "ready_to_code_review");
     const db = repo.getDb();
     const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
-    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge skipped")));
+    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge setting ignored (no_file_scope)")));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
 });
 
-test("workOnTasks skips auto-merge when autoMerge disabled", async () => {
+test("workOnTasks merges even when autoMerge disabled", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   workspace.config = { autoMerge: false };
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3260,12 +3509,12 @@ test("workOnTasks skips auto-merge when autoMerge disabled", async () => {
       });
       assert.equal(result.results.length, 1);
     });
-    assert.equal(vcs.merges.length, 0);
+    assert.equal(vcs.merges.length, 1);
     const db = repo.getDb();
     const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
-    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge disabled")));
-    assert.ok(output.includes("Merge→dev:   skipped"));
-    assert.ok(output.includes("auto_merge_disabled"));
+    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge setting ignored (auto_merge_disabled)")));
+    assert.ok(output.includes("Merge→mcoda-dev:   merged"));
+    assert.ok(output.includes("auto_merge_disabled_forced"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -3309,7 +3558,7 @@ test("workOnTasks end summary includes failure reason", async () => {
   }
 });
 
-test("workOnTasks skips auto-push when autoPush disabled", async () => {
+test("workOnTasks pushes even when autoPush disabled", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   workspace.config = { autoPush: false };
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3337,10 +3586,10 @@ test("workOnTasks skips auto-push when autoPush disabled", async () => {
       limit: 1,
     });
     assert.equal(result.results.length, 1);
-    assert.equal(vcs.pushes.length, 0);
+    assert.equal(vcs.pushes.length, 2);
     const db = repo.getDb();
     const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
-    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-push disabled")));
+    assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-push setting ignored")));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -3422,7 +3671,7 @@ test("workOnTasks skips rollback when workspace is dirty before apply", async ()
   }
 });
 
-test("workOnTasks fails when workspace is dirty before checkout", async () => {
+test("workOnTasks auto-commits when workspace is dirty before checkout", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -3441,7 +3690,7 @@ test("workOnTasks fails when workspace is dirty before checkout", async () => {
   });
 
   try {
-    await service.workOnTasks({
+    const result = await service.workOnTasks({
       workspace,
       projectKey: "proj",
       agentStream: false,
@@ -3449,11 +3698,10 @@ test("workOnTasks fails when workspace is dirty before checkout", async () => {
       noCommit: true,
       limit: 1,
     });
-    assert.fail("expected workOnTasks to throw");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    assert.ok(message.includes("Working tree dirty"));
-    assert.equal(vcs.commitCalls, 0);
+    assert.equal(result.results.length, 1);
+    assert.ok(vcs.commitCalls > 0);
+    const logs = await repo.getDb().all<{ message: string }[]>("SELECT message FROM task_logs");
+    assert.ok(logs.some((log) => log.message.includes("Auto-committed pending changes")));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

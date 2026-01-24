@@ -3,6 +3,7 @@ export * from "./paths/PathHelper.js";
 export * from "./openapi/OpenApiTypes.js";
 export * from "./qa/QaProfile.js";
 export * from "./metadata/CommandMetadata.js";
+export * from "./status/TaskStatus.js";
 export type {
   BacklogLaneTotals,
   BacklogTotals,

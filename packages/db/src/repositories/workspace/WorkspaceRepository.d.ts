@@ -1,7 +1,7 @@
 import { Database } from "sqlite";
 import { Connection } from "../../sqlite/connection.js";
 export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "partial";
-export type CommandStatus = "running" | "succeeded" | "failed";
+export type CommandStatus = "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export interface ProjectRow {
     id: string;

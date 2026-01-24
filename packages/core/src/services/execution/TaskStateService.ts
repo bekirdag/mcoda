@@ -1,10 +1,12 @@
 import { WorkspaceRepository, TaskRow } from "@mcoda/db";
+import { READY_TO_CODE_REVIEW } from "@mcoda/shared";
 
 const mergeMetadata = (existing: Record<string, unknown> | undefined, patch?: Record<string, unknown> | null) => {
   if (patch === undefined) return existing;
   if (patch === null) return null;
   return { ...(existing ?? {}), ...patch };
 };
+
 
 export type TaskStatusEventContext = {
   commandName?: string | null;
@@ -46,15 +48,19 @@ export class TaskStateService {
     task.status = "in_progress";
   }
 
-  async markReadyToReview(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
+  async markReadyToReview(
+    task: TaskRow,
+    metadataPatch?: Record<string, unknown>,
+    context?: TaskStatusEventContext,
+  ): Promise<void> {
     const fromStatus = task.status;
     const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
     await this.workspaceRepo.updateTask(task.id, {
-      status: "ready_to_review",
+      status: READY_TO_CODE_REVIEW,
       metadata: mergedMetadata ?? undefined,
     });
-    await this.recordStatusEvent(task, fromStatus, "ready_to_review", context);
-    task.status = "ready_to_review";
+    await this.recordStatusEvent(task, fromStatus, READY_TO_CODE_REVIEW, context);
+    task.status = READY_TO_CODE_REVIEW;
     task.metadata = mergedMetadata ?? undefined;
   }
 
@@ -94,18 +100,32 @@ export class TaskStateService {
     task.metadata = mergedMetadata ?? undefined;
   }
 
-  async markBlocked(task: TaskRow, reason: string, context?: TaskStatusEventContext): Promise<void> {
+  async markChangesRequested(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
     const fromStatus = task.status;
-    const metadata = mergeMetadata(task.metadata, { blocked_reason: reason }) ?? { blocked_reason: reason };
+    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
     await this.workspaceRepo.updateTask(task.id, {
-      status: "blocked",
+      status: "changes_requested",
+      metadata: mergedMetadata ?? undefined,
+    });
+    await this.recordStatusEvent(task, fromStatus, "changes_requested", context);
+    task.status = "changes_requested";
+    task.metadata = mergedMetadata ?? undefined;
+  }
+
+  async markFailed(task: TaskRow, reason: string, context?: TaskStatusEventContext): Promise<void> {
+    const fromStatus = task.status;
+    const metadata = mergeMetadata(task.metadata as Record<string, unknown> | undefined, { failed_reason: reason }) ?? {
+      failed_reason: reason,
+    };
+    await this.workspaceRepo.updateTask(task.id, {
+      status: "failed",
       metadata,
     });
     const eventMetadata =
-      mergeMetadata(context?.metadata ?? undefined, { blocked_reason: reason }) ?? { blocked_reason: reason };
+      mergeMetadata(context?.metadata ?? undefined, { failed_reason: reason }) ?? { failed_reason: reason };
     const eventContext = context ? { ...context, metadata: eventMetadata } : { metadata: eventMetadata };
-    await this.recordStatusEvent(task, fromStatus, "blocked", eventContext);
-    task.status = "blocked";
+    await this.recordStatusEvent(task, fromStatus, "failed", eventContext);
+    task.status = "failed";
     task.metadata = metadata;
   }
 

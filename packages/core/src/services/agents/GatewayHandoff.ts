@@ -16,70 +16,87 @@ export const buildGatewayHandoffDocdexUsage = (): string => {
 
 export const buildGatewayHandoffContent = (result: GatewayAgentResult): string => {
   const lines: string[] = [];
+  const analysis = result.analysis;
+  const filesLikelyTouched = analysis.filesLikelyTouched ?? [];
+  const filesToCreate = analysis.filesToCreate ?? [];
+  const dirsToCreate = analysis.dirsToCreate ?? [];
+  const assumptions = analysis.assumptions ?? [];
+  const risks = analysis.risks ?? [];
+  const docdexNotes = analysis.docdexNotes ?? [];
   lines.push("# Gateway Handoff");
   lines.push("");
   lines.push(`Job: ${result.job}`);
   lines.push(`Gateway agent: ${result.gatewayAgent.slug}`);
   lines.push(`Chosen agent: ${result.chosenAgent.agentSlug}`);
   lines.push("");
-  if (result.analysis.reasoningSummary?.trim()) {
+  if (analysis.reasoningSummary?.trim()) {
     lines.push("## Reasoning Summary");
-    lines.push(result.analysis.reasoningSummary.trim());
+    lines.push(analysis.reasoningSummary.trim());
+    lines.push("");
+  }
+  if (result.tasks?.length) {
+    lines.push("## Task Context");
+    result.tasks.forEach((task) => {
+      lines.push(`- ${task.key}: ${task.title}`);
+      if (task.description) lines.push(`  Description: ${task.description}`);
+      if (task.acceptanceCriteria?.length) lines.push(`  Acceptance: ${task.acceptanceCriteria.join(" | ")}`);
+      if (task.dependencies?.length) lines.push(`  Dependencies: ${task.dependencies.join(", ")}`);
+    });
     lines.push("");
   }
   lines.push("## Summary");
-  lines.push(result.analysis.summary || "(none)");
+  lines.push(analysis.summary || "(none)");
   lines.push("");
   lines.push("## Current State");
-  lines.push(result.analysis.currentState || "(none)");
+  lines.push(analysis.currentState || "(none)");
   lines.push("");
   lines.push("## Todo");
-  lines.push(result.analysis.todo || "(none)");
+  lines.push(analysis.todo || "(none)");
   lines.push("");
   lines.push("## Understanding");
-  lines.push(result.analysis.understanding || "(none)");
+  lines.push(analysis.understanding || "(none)");
   lines.push("");
   lines.push("## Plan");
-  if (result.analysis.plan.length) {
-    result.analysis.plan.forEach((step, idx) => lines.push(`${idx + 1}. ${step}`));
+  if (analysis.plan.length) {
+    analysis.plan.forEach((step, idx) => lines.push(`${idx + 1}. ${step}`));
   } else {
     lines.push("(none)");
   }
   lines.push("");
   lines.push("## Files Likely Touched");
-  if (result.analysis.filesLikelyTouched.length) {
-    result.analysis.filesLikelyTouched.forEach((file) => lines.push(`- ${file}`));
+  if (filesLikelyTouched.length) {
+    filesLikelyTouched.forEach((file) => lines.push(`- ${file}`));
   } else {
     lines.push("(none)");
   }
   lines.push("");
   lines.push("## Files To Create");
-  if (result.analysis.filesToCreate.length) {
-    result.analysis.filesToCreate.forEach((file) => lines.push(`- ${file}`));
+  if (filesToCreate.length) {
+    filesToCreate.forEach((file) => lines.push(`- ${file}`));
   } else {
     lines.push("(none)");
   }
   lines.push("");
   lines.push("## Dirs To Create");
-  if (result.analysis.dirsToCreate.length) {
-    result.analysis.dirsToCreate.forEach((dir) => lines.push(`- ${dir}`));
+  if (dirsToCreate.length) {
+    dirsToCreate.forEach((dir) => lines.push(`- ${dir}`));
   } else {
     lines.push("(none)");
   }
-  if (result.analysis.assumptions.length) {
+  if (assumptions.length) {
     lines.push("");
     lines.push("## Assumptions");
-    result.analysis.assumptions.forEach((item) => lines.push(`- ${item}`));
+    assumptions.forEach((item) => lines.push(`- ${item}`));
   }
-  if (result.analysis.risks.length) {
+  if (risks.length) {
     lines.push("");
     lines.push("## Risks");
-    result.analysis.risks.forEach((item) => lines.push(`- ${item}`));
+    risks.forEach((item) => lines.push(`- ${item}`));
   }
-  if (result.analysis.docdexNotes.length) {
+  if (docdexNotes.length) {
     lines.push("");
     lines.push("## Docdex Notes");
-    result.analysis.docdexNotes.forEach((item) => lines.push(`- ${item}`));
+    docdexNotes.forEach((item) => lines.push(`- ${item}`));
   }
   lines.push("");
   lines.push(buildGatewayHandoffDocdexUsage());

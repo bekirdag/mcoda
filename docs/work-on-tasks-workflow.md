@@ -3,7 +3,7 @@
 This document describes the current `work-on-tasks` command flow as implemented in `WorkOnTasksService` (`packages/core/src/services/execution/WorkOnTasksService.ts`).
 
 ## Overview
-`work-on-tasks` selects tasks from the backlog, builds an execution prompt with docdex + project guidance, invokes a work agent to generate patches or file blocks, applies those changes, runs task-specific tests + run-all tests, and then moves the task to `ready_to_review` if everything passes. It also manages task locks, VCS branches, and logs/telemetry for each run.
+`work-on-tasks` selects tasks from the backlog, builds an execution prompt with docdex + project guidance, invokes a work agent to edit the repo directly, checks git for changes, runs task-specific tests + run-all tests, and then moves the task to `ready_to_code_review` if everything passes. It also manages task locks, VCS branches, and logs/telemetry for each run. A legacy patch-apply mode is still available for compatibility (set `MCODA_WORK_ON_TASKS_PATCH_MODE=1`), but direct edits are the default.
 
 ## Inputs and defaults
 - Task scope: `projectKey`, `epicKey`, `storyKey`, `taskKeys`, `statusFilter`, `limit`, `parallel`.
@@ -29,7 +29,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 
 #### 2.1 Task run and gating
 1. Create a `task_run` row (status: `running`).
-2. If the task already has a blocked reason and this is not a dry run, mark the task `blocked` and skip execution.
+2. Tasks in terminal states (`completed`, `cancelled`, `failed`) are filtered out by selection unless explicitly included via `--status`.
 3. Acquire a task lock (TTL derived from `maxAgentSeconds`).
    - If the lock is taken by another run, mark this run as `skipped` and move on.
 
@@ -39,7 +39,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
    - `doc_links` → docs to query via docdex
    - `tests` and `test_requirements`
 2. Normalize test commands; detect `tests/all.js` as the run‑all tests script.
-3. If `test_requirements` exist but no test command is configured, block the task with `tests_not_configured`.
+3. If `test_requirements` exist but no test command is configured, fail the task with `tests_not_configured`.
 
 #### 2.3 Branch preparation (non‑dry run)
 1. Create or reuse a task branch and merge base into it.
@@ -59,42 +59,37 @@ This document describes the current `work-on-tasks` command flow as implemented 
 2. Append test requirements + test commands.
 3. Append run‑all tests guidance (`tests/all.js` expected).
 4. Add explicit output requirements:
-   - Unified diff inside ```patch``` fences for edits.
-   - FILE blocks for new files.
-   - No JSON unless runtime forces it.
+   - Apply changes directly in the repo (no patch/diff/FILE blocks).
+   - Summarize changes and test results.
+   - If comment backlog is present, include a JSON object with resolved/unresolved slugs.
 
 #### 2.6 Agent execution loop
 1. Move task to `in_progress`.
-2. Invoke the agent (streaming or sync) and capture output.
-3. Parse output for unified diff patches and FILE blocks.
-4. If no patch or file blocks are found:
-   - Retry once with stricter instructions.
-   - If still empty: block task with `missing_patch`.
-5. Apply patches:
-   - If patch apply fails, attempt fallback to FILE blocks for touched files.
-   - If still failing, block with `patch_failed`.
-6. Enforce allowed file scope (if set); out‑of‑scope changes block the task with `scope_violation`.
+2. Invoke the agent (streaming or sync); the agent edits the repo directly.
+3. Detect changed files via git dirty paths and treat them as touched.
+4. Enforce allowed file scope (if set); out‑of‑scope changes fail the task with `scope_violation`.
+5. Legacy patch mode (optional): when enabled, parse/apply patch or FILE output and fall back on patch errors.
 
 #### 2.7 Tests
 1. Run task-specific test commands (from metadata) followed by run‑all tests (`tests/all.js`).
 2. If `tests/all.js` is missing and tests are required, attempt to create a minimal run‑all script before continuing.
 3. If run‑all tests are still missing, treat as `tests_not_configured`.
 4. If tests fail, retry up to `MAX_TEST_FIX_ATTEMPTS` by looping agent → apply → tests.
-5. If all attempts fail, block with `tests_failed`.
+5. If all attempts fail, fail with `tests_failed`.
 
 #### 2.8 No-change handling
 1. If there are **no changes** (no touched files and no dirty paths):
-   - If unresolved comments exist, block with `no_changes` and add a comment backlog summary.
-   - Otherwise, block with `no_changes` and add a `no_changes` comment.
+   - If unresolved comments exist, fail with `no_changes` and add a comment backlog summary.
+   - Otherwise, add a `no_changes` comment and mark the task completed (`completed_reason = "no_changes"`).
 
 #### 2.9 VCS commit/merge/push (non‑dry run)
 1. Stage changes, commit with `[TASK_KEY] <title>`.
 2. Merge task branch back into base (skipped when `autoMerge` is false).
 3. Push branch and base if a remote exists (skipped when `autoPush` is false).
-4. If VCS fails, block with `vcs_failed`.
+4. If VCS fails, fail with `vcs_failed`.
 
 #### 2.10 Finalize task
-1. Mark task `ready_to_review` and record test metadata (`test_attempts`, `test_commands`, `run_all_tests_command`).
+1. Mark task `ready_to_code_review` and record test metadata (`test_attempts`, `test_commands`, `run_all_tests_command`).
 2. Update task run to `succeeded`.
 3. Write checkpoints and update job progress.
 4. Record agent rating (if `rateAgents` enabled).
@@ -105,7 +100,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 2. Finish command run with error summary if any failures.
 3. Checkout base branch again (best effort).
 
-## Common block reasons
+## Common failure reasons
 - `missing_patch`: no patch/file output after retry.
 - `patch_failed`: patch or file apply failed.
 - `tests_not_configured`: task requires tests but no command/run‑all script exists.
@@ -115,12 +110,12 @@ This document describes the current `work-on-tasks` command flow as implemented 
 - `vcs_failed`: commit/merge/push failed.
 - `agent_timeout`: abort/timeout triggered.
 - `task_lock_lost`: lock was stolen or expired.
-- `merge_conflict`: merge conflict detected while syncing branches; task is blocked for manual resolution.
+- `merge_conflict`: merge conflict detected while syncing branches; task fails for manual resolution.
 
 ## Gateway-trio integration notes
 - `gateway-trio` invokes `work-on-tasks` per task and reuses the same run-all tests gating.
 - Escalation reasons include `missing_patch`, `patch_failed`, `tests_failed`, `agent_timeout`, and `no_changes` (default).
-- `tests_failed` triggers one retry with a stronger agent before the task is left blocked.
+- `tests_failed` triggers one retry with a stronger agent before the task is left failed.
 - Task locks are cleaned up by gateway-trio on start/resume if expired.
 
 ## Mermaid diagram
@@ -131,35 +126,32 @@ flowchart TD
   C --> D[Select tasks]
   D --> E{For each task}
   E --> F[Create task_run]
-  F --> G{Blocked reason?}
-  G -->|Yes| G1[Mark blocked + skip]
+  F --> G{Terminal status?}
+  G -->|Yes| G1[Skip task]
   G -->|No| H[Acquire lock]
   H --> I{Lock acquired?}
   I -->|No| I1[Skip task]
   I -->|Yes| J[Load metadata + tests]
   J --> K{Tests configured?}
-  K -->|No| K1[Block tests_not_configured]
+  K -->|No| K1[Fail tests_not_configured]
   K -->|Yes| L[Prepare branch]
   L --> M[Docdex + guidance + backlog]
   M --> N[Build prompt]
   N --> O{dryRun?}
   O -->|Yes| O1[Skip execution]
   O -->|No| P[Invoke agent]
-  P --> Q{Patch/file output?}
-  Q -->|No| Q1[Retry once -> missing_patch]
-  Q -->|Yes| R[Apply patch/file]
-  R --> S{Apply ok?}
-  S -->|No| S1[Fallback -> patch_failed]
-  S -->|Yes| T{Scope ok?}
-  T -->|No| T1[Block scope_violation]
-  T -->|Yes| U[Run tests + run-all]
+  P --> Q[Agent edits repo]
+  Q --> R[Detect changed files]
+  R --> S{Scope ok?}
+  S -->|No| S1[Fail scope_violation]
+  S -->|Yes| U[Run tests + run-all]
   U --> V{Tests pass?}
-  V -->|No| V1[Retry loop -> tests_failed]
+  V -->|No| V1[Retry loop -> fail tests_failed]
   V -->|Yes| W{Changes exist?}
-  W -->|No| W1[Block no_changes]
+  W -->|No| W1[No-changes handling]
   W -->|Yes| X[Commit/Merge/Push]
   X --> Y{VCS ok?}
-  Y -->|No| Y1[Block vcs_failed]
-  Y -->|Yes| Z[Mark ready_to_review]
+  Y -->|No| Y1[Fail vcs_failed]
+  Y -->|Yes| Z[Mark ready_to_code_review]
   Z --> AA[Update job + release lock]
 ```

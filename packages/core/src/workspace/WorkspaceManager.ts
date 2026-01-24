@@ -32,6 +32,7 @@ export interface WorkspaceConfig {
   restrictAutoMergeWithoutScope?: boolean;
   autoMerge?: boolean;
   autoPush?: boolean;
+  codexNoSandbox?: boolean;
   qa?: {
     cleanIgnorePaths?: string[];
     runAllMarkerRequired?: boolean;
@@ -107,6 +108,17 @@ const readWorkspaceConfig = async (mcodaDir: string, fallbackDir?: string): Prom
     return readConfig(fallbackDir);
   }
   return undefined;
+};
+
+const applyWorkspaceEnvOverrides = (config?: WorkspaceConfig): void => {
+  if (!config) return;
+  if (config.codexNoSandbox === true) {
+    process.env.MCODA_CODEX_NO_SANDBOX = "1";
+    return;
+  }
+  if (config.codexNoSandbox === false && process.env.MCODA_CODEX_NO_SANDBOX === undefined) {
+    process.env.MCODA_CODEX_NO_SANDBOX = "0";
+  }
 };
 
 type WorkspaceIdentity = { id: string; name?: string; createdAt?: string; legacyIds?: string[] };
@@ -275,6 +287,7 @@ export class WorkspaceResolver {
     }
     const legacyWorkspaceIds = Array.from(new Set([...(identity.legacyIds ?? []), workspaceRoot].filter(Boolean)));
     const config = await readWorkspaceConfig(mcodaDir, repoMcodaDir);
+    applyWorkspaceEnvOverrides(config);
     const resolution: WorkspaceResolution = {
       workspaceRoot,
       workspaceId: identity.id,

@@ -57,14 +57,14 @@ test("TaskStateService merges metadata and updates status", async () => {
     await service.markReadyToReview(task, { review: true }, statusContext);
 
     const updated = await repo.getTaskByKey(task.key);
-    assert.equal(updated?.status, "ready_to_review");
+    assert.equal(updated?.status, "ready_to_code_review");
     assert.equal((updated?.metadata as any)?.owner, "alex");
     assert.equal((updated?.metadata as any)?.review, true);
 
-    await service.markBlocked(task, "needs_spec", statusContext);
-    const blocked = await repo.getTaskByKey(task.key);
-    assert.equal(blocked?.status, "blocked");
-    assert.equal((blocked?.metadata as any)?.blocked_reason, "needs_spec");
+    await service.markFailed(task, "tests_failed", statusContext);
+    const failed = await repo.getTaskByKey(task.key);
+    assert.equal(failed?.status, "failed");
+    assert.equal((failed?.metadata as any)?.failed_reason, "tests_failed");
 
     const db = repo.getDb();
     const events = await db.all<{
@@ -81,18 +81,18 @@ test("TaskStateService merges metadata and updates status", async () => {
     );
     assert.equal(events.length, 2);
     assert.equal(events[0]?.from_status, "not_started");
-    assert.equal(events[0]?.to_status, "ready_to_review");
+    assert.equal(events[0]?.to_status, "ready_to_code_review");
     assert.equal(events[0]?.command_name, "work-on-tasks");
     assert.equal(events[0]?.job_id, job.id);
     assert.equal(events[0]?.task_run_id, taskRun.id);
     assert.equal(events[0]?.agent_id, "agent-1");
     const firstMeta = events[0]?.metadata_json ? JSON.parse(events[0].metadata_json) : {};
     assert.equal(firstMeta.lane, "work");
-    assert.equal(events[1]?.from_status, "ready_to_review");
-    assert.equal(events[1]?.to_status, "blocked");
+    assert.equal(events[1]?.from_status, "ready_to_code_review");
+    assert.equal(events[1]?.to_status, "failed");
     const secondMeta = events[1]?.metadata_json ? JSON.parse(events[1].metadata_json) : {};
     assert.equal(secondMeta.lane, "work");
-    assert.equal(secondMeta.blocked_reason, "needs_spec");
+    assert.equal(secondMeta.failed_reason, "tests_failed");
   } finally {
     await repo.close();
     await fs.rm(dir, { recursive: true, force: true });

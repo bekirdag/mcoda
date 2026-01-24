@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Connection, type Database } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, READY_TO_CODE_REVIEW } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import type { EffectiveVelocity, VelocityConfig, VelocityOptions, VelocityScopeIds } from "./types.js";
 
@@ -453,14 +453,14 @@ export class VelocityService {
     const scope = await this.resolveScopeIds(options);
     const implementation = await this.computeLaneVelocity(
       "work-on-tasks",
-      { startStatus: "in_progress", endStatus: "ready_to_review" },
+      { startStatus: "in_progress", endStatus: READY_TO_CODE_REVIEW },
       scope,
       options.assignee,
       windowTasks,
     );
     const review = await this.computeLaneVelocity(
       "code-review",
-      { startStatus: "ready_to_review", endStatus: "ready_to_qa" },
+      { startStatus: READY_TO_CODE_REVIEW, endStatus: "ready_to_qa" },
       scope,
       options.assignee,
       windowTasks,

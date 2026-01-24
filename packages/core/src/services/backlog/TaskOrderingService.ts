@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient } from "@mcoda/integrations";
 import { GlobalRepository, WorkspaceRepository, Connection, type Database } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, READY_TO_CODE_REVIEW, normalizeReviewStatuses } from "@mcoda/shared";
 import type { Agent } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
@@ -11,17 +11,17 @@ import { classifyTask, TaskStage } from "./TaskOrderingHeuristics.js";
 
 type StatusRank = Record<string, number>;
 
-const DEFAULT_STATUSES = ["not_started", "in_progress", "blocked", "ready_to_review", "ready_to_qa"];
+const DEFAULT_STATUSES = ["not_started", "in_progress", "changes_requested", READY_TO_CODE_REVIEW, "ready_to_qa"];
 const DONE_STATUSES = new Set(["completed", "cancelled"]);
 const DEFAULT_STAGE_ORDER: TaskStage[] = ["foundation", "backend", "frontend", "other"];
 const STATUS_RANK: StatusRank = {
   in_progress: 0,
+  changes_requested: 0,
   not_started: 1,
-  ready_to_review: 2,
+  [READY_TO_CODE_REVIEW]: 2,
   ready_to_qa: 3,
-  blocked: 4,
-  completed: 5,
-  cancelled: 6,
+  completed: 4,
+  cancelled: 5,
 };
 
 const hasTables = async (db: Database, required: string[]): Promise<boolean> => {
@@ -35,7 +35,10 @@ const hasTables = async (db: Database, required: string[]): Promise<boolean> => 
 
 const normalizeStatuses = (statuses?: string[]): string[] => {
   if (!statuses || statuses.length === 0) return DEFAULT_STATUSES;
-  return Array.from(new Set(statuses.map((s) => s.toLowerCase().trim()).filter(Boolean)));
+  const normalized = Array.from(new Set(statuses.map((s) => s.toLowerCase().trim()).filter(Boolean))).filter(
+    (status) => status !== "blocked",
+  );
+  return normalizeReviewStatuses(normalized);
 };
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
@@ -45,7 +48,6 @@ const SDS_DEPENDENCY_GUIDE = [
   "- Enforce topological ordering: never place a task before any of its dependencies.",
   "- Prioritize tasks that unlock the most downstream work (direct + indirect dependents).",
   "- Tie-break by existing priority, then lower story points, then older tasks, then status (in_progress before not_started).",
-  "- Blocked tasks should remain after unblocked tasks unless explicitly requested.",
 ].join("\n");
 
 interface DocContext {
@@ -117,8 +119,6 @@ export interface TaskOrderItem {
   storyId: string;
   storyKey: string;
   storyTitle: string;
-  blocked: boolean;
-  blockedBy: string[];
   dependencyKeys: string[];
   dependencyImpact: DependencyImpact;
   cycleDetected?: boolean;
@@ -129,7 +129,6 @@ export interface TaskOrderingResult {
   project: ProjectRow;
   epic?: EpicRow;
   ordered: TaskOrderItem[];
-  blocked: TaskOrderItem[];
   warnings: string[];
   jobId?: string;
   commandRunId?: string;
@@ -146,9 +145,6 @@ export interface TaskOrderingRequest {
   storyKey?: string;
   assignee?: string;
   statusFilter?: string[];
-  includeBlocked?: boolean;
-  blockOnDependencies?: boolean;
-  blockOnMissingContext?: boolean;
   agentName?: string;
   agentStream?: boolean;
   rateAgents?: boolean;
@@ -159,7 +155,6 @@ export interface TaskOrderingRequest {
 
 type TaskNode = TaskRow & {
   dependencies: DependencyRow[];
-  blockedBy: string[];
   missingDependencies: string[];
 };
 
@@ -696,6 +691,19 @@ export class TaskOrderingService {
     agentRank?: AgentRanking,
     stageOrderMap?: Map<TaskStage, number>,
   ): number {
+    const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
+    const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
+    if (priorityA !== priorityB) return priorityA - priorityB;
+    const impactA = impact.get(a.id)?.total ?? 0;
+    const impactB = impact.get(b.id)?.total ?? 0;
+    if (impactA !== impactB) return impactB - impactA;
+    const rankA = agentRank?.get(a.id);
+    const rankB = agentRank?.get(b.id);
+    if (rankA !== undefined || rankB !== undefined) {
+      if (rankA === undefined) return 1;
+      if (rankB === undefined) return -1;
+      if (rankA !== rankB) return rankA - rankB;
+    }
     const classA = this.resolveClassification(a);
     const classB = this.resolveClassification(b);
     if (classA.foundation !== classB.foundation) {
@@ -706,19 +714,6 @@ export class TaskOrderingService {
       const stageB = stageOrderMap.get(classB.stage) ?? stageOrderMap.get("other") ?? Number.MAX_SAFE_INTEGER;
       if (stageA !== stageB) return stageA - stageB;
     }
-    const rankA = agentRank?.get(a.id);
-    const rankB = agentRank?.get(b.id);
-    if (rankA !== undefined || rankB !== undefined) {
-      if (rankA === undefined) return 1;
-      if (rankB === undefined) return -1;
-      if (rankA !== rankB) return rankA - rankB;
-    }
-    const impactA = impact.get(a.id)?.total ?? 0;
-    const impactB = impact.get(b.id)?.total ?? 0;
-    if (impactA !== impactB) return impactB - impactA;
-    const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
-    const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
-    if (priorityA !== priorityB) return priorityA - priorityB;
     const spA = a.story_points ?? Number.POSITIVE_INFINITY;
     const spB = b.story_points ?? Number.POSITIVE_INFINITY;
     if (spA !== spB) return spA - spB;
@@ -786,39 +781,28 @@ export class TaskOrderingService {
   private buildNodes(
     tasks: TaskRow[],
     deps: Map<string, DependencyRow[]>,
-    options: { blockOnDependencies: boolean },
   ): { nodes: TaskNode[]; dependents: Map<string, string[]>; missingRefs: Set<string> } {
     const taskIds = new Set(tasks.map((t) => t.id));
     const dependents = new Map<string, string[]>();
     const missingRefs = new Set<string>();
     const nodes: TaskNode[] = tasks.map((task) => {
       const taskDeps = deps.get(task.id) ?? [];
-      const blockedBy: string[] = [];
       const missing: string[] = [];
       for (const dep of taskDeps) {
         const status = dep.depends_on_status?.toLowerCase();
         if (!dep.depends_on_task_id) {
           missing.push(dep.depends_on_key ?? "unknown");
           missingRefs.add(dep.depends_on_key ?? "unknown");
-          if (options.blockOnDependencies) {
-            blockedBy.push(dep.depends_on_key ?? "unknown");
-          }
           continue;
         }
         const inScope = taskIds.has(dep.depends_on_task_id);
         const isDone = DONE_STATUSES.has(status ?? "");
         if (!inScope) {
           if (!isDone) {
-            if (options.blockOnDependencies) {
-              blockedBy.push(dep.depends_on_key ?? dep.depends_on_task_id);
-            }
             missing.push(dep.depends_on_key ?? dep.depends_on_task_id);
             missingRefs.add(dep.depends_on_key ?? dep.depends_on_task_id);
           }
           continue;
-        }
-        if (!isDone && options.blockOnDependencies) {
-          blockedBy.push(dep.depends_on_key ?? dep.depends_on_task_id);
         }
         const list = dependents.get(dep.depends_on_task_id) ?? [];
         list.push(task.id);
@@ -827,7 +811,6 @@ export class TaskOrderingService {
       return {
         ...task,
         dependencies: taskDeps,
-        blockedBy,
         missingDependencies: missing,
       };
     });
@@ -982,10 +965,9 @@ export class TaskOrderingService {
 
   private mapResult(
     ordered: TaskNode[],
-    blockedSet: Set<string>,
     impact: Map<string, DependencyImpact>,
     cycleMembers: Set<string>,
-  ): { ordered: TaskOrderItem[]; blocked: TaskOrderItem[] } {
+  ): { ordered: TaskOrderItem[] } {
     const result: TaskOrderItem[] = ordered.map((task, idx) => ({
       taskId: task.id,
       taskKey: task.key,
@@ -998,15 +980,12 @@ export class TaskOrderingService {
       storyId: task.story_id,
       storyKey: task.story_key,
       storyTitle: task.story_title,
-      blocked: blockedSet.has(task.id),
-      blockedBy: task.blockedBy,
       dependencyKeys: (task.dependencies ?? []).map((d) => d.depends_on_key ?? d.depends_on_task_id ?? "").filter(Boolean),
       dependencyImpact: impact.get(task.id) ?? { direct: 0, total: 0 },
       cycleDetected: cycleMembers.has(task.id) || undefined,
       metadata: task.metadata,
     }));
-    const blocked = result.filter((t) => t.blocked);
-    return { ordered: result, blocked };
+    return { ordered: result };
   }
 
   async orderTasks(request: TaskOrderingRequest): Promise<TaskOrderingResult> {
@@ -1015,6 +994,9 @@ export class TaskOrderingService {
     }
     const statuses = normalizeStatuses(request.statusFilter);
     const warnings: string[] = [];
+    if (request.statusFilter?.some((status) => status.toLowerCase().trim() === "blocked")) {
+      warnings.push("Status 'blocked' is no longer supported; ignoring it in order-tasks.");
+    }
     const commandRun = this.recordTelemetry
       ? await this.jobService.startCommandRun("order-tasks", request.projectKey, {
           taskIds: undefined,
@@ -1032,7 +1014,6 @@ export class TaskOrderingService {
             storyKey: request.storyKey,
             assignee: request.assignee,
             statuses,
-            includeBlocked: request.includeBlocked === true,
             agent: request.agentName,
           },
         })
@@ -1055,9 +1036,7 @@ export class TaskOrderingService {
       if (request.injectFoundationDeps !== false) {
         await this.injectFoundationDependencies(tasks, deps, warnings);
       }
-      const blockOnDependencies = request.blockOnDependencies !== false;
-      const blockOnMissingContext = request.blockOnMissingContext !== false;
-      let { nodes, dependents, missingRefs } = this.buildNodes(tasks, deps, { blockOnDependencies });
+      let { nodes, dependents, missingRefs } = this.buildNodes(tasks, deps);
       const enableAgentRanking = Boolean(request.agentName);
       const enableInference = request.inferDependencies === true;
       const useAgent = enableAgentRanking || enableInference;
@@ -1100,7 +1079,7 @@ export class TaskOrderingService {
             warnings,
           });
           await this.applyInferredDependencies(tasks, deps, inferred, warnings);
-          ({ nodes, dependents, missingRefs } = this.buildNodes(tasks, deps, { blockOnDependencies }));
+          ({ nodes, dependents, missingRefs } = this.buildNodes(tasks, deps));
         } catch (error) {
           warnings.push(`Dependency inference skipped: ${(error as Error).message}`);
         }
@@ -1114,19 +1093,8 @@ export class TaskOrderingService {
       const missingContext = await this.loadMissingContext(nodes.map((node) => node.id));
       if (missingContext.size > 0) {
         warnings.push(
-          blockOnMissingContext
-            ? `Tasks blocked by missing_context: ${Array.from(missingContext).length}`
-            : `Tasks with open missing_context comments: ${Array.from(missingContext).length}`,
+          `Tasks with open missing_context comments: ${Array.from(missingContext).length}`,
         );
-      }
-      const blockedSet = new Set<string>();
-      for (const node of nodes) {
-        if (blockOnMissingContext && missingContext.has(node.id) && !node.blockedBy.includes("missing_context")) {
-          node.blockedBy.push("missing_context");
-        }
-        if (node.blockedBy.length > 0 || node.status.toLowerCase() === "blocked") {
-          blockedSet.add(node.id);
-        }
       }
       const stageOrder = (request.stageOrder && request.stageOrder.length > 0
         ? request.stageOrder
@@ -1189,7 +1157,6 @@ export class TaskOrderingService {
             epic: epic?.key,
             story: story?.key,
             statuses,
-            includeBlocked: request.includeBlocked === true,
           });
           const promptTokens = estimateTokens(prompt);
           const completionTokens = estimateTokens(output);
@@ -1213,7 +1180,6 @@ export class TaskOrderingService {
                 adapter: resolvedAgent.adapter,
                 epicKey: epic?.key,
                 storyKey: story?.key,
-                includeBlocked: request.includeBlocked === true,
                 statusFilter: statuses,
                 agentSlug: resolvedAgent.slug,
                 modelName: resolvedAgent.defaultModel,
@@ -1242,9 +1208,7 @@ export class TaskOrderingService {
         warnings.push("Agent-influenced ordering encountered a cycle; used partial order.");
       }
 
-      const blockedTasks = ordered.filter((t) => blockedSet.has(t.id));
-      const unblockedTasks = ordered.filter((t) => !blockedSet.has(t.id));
-      const prioritized = [...unblockedTasks, ...blockedTasks];
+      const prioritized = ordered;
 
       const epicMap = new Map<string, TaskNode[]>();
       const storyMap = new Map<string, TaskNode[]>();
@@ -1260,9 +1224,7 @@ export class TaskOrderingService {
 
       await this.persistPriorities(prioritized, epicMap, storyMap);
 
-      const mapped = this.mapResult(prioritized, blockedSet, impact, finalCycleMembers);
-      const visibleOrdered = request.includeBlocked ? mapped.ordered : mapped.ordered.filter((t) => !t.blocked);
-      const visibleBlocked = request.includeBlocked ? [] : mapped.blocked;
+      const mapped = this.mapResult(prioritized, impact, finalCycleMembers);
 
       if (job) {
         await this.jobService.updateJobStatus(job.id, "completed", {
@@ -1270,7 +1232,6 @@ export class TaskOrderingService {
           payload: {
             warnings,
             statuses,
-            includeBlocked: request.includeBlocked === true,
             epicKey: epic?.key,
             storyKey: story?.key,
           },
@@ -1282,8 +1243,7 @@ export class TaskOrderingService {
       return {
         project,
         epic,
-        ordered: visibleOrdered,
-        blocked: visibleBlocked,
+        ordered: mapped.ordered,
         warnings,
         jobId: job?.id,
         commandRunId: commandRun?.id,

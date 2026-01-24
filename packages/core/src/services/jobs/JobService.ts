@@ -101,6 +101,7 @@ export interface TaskRunSnapshotRow {
 }
 
 const nowIso = (): string => new Date().toISOString();
+const TERMINAL_JOB_STATES = new Set<JobState>(["completed", "failed", "cancelled", "partial"]);
 
 type JobServiceWorkspace =
   | string
@@ -111,6 +112,9 @@ type JobServiceWorkspace =
     };
 
 export class JobService {
+  private static activeJobs = new Map<string, { service: JobService; commandRunId?: string }>();
+  private static signalHandlersRegistered = false;
+  private static handlingSignal = false;
   private checkpointCounters = new Map<string, number>();
   private workspaceRepoInit = false;
   private telemetryConfig?: { optOut?: boolean; strict?: boolean };
@@ -122,6 +126,39 @@ export class JobService {
   private workspaceRoot: string;
   private workspaceId: string;
   private mcodaDirOverride?: string;
+
+  private static ensureSignalHandlers(): void {
+    if (JobService.signalHandlersRegistered) return;
+    if (process.env.MCODA_DISABLE_JOB_SIGNAL_HANDLERS === "1") return;
+    JobService.signalHandlersRegistered = true;
+    const handler = (signal: NodeJS.Signals) => {
+      void JobService.handleProcessSignal(signal);
+    };
+    process.once("SIGINT", handler);
+    process.once("SIGTERM", handler);
+    process.once("SIGTSTP", handler);
+  }
+
+  private static registerActiveJob(jobId: string, service: JobService, commandRunId?: string): void {
+    JobService.activeJobs.set(jobId, { service, commandRunId });
+    JobService.ensureSignalHandlers();
+  }
+
+  private static unregisterActiveJob(jobId: string): void {
+    JobService.activeJobs.delete(jobId);
+  }
+
+  private static async handleProcessSignal(signal: NodeJS.Signals): Promise<void> {
+    if (JobService.handlingSignal) return;
+    JobService.handlingSignal = true;
+    const active = Array.from(JobService.activeJobs.entries());
+    await Promise.all(
+      active.map(async ([jobId, entry]) => entry.service.cancelJobOnSignal(jobId, entry.commandRunId, signal)),
+    );
+    const exitCode = signal === "SIGTERM" ? 143 : 130;
+    process.exitCode = exitCode;
+    process.exit(exitCode);
+  }
 
   constructor(
     workspace: JobServiceWorkspace,
@@ -192,6 +229,34 @@ export class JobService {
       }
       // Fall back to JSON stores if sqlite is unavailable or schema mismatches.
       this.workspaceRepo = undefined;
+    }
+  }
+
+  private async cancelJobOnSignal(jobId: string, commandRunId: string | undefined, signal: NodeJS.Signals): Promise<void> {
+    const reason = `Cancelled by ${signal}`;
+    try {
+      await this.ensureMcoda();
+    } catch {
+      // ignore workspace bootstrap failures during shutdown
+    }
+    if (this.workspaceRepo && "releaseTaskLocksByJob" in this.workspaceRepo) {
+      try {
+        await (this.workspaceRepo as any).releaseTaskLocksByJob(jobId);
+      } catch {
+        // ignore lock cleanup failures during shutdown
+      }
+    }
+    try {
+      await this.updateJobStatus(jobId, "cancelled", { errorSummary: reason });
+    } catch {
+      // ignore job status failures during shutdown
+    }
+    if (commandRunId) {
+      try {
+        await this.finishCommandRun(commandRunId, "cancelled", reason);
+      } catch {
+        // ignore command run failures during shutdown
+      }
     }
   }
 
@@ -453,6 +518,7 @@ export class JobService {
     if (commandRunId) {
       await this.attachCommandRunToJob(commandRunId, record.id);
     }
+    JobService.registerActiveJob(record.id, this, commandRunId);
     return record;
   }
 
@@ -532,6 +598,18 @@ export class JobService {
         completedAt: updated.completedAt ?? null,
         payload: updated.payload,
       });
+    }
+    if (state === "cancelled" && this.workspaceRepo && "releaseTaskLocksByJob" in this.workspaceRepo) {
+      try {
+        await (this.workspaceRepo as any).releaseTaskLocksByJob(jobId);
+      } catch {
+        // ignore lock cleanup failures during cancellation
+      }
+    }
+    if (TERMINAL_JOB_STATES.has(state)) {
+      JobService.unregisterActiveJob(jobId);
+    } else if (state === "running") {
+      JobService.registerActiveJob(jobId, this, updated.commandRunId);
     }
   }
 

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
-import { Agent, canonicalizeCommandName, getCommandRequiredCapabilities } from "@mcoda/shared";
+import { Agent, READY_TO_CODE_REVIEW, canonicalizeCommandName, getCommandRequiredCapabilities } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, SelectedTask } from "../execution/TaskSelectionService.js";
@@ -302,8 +302,7 @@ const EXPLORATION_RATE = 0.1;
 const DEFAULT_STATUS_FILTER = [
   "not_started",
   "in_progress",
-  "blocked",
-  "ready_to_review",
+  READY_TO_CODE_REVIEW,
   "ready_to_qa",
   "completed",
   "cancelled",
@@ -723,25 +722,83 @@ export class GatewayAgentService {
         taskKeys: request.taskKeys,
         statusFilter: request.statusFilter?.length ? request.statusFilter : DEFAULT_STATUS_FILTER,
         limit,
+        ignoreDependencies: request.taskKeys && request.taskKeys.length > 0 ? true : request.ignoreDependencies,
       };
       const selection = await this.taskSelectionService.selectTasks(filters);
       if (selection.warnings.length) warnings.push(...selection.warnings);
-      const combined: SelectedTask[] = [...selection.ordered, ...selection.blocked];
-      return combined.slice(0, limit).map((entry) => ({
-        key: entry.task.key,
-        title: entry.task.title,
-        description: entry.task.description ?? undefined,
-        status: entry.task.status,
-        storyPoints: entry.task.storyPoints ?? undefined,
-        storyKey: entry.task.storyKey,
-        storyTitle: entry.task.storyTitle,
-        epicKey: entry.task.epicKey,
-        epicTitle: entry.task.epicTitle,
-        acceptanceCriteria: entry.task.acceptanceCriteria,
-        dependencies: normalizeDependencies(entry.dependencies.keys),
+      const combined: SelectedTask[] = [...selection.ordered];
+      if (combined.length) {
+        return combined.slice(0, limit).map((entry) => ({
+          key: entry.task.key,
+          title: entry.task.title,
+          description: entry.task.description ?? undefined,
+          status: entry.task.status,
+          storyPoints: entry.task.storyPoints ?? undefined,
+          storyKey: entry.task.storyKey,
+          storyTitle: entry.task.storyTitle,
+          epicKey: entry.task.epicKey,
+          epicTitle: entry.task.epicTitle,
+          acceptanceCriteria: entry.task.acceptanceCriteria,
+          dependencies: normalizeDependencies(entry.dependencies.keys),
+        }));
+      }
+      if (!request.taskKeys?.length) return [];
+      warnings.push("Gateway task selection returned no tasks; falling back to direct task lookup.");
+      const tasks = await Promise.all(request.taskKeys.map((key) => this.deps.workspaceRepo.getTaskByKey(key)));
+      const found = tasks.filter((task): task is NonNullable<typeof task> => Boolean(task));
+      const missing = request.taskKeys.filter((key, index) => !tasks[index]);
+      if (missing.length) {
+        warnings.push(`Fallback task lookup missing keys: ${missing.join(", ")}`);
+      }
+      if (!found.length) return [];
+      let withRelations: Array<
+        typeof found[number] & {
+          epicKey?: string;
+          epicTitle?: string;
+          storyKey?: string;
+          storyTitle?: string;
+          acceptanceCriteria?: string[];
+        }
+      > = [];
+      try {
+        const related = await this.deps.workspaceRepo.getTasksWithRelations(found.map((task) => task.id));
+        const relatedById = new Map(related.map((task) => [task.id, task]));
+        withRelations = found.map((task) => relatedById.get(task.id) ?? task);
+      } catch {
+        withRelations = found;
+      }
+      return withRelations.slice(0, limit).map((task) => ({
+        key: task.key,
+        title: task.title,
+        description: task.description ?? undefined,
+        status: task.status,
+        storyPoints: task.storyPoints ?? undefined,
+        storyKey: (task as any).storyKey,
+        storyTitle: (task as any).storyTitle,
+        epicKey: (task as any).epicKey,
+        epicTitle: (task as any).epicTitle,
+        acceptanceCriteria: (task as any).acceptanceCriteria,
+        dependencies: undefined,
       }));
     } catch (error) {
       warnings.push(`Task lookup failed: ${(error as Error).message}`);
+      if (request.taskKeys?.length) {
+        warnings.push("Task lookup failed; attempting direct task fallback.");
+        try {
+          const tasks = await Promise.all(request.taskKeys.map((key) => this.deps.workspaceRepo.getTaskByKey(key)));
+          const found = tasks.filter((task): task is NonNullable<typeof task> => Boolean(task));
+          return found.map((task) => ({
+            key: task.key,
+            title: task.title,
+            description: task.description ?? undefined,
+            status: task.status,
+            storyPoints: task.storyPoints ?? undefined,
+            dependencies: undefined,
+          }));
+        } catch {
+          return [];
+        }
+      }
       return [];
     }
   }
@@ -1225,7 +1282,7 @@ export class GatewayAgentService {
       let parsed = jsonResult.payload;
       let fileListCoverage = parsed ? assessFileListCoverage(parsed) : { empty: false, justified: false };
       let missingFields = parsed
-        ? listMissingFields(parsed, { allowEmptyFiles: fileListCoverage.justified })
+        ? listMissingFields(parsed, { allowEmptyFiles: true })
         : ["summary", "reasoningSummary", "currentState", "todo", "understanding", "plan", "filesLikelyTouched", "filesToCreate", "dirsToCreate"];
       if (!parsed) {
         warnings.push(
@@ -1258,7 +1315,7 @@ export class GatewayAgentService {
         if (repaired.payload) {
           parsed = repaired.payload;
           fileListCoverage = assessFileListCoverage(parsed);
-          missingFields = listMissingFields(parsed, { allowEmptyFiles: fileListCoverage.justified });
+          missingFields = listMissingFields(parsed, { allowEmptyFiles: true });
         } else {
           warnings.push(
             repaired.jsonOnly
@@ -1281,9 +1338,7 @@ export class GatewayAgentService {
       }
 
       if (fileListCoverage.empty && !fileListCoverage.justified) {
-        throw new Error(
-          "Gateway analysis returned no file paths and did not justify the missing file context in assumptions/docdexNotes.",
-        );
+        warnings.push("Gateway analysis returned no file paths; proceeding without file context.");
       }
 
       let analysis = this.normalizeAnalysis(parsed ?? {}, normalizedJob, tasks, request.inputText);

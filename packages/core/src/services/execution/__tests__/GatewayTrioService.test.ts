@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { GatewayTrioService } from "../GatewayTrioService.js";
+import { GatewayTrioService, type GatewayLogDetails } from "../GatewayTrioService.js";
 import { JobService } from "../../jobs/JobService.js";
 import { PathHelper } from "@mcoda/shared";
 
@@ -89,7 +89,6 @@ const makeWorkspace = async () => {
 
 type SelectionSnapshot = {
   ordered: string[];
-  blocked?: string[];
   warnings?: string[];
 };
 
@@ -135,19 +134,16 @@ const buildSelection = (
     .map((key) => ({
       task: buildTask(key, statusStore, metadataStore),
       dependencies: { ids: [], keys: [], blocking: [] },
-      blockedReason: undefined,
     }));
-  const blocked = (blockedKeys ?? []).map((key) => ({
-    task: buildTask(key, statusStore, metadataStore),
-    dependencies: { ids: ["dep-1"], keys: ["DEP-1"], blocking: ["dep-1"] },
-    blockedReason: "dependency_not_ready",
-  }));
+  const selectionWarnings = warnings ? [...warnings] : [];
+  if (blockedSet.size > 0) {
+    selectionWarnings.push(`Skipped ${blockedSet.size} task(s) due to dependencies not ready.`);
+  }
   return {
     project: undefined,
     filters: { effectiveStatuses: [] },
     ordered,
-    blocked,
-    warnings: warnings ?? [],
+    warnings: selectionWarnings,
   };
 };
 
@@ -215,14 +211,13 @@ const makeService = async (options: {
     selectTasks: async (filters?: { taskKeys?: string[]; limit?: number }) => {
       const entry = options.selectionSequence?.length
         ? options.selectionSequence[Math.min(selectionIndex, options.selectionSequence.length - 1)]
-        : { ordered: options.selectionKeys, blocked: options.blockedKeys };
+        : { ordered: options.selectionKeys };
       selectionIndex += 1;
       const filterSet = filters?.taskKeys?.length ? new Set(filters.taskKeys) : undefined;
       let ordered = entry.ordered;
-      let blocked = entry.blocked ?? [];
+      let blocked = options.blockedKeys ?? [];
       if (filterSet) {
         ordered = ordered.filter((key) => filterSet.has(key));
-        blocked = blocked.filter((key) => filterSet.has(key));
       }
       if (typeof filters?.limit === "number" && filters.limit > 0) {
         ordered = ordered.slice(0, filters.limit);
@@ -296,14 +291,14 @@ const makeService = async (options: {
         options.workNotesSequence?.[Math.min(workIndex, options.workNotesSequence.length - 1)];
       workIndex += 1;
       if (!dryRun) {
-        const next = outcome === "failed" ? "in_progress" : "ready_to_review";
+        const next = outcome === "failed" ? "in_progress" : "ready_to_code_review";
         statusStore.set(key, next);
       }
       await recordTokens("work-on-tasks", "work-job", "work-run");
       return {
         jobId: "work-job",
         commandRunId: "work-run",
-        selection: { ordered: [], blocked: [], warnings: [], filters: { effectiveStatuses: [] } },
+        selection: { ordered: [], warnings: [], filters: { effectiveStatuses: [] } },
         results: [{ taskKey: key, status: outcome, notes }],
         warnings: [],
       };
@@ -324,7 +319,7 @@ const makeService = async (options: {
           decision === "approve" || decision === "info_only"
             ? "ready_to_qa"
             : decision === "block"
-              ? "blocked"
+              ? "failed"
               : "in_progress";
         statusStore.set(key, next);
       }
@@ -349,14 +344,14 @@ const makeService = async (options: {
       qaIndex += 1;
       if (options.stepCalls) options.stepCalls.push("qa");
       if (!dryRun) {
-        const next = outcome === "pass" ? "completed" : outcome === "infra_issue" ? "blocked" : "in_progress";
+        const next = outcome === "pass" ? "completed" : outcome === "infra_issue" ? "failed" : "in_progress";
         statusStore.set(key, next);
       }
       await recordTokens("qa-tasks", "qa-job", "qa-run");
       return {
         jobId: "qa-job",
         commandRunId: "qa-run",
-        selection: { ordered: [], blocked: [], warnings: [], filters: { effectiveStatuses: [] } },
+        selection: { ordered: [], warnings: [], filters: { effectiveStatuses: [] } },
         results: [{ taskKey: key, outcome }],
         warnings: [],
       };
@@ -505,8 +500,8 @@ test("GatewayTrioService completes work-review-qa successfully", async () => {
   }
 });
 
-test("GatewayTrioService skips work when task is ready_to_review", async () => {
-  const statusStore = makeStatusStore({ "TASK-R": "ready_to_review" });
+test("GatewayTrioService skips work when task is ready_to_code_review", async () => {
+  const statusStore = makeStatusStore({ "TASK-R": "ready_to_code_review" });
   const stepCalls: string[] = [];
   const { service, dir } = await makeService({
     statusStore,
@@ -541,6 +536,29 @@ test("GatewayTrioService skips work and review when task is ready_to_qa", async 
   }
 });
 
+test("GatewayTrioService skips cancelled tasks before running steps", async () => {
+  const statusStore = makeStatusStore({ "TASK-CANCEL": "cancelled" });
+  const workCalls: string[] = [];
+  const stepCalls: string[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-CANCEL"],
+    workCalls,
+    stepCalls,
+  });
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
+    assert.equal(result.tasks[0].status, "skipped");
+    assert.equal(result.tasks[0].lastError, "cancelled_in_db");
+    assert.equal(result.tasks[0].attempts, 0);
+    assert.equal(workCalls.length, 0);
+    assert.equal(stepCalls.length, 0);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService records docdex preflight failures", async () => {
   const statusStore = makeStatusStore({ "TASK-DOCDEX": "in_progress" });
   const { service, dir, workspace } = await makeService({
@@ -564,8 +582,8 @@ test("GatewayTrioService records docdex preflight failures", async () => {
 
 test("GatewayTrioService emits gateway start/end callbacks when gateway fails", async () => {
   const statusStore = makeStatusStore({ "TASK-GW": "in_progress" });
-  const startCalls: any[] = [];
-  const endCalls: any[] = [];
+  const startCalls: GatewayLogDetails[] = [];
+  const endCalls: GatewayLogDetails[] = [];
   const { service, dir, workspace } = await makeService({
     statusStore,
     selectionKeys: ["TASK-GW"],
@@ -577,12 +595,12 @@ test("GatewayTrioService emits gateway start/end callbacks when gateway fails", 
       maxCycles: 1,
       maxIterations: 1,
       workAgentName: "agent-1",
-      onGatewayStart: (details) => startCalls.push(details),
-      onGatewayEnd: (details) => endCalls.push(details),
+      onGatewayStart: (details: GatewayLogDetails) => startCalls.push(details),
+      onGatewayEnd: (details: GatewayLogDetails) => endCalls.push(details),
     });
-    assert.equal(startCalls.length, 1);
-    assert.equal(endCalls.length, 1);
-    assert.equal(endCalls[0].status, "failed");
+    assert.equal(startCalls.length, 2);
+    assert.equal(endCalls.length, 2);
+    assert.ok(endCalls.every((call) => call.status === "failed"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -667,7 +685,7 @@ test("GatewayTrioService stops on QA infra_issue", async () => {
   });
   try {
     const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
-    assert.equal(result.tasks[0].status, "blocked");
+    assert.equal(result.tasks[0].status, "failed");
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -754,7 +772,7 @@ test("GatewayTrioService sets totalItems once tasks are selected", async () => {
   }
 });
 
-test("GatewayTrioService retries tests_failed once before blocking", async () => {
+test("GatewayTrioService retries tests_failed once before failing", async () => {
   const statusStore = makeStatusStore({ "TASK-TF": "in_progress" });
   const gatewayRequests: any[] = [];
   const { service, dir, workspace } = await makeService({
@@ -768,7 +786,7 @@ test("GatewayTrioService retries tests_failed once before blocking", async () =>
   });
   try {
     const result = await service.run({ workspace, maxIterations: 3, maxCycles: 3 });
-    assert.equal(result.tasks[0].status, "blocked");
+    assert.equal(result.tasks[0].status, "failed");
     assert.equal(result.tasks[0].attempts, 2);
     const workCalls = gatewayRequests.filter((req) => req.job === "work-on-tasks");
     assert.ok(workCalls.length >= 2);
@@ -813,22 +831,6 @@ test("GatewayTrioService retries zero-token work once before failing", async () 
     assert.equal(workCalls.length, 2);
     assert.equal(result.tasks[0].status, "failed");
     assert.equal(result.tasks[0].lastError, "zero_tokens");
-  } finally {
-    await service.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("GatewayTrioService skips dependency-blocked tasks unless explicit", async () => {
-  const statusStore = makeStatusStore({ "TASK-6": "in_progress" });
-  const { service, dir } = await makeService({
-    statusStore,
-    selectionKeys: ["TASK-6"],
-    blockedKeys: ["TASK-6"],
-  });
-  try {
-    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
-    assert.equal(result.tasks[0].status, "skipped");
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -889,7 +891,7 @@ test("GatewayTrioService respects limit across cycles", async () => {
   }
 });
 
-test("GatewayTrioService blocks when gateway lacks file paths and docdex context", async () => {
+test("GatewayTrioService proceeds when gateway lacks file paths and docdex context", async () => {
   const statusStore = makeStatusStore({ "TASK-NOCTX": "in_progress" });
   const metadataStore = makeMetadataStore();
   const commentCalls: Array<Record<string, unknown>> = [];
@@ -904,20 +906,17 @@ test("GatewayTrioService blocks when gateway lacks file paths and docdex context
   try {
     const result = await service.run({ workspace, maxCycles: 1, maxIterations: 1 });
     const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-NOCTX");
-    assert.equal(summary?.status, "blocked");
-    assert.equal(summary?.lastError, "missing_context");
-    assert.equal(statusStore.get("TASK-NOCTX"), "blocked");
-    assert.equal((metadataStore.get("TASK-NOCTX") as any)?.blocked_reason, "missing_context");
-    assert.equal(commentCalls.length, 1);
-    assert.equal(commentCalls[0].sourceCommand, "gateway-trio");
-    assert.ok(String(commentCalls[0].body).includes("no file paths"));
+    assert.equal(summary?.status, "completed");
+    assert.equal(statusStore.get("TASK-NOCTX"), "completed");
+    assert.equal((metadataStore.get("TASK-NOCTX") as any)?.failed_reason, undefined);
+    assert.equal(commentCalls.length, 0);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test("GatewayTrioService blocks when gateway reports docdex was skipped", async () => {
+test("GatewayTrioService proceeds when gateway reports docdex was skipped", async () => {
   const statusStore = makeStatusStore({ "TASK-SKIP": "in_progress" });
   const metadataStore = makeMetadataStore();
   const commentCalls: Array<Record<string, unknown>> = [];
@@ -937,44 +936,81 @@ test("GatewayTrioService blocks when gateway reports docdex was skipped", async 
   try {
     const result = await service.run({ workspace, maxCycles: 1, maxIterations: 1 });
     const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-SKIP");
-    assert.equal(summary?.status, "blocked");
-    assert.equal(summary?.lastError, "missing_context");
-    assert.equal(statusStore.get("TASK-SKIP"), "blocked");
-    assert.equal((metadataStore.get("TASK-SKIP") as any)?.blocked_reason, "missing_context");
-    assert.ok(String(commentCalls[0].body).includes("not executed"));
+    assert.equal(summary?.status, "completed");
+    assert.equal(statusStore.get("TASK-SKIP"), "completed");
+    assert.equal((metadataStore.get("TASK-SKIP") as any)?.failed_reason, undefined);
+    assert.equal(commentCalls.length, 0);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test("GatewayTrioService retries blocked tasks when dependencies clear", async () => {
-  const statusStore = makeStatusStore({ "TASK-11": "in_progress", "TASK-12": "in_progress" });
-  const { service, dir } = await makeService({
+test("GatewayTrioService proceeds when gateway signals missing task details", async () => {
+  const statusStore = makeStatusStore({ "TASK-MISSING": "in_progress" });
+  const metadataStore = makeMetadataStore();
+  const commentCalls: Array<Record<string, unknown>> = [];
+  const { service, dir, workspace } = await makeService({
     statusStore,
-    selectionKeys: [],
-    selectionSequence: [
-      { ordered: ["TASK-12"], blocked: ["TASK-11"] },
-      { ordered: ["TASK-11"] },
-    ],
+    metadataStore,
+    selectionKeys: ["TASK-MISSING"],
+    gatewayAnalysisOverride: {
+      summary: "No concrete task was provided; need the specific change request to proceed.",
+      filesLikelyTouched: ["src/file.ts"],
+      filesToCreate: [],
+      docdexNotes: ["Docdex context provided."],
+    },
+    gatewayDocdex: [{ id: "doc-1" }],
+    commentCalls,
   });
   try {
-    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 2 });
-    const summary = Object.fromEntries(
-      (result.tasks as Array<{ taskKey: string; status: string; attempts: number }>).map((task) => [task.taskKey, task]),
-    );
-    assert.equal(summary["TASK-11"]?.status, "completed");
-    assert.equal(summary["TASK-11"]?.attempts, 1);
-    assert.equal(summary["TASK-12"]?.status, "completed");
+    const result = await service.run({ workspace, maxCycles: 1, maxIterations: 1 });
+    const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-MISSING");
+    assert.equal(summary?.status, "completed");
+    assert.equal(statusStore.get("TASK-MISSING"), "completed");
+    assert.equal((metadataStore.get("TASK-MISSING") as any)?.failed_reason, undefined);
+    assert.equal(commentCalls.length, 0);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test("GatewayTrioService reopens retryable blocked tasks", async () => {
-  const statusStore = makeStatusStore({ "TASK-13": "blocked" });
-  const metadataStore = makeMetadataStore({ "TASK-13": { blocked_reason: "patch_failed" } });
+test("GatewayTrioService regression handles missing context and no-change work", async () => {
+  const statusStore = makeStatusStore({ "TASK-REG": "in_progress" });
+  const metadataStore = makeMetadataStore();
+  const { service, dir, workspace } = await makeService({
+    statusStore,
+    metadataStore,
+    selectionKeys: ["TASK-REG"],
+    gatewayAnalysisOverride: {
+      summary: "No concrete task was provided; need the specific change request to proceed.",
+      filesLikelyTouched: [],
+      filesToCreate: [],
+      docdexNotes: [],
+    },
+    gatewayDocdex: [],
+    workSequence: ["succeeded"],
+    workNotesSequence: ["no_changes"],
+    reviewSequence: ["approve"],
+    qaSequence: ["pass"],
+  });
+  try {
+    const result = await service.run({ workspace, maxCycles: 1, maxIterations: 1 });
+    const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-REG");
+    assert.equal(summary?.status, "completed");
+    assert.equal(summary?.lastDecision, "approve");
+    assert.equal(statusStore.get("TASK-REG"), "completed");
+    assert.ok(result.warnings.some((warning: string) => warning.includes("gateway context incomplete")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService reopens retryable failed tasks", async () => {
+  const statusStore = makeStatusStore({ "TASK-13": "failed" });
+  const metadataStore = makeMetadataStore({ "TASK-13": { failed_reason: "tests_failed" } });
   const { service, dir } = await makeService({
     statusStore,
     metadataStore,
@@ -990,45 +1026,7 @@ test("GatewayTrioService reopens retryable blocked tasks", async () => {
     const summary = result.tasks.find((task: { taskKey: string }) => task.taskKey === "TASK-13");
     assert.equal(summary?.status, "completed");
     assert.equal(statusStore.get("TASK-13"), "completed");
-    assert.equal((metadataStore.get("TASK-13") as any)?.blocked_reason, undefined);
-  } finally {
-    await service.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("GatewayTrioService reopens dependency-blocked tasks only when deps complete", async () => {
-  const statusStore = makeStatusStore({ "TASK-20": "blocked", "TASK-21": "completed", "TASK-30": "blocked", "TASK-31": "in_progress" });
-  const metadataStore = makeMetadataStore({
-    "TASK-20": { blocked_reason: "dependency_not_ready" },
-    "TASK-30": { blocked_reason: "dependency_not_ready" },
-  });
-  const { service, dir } = await makeService({
-    statusStore,
-    metadataStore,
-    dependencyMap: {
-      "TASK-20": ["TASK-21"],
-      "TASK-30": ["TASK-31"],
-    },
-    selectionKeys: [],
-  });
-  try {
-    const state: any = {
-      schema_version: 1,
-      job_id: "job-1",
-      command_run_id: "run-1",
-      cycle: 0,
-      tasks: {
-        "TASK-20": { taskKey: "TASK-20", attempts: 0, status: "blocked", chosenAgents: {} },
-        "TASK-30": { taskKey: "TASK-30", attempts: 0, status: "blocked", chosenAgents: {} },
-      },
-    };
-    const warnings: string[] = [];
-    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-20", "TASK-30"]), 3, warnings);
-    assert.equal(statusStore.get("TASK-20"), "in_progress");
-    assert.equal((metadataStore.get("TASK-20") as any)?.blocked_reason, undefined);
-    assert.equal(statusStore.get("TASK-30"), "blocked");
-    assert.equal((metadataStore.get("TASK-30") as any)?.blocked_reason, "dependency_not_ready");
+    assert.equal((metadataStore.get("TASK-13") as any)?.failed_reason, undefined);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -1052,7 +1050,7 @@ test("GatewayTrioService does not reopen tasks completed in DB", async () => {
       },
     };
     const warnings: string[] = [];
-    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-DONE"]), 3, warnings);
+    await (service as any).reopenRetryableFailedTasks(state, new Set(["TASK-DONE"]), 3, warnings);
     assert.equal(state.tasks["TASK-DONE"].status, "completed");
     assert.equal(state.tasks["TASK-DONE"].lastError, "completed_in_db");
     assert.ok(warnings.some((warning) => warning.includes("TASK-DONE") && warning.includes("completed")));
@@ -1079,7 +1077,7 @@ test("GatewayTrioService reopens failed tasks when max iterations increases", as
       },
     };
     const warnings: string[] = [];
-    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-40"]), 5, warnings);
+    await (service as any).reopenRetryableFailedTasks(state, new Set(["TASK-40"]), 5, warnings);
     assert.equal(state.tasks["TASK-40"].status, "pending");
     assert.equal(statusStore.get("TASK-40"), "in_progress");
   } finally {
@@ -1120,7 +1118,7 @@ test("GatewayTrioService does not reopen non-retryable failed tasks", async () =
       },
     };
     const warnings: string[] = [];
-    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-NR"]), 3, warnings);
+    await (service as any).reopenRetryableFailedTasks(state, new Set(["TASK-NR"]), 3, warnings);
     assert.equal(state.tasks["TASK-NR"].status, "failed");
     assert.ok(warnings.some((warning) => warning.includes("non-retryable")));
   } finally {
@@ -1161,7 +1159,7 @@ test("GatewayTrioService cools down before reopening repeated failures", async (
       },
     };
     const warnings: string[] = [];
-    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-CD"]), 3, warnings);
+    await (service as any).reopenRetryableFailedTasks(state, new Set(["TASK-CD"]), 3, warnings);
     assert.equal(state.tasks["TASK-CD"].status, "failed");
     assert.ok(warnings.some((warning) => warning.includes("cooling down")));
   } finally {
@@ -1171,8 +1169,8 @@ test("GatewayTrioService cools down before reopening repeated failures", async (
 });
 
 test("GatewayTrioService marks max-iteration tasks as failed when reopening", async () => {
-  const statusStore = makeStatusStore({ "TASK-MAX": "blocked" });
-  const metadataStore = makeMetadataStore({ "TASK-MAX": { blocked_reason: "tests_failed" } });
+  const statusStore = makeStatusStore({ "TASK-MAX": "failed" });
+  const metadataStore = makeMetadataStore({ "TASK-MAX": { failed_reason: "tests_failed" } });
   const { service, dir } = await makeService({
     statusStore,
     metadataStore,
@@ -1189,7 +1187,7 @@ test("GatewayTrioService marks max-iteration tasks as failed when reopening", as
       },
     };
     const warnings: string[] = [];
-    await (service as any).reopenRetryableBlockedTasks(state, new Set(["TASK-MAX"]), 2, warnings);
+    await (service as any).reopenRetryableFailedTasks(state, new Set(["TASK-MAX"]), 2, warnings);
     assert.equal(state.tasks["TASK-MAX"].status, "failed");
     assert.equal(state.tasks["TASK-MAX"].lastError, "max_iterations_reached");
     assert.ok(warnings.some((warning) => warning.includes("TASK-MAX") && warning.includes("max iterations")));

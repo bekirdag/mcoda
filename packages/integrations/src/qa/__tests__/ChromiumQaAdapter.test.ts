@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { ChromiumQaAdapter } from "../ChromiumQaAdapter.js";
 import { QaProfile } from "@mcoda/shared/qa/QaProfile.js";
-import { PathHelper } from "@mcoda/shared";
 
 const withTempHome = async <T>(fn: (home: string) => Promise<T>): Promise<T> => {
   const originalHome = process.env.HOME;
@@ -24,76 +23,20 @@ const withTempHome = async <T>(fn: (home: string) => Promise<T>): Promise<T> => 
   }
 };
 
-test("ChromiumQaAdapter runs test command and captures artifacts with install skip", async () => {
-  await withTempHome(async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-chromium-"));
-    try {
-      const adapter = new ChromiumQaAdapter();
-      const profile: QaProfile = {
-        name: "ui",
-        runner: "chromium",
-        test_command: 'node -e "console.log(\\"ui ok\\")"',
-      };
-      const mcodaDir = PathHelper.getWorkspaceDir(tmp);
-      const ctx = {
-        workspaceRoot: tmp,
-        jobId: "job-1",
-        taskKey: "task-1",
-        env: { ...process.env, MCODA_QA_SKIP_INSTALL: "1" },
-        artifactDir: path.join(mcodaDir, "jobs", "job-1", "qa", "task-1"),
-      };
-      const ensure = await adapter.ensureInstalled(profile, ctx);
-      assert.equal(ensure.ok, true);
-      const result = await adapter.invoke(profile, ctx);
-      assert.equal(result.outcome, "pass");
-      assert.equal(result.exitCode, 0);
-      assert.ok(result.artifacts.length >= 2);
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
-  });
-});
-
-test("ChromiumQaAdapter ensureInstalled fails without Playwright and no test command", async () => {
-  const prev = process.env.MCODA_FORCE_NO_PLAYWRIGHT;
-  process.env.MCODA_FORCE_NO_PLAYWRIGHT = "1";
+test("ChromiumQaAdapter ensureInstalled succeeds with Docdex chromium", async () => {
+  const prevChromiumPath = process.env.MCODA_QA_CHROMIUM_PATH;
   try {
     await withTempHome(async () => {
       const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-chromium-"));
       try {
         const adapter = new ChromiumQaAdapter();
-        const profile: QaProfile = { name: "ui", runner: "chromium" };
-        const ctx = {
-          workspaceRoot: tmp,
-          jobId: "job-1",
-          taskKey: "task-1",
-          env: {},
-        };
-        const ensure = await adapter.ensureInstalled(profile, ctx as any);
-        assert.equal(ensure.ok, false);
-        assert.ok(ensure.message?.includes("Playwright CLI"));
-      } finally {
-        await fs.rm(tmp, { recursive: true, force: true });
-      }
-    });
-  } finally {
-    if (prev === undefined) delete process.env.MCODA_FORCE_NO_PLAYWRIGHT;
-    else process.env.MCODA_FORCE_NO_PLAYWRIGHT = prev;
-  }
-});
-
-test("ChromiumQaAdapter ensureInstalled allows custom test command without Playwright", async () => {
-  const prev = process.env.MCODA_FORCE_NO_PLAYWRIGHT;
-  process.env.MCODA_FORCE_NO_PLAYWRIGHT = "1";
-  try {
-    await withTempHome(async () => {
-      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-chromium-"));
-      try {
-        const adapter = new ChromiumQaAdapter();
+        const chromiumPath = path.join(tmp, "chromium-bin");
+        await fs.writeFile(chromiumPath, "");
+        process.env.MCODA_QA_CHROMIUM_PATH = chromiumPath;
         const profile: QaProfile = {
           name: "ui",
           runner: "chromium",
-          test_command: 'node -e "console.log(\\"ui ok\\")"',
+          test_command: "http://localhost:3000",
         };
         const ctx = {
           workspaceRoot: tmp,
@@ -108,7 +51,64 @@ test("ChromiumQaAdapter ensureInstalled allows custom test command without Playw
       }
     });
   } finally {
-    if (prev === undefined) delete process.env.MCODA_FORCE_NO_PLAYWRIGHT;
-    else process.env.MCODA_FORCE_NO_PLAYWRIGHT = prev;
+    if (prevChromiumPath === undefined) delete process.env.MCODA_QA_CHROMIUM_PATH;
+    else process.env.MCODA_QA_CHROMIUM_PATH = prevChromiumPath;
+  }
+});
+
+test("ChromiumQaAdapter ensureInstalled fails without Docdex chromium", async () => {
+  const prevChromiumPath = process.env.MCODA_QA_CHROMIUM_PATH;
+  delete process.env.MCODA_QA_CHROMIUM_PATH;
+  try {
+    await withTempHome(async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-chromium-"));
+      try {
+        const adapter = new ChromiumQaAdapter();
+        const profile: QaProfile = { name: "ui", runner: "chromium", test_command: "http://localhost" };
+        const ctx = {
+          workspaceRoot: tmp,
+          jobId: "job-1",
+          taskKey: "task-1",
+          env: {},
+        };
+        const ensure = await adapter.ensureInstalled(profile, ctx as any);
+        assert.equal(ensure.ok, false);
+        assert.ok(ensure.message?.includes("Docdex Chromium"));
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
+    });
+  } finally {
+    if (prevChromiumPath === undefined) delete process.env.MCODA_QA_CHROMIUM_PATH;
+    else process.env.MCODA_QA_CHROMIUM_PATH = prevChromiumPath;
+  }
+});
+
+test("ChromiumQaAdapter ensureInstalled succeeds when no URL is configured", async () => {
+  const prevChromiumPath = process.env.MCODA_QA_CHROMIUM_PATH;
+  try {
+    await withTempHome(async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-chromium-"));
+      try {
+        const adapter = new ChromiumQaAdapter();
+        const chromiumPath = path.join(tmp, "chromium-bin");
+        await fs.writeFile(chromiumPath, "");
+        process.env.MCODA_QA_CHROMIUM_PATH = chromiumPath;
+        const profile: QaProfile = { name: "ui", runner: "chromium" };
+        const ctx = {
+          workspaceRoot: tmp,
+          jobId: "job-1",
+          taskKey: "task-1",
+          env: {},
+        };
+        const ensure = await adapter.ensureInstalled(profile, ctx as any);
+        assert.equal(ensure.ok, true);
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
+    });
+  } finally {
+    if (prevChromiumPath === undefined) delete process.env.MCODA_QA_CHROMIUM_PATH;
+    else process.env.MCODA_QA_CHROMIUM_PATH = prevChromiumPath;
   }
 });
