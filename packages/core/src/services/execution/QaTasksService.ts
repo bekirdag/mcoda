@@ -39,6 +39,21 @@ const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const QA_TEST_POLICY =
   'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
+const QA_ROUTING_PROMPT = [
+  'You are the mcoda QA routing agent.',
+  'Decide which QA profiles should run for each task in this job.',
+  'Only use the provided profile names.',
+  'If unsure, choose a safe minimal set (usually [\"cli\"]).',
+].join('\n');
+const QA_ROUTING_OUTPUT_SCHEMA = [
+  'Return strict JSON only with shape:',
+  '{',
+  '  \"task_profiles\": { \"TASK_KEY\": [\"profile1\", \"profile2\"] },',
+  '  \"notes\": \"optional\"',
+  '}',
+  'No markdown or prose.',
+].join('\n');
+const QA_AGENT_INTERPRETATION_ENV = 'MCODA_QA_AGENT_INTERPRETATION';
 const QA_REQUIRED_DEPS = ['argon2', 'pg', 'ioredis', '@jest/globals'];
 const QA_REQUIRED_ENV = [
   { dep: 'pg', env: 'TEST_DB_URL' },
@@ -123,6 +138,13 @@ const normalizeLineNumber = (value: unknown): number | undefined => {
     if (Number.isFinite(parsed)) return Math.max(1, parsed);
   }
   return undefined;
+};
+
+const isEnvEnabled = (name: string): boolean => {
+  const raw = process.env[name];
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return !['0', 'false', 'off', 'no'].includes(normalized);
 };
 
 const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
@@ -281,6 +303,7 @@ export class QaTasksService {
   private routingService?: RoutingService;
   private ratingService?: AgentRatingService;
   private dryRunGuard = false;
+  private qaProfilePlan?: Map<string, QaProfile[]>;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -499,6 +522,31 @@ export class QaTasksService {
     if (result.outcome === 'pass') return 'pass';
     if (result.outcome === 'infra_issue') return 'infra_issue';
     return 'fix_required';
+  }
+
+  private shouldUseAgentInterpretation(): boolean {
+    return isEnvEnabled(QA_AGENT_INTERPRETATION_ENV);
+  }
+
+  private buildDeterministicInterpretation(
+    task: TaskSelectionPlan['ordered'][number],
+    profile: QaProfile,
+    result: QaRunResult,
+  ): AgentInterpretation {
+    const recommendation = this.mapOutcome(result);
+    const runner = profile.runner ?? 'cli';
+    const testedScope = `Ran ${profile.name} (${runner}) QA for ${task.task.key}.`;
+    const coverageSummary =
+      recommendation === 'pass'
+        ? `Automated QA completed successfully with exit code ${result.exitCode}.`
+        : `Automated QA reported outcome ${result.outcome} (exit code ${result.exitCode}). Review logs/artifacts for details.`;
+    return {
+      recommendation,
+      testedScope,
+      coverageSummary,
+      failures: [],
+      followUps: [],
+    };
   }
 
   private resolveRunAllMarkerPolicy(): RunAllMarkerPolicy {
@@ -816,29 +864,144 @@ export class QaTasksService {
     }
   }
 
+  private async loadAvailableProfiles(): Promise<QaProfile[]> {
+    const loader = (this.profileService as any)?.loadProfiles;
+    if (typeof loader !== 'function') return [];
+    try {
+      const profiles = await loader.call(this.profileService);
+      return Array.isArray(profiles) ? (profiles.filter(Boolean) as QaProfile[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private pickDefaultProfile(profiles: QaProfile[]): QaProfile | undefined {
+    if (!profiles.length) return undefined;
+    const explicitDefault = profiles.find((profile) => profile.default);
+    if (explicitDefault) return explicitDefault;
+    const cliProfile = profiles.find((profile) => profile.name === 'cli' || (profile.runner ?? 'cli') === 'cli');
+    if (cliProfile) return cliProfile;
+    return profiles[0];
+  }
+
+  private async planProfilesWithAgent(
+    tasks: TaskSelectionPlan['ordered'],
+    request: QaTasksRequest,
+    ctx: { jobId?: string; commandRunId?: string; warnings?: string[] },
+  ): Promise<Map<string, QaProfile[]>> {
+    const plan = new Map<string, QaProfile[]>();
+    if (request.profileName) return plan;
+    if (!this.agentService) return plan;
+    const profiles = await this.loadAvailableProfiles();
+    if (!profiles.length) return plan;
+    const defaultProfile = this.pickDefaultProfile(profiles);
+    const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
+    const taskKeys = new Set(tasks.map((task) => task.task.key));
+    const agent = await this.resolveAgent(request.agentName);
+    const prompts = await this.loadPrompts(agent.id);
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
+    const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
+    const systemPrompt = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt]
+      .filter(Boolean)
+      .join('\n\n');
+    const availableProfiles = profiles
+      .map((profile) => `- ${profile.name} (runner=${profile.runner ?? 'cli'})`)
+      .join('\n');
+    const tasksBlock = tasks
+      .map((task) => {
+        const desc = (task.task.description ?? '').replace(/\s+/g, ' ').trim();
+        const shortDesc = desc ? ` — ${desc.slice(0, 240)}` : '';
+        return `- ${task.task.key}: ${task.task.title ?? '(untitled)'}${shortDesc}`;
+      })
+      .join('\n');
+    const prompt = [
+      systemPrompt,
+      QA_ROUTING_PROMPT,
+      `Available QA profiles:\n${availableProfiles}`,
+      `Tasks:\n${tasksBlock}`,
+      QA_ROUTING_OUTPUT_SCHEMA,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const res = await this.agentService.invoke(agent.id, {
+      input: prompt,
+      metadata: { command: 'qa-tasks', action: 'qa-profile-plan' },
+    });
+    const output = res.output ?? '';
+    const tokensPrompt = this.estimateTokens(prompt);
+    const tokensCompletion = this.estimateTokens(output);
+    if (!this.dryRunGuard) {
+      await this.jobService.recordTokenUsage({
+        workspaceId: this.workspace.workspaceId,
+        agentId: agent.id,
+        modelName: agent.defaultModel,
+        jobId: ctx.jobId ?? 'qa-profile-plan',
+        commandRunId: ctx.commandRunId ?? 'qa-profile-plan',
+        tokensPrompt,
+        tokensCompletion,
+        tokensTotal: tokensPrompt + tokensCompletion,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          commandName: 'qa-tasks',
+          action: 'qa-profile-plan',
+          phase: 'qa-plan',
+          taskCount: tasks.length,
+        },
+      });
+    }
+    const parsed = this.extractJsonCandidate(output);
+    const taskProfiles = (parsed as any)?.task_profiles ?? (parsed as any)?.taskProfiles ?? {};
+    if (typeof taskProfiles !== 'object' || taskProfiles === null) {
+      ctx.warnings?.push('QA routing agent output invalid; defaulting to CLI profiles.');
+    }
+    for (const task of tasks) {
+      const selection = (taskProfiles as Record<string, unknown>)[task.task.key];
+      const rawList = Array.isArray(selection)
+        ? selection
+        : typeof selection === 'string'
+          ? [selection]
+          : [];
+      const resolved = rawList
+        .map((name) => (typeof name === 'string' ? profileByName.get(name) : undefined))
+        .filter(Boolean) as QaProfile[];
+      if (resolved.length) {
+        plan.set(task.task.key, resolved);
+        continue;
+      }
+      if (defaultProfile) {
+        plan.set(task.task.key, [defaultProfile]);
+      }
+    }
+    const summary = Object.fromEntries(
+      Array.from(plan.entries()).map(([key, entries]) => [key, entries.map((profile) => profile.name)]),
+    );
+    if (ctx.jobId) {
+      await this.checkpoint(ctx.jobId, 'qa-profile-plan', { profiles: summary, notes: (parsed as any)?.notes });
+    }
+    const unusedKeys = Object.keys(taskProfiles).filter((key) => !taskKeys.has(key));
+    if (unusedKeys.length) {
+      ctx.warnings?.push(`QA routing agent returned unknown task keys: ${unusedKeys.join(', ')}`);
+    }
+    return plan;
+  }
+
   private async resolveProfilesForRequest(
     task: TaskRow & { metadata?: any },
     request: QaTasksRequest,
   ): Promise<QaProfile[]> {
     const profileName = request.profileName;
-    let profiles: QaProfile[] = [];
-    if (!profileName) {
-      const resolver = (this.profileService as any)?.resolveProfilesForTask;
-      if (typeof resolver === 'function') {
-        const resolved = await resolver.call(this.profileService, task, { level: request.level });
-        if (Array.isArray(resolved)) {
-          profiles = resolved.filter(Boolean) as QaProfile[];
-        }
-      }
-    }
-    if (!profiles.length) {
+    if (profileName) {
       const profile = await this.profileService.resolveProfileForTask(task, {
         profileName,
         level: request.level,
       });
-      if (profile) profiles = [profile];
+      return profile ? [profile] : [];
     }
-    return profiles;
+    const planned = this.qaProfilePlan?.get(task.key);
+    if (planned?.length) return planned;
+    const available = await this.loadAvailableProfiles();
+    const fallback = this.pickDefaultProfile(available);
+    return fallback ? [fallback] : [];
   }
 
   private isApprovedReviewDecision(decision?: string): boolean {
@@ -1997,18 +2160,25 @@ export class QaTasksService {
     const commentBacklog = buildCommentBacklog(commentContext.unresolved);
     let interpretation: AgentInterpretation;
     try {
-      interpretation = await this.interpretResult(
-        task,
-        profile,
-        result,
-        ctx.request.agentName,
-        ctx.request.agentStream ?? true,
-        ctx.jobId,
-        ctx.commandRunId,
-        taskRun.id,
-        commentBacklog,
-        ctx.request.abortSignal,
-      );
+      if (this.shouldUseAgentInterpretation()) {
+        interpretation = await this.interpretResult(
+          task,
+          profile,
+          result,
+          ctx.request.agentName,
+          ctx.request.agentStream ?? true,
+          ctx.jobId,
+          ctx.commandRunId,
+          taskRun.id,
+          commentBacklog,
+          ctx.request.abortSignal,
+        );
+      } else {
+        interpretation = this.buildDeterministicInterpretation(task, profile, result);
+        if (taskRun.id) {
+          await this.logTask(taskRun.id, 'QA agent interpretation disabled; using runner outcome only.', 'qa-agent');
+        }
+      }
     } catch (error: any) {
       const message = error?.message ?? String(error);
       if (isAuthErrorMessage(message) && !this.dryRunGuard) {
@@ -2295,15 +2465,17 @@ export class QaTasksService {
           evidenceUrl: ctx.request.evidenceUrl,
         },
       ];
-      const agentSuggestions = await this.suggestFollowupsFromAgent(
-        task,
-        notes,
-        ctx.request.evidenceUrl,
-        'manual',
-        ctx.jobId,
-        ctx.commandRunId,
-        taskRun.id,
-      );
+      const agentSuggestions = this.shouldUseAgentInterpretation()
+        ? await this.suggestFollowupsFromAgent(
+            task,
+            notes,
+            ctx.request.evidenceUrl,
+            'manual',
+            ctx.jobId,
+            ctx.commandRunId,
+            taskRun.id,
+          )
+        : [];
       if (agentSuggestions.length) {
         suggestions.unshift(...agentSuggestions);
       }
@@ -2394,6 +2566,7 @@ export class QaTasksService {
   }
 
   async run(request: QaTasksRequest): Promise<QaTasksResponse> {
+    this.qaProfilePlan = undefined;
     const resume = request.resumeJobId ? await this.deps.jobService.getJob(request.resumeJobId) : undefined;
     if (request.resumeJobId && !resume) {
       throw new Error(`Resume requested but job ${request.resumeJobId} not found`);
@@ -2440,23 +2613,27 @@ export class QaTasksService {
     this.dryRunGuard = request.dryRun ?? false;
     if (request.dryRun) {
       const dryResults: QaTaskResult[] = [];
+      this.qaProfilePlan = await this.planProfilesWithAgent(selection.ordered, request, {
+        warnings: selection.warnings,
+      });
       for (const task of selection.ordered) {
         abortIfSignaled();
-        let profile: QaProfile | undefined;
+        let profiles: QaProfile[] = [];
         try {
-          profile = await this.profileService.resolveProfileForTask(task.task, {
-            profileName: request.profileName,
-            level: request.level,
-          });
+          profiles = await this.resolveProfilesForRequest(task.task, request);
         } catch {
-          profile = undefined;
+          profiles = [];
         }
+        const profile = profiles[0];
+        const profileNames = profiles.map((entry) => entry.name);
         dryResults.push({
           taskKey: task.task.key,
           outcome: profile ? 'unclear' : 'infra_issue',
-          profile: profile?.name,
-          runner: profile?.runner,
-          notes: profile ? 'Dry-run: QA planned' : 'Dry-run: no profile available',
+          profile: profileNames.length > 1 ? 'auto' : profile?.name,
+          runner: profileNames.length > 1 ? 'multi' : profile?.runner,
+          notes: profile
+            ? `Dry-run: QA planned${profileNames.length > 1 ? ` (${profileNames.join(', ')})` : ''}`
+            : 'Dry-run: no profile available',
         });
       }
       return {
@@ -2515,6 +2692,11 @@ export class QaTasksService {
             totalItems: selection.ordered.length,
             processedItems: completedKeys.size,
           });
+    this.qaProfilePlan = await this.planProfilesWithAgent(selection.ordered, request, {
+      jobId: job.id,
+      commandRunId: commandRun.id,
+      warnings: selection.warnings,
+    });
     if (resume?.id) {
       try {
         const qaRuns = await this.deps.workspaceRepo.listTaskQaRunsForJob(

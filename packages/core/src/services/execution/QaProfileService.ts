@@ -74,6 +74,8 @@ export class QaProfileService {
       'apps/client',
       'packages/web',
       'packages/client',
+      'src/public',
+      'src/public/index.html',
       'public/index.html',
       'index.html',
       'src/App.tsx',
@@ -192,15 +194,17 @@ export class QaProfileService {
     const uiTask = this.detectUiTask(task);
     const mobileTask = this.detectMobileTask(task);
     const runners: QaRunner[] = ['cli'];
-    if (hasWebInterface) runners.push('chromium');
+    if (uiTask && hasWebInterface) runners.push('chromium');
     if (mobileTask) runners.push('maestro');
     return { runners, hasWebInterface, uiTask, mobileTask };
   }
 
   private async resolveRunnerPreference(task?: TaskRow & { metadata?: any }): Promise<'chromium' | 'cli'> {
-    if (task && this.detectUiTask(task)) return 'chromium';
-    const hasUi = await this.detectWebInterface();
-    return hasUi ? 'chromium' : 'cli';
+    if (task && this.detectUiTask(task)) {
+      const hasUi = await this.detectWebInterface();
+      return hasUi ? 'chromium' : 'cli';
+    }
+    return 'cli';
   }
 
   private get profilePath(): string {
