@@ -17,13 +17,16 @@ import { createTaskCommentSlug, formatTaskCommentBody } from "../../tasks/TaskCo
 let tempHome: string | undefined;
 let originalHome: string | undefined;
 let originalProfile: string | undefined;
+let originalQaInterpretation: string | undefined;
 
 beforeEach(async () => {
   originalHome = process.env.HOME;
   originalProfile = process.env.USERPROFILE;
+  originalQaInterpretation = process.env.MCODA_QA_AGENT_INTERPRETATION;
   tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-home-"));
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
+  process.env.MCODA_QA_AGENT_INTERPRETATION = "1";
 });
 
 afterEach(async () => {
@@ -39,6 +42,11 @@ afterEach(async () => {
     delete process.env.USERPROFILE;
   } else {
     process.env.USERPROFILE = originalProfile;
+  }
+  if (originalQaInterpretation === undefined) {
+    delete process.env.MCODA_QA_AGENT_INTERPRETATION;
+  } else {
+    process.env.MCODA_QA_AGENT_INTERPRETATION = originalQaInterpretation;
   }
 });
 
@@ -64,6 +72,9 @@ class StubQaAdapter {
 }
 
 class StubProfileService {
+  async loadProfiles() {
+    return [{ name: "unit", runner: "cli", test_command: "echo ok", default: true }];
+  }
   async resolveProfileForTask() {
     return { name: "unit", runner: "cli", test_command: "echo ok" };
   }
@@ -73,7 +84,11 @@ class StubAgentService {
   async resolveAgent() {
     return { id: "qa-agent", defaultModel: "stub" } as any;
   }
-  async invoke() {
+  async invoke(_id: string, req?: { input?: string }) {
+    const input = req?.input ?? "";
+    if (input.includes("QA routing agent")) {
+      return { output: '{"task_profiles":{}}' };
+    }
     return {
       output:
         '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
@@ -109,7 +124,11 @@ class CapturingAgentService {
     return { id: "qa-agent", defaultModel: "stub" } as any;
   }
   async invoke(_id: string, req: any) {
-    this.lastInput = req?.input ?? "";
+    const input = req?.input ?? "";
+    if (input.includes("QA routing agent")) {
+      return { output: '{"task_profiles":{}}' };
+    }
+    this.lastInput = input;
     return {
       output:
         '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
@@ -138,6 +157,9 @@ class StubRatingService {
 }
 
 class MarkerProfileService {
+  async loadProfiles() {
+    return [{ name: "unit", runner: "cli", test_command: "node tests/all.js", default: true }];
+  }
   async resolveProfileForTask() {
     return { name: "unit", runner: "cli", test_command: "node tests/all.js" };
   }
@@ -236,6 +258,90 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
 
     const jobs = await db.all<{ state: string }[]>("SELECT state FROM jobs WHERE id = ?", result.jobId);
     assert.equal(jobs[0]?.state, "completed");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks routing-only skips agent interpretation by default", async () => {
+  process.env.MCODA_QA_AGENT_INTERPRETATION = "0";
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task QA",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  let invokeCount = 0;
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileService() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: {
+      invoke: async (_id: string, { input }: { input: string }) => {
+        invokeCount += 1;
+        if (input.includes("QA routing agent")) {
+          return { output: "{\"task_profiles\":{}}" };
+        }
+        return {
+          output:
+            "{\"recommendation\":\"pass\",\"tested_scope\":\"unit\",\"coverage_summary\":\"ok\",\"failures\":[],\"follow_up_tasks\":[],\"resolvedSlugs\":[],\"unresolvedSlugs\":[]}",
+        };
+      },
+    } as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.outcome, "pass");
+    assert.equal(invokeCount, 1);
+
+    const db = repo.getDb();
+    const qaRuns = await db.all<{ agent_id: string | null }[]>(
+      "SELECT agent_id FROM task_qa_runs WHERE task_id = ?",
+      task.id,
+    );
+    assert.equal(qaRuns[0]?.agent_id, null);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
@@ -363,6 +469,12 @@ test("qa-tasks aggregates multiple profiles when available", async () => {
   );
 
   class MultiProfileService {
+    async loadProfiles() {
+      return [
+        { name: "cli", runner: "cli", test_command: "echo ok", default: true },
+        { name: "chromium", runner: "chromium", test_command: "http://localhost" },
+      ];
+    }
     async resolveProfilesForTask() {
       return [
         { name: "cli", runner: "cli", test_command: "echo ok" },
@@ -392,6 +504,24 @@ test("qa-tasks aggregates multiple profiles when available", async () => {
     }
   }
 
+  class RoutingAgentService {
+    async resolveAgent() {
+      return { id: "qa-agent", defaultModel: "stub" } as any;
+    }
+    async invoke(_id: string, req?: { input?: string }) {
+      const input = req?.input ?? "";
+      if (input.includes("QA routing agent")) {
+        return {
+          output: `{\"task_profiles\":{\"${task.key}\":[\"cli\",\"chromium\"]}}`,
+        };
+      }
+      return {
+        output:
+          '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+      };
+    }
+  }
+
   const service = new QaTasksService(workspace, {
     workspaceRepo: repo,
     jobService,
@@ -400,7 +530,7 @@ test("qa-tasks aggregates multiple profiles when available", async () => {
     profileService: new MultiProfileService() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
-    agentService: new StubAgentService() as any,
+    agentService: new RoutingAgentService() as any,
     docdex: new StubDocdex() as any,
     routingService: new StubRoutingService() as any,
   });
@@ -866,6 +996,18 @@ test("qa-tasks selects chromium profile for UI-tagged tasks", async () => {
     false,
   );
 
+  const routingAgent = {
+    invoke: async (_id: string, { input }: { input: string }) => {
+      if (input.includes("QA routing agent")) {
+        return { output: `{\"task_profiles\":{\"proj-epic-us-01-t01\":[\"chromium\"]}}` };
+      }
+      return {
+        output:
+          "{\"recommendation\":\"pass\",\"tested_scope\":\"unit\",\"coverage_summary\":\"ok\",\"failures\":[],\"follow_up_tasks\":[],\"resolvedSlugs\":[],\"unresolvedSlugs\":[]}",
+      };
+    },
+  };
+
   let selectedProfile = "";
   const service = new QaTasksService(workspace, {
     workspaceRepo: repo,
@@ -875,7 +1017,7 @@ test("qa-tasks selects chromium profile for UI-tagged tasks", async () => {
     profileService: new QaProfileService(workspace.workspaceRoot),
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
-    agentService: new StubAgentService() as any,
+    agentService: routingAgent as any,
     docdex: new StubDocdex() as any,
     routingService: new StubRoutingService() as any,
   });
@@ -1597,6 +1739,9 @@ test("qa-tasks preflight blocks missing dependencies and env vars", async () => 
   );
 
   class PreflightProfileService {
+    async loadProfiles() {
+      return [{ name: "unit", runner: "cli", test_command: "node tests/all.js", default: true }];
+    }
     async resolveProfileForTask() {
       return { name: "unit", runner: "cli", test_command: "node tests/all.js" };
     }
@@ -1709,6 +1854,9 @@ test("qa-tasks install failure includes chromium guidance for chromium runner", 
   }
 
   class ChromiumProfileService {
+    async loadProfiles() {
+      return [{ name: "ui", runner: "chromium", default: true }];
+    }
     async resolveProfileForTask() {
       return { name: "ui", runner: "chromium" };
     }

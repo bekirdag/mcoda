@@ -3,7 +3,7 @@
 This document describes the current `qa-tasks` command flow as implemented in `QaTasksService` (`packages/core/src/services/execution/QaTasksService.ts`).
 
 ## Overview
-`qa-tasks` runs automated QA checks using a selected QA profile (CLI/browser/etc.), then asks a QA agent to interpret the results and produce structured JSON. It updates task state, creates QA comments and follow‑up tasks, and records QA telemetry.
+`qa-tasks` runs automated QA checks using a selected QA profile (CLI/browser/etc.). It uses a routing agent to decide which profiles to run, then records a deterministic QA summary from the runner outputs. Optional agent interpretation can be enabled by setting `MCODA_QA_AGENT_INTERPRETATION=1`.
 
 ## Inputs and defaults
 - Task scope: `projectKey`, `epicKey`, `storyKey`, `taskKeys`, `statusFilter`.
@@ -33,12 +33,10 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 
 #### 2.1 Task run setup
 1. Create a `task_run` row (status: `running`).
-2. Resolve QA profiles using `QaProfileService`:
-   - If `profileName` is provided, run only that profile.
-   - Otherwise, auto-select multiple profiles:
-     - Always include a CLI profile.
-     - Include Chromium when the repo has a web UI.
-     - Include Maestro when the task is tagged as mobile.
+2. Resolve QA profiles using the QA routing agent:
+   - If `profileName` is provided, run only that profile (explicit override).
+   - Otherwise, the routing agent chooses profiles per task based on task content and available profiles.
+   - If the routing output is invalid, fall back to the default CLI profile.
 3. If the latest code review indicates an empty diff (no code changes) and the decision is `approve`/`info_only`, skip QA and mark the task as passed.
 
 #### 2.2 Adapter selection and install check
@@ -56,9 +54,10 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 4. Normalize outcomes:
    - CLI adapter may treat “no tests found / skipping tests” as `infra_issue`.
    - If `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE`; missing markers are treated as `infra_issue`.
-5. Aggregate multiple runs into a single combined QA result for interpretation.
+5. Aggregate multiple runs into a single combined QA result for summary (and optional agent interpretation when enabled).
 
-#### 2.4 Interpret results with QA agent
+#### 2.4 Optional agent interpretation (disabled by default)
+Agent interpretation runs only when `MCODA_QA_AGENT_INTERPRETATION=1`.
 1. Load project guidance and docdex context.
 2. Build a QA interpretation prompt with:
    - Task metadata + acceptance criteria
@@ -69,7 +68,7 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
    - If still invalid, record `unclear` and capture the raw output for manual QA follow-up.
 
 #### 2.5 Apply results
-1. Combine raw test outcome + agent recommendation:
+1. Combine raw test outcome (and agent recommendation when enabled):
    - `infra_issue` dominates.
    - `fix_required` dominates if either side requests it.
    - `unclear` is preserved if the agent requests it.
@@ -86,7 +85,7 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
    - Follow‑ups are deduplicated via a stable `qa_followup_slug` in task metadata.
 
 #### 2.6 Rating
-If `rateAgents` is enabled, record an agent rating for the QA interpretation run.
+If agent interpretation is enabled and `rateAgents` is set, record an agent rating for the QA interpretation run.
 
 ### 2) Per-task QA run (manual mode)
 1. Create a `task_run` row.
@@ -118,14 +117,7 @@ flowchart TD
   I -->|No| I1[Fail qa_infra_issue + comment]
   I -->|Yes| J[Run tests via adapter]
   J --> K[Normalize outcome]
-  K --> L[Interpret results with QA agent]
-  L --> M{Valid JSON?}
-  M -->|No| M1[Retry once]
-  M1 --> N{Valid JSON?}
-  M -->|Yes| O[Parse recommendation]
-  N -->|No| N1[Fallback to raw outcome]
-  N -->|Yes| O
-  O --> P[Combine outcome + recommendation]
+  K --> P[Combine outcome + recommendation (optional)]
   P --> Q[Apply state transition]
   Q --> R[Resolve comment slugs + create QA comment]
   R --> S[Create QA run + followups]
