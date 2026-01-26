@@ -14,12 +14,16 @@ interface ParsedArgs {
   maxStoriesPerEpic?: number;
   maxTasksPerStory?: number;
   quiet?: boolean;
+  qaProfiles?: string[];
+  qaEntryUrl?: string;
+  qaStartCommand?: string;
+  qaRequires?: string[];
   inputs: string[];
 }
 
 type ProjectKeyCandidate = { key: string; mtimeMs: number };
 
-const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--quiet]`;
+const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--quiet]`;
 
 const readWorkspaceConfig = async (mcodaDir: string): Promise<Record<string, unknown>> => {
   const configPath = path.join(mcodaDir, "config.json");
@@ -145,6 +149,10 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
   let maxTasksPerStory: number | undefined;
   let force = false;
   let quiet = false;
+  let qaProfiles: string[] | undefined;
+  let qaEntryUrl: string | undefined;
+  let qaStartCommand: string | undefined;
+  let qaRequires: string[] | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -200,6 +208,32 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
           maxTasksPerStory = Number(argv[i + 1]);
           i += 1;
           break;
+        case "--qa-profile":
+          qaProfiles = argv[i + 1]
+            ? argv[i + 1]
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : undefined;
+          i += 1;
+          break;
+        case "--qa-entry-url":
+          qaEntryUrl = argv[i + 1];
+          i += 1;
+          break;
+        case "--qa-start-command":
+          qaStartCommand = argv[i + 1];
+          i += 1;
+          break;
+        case "--qa-requires":
+          qaRequires = argv[i + 1]
+            ? argv[i + 1]
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : undefined;
+          i += 1;
+          break;
         case "--quiet":
           quiet = true;
           break;
@@ -231,6 +265,10 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     maxTasksPerStory: Number.isFinite(maxTasksPerStory) ? maxTasksPerStory : undefined,
     force,
     quiet,
+    qaProfiles,
+    qaEntryUrl,
+    qaStartCommand,
+    qaRequires,
     inputs,
   };
 };
@@ -278,6 +316,10 @@ export class CreateTasksCommand {
         maxStoriesPerEpic: parsed.maxStoriesPerEpic,
         maxTasksPerStory: parsed.maxTasksPerStory,
         force: parsed.force,
+        qaProfiles: parsed.qaProfiles,
+        qaEntryUrl: parsed.qaEntryUrl,
+        qaStartCommand: parsed.qaStartCommand,
+        qaRequires: parsed.qaRequires,
       });
 
       const dbPath = PathHelper.getWorkspaceDbPath(workspace.workspaceRoot);

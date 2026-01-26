@@ -108,6 +108,18 @@ export class VcsClient {
     await this.runGit(cwd, ["checkout", "-b", branch, base]);
   }
 
+  async addWorktree(cwd: string, worktreePath: string, branch: string): Promise<void> {
+    await this.runGit(cwd, ["worktree", "add", "--force", worktreePath, branch]);
+  }
+
+  async removeWorktree(cwd: string, worktreePath: string): Promise<void> {
+    try {
+      await this.runGit(cwd, ["worktree", "remove", "--force", worktreePath]);
+    } catch {
+      // ignore; cleanup caller will remove directory
+    }
+  }
+
   async cherryPick(cwd: string, commit: string): Promise<void> {
     await this.runGit(cwd, ["cherry-pick", commit]);
   }

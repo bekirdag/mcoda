@@ -1,3 +1,5 @@
+import type { QaBrowserAction } from '@mcoda/shared/qa/QaPlan.js';
+
 export type QaOutcome = 'pass' | 'fail' | 'infra_issue';
 
 export interface QaRunResult {
@@ -22,5 +24,8 @@ export interface QaContext {
   taskKey: string;
   env: NodeJS.ProcessEnv;
   testCommandOverride?: string;
+  commands?: string[];
+  browserActions?: QaBrowserAction[];
+  browserBaseUrl?: string;
   artifactDir?: string;
 }

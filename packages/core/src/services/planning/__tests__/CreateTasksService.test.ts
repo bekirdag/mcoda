@@ -329,12 +329,389 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
     integration: ["Run integration flow A"],
     api: ["Validate API response contract"],
   });
+  assert.ok(Array.isArray(metadata?.qa?.profiles_expected));
+  assert.ok(metadata?.qa?.profiles_expected.includes("cli"));
   assert.equal(metadata?.stage, "other");
   assert.equal(metadata?.foundation, false);
   assert.ok(result.tasks[0].description.includes("Unit tests: Add unit coverage for task path"));
   assert.ok(result.tasks[0].description.includes("Component tests: Not applicable"));
   assert.ok(result.tasks[0].description.includes("Integration tests: Run integration flow A"));
   assert.ok(result.tasks[0].description.includes("API tests: Validate API response contract"));
+  assert.ok(result.tasks[0].description.includes("QA Readiness"));
+  assert.ok(result.tasks[0].description.includes("Profiles:"));
+});
+
+test("createTasks merges qa overrides into task metadata", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+    qaProfiles: ["cli", "chromium"],
+    qaEntryUrl: "http://localhost:5555",
+    qaStartCommand: "npm run dev",
+    qaRequires: ["seed"],
+  });
+
+  const metadata = result.tasks[0].metadata as any;
+  assert.ok(metadata?.qa?.profiles_expected.includes("chromium"));
+  assert.ok(metadata?.qa?.requires.includes("seed"));
+  assert.deepEqual(metadata?.qa?.entrypoints, [
+    { kind: "web", base_url: "http://localhost:5555", command: "npm run dev" },
+  ]);
+});
+
+test("createTasks records qa preflight scripts and entrypoints", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "package.json"),
+    JSON.stringify(
+      {
+        name: "demo",
+        scripts: {
+          dev: "vite",
+          test: "node tests/all.js",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: ["Add unit coverage for task path"],
+          componentTests: [],
+          integrationTests: ["Run integration flow A"],
+          apiTests: ["Validate API response contract"],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const preflight = jobService.checkpoints.find((ckpt) => ckpt.stage === "qa_preflight");
+  assert.ok(preflight);
+  assert.equal(preflight.details.scripts.dev, "vite");
+  assert.equal(preflight.details.scripts.test, "node tests/all.js");
+  assert.equal(preflight.details.entrypoints[0].command, "npm run dev");
+  assert.equal(preflight.details.entrypoints[0].base_url, "http://localhost:3000");
+});
+
+test("createTasks records empty qa preflight when package.json is missing", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const preflight = jobService.checkpoints.find((ckpt) => ckpt.stage === "qa_preflight");
+  assert.ok(preflight);
+  assert.deepEqual(preflight.details.scripts, {});
+  assert.deepEqual(preflight.details.entrypoints, []);
+});
+
+test("createTasks adds UI entrypoint blocker when scripts are missing", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "UI layout update",
+          type: "feature",
+          description: "Update UI components",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const metadata = result.tasks[0].metadata as any;
+  assert.ok(
+    (metadata?.qa?.blockers as string[]).some((entry) => entry.includes("Missing UI entrypoint")),
+  );
+});
+
+test("createTasks flags missing test dependencies in qa preflight", async () => {
+  await fs.mkdir(path.join(workspaceRoot, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceRoot, "tests", "server.test.js"),
+    "import request from 'supertest';\n",
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(workspaceRoot, "package.json"),
+    JSON.stringify(
+      {
+        name: "demo",
+        scripts: {
+          test: "node tests/all.js",
+        },
+        devDependencies: {},
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: ["Add unit coverage for task path"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const preflight = jobService.checkpoints.find((ckpt) => ckpt.stage === "qa_preflight");
+  assert.ok(preflight);
+  assert.ok(
+    (preflight.details.blockers as string[]).some((entry) => entry.includes("supertest")),
+  );
 });
 
 test("createTasks invokes agent rating when enabled", async () => {

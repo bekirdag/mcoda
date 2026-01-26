@@ -28,6 +28,8 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Apply changes directly in the repo; do not output patches/diffs/FILE blocks. Summarize changes and tests instead of emitting diffs.
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
 - Add or update tests alongside code, following the existing style and fixtures. For each task, identify the relevant unit/component/integration/API tests and implement them as part of the change.
+- Assume QA runs unit -> component -> integration -> api when test requirements are set; make sure those suites exist and pass.
+- Honor `metadata.qa` readiness (profiles/entrypoints/blockers) and keep browser testing Chromium-only.
 - If you create a new test script or suite entry point, register it in `tests/all.js` so the run-all script stays complete.
 - Align tests with the project’s test runner and dependencies; avoid introducing libraries that aren’t already in use or declared, and target real components/modules (not missing files). Update docs/config only when behavior or contracts change (command help, README snippets, specs, runbooks).
 

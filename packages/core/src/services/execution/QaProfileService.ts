@@ -2,6 +2,7 @@ import path from 'node:path';
 import { TaskRow } from '@mcoda/db';
 import { PathHelper } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
+import { classifyTask } from '../backlog/TaskOrderingHeuristics.js';
 import fs from 'node:fs/promises';
 
 export interface QaProfileResolutionOptions {
@@ -122,27 +123,42 @@ export class QaProfileService {
 
   private detectUiTask(task: TaskRow & { metadata?: any }): boolean {
     const metadata = (task.metadata as any) ?? {};
-    const tags: string[] = Array.isArray(metadata.tags) ? metadata.tags.map((t: string) => t.toLowerCase()) : [];
-    const uiTags = new Set([
-      'ui',
-      'frontend',
-      'front-end',
-      'client',
-      'web',
-      'react',
-      'vue',
-      'svelte',
-      'angular',
-      'next',
-      'nuxt',
-      'astro',
-    ]);
-    if (tags.some((tag) => uiTags.has(tag))) return true;
     const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
     const reviewFiles: string[] = Array.isArray(metadata.last_review_changed_paths)
       ? metadata.last_review_changed_paths
       : [];
-    const combined = [...files, ...reviewFiles];
+    const key = String(task.key ?? '').toLowerCase();
+    const isUiKey =
+      key.startsWith('web-') ||
+      key.startsWith('ui-') ||
+      key.startsWith('fe-') ||
+      key.startsWith('ux-') ||
+      key.includes('-web-') ||
+      key.includes('-ui-') ||
+      key.includes('-fe-') ||
+      key.includes('-ux-');
+    if (isUiKey) return true;
+    const isBackendKey =
+      key.startsWith('bck-') ||
+      key.startsWith('backend-') ||
+      key.startsWith('api-') ||
+      key.startsWith('ops-') ||
+      key.startsWith('infra-') ||
+      key.includes('-bck-') ||
+      key.includes('-backend-') ||
+      key.includes('-api-') ||
+      key.includes('-ops-') ||
+      key.includes('-infra-');
+    const tags: string[] = Array.isArray(metadata.tags)
+      ? metadata.tags.map((tag: string) => String(tag).toLowerCase())
+      : [];
+    const tagHints = new Set(['ui', 'ux', 'frontend', 'front-end', 'web', 'client']);
+    const hasUiTag = tags.some((tag) => tagHints.has(tag));
+    const components: string[] = Array.isArray(metadata.components)
+      ? metadata.components.map((component: string) => String(component).toLowerCase())
+      : [];
+    const componentHints = new Set(['ui', 'ux', 'frontend', 'front-end', 'web', 'client']);
+    const hasUiComponent = components.some((component) => componentHints.has(component));
     const uiHints = [
       '/ui/',
       '/frontend/',
@@ -155,11 +171,57 @@ export class QaProfileService {
       '/styles/',
     ];
     const uiExtensions = ['.tsx', '.jsx', '.vue', '.svelte', '.astro', '.html', '.css', '.scss', '.less'];
-    for (const file of combined) {
-      const normalized = String(file).toLowerCase();
-      if (uiExtensions.some((ext) => normalized.endsWith(ext))) return true;
-      if (uiHints.some((hint) => normalized.includes(hint))) return true;
+    const hasUiFileHint = (paths: string[], options: { requireExtension?: boolean } = {}): boolean => {
+      for (const file of paths) {
+        const normalized = String(file).toLowerCase();
+        const extensionMatch = uiExtensions.some((ext) => normalized.endsWith(ext));
+        if (extensionMatch) return true;
+        if (options.requireExtension) continue;
+        if (uiHints.some((hint) => normalized.includes(hint))) return true;
+      }
+      return false;
+    };
+    const type = typeof task.type === 'string' ? task.type.toLowerCase() : '';
+    const hasUiType = ['frontend', 'front-end', 'ui', 'web', 'client'].some((hint) => type.includes(hint));
+    if (hasUiTag || hasUiComponent || hasUiType) return true;
+    if (hasUiFileHint(files, { requireExtension: isBackendKey })) return true;
+    if (isBackendKey) return false;
+    if (hasUiFileHint(reviewFiles)) return true;
+    const acceptance: string[] = Array.isArray((task as any).acceptanceCriteria)
+      ? ((task as any).acceptanceCriteria as string[])
+      : [];
+    const text = [task.key, task.title, task.description, task.type, ...acceptance]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    if (text) {
+      const uiPhrases = [
+        'user interface',
+        'front end',
+        'frontend',
+        'front-end',
+        'web ui',
+        'web-',
+        'ui-',
+        'ui ',
+        'page',
+        'screen',
+        'view',
+        'component',
+        'browser',
+        'html',
+        'css',
+        'responsive',
+        'accessibility',
+      ];
+      if (uiPhrases.some((phrase) => text.includes(phrase))) return true;
     }
+    const classification = classifyTask({
+      title: task.title,
+      description: task.description,
+      type: task.type ?? undefined,
+    });
+    if (classification.stage === 'frontend') return true;
     return false;
   }
 
@@ -197,6 +259,15 @@ export class QaProfileService {
     if (uiTask && hasWebInterface) runners.push('chromium');
     if (mobileTask) runners.push('maestro');
     return { runners, hasWebInterface, uiTask, mobileTask };
+  }
+
+  async getRunnerPlan(task: TaskRow & { metadata?: any }): Promise<{
+    runners: QaRunner[];
+    hasWebInterface: boolean;
+    uiTask: boolean;
+    mobileTask: boolean;
+  }> {
+    return this.resolveRunnerPlan(task);
   }
 
   private async resolveRunnerPreference(task?: TaskRow & { metadata?: any }): Promise<'chromium' | 'cli'> {
@@ -383,6 +454,51 @@ export class QaProfileService {
     if (options.profileName) {
       const explicit = await this.resolveProfileForTask(task, options);
       return explicit ? [explicit] : [];
+    }
+    const qaProfiles = Array.isArray((task.metadata as any)?.qa?.profiles_expected)
+      ? ((task.metadata as any).qa.profiles_expected as unknown[])
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [];
+    if (qaProfiles.length > 0) {
+      const profiles = await this.loadProfiles();
+      const byName = new Map(profiles.map((profile) => [profile.name.toLowerCase(), profile]));
+      const pickByRunner = (runner: QaRunner): QaProfile | undefined => {
+        const matches = profiles.filter((profile) => (profile.runner ?? 'cli') === runner);
+        if (!matches.length) return undefined;
+        const defaults = matches.filter((profile) => profile.default);
+        if (defaults.length === 1) return defaults[0];
+        return matches[0];
+      };
+      const runnerAliases: Record<string, QaRunner> = {
+        api: 'cli',
+        cli: 'cli',
+        browser: 'chromium',
+        web: 'chromium',
+        ui: 'chromium',
+        chromium: 'chromium',
+        maestro: 'maestro',
+        mobile: 'maestro',
+      };
+      const resolved: QaProfile[] = [];
+      const seen = new Set<string>();
+      for (const profileName of qaProfiles) {
+        const normalized = profileName.toLowerCase();
+        let profile = byName.get(normalized);
+        if (!profile) {
+          const runner = runnerAliases[normalized];
+          if (runner) {
+            profile = pickByRunner(runner);
+          }
+        }
+        if (profile && !seen.has(profile.name)) {
+          resolved.push(profile);
+          seen.add(profile.name);
+        }
+      }
+      if (resolved.length > 0) {
+        return resolved;
+      }
     }
     const plan = await this.resolveRunnerPlan(task);
     const profiles: QaProfile[] = [];

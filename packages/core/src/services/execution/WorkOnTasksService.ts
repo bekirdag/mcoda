@@ -5,12 +5,14 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
+import { resolveChromiumBinary } from "@mcoda/integrations/qa/ChromiumQaAdapter.js";
 import { GlobalRepository, WorkspaceRepository, type TaskCommentRow } from "@mcoda/db";
 import { PathHelper, READY_TO_CODE_REVIEW, WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from "./TaskSelectionService.js";
 import { TaskStateService } from "./TaskStateService.js";
+import { QaTestCommandBuilder } from "./QaTestCommandBuilder.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
@@ -551,6 +553,38 @@ const formatTestRequirementsNote = (requirements: TestRequirements): string => {
   return parts.length ? `Required tests: ${parts.join(" | ")}` : "";
 };
 
+const formatQaReadinessNote = (value: unknown): string => {
+  if (!value || typeof value !== "object") return "";
+  const qa = value as Record<string, unknown>;
+  const profiles = normalizeStringArray(qa.profiles_expected);
+  const requires = normalizeStringArray(qa.requires);
+  const blockers = normalizeStringArray(qa.blockers);
+  const dataSetup = normalizeStringArray(qa.data_setup);
+  const notes = typeof qa.notes === "string" ? qa.notes.trim() : "";
+  const entrypoints = Array.isArray(qa.entrypoints)
+    ? qa.entrypoints
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") return "";
+          const raw = entry as Record<string, unknown>;
+          const kind = typeof raw.kind === "string" ? raw.kind.trim() : "";
+          const baseUrl = typeof raw.base_url === "string" ? raw.base_url.trim() : "";
+          const command = typeof raw.command === "string" ? raw.command.trim() : "";
+          const detail = baseUrl || command;
+          if (!kind && !detail) return "";
+          return detail ? `${kind || "entry"}=${detail}` : kind;
+        })
+        .filter(Boolean)
+    : [];
+  const parts: string[] = [];
+  if (profiles.length) parts.push(`Profiles: ${profiles.join(", ")}`);
+  if (entrypoints.length) parts.push(`Entrypoints: ${entrypoints.join("; ")}`);
+  if (requires.length) parts.push(`Requires: ${requires.join("; ")}`);
+  if (dataSetup.length) parts.push(`Data setup: ${dataSetup.join("; ")}`);
+  if (blockers.length) parts.push(`Blockers: ${blockers.join("; ")}`);
+  if (notes) parts.push(`Notes: ${notes}`);
+  return parts.length ? `QA readiness: ${parts.join(" | ")}` : "";
+};
+
 const truncateText = (value: string, maxChars = DEFAULT_TEST_OUTPUT_CHARS): string => {
   if (!value) return "";
   if (value.length <= maxChars) return value;
@@ -586,10 +620,14 @@ const readPackageScripts = (packageRoot: string): Record<string, string> | null 
   return null;
 };
 
-const hasTestScript = (packageRoot: string): boolean => {
+const hasPackageScript = (packageRoot: string, scriptName: string): boolean => {
   const scripts = readPackageScripts(packageRoot);
-  const testScript = scripts?.test;
-  return typeof testScript === "string" && testScript.trim().length > 0;
+  const script = scripts?.[scriptName];
+  return typeof script === "string" && script.trim().length > 0;
+};
+
+const hasTestScript = (packageRoot: string): boolean => {
+  return hasPackageScript(packageRoot, "test");
 };
 
 const extractCommandCwd = (command: string): string | undefined => {
@@ -607,6 +645,38 @@ const isPackageManagerTestCommand = (command: string): boolean => {
   const normalized = command.trim().replace(/\s+/g, " ");
   if (!/^(npm|yarn|pnpm)\b/i.test(normalized)) return false;
   return /\btest\b/i.test(normalized);
+};
+
+const extractPackageScriptName = (command: string): string | undefined => {
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return undefined;
+  if (!/^(npm|yarn|pnpm)$/i.test(tokens[0])) return undefined;
+  let idx = 1;
+  while (idx < tokens.length) {
+    const token = tokens[idx];
+    if (token.startsWith("-")) {
+      if (token === "--prefix" || token === "--cwd" || token === "-C") {
+        idx += 2;
+        continue;
+      }
+      if (token.startsWith("--prefix=") || token.startsWith("--cwd=")) {
+        idx += 1;
+        continue;
+      }
+      idx += 1;
+      continue;
+    }
+    if (token === "run") {
+      idx += 1;
+      break;
+    }
+    if (token === "test") return "test";
+    return token;
+  }
+  if (idx >= tokens.length) return undefined;
+  const script = tokens[idx];
+  if (!script || script.startsWith("-")) return undefined;
+  return script;
 };
 
 const detectDefaultTestCommand = (workspaceRoot: string): string | undefined => {
@@ -794,13 +864,27 @@ const sanitizeTestCommands = (
       skipped.push(`${command} (package.json missing)`);
       return false;
     }
-    if (!hasTestScript(packageRoot)) {
-      skipped.push(`${command} (test script missing)`);
+    const scriptName = extractPackageScriptName(normalized);
+    if (scriptName && !hasPackageScript(packageRoot, scriptName)) {
+      skipped.push(`${command} (${scriptName} script missing)`);
       return false;
     }
     return true;
   });
   return { commands: sanitized, skipped };
+};
+
+const dedupeCommands = (commands: string[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const command of commands) {
+    const trimmed = command.trim();
+    if (!trimmed) continue;
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 };
 
 const touchedFilesFromPatch = (patch: string): string[] => {
@@ -2667,18 +2751,76 @@ export class WorkOnTasksService {
     return { touched: Array.from(touched), warnings, appliedCount: applied };
   }
 
+  private usesCliBrowserTools(commands: string[]): boolean {
+    const pattern = /(cypress|puppeteer|selenium|capybara|dusk)/i;
+    return commands.some((command) => pattern.test(command));
+  }
+
+  private ensureCypressChromium(command: string): string {
+    if (!/cypress/i.test(command)) return command;
+    if (/--browser(\s+|=)/i.test(command)) return command;
+    if (/\bcypress\s+(run|open)\b/i.test(command)) {
+      return `${command} --browser chromium`;
+    }
+    return command;
+  }
+
+  private async applyChromiumForTests(
+    commands: string[],
+  ): Promise<{ ok: boolean; commands: string[]; env: NodeJS.ProcessEnv; message?: string }> {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (!this.usesCliBrowserTools(commands)) {
+      return { ok: true, commands, env };
+    }
+    const chromiumPath = await resolveChromiumBinary();
+    if (!chromiumPath) {
+      return {
+        ok: false,
+        commands,
+        env,
+        message:
+          "Chromium binary not found for CLI browser tests. Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).",
+      };
+    }
+    if (!env.CHROME_PATH) env.CHROME_PATH = chromiumPath;
+    if (!env.CHROME_BIN) env.CHROME_BIN = chromiumPath;
+    if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = chromiumPath;
+    if (!env.PUPPETEER_PRODUCT) env.PUPPETEER_PRODUCT = "chrome";
+    if (!env.CYPRESS_BROWSER) env.CYPRESS_BROWSER = "chromium";
+    const updated = commands.map((command) => this.ensureCypressChromium(command));
+    return { ok: true, commands: updated, env };
+  }
+
   private async runTests(
     commands: string[],
     cwd: string,
     abortSignal?: AbortSignal,
   ): Promise<{ ok: boolean; results: { command: string; stdout: string; stderr: string; code: number }[] }> {
     const results: { command: string; stdout: string; stderr: string; code: number }[] = [];
-    for (const command of commands) {
+    const chromiumPrep = await this.applyChromiumForTests(commands);
+    if (!chromiumPrep.ok) {
+      return {
+        ok: false,
+        results: [
+          {
+            command: commands[0] ?? "chromium-preflight",
+            stdout: "",
+            stderr: chromiumPrep.message ?? "Chromium preflight failed.",
+            code: 1,
+          },
+        ],
+      };
+    }
+    for (const command of chromiumPrep.commands) {
       try {
         if (abortSignal?.aborted) {
           throw new Error("work_on_tasks_aborted");
         }
-        const { stdout, stderr } = await exec(command, { cwd, signal: abortSignal });
+        const { stdout, stderr } = await exec(command, {
+          cwd,
+          signal: abortSignal,
+          env: chromiumPrep.env,
+        });
         results.push({ command, stdout, stderr, code: 0 });
       } catch (error: any) {
         results.push({
@@ -3191,8 +3333,9 @@ export class WorkOnTasksService {
           allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
           const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
           const testRequirementsNote = formatTestRequirementsNote(testRequirements);
+          const qaReadinessNote = formatQaReadinessNote(metadata.qa);
           const testsRequired = hasTestRequirements(testRequirements);
-          let testCommands = normalizeTestCommands(metadata.tests);
+          let testCommands = normalizeTestCommands(metadata.tests ?? metadata.testCommands);
           const allowLargeDocEdits =
             metadata.allow_large_doc_edits === true ||
             metadata.allowLargeDocEdits === true ||
@@ -3206,6 +3349,21 @@ export class WorkOnTasksService {
               `Skipped test commands: ${sanitized.skipped.join("; ")}`,
               "tests",
             );
+          }
+          if (!testCommands.length && testsRequired) {
+            const commandBuilder = new QaTestCommandBuilder(this.workspace.workspaceRoot);
+            const commandPlan = await commandBuilder.build({ task: task.task });
+            if (commandPlan.commands.length) {
+              const built = sanitizeTestCommands(commandPlan.commands, this.workspace.workspaceRoot);
+              testCommands = built.commands;
+              if (built.skipped.length) {
+                await this.logTask(
+                  taskRun.id,
+                  `Skipped test commands: ${built.skipped.join("; ")}`,
+                  "tests",
+                );
+              }
+            }
           }
           if (!testCommands.length && testsRequired) {
             const fallbackCommand = detectScopedTestCommand(this.workspace.workspaceRoot, allowedFiles);
@@ -3247,10 +3405,21 @@ export class WorkOnTasksService {
           if (testsRequired && !hasRunnableTests) {
             await this.logTask(
               taskRun.id,
-              "Tests required but no runnable test commands were found; skipping tests.",
+              "Tests required but no runnable test commands were found; failing task.",
               "tests",
               { testRequirements },
             );
+            await this.stateService.markFailed(task.task, "tests_not_configured", statusContext);
+            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+              status: "failed",
+              finishedAt: new Date().toISOString(),
+            });
+            setFailureReason("tests_not_configured");
+            results.push({ taskKey: task.task.key, status: "failed", notes: "tests_not_configured" });
+            taskStatus = "failed";
+            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+            await emitTaskEndOnce();
+            continue taskLoop;
           }
           const shouldRunTests = !request.dryRun && (testsRequired ? hasRunnableTests : testCommands.length > 0);
           let mergeConflicts: string[] = [];
@@ -3533,15 +3702,6 @@ export class WorkOnTasksService {
             return { halt: haltAfterPush };
           };
 
-          if (!request.dryRun && testsRequired && testCommands.length === 0 && !runAllTestsCommandHint) {
-            await this.logTask(
-              taskRun.id,
-              "No runnable test commands found for required tests; continuing without running tests.",
-              "tests",
-              { testRequirements },
-            );
-          }
-
           if (!request.dryRun) {
             try {
               branchInfo = await this.ensureBranches(
@@ -3648,6 +3808,7 @@ export class WorkOnTasksService {
             testCommandNote,
             runAllTestsNote,
             testExpectationNote,
+            qaReadinessNote,
             commentBacklogNote,
             outputRequirementNote,
           ]
@@ -4663,12 +4824,21 @@ export class WorkOnTasksService {
                 abortIfSignaled();
                 testAttemptCount += 1;
                 const runAllTestsCommand = testsRequired ? detectRunAllTestsCommand(this.workspace.workspaceRoot) : undefined;
-                const combinedCommands = runAllTestsCommand ? [...testCommands, runAllTestsCommand] : testCommands;
+                const combinedCommands = runAllTestsCommand
+                  ? dedupeCommands([...testCommands, runAllTestsCommand])
+                  : testCommands;
                 if (!combinedCommands.length) {
-                  await this.logTask(taskRun.id, "No runnable tests found; skipping tests.", "tests", {
-                    attempt,
-                    testRequirements: testsRequired ? testRequirements : undefined,
-                  });
+                  if (testsRequired) {
+                    await this.logTask(taskRun.id, "No runnable tests found; failing task.", "tests", {
+                      attempt,
+                      testRequirements,
+                    });
+                    lastTestErrorType = "tests_not_configured";
+                    lastTestFailureSummary = "No runnable test commands configured.";
+                    testsPassed = false;
+                    break;
+                  }
+                  await this.logTask(taskRun.id, "No runnable tests found; skipping tests.", "tests", { attempt });
                   testsPassed = true;
                   break;
                 }
@@ -4860,7 +5030,9 @@ export class WorkOnTasksService {
         const reviewMetadata: Record<string, unknown> = { last_run: finishedAt };
         if (shouldRunTests) {
           const runAllTestsCommand = testsRequired ? detectRunAllTestsCommand(this.workspace.workspaceRoot) : undefined;
-          const combinedCommands = runAllTestsCommand ? [...testCommands, runAllTestsCommand] : testCommands;
+          const combinedCommands = runAllTestsCommand
+            ? dedupeCommands([...testCommands, runAllTestsCommand])
+            : testCommands;
           reviewMetadata.test_attempts = testAttemptCount;
           reviewMetadata.test_commands = combinedCommands;
           reviewMetadata.run_all_tests_command = runAllTestsCommand ?? null;

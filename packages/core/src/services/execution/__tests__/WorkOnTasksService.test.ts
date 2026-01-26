@@ -3095,6 +3095,48 @@ test("workOnTasks retries failing tests until they pass", async () => {
   }
 });
 
+test("workOnTasks applies chromium env for browser test commands", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  const prevChromiumPath = process.env.MCODA_QA_CHROMIUM_PATH;
+  const chromiumPath = path.join(dir, "bin", "chromium");
+  await fs.mkdir(path.join(dir, "bin"), { recursive: true });
+  await fs.writeFile(chromiumPath, "", "utf8");
+  process.env.MCODA_QA_CHROMIUM_PATH = chromiumPath;
+
+  try {
+    const result = await (service as any).applyChromiumForTests(["npx cypress run"]);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.commands, ["npx cypress run --browser chromium"]);
+    assert.equal(result.env.CHROME_PATH, chromiumPath);
+    assert.equal(result.env.CHROME_BIN, chromiumPath);
+    assert.equal(result.env.PUPPETEER_EXECUTABLE_PATH, chromiumPath);
+    assert.equal(result.env.PUPPETEER_PRODUCT, "chrome");
+    assert.equal(result.env.CYPRESS_BROWSER, "chromium");
+  } finally {
+    if (prevChromiumPath === undefined) {
+      delete process.env.MCODA_QA_CHROMIUM_PATH;
+    } else {
+      process.env.MCODA_QA_CHROMIUM_PATH = prevChromiumPath;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks creates run-all tests script when missing", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3153,22 +3195,19 @@ test("workOnTasks creates run-all tests script when missing", async () => {
   }
 });
 
-test("workOnTasks prefers nested package test command", async () => {
+test("workOnTasks uses category test commands when requirements are set", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
-  const nestedRoot = path.join(dir, "packages", "app");
-  await fs.mkdir(path.join(nestedRoot, "src"), { recursive: true });
-  await fs.writeFile(path.join(nestedRoot, "src", "index.ts"), "export {};\n", "utf8");
-  await fs.writeFile(path.join(nestedRoot, "test-pass.js"), "process.exit(0);\n", "utf8");
+  await fs.writeFile(path.join(dir, "test-pass.js"), "process.exit(0);\n", "utf8");
   await fs.writeFile(
-    path.join(nestedRoot, "package.json"),
+    path.join(dir, "package.json"),
     JSON.stringify(
       {
         name: "app",
         version: "1.0.0",
-        scripts: { test: "node ./test-pass.js" },
+        scripts: { "test:unit": "node ./test-pass.js" },
       },
       null,
       2,
@@ -3177,9 +3216,8 @@ test("workOnTasks prefers nested package test command", async () => {
   );
   await repo.updateTask(tasks[0].id, {
     metadata: {
-      files: ["packages/app/src/index.ts"],
       test_requirements: {
-        unit: ["nested package tests"],
+        unit: ["unit tests"],
         component: [],
         integration: [],
         api: [],
@@ -3213,7 +3251,58 @@ test("workOnTasks prefers nested package test command", async () => {
 
     const updated = await repo.getTaskByKey(tasks[0].key);
     const testCommands = (updated?.metadata as any)?.test_commands ?? [];
-    assert.ok(testCommands.some((command: string) => command.includes("packages/app")));
+    assert.ok(testCommands.some((command: string) => command.includes("npm run test:unit")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks fails when tests are required but no commands exist", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      test_requirements: {
+        unit: ["missing test commands"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "tests_not_configured");
+
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "failed");
+    assert.equal((updated?.metadata as any)?.failed_reason, "tests_not_configured");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

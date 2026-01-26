@@ -66,6 +66,12 @@ test("TaskStateService merges metadata and updates status", async () => {
     assert.equal(failed?.status, "failed");
     assert.equal((failed?.metadata as any)?.failed_reason, "tests_failed");
 
+    await service.transitionToInProgress(task, statusContext);
+    await service.markNotStarted(task, { qa_reset: true }, statusContext);
+    const reset = await repo.getTaskByKey(task.key);
+    assert.equal(reset?.status, "not_started");
+    assert.equal((reset?.metadata as any)?.qa_reset, true);
+
     const db = repo.getDb();
     const events = await db.all<{
       from_status: string | null;
@@ -79,7 +85,7 @@ test("TaskStateService merges metadata and updates status", async () => {
       "SELECT from_status, to_status, command_name, job_id, task_run_id, agent_id, metadata_json FROM task_status_events WHERE task_id = ? ORDER BY timestamp",
       task.id,
     );
-    assert.equal(events.length, 2);
+    assert.equal(events.length, 4);
     assert.equal(events[0]?.from_status, "not_started");
     assert.equal(events[0]?.to_status, "ready_to_code_review");
     assert.equal(events[0]?.command_name, "work-on-tasks");
@@ -93,6 +99,14 @@ test("TaskStateService merges metadata and updates status", async () => {
     const secondMeta = events[1]?.metadata_json ? JSON.parse(events[1].metadata_json) : {};
     assert.equal(secondMeta.lane, "work");
     assert.equal(secondMeta.failed_reason, "tests_failed");
+    assert.equal(events[2]?.from_status, "failed");
+    assert.equal(events[2]?.to_status, "in_progress");
+    const thirdMeta = events[2]?.metadata_json ? JSON.parse(events[2].metadata_json) : {};
+    assert.equal(thirdMeta.lane, "work");
+    assert.equal(events[3]?.from_status, "in_progress");
+    assert.equal(events[3]?.to_status, "not_started");
+    const fourthMeta = events[3]?.metadata_json ? JSON.parse(events[3].metadata_json) : {};
+    assert.equal(fourthMeta.lane, "work");
   } finally {
     await repo.close();
     await fs.rm(dir, { recursive: true, force: true });
