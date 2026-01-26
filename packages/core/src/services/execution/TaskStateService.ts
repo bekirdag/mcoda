@@ -48,6 +48,22 @@ export class TaskStateService {
     task.status = "in_progress";
   }
 
+  async markNotStarted(
+    task: TaskRow,
+    metadataPatch?: Record<string, unknown>,
+    context?: TaskStatusEventContext,
+  ): Promise<void> {
+    const fromStatus = task.status;
+    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
+    await this.workspaceRepo.updateTask(task.id, {
+      status: "not_started",
+      metadata: mergedMetadata ?? undefined,
+    });
+    await this.recordStatusEvent(task, fromStatus, "not_started", context);
+    task.status = "not_started";
+    task.metadata = mergedMetadata ?? undefined;
+  }
+
   async markReadyToReview(
     task: TaskRow,
     metadataPatch?: Record<string, unknown>,

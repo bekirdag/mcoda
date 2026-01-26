@@ -1,10 +1,15 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+import net from 'node:net';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
-import { PathHelper, QA_ALLOWED_STATUSES, filterTaskStatuses } from '@mcoda/shared';
+import { PathHelper, QA_ALLOWED_STATUSES, QaTaskPlan, filterTaskStatuses } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { WorkspaceResolution } from '../../workspace/WorkspaceManager.js';
 import { JobService, JobState } from '../jobs/JobService.js';
@@ -14,7 +19,7 @@ import { QaProfileService } from './QaProfileService.js';
 import { QaFollowupService, FollowupSuggestion } from './QaFollowupService.js';
 import { QaAdapter } from '@mcoda/integrations/qa/QaAdapter.js';
 import { CliQaAdapter } from '@mcoda/integrations/qa/CliQaAdapter.js';
-import { ChromiumQaAdapter } from '@mcoda/integrations/qa/ChromiumQaAdapter.js';
+import { ChromiumQaAdapter, resolveChromiumBinary } from '@mcoda/integrations/qa/ChromiumQaAdapter.js';
 import { MaestroQaAdapter } from '@mcoda/integrations/qa/MaestroQaAdapter.js';
 import { QaContext, QaRunResult } from '@mcoda/integrations/qa/QaTypes.js';
 import { VcsClient } from '@mcoda/integrations';
@@ -29,29 +34,50 @@ import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from '../
 import { buildDocdexUsageGuidance } from '../shared/DocdexGuidance.js';
 import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from '../shared/AuthErrors.js';
+import { normalizeQaPlanOutput } from './QaPlanValidator.js';
+import { QaApiRunner } from './QaApiRunner.js';
+import { QaTestCommandBuilder } from './QaTestCommandBuilder.js';
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent.',
   buildDocdexUsageGuidance({ contextLabel: 'the QA report', includeHeading: false, includeFallback: true }),
   'Use docdex snippets to derive acceptance criteria, data contracts, edge cases, and non-functional requirements (performance, accessibility, offline/online assumptions).',
-  'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.',
+  'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. When test_requirements list unit/component/integration/api, run them in that order using stack-appropriate tools. Prefer tests/all.js or package manager test scripts when no category split is available; do not suggest Jest configs unless the repo explicitly documents them.',
 ].join('\n');
 const REPO_PROMPTS_DIR = fileURLToPath(new URL('../../../../../prompts/', import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const QA_TEST_POLICY =
-  'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. Prefer tests/all.js or package manager test scripts; do not suggest Jest configs unless the repo explicitly documents them.';
+  'QA policy: always run automated tests. Use browser (Chromium) tests only when the project has a web UI; otherwise run API/endpoint/CLI tests that simulate real usage. When test_requirements list unit/component/integration/api, run them in that order using stack-appropriate tools. Prefer tests/all.js or package manager test scripts when no category split is available; do not suggest Jest configs unless the repo explicitly documents them.';
 const QA_ROUTING_PROMPT = [
   'You are the mcoda QA routing agent.',
   'Decide which QA profiles should run for each task in this job.',
+  'Return a QA plan that maps tasks to profiles and action lists (cli/api/browser/stress).',
   'Only use the provided profile names.',
-  'If unsure, choose a safe minimal set (usually [\"cli\"]).',
+  'Always include CLI when tests are available.',
+  'When adding CLI commands, cover functional checks: unit -> component -> integration -> api (when test_requirements exist), then tests/all.js or package.json test script, plus build, lint, and CLI smoke commands where relevant.',
+  'Prefer category scripts (test:unit/test:component/test:integration/test:api) when they exist; otherwise use stack-appropriate test tools.',
+  'UI/front-end tasks must include chromium alongside CLI and include browser actions.',
+  'Only include chromium when the task itself is UI/front-end (ui_task=yes). Do not add chromium just because ui_repo=yes.',
+  'Include at least one light stress action for UI tasks (repeat navigation or submit) when safe.',
+  'API/back-end tasks (api_task=yes) must include API requests with sample data/auth when available.',
+  'Only include API requests when api_task=yes or the plan explicitly defines api base_url/requests.',
+  'If unsure, choose a safe minimal set (usually [\"cli\"]) and avoid guessing API endpoints.',
 ].join('\n');
 const QA_ROUTING_OUTPUT_SCHEMA = [
   'Return strict JSON only with shape:',
   '{',
   '  \"task_profiles\": { \"TASK_KEY\": [\"profile1\", \"profile2\"] },',
+  '  \"task_plans\": {',
+  '    \"TASK_KEY\": {',
+  '      \"profiles\": [\"cli\", \"chromium\"],',
+  '      \"cli\": { \"commands\": [\"pnpm test\", \"node tests/all.js\"] },',
+  '      \"api\": { \"base_url\": \"http://localhost:3000\", \"requests\": [{ \"method\": \"GET\", \"path\": \"/health\", \"expect\": { \"status\": 200 } }] },',
+  '      \"browser\": { \"base_url\": \"http://localhost:3000\", \"actions\": [{ \"type\": \"navigate\", \"url\": \"/\" }, { \"type\": \"snapshot\", \"name\": \"home\" }] },',
+  '      \"stress\": { \"api\": [], \"browser\": [] }',
+  '    }',
+  '  },',
   '  \"notes\": \"optional\"',
   '}',
-  'No markdown or prose.',
+  'No markdown or prose. task_profiles is required; task_plans is optional when actions are unknown.',
 ].join('\n');
 const QA_AGENT_INTERPRETATION_ENV = 'MCODA_QA_AGENT_INTERPRETATION';
 const QA_REQUIRED_DEPS = ['argon2', 'pg', 'ioredis', '@jest/globals'];
@@ -95,11 +121,24 @@ const RUN_ALL_TESTS_MARKER = 'mcoda_run_all_tests_complete';
 const RUN_ALL_TESTS_GUIDANCE =
   'Run-all tests did not emit the expected marker. Ensure tests/all.js prints "MCODA_RUN_ALL_TESTS_COMPLETE".';
 const QA_CLEAN_IGNORE_DEFAULTS = ['test-results', 'repo_meta.json', 'logs/', '.docdexignore'];
+const DEFAULT_QA_HOST = '127.0.0.1';
+const QA_HOST_ENV_KEYS = ['HOST', 'BIND_ADDR', 'BIND_ADDRESS', 'LISTEN_HOST', 'VITE_HOST', 'NUXT_HOST'];
+const QA_PORT_ENV_KEYS = ['PORT', 'VITE_PORT', 'NUXT_PORT', 'NEXT_PORT'];
+const QA_SERVER_START_ENV = 'MCODA_QA_START_SERVER';
+const QA_SERVER_TIMEOUT_ENV = 'MCODA_QA_SERVER_TIMEOUT_MS';
+const DEFAULT_QA_SERVER_TIMEOUT_MS = 600_000;
 type RunAllMarkerPolicy = 'strict' | 'warn';
 type RunAllMarkerStatus = {
   policy: RunAllMarkerPolicy;
   present: boolean;
   action: 'none' | 'warn' | 'block';
+};
+type QaServerHandle = {
+  baseUrl: string;
+  command: string;
+  logPath: string;
+  process: ReturnType<typeof spawn>;
+  stop: () => Promise<void>;
 };
 const normalizeSlugList = (input?: string[] | null): string[] => {
   if (!Array.isArray(input)) return [];
@@ -140,11 +179,167 @@ const normalizeLineNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const detectApiTask = (task: TaskRow & { metadata?: any }): boolean => {
+  const metadata = (task.metadata as any) ?? {};
+  const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
+  const reviewFiles: string[] = Array.isArray(metadata.last_review_changed_paths)
+    ? metadata.last_review_changed_paths
+    : [];
+  const combined = [...files, ...reviewFiles].map((file) => String(file).toLowerCase());
+  const apiHints = ['/api/', '/routes/', '/controllers/', '/server/', '/backend/', '/services/'];
+  if (combined.some((file) => apiHints.some((hint) => file.includes(hint)))) return true;
+  const key = (task.key ?? '').toLowerCase();
+  if (key.startsWith('bck-') || key.startsWith('api-')) return true;
+  const type = String(task.type ?? '').toLowerCase();
+  if (type.includes('backend') || type.includes('api')) return true;
+  const acceptance: string[] = Array.isArray((task as any).acceptanceCriteria)
+    ? ((task as any).acceptanceCriteria as string[])
+    : [];
+  const text = [task.key, task.title, task.description, task.type, ...acceptance]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (!text) return false;
+  const apiPhrases = [
+    'endpoint',
+    'route',
+    'router',
+    'controller',
+    'backend',
+    'server',
+    'openapi',
+    'swagger',
+    'graphql',
+    'rest',
+  ];
+  return apiPhrases.some((phrase) => text.includes(phrase));
+};
+
+const applyQaHostDefaults = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const next = { ...env };
+  for (const key of QA_HOST_ENV_KEYS) {
+    const value = next[key];
+    if (!value || value === '0.0.0.0') {
+      next[key] = DEFAULT_QA_HOST;
+    }
+  }
+  return next;
+};
+
+const resolveEnvPort = (env: NodeJS.ProcessEnv): number | undefined => {
+  for (const key of QA_PORT_ENV_KEYS) {
+    const raw = env[key];
+    if (!raw) continue;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+};
+
+const applyQaPortDefaults = (env: NodeJS.ProcessEnv, port: number): void => {
+  for (const key of QA_PORT_ENV_KEYS) {
+    if (!env[key]) {
+      env[key] = String(port);
+    }
+  }
+};
+
+const resolveUrlPort = (value: string): { url: URL; port: number } | undefined => {
+  try {
+    const url = new URL(value);
+    const port =
+      url.port !== ''
+        ? Number.parseInt(url.port, 10)
+        : url.protocol === 'https:'
+          ? 443
+          : 80;
+    if (!Number.isFinite(port) || port <= 0) return undefined;
+    return { url, port };
+  } catch {
+    return undefined;
+  }
+};
+
+const isPortOpen = async (host: string, port: number, timeoutMs = 500): Promise<boolean> =>
+  await new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (open: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(open);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.once('error', () => {
+      clearTimeout(timer);
+      finish(false);
+    });
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      finish(true);
+    });
+    socket.connect(port, host);
+  });
+
+const pickFreePort = async (host: string): Promise<number> =>
+  await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, host, () => {
+      const address = server.address();
+      if (typeof address === 'object' && address?.port) {
+        const port = address.port;
+        server.close(() => resolve(port));
+      } else {
+        server.close(() => reject(new Error('Failed to acquire free port')));
+      }
+    });
+  });
+
+const normalizeQaUrl = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.hostname === '0.0.0.0') {
+      url.hostname = DEFAULT_QA_HOST;
+    }
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return value;
+  }
+};
+
+
 const isEnvEnabled = (name: string): boolean => {
   const raw = process.env[name];
   if (!raw) return false;
   const normalized = raw.trim().toLowerCase();
   return !['0', 'false', 'off', 'no'].includes(normalized);
+};
+
+const shouldAutoStartServer = (): boolean => {
+  if (process.env[QA_SERVER_START_ENV] === undefined) return true;
+  return isEnvEnabled(QA_SERVER_START_ENV);
+};
+
+const resolveServerTimeoutMs = (): number => {
+  const raw = process.env[QA_SERVER_TIMEOUT_ENV];
+  if (!raw) return DEFAULT_QA_SERVER_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return DEFAULT_QA_SERVER_TIMEOUT_MS;
+};
+
+const isLocalBaseUrl = (value?: string): boolean => {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return ['127.0.0.1', 'localhost'].includes(url.hostname);
+  } catch {
+    return false;
+  }
 };
 
 const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
@@ -304,6 +499,7 @@ export class QaTasksService {
   private ratingService?: AgentRatingService;
   private dryRunGuard = false;
   private qaProfilePlan?: Map<string, QaProfile[]>;
+  private qaTaskPlans?: Map<string, QaTaskPlan>;
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -419,10 +615,53 @@ export class QaTasksService {
     const mcodaPromptPath = path.join(this.workspace.mcodaDir, 'prompts', 'qa-agent.md');
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, 'prompts', 'qa-agent.md');
     const repoPromptPath = resolveRepoPromptPath('qa-agent.md');
+    const isStalePrompt = (value?: string): boolean => {
+      if (!value) return false;
+      return /playwright/i.test(value) || /MCODA_QA_BROWSER_URL/i.test(value);
+    };
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
-      await fs.access(mcodaPromptPath);
-      console.info(`[qa-tasks] using existing QA prompt at ${mcodaPromptPath}`);
+      let existingPrompt: string | undefined;
+      try {
+        existingPrompt = await fs.readFile(mcodaPromptPath, 'utf8');
+      } catch {
+        existingPrompt = undefined;
+      }
+      if (existingPrompt && !isStalePrompt(existingPrompt)) {
+        console.info(`[qa-tasks] using existing QA prompt at ${mcodaPromptPath}`);
+      } else {
+        if (existingPrompt) {
+          console.info(`[qa-tasks] refreshing stale QA prompt at ${mcodaPromptPath}`);
+        }
+        let sourcePrompt: string | undefined;
+        try {
+          const workspacePrompt = await fs.readFile(workspacePromptPath, 'utf8');
+          if (!isStalePrompt(workspacePrompt)) {
+            sourcePrompt = workspacePrompt;
+            console.info(`[qa-tasks] copied QA prompt to ${mcodaPromptPath}`);
+          }
+        } catch {
+          // ignore workspace prompt
+        }
+        if (!sourcePrompt) {
+          try {
+            const repoPrompt = await fs.readFile(repoPromptPath, 'utf8');
+            if (!isStalePrompt(repoPrompt)) {
+              sourcePrompt = repoPrompt;
+              console.info(`[qa-tasks] copied repo QA prompt to ${mcodaPromptPath}`);
+            }
+          } catch {
+            // ignore repo prompt
+          }
+        }
+        if (!sourcePrompt) {
+          console.info(
+            `[qa-tasks] no QA prompt found at ${workspacePromptPath} or repo prompts; writing default prompt to ${mcodaPromptPath}`,
+          );
+          sourcePrompt = DEFAULT_QA_PROMPT;
+        }
+        await fs.writeFile(mcodaPromptPath, sourcePrompt, 'utf8');
+      }
     } catch {
       try {
         await fs.access(workspacePromptPath);
@@ -463,29 +702,66 @@ export class QaTasksService {
   private async ensureTaskBranch(
     task: TaskSelectionPlan['ordered'][number],
     taskRunId: string,
+    jobId: string,
     allowDirty: boolean,
     cleanIgnorePaths?: string[],
-  ): Promise<{ ok: boolean; message?: string }> {
+  ): Promise<{
+    ok: boolean;
+    message?: string;
+    workspaceRoot?: string;
+    cleanup?: () => Promise<void>;
+    branch?: string;
+  }> {
     try {
-      await this.vcs.ensureRepo(this.workspace.workspaceRoot);
+      const repoRoot = this.workspace.workspaceRoot;
+      await this.vcs.ensureRepo(repoRoot);
       if (!allowDirty) {
         const ignorePaths = this.buildCleanIgnorePaths(cleanIgnorePaths);
         if (ignorePaths.length) {
           await this.logTask(taskRunId, `VCS clean ignore paths: ${ignorePaths.join(", ")}`, 'vcs', { ignorePaths });
         }
-        await this.vcs.ensureClean(this.workspace.workspaceRoot, true, ignorePaths);
+        await this.vcs.ensureClean(repoRoot, true, ignorePaths);
       }
-      if (task.task.vcsBranch) {
-        const exists = await this.vcs.branchExists(this.workspace.workspaceRoot, task.task.vcsBranch);
+      let branch = task.task.vcsBranch;
+      if (branch) {
+        const exists = await this.vcs.branchExists(repoRoot, branch);
         if (!exists) {
-          return { ok: false, message: `Task branch ${task.task.vcsBranch} not found` };
+          return { ok: false, message: `Task branch ${branch} not found` };
         }
-        await this.vcs.checkoutBranch(this.workspace.workspaceRoot, task.task.vcsBranch);
       } else {
         const base = this.workspace.config?.branch ?? 'mcoda-dev';
-        await this.vcs.ensureBaseBranch(this.workspace.workspaceRoot, base);
+        await this.vcs.ensureBaseBranch(repoRoot, base);
+        branch = base;
       }
-      return { ok: true };
+
+      const worktreeRoot = path.join(
+        this.workspace.mcodaDir,
+        'jobs',
+        jobId,
+        'qa-worktrees',
+        task.task.key,
+      );
+      await fs.rm(worktreeRoot, { recursive: true, force: true });
+      await PathHelper.ensureDir(path.dirname(worktreeRoot));
+      await this.vcs.addWorktree(repoRoot, worktreeRoot, branch);
+      const reportedBranch = await this.vcs.currentBranch(worktreeRoot);
+      let activeBranch = reportedBranch ?? branch;
+      if (reportedBranch && reportedBranch !== branch) {
+        await this.logTask(taskRunId, `QA worktree branch mismatch (${reportedBranch}); switching to ${branch}`, 'vcs', {
+          expected: branch,
+          found: reportedBranch,
+        });
+        await this.vcs.checkoutBranch(worktreeRoot, branch);
+        activeBranch = (await this.vcs.currentBranch(worktreeRoot)) ?? branch;
+      }
+      await this.logTask(taskRunId, `QA worktree ready on branch ${activeBranch}`, 'vcs', {
+        branch: activeBranch,
+      });
+      const cleanup = async () => {
+        await this.vcs.removeWorktree(repoRoot, worktreeRoot);
+        await fs.rm(worktreeRoot, { recursive: true, force: true });
+      };
+      return { ok: true, workspaceRoot: worktreeRoot, cleanup, branch: activeBranch };
     } catch (error: any) {
       await this.logTask(taskRunId, `VCS check failed: ${error?.message ?? error}`, 'vcs');
       return { ok: false, message: error?.message ?? String(error) };
@@ -525,6 +801,7 @@ export class QaTasksService {
   }
 
   private shouldUseAgentInterpretation(): boolean {
+    if (process.env[QA_AGENT_INTERPRETATION_ENV] === undefined) return true;
     return isEnvEnabled(QA_AGENT_INTERPRETATION_ENV);
   }
 
@@ -547,6 +824,229 @@ export class QaTasksService {
       failures: [],
       followUps: [],
     };
+  }
+
+  private async buildRunnerFailureMessage(params: {
+    outcome: 'fix_required' | 'infra_issue' | 'unclear';
+    result: QaRunResult;
+    runs: Array<{
+      profile: QaProfile;
+      runner: string;
+      command?: string;
+      testCommand?: string;
+      result: QaRunResult;
+    }>;
+    runSummary?: string;
+    workspaceRoot: string;
+  }): Promise<string> {
+    const { outcome, result, runs, runSummary, workspaceRoot } = params;
+    const artifacts = result.artifacts ?? [];
+    const lines: string[] = [`QA ${outcome} based on runner output.`];
+    if (runSummary) lines.push(`Runs:\n${runSummary}`);
+
+    const tail = (text: string, maxLines = 16, maxChars = 2000): string => {
+      const trimmed = text.trim();
+      if (!trimmed) return '';
+      const lines = trimmed.split(/\r?\n/);
+      const slice = lines.slice(-maxLines).join('\n');
+      return slice.length > maxChars ? `${slice.slice(0, maxChars)}…` : slice;
+    };
+
+    const resolveArtifactPath = (artifact: string): string => path.resolve(workspaceRoot, artifact);
+    const loadJson = async <T>(artifact: string): Promise<T | undefined> => {
+      try {
+        const raw = await fs.readFile(resolveArtifactPath(artifact), 'utf8');
+        return JSON.parse(raw) as T;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const browserArtifact = artifacts.find((artifact) => artifact.endsWith('browser-actions.json'));
+    if (browserArtifact) {
+      type BrowserActionsFile = {
+        actions?: Array<{ index: number; type: string; ok: boolean; message?: string }>;
+      };
+      const payload = await loadJson<BrowserActionsFile>(browserArtifact);
+      const failures = (payload?.actions ?? []).filter((action) => action.ok === false).slice(0, 8);
+      if (failures.length) {
+        lines.push(
+          `Browser action failures:\n${failures
+            .map((action) => `- ${action.index}. ${action.type}: ${action.message ?? 'failed'}`)
+            .join('\n')}`,
+        );
+      }
+    }
+
+    const apiArtifact = artifacts.find((artifact) => artifact.endsWith('api-results.json'));
+    if (apiArtifact) {
+      type ApiResultsFile = {
+        results?: Array<{
+          method?: string;
+          url?: string;
+          status?: number;
+          ok?: boolean;
+          error?: string;
+          expectations?: string[];
+        }>;
+      };
+      const payload = await loadJson<ApiResultsFile>(apiArtifact);
+      const failures = (payload?.results ?? []).filter((item) => item.ok === false).slice(0, 8);
+      if (failures.length) {
+        lines.push(
+          `API request failures:\n${failures
+            .map((item) => {
+              const parts = [item.method ?? 'GET', item.url ?? '', item.status ? `status=${item.status}` : ''];
+              const detail = item.error ?? item.expectations?.[0];
+              return `- ${parts.filter(Boolean).join(' ')}${detail ? ` (${detail})` : ''}`;
+            })
+            .join('\n')}`,
+        );
+      }
+    }
+
+    const cliFailure = runs.find((run) => run.runner === 'cli' && run.result.outcome !== 'pass');
+    const stderrSnippet = cliFailure?.result.stderr ?? result.stderr;
+    const stderrTail = stderrSnippet ? tail(stderrSnippet) : '';
+    if (stderrTail) {
+      lines.push(`Runner stderr (tail):\n${stderrTail}`);
+    }
+
+    return lines.join('\n\n');
+  }
+
+  private async createRunnerFailureComments(params: {
+    task: TaskRow;
+    taskRunId: string;
+    jobId: string;
+    outcome: 'fix_required' | 'infra_issue' | 'unclear';
+    result: QaRunResult;
+    runs: Array<{
+      profile: QaProfile;
+      runner: string;
+      command?: string;
+      testCommand?: string;
+      result: QaRunResult;
+    }>;
+    workspaceRoot: string;
+    runSummary?: string;
+    existingSlugs?: Set<string>;
+  }): Promise<number> {
+    const { task, taskRunId, jobId, result, runs, workspaceRoot, runSummary } = params;
+    const existingSlugs = params.existingSlugs ?? new Set<string>();
+    const artifacts = result.artifacts ?? [];
+    const resolveArtifactPath = (artifact: string): string => path.resolve(workspaceRoot, artifact);
+    const loadJson = async <T>(artifact: string): Promise<T | undefined> => {
+      try {
+        const raw = await fs.readFile(resolveArtifactPath(artifact), 'utf8');
+        return JSON.parse(raw) as T;
+      } catch {
+        return undefined;
+      }
+    };
+    const comments: Array<{ message: string; metadata?: Record<string, unknown> }> = [];
+
+    const browserArtifact = artifacts.find((artifact) => artifact.endsWith('browser-actions.json'));
+    if (browserArtifact) {
+      type BrowserActionsFile = {
+        actions?: Array<{ index: number; type: string; ok: boolean; message?: string; url?: string }>;
+      };
+      const payload = await loadJson<BrowserActionsFile>(browserArtifact);
+      const failures = (payload?.actions ?? []).filter((action) => action.ok === false).slice(0, 8);
+      for (const action of failures) {
+        const message = `Browser action ${action.index} (${action.type}) failed${action.message ? `: ${action.message}` : ''}`;
+        comments.push({
+          message,
+          metadata: {
+            runner: 'chromium',
+            actionIndex: action.index,
+            actionType: action.type,
+            url: action.url,
+            artifact: browserArtifact,
+            runSummary,
+          },
+        });
+      }
+    }
+
+    const apiArtifact = artifacts.find((artifact) => artifact.endsWith('api-results.json'));
+    if (apiArtifact) {
+      type ApiResultsFile = {
+        results?: Array<{
+          id?: string;
+          method?: string;
+          url?: string;
+          status?: number;
+          ok?: boolean;
+          error?: string;
+          expectations?: string[];
+        }>;
+      };
+      const payload = await loadJson<ApiResultsFile>(apiArtifact);
+      const failures = (payload?.results ?? []).filter((item) => item.ok === false).slice(0, 8);
+      for (const item of failures) {
+        const detail = item.error ?? item.expectations?.[0];
+        const parts = [item.method ?? 'GET', item.url ?? '', item.status ? `status=${item.status}` : '']
+          .filter(Boolean)
+          .join(' ');
+        const message = `API ${parts} failed${detail ? `: ${detail}` : ''}`;
+        comments.push({
+          message,
+          metadata: {
+            runner: 'api',
+            requestId: item.id,
+            method: item.method,
+            url: item.url,
+            status: item.status,
+            expectations: item.expectations,
+            artifact: apiArtifact,
+            runSummary,
+          },
+        });
+      }
+    }
+
+    const tail = (text: string, maxLines = 16, maxChars = 2000): string => {
+      const trimmed = text.trim();
+      if (!trimmed) return '';
+      const lines = trimmed.split(/\r?\n/);
+      const slice = lines.slice(-maxLines).join('\n');
+      return slice.length > maxChars ? `${slice.slice(0, maxChars)}…` : slice;
+    };
+    const cliFailures = runs.filter((run) => run.runner === 'cli' && run.result.outcome !== 'pass');
+    for (const run of cliFailures) {
+      const stderrTail = tail(run.result.stderr ?? '');
+      const message = stderrTail
+        ? `CLI QA failed${run.command ? ` (${run.command})` : ''}: ${stderrTail}`
+        : `CLI QA failed${run.command ? ` (${run.command})` : ''}.`;
+      comments.push({
+        message,
+        metadata: {
+          runner: 'cli',
+          command: run.command,
+          testCommand: run.testCommand,
+          runSummary,
+        },
+      });
+    }
+
+    let created = 0;
+    for (const entry of comments) {
+      const slug = createTaskCommentSlug({ source: 'qa-tasks', message: entry.message, category: 'qa_issue' });
+      if (existingSlugs.has(slug)) continue;
+      existingSlugs.add(slug);
+      await this.createQaComment({
+        task,
+        taskRunId,
+        jobId,
+        message: entry.message,
+        category: 'qa_issue',
+        status: 'open',
+        metadata: entry.metadata,
+      });
+      created += 1;
+    }
+    return created;
   }
 
   private resolveRunAllMarkerPolicy(): RunAllMarkerPolicy {
@@ -575,19 +1075,21 @@ export class QaTasksService {
         action: present ? 'none' : policy === 'strict' ? 'block' : 'warn',
       };
       if (!present) {
+        const passed = result.outcome === 'pass' || result.exitCode === 0;
+        if (passed) {
+          markerStatus.action = 'warn';
+          const warning = `Warning: ${RUN_ALL_TESTS_GUIDANCE}`;
+          const stderr = result.stderr?.includes(RUN_ALL_TESTS_GUIDANCE)
+            ? result.stderr
+            : [result.stderr, warning].filter(Boolean).join('\n');
+          return { result: { ...result, stderr }, markerStatus };
+        }
         if (policy === 'strict') {
           const stderr = [result.stderr, RUN_ALL_TESTS_GUIDANCE].filter(Boolean).join('\n');
           return {
             result: { ...result, outcome: 'infra_issue', exitCode: result.exitCode ?? 1, stderr },
             markerStatus,
           };
-        }
-        if (result.outcome === 'pass') {
-          const warning = `Warning: ${RUN_ALL_TESTS_GUIDANCE}`;
-          const stderr = result.stderr?.includes(RUN_ALL_TESTS_GUIDANCE)
-            ? result.stderr
-            : [result.stderr, warning].filter(Boolean).join('\n');
-          return { result: { ...result, stderr }, markerStatus };
         }
       }
     }
@@ -760,8 +1262,8 @@ export class QaTasksService {
     }
   }
 
-  private async readPackageJson(): Promise<Record<string, any> | undefined> {
-    const pkgPath = path.join(this.workspace.workspaceRoot, 'package.json');
+  private async readPackageJson(root = this.workspace.workspaceRoot): Promise<Record<string, any> | undefined> {
+    const pkgPath = path.join(root, 'package.json');
     try {
       const raw = await fs.readFile(pkgPath, 'utf8');
       return JSON.parse(raw);
@@ -770,8 +1272,9 @@ export class QaTasksService {
     }
   }
 
-  private async detectPackageManager(): Promise<'pnpm' | 'yarn' | 'npm' | undefined> {
-    const root = this.workspace.workspaceRoot;
+  private async detectPackageManager(
+    root = this.workspace.workspaceRoot,
+  ): Promise<'pnpm' | 'yarn' | 'npm' | undefined> {
     if (await this.fileExists(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
     if (await this.fileExists(path.join(root, 'pnpm-workspace.yaml'))) return 'pnpm';
     if (await this.fileExists(path.join(root, 'yarn.lock'))) return 'yarn';
@@ -781,28 +1284,268 @@ export class QaTasksService {
     return undefined;
   }
 
-  private async resolveTestCommand(profile: QaProfile, requestTestCommand?: string): Promise<string | undefined> {
+  private async resolveTestCommand(
+    profile: QaProfile,
+    requestTestCommand?: string,
+    workspaceRoot = this.workspace.workspaceRoot,
+  ): Promise<string | undefined> {
     if (requestTestCommand) return requestTestCommand;
     if ((profile.runner ?? 'cli') !== 'cli') return undefined;
     if (profile.test_command) return profile.test_command;
-    if (await this.fileExists(path.join(this.workspace.workspaceRoot, 'tests', 'all.js'))) {
+    if (await this.fileExists(path.join(workspaceRoot, 'tests', 'all.js'))) {
       return 'node tests/all.js';
     }
-    const pkg = await this.readPackageJson();
+    const pkg = await this.readPackageJson(workspaceRoot);
     if (pkg?.scripts?.test) {
-      const pm = (await this.detectPackageManager()) ?? 'npm';
+      const pm = (await this.detectPackageManager(workspaceRoot)) ?? 'npm';
       return `${pm} test`;
     }
     return undefined;
   }
 
-  private async checkQaPreflight(testCommand?: string): Promise<{
+  private isCliTask(task: TaskRow & { metadata?: any }): boolean {
+    const metadata = (task.metadata as any) ?? {};
+    const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
+    const reviewFiles: string[] = Array.isArray(metadata.last_review_changed_paths)
+      ? metadata.last_review_changed_paths
+      : [];
+    const combined = [...files, ...reviewFiles].map((file) => String(file).toLowerCase());
+    const cliHints = ['/cli/', '/packages/cli/', '/bin/', '/cmd/'];
+    if (combined.some((file) => cliHints.some((hint) => file.includes(hint)))) return true;
+    const text = [task.key, task.title, task.description, task.type]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    if (!text) return false;
+    return ['cli', 'command', 'terminal'].some((hint) => text.includes(hint));
+  }
+
+  private async findCliBinCommand(workspaceRoot: string): Promise<string | undefined> {
+    const resolveBin = (pkg: Record<string, any> | undefined): string | undefined => {
+      if (!pkg) return undefined;
+      const bin = pkg.bin;
+      if (typeof bin === 'string') return bin;
+      if (bin && typeof bin === 'object') {
+        const first = Object.values(bin).find((value) => typeof value === 'string');
+        return typeof first === 'string' ? first : undefined;
+      }
+      return undefined;
+    };
+    const rootPkg = await this.readPackageJson(workspaceRoot);
+    let binPath = resolveBin(rootPkg);
+    if (!binPath) {
+      const cliPkgPath = path.join(workspaceRoot, 'packages', 'cli', 'package.json');
+      try {
+        const raw = await fs.readFile(cliPkgPath, 'utf8');
+        const cliPkg = JSON.parse(raw);
+        binPath = resolveBin(cliPkg);
+        if (binPath) {
+          binPath = path.join('packages', 'cli', binPath);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!binPath) return undefined;
+    const normalized = path.isAbsolute(binPath) ? binPath : path.join(workspaceRoot, binPath);
+    if (!(await this.fileExists(normalized))) return undefined;
+    const relative = path.isAbsolute(binPath) ? path.relative(workspaceRoot, binPath) : binPath;
+    return `node ${relative} --help`;
+  }
+
+  private async resolveCliChecklistCommands(params: {
+    workspaceRoot: string;
+    task: TaskRow & { metadata?: any };
+    existing: string[];
+  }): Promise<string[]> {
+    const pkg = await this.readPackageJson(params.workspaceRoot);
+    if (!pkg?.scripts) return [];
+    const pm = (await this.detectPackageManager(params.workspaceRoot)) ?? 'npm';
+    const existingLower = params.existing.map((cmd) => cmd.toLowerCase());
+    const addIfScript = (script: string, matcher: string) => {
+      if (!pkg.scripts?.[script]) return undefined;
+      if (existingLower.some((cmd) => cmd.includes(matcher))) return undefined;
+      return this.buildScriptCommand(pm, script);
+    };
+    const extras: string[] = [];
+    const lintCmd = addIfScript('lint', 'lint');
+    if (lintCmd) extras.push(lintCmd);
+    const typecheckCmd =
+      addIfScript('typecheck', 'typecheck') ??
+      addIfScript('type-check', 'type-check') ??
+      addIfScript('tsc', 'tsc');
+    if (typecheckCmd) extras.push(typecheckCmd);
+    const buildCmd = addIfScript('build', 'build');
+    if (buildCmd) extras.push(buildCmd);
+    if (this.isCliTask(params.task)) {
+      const cliSmoke = await this.findCliBinCommand(params.workspaceRoot);
+      if (cliSmoke && !existingLower.some((cmd) => cmd.includes('--help'))) {
+        extras.push(cliSmoke);
+      }
+    }
+    return extras;
+  }
+
+  private softenOptionalNpmScripts(commands: string[]): string[] {
+    if (!commands.length) return commands;
+    const scripts = ['lint', 'build'];
+    return commands.map((command) => {
+      let next = command;
+      for (const script of scripts) {
+        const pattern = new RegExp(`\\bnpm\\s+run\\s+${script}\\b(?!\\s+--if-present)`, 'i');
+        next = next.replace(pattern, '$& --if-present');
+      }
+      return next;
+    });
+  }
+
+  private usesCliBrowserTools(commands: string[]): boolean {
+    const pattern = /(cypress|puppeteer|selenium|capybara|dusk)/i;
+    return commands.some((command) => pattern.test(command));
+  }
+
+  private ensureCypressChromium(command: string): string {
+    if (!/cypress/i.test(command)) return command;
+    if (/--browser(\s+|=)/i.test(command)) return command;
+    if (/\bcypress\s+(run|open)\b/i.test(command)) {
+      return `${command} --browser chromium`;
+    }
+    return command;
+  }
+
+  private async applyChromiumForCli(
+    env: NodeJS.ProcessEnv,
+    commands: string[],
+  ): Promise<{ ok: boolean; commands: string[]; message?: string }> {
+    if (!this.usesCliBrowserTools(commands)) {
+      return { ok: true, commands };
+    }
+    const chromiumPath = await resolveChromiumBinary();
+    if (!chromiumPath) {
+      return {
+        ok: false,
+        commands,
+        message:
+          'Chromium binary not found for CLI browser tests. Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).',
+      };
+    }
+    if (!env.CHROME_PATH) env.CHROME_PATH = chromiumPath;
+    if (!env.CHROME_BIN) env.CHROME_BIN = chromiumPath;
+    if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = chromiumPath;
+    if (!env.PUPPETEER_PRODUCT) env.PUPPETEER_PRODUCT = 'chrome';
+    if (!env.CYPRESS_BROWSER) env.CYPRESS_BROWSER = 'chromium';
+    const updated = commands.map((command) => this.ensureCypressChromium(command));
+    return { ok: true, commands: updated };
+  }
+
+  private buildScriptCommand(pm: 'pnpm' | 'yarn' | 'npm', script: string): string {
+    if (pm === 'yarn') return `yarn ${script}`;
+    if (pm === 'pnpm') return `pnpm ${script}`;
+    return `npm run ${script}`;
+  }
+
+  private async resolveDevServerCommand(
+    workspaceRoot: string,
+  ): Promise<{ script: string; command: string } | undefined> {
+    const pkg = await this.readPackageJson(workspaceRoot);
+    if (!pkg?.scripts) return undefined;
+    const script =
+      typeof pkg.scripts.dev === 'string'
+        ? 'dev'
+        : typeof pkg.scripts.start === 'string'
+          ? 'start'
+          : typeof pkg.scripts.serve === 'string'
+            ? 'serve'
+            : undefined;
+    if (!script) return undefined;
+    const pm = (await this.detectPackageManager(workspaceRoot)) ?? 'npm';
+    return { script, command: this.buildScriptCommand(pm, script) };
+  }
+
+  private async isUrlReachable(url: string, timeoutMs: number): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      await fetch(url, { method: 'GET', signal: controller.signal });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async waitForUrlReady(url: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const ok = await this.isUrlReachable(url, Math.min(2000, timeoutMs));
+      if (ok) return true;
+      await delay(500);
+    }
+    return false;
+  }
+
+  private async startQaServer(params: {
+    workspaceRoot: string;
+    baseUrl: string;
+    env: NodeJS.ProcessEnv;
+    jobId: string;
+    taskKey: string;
+  }): Promise<QaServerHandle | undefined> {
+    const command = await this.resolveDevServerCommand(params.workspaceRoot);
+    if (!command) return undefined;
+    const serverDir = path.join(this.workspace.mcodaDir, 'jobs', params.jobId, 'qa', params.taskKey, 'server');
+    await PathHelper.ensureDir(serverDir);
+    const logPath = path.join(serverDir, 'server.log');
+    const stream = fsSync.createWriteStream(logPath, { flags: 'a' });
+    const env: NodeJS.ProcessEnv = { ...params.env };
+    try {
+      const url = new URL(params.baseUrl);
+      if (!env.HOST) env.HOST = url.hostname;
+      if (!env.PORT && url.port) env.PORT = url.port;
+    } catch {
+      // ignore invalid base URLs
+    }
+    const child = spawn(command.command, {
+      cwd: params.workspaceRoot,
+      env,
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout?.pipe(stream);
+    child.stderr?.pipe(stream);
+    child.on('error', (error) => {
+      stream.write(`\n[qa-server] spawn error: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+    const stop = async () => {
+      if (child.exitCode !== null) {
+        stream.end();
+        return;
+      }
+      child.kill('SIGTERM');
+      try {
+        await Promise.race([once(child, 'exit'), delay(5000)]);
+      } catch {
+        // ignore
+      }
+      if (child.exitCode === null) {
+        child.kill('SIGKILL');
+      }
+      stream.end();
+    };
+    return { baseUrl: params.baseUrl, command: command.command, logPath, process: child, stop };
+  }
+
+  private async checkQaPreflight(
+    testCommand?: string,
+    workspaceRoot = this.workspace.workspaceRoot,
+  ): Promise<{
     ok: boolean;
     missingDeps: string[];
     missingEnv: string[];
     message?: string;
   }> {
-    const pkg = await this.readPackageJson();
+    const pkg = await this.readPackageJson(workspaceRoot);
     const declared = new Set([
       ...Object.keys(pkg?.dependencies ?? {}),
       ...Object.keys(pkg?.devDependencies ?? {}),
@@ -820,7 +1563,7 @@ export class QaTasksService {
     if (depsToCheck.length === 0 && !usesJest) {
       return { ok: true, missingDeps: [], missingEnv: [] };
     }
-    const requireFromWorkspace = createRequire(path.join(this.workspace.workspaceRoot, 'package.json'));
+    const requireFromWorkspace = createRequire(path.join(workspaceRoot, 'package.json'));
     const missingDeps = depsToCheck.filter((dep) => {
       try {
         requireFromWorkspace.resolve(dep);
@@ -896,6 +1639,20 @@ export class QaTasksService {
     if (!profiles.length) return plan;
     const defaultProfile = this.pickDefaultProfile(profiles);
     const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
+    const runnerPlans = new Map<
+      string,
+      { hasWebInterface: boolean; uiTask: boolean; mobileTask: boolean }
+    >();
+    const resolveProfileForRunner = (runner: string): QaProfile | undefined => {
+      const normalized = runner ?? 'cli';
+      const matches = profiles.filter(
+        (profile) => (profile.runner ?? 'cli') === normalized || profile.name === normalized,
+      );
+      if (!matches.length) return undefined;
+      const defaults = matches.filter((profile) => profile.default);
+      if (defaults.length === 1) return defaults[0];
+      return matches[0];
+    };
     const taskKeys = new Set(tasks.map((task) => task.task.key));
     const agent = await this.resolveAgent(request.agentName);
     const prompts = await this.loadPrompts(agent.id);
@@ -907,13 +1664,28 @@ export class QaTasksService {
     const availableProfiles = profiles
       .map((profile) => `- ${profile.name} (runner=${profile.runner ?? 'cli'})`)
       .join('\n');
-    const tasksBlock = tasks
-      .map((task) => {
-        const desc = (task.task.description ?? '').replace(/\s+/g, ' ').trim();
-        const shortDesc = desc ? ` — ${desc.slice(0, 240)}` : '';
-        return `- ${task.task.key}: ${task.task.title ?? '(untitled)'}${shortDesc}`;
-      })
-      .join('\n');
+    const taskLines: string[] = [];
+    for (const task of tasks) {
+      const desc = (task.task.description ?? '').replace(/\s+/g, ' ').trim();
+      const shortDesc = desc ? ` — ${desc.slice(0, 240)}` : '';
+      const metadata = (task.task.metadata as any) ?? {};
+      const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
+      const reviewFiles: string[] = Array.isArray(metadata.last_review_changed_paths)
+        ? metadata.last_review_changed_paths
+        : [];
+      const combined = [...files, ...reviewFiles].map((file) => String(file)).filter(Boolean);
+      const changedSummary =
+        combined.length > 0 ? ` | changed: ${combined.slice(0, 8).join(', ')}` : '';
+      const apiTask = detectApiTask(task.task);
+      let runnerHint = ` | api_task=${apiTask ? 'yes' : 'no'}`;
+      if (this.profileService && typeof (this.profileService as any).getRunnerPlan === 'function') {
+        const runnerPlan = await (this.profileService as any).getRunnerPlan(task.task);
+        runnerPlans.set(task.task.key, runnerPlan);
+        runnerHint = ` | ui_repo=${runnerPlan.hasWebInterface ? 'yes' : 'no'} ui_task=${runnerPlan.uiTask ? 'yes' : 'no'} mobile_task=${runnerPlan.mobileTask ? 'yes' : 'no'} api_task=${apiTask ? 'yes' : 'no'}`;
+      }
+      taskLines.push(`- ${task.task.key}: ${task.task.title ?? '(untitled)'}${shortDesc}${changedSummary}${runnerHint}`);
+    }
+    const tasksBlock = taskLines.join('\n');
     const prompt = [
       systemPrompt,
       QA_ROUTING_PROMPT,
@@ -950,35 +1722,81 @@ export class QaTasksService {
       });
     }
     const parsed = this.extractJsonCandidate(output);
-    const taskProfiles = (parsed as any)?.task_profiles ?? (parsed as any)?.taskProfiles ?? {};
-    if (typeof taskProfiles !== 'object' || taskProfiles === null) {
+    const normalizedPlan = normalizeQaPlanOutput(parsed);
+    if (normalizedPlan.warnings.length) {
+      ctx.warnings?.push(...normalizedPlan.warnings);
+    }
+    const taskProfiles = normalizedPlan.taskProfiles;
+    const taskPlans = normalizedPlan.taskPlans;
+    if (!Object.keys(taskProfiles).length && !Object.keys(taskPlans).length) {
       ctx.warnings?.push('QA routing agent output invalid; defaulting to CLI profiles.');
     }
+    this.qaTaskPlans = new Map(Object.entries(taskPlans));
     for (const task of tasks) {
-      const selection = (taskProfiles as Record<string, unknown>)[task.task.key];
-      const rawList = Array.isArray(selection)
-        ? selection
-        : typeof selection === 'string'
-          ? [selection]
-          : [];
+      const planEntry = taskPlans[task.task.key];
+      const selection = taskProfiles[task.task.key] ?? planEntry?.profiles ?? [];
+      const rawList = Array.isArray(selection) ? selection : typeof selection === 'string' ? [selection] : [];
       const resolved = rawList
         .map((name) => (typeof name === 'string' ? profileByName.get(name) : undefined))
         .filter(Boolean) as QaProfile[];
-      if (resolved.length) {
-        plan.set(task.task.key, resolved);
-        continue;
+      let selected = resolved.length ? [...resolved] : [];
+      if (!selected.length && defaultProfile) {
+        selected = [defaultProfile];
       }
-      if (defaultProfile) {
-        plan.set(task.task.key, [defaultProfile]);
+
+      const runnerPlan = runnerPlans.get(task.task.key);
+      const allowChromium = Boolean(runnerPlan?.uiTask && runnerPlan?.hasWebInterface);
+      const allowMaestro = Boolean(runnerPlan?.mobileTask);
+      const planBrowserActions = (planEntry?.browser?.actions ?? []).filter(Boolean);
+      const planWantsChromium =
+        rawList.some((name) => String(name).toLowerCase() === 'chromium') ||
+        (planEntry?.profiles ?? []).some((name) => String(name).toLowerCase() === 'chromium') ||
+        planBrowserActions.length > 0;
+      if (planWantsChromium && allowChromium) {
+        const chromiumProfile = resolveProfileForRunner('chromium');
+        if (chromiumProfile && !selected.some((entry) => entry.name === chromiumProfile.name)) {
+          selected.push(chromiumProfile);
+        }
+      }
+
+      const cliProfile = resolveProfileForRunner('cli');
+      if (cliProfile && !selected.some((entry) => entry.name === cliProfile.name)) {
+        selected.push(cliProfile);
+      }
+
+      if (runnerPlan) {
+        if (allowChromium) {
+          const chromiumProfile = resolveProfileForRunner('chromium');
+          if (chromiumProfile && !selected.some((entry) => entry.name === chromiumProfile.name)) {
+            selected.push(chromiumProfile);
+          }
+        }
+        if (allowMaestro) {
+          const maestroProfile = resolveProfileForRunner('maestro');
+          if (maestroProfile && !selected.some((entry) => entry.name === maestroProfile.name)) {
+            selected.push(maestroProfile);
+          }
+        }
+        if (!allowChromium) {
+          selected = selected.filter((entry) => (entry.runner ?? 'cli') !== 'chromium' && entry.name !== 'chromium');
+        }
+        if (!allowMaestro) {
+          selected = selected.filter((entry) => (entry.runner ?? 'cli') !== 'maestro' && entry.name !== 'maestro');
+        }
+      }
+      if (selected.length) {
+        plan.set(task.task.key, selected);
       }
     }
     const summary = Object.fromEntries(
       Array.from(plan.entries()).map(([key, entries]) => [key, entries.map((profile) => profile.name)]),
     );
     if (ctx.jobId) {
-      await this.checkpoint(ctx.jobId, 'qa-profile-plan', { profiles: summary, notes: (parsed as any)?.notes });
+      await this.checkpoint(ctx.jobId, 'qa-profile-plan', { profiles: summary, notes: normalizedPlan.notes });
     }
-    const unusedKeys = Object.keys(taskProfiles).filter((key) => !taskKeys.has(key));
+    const unusedProfileKeys = Object.keys(taskProfiles).filter((key) => !taskKeys.has(key));
+    const unusedPlanKeys = Object.keys(taskPlans).filter((key) => !taskKeys.has(key));
+    const unusedKeys = Array.from(new Set([...unusedProfileKeys, ...unusedPlanKeys]));
     if (unusedKeys.length) {
       ctx.warnings?.push(`QA routing agent returned unknown task keys: ${unusedKeys.join(', ')}`);
     }
@@ -997,8 +1815,31 @@ export class QaTasksService {
       });
       return profile ? [profile] : [];
     }
-    const planned = this.qaProfilePlan?.get(task.key);
-    if (planned?.length) return planned;
+    const planned = this.qaProfilePlan?.get(task.key) ?? [];
+    const profiles: QaProfile[] = [...planned];
+    const seen = new Set(profiles.map((profile) => profile.name));
+    const shouldUseRunnerProfiles = profiles.length === 0;
+    if (
+      shouldUseRunnerProfiles &&
+      this.profileService &&
+      typeof (this.profileService as any).resolveProfilesForTask === 'function'
+    ) {
+      try {
+        const runnerProfiles = await (this.profileService as any).resolveProfilesForTask(task, {
+          level: request.level,
+        });
+        if (Array.isArray(runnerProfiles)) {
+          for (const profile of runnerProfiles) {
+            if (!profile || seen.has(profile.name)) continue;
+            profiles.push(profile);
+            seen.add(profile.name);
+          }
+        }
+      } catch {
+        // ignore runner plan resolution failures and fall back to planned/default
+      }
+    }
+    if (profiles.length) return profiles;
     const available = await this.loadAvailableProfiles();
     const fallback = this.pickDefaultProfile(available);
     return fallback ? [fallback] : [];
@@ -1603,20 +2444,63 @@ export class QaTasksService {
     });
   }
 
+  private async createQaComment(params: {
+    task: TaskRow;
+    taskRunId?: string;
+    jobId: string;
+    message: string;
+    category: 'qa_issue' | 'qa_result';
+    status?: 'open' | 'resolved';
+    metadata?: Record<string, unknown>;
+    authorType?: 'agent' | 'human';
+    authorAgentId?: string | null;
+  }): Promise<void> {
+    const status = params.status ?? (params.category === 'qa_result' ? 'resolved' : 'open');
+    const slug = createTaskCommentSlug({ source: 'qa-tasks', message: params.message, category: params.category });
+    const body = formatTaskCommentBody({
+      slug,
+      source: 'qa-tasks',
+      message: params.message,
+      status,
+      category: params.category,
+    });
+    const createdAt = new Date().toISOString();
+    await this.deps.workspaceRepo.createTaskComment({
+      taskId: params.task.id,
+      taskRunId: params.taskRunId,
+      jobId: params.jobId,
+      sourceCommand: 'qa-tasks',
+      authorType: params.authorType ?? 'agent',
+      authorAgentId: params.authorAgentId ?? null,
+      category: params.category,
+      slug,
+      status,
+      body,
+      createdAt,
+      resolvedAt: status === 'resolved' ? createdAt : null,
+      resolvedBy: status === 'resolved' ? params.authorAgentId ?? null : null,
+      metadata: params.metadata ?? undefined,
+    });
+  }
+
   private async applyStateTransition(
     task: TaskRow,
     outcome: 'pass' | 'fix_required' | 'infra_issue' | 'unclear',
     context?: TaskStatusEventContext,
+    metadataPatch?: Record<string, unknown>,
   ): Promise<void> {
-    const timestamp = { last_qa: new Date().toISOString() };
+    const baseMetadata: Record<string, unknown> = {
+      last_qa: new Date().toISOString(),
+      last_qa_outcome: outcome,
+    };
+    if (outcome !== 'pass') {
+      baseMetadata.qa_failure_reason = `qa_${outcome}`;
+    }
+    const mergedMetadata = metadataPatch ? { ...baseMetadata, ...metadataPatch } : baseMetadata;
     if (outcome === 'pass') {
-      await this.stateService.markCompleted(task, timestamp, context);
-    } else if (outcome === 'fix_required') {
-      await this.stateService.returnToInProgress(task, timestamp, context);
-    } else if (outcome === 'infra_issue') {
-      await this.stateService.markFailed(task, 'qa_infra_issue', context);
-    } else if (outcome === 'unclear') {
-      await this.stateService.markFailed(task, 'qa_unclear', context);
+      await this.stateService.markCompleted(task, mergedMetadata, context);
+    } else {
+      await this.stateService.markNotStarted(task, mergedMetadata, context);
     }
   }
 
@@ -1822,6 +2706,19 @@ export class QaTasksService {
           runner: undefined,
           metadata: { reason: 'status_gating' },
         });
+        await this.createQaComment({
+          task: task.task,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          message,
+          category: 'qa_issue',
+          status: 'open',
+          metadata: {
+            reason: 'status_gating',
+            taskStatus: task.task.status,
+            allowedStatuses: Array.from(allowedStatuses),
+          },
+        });
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'status_gating' };
     }
@@ -1874,6 +2771,7 @@ export class QaTasksService {
     const branchCheck = await this.ensureTaskBranch(
       task,
       taskRun.id,
+      ctx.jobId,
       ctx.request.allowDirty ?? false,
       ctx.request.cleanIgnorePaths,
     );
@@ -1916,31 +2814,48 @@ export class QaTasksService {
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'vcs_branch_missing' };
     }
-    let profiles: QaProfile[] = [];
+    const qaWorkspaceRoot = branchCheck.workspaceRoot ?? this.workspace.workspaceRoot;
+    const cleanupWorktree = branchCheck.cleanup;
+    let serverHandle: QaServerHandle | undefined;
     try {
-      profiles = await this.resolveProfilesForRequest(task.task, ctx.request);
-    } catch (error: any) {
-      await this.logTask(taskRun.id, `Profile resolution failed: ${error?.message ?? error}`, 'qa-profile');
-      await this.finishTaskRun(taskRun, 'failed');
-      if (!this.dryRunGuard) {
-        await this.deps.workspaceRepo.createTaskQaRun({
-          taskId: task.task.id,
-          taskRunId: taskRun.id,
-          jobId: ctx.jobId,
-          commandRunId: ctx.commandRunId,
-          source: 'auto',
-          mode: 'auto',
-          rawOutcome: 'infra_issue',
-          recommendation: 'infra_issue',
-          metadata: { reason: 'profile_resolution_failed', message: error?.message ?? String(error) },
-        });
+      let profiles: QaProfile[] = [];
+      try {
+        profiles = await this.resolveProfilesForRequest(task.task, ctx.request);
+      } catch (error: any) {
+        await this.logTask(taskRun.id, `Profile resolution failed: ${error?.message ?? error}`, 'qa-profile');
+        await this.finishTaskRun(taskRun, 'failed');
+        if (!this.dryRunGuard) {
+          await this.applyStateTransition(task.task, 'infra_issue', statusContextBase, {
+            qa_failure_reason: 'qa_profile_resolution_failed',
+          });
+          await this.deps.workspaceRepo.createTaskQaRun({
+            taskId: task.task.id,
+            taskRunId: taskRun.id,
+            jobId: ctx.jobId,
+            commandRunId: ctx.commandRunId,
+            source: 'auto',
+            mode: 'auto',
+            rawOutcome: 'infra_issue',
+            recommendation: 'infra_issue',
+            metadata: { reason: 'profile_resolution_failed', message: error?.message ?? String(error) },
+          });
+          await this.createQaComment({
+            task: task.task,
+            taskRunId: taskRun.id,
+            jobId: ctx.jobId,
+            message: `QA profile resolution failed: ${error?.message ?? String(error)}`,
+            category: 'qa_issue',
+            status: 'open',
+            metadata: { reason: 'profile_resolution_failed' },
+          });
+        }
+        return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'profile_resolution_failed' };
       }
-      return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'profile_resolution_failed' };
-    }
     if (!profiles.length) {
       await this.logTask(taskRun.id, 'No QA profile available', 'qa-profile');
       await this.finishTaskRun(taskRun, 'failed');
       if (!this.dryRunGuard) {
+        await this.applyStateTransition(task.task, 'infra_issue', statusContextBase, { qa_failure_reason: 'qa_no_profile' });
         await this.deps.workspaceRepo.createTaskQaRun({
           taskId: task.task.id,
           taskRunId: taskRun.id,
@@ -1952,19 +2867,161 @@ export class QaTasksService {
           recommendation: 'infra_issue',
           metadata: { reason: 'no_profile' },
         });
+        await this.createQaComment({
+          task: task.task,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          message: 'QA profile selection returned no profiles. Add or configure QA profiles.',
+          category: 'qa_issue',
+          status: 'open',
+          metadata: { reason: 'no_profile' },
+        });
       }
       return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'no_profile' };
     }
 
+    const taskPlan = this.qaTaskPlans?.get(task.task.key);
     const requestCommand = ctx.request.testCommand;
     const requestCommandIsUrl = this.isHttpUrl(requestCommand);
     const cliOverride = requestCommandIsUrl ? undefined : requestCommand;
-    const browserOverride = requestCommandIsUrl ? requestCommand : undefined;
+    const browserOverride = requestCommandIsUrl ? normalizeQaUrl(requestCommand) : undefined;
+    const qaEnv = applyQaHostDefaults(process.env);
+    const apiRunner = new QaApiRunner(qaWorkspaceRoot);
+    const browserActions = [...(taskPlan?.browser?.actions ?? [])];
+    const browserStressEntries = taskPlan?.stress?.browser ?? [];
+    const browserStressConfigured = browserStressEntries.length;
+    if (browserStressConfigured) {
+      for (const stress of browserStressEntries) {
+        if (stress?.type !== 'repeat' || !stress.action) continue;
+        const count = Math.max(1, Math.round(stress.count ?? 1));
+        for (let index = 0; index < count; index += 1) {
+          browserActions.push({ ...stress.action });
+        }
+      }
+    }
+    const wantsChromium =
+      browserActions.length > 0 || profiles.some((profile) => (profile.runner ?? 'cli') === 'chromium');
+    const wantsCli = profiles.some((profile) => (profile.runner ?? 'cli') === 'cli');
+    let resolvedApiBaseUrl: string | undefined;
+    const resolveApiBaseUrl = async (): Promise<string | undefined> => {
+      if (resolvedApiBaseUrl !== undefined) return resolvedApiBaseUrl;
+      const inferred = await apiRunner.resolveBaseUrl({
+        planBaseUrl: taskPlan?.api?.base_url,
+        planBrowserBaseUrl: taskPlan?.browser?.base_url,
+        env: qaEnv,
+      });
+      resolvedApiBaseUrl = normalizeQaUrl(inferred);
+      return resolvedApiBaseUrl;
+    };
+    let browserBaseUrl = normalizeQaUrl(
+      browserOverride ?? taskPlan?.browser?.base_url ?? taskPlan?.api?.base_url,
+    );
+    if (wantsChromium && !browserBaseUrl) {
+      browserBaseUrl = await resolveApiBaseUrl();
+    }
+    if (wantsCli) {
+      const baseUrlCandidate = browserBaseUrl ?? (await resolveApiBaseUrl());
+      if (baseUrlCandidate && isLocalBaseUrl(baseUrlCandidate)) {
+        const parsed = resolveUrlPort(baseUrlCandidate);
+        if (parsed) {
+          const envPort = resolveEnvPort(qaEnv);
+          let desiredPort = envPort ?? parsed.port;
+          const open = await isPortOpen(parsed.url.hostname, desiredPort);
+          let adjusted = false;
+          let adjustReason: 'in_use' | 'env' | undefined;
+          if (open) {
+            desiredPort = await pickFreePort(parsed.url.hostname);
+            adjusted = true;
+            adjustReason = 'in_use';
+          }
+          if (desiredPort !== parsed.port) {
+            parsed.url.port = String(desiredPort);
+            adjusted = true;
+            adjustReason = adjustReason ?? 'env';
+          }
+          applyQaPortDefaults(qaEnv, desiredPort);
+          if (adjusted) {
+            const adjustedBaseUrl = parsed.url.toString().replace(/\/$/, '');
+            if (browserBaseUrl) browserBaseUrl = adjustedBaseUrl;
+            qaEnv.MCODA_QA_API_BASE_URL = adjustedBaseUrl;
+            const reasonLabel = adjustReason === 'env' ? 'env override' : 'port in use';
+            await this.logTask(taskRun.id, `QA port ${parsed.port} -> ${desiredPort} (${reasonLabel}).`, 'qa-server', {
+              baseUrl: baseUrlCandidate,
+              adjustedBaseUrl,
+              reason: adjustReason ?? 'unknown',
+            });
+          }
+        }
+      }
+    }
+    if (wantsChromium && browserActions.length === 0 && browserBaseUrl) {
+      browserActions.push(
+        { type: 'navigate', url: '/' },
+        {
+          type: 'script',
+          expression:
+            "document.body ? 'ok' : ''",
+          expect: 'ok',
+        },
+        { type: 'snapshot', name: 'home' },
+      );
+    }
+    if (wantsChromium && browserActions.length > 0 && !browserStressConfigured) {
+      const stressSeed = browserActions[0];
+      browserActions.push({ ...stressSeed }, { ...stressSeed });
+    }
     const baseCtx: QaContext = {
-      workspaceRoot: this.workspace.workspaceRoot,
+      workspaceRoot: qaWorkspaceRoot,
       jobId: ctx.jobId,
       taskKey: task.task.key,
-      env: process.env,
+      env: qaEnv,
+    };
+    let serverBaseUrl: string | undefined;
+    const serverTimeoutMs = resolveServerTimeoutMs();
+    const ensureServerReady = async (
+      baseUrl: string | undefined,
+      reason: 'browser' | 'api',
+      options: { allowFailure?: boolean } = {},
+    ): Promise<{ ok: boolean; message?: string }> => {
+      if (!baseUrl) return { ok: true };
+      if (!isLocalBaseUrl(baseUrl)) return { ok: true };
+      const reachable = await this.isUrlReachable(baseUrl, 1500);
+      if (reachable) return { ok: true };
+      if (!shouldAutoStartServer()) {
+        const message = `QA ${reason} base URL ${baseUrl} is not reachable and auto-start is disabled.`;
+        await this.logTask(taskRun.id, message, 'qa-server');
+        return { ok: true, message };
+      }
+      if (serverHandle) {
+        const message = `QA server already started for ${serverBaseUrl ?? 'unknown'}; ${baseUrl} is still unreachable.`;
+        await this.logTask(taskRun.id, message, 'qa-server');
+        return options.allowFailure ? { ok: true, message } : { ok: false, message };
+      }
+      const handle = await this.startQaServer({
+        workspaceRoot: qaWorkspaceRoot,
+        baseUrl,
+        env: qaEnv,
+        jobId: ctx.jobId,
+        taskKey: task.task.key,
+      });
+      if (!handle) {
+        const message = `QA ${reason} base URL ${baseUrl} is unreachable and no dev server script (dev/start/serve) was found.`;
+        await this.logTask(taskRun.id, message, 'qa-server');
+        return options.allowFailure ? { ok: true, message } : { ok: false, message };
+      }
+      serverHandle = handle;
+      serverBaseUrl = baseUrl;
+      await this.logTask(taskRun.id, `Starting QA server: ${handle.command}`, 'qa-server', {
+        baseUrl,
+        logPath: handle.logPath,
+      });
+      const ready = await this.waitForUrlReady(baseUrl, serverTimeoutMs);
+      if (!ready) {
+        const message = `QA server did not become ready at ${baseUrl} after ${serverTimeoutMs}ms.`;
+        await this.logTask(taskRun.id, message, 'qa-server', { baseUrl, timeoutMs: serverTimeoutMs });
+        return options.allowFailure ? { ok: true, message } : { ok: false, message };
+      }
+      return { ok: true };
     };
     const runs: Array<{
       profile: QaProfile;
@@ -2001,10 +3058,48 @@ export class QaTasksService {
         continue;
       }
 
-      let testCommand: string | undefined;
+      let testCommand: string | undefined = undefined;
+      let cliCommands: string[] = [];
       if (runner === 'cli') {
-        testCommand = await this.resolveTestCommand(profile, cliOverride);
-        const preflight = await this.checkQaPreflight(testCommand);
+        const planCommands = (taskPlan?.cli?.commands ?? []).map((cmd) => cmd.trim()).filter(Boolean);
+        const commandBuilder = new QaTestCommandBuilder(qaWorkspaceRoot);
+        const commandPlan = await commandBuilder.build({
+          task: task.task,
+          planCommands,
+          cliOverride,
+          profileCommand: profile.test_command,
+        });
+        const dedupedCommands = new Set<string>();
+        cliCommands = commandPlan.commands.filter((cmd) => {
+          const normalized = cmd.trim();
+          if (!normalized) return false;
+          if (dedupedCommands.has(normalized)) return false;
+          dedupedCommands.add(normalized);
+          return true;
+        });
+        if (!cliOverride) {
+          const checklist = await this.resolveCliChecklistCommands({
+            workspaceRoot: qaWorkspaceRoot,
+            task: task.task,
+            existing: cliCommands,
+          });
+          if (checklist.length) {
+            cliCommands = [...cliCommands, ...checklist];
+          }
+        }
+        cliCommands = this.softenOptionalNpmScripts(cliCommands);
+        const chromiumPrep = await this.applyChromiumForCli(qaEnv, cliCommands);
+        if (!chromiumPrep.ok) {
+          const message = chromiumPrep.message ?? 'Chromium preflight failed.';
+          await this.logTask(taskRun.id, message, 'qa-preflight');
+          const failedCommand = cliCommands.length ? cliCommands.join(' && ') : undefined;
+          runs.push({ profile, runner, testCommand: failedCommand, result: buildInfraResult(message) });
+          runSummaries.push(`- ${profile.name} (${runner}) infra_issue (chromium_preflight)`);
+          continue;
+        }
+        cliCommands = chromiumPrep.commands;
+        testCommand = cliCommands.length ? cliCommands.join(' && ') : undefined;
+        const preflight = await this.checkQaPreflight(testCommand, qaWorkspaceRoot);
         if (!preflight.ok) {
           const message = preflight.message ?? 'QA preflight failed.';
           await this.logTask(taskRun.id, message, 'qa-preflight', {
@@ -2019,7 +3114,15 @@ export class QaTasksService {
 
       const runCtx: QaContext = {
         ...baseCtx,
-        testCommandOverride: runner === 'cli' ? testCommand : runner === 'chromium' ? browserOverride : undefined,
+        commands: runner === 'cli' && cliCommands.length > 1 ? cliCommands : undefined,
+        testCommandOverride:
+          runner === 'cli'
+            ? cliCommands.length === 1
+              ? cliCommands[0]
+              : undefined
+            : undefined,
+        browserActions: runner === 'chromium' && browserActions.length ? browserActions : undefined,
+        browserBaseUrl: runner === 'chromium' ? browserBaseUrl : undefined,
       };
       let ensure: { ok: boolean; message?: string };
       try {
@@ -2037,7 +3140,6 @@ export class QaTasksService {
         const alreadyGuided =
           installLower.includes('chromium') ||
           installLower.includes('docdex') ||
-          installLower.includes('browser_url') ||
           installLower.includes('test_command');
         const installMessageWithGuidance =
           guidance && !alreadyGuided ? `${installMessage} ${guidance}` : installMessage;
@@ -2046,12 +3148,21 @@ export class QaTasksService {
         runSummaries.push(`- ${profile.name} (${runner}) infra_issue (install)`);
         continue;
       }
+      if (runner === 'chromium') {
+        const serverCheck = await ensureServerReady(browserBaseUrl, 'browser', { allowFailure: true });
+        if (!serverCheck.ok) {
+          const message = serverCheck.message ?? `QA server not ready for ${browserBaseUrl ?? 'browser QA'}.`;
+          runs.push({ profile, runner, testCommand, result: buildInfraResult(message) });
+          runSummaries.push(`- ${profile.name} (${runner}) infra_issue (server_unavailable)`);
+          continue;
+        }
+      }
 
       const profileDir = profile.name.replace(/[\\/]/g, '_');
       const artifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key, profileDir);
       await PathHelper.ensureDir(artifactDir);
-      const qaEnv: NodeJS.ProcessEnv = { ...runCtx.env };
-      let result = await adapter.invoke(profile, { ...runCtx, env: qaEnv, artifactDir });
+      const runEnv: NodeJS.ProcessEnv = { ...runCtx.env };
+      let result = await adapter.invoke(profile, { ...runCtx, env: runEnv, artifactDir });
       let markerStatus: RunAllMarkerStatus | undefined;
       if (runner === 'cli') {
         const adjusted = this.adjustOutcomeForSkippedTests(profile, result, testCommand);
@@ -2074,7 +3185,11 @@ export class QaTasksService {
         }
       }
       const command =
-        runner === 'chromium' ? browserOverride ?? profile.test_command : testCommand ?? profile.test_command;
+        runner === 'chromium'
+          ? browserBaseUrl ?? profile.test_command
+          : cliCommands.length > 1
+            ? cliCommands.join(' && ')
+            : cliCommands[0] ?? testCommand ?? profile.test_command;
       runs.push({
         profile,
         runner,
@@ -2090,6 +3205,83 @@ export class QaTasksService {
         `- ${profile.name} (${runner}) outcome=${result.outcome} exit=${result.exitCode ?? 'null'}${
           command ? ` cmd=${command}` : ''
         }`,
+      );
+    }
+
+    let apiRequests = [...(taskPlan?.api?.requests ?? [])];
+    if (taskPlan?.stress?.api?.length) {
+      for (const stress of taskPlan.stress.api) {
+        if (stress?.type !== 'burst' || !stress.request) continue;
+        const count = Math.max(1, Math.round(stress.count ?? 1));
+        for (let index = 0; index < count; index += 1) {
+          apiRequests.push({
+            ...stress.request,
+            id: stress.request.id ? `${stress.request.id}-${index + 1}` : `stress-${index + 1}`,
+          });
+        }
+      }
+    }
+    const explicitProfileName = ctx.request.profileName?.toLowerCase();
+    const explicitApi = explicitProfileName === 'api';
+    const allowApiRunner = !explicitProfileName || explicitApi;
+    const apiPlanRequested = taskPlan?.api !== undefined;
+    const apiTaskHint = detectApiTask(task.task);
+    if (allowApiRunner) {
+      const shouldRunApiFallback =
+        apiRequests.length === 0 && (apiPlanRequested || apiTaskHint || explicitApi);
+      if (shouldRunApiFallback) {
+        const hasOpenApiSpec = await apiRunner.hasOpenApiSpec();
+        if (hasOpenApiSpec || apiPlanRequested || apiTaskHint || explicitApi) {
+          apiRequests = await apiRunner.suggestDefaultRequests();
+        }
+      }
+    }
+    if (allowApiRunner && apiRequests.length) {
+      const baseUrl = await apiRunner.resolveBaseUrl({
+        planBaseUrl: taskPlan?.api?.base_url,
+        planBrowserBaseUrl: taskPlan?.browser?.base_url,
+        env: baseCtx.env,
+      });
+      const apiProfile: QaProfile = { name: 'api', runner: 'api' };
+      const serverCheck = await ensureServerReady(baseUrl, 'api');
+      if (!serverCheck.ok) {
+        const message = serverCheck.message ?? `QA server not ready for ${baseUrl}.`;
+        const apiResult = buildInfraResult(message);
+        runs.push({
+          profile: apiProfile,
+          runner: 'api',
+          command: `${baseUrl} (${apiRequests.length} requests)`,
+          result: apiResult,
+        });
+        runSummaries.push(`- api (api) infra_issue (server_unavailable) cmd=${baseUrl}`);
+      } else {
+        const apiArtifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key, 'api');
+        await PathHelper.ensureDir(apiArtifactDir);
+        const apiResult = await apiRunner.run({
+          baseUrl,
+          requests: apiRequests,
+          env: baseCtx.env,
+          artifactDir: apiArtifactDir,
+        });
+        runs.push({
+          profile: apiProfile,
+          runner: 'api',
+          command: `${baseUrl} (${apiRequests.length} requests)`,
+          result: apiResult,
+        });
+        for (const artifact of apiResult.artifacts ?? []) {
+          artifactSet.add(artifact);
+        }
+        runSummaries.push(
+          `- api (api) outcome=${apiResult.outcome} exit=${apiResult.exitCode ?? 'null'} cmd=${baseUrl}`,
+        );
+      }
+    } else if (!allowApiRunner && (apiRequests.length || apiPlanRequested || apiTaskHint)) {
+      await this.logTask(
+        taskRun.id,
+        `Skipping API checks because profile=${ctx.request.profileName} was explicitly requested.`,
+        'qa-api',
+        { profile: ctx.request.profileName },
       );
     }
 
@@ -2249,12 +3441,60 @@ export class QaTasksService {
         ...statusContextBase,
         agentId: interpretation.agentId ?? undefined,
       };
-      if (invalidJson) {
-        await this.stateService.markFailed(task.task, 'qa_invalid_output', statusContext);
-      } else {
-        await this.applyStateTransition(task.task, outcome, statusContext);
-      }
+      await this.applyStateTransition(
+        task.task,
+        outcome,
+        statusContext,
+        invalidJson ? { qa_failure_reason: 'qa_invalid_output', qa_invalid_output: true } : undefined,
+      );
       await this.finishTaskRun(taskRun, invalidJson ? 'failed' : outcome === 'pass' ? 'succeeded' : 'failed');
+    }
+
+    const existingSlugs = new Set(
+      commentContext.comments.map((comment) => comment.slug).filter((slug): slug is string => Boolean(slug)),
+    );
+    const fallbackFailures =
+      outcome !== 'pass' && (!interpretation.failures || interpretation.failures.length === 0);
+    if (!this.dryRunGuard && fallbackFailures) {
+      let created = 0;
+      try {
+        created = await this.createRunnerFailureComments({
+          task: task.task,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          outcome,
+          result,
+          runs,
+          workspaceRoot: qaWorkspaceRoot,
+          runSummary,
+          existingSlugs,
+        });
+      } catch {
+        // fall through to summary comment
+      }
+      if (created === 0) {
+        let message = `QA ${outcome} based on runner output. Review QA logs/artifacts for details.`;
+        try {
+          message = await this.buildRunnerFailureMessage({
+            outcome,
+            result,
+            runs,
+            runSummary,
+            workspaceRoot: qaWorkspaceRoot,
+          });
+        } catch {
+          // fallback to default message if summary build fails
+        }
+        await this.createQaComment({
+          task: task.task,
+          taskRunId: taskRun.id,
+          jobId: ctx.jobId,
+          message,
+          category: 'qa_issue',
+          status: 'open',
+          metadata: { reason: 'qa_runner_failure', outcome, runSummary },
+        });
+      }
     }
 
     const followups: string[] = [];
@@ -2321,7 +3561,7 @@ export class QaTasksService {
         ? `Comment slugs: resolved ${commentResolution.resolved.length}, reopened ${commentResolution.reopened.length}, open ${commentResolution.open.length}`
         : '',
       interpretation.invalidJson
-        ? 'QA agent output invalid; task failed (qa_invalid_output).'
+        ? 'QA agent output invalid; task needs follow-up (qa_invalid_output).'
         : '',
       interpretation.invalidJson && interpretation.rawOutput
         ? `QA agent output (invalid JSON):\n${interpretation.rawOutput.slice(0, 4000)}`
@@ -2403,6 +3643,23 @@ export class QaTasksService {
       artifacts,
       followups,
     };
+    } finally {
+      if (serverHandle) {
+        try {
+          await serverHandle.stop();
+          await this.logTask(taskRun.id, 'QA server stopped.', 'qa-server');
+        } catch (error: any) {
+          await this.logTask(taskRun.id, `QA server shutdown failed: ${error?.message ?? error}`, 'qa-server');
+        }
+      }
+      if (cleanupWorktree) {
+        try {
+          await cleanupWorktree();
+        } catch (error: any) {
+          await this.logTask(taskRun.id, `QA cleanup failed: ${error?.message ?? error}`, 'qa-cleanup');
+        }
+      }
+    }
   }
 
   private async runManual(
@@ -2567,6 +3824,7 @@ export class QaTasksService {
 
   async run(request: QaTasksRequest): Promise<QaTasksResponse> {
     this.qaProfilePlan = undefined;
+    this.qaTaskPlans = undefined;
     const resume = request.resumeJobId ? await this.deps.jobService.getJob(request.resumeJobId) : undefined;
     if (request.resumeJobId && !resume) {
       throw new Error(`Resume requested but job ${request.resumeJobId} not found`);
@@ -2610,12 +3868,17 @@ export class QaTasksService {
       }
     };
 
+    const mode = request.mode ?? 'auto';
     this.dryRunGuard = request.dryRun ?? false;
     if (request.dryRun) {
       const dryResults: QaTaskResult[] = [];
-      this.qaProfilePlan = await this.planProfilesWithAgent(selection.ordered, request, {
-        warnings: selection.warnings,
-      });
+      if (mode !== 'manual') {
+        this.qaProfilePlan = await this.planProfilesWithAgent(selection.ordered, request, {
+          warnings: selection.warnings,
+        });
+      } else {
+        this.qaProfilePlan = new Map();
+      }
       for (const task of selection.ordered) {
         abortIfSignaled();
         let profiles: QaProfile[] = [];
@@ -2681,7 +3944,7 @@ export class QaTasksService {
               tasks: effectiveTasks,
               statusFilter,
               limit: effectiveLimit,
-              mode: request.mode ?? 'auto',
+              mode,
               profile: request.profileName,
               level: request.level,
               agent: request.agentName,
@@ -2692,11 +3955,15 @@ export class QaTasksService {
             totalItems: selection.ordered.length,
             processedItems: completedKeys.size,
           });
-    this.qaProfilePlan = await this.planProfilesWithAgent(selection.ordered, request, {
-      jobId: job.id,
-      commandRunId: commandRun.id,
-      warnings: selection.warnings,
-    });
+    if (mode !== 'manual') {
+      this.qaProfilePlan = await this.planProfilesWithAgent(selection.ordered, request, {
+        jobId: job.id,
+        commandRunId: commandRun.id,
+        warnings: selection.warnings,
+      });
+    } else {
+      this.qaProfilePlan = new Map();
+    }
     if (resume?.id) {
       try {
         const qaRuns = await this.deps.workspaceRepo.listTaskQaRunsForJob(

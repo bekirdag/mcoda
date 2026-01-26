@@ -95,3 +95,6 @@ Use docdex before any non-trivial change:
 - Any new test script must be registered in `tests/all.js`.
 - Run task-specific tests first, then `node tests/all.js` at the end.
 - If any test fails, fix and iterate until all tests pass.
+- QA runs unit -> component -> integration -> api when requirements exist; keep suites and `tests/all.js` in sync.
+- Browser QA uses Chromium only (Cypress/Puppeteer/Selenium must target Chromium).
+- Honor `metadata.qa` readiness (profiles/entrypoints/blockers) so QA can run without manual fixes.

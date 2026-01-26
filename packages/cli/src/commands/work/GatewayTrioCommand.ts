@@ -121,12 +121,10 @@ const createGatewayLogger = (options: { agentStream: boolean }) => {
     console.info(line);
   };
   const emitBlank = (): void => emitLine("");
-  const onGatewayChunk = options.agentStream
-    ? (chunk: string) => {
-        if (!chunk) return;
-        process.stdout.write(chunk);
-      }
-    : undefined;
+  const onGatewayChunk = (chunk: string) => {
+    if (!chunk) return;
+    process.stdout.write(chunk);
+  };
   const onGatewayStart = (details: GatewayLogDetails): void => {
     const sessionId = formatSessionId(details.startedAt);
     emitLine("╭──────────────────────────────────────────────────────────╮");

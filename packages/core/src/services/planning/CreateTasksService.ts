@@ -13,7 +13,7 @@ import {
   TaskRow,
   WorkspaceRepository,
 } from "@mcoda/db";
-import { Agent } from "@mcoda/shared";
+import { Agent, type QaEntrypoint, type QaReadiness } from "@mcoda/shared";
 import { setTimeout as delay } from "node:timers/promises";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
@@ -39,6 +39,10 @@ export interface CreateTasksOptions {
   maxStoriesPerEpic?: number;
   maxTasksPerStory?: number;
   force?: boolean;
+  qaProfiles?: string[];
+  qaEntryUrl?: string;
+  qaStartCommand?: string;
+  qaRequires?: string[];
 }
 
 export interface CreateTasksResult {
@@ -63,6 +67,7 @@ interface AgentTaskNode {
   componentTests?: string[];
   integrationTests?: string[];
   apiTests?: string[];
+  qa?: QaReadiness;
 }
 
 interface AgentStoryNode {
@@ -112,6 +117,19 @@ interface GeneratedPlan {
   tasks: PlanTask[];
 }
 
+type QaPreflight = {
+  scripts: Record<string, string>;
+  entrypoints: QaEntrypoint[];
+  blockers: string[];
+};
+
+type PersistPlanOptions = {
+  force?: boolean;
+  resetKeys?: boolean;
+  qaPreflight?: QaPreflight;
+  qaOverrides?: QaReadiness;
+};
+
 type TaskOrderingClient = Pick<TaskOrderingService, "orderTasks" | "close">;
 type TaskOrderingFactory = (
   workspace: WorkspaceResolution,
@@ -121,6 +139,103 @@ type TaskOrderingFactory = (
 const formatBullets = (items: string[] | undefined, fallback: string): string => {
   if (!items || items.length === 0) return `- ${fallback}`;
   return items.map((item) => `- ${item}`).join("\n");
+};
+
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const normalizeEntrypoints = (value: unknown): QaEntrypoint[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const record = entry as Record<string, unknown>;
+      const kind = record.kind;
+      if (kind !== "web" && kind !== "api" && kind !== "cli") return null;
+      return {
+        kind,
+        base_url: typeof record.base_url === "string" ? record.base_url : undefined,
+        command: typeof record.command === "string" ? record.command : undefined,
+      } as QaEntrypoint;
+    })
+    .filter((entry): entry is QaEntrypoint => Boolean(entry));
+};
+
+const normalizeQaReadiness = (value: unknown): QaReadiness | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const qa: QaReadiness = {
+    profiles_expected: normalizeStringArray(record.profiles_expected),
+    requires: normalizeStringArray(record.requires),
+    entrypoints: normalizeEntrypoints(record.entrypoints),
+    data_setup: normalizeStringArray(record.data_setup),
+    blockers: normalizeStringArray(record.blockers),
+    notes: typeof record.notes === "string" ? record.notes : undefined,
+  };
+  const hasValues =
+    (qa.profiles_expected?.length ?? 0) > 0 ||
+    (qa.requires?.length ?? 0) > 0 ||
+    (qa.entrypoints?.length ?? 0) > 0 ||
+    (qa.data_setup?.length ?? 0) > 0 ||
+    (qa.blockers?.length ?? 0) > 0 ||
+    (qa.notes?.length ?? 0) > 0;
+  return hasValues ? qa : undefined;
+};
+
+const uniqueStrings = (items: string[]): string[] => Array.from(new Set(items));
+
+const uniqueEntrypoints = (items: QaEntrypoint[]): QaEntrypoint[] => {
+  const seen = new Set<string>();
+  const result: QaEntrypoint[] = [];
+  for (const entry of items) {
+    const key = `${entry.kind}|${entry.base_url ?? ""}|${entry.command ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(entry);
+  }
+  return result;
+};
+
+const buildQaReadiness = (params: {
+  classification: { stage: string };
+  planQa?: QaReadiness;
+  preflight?: QaPreflight;
+  overrides?: QaReadiness;
+}): QaReadiness => {
+  const derivedProfiles = ["cli"];
+  if (params.classification.stage === "frontend") derivedProfiles.push("chromium");
+  if (params.classification.stage === "backend") derivedProfiles.push("api");
+  const profilesExpected = uniqueStrings([
+    ...derivedProfiles,
+    ...(params.overrides?.profiles_expected ?? []),
+    ...(params.planQa?.profiles_expected ?? []),
+  ]);
+  const entrypoints = uniqueEntrypoints([
+    ...(params.overrides?.entrypoints ?? []),
+    ...(params.planQa?.entrypoints ?? []),
+    ...(params.classification.stage === "frontend" ? params.preflight?.entrypoints ?? [] : []),
+  ]);
+  const blockers = uniqueStrings([
+    ...(params.overrides?.blockers ?? []),
+    ...(params.planQa?.blockers ?? []),
+    ...(params.preflight?.blockers ?? []),
+  ]);
+  if (params.classification.stage === "frontend" && entrypoints.length === 0) {
+    blockers.push("Missing UI entrypoint (dev/start script).");
+  }
+  return {
+    profiles_expected: profilesExpected,
+    requires: uniqueStrings([...(params.overrides?.requires ?? []), ...(params.planQa?.requires ?? [])]),
+    entrypoints: entrypoints.length ? entrypoints : undefined,
+    data_setup: uniqueStrings([...(params.overrides?.data_setup ?? []), ...(params.planQa?.data_setup ?? [])]),
+    blockers: blockers.length ? blockers : undefined,
+    notes: params.overrides?.notes ?? params.planQa?.notes,
+  };
 };
 
 const formatTestList = (items: string[] | undefined): string => {
@@ -134,6 +249,7 @@ const ensureNonEmpty = (value: string | undefined, fallback: string): string =>
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 const DOC_CONTEXT_BUDGET = 8000;
 const DOCDEX_HANDLE = /^docdex:/i;
+const DEFAULT_QA_BASE_URL = "http://localhost:3000";
 const VALID_AREAS = new Set(["web", "adm", "bck", "ops", "infra", "mobile"]);
 const VALID_TASK_TYPES = new Set(["feature", "bug", "chore", "spike"]);
 
@@ -349,7 +465,17 @@ const buildTaskDescription = (
     integrationTests?: string[];
     apiTests?: string[];
   },
+  qa?: QaReadiness,
 ): string => {
+  const formatEntrypoints = (entrypoints: QaEntrypoint[] | undefined): string => {
+    if (!entrypoints || entrypoints.length === 0) return "- Not specified";
+    return entrypoints
+      .map((entry) => {
+        const target = entry.base_url ?? entry.command ?? "TBD";
+        return `- ${entry.kind}: ${target}`;
+      })
+      .join("\n");
+  };
   return [
     `* **Task Key**: ${taskKey}`,
     "* **Objective**",
@@ -370,6 +496,14 @@ const buildTaskDescription = (
     `- Component tests: ${formatTestList(tests.componentTests)}`,
     `- Integration tests: ${formatTestList(tests.integrationTests)}`,
     `- API tests: ${formatTestList(tests.apiTests)}`,
+    "* **QA Readiness**",
+    `- Profiles: ${qa?.profiles_expected?.length ? qa.profiles_expected.join(", ") : "TBD"}`,
+    `- Requires: ${qa?.requires?.length ? qa.requires.join("; ") : "None specified"}`,
+    `- Data setup: ${qa?.data_setup?.length ? qa.data_setup.join("; ") : "None specified"}`,
+    "* **QA Entry Points**",
+    formatEntrypoints(qa?.entrypoints),
+    "* **QA Blockers**",
+    formatBullets(qa?.blockers, "None known."),
     "* **Dependencies**",
     formatBullets(dependencies, "Enumerate prerequisite tasks by key."),
     "* **Risks & Gotchas**",
@@ -440,7 +574,14 @@ const TASK_SCHEMA_SNIPPET = `{
       "unitTests": ["unit test description"],
       "componentTests": ["component test description"],
       "integrationTests": ["integration test description"],
-      "apiTests": ["api test description"]
+      "apiTests": ["api test description"],
+      "qa": {
+        "profiles_expected": ["cli", "api", "chromium"],
+        "requires": ["dev server", "seed data"],
+        "entrypoints": [{ "kind": "web", "base_url": "http://localhost:3000", "command": "npm run dev" }],
+        "data_setup": ["seed sample data"],
+        "notes": "optional QA notes"
+      }
     }
   ]
 }`;
@@ -613,6 +754,102 @@ export class CreateTasksService {
       }
     }
     return existing;
+  }
+
+  private async buildQaPreflight(): Promise<QaPreflight> {
+    const preflight: QaPreflight = {
+      scripts: {},
+      entrypoints: [],
+      blockers: [],
+    };
+    const packagePath = path.join(this.workspace.workspaceRoot, "package.json");
+    let pkg: Record<string, unknown> | null = null;
+    try {
+      const raw = await fs.readFile(packagePath, "utf8");
+      pkg = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return preflight;
+    }
+    const scripts = pkg?.scripts;
+    if (scripts && typeof scripts === "object") {
+      for (const [name, value] of Object.entries(scripts as Record<string, unknown>)) {
+        if (typeof value === "string") {
+          preflight.scripts[name] = value;
+        }
+      }
+    }
+    const dependencies = {
+      ...(pkg?.dependencies && typeof pkg.dependencies === "object" ? (pkg.dependencies as Record<string, unknown>) : {}),
+      ...(pkg?.devDependencies && typeof pkg.devDependencies === "object"
+        ? (pkg.devDependencies as Record<string, unknown>)
+        : {}),
+    };
+    const hasDev = typeof preflight.scripts.dev === "string";
+    const hasStart = typeof preflight.scripts.start === "string";
+    if (hasDev) {
+      preflight.entrypoints.push({
+        kind: "web",
+        base_url: DEFAULT_QA_BASE_URL,
+        command: "npm run dev",
+      });
+    } else if (hasStart) {
+      preflight.entrypoints.push({
+        kind: "web",
+        base_url: DEFAULT_QA_BASE_URL,
+        command: "npm start",
+      });
+    }
+    const testDirs = [
+      path.join(this.workspace.workspaceRoot, "tests"),
+      path.join(this.workspace.workspaceRoot, "__tests__"),
+    ];
+    const testFiles: string[] = [];
+    for (const dir of testDirs) {
+      try {
+        const stat = await fs.stat(dir);
+        if (!stat.isDirectory()) continue;
+        testFiles.push(...(await collectFilesRecursively(dir)));
+      } catch {
+        // ignore missing test dirs
+      }
+    }
+    const testCandidates = testFiles.filter((file) => /\b(test|spec)\b/i.test(path.basename(file)));
+    const hasSupertest = typeof dependencies.supertest === "string";
+    if (!hasSupertest && testCandidates.length > 0) {
+      for (const file of testCandidates) {
+        try {
+          const content = await fs.readFile(file, "utf8");
+          if (content.includes("supertest")) {
+            preflight.blockers.push(
+              "Missing devDependency: supertest (required by test files).",
+            );
+            break;
+          }
+        } catch {
+          // ignore read errors
+        }
+      }
+    }
+    return preflight;
+  }
+
+  private buildQaOverrides(options: CreateTasksOptions): QaReadiness | undefined {
+    const profiles = options.qaProfiles?.filter(Boolean);
+    const requires = options.qaRequires?.filter(Boolean);
+    const entrypoints: QaEntrypoint[] = [];
+    if (options.qaEntryUrl || options.qaStartCommand) {
+      entrypoints.push({
+        kind: "web",
+        base_url: options.qaEntryUrl,
+        command: options.qaStartCommand,
+      });
+    }
+    if (!profiles?.length && !requires?.length && entrypoints.length === 0) return undefined;
+    return {
+      profiles_expected: profiles,
+      requires,
+      entrypoints: entrypoints.length ? entrypoints : undefined,
+    };
   }
 
   private buildDocContext(docs: DocdexDocument[]): { docSummary: string; warnings: string[] } {
@@ -926,6 +1163,7 @@ export class CreateTasksService {
       "- Include test arrays: unitTests, componentTests, integrationTests, apiTests. Use [] when not applicable.",
       "- Only include tests that are relevant to the task's scope.",
       "- If the task involves code or configuration changes, include at least one relevant test; do not leave all test arrays empty unless it's purely documentation or research.",
+      "- When known, include qa object with profiles_expected/requires/entrypoints/data_setup to guide QA.",
       "- dependsOnKeys must reference localIds in this story.",
       "- Use docdex handles when citing docs.",
       `Story context (key=${story.key ?? story.localId ?? "TBD"}):`,
@@ -954,6 +1192,7 @@ export class CreateTasksService {
         if (!hasTests && !docOnly) {
           unitTests.push(`Add tests for ${title} (unit/component/integration/api as applicable)`);
         }
+        const qa = normalizeQaReadiness(task.qa);
         return {
           localId: task.localId ?? `t${idx + 1}`,
           title,
@@ -967,6 +1206,7 @@ export class CreateTasksService {
           componentTests,
           integrationTests,
           apiTests,
+          qa,
         };
       })
       .filter((t: AgentTaskNode) => t.title);
@@ -1053,7 +1293,7 @@ export class CreateTasksService {
     plan: GeneratedPlan,
     jobId: string,
     commandRunId: string,
-    options?: { force?: boolean; resetKeys?: boolean },
+    options?: PersistPlanOptions,
   ): Promise<{ epics: EpicRow[]; stories: StoryRow[]; tasks: TaskRow[]; dependencies: TaskDependencyRow[] }> {
     const resetKeys = options?.resetKeys ?? false;
     const existingEpicKeys = resetKeys ? [] : await this.workspaceRepo.listEpicKeys(projectId);
@@ -1160,6 +1400,12 @@ export class CreateTasksService {
           description: task.plan.description,
           type: task.plan.type,
         });
+        const qaReadiness = buildQaReadiness({
+          classification,
+          planQa: task.plan.qa,
+          preflight: options?.qaPreflight,
+          overrides: options?.qaOverrides,
+        });
         const depSlugs = (task.plan.dependsOnKeys ?? [])
           .map((dep) => localToKey.get(dep))
           .filter((value): value is string => Boolean(value));
@@ -1183,6 +1429,7 @@ export class CreateTasksService {
               integrationTests: task.plan.integrationTests,
               apiTests: task.plan.apiTests,
             },
+            qaReadiness,
           ),
           type: task.plan.type ?? "feature",
           status: "not_started",
@@ -1198,6 +1445,7 @@ export class CreateTasksService {
             },
             stage: classification.stage,
             foundation: classification.foundation,
+            qa: qaReadiness,
           },
         });
       }
@@ -1302,10 +1550,17 @@ export class CreateTasksService {
         const docs = await this.prepareDocs(options.inputs);
         const { docSummary, warnings: docWarnings } = this.buildDocContext(docs);
         const { prompt } = this.buildPrompt(options.projectKey, docs, options);
+        const qaPreflight = await this.buildQaPreflight();
+        const qaOverrides = this.buildQaOverrides(options);
         await this.jobService.writeCheckpoint(job.id, {
           stage: "docs_indexed",
           timestamp: new Date().toISOString(),
           details: { count: docs.length, warnings: docWarnings },
+        });
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "qa_preflight",
+          timestamp: new Date().toISOString(),
+          details: qaPreflight,
         });
 
         const agent = await this.resolveAgent(options.agentName);
@@ -1359,6 +1614,8 @@ export class CreateTasksService {
           await this.persistPlanToDb(project.id, options.projectKey, plan, job.id, commandRun.id, {
             force: options.force,
             resetKeys: options.force,
+            qaPreflight,
+            qaOverrides,
           });
         await this.seedPriorities(options.projectKey);
 

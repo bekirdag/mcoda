@@ -187,6 +187,11 @@ mcoda create-tasks \
 Writes plan artifacts to `<workspace-dir>/tasks/<PROJECT>/plan.json` plus `epics.json`, `stories.json`, `tasks.json`. If the DB is busy, the files still persist for later import.
 Project key is sticky: after the first run, `create-tasks` reuses the workspace `projectKey` from `<workspace-dir>/config.json` or an existing `<workspace-dir>/tasks/<PROJECT>` folder to avoid creating new slugs. Edit `<workspace-dir>/config.json` if you need to change it.
 Use `--force` to wipe and replace the existing backlog for the project. Add `--rate-agents` to score the planning agent.
+Create-tasks also captures QA readiness metadata (profiles, entrypoints, blockers) from repo preflight (scripts/tests) and writes it into each task’s metadata/description so QA can select the right profiles later. Override defaults with:
+- `--qa-profile <csv>` (comma-separated profile names)
+- `--qa-entry-url <url>` (UI base URL)
+- `--qa-start-command "<cmd>"` (dev/start command to launch UI)
+- `--qa-requires <csv>` (requirements like `db,seed`)
 
 Import (or re-import) the plan into the workspace DB:
 
@@ -344,7 +349,7 @@ mcoda qa-tasks --workspace . --project WEB --status ready_to_qa --profile ui --a
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_qa` (override for regression runs).
 - Modes: `--mode auto` (default; runs CLI/Chromium/Maestro via QA profiles) or `--mode manual --result pass|fail [--notes "..."] [--evidence-url "..."]`.
 - Profiles & runners: `--profile <NAME>` or `--level unit|integration|acceptance`, `--test-command "<CMD>"` override for CLI runner. Agent streaming defaults to true (`--agent-stream false` to quiet). Resume a QA sweep with `--resume <JOB_ID>`. Add `--rate-agents` to score QA agent performance.
-- Chromium runner: auto QA uses the Chromium runner. Install Docdex Chromium (`docdex setup`). Optional: target a specific app URL via `--test-command` (http[s]) or `MCODA_QA_BROWSER_URL`.
+- Chromium runner: auto QA uses the Chromium runner. Install Docdex Chromium (`docdex setup`). Optional: override the app base URL via `--test-command` (http[s]); otherwise the QA plan provides it.
 - CLI marker: when `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE` or QA marks the run as `infra_issue` with guidance in task comments.
 - Outputs & state: creates `jobs`/`command_runs`/`task_runs`/`task_qa_runs`, writes `task_comments`, records `token_usage`, and applies TaskStateService transitions (`ready_to_qa → completed/in_progress/failed` unless `--dry-run`). Artifacts live under `<workspace-dir>/jobs/<jobId>/qa/<task_key>/`.
 - Invalid JSON: if the QA agent returns invalid JSON after retry, the outcome is treated as `unclear` (`qa_unclear`) and a manual QA follow-up can be created.

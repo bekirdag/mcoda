@@ -38,8 +38,9 @@ This document describes the current `work-on-tasks` command flow as implemented 
    - `files` → allowed file scope
    - `doc_links` → docs to query via docdex
    - `tests` and `test_requirements`
-2. Normalize test commands; detect `tests/all.js` as the run‑all tests script.
-3. If `test_requirements` exist but no test command is configured, fail the task with `tests_not_configured`.
+2. Normalize explicit test commands and, when missing, build stack‑based category commands (unit/component/integration/api) using the same QA command builder as `qa-tasks`.
+3. Detect `tests/all.js` as the run‑all tests script; create it when tests are required and missing.
+4. If `test_requirements` exist but no runnable commands are found (including run‑all), fail the task with `tests_not_configured`.
 
 #### 2.3 Branch preparation (non‑dry run)
 1. Create or reuse a task branch and merge base into it.
@@ -56,7 +57,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
    - Task metadata (epic/story, description, acceptance criteria).
    - Dependencies and comment backlog.
    - Allowed file scope and docdex context summary.
-2. Append test requirements + test commands.
+2. Append test requirements + test commands and QA readiness (profiles/entrypoints/blockers).
 3. Append run‑all tests guidance (`tests/all.js` expected).
 4. Add explicit output requirements:
    - Apply changes directly in the repo (no patch/diff/FILE blocks).
@@ -71,7 +72,8 @@ This document describes the current `work-on-tasks` command flow as implemented 
 5. Legacy patch mode (optional): when enabled, parse/apply patch or FILE output and fall back on patch errors.
 
 #### 2.7 Tests
-1. Run task-specific test commands (from metadata) followed by run‑all tests (`tests/all.js`).
+1. Run task-specific test commands (from metadata or QA builder) followed by run‑all tests (`tests/all.js`).
+   - If commands include browser tooling (Cypress/Puppeteer/Selenium/Capybara/Dusk), inject Chromium env defaults and append `--browser chromium` for direct Cypress run/open commands; missing Chromium surfaces as test failure.
 2. If `tests/all.js` is missing and tests are required, attempt to create a minimal run‑all script before continuing.
 3. If run‑all tests are still missing, treat as `tests_not_configured`.
 4. If tests fail, retry up to `MAX_TEST_FIX_ATTEMPTS` by looping agent → apply → tests.

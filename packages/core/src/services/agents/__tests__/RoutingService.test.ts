@@ -228,7 +228,7 @@ test("updateWorkspaceDefaults validates capabilities and profiles", async () => 
   const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
 
   await assert.rejects(
-    () => service.updateWorkspaceDefaults("ws", { set: { "qa-tasks": "codex" } }),
+    () => service.updateWorkspaceDefaults("ws", { set: { "work-on-tasks": "codex" } }),
     /missing required capabilities/i,
   );
 

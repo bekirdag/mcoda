@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs/promises';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
+import type { QaBrowserAction } from '@mcoda/shared/qa/QaPlan.js';
 import { QaAdapter } from './QaAdapter.js';
 import { QaContext, QaEnsureResult, QaRunResult } from './QaTypes.js';
 
@@ -15,8 +16,8 @@ const DOCDEX_CHROMIUM_MISSING_MESSAGE =
 const DEFAULT_BROWSER_TIMEOUT_MS = 15000;
 const DEFAULT_BROWSER_URL = 'about:blank';
 const DOCDEX_STATE_ENV = 'DOCDEX_STATE_DIR';
+const DOCDEX_CONFIG_PATH_ENV = 'DOCDEX_CONFIG_PATH';
 const CHROMIUM_PATH_ENV = 'MCODA_QA_CHROMIUM_PATH';
-const CHROMIUM_URL_ENV = 'MCODA_QA_BROWSER_URL';
 const CHROMIUM_HEADLESS_ENV = 'MCODA_QA_CHROMIUM_HEADLESS';
 const CHROMIUM_TIMEOUT_ENV = 'MCODA_QA_CHROMIUM_TIMEOUT_MS';
 const CHROMIUM_USER_AGENT_ENV = 'MCODA_QA_BROWSER_USER_AGENT';
@@ -84,12 +85,35 @@ type ChromiumManifest = {
   download_url?: string;
 };
 
+type DocdexScraperConfig = {
+  chromeBinaryPath?: string;
+  userDataDir?: string;
+};
+
 type BrowserFetchResult = {
   html: string;
   innerText?: string;
   textContent?: string;
   status?: number;
   finalUrl?: string;
+};
+
+type BrowserActionResult = {
+  index: number;
+  type: QaBrowserAction['type'];
+  ok: boolean;
+  message?: string;
+  url?: string;
+  durationMs?: number;
+};
+
+type BrowserActionSnapshot = {
+  index: number;
+  name: string;
+  html: string;
+  innerText?: string;
+  textContent?: string;
+  url?: string;
 };
 
 type CdpTarget = {
@@ -126,14 +150,163 @@ const readJsonFile = async <T>(filePath: string): Promise<T | undefined> => {
   }
 };
 
+const readTextFile = async (filePath: string): Promise<string | undefined> => {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch {
+    return undefined;
+  }
+};
+
+const fileExists = async (filePath: string): Promise<boolean> => {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+};
+
 const resolveDocdexStateDir = (): string => {
   const envDir = process.env[DOCDEX_STATE_ENV];
   if (envDir && envDir.trim()) return envDir.trim();
   return path.join(os.homedir(), '.docdex', 'state');
 };
 
+const resolveDocdexConfigPath = (): string | undefined => {
+  const envPath = process.env[DOCDEX_CONFIG_PATH_ENV];
+  if (envPath && envPath.trim()) return envPath.trim();
+  const stateDir = resolveDocdexStateDir();
+  const baseDir = path.dirname(stateDir);
+  return path.join(baseDir, 'config.toml');
+};
+
+const stripTomlInlineComment = (value: string): string => {
+  let inSingle = false;
+  let inDouble = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (char === '"' && !inSingle) {
+      const prev = value[index - 1];
+      if (prev !== '\\') {
+        inDouble = !inDouble;
+      }
+      continue;
+    }
+    if (char === '#' && !inSingle && !inDouble) {
+      return value.slice(0, index).trim();
+    }
+  }
+  return value.trim();
+};
+
+const parseTomlString = (value: string): string | undefined => {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      return JSON.parse(trimmed) as string;
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+  return undefined;
+};
+
+const parseTomlSection = (raw: string, section: string): Record<string, string> => {
+  const lines = raw.split(/\r?\n/);
+  let inSection = false;
+  const result: Record<string, string> = {};
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const sectionMatch = /^\[([^\]]+)\]$/.exec(trimmed);
+    if (sectionMatch) {
+      inSection = sectionMatch[1].trim() === section;
+      continue;
+    }
+    if (!inSection) continue;
+    const match = /^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/.exec(trimmed);
+    if (!match) continue;
+    const key = match[1];
+    const rawValue = stripTomlInlineComment(match[2]);
+    const parsed = parseTomlString(rawValue);
+    if (parsed !== undefined) result[key] = parsed;
+  }
+  return result;
+};
+
+const readDocdexScraperConfig = async (): Promise<DocdexScraperConfig> => {
+  const configPath = resolveDocdexConfigPath();
+  if (!configPath) return {};
+  const raw = await readTextFile(configPath);
+  if (!raw) return {};
+  const section = parseTomlSection(raw, 'web.scraper');
+  return {
+    chromeBinaryPath: section.chrome_binary_path,
+    userDataDir: section.user_data_dir,
+  };
+};
+
 const resolveDocdexBrowserProfileDir = (): string =>
   path.join(resolveDocdexStateDir(), 'browser_profiles', 'chrome');
+
+const resolveBinaryFromPath = async (command: string): Promise<string | undefined> => {
+  const pathValue = process.env.PATH;
+  if (!pathValue) return undefined;
+  const extensions =
+    process.platform === 'win32'
+      ? [''].concat((process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean))
+      : [''];
+  for (const base of pathValue.split(path.delimiter)) {
+    if (!base) continue;
+    for (const ext of extensions) {
+      const candidate = path.join(base, `${command}${ext}`);
+      if (await fileExists(candidate)) return candidate;
+    }
+  }
+  return undefined;
+};
+
+const resolveBinaryHint = async (hint?: string): Promise<string | undefined> => {
+  if (!hint) return undefined;
+  const trimmed = hint.trim();
+  if (!trimmed) return undefined;
+  if (await fileExists(trimmed)) return trimmed;
+  if (trimmed.includes('/') || trimmed.includes('\\')) return undefined;
+  return await resolveBinaryFromPath(trimmed);
+};
+
+const resolveKnownChromiumPath = async (): Promise<string | undefined> => {
+  if (process.platform === 'darwin') {
+    const candidate = '/Applications/Chromium.app/Contents/MacOS/Chromium';
+    return (await fileExists(candidate)) ? candidate : undefined;
+  }
+  if (process.platform === 'win32') {
+    const bases = [
+      process.env.PROGRAMFILES,
+      process.env['PROGRAMFILES(X86)'],
+      process.env.LOCALAPPDATA,
+    ].filter(Boolean) as string[];
+    for (const base of bases) {
+      const candidate = path.join(base, 'Chromium', 'Application', 'chrome.exe');
+      if (await fileExists(candidate)) return candidate;
+    }
+    return undefined;
+  }
+  const linuxCandidates = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'];
+  for (const candidate of linuxCandidates) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return undefined;
+};
 
 const resolveDocdexChromiumBinary = async (): Promise<string | undefined> => {
   const overrides = [
@@ -143,26 +316,26 @@ const resolveDocdexChromiumBinary = async (): Promise<string | undefined> => {
     process.env.CHROME_PATH,
   ];
   for (const override of overrides) {
-    if (override && override.trim()) {
-      const resolved = override.trim();
-      try {
-        await fs.access(resolved);
-        return resolved;
-      } catch {
-        // continue
-      }
-    }
+    const resolved = await resolveBinaryHint(override);
+    if (resolved) return resolved;
+  }
+  const config = await readDocdexScraperConfig();
+  if (config.chromeBinaryPath && (await fileExists(config.chromeBinaryPath))) {
+    return config.chromeBinaryPath;
   }
   const manifestPath = path.join(resolveDocdexStateDir(), 'bin', 'chromium', 'manifest.json');
   const manifest = await readJsonFile<ChromiumManifest>(manifestPath);
-  if (!manifest?.path) return undefined;
-  try {
-    await fs.access(manifest.path);
+  if (manifest?.path && (await fileExists(manifest.path))) {
     return manifest.path;
-  } catch {
-    return undefined;
   }
+  const whichCandidate =
+    (await resolveBinaryFromPath('chromium')) ?? (await resolveBinaryFromPath('chromium-browser'));
+  if (whichCandidate) return whichCandidate;
+  return await resolveKnownChromiumPath();
 };
+
+export const resolveChromiumBinary = async (): Promise<string | undefined> =>
+  resolveDocdexChromiumBinary();
 
 const isUrl = (value: string | undefined): boolean => {
   if (!value) return false;
@@ -179,12 +352,6 @@ const parseBoolean = (value: string | undefined): boolean | undefined => {
   const normalized = value.trim().toLowerCase();
   if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
-  return undefined;
-};
-
-const resolveBrowserUrl = (ctx: QaContext): string | undefined => {
-  const envUrl = ctx.env?.[CHROMIUM_URL_ENV] ?? process.env[CHROMIUM_URL_ENV];
-  if (envUrl && isUrl(envUrl)) return envUrl;
   return undefined;
 };
 
@@ -220,6 +387,12 @@ const resolveUserDataDir = async (ctx: QaContext): Promise<UserDataDir> => {
     await fs.mkdir(resolved, { recursive: true });
     return { path: resolved, cleanup: null };
   }
+  const config = await readDocdexScraperConfig();
+  if (config.userDataDir && config.userDataDir.trim()) {
+    const resolved = config.userDataDir.trim();
+    await fs.mkdir(resolved, { recursive: true });
+    return { path: resolved, cleanup: null };
+  }
   const defaultPath = resolveDocdexBrowserProfileDir();
   await fs.mkdir(defaultPath, { recursive: true });
   return { path: defaultPath, cleanup: null };
@@ -237,10 +410,8 @@ const createTempUserDataDir = async (): Promise<UserDataDir> => {
 };
 
 const resolveBrowserTarget = (profile: QaProfile, ctx: QaContext): string | undefined => {
-  const override = ctx.testCommandOverride ?? profile.test_command;
+  const override = ctx.browserBaseUrl ?? ctx.testCommandOverride ?? profile.test_command;
   if (override && isUrl(override)) return override;
-  const envUrl = resolveBrowserUrl(ctx);
-  if (envUrl) return envUrl;
   return undefined;
 };
 
@@ -338,6 +509,10 @@ class ChromeInstance {
   async isHealthy(): Promise<boolean> {
     if (this.child && this.child.exitCode !== null) return false;
     return await probeCdp(this.debugPort);
+  }
+
+  getDebugPort(): number {
+    return this.debugPort;
   }
 
   async fetchDom(url: string | undefined, timeoutMs: number): Promise<BrowserFetchResult> {
@@ -837,6 +1012,172 @@ const captureDomText = async (
   return lastValue.trim();
 };
 
+const evalJson = async (client: CdpClient, expression: string): Promise<any> => {
+  const result = await client.call('Runtime.evaluate', {
+    expression,
+    returnByValue: true,
+  });
+  return result?.result?.value ?? result?.value;
+};
+
+const resolveActionTimeoutMs = (action: QaBrowserAction, fallbackMs: number): number => {
+  if ('timeout_ms' in action && typeof action.timeout_ms === 'number') {
+    const value = Math.round(action.timeout_ms);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return fallbackMs;
+};
+
+const resolveActionUrl = (actionUrl: string | undefined, baseUrl: string | undefined): string | undefined => {
+  if (actionUrl && isUrl(actionUrl)) return actionUrl;
+  if (!baseUrl || !isUrl(baseUrl)) return undefined;
+  if (!actionUrl) return baseUrl;
+  try {
+    return new URL(actionUrl, baseUrl).toString();
+  } catch {
+    return baseUrl;
+  }
+};
+
+const waitForDocumentReady = async (client: CdpClient, timeoutMs: number): Promise<boolean> => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const readyState = await evalString(client, 'document.readyState');
+    if (readyState === 'complete' || readyState === 'interactive') return true;
+    await delay(200);
+  }
+  return false;
+};
+
+const waitForSelector = async (
+  client: CdpClient,
+  selector: string,
+  timeoutMs: number,
+): Promise<boolean> => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const exists = await evalJson(
+      client,
+      `Boolean(document.querySelector(${JSON.stringify(selector)}))`,
+    );
+    if (exists) return true;
+    await delay(200);
+  }
+  return false;
+};
+
+const clickSelector = async (
+  client: CdpClient,
+  selector: string,
+  text?: string,
+): Promise<{ ok: boolean; message?: string }> => {
+  const expression = `(function () {
+    const selector = ${JSON.stringify(selector)};
+    const text = ${text ? JSON.stringify(text) : 'null'};
+    const nodes = Array.from(document.querySelectorAll(selector));
+    if (!nodes.length) return { ok: false, message: 'element not found' };
+    let target = nodes[0];
+    if (text) {
+      const normalized = text.toLowerCase();
+      target =
+        nodes.find((node) =>
+          ((node.innerText || node.textContent || '') + '').toLowerCase().includes(normalized),
+        ) || null;
+    }
+    if (!target) return { ok: false, message: 'element with text not found' };
+    if (target.scrollIntoView) target.scrollIntoView({ block: 'center', inline: 'center' });
+    if (target.click) target.click();
+    return { ok: true };
+  })()`;
+  const result = await evalJson(client, expression);
+  if (result?.ok) return { ok: true };
+  return { ok: false, message: result?.message || 'click failed' };
+};
+
+const typeSelector = async (
+  client: CdpClient,
+  selector: string,
+  text: string,
+  clear: boolean,
+): Promise<{ ok: boolean; message?: string }> => {
+  const expression = `(function () {
+    const selector = ${JSON.stringify(selector)};
+    const text = ${JSON.stringify(text)};
+    const clear = ${clear ? 'true' : 'false'};
+    const el = document.querySelector(selector);
+    if (!el) return { ok: false, message: 'element not found' };
+    if (el.focus) el.focus();
+    if (clear && 'value' in el) {
+      el.value = '';
+    }
+    if ('value' in el) {
+      el.value = String(el.value ?? '') + text;
+    } else {
+      el.textContent = String(el.textContent ?? '') + text;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true };
+  })()`;
+  const result = await evalJson(client, expression);
+  if (result?.ok) return { ok: true };
+  return { ok: false, message: result?.message || 'type failed' };
+};
+
+const assertText = async (
+  client: CdpClient,
+  selector: string | undefined,
+  text: string,
+  contains: boolean,
+): Promise<{ ok: boolean; message?: string }> => {
+  const expression = selector
+    ? `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        return el ? (el.innerText || el.textContent || '') : '';
+      })()`
+    : `document.body ? (document.body.innerText || document.body.textContent || '') : ''`;
+  const actual = String((await evalJson(client, expression)) ?? '');
+  const matches = contains ? actual.includes(text) : actual.trim() === text;
+  if (matches) return { ok: true };
+  return {
+    ok: false,
+    message: `assert_text failed (expected ${contains ? 'contains' : 'equals'} "${text}")`,
+  };
+};
+
+const captureSnapshot = async (
+  client: CdpClient,
+  index: number,
+  name: string,
+): Promise<BrowserActionSnapshot> => {
+  const html = await evalString(client, 'document.documentElement.outerHTML');
+  const innerText = await evalString(client, 'document.body ? document.body.innerText : ""');
+  const textContent = await evalString(client, 'document.body ? document.body.textContent : ""');
+  const url = await evalString(client, 'document.location.href');
+  return {
+    index,
+    name,
+    html: html || '',
+    innerText: innerText || undefined,
+    textContent: textContent || undefined,
+    url: url || undefined,
+  };
+};
+
+const captureFinalDom = async (client: CdpClient): Promise<BrowserFetchResult> => {
+  const html = await evalString(client, 'document.documentElement.outerHTML');
+  const innerText = await evalString(client, 'document.body ? document.body.innerText : ""');
+  const textContent = await evalString(client, 'document.body ? document.body.textContent : ""');
+  const url = await evalString(client, 'document.location.href');
+  return {
+    html: html || '',
+    innerText: innerText || undefined,
+    textContent: textContent || undefined,
+    status: undefined,
+    finalUrl: url || undefined,
+  };
+};
+
 const fetchDomViaCdp = async (
   wsUrl: string,
   url: string | undefined,
@@ -896,6 +1237,194 @@ const fetchDomViaCdp = async (
   } finally {
     client.close();
   }
+};
+
+const runBrowserActionsWithClient = async (
+  client: CdpClient,
+  actions: QaBrowserAction[],
+  baseUrl: string | undefined,
+  timeoutMs: number,
+): Promise<{
+  outcome: 'pass' | 'fail';
+  errorMessage?: string;
+  results: BrowserActionResult[];
+  snapshots: BrowserActionSnapshot[];
+  finalDom?: BrowserFetchResult;
+}> => {
+  await client.call('Network.enable', {});
+  await client.call('Page.enable', {});
+  await client.call('Runtime.enable', {});
+  await injectWebdriverOverride(client);
+
+  const tracker = new NetworkIdleTracker();
+  const results: BrowserActionResult[] = [];
+  const snapshots: BrowserActionSnapshot[] = [];
+
+  for (let index = 0; index < actions.length; index += 1) {
+    const action = actions[index];
+    const actionType = action.type;
+    const actionIndex = index + 1;
+    const startedAt = Date.now();
+    const actionTimeoutMs = resolveActionTimeoutMs(action, timeoutMs);
+    try {
+      if (action.type === 'navigate') {
+        const targetUrl = resolveActionUrl(action.url, baseUrl);
+        if (!targetUrl) {
+          throw new Error('navigate requires base_url or absolute url');
+        }
+        const navResult = await client.call('Page.navigate', { url: targetUrl }, tracker, actionTimeoutMs);
+        if (navResult?.errorText) {
+          throw new Error(`navigation failed: ${navResult.errorText}`);
+        }
+        if (action.wait_for === 'idle') {
+          await client.waitForNetworkIdle(tracker, actionTimeoutMs);
+        } else {
+          await waitForDocumentReady(client, actionTimeoutMs);
+        }
+        await dismissCookieBanners(client).catch(() => false);
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          url: targetUrl,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      if (action.type === 'click') {
+        const clickResult = await clickSelector(client, action.selector, action.text);
+        if (!clickResult.ok) throw new Error(clickResult.message ?? 'click failed');
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      if (action.type === 'type') {
+        const typeResult = await typeSelector(
+          client,
+          action.selector,
+          action.text,
+          action.clear ?? true,
+        );
+        if (!typeResult.ok) throw new Error(typeResult.message ?? 'type failed');
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      if (action.type === 'wait_for') {
+        if (action.selector) {
+          const ok = await waitForSelector(client, action.selector, actionTimeoutMs);
+          if (!ok) {
+            throw new Error(`wait_for timeout for selector ${action.selector}`);
+          }
+        } else {
+          await delay(actionTimeoutMs);
+        }
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      if (action.type === 'assert_text') {
+        const assertResult = await assertText(
+          client,
+          action.selector,
+          action.text,
+          action.contains ?? true,
+        );
+        if (!assertResult.ok) throw new Error(assertResult.message ?? 'assert_text failed');
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      if (action.type === 'snapshot') {
+        const name = action.name?.trim() || `snapshot-${actionIndex}`;
+        const snapshot = await captureSnapshot(client, actionIndex, name);
+        snapshots.push(snapshot);
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      if (action.type === 'script') {
+        const value = await evalJson(client, action.expression);
+        if (action.expect !== undefined) {
+          const actual = value === undefined || value === null ? '' : String(value);
+          if (!actual.includes(action.expect)) {
+            throw new Error(`script expect failed (expected "${action.expect}")`);
+          }
+        }
+        results.push({
+          index: actionIndex,
+          type: actionType,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+        });
+        continue;
+      }
+
+      results.push({
+        index: actionIndex,
+        type: actionType,
+        ok: false,
+        message: 'unsupported action',
+        durationMs: Date.now() - startedAt,
+      });
+      return {
+        outcome: 'fail',
+        errorMessage: 'unsupported action',
+        results,
+        snapshots,
+        finalDom: await captureFinalDom(client).catch(() => undefined),
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({
+        index: actionIndex,
+        type: actionType,
+        ok: false,
+        message,
+        durationMs: Date.now() - startedAt,
+      });
+      return {
+        outcome: 'fail',
+        errorMessage: message,
+        results,
+        snapshots,
+        finalDom: await captureFinalDom(client).catch(() => undefined),
+      };
+    }
+  }
+
+  return {
+    outcome: 'pass',
+    results,
+    snapshots,
+    finalDom: await captureFinalDom(client).catch(() => undefined),
+  };
 };
 
 const runDumpDom = async (
@@ -1065,8 +1594,164 @@ export class ChromiumQaAdapter implements QaAdapter {
 
   async invoke(profile: QaProfile, ctx: QaContext): Promise<QaRunResult> {
     const startedAt = new Date().toISOString();
+    const actions = (ctx.browserActions ?? []).filter(Boolean);
+    if (actions.length) {
+      return await this.runBrowserActions(actions, ctx, startedAt);
+    }
     const url = resolveBrowserTarget(profile, ctx);
     return await this.runBrowser(url, ctx, startedAt);
+  }
+
+  private async runBrowserActions(
+    actions: QaBrowserAction[],
+    ctx: QaContext,
+    startedAt: string,
+  ): Promise<QaRunResult> {
+    const chromiumPath = await resolveDocdexChromiumBinary();
+    if (!chromiumPath) {
+      const finishedAt = new Date().toISOString();
+      return {
+        outcome: 'infra_issue',
+        exitCode: null,
+        stdout: '',
+        stderr: DOCDEX_CHROMIUM_MISSING_MESSAGE,
+        artifacts: [],
+        startedAt,
+        finishedAt,
+      };
+    }
+    const headless = resolveHeadless(ctx);
+    const timeoutMs = resolveTimeoutMs(ctx);
+    const userAgent = resolveUserAgent(ctx);
+    const userDataDir = await resolveUserDataDir(ctx);
+    const sessionConfig: ChromeSessionConfig = {
+      chromeBinary: chromiumPath,
+      headless,
+      userAgent,
+      userDataDir,
+    };
+
+    let actionOutcome: 'pass' | 'fail' | undefined;
+    let actionError: string | undefined;
+    let infraError: string | undefined;
+    let actionResults: BrowserActionResult[] = [];
+    let snapshots: BrowserActionSnapshot[] = [];
+    let finalDom: BrowserFetchResult | undefined;
+
+    const executeOnce = async (): Promise<{
+      outcome: 'pass' | 'fail';
+      errorMessage?: string;
+      results: BrowserActionResult[];
+      snapshots: BrowserActionSnapshot[];
+      finalDom?: BrowserFetchResult;
+    }> => {
+      const instance = await chromeManager.getOrLaunch(sessionConfig, ctx.env);
+      const target = await createCdpTarget(instance.getDebugPort(), CHROME_STARTUP_TIMEOUT_MS);
+      const client = await CdpClient.connect(target.wsUrl);
+      try {
+        return await runBrowserActionsWithClient(
+          client,
+          actions,
+          ctx.browserBaseUrl,
+          timeoutMs,
+        );
+      } finally {
+        client.close();
+        if (target.targetId) {
+          try {
+            await closeCdpTarget(instance.getDebugPort(), target.targetId);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+
+    try {
+      const release = await chromeFetchSemaphore.acquire();
+      try {
+        const result = await executeOnce();
+        actionOutcome = result.outcome;
+        actionError = result.errorMessage;
+        actionResults = result.results;
+        snapshots = result.snapshots;
+        finalDom = result.finalDom;
+      } finally {
+        release();
+      }
+    } catch (err) {
+      infraError = err instanceof Error ? err.message : String(err);
+    }
+
+    const finishedAt = new Date().toISOString();
+    if (infraError) {
+      const artifacts = await this.persistLogs(ctx, '', infraError);
+      return {
+        outcome: 'infra_issue',
+        exitCode: null,
+        stdout: '',
+        stderr: infraError,
+        artifacts,
+        startedAt,
+        finishedAt,
+      };
+    }
+
+    const lines = ['MCODA_BROWSER_QA_ACTIONS'];
+    for (const result of actionResults) {
+      const status = result.ok ? 'ok' : 'fail';
+      lines.push(
+        `${result.index}. ${result.type} ${status}${result.message ? ` - ${result.message}` : ''}`,
+      );
+    }
+    const stdout = lines.join('\n');
+    const stderr = actionOutcome === 'fail' ? actionError ?? 'Browser action failed' : '';
+    const artifacts = await this.persistLogs(ctx, stdout, stderr);
+    if (finalDom) {
+      const browserArtifacts = await this.persistBrowserArtifacts(ctx, finalDom);
+      artifacts.push(...browserArtifacts);
+    }
+    if (ctx.artifactDir) {
+      await fs.mkdir(ctx.artifactDir, { recursive: true });
+      const actionsPath = path.join(ctx.artifactDir, 'browser-actions.json');
+      await fs.writeFile(
+        actionsPath,
+        JSON.stringify({ actions: actionResults, snapshots }, null, 2),
+        'utf8',
+      );
+      artifacts.push(path.relative(ctx.workspaceRoot, actionsPath));
+      if (snapshots.length) {
+        const snapDir = path.join(ctx.artifactDir, 'browser-snapshots');
+        await fs.mkdir(snapDir, { recursive: true });
+        for (const snapshot of snapshots) {
+          const safeName = snapshot.name.replace(/[^a-zA-Z0-9_-]+/g, '-');
+          const baseName = `${snapshot.index}-${safeName}`;
+          const htmlPath = path.join(snapDir, `${baseName}.html`);
+          await fs.writeFile(htmlPath, snapshot.html ?? '', 'utf8');
+          artifacts.push(path.relative(ctx.workspaceRoot, htmlPath));
+          if (snapshot.innerText) {
+            const innerPath = path.join(snapDir, `${baseName}.inner_text.txt`);
+            await fs.writeFile(innerPath, snapshot.innerText, 'utf8');
+            artifacts.push(path.relative(ctx.workspaceRoot, innerPath));
+          }
+          if (snapshot.textContent) {
+            const textPath = path.join(snapDir, `${baseName}.text_content.txt`);
+            await fs.writeFile(textPath, snapshot.textContent, 'utf8');
+            artifacts.push(path.relative(ctx.workspaceRoot, textPath));
+          }
+        }
+      }
+    }
+
+    return {
+      outcome: actionOutcome === 'fail' ? 'fail' : 'pass',
+      exitCode: actionOutcome === 'fail' ? 1 : 0,
+      stdout,
+      stderr: stderr || '',
+      artifacts,
+      startedAt,
+      finishedAt,
+    };
   }
 
   private async runBrowser(url: string | undefined, ctx: QaContext, startedAt: string): Promise<QaRunResult> {
@@ -1175,3 +1860,9 @@ export class ChromiumQaAdapter implements QaAdapter {
     };
   }
 }
+
+export const __testing = {
+  resolveActionUrl,
+  resolveActionTimeoutMs,
+  runBrowserActionsWithClient,
+};
