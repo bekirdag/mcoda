@@ -4,7 +4,8 @@ import fsSync from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import net from 'node:net';
@@ -37,6 +38,7 @@ import { AUTH_ERROR_REASON, isAuthErrorMessage } from '../shared/AuthErrors.js';
 import { normalizeQaPlanOutput } from './QaPlanValidator.js';
 import { QaApiRunner } from './QaApiRunner.js';
 import { QaTestCommandBuilder } from './QaTestCommandBuilder.js';
+const execFileAsync = promisify(execFile);
 const DEFAULT_QA_PROMPT = [
   'You are the QA agent.',
   buildDocdexUsageGuidance({ contextLabel: 'the QA report', includeHeading: false, includeFallback: true }),
@@ -58,6 +60,7 @@ const QA_ROUTING_PROMPT = [
   'UI/front-end tasks must include chromium alongside CLI and include browser actions.',
   'Only include chromium when the task itself is UI/front-end (ui_task=yes). Do not add chromium just because ui_repo=yes.',
   'Include at least one light stress action for UI tasks (repeat navigation or submit) when safe.',
+  'Browser actions must use types navigate/click/type/wait_for/snapshot/script; do not emit assertText/assert_text. For text checks, use a script action (optionally preceded by snapshot).',
   'API/back-end tasks (api_task=yes) must include API requests with sample data/auth when available.',
   'Only include API requests when api_task=yes or the plan explicitly defines api base_url/requests.',
   'Do not hardcode ports. If base_url is unknown, omit it and rely on MCODA_QA_API_BASE_URL or detected server ports.',
@@ -65,6 +68,7 @@ const QA_ROUTING_PROMPT = [
 ].join('\n');
 const QA_ROUTING_OUTPUT_SCHEMA = [
   'Return strict JSON only with shape:',
+  'Browser action types: navigate/click/type/wait_for/snapshot/script. Use script+expect for text checks; never emit assertText/assert_text.',
   '{',
   '  \"task_profiles\": { \"TASK_KEY\": [\"profile1\", \"profile2\"] },',
   '  \"task_plans\": {',
@@ -72,7 +76,7 @@ const QA_ROUTING_OUTPUT_SCHEMA = [
   '      \"profiles\": [\"cli\", \"chromium\"],',
   '      \"cli\": { \"commands\": [\"pnpm test\", \"node tests/all.js\"] },',
   '      \"api\": { \"base_url\": \"http://localhost:<PORT>\", \"requests\": [{ \"method\": \"GET\", \"path\": \"/health\", \"expect\": { \"status\": 200 } }] },',
-  '      \"browser\": { \"base_url\": \"http://localhost:<PORT>\", \"actions\": [{ \"type\": \"navigate\", \"url\": \"/\" }, { \"type\": \"snapshot\", \"name\": \"home\" }] },',
+  '      \"browser\": { \"base_url\": \"http://localhost:<PORT>\", \"actions\": [{ \"type\": \"navigate\", \"url\": \"/\" }, { \"type\": \"snapshot\", \"name\": \"home\" }, { \"type\": \"script\", \"expression\": \"document.body ? document.body.innerText : \\\"\\\"\", \"expect\": \"Welcome\" }] },',
   '      \"stress\": { \"api\": [], \"browser\": [] }',
   '    }',
   '  },',
@@ -128,6 +132,7 @@ const QA_PORT_ENV_KEYS = ['PORT', 'VITE_PORT', 'NUXT_PORT', 'NEXT_PORT'];
 const QA_SERVER_START_ENV = 'MCODA_QA_START_SERVER';
 const QA_SERVER_TIMEOUT_ENV = 'MCODA_QA_SERVER_TIMEOUT_MS';
 const DEFAULT_QA_SERVER_TIMEOUT_MS = 5_000;
+const QA_INSTALL_DEPS_ENV = 'MCODA_QA_INSTALL_DEPS';
 type RunAllMarkerPolicy = 'strict' | 'warn';
 type RunAllMarkerStatus = {
   policy: RunAllMarkerPolicy;
@@ -624,7 +629,7 @@ export class QaTasksService {
       return (
         /playwright/i.test(value) ||
         /MCODA_QA_BROWSER_URL/i.test(value) ||
-        /http:\/\/(?:localhost|127\.0\.0\.1):3000/i.test(value)
+        /http:\/\/(?:localhost|127\.0\.0\.1):\d{2,5}/i.test(value)
       );
     };
     try {
@@ -1473,6 +1478,166 @@ export class QaTasksService {
     if (!script) return undefined;
     const pm = (await this.detectPackageManager(workspaceRoot)) ?? 'npm';
     return { script, command: this.buildScriptCommand(pm, script) };
+  }
+
+  private shouldInstallQaDeps(): boolean {
+    if (process.env[QA_INSTALL_DEPS_ENV] === undefined) return true;
+    return isEnvEnabled(QA_INSTALL_DEPS_ENV);
+  }
+
+  private async hasFileWithExtension(workspaceRoot: string, ext: string): Promise<boolean> {
+    try {
+      const entries = await fs.readdir(workspaceRoot, { withFileTypes: true });
+      return entries.some((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(ext));
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveInstallCommands(workspaceRoot: string): Promise<string[]> {
+    const commands: string[] = [];
+    const pkgPath = path.join(workspaceRoot, 'package.json');
+    if (await this.fileExists(pkgPath)) {
+      const pm = (await this.detectPackageManager(workspaceRoot)) ?? 'npm';
+      if (pm === 'pnpm') commands.push('pnpm install');
+      else if (pm === 'yarn') commands.push('yarn install');
+      else commands.push('npm install');
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'requirements.txt'))) {
+      commands.push('python -m pip install -r requirements.txt');
+    } else if (
+      (await this.fileExists(path.join(workspaceRoot, 'pyproject.toml'))) ||
+      (await this.fileExists(path.join(workspaceRoot, 'setup.py')))
+    ) {
+      commands.push('python -m pip install .');
+    }
+
+    if (
+      (await this.hasFileWithExtension(workspaceRoot, '.sln')) ||
+      (await this.hasFileWithExtension(workspaceRoot, '.csproj'))
+    ) {
+      commands.push('dotnet restore');
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'pom.xml'))) {
+      commands.push('mvn -q -DskipTests dependency:resolve');
+    } else if (
+      (await this.fileExists(path.join(workspaceRoot, 'build.gradle'))) ||
+      (await this.fileExists(path.join(workspaceRoot, 'build.gradle.kts')))
+    ) {
+      const gradlew = path.join(workspaceRoot, 'gradlew');
+      if (await this.fileExists(gradlew)) {
+        commands.push('./gradlew --no-daemon dependencies');
+      } else {
+        commands.push('gradle --no-daemon dependencies');
+      }
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'go.mod'))) {
+      commands.push('go mod download');
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'composer.json'))) {
+      commands.push('composer install');
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'Gemfile'))) {
+      commands.push('bundle install');
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'pubspec.yaml'))) {
+      commands.push('flutter pub get');
+    }
+
+    if (await this.fileExists(path.join(workspaceRoot, 'Podfile'))) {
+      commands.push('pod install');
+    }
+
+    return Array.from(new Set(commands));
+  }
+
+  private async runShellCommand(params: {
+    command: string;
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+  }): Promise<{ ok: boolean; exitCode: number; stdout: string; stderr: string }> {
+    return await new Promise((resolve) => {
+      const child = spawn(params.command, {
+        cwd: params.cwd,
+        env: params.env,
+        shell: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr?.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.once('close', (code) => {
+        const exitCode = typeof code === 'number' ? code : 0;
+        resolve({ ok: exitCode === 0, exitCode, stdout, stderr });
+      });
+    });
+  }
+
+  private async commitInstallChanges(workspaceRoot: string, message: string): Promise<boolean> {
+    const status = await this.vcs.status(workspaceRoot);
+    if (!status.trim()) return false;
+    await execFileAsync('git', ['add', '-A'], { cwd: workspaceRoot });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'mcoda-qa',
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'qa@mcoda.local',
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'mcoda-qa',
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'qa@mcoda.local',
+    };
+    await execFileAsync('git', ['commit', '-m', message, '--no-verify'], { cwd: workspaceRoot, env });
+    return true;
+  }
+
+  private async prepareQaWorkspace(params: {
+    workspaceRoot: string;
+    taskRunId: string;
+    baseBranch: string;
+    taskBranch: string;
+  }): Promise<{ ok: boolean; message?: string }> {
+    if (!this.shouldInstallQaDeps()) {
+      await this.logTask(params.taskRunId, 'QA dependency install disabled; skipping.', 'qa-install');
+      return { ok: true };
+    }
+    await this.vcs.ensureBaseBranch(params.workspaceRoot, params.baseBranch);
+    const current = await this.vcs.currentBranch(params.workspaceRoot);
+    if (current !== params.baseBranch) {
+      await this.vcs.checkoutBranch(params.workspaceRoot, params.baseBranch);
+    }
+    const commands = await this.resolveInstallCommands(params.workspaceRoot);
+    for (const command of commands) {
+      await this.logTask(params.taskRunId, `Installing deps: ${command}`, 'qa-install');
+      const result = await this.runShellCommand({ command, cwd: params.workspaceRoot });
+      if (!result.ok) {
+        const message = `QA dependency install failed (${command}) with exit ${result.exitCode}.`;
+        await this.logTask(params.taskRunId, message, 'qa-install', {
+          stdout: result.stdout.slice(0, 2000),
+          stderr: result.stderr.slice(0, 2000),
+        });
+        return { ok: false, message };
+      }
+    }
+    const committed = await this.commitInstallChanges(
+      params.workspaceRoot,
+      'chore: qa install dependencies',
+    );
+    if (committed) {
+      await this.logTask(params.taskRunId, 'Committed QA dependency install changes.', 'qa-install');
+    }
+    if (params.taskBranch && params.taskBranch !== params.baseBranch) {
+      await this.vcs.checkoutBranch(params.workspaceRoot, params.taskBranch);
+    }
+    return { ok: true };
   }
 
   private async isUrlReachable(url: string, timeoutMs: number): Promise<boolean> {
@@ -2831,7 +2996,52 @@ export class QaTasksService {
     const qaWorkspaceRoot = branchCheck.workspaceRoot ?? this.workspace.workspaceRoot;
     const cleanupWorktree = branchCheck.cleanup;
     let serverHandle: QaServerHandle | undefined;
+    const baseBranch = this.workspace.config?.branch ?? 'mcoda-dev';
+    const taskBranch = branchCheck.branch ?? baseBranch;
+    let qaPrepared = false;
+    const ensureQaPrepared = async (): Promise<{ ok: boolean; message?: string }> => {
+      if (qaPrepared) return { ok: true };
+      qaPrepared = true;
+      return await this.prepareQaWorkspace({
+        workspaceRoot: qaWorkspaceRoot,
+        taskRunId: taskRun.id,
+        baseBranch,
+        taskBranch,
+      });
+    };
     try {
+      const prep = await ensureQaPrepared();
+      if (!prep.ok) {
+        const message = prep.message ?? 'QA dependency install failed.';
+        await this.logTask(taskRun.id, message, 'qa-install');
+        await this.finishTaskRun(taskRun, 'failed');
+        if (!this.dryRunGuard) {
+          await this.applyStateTransition(task.task, 'infra_issue', statusContextBase, {
+            qa_failure_reason: 'qa_dependency_install_failed',
+          });
+          await this.deps.workspaceRepo.createTaskQaRun({
+            taskId: task.task.id,
+            taskRunId: taskRun.id,
+            jobId: ctx.jobId,
+            commandRunId: ctx.commandRunId,
+            source: 'auto',
+            mode: 'auto',
+            rawOutcome: 'infra_issue',
+            recommendation: 'infra_issue',
+            metadata: { reason: 'qa_dependency_install_failed', message },
+          });
+          await this.createQaComment({
+            task: task.task,
+            taskRunId: taskRun.id,
+            jobId: ctx.jobId,
+            message,
+            category: 'qa_issue',
+            status: 'open',
+            metadata: { reason: 'qa_dependency_install_failed' },
+          });
+        }
+        return { taskKey: task.task.key, outcome: 'infra_issue', notes: 'qa_dependency_install_failed' };
+      }
       let profiles: QaProfile[] = [];
       try {
         profiles = await this.resolveProfilesForRequest(task.task, ctx.request);
@@ -3070,11 +3280,11 @@ export class QaTasksService {
     };
     let serverBaseUrl: string | undefined;
     const serverTimeoutMs = resolveServerTimeoutMs();
-    const ensureServerReady = async (
-      baseUrl: string | undefined,
-      reason: 'browser' | 'api',
-      options: { allowFailure?: boolean } = {},
-    ): Promise<{ ok: boolean; message?: string }> => {
+      const ensureServerReady = async (
+        baseUrl: string | undefined,
+        reason: 'browser' | 'api',
+        options: { allowFailure?: boolean } = {},
+      ): Promise<{ ok: boolean; message?: string }> => {
       if (!baseUrl) return { ok: true };
       if (!isLocalBaseUrl(baseUrl)) return { ok: true };
       const reachable = await this.isUrlReachable(baseUrl, 1500);
@@ -3087,6 +3297,12 @@ export class QaTasksService {
       if (serverHandle) {
         const message = `QA server already started for ${serverBaseUrl ?? 'unknown'}; ${baseUrl} is still unreachable.`;
         await this.logTask(taskRun.id, message, 'qa-server');
+        return options.allowFailure ? { ok: true, message } : { ok: false, message };
+      }
+      const prep = await ensureQaPrepared();
+      if (!prep.ok) {
+        const message = prep.message ?? 'QA dependency install failed.';
+        await this.logTask(taskRun.id, message, 'qa-install');
         return options.allowFailure ? { ok: true, message } : { ok: false, message };
       }
       const handle = await this.startQaServer({

@@ -1,4 +1,5 @@
 import { QaPlan, QaTaskPlan } from '@mcoda/shared';
+import type { QaBrowserAction } from '@mcoda/shared/qa/QaPlan.js';
 
 type NormalizedQaPlan = {
   taskProfiles: Record<string, string[]>;
@@ -16,7 +17,57 @@ const toStringList = (value: unknown): string[] => {
     .filter(Boolean);
 };
 
-const normalizePlanEntry = (value: unknown): QaTaskPlan | undefined => {
+const ASSERT_TEXT_OK_MARKER = '__MCODA_ASSERT_OK__';
+
+const buildAssertTextExpression = (params: {
+  selector?: string;
+  text: string;
+  contains: boolean;
+}): string => {
+  const textExpression = params.selector
+    ? `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); return el ? (el.innerText || el.textContent || '') : ''; })()`
+    : `document.body ? (document.body.innerText || document.body.textContent || '') : ''`;
+  const expected = JSON.stringify(params.text);
+  const comparison = params.contains ? 'actual.includes(expected)' : 'actual.trim() === expected';
+  return `(() => { const actual = ${textExpression}; const expected = ${expected}; const ok = ${comparison}; return ok ? ${JSON.stringify(ASSERT_TEXT_OK_MARKER)} : actual; })()`;
+};
+
+const normalizeBrowserActions = (
+  entries: unknown[],
+  warnings: string[],
+  taskKey?: string,
+): QaBrowserAction[] => {
+  const actions: QaBrowserAction[] = [];
+  const context = taskKey ? ` for ${taskKey}` : '';
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const action = entry as Record<string, unknown>;
+    const rawType = typeof action.type === 'string' ? action.type : '';
+    if (rawType === 'assertText' || rawType === 'assert_text') {
+      const text = typeof action.text === 'string' ? action.text.trim() : '';
+      if (!text) {
+        warnings.push(`QA plan browser action ${rawType} missing text${context}.`);
+        continue;
+      }
+      const selector = typeof action.selector === 'string' ? action.selector : undefined;
+      const contains = typeof action.contains === 'boolean' ? action.contains : true;
+      actions.push({
+        type: 'script',
+        expression: buildAssertTextExpression({ selector, text, contains }),
+        expect: ASSERT_TEXT_OK_MARKER,
+      });
+      continue;
+    }
+    actions.push(action as QaBrowserAction);
+  }
+  return actions;
+};
+
+const normalizePlanEntry = (
+  value: unknown,
+  warnings: string[],
+  taskKey?: string,
+): QaTaskPlan | undefined => {
   if (!value || typeof value !== 'object') return undefined;
   const raw = value as Record<string, unknown>;
   const profiles = toStringList(raw.profiles);
@@ -24,9 +75,10 @@ const normalizePlanEntry = (value: unknown): QaTaskPlan | undefined => {
   const apiRequests = Array.isArray((raw.api as any)?.requests)
     ? ((raw.api as any).requests as unknown[]).filter((entry) => typeof entry === 'object' && entry)
     : [];
-  const browserActions = Array.isArray((raw.browser as any)?.actions)
+  const rawBrowserActions = Array.isArray((raw.browser as any)?.actions)
     ? ((raw.browser as any).actions as unknown[]).filter((entry) => typeof entry === 'object' && entry)
     : [];
+  const browserActions = normalizeBrowserActions(rawBrowserActions, warnings, taskKey);
   const stressApi = Array.isArray((raw.stress as any)?.api)
     ? ((raw.stress as any).api as unknown[]).filter((entry) => typeof entry === 'object' && entry)
     : [];
@@ -46,7 +98,7 @@ const normalizePlanEntry = (value: unknown): QaTaskPlan | undefined => {
     plan.browser = {
       base_url:
         typeof (raw.browser as any)?.base_url === 'string' ? ((raw.browser as any).base_url as string) : undefined,
-      actions: browserActions as any,
+      actions: browserActions.length ? browserActions : undefined,
     };
   }
   if (stressApi.length || stressBrowser.length) {
@@ -81,7 +133,7 @@ export const normalizeQaPlanOutput = (value: unknown): NormalizedQaPlan => {
   const taskPlans: Record<string, QaTaskPlan> = {};
   if (taskPlansRaw && typeof taskPlansRaw === 'object') {
     for (const [key, entry] of Object.entries(taskPlansRaw as Record<string, unknown>)) {
-      const normalized = normalizePlanEntry(entry);
+      const normalized = normalizePlanEntry(entry, warnings, key);
       if (normalized) taskPlans[key] = normalized;
     }
   } else if (taskPlansRaw !== undefined) {

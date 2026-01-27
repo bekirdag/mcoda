@@ -7,9 +7,16 @@ const exec = promisify(execCb);
 const execFile = promisify(execFileCb);
 
 export class VcsClient {
-  private async runGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-    const { stdout, stderr } = await execFile("git", args, { cwd });
-    return { stdout, stderr };
+  private async runGit(
+    cwd: string,
+    args: string[],
+    options: ExecOptions = {},
+  ): Promise<{ stdout: string; stderr: string }> {
+    const { stdout, stderr } = await execFile("git", args, { cwd, ...options });
+    return {
+      stdout: typeof stdout === "string" ? stdout : stdout?.toString?.() ?? "",
+      stderr: typeof stderr === "string" ? stderr : stderr?.toString?.() ?? "",
+    };
   }
 
   private async gitDirExists(cwd: string): Promise<boolean> {
@@ -177,12 +184,13 @@ export class VcsClient {
   async commit(
     cwd: string,
     message: string,
-    options: { noVerify?: boolean; noGpgSign?: boolean } = {},
+    options: { noVerify?: boolean; noGpgSign?: boolean; env?: NodeJS.ProcessEnv } = {},
   ): Promise<void> {
     const args = ["commit", "-m", message];
     if (options.noVerify) args.push("--no-verify");
     if (options.noGpgSign) args.push("--no-gpg-sign");
-    await this.runGit(cwd, args);
+    const execOptions: ExecOptions = options.env ? { env: options.env } : {};
+    await this.runGit(cwd, args, execOptions);
   }
 
   async merge(cwd: string, source: string, target: string, ensureClean = false): Promise<void> {

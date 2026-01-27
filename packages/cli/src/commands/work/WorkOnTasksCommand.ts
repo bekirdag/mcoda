@@ -270,6 +270,7 @@ export class WorkOnTasksCommand {
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
         statusFilter: parsed.statusFilter,
+        ignoreStatusFilter: parsed.taskKeys.length > 0 ? true : undefined,
         limit: parsed.limit,
         parallel: parsed.parallel,
         noCommit: parsed.noCommit,

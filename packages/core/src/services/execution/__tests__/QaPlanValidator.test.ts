@@ -39,6 +39,27 @@ test('normalizeQaPlanOutput accepts task_plans with cli/api/browser entries', ()
   assert.equal(result.taskPlans['task-1']?.browser?.base_url, 'http://127.0.0.1:4173');
 });
 
+test('normalizeQaPlanOutput converts assertText actions to script checks', () => {
+  const result = normalizeQaPlanOutput({
+    task_plans: {
+      'task-1': {
+        browser: {
+          actions: [
+            { type: 'assertText', text: 'Welcome' },
+            { type: 'assert_text', selector: '#app', text: 'Home', contains: false },
+          ],
+        },
+      },
+    },
+  });
+  const actions = result.taskPlans['task-1']?.browser?.actions ?? [];
+  assert.equal(actions.length, 2);
+  for (const action of actions) {
+    assert.equal(action.type, 'script');
+    assert.equal((action as any).expect, '__MCODA_ASSERT_OK__');
+  }
+});
+
 test('normalizeQaPlanOutput preserves stress actions', () => {
   const result = normalizeQaPlanOutput({
     task_plans: {

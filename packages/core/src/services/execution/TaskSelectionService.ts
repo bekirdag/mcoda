@@ -8,6 +8,7 @@ export interface TaskSelectionFilters {
   storyKey?: string;
   taskKeys?: string[];
   statusFilter?: string[];
+  ignoreStatusFilter?: boolean;
   includeTypes?: string[];
   excludeTypes?: string[];
   limit?: number;
@@ -371,12 +372,13 @@ export class TaskSelectionService {
     const dedupedTaskKeys = filters.taskKeys?.length
       ? Array.from(new Set(filters.taskKeys.map((key) => key.trim()).filter(Boolean)))
       : undefined;
-    const effectiveStatuses = normalizeStatusList(filters.statusFilter);
+    const ignoreStatusFilter = Boolean(filters.ignoreStatusFilter);
+    const effectiveStatuses = ignoreStatusFilter ? [] : normalizeStatusList(filters.statusFilter);
     const includeTypes = normalizeTypeList(filters.includeTypes);
     const excludeTypes = normalizeTypeList(filters.excludeTypes);
     const tasks = await this.loadTasks({ ...filters, project, taskKeys: dedupedTaskKeys });
     const filteredTasks = tasks.filter((task) => {
-      if (!effectiveStatuses.includes(task.task_status.toLowerCase())) return false;
+      if (!ignoreStatusFilter && !effectiveStatuses.includes(task.task_status.toLowerCase())) return false;
       const type = task.task_type?.toLowerCase().trim() ?? "";
       if (includeTypes.length > 0 && !includeTypes.includes(type)) return false;
       if (excludeTypes.length > 0 && type && excludeTypes.includes(type)) return false;
@@ -384,15 +386,17 @@ export class TaskSelectionService {
     });
     const dedupeWarnings: string[] = [];
     const selectionWarnings: string[] = [];
-    const requestedBlocked =
-      filters.statusFilter?.some((status) => status.toLowerCase().trim() === "blocked") ?? false;
-    const requestedLegacyReview =
-      filters.statusFilter?.some((status) => status.toLowerCase().trim() === "ready_to_review") ?? false;
-    if (requestedBlocked) {
-      selectionWarnings.push("Status 'blocked' is no longer supported; ignoring it in selection.");
-    }
-    if (requestedLegacyReview) {
-      selectionWarnings.push("Status 'ready_to_review' is deprecated; use 'ready_to_code_review' instead.");
+    if (!ignoreStatusFilter) {
+      const requestedBlocked =
+        filters.statusFilter?.some((status) => status.toLowerCase().trim() === "blocked") ?? false;
+      const requestedLegacyReview =
+        filters.statusFilter?.some((status) => status.toLowerCase().trim() === "ready_to_review") ?? false;
+      if (requestedBlocked) {
+        selectionWarnings.push("Status 'blocked' is no longer supported; ignoring it in selection.");
+      }
+      if (requestedLegacyReview) {
+        selectionWarnings.push("Status 'ready_to_review' is deprecated; use 'ready_to_code_review' instead.");
+      }
     }
     const seenKeys = new Set<string>();
     const dedupedTasks: RawTaskRow[] = [];

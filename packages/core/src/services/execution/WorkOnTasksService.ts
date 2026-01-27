@@ -2126,6 +2126,17 @@ export class WorkOnTasksService {
     }
   }
 
+  private buildCommitEnv(agentId?: string): NodeJS.ProcessEnv {
+    const committerName = agentId ? `mcoda-qa (${agentId})` : "mcoda-qa";
+    return {
+      ...process.env,
+      GIT_AUTHOR_NAME: "mcoda-qa",
+      GIT_AUTHOR_EMAIL: "qa@mcoda.local",
+      GIT_COMMITTER_NAME: committerName,
+      GIT_COMMITTER_EMAIL: "qa@mcoda.local",
+    };
+  }
+
   private async commitPendingChanges(
     branchInfo: { branch: string; base: string } | null,
     taskKey: string,
@@ -2133,7 +2144,7 @@ export class WorkOnTasksService {
     reason: string,
     taskId: string,
     taskRunId: string,
-    options?: { updateTask?: boolean },
+    options?: { updateTask?: boolean; agentId?: string },
   ): Promise<string | null> {
     const dirty = await this.vcs.dirtyPaths(this.workspace.workspaceRoot);
     const nonMcoda = dirty.filter((p: string) => !p.startsWith(".mcoda"));
@@ -2142,7 +2153,8 @@ export class WorkOnTasksService {
     const status = await this.vcs.status(this.workspace.workspaceRoot);
     if (!status.trim().length) return null;
     const message = `[${taskKey}] ${taskTitle} (${reason})`;
-    await this.vcs.commit(this.workspace.workspaceRoot, message);
+    const commitEnv = this.buildCommitEnv(options?.agentId);
+    await this.vcs.commit(this.workspace.workspaceRoot, message, { env: commitEnv });
     const head = await this.vcs.lastCommitSha(this.workspace.workspaceRoot);
     if (options?.updateTask !== false) {
       await this.deps.workspaceRepo.updateTask(taskId, {
@@ -2165,6 +2177,7 @@ export class WorkOnTasksService {
     taskId: string,
     baseBranch: string,
     taskRunId: string,
+    agentId?: string,
   ): Promise<{ branch: string; base: string; mergeConflicts?: string[]; remoteSyncNote?: string }> {
     const branch = `${DEFAULT_TASK_BRANCH_PREFIX}${taskKey}`;
     const cwd = this.workspace.workspaceRoot;
@@ -2183,6 +2196,7 @@ export class WorkOnTasksService {
           "pre_existing_changes",
           taskId,
           taskRunId,
+          { agentId },
         );
       } else if (!taskBranchExists) {
         pendingCherryPickSha = await this.commitPendingChanges(
@@ -2192,7 +2206,7 @@ export class WorkOnTasksService {
           "pre_existing_changes",
           taskId,
           taskRunId,
-          { updateTask: false },
+          { updateTask: false, agentId },
         );
       } else {
         try {
@@ -2204,6 +2218,7 @@ export class WorkOnTasksService {
             "pre_existing_changes",
             taskId,
             taskRunId,
+            { agentId },
           );
         } catch (error) {
           const errorText = this.formatGitError(error);
@@ -2222,7 +2237,7 @@ export class WorkOnTasksService {
             "pre_existing_changes",
             taskId,
             taskRunId,
-            { updateTask: false },
+            { updateTask: false, agentId },
           );
         }
       }
@@ -2250,6 +2265,7 @@ export class WorkOnTasksService {
         "pre_existing_changes",
         taskId,
         taskRunId,
+        { agentId },
       );
       if (hasRemote) {
         try {
@@ -2344,6 +2360,7 @@ export class WorkOnTasksService {
         "pre_existing_changes",
         taskId,
         taskRunId,
+        { agentId },
       );
     }
     return { branch, base: baseBranch, remoteSyncNote: remoteSyncNote || undefined };
@@ -2852,22 +2869,24 @@ export class WorkOnTasksService {
     const autoPush = request.autoPush ?? configuredAutoPush ?? true;
     const baseBranchWarnings: string[] = [];
     const statusWarnings: string[] = [];
-    const { filtered: statusFilter, rejected } = filterTaskStatuses(
-      request.statusFilter,
-      WORK_ALLOWED_STATUSES,
-      WORK_ALLOWED_STATUSES,
-    );
+    const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
+    const { filtered: statusFilter, rejected } = ignoreStatusFilter
+      ? { filtered: request.statusFilter ?? [], rejected: [] as string[] }
+      : filterTaskStatuses(request.statusFilter, WORK_ALLOWED_STATUSES, WORK_ALLOWED_STATUSES);
     const includeTypes = request.includeTypes?.length ? request.includeTypes : undefined;
     let excludeTypes = request.excludeTypes;
     if (!excludeTypes && !includeTypes?.length && (!request.taskKeys || request.taskKeys.length === 0)) {
       excludeTypes = ["qa_followup"];
     }
-    if (rejected.length > 0) {
+    if (!ignoreStatusFilter && rejected.length > 0) {
       statusWarnings.push(
         `work-on-tasks ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${WORK_ALLOWED_STATUSES.join(
           ", ",
         )}.`,
       );
+    }
+    if (ignoreStatusFilter) {
+      statusWarnings.push("work-on-tasks ignores status filters when explicit --task keys are provided.");
     }
     if (normalizedBaseBranch && normalizedBaseBranch !== DEFAULT_BASE_BRANCH) {
       baseBranchWarnings.push(
@@ -2884,7 +2903,8 @@ export class WorkOnTasksService {
         epicKey: request.epicKey,
         storyKey: request.storyKey,
         tasks: request.taskKeys,
-        statusFilter,
+        statusFilter: ignoreStatusFilter ? undefined : statusFilter,
+        ignoreStatusFilter,
         includeTypes,
         excludeTypes,
         ignoreDependencies: true,
@@ -2938,6 +2958,7 @@ export class WorkOnTasksService {
         storyKey: request.storyKey,
         taskKeys: request.taskKeys,
         statusFilter,
+        ignoreStatusFilter,
         includeTypes,
         excludeTypes,
         ignoreDependencies: true,
@@ -3518,9 +3539,10 @@ export class WorkOnTasksService {
               const hasChanges = status.trim().length > 0;
               if (hasChanges) {
                 const commitMessage = `[${task.task.key}] ${task.task.title}`;
+                const commitEnv = this.buildCommitEnv(agent.id);
                 let committed = false;
                 try {
-                  await this.vcs.commit(this.workspace.workspaceRoot, commitMessage);
+                  await this.vcs.commit(this.workspace.workspaceRoot, commitMessage, { env: commitEnv });
                   committed = true;
                 } catch (error) {
                   const errorText = this.formatGitError(error);
@@ -3544,6 +3566,7 @@ export class WorkOnTasksService {
                       await this.vcs.commit(this.workspace.workspaceRoot, commitMessage, {
                         noVerify: hookFailure,
                         noGpgSign: gpgFailure,
+                        env: commitEnv,
                       });
                       committed = true;
                       await this.logTask(taskRun.id, "Commit succeeded after bypassing hook/signing checks.", "vcs");
@@ -3711,6 +3734,7 @@ export class WorkOnTasksService {
                 task.task.id,
                 baseBranch,
                 taskRun.id,
+                agent.id,
               );
               taskBranchName = branchInfo.branch || taskBranchName;
               baseBranchName = branchInfo.base || baseBranchName;
