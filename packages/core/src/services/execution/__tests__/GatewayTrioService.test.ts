@@ -676,16 +676,52 @@ test("GatewayTrioService loops on QA fix_required", async () => {
   }
 });
 
-test("GatewayTrioService stops on QA infra_issue", async () => {
+test("GatewayTrioService retries after QA infra_issue and completes", async () => {
   const statusStore = makeStatusStore({ "TASK-4": "in_progress" });
   const { service, dir } = await makeService({
     statusStore,
     selectionKeys: ["TASK-4"],
-    qaSequence: ["infra_issue"],
+    qaSequence: ["infra_issue", "pass"],
   });
   try {
     const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
-    assert.equal(result.tasks[0].status, "failed");
+    assert.equal(result.tasks[0].status, "completed");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService completes one task before moving to the next", async () => {
+  const statusStore = makeStatusStore({ "TASK-4": "in_progress", "TASK-5": "in_progress" });
+  const workCalls: string[] = [];
+  const stepCalls: string[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-4", "TASK-5"],
+    qaSequence: ["infra_issue", "pass", "pass"],
+    workCalls,
+    stepCalls,
+  });
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any });
+    const summary = Object.fromEntries(
+      result.tasks.map((task: { taskKey: string; status: string }) => [task.taskKey, task.status]),
+    );
+    assert.equal(summary["TASK-4"], "completed");
+    assert.equal(summary["TASK-5"], "completed");
+    assert.deepEqual(workCalls, ["TASK-4", "TASK-4", "TASK-5"]);
+    assert.deepEqual(stepCalls, [
+      "work",
+      "review",
+      "qa",
+      "work",
+      "review",
+      "qa",
+      "work",
+      "review",
+      "qa",
+    ]);
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

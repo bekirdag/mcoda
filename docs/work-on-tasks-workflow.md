@@ -81,7 +81,8 @@ This document describes the current `work-on-tasks` command flow as implemented 
 
 #### 2.8 No-change handling
 1. If there are **no changes** (no touched files and no dirty paths):
-   - If unresolved comments exist, fail with `no_changes` and add a comment backlog summary.
+   - If unresolved comments exist and no repo changes were made, fail with `comment_backlog_unaddressed`, add a comment backlog summary, and keep the task in `changes_requested`.
+   - For any run with unresolved comments, record a `comment_progress` note (work-on-tasks) that captures the open slugs and the agent’s reported resolution status. This forms the thread for follow-up runs.
    - Otherwise, add a `no_changes` comment and mark the task completed (`completed_reason = "no_changes"`).
 
 #### 2.9 VCS commit/merge/push (non‑dry run)
@@ -108,7 +109,8 @@ This document describes the current `work-on-tasks` command flow as implemented 
 - `tests_not_configured`: task requires tests but no command/run‑all script exists.
 - `tests_failed`: tests failed after all attempts.
 - `scope_violation`: change outside allowed file scope.
-- `no_changes`: no diffs produced.
+- `no_changes`: no diffs produced (no comment backlog).
+- `comment_backlog_unaddressed`: no diffs produced while unresolved review/QA comments remain.
 - `vcs_failed`: commit/merge/push failed.
 - `agent_timeout`: abort/timeout triggered.
 - `task_lock_lost`: lock was stolen or expired.
@@ -116,7 +118,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 
 ## Gateway-trio integration notes
 - `gateway-trio` invokes `work-on-tasks` per task and reuses the same run-all tests gating.
-- Escalation reasons include `missing_patch`, `patch_failed`, `tests_failed`, `agent_timeout`, and `no_changes` (default).
+- Escalation reasons include `missing_patch`, `patch_failed`, `tests_failed`, `agent_timeout`, `no_changes` (default), and `comment_backlog_unaddressed`.
 - `tests_failed` triggers one retry with a stronger agent before the task is left failed.
 - Task locks are cleaned up by gateway-trio on start/resume if expired.
 
