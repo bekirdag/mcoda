@@ -222,7 +222,7 @@ class StubAgentServiceCommentResolution {
       output: JSON.stringify({
         patch,
         resolvedSlugs: ["review-open"],
-        unresolvedSlugs: ["qa-old"],
+        unresolvedSlugs: ["review-resolved"],
       }),
       adapter: "local-model",
     };
@@ -2234,7 +2234,7 @@ test("workOnTasks filters QA and .mcoda docs from doc context", async () => {
   }
 });
 
-test("workOnTasks includes unresolved review/qa comment backlog", async () => {
+test("workOnTasks includes unresolved review + QA comment backlog", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2281,10 +2281,9 @@ test("workOnTasks includes unresolved review/qa comment backlog", async () => {
     authorType: "agent",
     slug: "qa-1",
     status: "open",
-    file: "src/app.ts",
-    line: 20,
-    body: "QA failed for empty input",
-    metadata: { suggestedFix: "Add unit test for empty input" },
+    file: "tests/ui.spec.ts",
+    line: 5,
+    body: "Fix flaky UI assertion",
     createdAt: now,
   });
   await repo.createTaskComment({
@@ -2325,6 +2324,7 @@ test("workOnTasks includes unresolved review/qa comment backlog", async () => {
     assert.ok(!input.includes("resolved-1"));
     assert.equal((input.match(/review-1/g) ?? []).length, 1);
     assert.ok(input.includes("src/app.ts:12"));
+    assert.ok(input.includes("tests/ui.spec.ts:5"));
     assert.ok(input.includes("Suggested fix: Add early return when value missing"));
   } finally {
     await service.close();
@@ -2362,11 +2362,11 @@ test("workOnTasks applies comment resolutions from JSON output", async () => {
   const resolvedAt = new Date(Date.now() - 1000).toISOString();
   await repo.createTaskComment({
     taskId: tasks[0].id,
-    sourceCommand: "qa-tasks",
+    sourceCommand: "code-review",
     authorType: "agent",
-    slug: "qa-old",
+    slug: "review-resolved",
     status: "resolved",
-    body: "Resolved QA comment",
+    body: "Resolved review comment",
     createdAt: resolvedAt,
     resolvedAt,
     resolvedBy: "agent-0",
@@ -2386,7 +2386,7 @@ test("workOnTasks applies comment resolutions from JSON output", async () => {
     const resolved = await repo.listTaskComments(tasks[0].id, { slug: "review-open", resolved: true });
     assert.ok(resolved.length > 0);
 
-    const reopened = await repo.listTaskComments(tasks[0].id, { slug: "qa-old", resolved: false });
+    const reopened = await repo.listTaskComments(tasks[0].id, { slug: "review-resolved", resolved: false });
     assert.ok(reopened.length > 0);
 
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });

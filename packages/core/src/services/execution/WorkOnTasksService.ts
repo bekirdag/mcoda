@@ -31,10 +31,12 @@ const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_CODE_WRITER_PROMPT = [
   "You are the code-writing agent.",
+  "You are not the QA agent. Do not run qa-tasks, generate QA plans, or write QA reports.",
   buildDocdexUsageGuidance({ contextLabel: "task notes", includeHeading: false, includeFallback: true }),
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria).",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
   "Do not hardcode ports. Read PORT/HOST (or MCODA_QA_PORT/MCODA_QA_HOST) from env, and document base URLs with http://localhost:<PORT> placeholders when needed.",
+  "Do not create docs/qa/* reports unless the task explicitly requests one. Work-on-tasks should not generate QA reports.",
   "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
   "Work directly in the repo: edit files and run commands as needed. Do not output patches/diffs/FILE blocks; apply changes to the working tree.",
 ].join("\n");
@@ -50,6 +52,17 @@ const GATEWAY_PROMPT_MARKERS = [
   "filestocreate",
   "do not include fields outside the schema",
 ];
+const QA_PROMPT_MARKERS = [
+  "qa agent prompt",
+  "qa task",
+  "qa-tasks",
+  "qa report",
+  "tested_scope",
+  "coverage_summary",
+  "start of qa task",
+  "qa plan output schema",
+];
+const QA_ADAPTERS = new Set(["qa-cli"]);
 
 const sanitizeNonGatewayPrompt = (value?: string): string | undefined => {
   if (!value) return undefined;
@@ -58,6 +71,12 @@ const sanitizeNonGatewayPrompt = (value?: string): string | undefined => {
   const lower = trimmed.toLowerCase();
   if (GATEWAY_PROMPT_MARKERS.some((marker) => lower.includes(marker))) return undefined;
   return trimmed;
+};
+
+const looksLikeQaPrompt = (value?: string): boolean => {
+  if (!value) return false;
+  const normalized = value.toLowerCase();
+  return QA_PROMPT_MARKERS.some((marker) => normalized.includes(marker));
 };
 
 const readPromptFile = async (promptPath: string, fallback: string): Promise<string> => {
@@ -1602,8 +1621,21 @@ export class WorkOnTasksService {
         }
       }
     }
-    const filePrompt = await readPromptFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT);
-    const commandPrompt = agentPrompts?.commandPrompts?.["work-on-tasks"]?.trim() || filePrompt;
+    let filePrompt = await readPromptFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT);
+    if (looksLikeQaPrompt(filePrompt)) {
+      console.info("[work-on-tasks] detected QA prompt in code-writer prompt; restoring default code-writer prompt.");
+      filePrompt = DEFAULT_CODE_WRITER_PROMPT;
+      try {
+        await fs.promises.writeFile(mcodaPromptPath, DEFAULT_CODE_WRITER_PROMPT, "utf8");
+      } catch {
+        // ignore prompt write failures
+      }
+    }
+    let commandPrompt = agentPrompts?.commandPrompts?.["work-on-tasks"]?.trim() || filePrompt;
+    if (looksLikeQaPrompt(commandPrompt)) {
+      console.info("[work-on-tasks] ignoring QA-flavored command prompt override; using code-writer prompt.");
+      commandPrompt = filePrompt;
+    }
     return {
       jobPrompt: sanitizeNonGatewayPrompt(agentPrompts?.jobPrompt) ?? DEFAULT_JOB_PROMPT,
       characterPrompt: sanitizeNonGatewayPrompt(agentPrompts?.characterPrompt) ?? DEFAULT_CHARACTER_PROMPT,
@@ -1703,7 +1735,16 @@ export class WorkOnTasksService {
       commandName: "work-on-tasks",
       overrideAgentSlug: agentName,
     });
+    this.ensureWorkAgent(resolved.agent);
     return resolved.agent;
+  }
+
+  private ensureWorkAgent(agent: { id: string; slug?: string | null; adapter?: string | null }): void {
+    const adapter = (agent.adapter ?? "").toLowerCase();
+    if (QA_ADAPTERS.has(adapter)) {
+      const label = agent.slug ?? agent.id;
+      throw new Error(`Work-on-tasks cannot use QA adapter ${adapter} (agent ${label}). Select a code-writing agent.`);
+    }
   }
 
   private ensureRatingService(): AgentRatingService {
@@ -2003,9 +2044,12 @@ export class WorkOnTasksService {
       }
     }
 
-    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const allowedSlugs = new Set(existingBySlug.keys());
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined).filter((slug) => allowedSlugs.has(slug));
     const resolvedSet = new Set(resolvedSlugs);
-    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+    const unresolvedSet = new Set(
+      normalizeSlugList(params.unresolvedSlugs ?? undefined).filter((slug) => allowedSlugs.has(slug)),
+    );
     for (const slug of resolvedSet) {
       unresolvedSet.delete(slug);
     }
@@ -2127,13 +2171,13 @@ export class WorkOnTasksService {
   }
 
   private buildCommitEnv(agentId?: string): NodeJS.ProcessEnv {
-    const committerName = agentId ? `mcoda-qa (${agentId})` : "mcoda-qa";
+    const committerName = agentId ? `mcoda-code-writer (${agentId})` : "mcoda-code-writer";
     return {
       ...process.env,
-      GIT_AUTHOR_NAME: "mcoda-qa",
-      GIT_AUTHOR_EMAIL: "qa@mcoda.local",
+      GIT_AUTHOR_NAME: "mcoda-code-writer",
+      GIT_AUTHOR_EMAIL: "code-writer@mcoda.local",
       GIT_COMMITTER_NAME: committerName,
-      GIT_COMMITTER_EMAIL: "qa@mcoda.local",
+      GIT_COMMITTER_EMAIL: "code-writer@mcoda.local",
     };
   }
 
@@ -2149,7 +2193,23 @@ export class WorkOnTasksService {
     const dirty = await this.vcs.dirtyPaths(this.workspace.workspaceRoot);
     const nonMcoda = dirty.filter((p: string) => !p.startsWith(".mcoda"));
     if (!nonMcoda.length) return null;
-    await this.vcs.stage(this.workspace.workspaceRoot, nonMcoda);
+    const normalize = (value: string): string =>
+      value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+    const blocked = nonMcoda.filter((p) => {
+      const normalized = normalize(p);
+      return normalized === "docs/qa" || normalized.startsWith("docs/qa/");
+    });
+    if (blocked.length) {
+      await this.vcs.restorePaths(this.workspace.workspaceRoot, blocked);
+      await this.logTask(
+        taskRunId,
+        `Removed blocked QA report paths from work-on-tasks output: ${blocked.join(", ")}`,
+        "policy",
+      );
+    }
+    const allowed = nonMcoda.filter((p) => !blocked.includes(p));
+    if (!allowed.length) return null;
+    await this.vcs.stage(this.workspace.workspaceRoot, allowed);
     const status = await this.vcs.status(this.workspace.workspaceRoot);
     if (!status.trim().length) return null;
     const message = `[${taskKey}] ${taskTitle} (${reason})`;
@@ -3827,6 +3887,7 @@ export class WorkOnTasksService {
             "- Do not commit changes; leave the working tree for mcoda to stage and commit.",
             "- Summarize what you changed and any test results.",
             "- If comment backlog is present and you need to report comment resolution, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus (no patches/files).",
+            "- Do not create docs/qa/* reports unless explicitly required by the task.",
           ].join("\n");
           const promptExtras = [
             testRequirementsNote,

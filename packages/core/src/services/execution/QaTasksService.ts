@@ -756,16 +756,43 @@ export class QaTasksService {
       );
       await fs.rm(worktreeRoot, { recursive: true, force: true });
       await PathHelper.ensureDir(path.dirname(worktreeRoot));
-      await this.vcs.addWorktree(repoRoot, worktreeRoot, branch);
+      const repoBranch = await this.vcs.currentBranch(repoRoot);
+      const preferDetached = repoBranch === branch;
+      await this.vcs.addWorktree(repoRoot, worktreeRoot, branch, { detach: preferDetached });
       const reportedBranch = await this.vcs.currentBranch(worktreeRoot);
       let activeBranch = reportedBranch ?? branch;
       if (reportedBranch && reportedBranch !== branch) {
-        await this.logTask(taskRunId, `QA worktree branch mismatch (${reportedBranch}); switching to ${branch}`, 'vcs', {
-          expected: branch,
-          found: reportedBranch,
-        });
-        await this.vcs.checkoutBranch(worktreeRoot, branch);
-        activeBranch = (await this.vcs.currentBranch(worktreeRoot)) ?? branch;
+        if (reportedBranch === 'HEAD') {
+          await this.logTask(
+            taskRunId,
+            `QA worktree is detached at ${branch}; keeping detached HEAD to avoid branch lock.`,
+            'vcs',
+            { expected: branch, found: reportedBranch },
+          );
+          activeBranch = branch;
+        } else {
+          await this.logTask(taskRunId, `QA worktree branch mismatch (${reportedBranch}); switching to ${branch}`, 'vcs', {
+            expected: branch,
+            found: reportedBranch,
+          });
+          try {
+            await this.vcs.checkoutBranch(worktreeRoot, branch);
+            activeBranch = (await this.vcs.currentBranch(worktreeRoot)) ?? branch;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes('already used by worktree')) {
+              await this.logTask(
+                taskRunId,
+                `QA worktree branch ${branch} already checked out elsewhere; continuing in detached HEAD.`,
+                'vcs',
+                { error: message },
+              );
+              activeBranch = branch;
+            } else {
+              throw error;
+            }
+          }
+        }
       }
       await this.logTask(taskRunId, `QA worktree ready on branch ${activeBranch}`, 'vcs', {
         branch: activeBranch,
@@ -1584,9 +1611,9 @@ export class QaTasksService {
     });
   }
 
-  private async commitInstallChanges(workspaceRoot: string, message: string): Promise<boolean> {
+  private async commitInstallChanges(workspaceRoot: string, message: string): Promise<string | null> {
     const status = await this.vcs.status(workspaceRoot);
-    if (!status.trim()) return false;
+    if (!status.trim()) return null;
     await execFileAsync('git', ['add', '-A'], { cwd: workspaceRoot });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -1596,7 +1623,21 @@ export class QaTasksService {
       GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'qa@mcoda.local',
     };
     await execFileAsync('git', ['commit', '-m', message, '--no-verify'], { cwd: workspaceRoot, env });
-    return true;
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot });
+    const trimmed =
+      typeof stdout === 'string' ? stdout.trim() : Buffer.from(stdout).toString('utf8').trim();
+    return trimmed || null;
+  }
+
+  private isBranchInUseError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return /already used by worktree/i.test(message);
+  }
+
+  private buildQaInstallBranch(taskKey: string, taskRunId: string, baseBranch: string): string {
+    const suffix = createHash('sha1').update(`${taskKey}:${taskRunId}`).digest('hex').slice(0, 8);
+    const safeKey = taskKey.replace(/[^a-zA-Z0-9._-]+/g, '-');
+    return `mcoda/qa/${safeKey}-${baseBranch}-${suffix}`;
   }
 
   private async prepareQaWorkspace(params: {
@@ -1604,6 +1645,7 @@ export class QaTasksService {
     taskRunId: string;
     baseBranch: string;
     taskBranch: string;
+    taskKey: string;
   }): Promise<{ ok: boolean; message?: string }> {
     if (!this.shouldInstallQaDeps()) {
       await this.logTask(params.taskRunId, 'QA dependency install disabled; skipping.', 'qa-install');
@@ -1611,8 +1653,23 @@ export class QaTasksService {
     }
     await this.vcs.ensureBaseBranch(params.workspaceRoot, params.baseBranch);
     const current = await this.vcs.currentBranch(params.workspaceRoot);
+    let installBranch = params.baseBranch;
     if (current !== params.baseBranch) {
-      await this.vcs.checkoutBranch(params.workspaceRoot, params.baseBranch);
+      try {
+        await this.vcs.checkoutBranch(params.workspaceRoot, params.baseBranch);
+      } catch (error) {
+        if (this.isBranchInUseError(error)) {
+          installBranch = this.buildQaInstallBranch(params.taskKey, params.taskRunId, params.baseBranch);
+          await this.logTask(
+            params.taskRunId,
+            `Base branch ${params.baseBranch} already used by another worktree; using ${installBranch} for QA install.`,
+            'qa-install',
+          );
+          await this.vcs.createOrCheckoutBranch(params.workspaceRoot, installBranch, params.baseBranch);
+        } else {
+          throw error;
+        }
+      }
     }
     const commands = await this.resolveInstallCommands(params.workspaceRoot);
     for (const command of commands) {
@@ -1627,15 +1684,39 @@ export class QaTasksService {
         return { ok: false, message };
       }
     }
-    const committed = await this.commitInstallChanges(
+    const installCommit = await this.commitInstallChanges(
       params.workspaceRoot,
       'chore: qa install dependencies',
     );
-    if (committed) {
+    if (installCommit) {
       await this.logTask(params.taskRunId, 'Committed QA dependency install changes.', 'qa-install');
     }
-    if (params.taskBranch && params.taskBranch !== params.baseBranch) {
-      await this.vcs.checkoutBranch(params.workspaceRoot, params.taskBranch);
+    if (params.taskBranch && params.taskBranch !== installBranch) {
+      try {
+        await this.vcs.checkoutBranch(params.workspaceRoot, params.taskBranch);
+      } catch (error) {
+        if (this.isBranchInUseError(error)) {
+          await this.logTask(
+            params.taskRunId,
+            `Task branch ${params.taskBranch} already used by another worktree; continuing on ${installBranch}.`,
+            'qa-install',
+          );
+        } else {
+          throw error;
+        }
+      }
+      if (installCommit) {
+        try {
+          await this.vcs.cherryPick(params.workspaceRoot, installCommit);
+        } catch (error) {
+          await this.logTask(
+            params.taskRunId,
+            `Warning: failed to cherry-pick QA install commit onto ${params.taskBranch}.`,
+            'qa-install',
+            { error: error instanceof Error ? error.message : String(error) },
+          );
+        }
+      }
     }
     return { ok: true };
   }
@@ -3007,6 +3088,7 @@ export class QaTasksService {
         taskRunId: taskRun.id,
         baseBranch,
         taskBranch,
+        taskKey: task.task.key,
       });
     };
     try {
@@ -4164,8 +4246,9 @@ export class QaTasksService {
     const effectiveTasks = request.taskKeys?.length ? request.taskKeys : (resume?.payload as any)?.tasks;
     const effectiveStatus = request.statusFilter ?? (resume?.payload as any)?.statusFilter ?? ['ready_to_qa'];
     const effectiveLimit = request.limit ?? (resume?.payload as any)?.limit;
+    const ignoreStatusFilter = Boolean(effectiveTasks?.length) || request.ignoreStatusFilter === true;
     const { filtered: statusFilter, rejected } = filterTaskStatuses(
-      effectiveStatus,
+      ignoreStatusFilter ? [] : effectiveStatus,
       QA_ALLOWED_STATUSES,
       QA_ALLOWED_STATUSES,
     );
@@ -4178,8 +4261,9 @@ export class QaTasksService {
       statusFilter,
       limit: effectiveLimit,
       ignoreDependencies: true,
+      ignoreStatusFilter,
     });
-    if (rejected.length > 0) {
+    if (rejected.length > 0 && !ignoreStatusFilter) {
       selection.warnings.push(
         `qa-tasks ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${QA_ALLOWED_STATUSES.join(", ")}.`,
       );

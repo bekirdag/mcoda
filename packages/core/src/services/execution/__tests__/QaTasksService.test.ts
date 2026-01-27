@@ -178,11 +178,11 @@ class StubVcs {
     this.branchByWorktree.set(cwd, branch);
   }
   async ensureBaseBranch() {}
-  async addWorktree(cwd: string, worktreePath: string, branch: string) {
+  async addWorktree(cwd: string, worktreePath: string, branch: string, options?: { detach?: boolean }) {
     this.addCalls += 1;
     this.worktrees.push({ cwd, path: worktreePath, branch });
     this.addedWorktrees.push({ path: worktreePath, branch });
-    this.branchByWorktree.set(worktreePath, branch);
+    this.branchByWorktree.set(worktreePath, options?.detach ? "HEAD" : branch);
     await fs.mkdir(worktreePath, { recursive: true });
     try {
       await fs.copyFile(path.join(cwd, "package.json"), path.join(worktreePath, "package.json"));

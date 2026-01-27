@@ -19,6 +19,8 @@ Goal: surface correctness risks, regressions, and missing coverage quickly and c
 - Correctness first: does the change satisfy the intent without breaking callers or data contracts? Check types, null/undefined handling, and async/error paths.
 - Tests: confirm there is coverage for new/changed behavior; call out missing edge cases and propose specific tests.
 - QA alignment: ensure `test_requirements` expectations are met, `tests/all.js` stays complete, and any UI checks target Chromium only (per `metadata.qa` readiness).
+- Do not require docs/qa/<task>.md reports unless the task explicitly asks for one; QA artifacts typically live in mcoda workspace outputs.
+- Avoid hardcoded ports; if a port matters, call out that it must be discovered or configured dynamically.
 - Compatibility and docs: flag API/CLI/schema changes that lack doc updates or migration notes.
 - Quality: prefer existing helpers, avoid dead code, and ensure logging/metrics are consistent with the surrounding code.
 - Avoid style-only nits; center on impact and maintainability.
