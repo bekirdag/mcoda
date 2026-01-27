@@ -50,6 +50,8 @@ const DEFAULT_CODE_REVIEW_PROMPT = [
   buildDocdexUsageGuidance({ contextLabel: "the review", includeHeading: false, includeFallback: true }),
   "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
   "When recommending tests, prefer the repo's existing runner (tests/all.js or package manager scripts). Avoid suggesting new Jest configs unless the repo explicitly documents them.",
+  "Do not require docs/qa/<task>.md reports unless the task explicitly asks for one. QA artifacts typically live in mcoda workspace outputs.",
+  "Do not hardcode ports; if a port matters, call out that it must be discovered or configured dynamically.",
 ].join("\n");
 const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
@@ -668,7 +670,7 @@ export class CodeReviewService {
     epicKey?: string;
     storyKey?: string;
     taskKeys?: string[];
-    statusFilter: string[];
+    statusFilter?: string[];
     limit?: number;
   }): Promise<(TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] })[]> {
     // Prefer the backlog/task OpenAPI surface (via BacklogService) to mirror API filtering semantics.
@@ -678,7 +680,7 @@ export class CodeReviewService {
         projectKey: filters.projectKey,
         epicKey: filters.epicKey,
         storyKey: filters.storyKey,
-        statuses: filters.statusFilter,
+        statuses: filters.statusFilter && filters.statusFilter.length ? filters.statusFilter : undefined,
         verbose: true,
       });
       let tasks = result.summary.tasks;
@@ -913,7 +915,9 @@ export class CodeReviewService {
         `Status: ${params.task.status}, Branch: ${params.branch ?? params.task.vcsBranch ?? "n/a"} (base ${params.baseRef})`,
         `Task description: ${params.task.description ? params.task.description : "none"}`,
         `History:\n${historySummary}`,
-        commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : "Comment backlog: none",
+        commentBacklog
+          ? `Code-review comment backlog (unresolved slugs):\n${commentBacklog}`
+          : "Code-review comment backlog: none",
         `Task DoD / acceptance criteria: ${acceptance}`,
         docContextText ? `Doc context (docdex excerpts):\n${docContextText}` : "Doc context: none",
         openapiSnippet
@@ -922,7 +926,7 @@ export class CodeReviewService {
         checklistsText ? `Review checklists/runbook:\n${checklistsText}` : "Checklists: none",
         params.diffEmpty ? "Diff: (empty — no changes between base and branch)" : "Diff:\n" + diffText,
         "Respond with STRICT JSON only, matching:\n" + JSON_CONTRACT,
-        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for comment backlog items; do not add prose or markdown fences outside JSON.",
+        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for code-review comment backlog items only; do not require docs/qa/* reports; avoid hardcoded ports; do not add prose or markdown fences outside JSON.",
       ].join("\n"),
     );
     return parts.join("\n\n");
@@ -930,7 +934,7 @@ export class CodeReviewService {
 
   private async buildHistorySummary(taskId: string): Promise<string> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
-      sourceCommands: ["work-on-tasks", "code-review", "qa-tasks"],
+      sourceCommands: ["work-on-tasks", "code-review"],
       limit: 10,
     });
     const lastReview = await this.deps.workspaceRepo.getLatestTaskReview(taskId);
@@ -955,13 +959,13 @@ export class CodeReviewService {
         parts.push(`Unresolved items: ${unresolved.length}`);
       }
     }
-    if (!parts.length) return "No prior review or QA history.";
+    if (!parts.length) return "No prior review history.";
     return parts.join("\n");
   }
 
   private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
-      sourceCommands: ["code-review", "qa-tasks"],
+      sourceCommands: ["code-review"],
       limit: 50,
     });
     const unresolved = comments.filter((comment) => !comment.resolvedAt);
@@ -1030,9 +1034,12 @@ export class CodeReviewService {
     const reviewSlugIndex = this.buildCommentSlugIndex(
       params.existingComments.filter((comment) => comment.sourceCommand === "code-review"),
     );
-    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const allowedSlugs = new Set(existingBySlug.keys());
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined).filter((slug) => allowedSlugs.has(slug));
     const resolvedSet = new Set(resolvedSlugs);
-    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+    const unresolvedSet = new Set(
+      normalizeSlugList(params.unresolvedSlugs ?? undefined).filter((slug) => allowedSlugs.has(slug)),
+    );
 
     const findingSlugs: string[] = [];
     for (const finding of params.findings ?? []) {
@@ -1531,8 +1538,12 @@ export class CodeReviewService {
     await this.ensureMcoda();
     const agentStream = request.agentStream !== false;
     const baseRef = request.baseRef ?? this.workspace.config?.branch ?? DEFAULT_BASE_BRANCH;
-    const rawStatusFilter =
-      request.statusFilter && request.statusFilter.length ? request.statusFilter : [READY_TO_CODE_REVIEW];
+    const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
+    const rawStatusFilter = ignoreStatusFilter
+      ? []
+      : request.statusFilter && request.statusFilter.length
+        ? request.statusFilter
+        : [READY_TO_CODE_REVIEW];
     const { filtered: allowedStatusFilter, rejected } = filterTaskStatuses(
       rawStatusFilter,
       REVIEW_ALLOWED_STATUSES,
@@ -1550,7 +1561,7 @@ export class CodeReviewService {
     let jobId = request.resumeJobId;
     let selectedTaskIds: string[] = [];
     let warnings: string[] = [];
-    if (rejected.length > 0) {
+    if (rejected.length > 0 && !ignoreStatusFilter) {
       warnings.push(
         `code-review ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${REVIEW_ALLOWED_STATUSES.join(
           ", ",
@@ -1605,7 +1616,7 @@ export class CodeReviewService {
           epicKey: request.epicKey,
           storyKey: request.storyKey,
           taskKeys: request.taskKeys,
-          statusFilter,
+          statusFilter: ignoreStatusFilter ? undefined : statusFilter,
           limit: request.limit,
         });
       } catch {
@@ -1614,8 +1625,9 @@ export class CodeReviewService {
           epicKey: request.epicKey,
           storyKey: request.storyKey,
           taskKeys: request.taskKeys,
-          statusFilter,
+          statusFilter: ignoreStatusFilter ? undefined : statusFilter,
           limit: request.limit,
+          ignoreStatusFilter,
         });
         warnings = [...warnings, ...selection.warnings];
         selectedTasks = selection.ordered.map((t) => t.task);
@@ -1629,7 +1641,7 @@ export class CodeReviewService {
           epicKey: request.epicKey,
           storyKey: request.storyKey,
           tasks: request.taskKeys,
-          statusFilter,
+          statusFilter: ignoreStatusFilter ? [] : statusFilter,
           baseRef,
           selection: selectedTaskIds,
           dryRun: request.dryRun ?? false,

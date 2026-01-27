@@ -115,8 +115,18 @@ export class VcsClient {
     await this.runGit(cwd, ["checkout", "-b", branch, base]);
   }
 
-  async addWorktree(cwd: string, worktreePath: string, branch: string): Promise<void> {
-    await this.runGit(cwd, ["worktree", "add", "--force", worktreePath, branch]);
+  async addWorktree(
+    cwd: string,
+    worktreePath: string,
+    branch: string,
+    options?: { detach?: boolean },
+  ): Promise<void> {
+    const args = ["worktree", "add", "--force"];
+    if (options?.detach) {
+      args.push("--detach");
+    }
+    args.push(worktreePath, branch);
+    await this.runGit(cwd, args);
   }
 
   async removeWorktree(cwd: string, worktreePath: string): Promise<void> {
@@ -305,6 +315,13 @@ export class VcsClient {
         args.push("-e", entry);
       });
     await this.runGit(cwd, args);
+  }
+
+  async restorePaths(cwd: string, paths: string[]): Promise<void> {
+    const cleaned = paths.map((entry) => entry.trim()).filter(Boolean);
+    if (!cleaned.length) return;
+    await this.runGit(cwd, ["checkout", "--", ...cleaned]);
+    await this.runGit(cwd, ["clean", "-fd", "--", ...cleaned]);
   }
 
   async lastCommitSha(cwd: string): Promise<string> {

@@ -8,7 +8,7 @@ describe("qa-tasks argument parsing", () => {
     const parsed = parseQaTasksArgs([]);
     assert.equal(parsed.mode, "auto");
     assert.deepEqual(parsed.statusFilter, ["ready_to_qa"]);
-    assert.equal(parsed.agentStream, false);
+    assert.equal(parsed.agentStream, true);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.createFollowupTasks, "auto");
     assert.equal(parsed.rateAgents, false);

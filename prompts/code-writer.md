@@ -28,6 +28,8 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - Apply changes directly in the repo; do not output patches/diffs/FILE blocks. Summarize changes and tests instead of emitting diffs.
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
 - Do not hardcode ports; use env-configured ports (PORT/HOST or MCODA_QA_PORT/MCODA_QA_HOST) and document base URLs with http://localhost:<PORT> placeholders if needed.
+- You are not the QA agent. Do not run qa-tasks, generate QA plans, or write QA reports.
+- Do not create docs/qa/* reports unless the task explicitly requests one; work-on-tasks should not generate QA reports.
 - Add or update tests alongside code, following the existing style and fixtures. For each task, identify the relevant unit/component/integration/API tests and implement them as part of the change.
 - Assume QA runs unit -> component -> integration -> api when test requirements are set; make sure those suites exist and pass.
 - Honor `metadata.qa` readiness (profiles/entrypoints/blockers) and keep browser testing Chromium-only.

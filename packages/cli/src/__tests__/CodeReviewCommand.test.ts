@@ -565,7 +565,7 @@ describe("code-review service flow", () => {
     assert.equal(fakeJobService.jobStatuses.length > 0, true);
   });
 
-  it("passes default status filter to selection service", async () => {
+  it("ignores status filters when task keys are explicit", async () => {
     const service = new CodeReviewService(workspace, {
       agentService: new FakeAgentService() as any,
       docdex: new FakeDocdex() as any,
@@ -585,7 +585,8 @@ describe("code-review service flow", () => {
     });
 
     assert.ok(fakeSelection.lastFilters);
-    assert.deepEqual(fakeSelection.lastFilters.statusFilter, ["ready_to_code_review"]);
+    assert.equal(fakeSelection.lastFilters.ignoreStatusFilter, true);
+    assert.equal(fakeSelection.lastFilters.statusFilter, undefined);
   });
 });
 

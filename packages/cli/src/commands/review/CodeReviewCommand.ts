@@ -233,6 +233,7 @@ export class CodeReviewCommand {
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
         statusFilter: parsed.statusFilter,
+        ignoreStatusFilter: parsed.taskKeys.length > 0 ? true : undefined,
         baseRef: parsed.baseRef,
         dryRun: parsed.dryRun,
         resumeJobId: parsed.resumeJobId,
