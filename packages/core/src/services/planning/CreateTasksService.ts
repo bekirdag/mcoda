@@ -246,10 +246,19 @@ const formatTestList = (items: string[] | undefined): string => {
 const ensureNonEmpty = (value: string | undefined, fallback: string): string =>
   value && value.trim().length > 0 ? value.trim() : fallback;
 
+const extractScriptPort = (script: string): number | undefined => {
+  const matches = [script.match(/(?:--port|-p)\s*(\d{2,5})/), script.match(/PORT\s*=\s*(\d{2,5})/)];
+  for (const match of matches) {
+    if (!match) continue;
+    const parsed = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+};
+
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 const DOC_CONTEXT_BUDGET = 8000;
 const DOCDEX_HANDLE = /^docdex:/i;
-const DEFAULT_QA_BASE_URL = "http://localhost:3000";
 const VALID_AREAS = new Set(["web", "adm", "bck", "ops", "infra", "mobile"]);
 const VALID_TASK_TYPES = new Set(["feature", "bug", "chore", "spike"]);
 
@@ -578,7 +587,7 @@ const TASK_SCHEMA_SNIPPET = `{
       "qa": {
         "profiles_expected": ["cli", "api", "chromium"],
         "requires": ["dev server", "seed data"],
-        "entrypoints": [{ "kind": "web", "base_url": "http://localhost:3000", "command": "npm run dev" }],
+        "entrypoints": [{ "kind": "web", "base_url": "http://localhost:<PORT>", "command": "npm run dev" }],
         "data_setup": ["seed sample data"],
         "notes": "optional QA notes"
       }
@@ -786,16 +795,18 @@ export class CreateTasksService {
     };
     const hasDev = typeof preflight.scripts.dev === "string";
     const hasStart = typeof preflight.scripts.start === "string";
+    const devPort = hasDev ? extractScriptPort(preflight.scripts.dev) : undefined;
+    const startPort = hasStart ? extractScriptPort(preflight.scripts.start) : undefined;
     if (hasDev) {
       preflight.entrypoints.push({
         kind: "web",
-        base_url: DEFAULT_QA_BASE_URL,
+        base_url: devPort ? `http://localhost:${devPort}` : undefined,
         command: "npm run dev",
       });
     } else if (hasStart) {
       preflight.entrypoints.push({
         kind: "web",
-        base_url: DEFAULT_QA_BASE_URL,
+        base_url: startPort ? `http://localhost:${startPort}` : undefined,
         command: "npm start",
       });
     }
@@ -1164,6 +1175,7 @@ export class CreateTasksService {
       "- Only include tests that are relevant to the task's scope.",
       "- If the task involves code or configuration changes, include at least one relevant test; do not leave all test arrays empty unless it's purely documentation or research.",
       "- When known, include qa object with profiles_expected/requires/entrypoints/data_setup to guide QA.",
+      "- Do not hardcode ports. For QA entrypoints, use http://localhost:<PORT> placeholders or omit base_url when unknown.",
       "- dependsOnKeys must reference localIds in this story.",
       "- Use docdex handles when citing docs.",
       `Story context (key=${story.key ?? story.localId ?? "TBD"}):`,

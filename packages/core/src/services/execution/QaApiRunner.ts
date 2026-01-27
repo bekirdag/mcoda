@@ -16,11 +16,13 @@ type ApiRequestResult = {
   responseSnippet?: string;
 };
 
-const DEFAULT_API_PORT = 3000;
 const DEFAULT_API_HOST = "127.0.0.1";
 const DEFAULT_TIMEOUT_MS = 600_000;
 const RESPONSE_SNIPPET_LIMIT = 2000;
 const SAMPLE_PLACEHOLDER_KEYS = ["QA_SAMPLE_EMAIL", "QA_SAMPLE_PASSWORD", "QA_SAMPLE_TOKEN"] as const;
+const PORT_ENV_KEYS = ["PORT", "VITE_PORT", "NUXT_PORT", "NEXT_PORT", "ASTRO_PORT", "SVELTE_PORT", "SAPPER_PORT"];
+const PORT_SCAN_OFFSETS = [0, 1, 2, 3, 4, 5];
+const FALLBACK_PORTS = [5173, 4173, 4321, 8080, 8000, 5000, 4200];
 
 const buildSamplePlaceholderMap = (env: NodeJS.ProcessEnv): Record<string, string | undefined> => ({
   QA_SAMPLE_EMAIL: env.MCODA_QA_SAMPLE_EMAIL ?? env.QA_SAMPLE_EMAIL,
@@ -70,6 +72,9 @@ const normalizeBaseUrl = (value: string): string | undefined => {
   }
 };
 
+const isLocalHostname = (hostname: string): boolean =>
+  ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(hostname.toLowerCase());
+
 const extractPort = (script: string): number | undefined => {
   const matches = [
     script.match(/(?:--port|-p)\s*(\d{2,5})/),
@@ -87,10 +92,46 @@ const inferPort = (script: string): number | undefined => {
   const lower = script.toLowerCase();
   if (lower.includes("vite")) return 5173;
   if (lower.includes("astro")) return 4321;
-  if (lower.includes("next")) return 3000;
-  if (lower.includes("react-scripts")) return 3000;
-  if (lower.includes("nuxt")) return 3000;
   return undefined;
+};
+
+const parsePort = (raw: string | undefined): number | undefined => {
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const expandPortCandidates = (ports: number[]): number[] => {
+  const expanded = new Set<number>();
+  for (const base of ports) {
+    if (!Number.isFinite(base) || base <= 0) continue;
+    for (const offset of PORT_SCAN_OFFSETS) {
+      const candidate = base + offset;
+      if (candidate > 0 && candidate < 65536) expanded.add(candidate);
+    }
+  }
+  return Array.from(expanded);
+};
+
+const extractPortsFromServers = (spec: any): number[] => {
+  if (!spec || typeof spec !== "object") return [];
+  const servers = Array.isArray(spec.servers) ? spec.servers : [];
+  const ports: number[] = [];
+  for (const server of servers) {
+    const urlValue = server?.url;
+    if (typeof urlValue !== "string") continue;
+    const normalized = normalizeBaseUrl(urlValue);
+    if (!normalized) continue;
+    try {
+      const url = new URL(normalized);
+      if (!isLocalHostname(url.hostname)) continue;
+      const parsed = parsePort(url.port);
+      if (parsed) ports.push(parsed);
+    } catch {
+      // ignore invalid URLs
+    }
+  }
+  return ports;
 };
 
 const resolveSchemaRef = (spec: any, schema: any): any => {
@@ -411,11 +452,57 @@ export class QaApiRunner {
     }
   }
 
+  async probeBaseUrl(baseUrl: string, requests?: QaApiRequest[]): Promise<boolean> {
+    const probeRequests =
+      (requests ?? []).filter((req) => (req.method ?? "GET").toUpperCase() === "GET") ??
+      [];
+    const candidates =
+      probeRequests.length > 0 ? probeRequests : [{ method: "GET", path: "/" } as QaApiRequest];
+    const timeoutMs = Math.min(2000, this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    for (const request of candidates.slice(0, 3)) {
+      const url = this.buildRequestUrl(request, baseUrl) ?? baseUrl;
+      if (!url) continue;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          method: "GET",
+          signal: controller.signal,
+          headers: { accept: "application/json" },
+        });
+        const expectedStatus = request.expect?.status;
+        const statusOk =
+          expectedStatus !== undefined
+            ? response.status === expectedStatus
+            : (response.status >= 200 && response.status < 400) ||
+              response.status === 401 ||
+              response.status === 403;
+        if (!statusOk) continue;
+        const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+        if (contentType.includes("text/html")) {
+          try {
+            const pathName = new URL(url).pathname;
+            if (pathName !== "/") return false;
+          } catch {
+            return false;
+          }
+        }
+        return true;
+      } catch {
+        // try next probe
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return false;
+  }
+
   async resolveBaseUrl(options: {
     planBaseUrl?: string;
     planBrowserBaseUrl?: string;
     env?: NodeJS.ProcessEnv;
-  }): Promise<string> {
+    probeRequests?: QaApiRequest[];
+  }): Promise<string | undefined> {
     const env = options.env ?? process.env;
     const candidates = [
       options.planBaseUrl,
@@ -425,18 +512,50 @@ export class QaApiRunner {
       env.API_BASE_URL,
       env.BASE_URL,
     ];
+    const probeRequests = options.probeRequests?.length ? options.probeRequests : undefined;
     for (const candidate of candidates) {
       if (!candidate) continue;
       const normalized = normalizeBaseUrl(candidate);
-      if (normalized) return normalized;
+      if (!normalized) continue;
+      try {
+        const url = new URL(normalized);
+        if (!isLocalHostname(url.hostname) || !probeRequests) return normalized;
+        const ok = await this.probeBaseUrl(normalized, probeRequests);
+        if (ok) return normalized;
+      } catch {
+        // fall through to probing ports
+      }
+    }
+
+    const ports = new Set<number>();
+    for (const key of PORT_ENV_KEYS) {
+      const parsed = parsePort(env[key]);
+      if (parsed) ports.add(parsed);
     }
     const pkg = await this.readPackageJson();
     const script = pkg?.scripts?.dev ?? pkg?.scripts?.start ?? pkg?.scripts?.serve;
     if (typeof script === "string") {
       const port = extractPort(script) ?? inferPort(script);
-      if (port) return `http://${DEFAULT_API_HOST}:${port}`;
+      if (port) ports.add(port);
     }
-    return `http://${DEFAULT_API_HOST}:${DEFAULT_API_PORT}`;
+    if (ports.size === 0) {
+      const spec = await this.loadOpenApiSpec();
+      for (const port of extractPortsFromServers(spec)) {
+        ports.add(port);
+      }
+    }
+    for (const port of FALLBACK_PORTS) {
+      ports.add(port);
+    }
+    const expanded = expandPortCandidates(Array.from(ports));
+    if (expanded.length === 0) return undefined;
+    const baseProbeRequests = probeRequests ?? [{ method: "GET", path: "/" } as QaApiRequest];
+    for (const port of expanded) {
+      const baseUrl = `http://${DEFAULT_API_HOST}:${port}`;
+      const ok = await this.probeBaseUrl(baseUrl, baseProbeRequests);
+      if (ok) return baseUrl;
+    }
+    return undefined;
   }
 
   private async loadOpenApiSpec(): Promise<any | undefined> {

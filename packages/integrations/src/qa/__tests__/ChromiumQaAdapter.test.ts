@@ -36,7 +36,7 @@ test("ChromiumQaAdapter ensureInstalled succeeds with Docdex chromium", async ()
         const profile: QaProfile = {
           name: "ui",
           runner: "chromium",
-          test_command: "http://localhost:3000",
+          test_command: "http://localhost:4173",
         };
         const ctx = {
           workspaceRoot: tmp,
@@ -407,7 +407,7 @@ class FakeCdpClient {
         return { result: { value: "complete" } };
       }
       if (expression.includes("document.location.href")) {
-        return { result: { value: "http://127.0.0.1:3000/" } };
+        return { result: { value: "http://127.0.0.1:4173/" } };
       }
       if (expression.includes("document.documentElement.outerHTML")) {
         return { result: { value: "<html><body>Welcome</body></html>" } };
@@ -437,14 +437,14 @@ class FakeCdpClient {
 test("runBrowserActionsWithClient executes action list", async () => {
   const client = new FakeCdpClient();
   const actions = [
-    { type: "navigate", url: "http://127.0.0.1:3000", wait_for: "load" },
+    { type: "navigate", url: "http://127.0.0.1:4173", wait_for: "load" },
     { type: "assert_text", text: "Welcome" },
     { type: "snapshot", name: "home" },
   ];
   const result = await __testing.runBrowserActionsWithClient(
     client as any,
     actions as any,
-    "http://127.0.0.1:3000",
+    "http://127.0.0.1:4173",
     5000,
   );
   assert.equal(result.outcome, "pass");
@@ -458,7 +458,7 @@ test("runBrowserActionsWithClient reports failed assertions", async () => {
   const result = await __testing.runBrowserActionsWithClient(
     client as any,
     actions as any,
-    "http://127.0.0.1:3000",
+    "http://127.0.0.1:4173",
     2000,
   );
   assert.equal(result.outcome, "fail");

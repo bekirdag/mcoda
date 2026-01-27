@@ -282,8 +282,11 @@ export class AgentsCommands {
         case "list": {
           const agents = await api.listAgents();
           if (parsed.flags.json) {
+            const detailed = await Promise.all(
+              agents.map((agent) => api.getAgent(agent.id ?? agent.slug)),
+            );
             // eslint-disable-next-line no-console
-            console.log(JSON.stringify(agents, null, 2));
+            console.log(JSON.stringify(detailed, null, 2));
           } else {
             if (agents.length === 0) {
               // eslint-disable-next-line no-console

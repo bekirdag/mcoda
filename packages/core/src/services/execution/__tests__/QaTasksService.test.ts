@@ -2349,7 +2349,7 @@ test("qa-tasks passes browser actions and stress actions to chromium adapter", a
     false,
   );
 
-  const baseUrl = "http://127.0.0.1:3000";
+  const baseUrl = "http://127.0.0.1:4173";
   class BrowserPlanAgentService {
     async resolveAgent() {
       return { id: "qa-agent", defaultModel: "stub" } as any;
@@ -2476,7 +2476,7 @@ test("qa-tasks injects default browser actions when missing", async () => {
     false,
   );
 
-  const baseUrl = "http://127.0.0.1:3000";
+  const baseUrl = "http://127.0.0.1:4173";
   class BrowserPlanAgentService {
     async resolveAgent() {
       return { id: "qa-agent", defaultModel: "stub" } as any;

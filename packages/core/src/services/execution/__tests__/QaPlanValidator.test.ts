@@ -28,15 +28,15 @@ test('normalizeQaPlanOutput accepts task_plans with cli/api/browser entries', ()
       'task-1': {
         profiles: ['cli', 'chromium'],
         cli: { commands: ['node tests/all.js'] },
-        api: { base_url: 'http://127.0.0.1:3000', requests: [{ method: 'GET', path: '/' }] },
-        browser: { base_url: 'http://127.0.0.1:3000', actions: [{ type: 'navigate', url: '/' }] },
+        api: { base_url: 'http://127.0.0.1:4173', requests: [{ method: 'GET', path: '/' }] },
+        browser: { base_url: 'http://127.0.0.1:4173', actions: [{ type: 'navigate', url: '/' }] },
       },
     },
   });
   assert.deepEqual(result.taskPlans['task-1']?.profiles, ['cli', 'chromium']);
   assert.deepEqual(result.taskPlans['task-1']?.cli?.commands, ['node tests/all.js']);
-  assert.equal(result.taskPlans['task-1']?.api?.base_url, 'http://127.0.0.1:3000');
-  assert.equal(result.taskPlans['task-1']?.browser?.base_url, 'http://127.0.0.1:3000');
+  assert.equal(result.taskPlans['task-1']?.api?.base_url, 'http://127.0.0.1:4173');
+  assert.equal(result.taskPlans['task-1']?.browser?.base_url, 'http://127.0.0.1:4173');
 });
 
 test('normalizeQaPlanOutput preserves stress actions', () => {

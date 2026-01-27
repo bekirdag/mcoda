@@ -9,7 +9,7 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import net from 'node:net';
 import { TaskRow, WorkspaceRepository, TaskRunRow, TaskRunStatus, TaskQaRunRow, TaskCommentRow } from '@mcoda/db';
-import { PathHelper, QA_ALLOWED_STATUSES, QaTaskPlan, filterTaskStatuses } from '@mcoda/shared';
+import { PathHelper, QA_ALLOWED_STATUSES, QaApiRequest, QaTaskPlan, filterTaskStatuses } from '@mcoda/shared';
 import { QaProfile } from '@mcoda/shared/qa/QaProfile.js';
 import { WorkspaceResolution } from '../../workspace/WorkspaceManager.js';
 import { JobService, JobState } from '../jobs/JobService.js';
@@ -60,6 +60,7 @@ const QA_ROUTING_PROMPT = [
   'Include at least one light stress action for UI tasks (repeat navigation or submit) when safe.',
   'API/back-end tasks (api_task=yes) must include API requests with sample data/auth when available.',
   'Only include API requests when api_task=yes or the plan explicitly defines api base_url/requests.',
+  'Do not hardcode ports. If base_url is unknown, omit it and rely on MCODA_QA_API_BASE_URL or detected server ports.',
   'If unsure, choose a safe minimal set (usually [\"cli\"]) and avoid guessing API endpoints.',
 ].join('\n');
 const QA_ROUTING_OUTPUT_SCHEMA = [
@@ -70,8 +71,8 @@ const QA_ROUTING_OUTPUT_SCHEMA = [
   '    \"TASK_KEY\": {',
   '      \"profiles\": [\"cli\", \"chromium\"],',
   '      \"cli\": { \"commands\": [\"pnpm test\", \"node tests/all.js\"] },',
-  '      \"api\": { \"base_url\": \"http://localhost:3000\", \"requests\": [{ \"method\": \"GET\", \"path\": \"/health\", \"expect\": { \"status\": 200 } }] },',
-  '      \"browser\": { \"base_url\": \"http://localhost:3000\", \"actions\": [{ \"type\": \"navigate\", \"url\": \"/\" }, { \"type\": \"snapshot\", \"name\": \"home\" }] },',
+  '      \"api\": { \"base_url\": \"http://localhost:<PORT>\", \"requests\": [{ \"method\": \"GET\", \"path\": \"/health\", \"expect\": { \"status\": 200 } }] },',
+  '      \"browser\": { \"base_url\": \"http://localhost:<PORT>\", \"actions\": [{ \"type\": \"navigate\", \"url\": \"/\" }, { \"type\": \"snapshot\", \"name\": \"home\" }] },',
   '      \"stress\": { \"api\": [], \"browser\": [] }',
   '    }',
   '  },',
@@ -126,7 +127,7 @@ const QA_HOST_ENV_KEYS = ['HOST', 'BIND_ADDR', 'BIND_ADDRESS', 'LISTEN_HOST', 'V
 const QA_PORT_ENV_KEYS = ['PORT', 'VITE_PORT', 'NUXT_PORT', 'NEXT_PORT'];
 const QA_SERVER_START_ENV = 'MCODA_QA_START_SERVER';
 const QA_SERVER_TIMEOUT_ENV = 'MCODA_QA_SERVER_TIMEOUT_MS';
-const DEFAULT_QA_SERVER_TIMEOUT_MS = 600_000;
+const DEFAULT_QA_SERVER_TIMEOUT_MS = 5_000;
 type RunAllMarkerPolicy = 'strict' | 'warn';
 type RunAllMarkerStatus = {
   policy: RunAllMarkerPolicy;
@@ -328,7 +329,10 @@ const resolveServerTimeoutMs = (): number => {
   const raw = process.env[QA_SERVER_TIMEOUT_ENV];
   if (!raw) return DEFAULT_QA_SERVER_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  if (Number.isFinite(parsed)) {
+    if (parsed <= 0) return 0;
+    return parsed;
+  }
   return DEFAULT_QA_SERVER_TIMEOUT_MS;
 };
 
@@ -617,7 +621,11 @@ export class QaTasksService {
     const repoPromptPath = resolveRepoPromptPath('qa-agent.md');
     const isStalePrompt = (value?: string): boolean => {
       if (!value) return false;
-      return /playwright/i.test(value) || /MCODA_QA_BROWSER_URL/i.test(value);
+      return (
+        /playwright/i.test(value) ||
+        /MCODA_QA_BROWSER_URL/i.test(value) ||
+        /http:\/\/(?:localhost|127\.0\.0\.1):3000/i.test(value)
+      );
     };
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
@@ -1406,7 +1414,12 @@ export class QaTasksService {
 
   private ensureCypressChromium(command: string): string {
     if (!/cypress/i.test(command)) return command;
-    if (/--browser(\s+|=)/i.test(command)) return command;
+    const browserMatch = /--browser(\s+|=)(\S+)/i.exec(command);
+    if (browserMatch) {
+      const current = browserMatch[2] ?? "";
+      if (/chromium/i.test(current)) return command;
+      return command.replace(browserMatch[0], "--browser chromium");
+    }
     if (/\bcypress\s+(run|open)\b/i.test(command)) {
       return `${command} --browser chromium`;
     }
@@ -1429,11 +1442,11 @@ export class QaTasksService {
           'Chromium binary not found for CLI browser tests. Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).',
       };
     }
-    if (!env.CHROME_PATH) env.CHROME_PATH = chromiumPath;
-    if (!env.CHROME_BIN) env.CHROME_BIN = chromiumPath;
-    if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = chromiumPath;
-    if (!env.PUPPETEER_PRODUCT) env.PUPPETEER_PRODUCT = 'chrome';
-    if (!env.CYPRESS_BROWSER) env.CYPRESS_BROWSER = 'chromium';
+    env.CHROME_PATH = chromiumPath;
+    env.CHROME_BIN = chromiumPath;
+    env.PUPPETEER_EXECUTABLE_PATH = chromiumPath;
+    env.PUPPETEER_PRODUCT = 'chrome';
+    env.CYPRESS_BROWSER = 'chromium';
     const updated = commands.map((command) => this.ensureCypressChromium(command));
     return { ok: true, commands: updated };
   }
@@ -1476,6 +1489,7 @@ export class QaTasksService {
   }
 
   private async waitForUrlReady(url: string, timeoutMs: number): Promise<boolean> {
+    if (timeoutMs <= 0) return false;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const ok = await this.isUrlReachable(url, Math.min(2000, timeoutMs));
@@ -2887,6 +2901,13 @@ export class QaTasksService {
     const browserOverride = requestCommandIsUrl ? normalizeQaUrl(requestCommand) : undefined;
     const qaEnv = applyQaHostDefaults(process.env);
     const apiRunner = new QaApiRunner(qaWorkspaceRoot);
+    const explicitBaseUrl = normalizeQaUrl(
+      qaEnv.MCODA_QA_API_BASE_URL ?? qaEnv.MCODA_API_BASE_URL ?? qaEnv.API_BASE_URL ?? qaEnv.BASE_URL,
+    );
+    if (explicitBaseUrl && !qaEnv.MCODA_QA_API_BASE_URL) {
+      qaEnv.MCODA_QA_API_BASE_URL = explicitBaseUrl;
+    }
+    const hasOpenApiSpec = await apiRunner.hasOpenApiSpec();
     const browserActions = [...(taskPlan?.browser?.actions ?? [])];
     const browserStressEntries = taskPlan?.stress?.browser ?? [];
     const browserStressConfigured = browserStressEntries.length;
@@ -2902,22 +2923,56 @@ export class QaTasksService {
     const wantsChromium =
       browserActions.length > 0 || profiles.some((profile) => (profile.runner ?? 'cli') === 'chromium');
     const wantsCli = profiles.some((profile) => (profile.runner ?? 'cli') === 'cli');
+    const explicitProfileName = ctx.request.profileName?.toLowerCase();
+    const explicitApi = explicitProfileName === 'api';
+    const apiProbeEnabled = Boolean(taskPlan?.api || detectApiTask(task.task) || explicitApi);
+    let apiProbeRequests: QaApiRequest[] | undefined;
+    if (taskPlan?.api?.requests?.length) {
+      apiProbeRequests = [...taskPlan.api.requests];
+    } else if (apiProbeEnabled || hasOpenApiSpec) {
+      apiProbeRequests = await apiRunner.suggestDefaultRequests();
+    }
     let resolvedApiBaseUrl: string | undefined;
     const resolveApiBaseUrl = async (): Promise<string | undefined> => {
       if (resolvedApiBaseUrl !== undefined) return resolvedApiBaseUrl;
+      if (explicitBaseUrl) {
+        resolvedApiBaseUrl = explicitBaseUrl;
+        return resolvedApiBaseUrl;
+      }
       const inferred = await apiRunner.resolveBaseUrl({
         planBaseUrl: taskPlan?.api?.base_url,
         planBrowserBaseUrl: taskPlan?.browser?.base_url,
         env: qaEnv,
+        probeRequests: apiProbeRequests,
       });
-      resolvedApiBaseUrl = normalizeQaUrl(inferred);
+      const normalized = inferred ? normalizeQaUrl(inferred) : undefined;
+      resolvedApiBaseUrl = normalized;
       return resolvedApiBaseUrl;
+    };
+    let allocatedBaseUrl: string | undefined;
+    const allocateLocalBaseUrl = async (
+      reason: 'browser' | 'api',
+      options: { ignoreEnvPort?: boolean } = {},
+    ): Promise<string> => {
+      if (allocatedBaseUrl) return allocatedBaseUrl;
+      const host = qaEnv.MCODA_QA_HOST ?? DEFAULT_QA_HOST;
+      const envPort = options.ignoreEnvPort ? undefined : resolveEnvPort(qaEnv);
+      const port = envPort ?? (await pickFreePort(host));
+      applyQaPortDefaults(qaEnv, port);
+      const baseUrl = `http://${host}:${port}`;
+      qaEnv.MCODA_QA_API_BASE_URL = baseUrl;
+      allocatedBaseUrl = baseUrl;
+      await this.logTask(taskRun.id, `QA base URL set to ${baseUrl} (${reason}).`, 'qa-server', {
+        baseUrl,
+        reason,
+      });
+      return baseUrl;
     };
     let browserBaseUrl = normalizeQaUrl(
       browserOverride ?? taskPlan?.browser?.base_url ?? taskPlan?.api?.base_url,
     );
     if (wantsChromium && !browserBaseUrl) {
-      browserBaseUrl = await resolveApiBaseUrl();
+      browserBaseUrl = (await resolveApiBaseUrl()) ?? (await allocateLocalBaseUrl('browser'));
     }
     if (wantsCli) {
       const baseUrlCandidate = browserBaseUrl ?? (await resolveApiBaseUrl());
@@ -2926,13 +2981,21 @@ export class QaTasksService {
         if (parsed) {
           const envPort = resolveEnvPort(qaEnv);
           let desiredPort = envPort ?? parsed.port;
-          const open = await isPortOpen(parsed.url.hostname, desiredPort);
           let adjusted = false;
           let adjustReason: 'in_use' | 'env' | undefined;
-          if (open) {
-            desiredPort = await pickFreePort(parsed.url.hostname);
+          if (envPort && envPort !== parsed.port) {
             adjusted = true;
-            adjustReason = 'in_use';
+            adjustReason = 'env';
+          } else if (apiProbeRequests?.length) {
+            const probeOk = await apiRunner.probeBaseUrl(baseUrlCandidate, apiProbeRequests);
+            if (!probeOk) {
+              const open = await isPortOpen(parsed.url.hostname, parsed.port);
+              if (open) {
+                desiredPort = await pickFreePort(parsed.url.hostname);
+                adjusted = true;
+                adjustReason = 'in_use';
+              }
+            }
           }
           if (desiredPort !== parsed.port) {
             parsed.url.port = String(desiredPort);
@@ -2953,6 +3016,35 @@ export class QaTasksService {
           }
         }
       }
+    }
+    const adjustBaseUrlForPortConflict = async (
+      baseUrl: string | undefined,
+      reason: 'browser' | 'api',
+      probeRequests?: QaApiRequest[],
+    ): Promise<string | undefined> => {
+      if (!baseUrl) return baseUrl;
+      if (explicitBaseUrl) return baseUrl;
+      if (!isLocalBaseUrl(baseUrl)) return baseUrl;
+      const parsed = resolveUrlPort(baseUrl);
+      if (!parsed) return baseUrl;
+      const open = await isPortOpen(parsed.url.hostname, parsed.port);
+      if (!open) return baseUrl;
+      if (probeRequests?.length) {
+        const probeOk = await apiRunner.probeBaseUrl(baseUrl, probeRequests);
+        if (probeOk) return baseUrl;
+      }
+      const adjustedBaseUrl = await allocateLocalBaseUrl(reason, { ignoreEnvPort: true });
+      const reasonLabel = probeRequests?.length ? 'probe_mismatch' : 'port_in_use';
+      await this.logTask(
+        taskRun.id,
+        `QA ${reason} base URL ${baseUrl} rejected (${reasonLabel}); using ${adjustedBaseUrl}.`,
+        'qa-server',
+        { baseUrl, adjustedBaseUrl, reason: reasonLabel },
+      );
+      return adjustedBaseUrl;
+    };
+    if (wantsChromium) {
+      browserBaseUrl = await adjustBaseUrlForPortConflict(browserBaseUrl, 'browser', apiProbeRequests);
     }
     if (wantsChromium && browserActions.length === 0 && browserBaseUrl) {
       browserActions.push(
@@ -3015,6 +3107,13 @@ export class QaTasksService {
         baseUrl,
         logPath: handle.logPath,
       });
+      if (serverTimeoutMs <= 0) {
+        const message = `QA server wait disabled; continuing without readiness check for ${baseUrl}.`;
+        await this.logTask(taskRun.id, message, 'qa-server', { baseUrl, timeoutMs: serverTimeoutMs });
+        console.info(`[qa-tasks] ${message}`);
+        return { ok: true, message };
+      }
+      console.info(`[qa-tasks] waiting for QA server at ${baseUrl} (timeout ${serverTimeoutMs}ms).`);
       const ready = await this.waitForUrlReady(baseUrl, serverTimeoutMs);
       if (!ready) {
         const message = `QA server did not become ready at ${baseUrl} after ${serverTimeoutMs}ms.`;
@@ -3221,8 +3320,6 @@ export class QaTasksService {
         }
       }
     }
-    const explicitProfileName = ctx.request.profileName?.toLowerCase();
-    const explicitApi = explicitProfileName === 'api';
     const allowApiRunner = !explicitProfileName || explicitApi;
     const apiPlanRequested = taskPlan?.api !== undefined;
     const apiTaskHint = detectApiTask(task.task);
@@ -3230,51 +3327,67 @@ export class QaTasksService {
       const shouldRunApiFallback =
         apiRequests.length === 0 && (apiPlanRequested || apiTaskHint || explicitApi);
       if (shouldRunApiFallback) {
-        const hasOpenApiSpec = await apiRunner.hasOpenApiSpec();
         if (hasOpenApiSpec || apiPlanRequested || apiTaskHint || explicitApi) {
           apiRequests = await apiRunner.suggestDefaultRequests();
         }
       }
     }
     if (allowApiRunner && apiRequests.length) {
-      const baseUrl = await apiRunner.resolveBaseUrl({
+      let baseUrl = await apiRunner.resolveBaseUrl({
         planBaseUrl: taskPlan?.api?.base_url,
         planBrowserBaseUrl: taskPlan?.browser?.base_url,
         env: baseCtx.env,
+        probeRequests: apiRequests,
       });
-      const apiProfile: QaProfile = { name: 'api', runner: 'api' };
-      const serverCheck = await ensureServerReady(baseUrl, 'api');
-      if (!serverCheck.ok) {
-        const message = serverCheck.message ?? `QA server not ready for ${baseUrl}.`;
-        const apiResult = buildInfraResult(message);
-        runs.push({
-          profile: apiProfile,
-          runner: 'api',
-          command: `${baseUrl} (${apiRequests.length} requests)`,
-          result: apiResult,
-        });
-        runSummaries.push(`- api (api) infra_issue (server_unavailable) cmd=${baseUrl}`);
+      if (!baseUrl && shouldAutoStartServer()) {
+        baseUrl = await allocateLocalBaseUrl('api');
+      }
+      if (baseUrl) {
+        baseUrl = await adjustBaseUrlForPortConflict(baseUrl, 'api', apiRequests);
+      }
+      if (!baseUrl) {
+        const message = shouldAutoStartServer()
+          ? 'QA API base URL could not be resolved.'
+          : 'QA API base URL is missing and auto-start is disabled.';
+        const apiProfile: QaProfile = { name: 'api', runner: 'api' };
+        runs.push({ profile: apiProfile, runner: 'api', command: 'unknown', result: buildInfraResult(message) });
+        runSummaries.push(`- api (api) infra_issue (no_base_url)`);
+        await this.logTask(taskRun.id, message, 'qa-server');
       } else {
-        const apiArtifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key, 'api');
-        await PathHelper.ensureDir(apiArtifactDir);
-        const apiResult = await apiRunner.run({
-          baseUrl,
-          requests: apiRequests,
-          env: baseCtx.env,
-          artifactDir: apiArtifactDir,
-        });
-        runs.push({
-          profile: apiProfile,
-          runner: 'api',
-          command: `${baseUrl} (${apiRequests.length} requests)`,
-          result: apiResult,
-        });
-        for (const artifact of apiResult.artifacts ?? []) {
-          artifactSet.add(artifact);
+        const apiProfile: QaProfile = { name: 'api', runner: 'api' };
+        const serverCheck = await ensureServerReady(baseUrl, 'api');
+        if (!serverCheck.ok) {
+          const message = serverCheck.message ?? `QA server not ready for ${baseUrl}.`;
+          const apiResult = buildInfraResult(message);
+          runs.push({
+            profile: apiProfile,
+            runner: 'api',
+            command: `${baseUrl} (${apiRequests.length} requests)`,
+            result: apiResult,
+          });
+          runSummaries.push(`- api (api) infra_issue (server_unavailable) cmd=${baseUrl}`);
+        } else {
+          const apiArtifactDir = path.join(this.workspace.mcodaDir, 'jobs', ctx.jobId, 'qa', task.task.key, 'api');
+          await PathHelper.ensureDir(apiArtifactDir);
+          const apiResult = await apiRunner.run({
+            baseUrl,
+            requests: apiRequests,
+            env: baseCtx.env,
+            artifactDir: apiArtifactDir,
+          });
+          runs.push({
+            profile: apiProfile,
+            runner: 'api',
+            command: `${baseUrl} (${apiRequests.length} requests)`,
+            result: apiResult,
+          });
+          for (const artifact of apiResult.artifacts ?? []) {
+            artifactSet.add(artifact);
+          }
+          runSummaries.push(
+            `- api (api) outcome=${apiResult.outcome} exit=${apiResult.exitCode ?? 'null'} cmd=${baseUrl}`,
+          );
         }
-        runSummaries.push(
-          `- api (api) outcome=${apiResult.outcome} exit=${apiResult.exitCode ?? 'null'} cmd=${baseUrl}`,
-        );
       }
     } else if (!allowApiRunner && (apiRequests.length || apiPlanRequested || apiTaskHint)) {
       await this.logTask(

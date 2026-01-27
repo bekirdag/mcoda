@@ -48,14 +48,14 @@ describe("create-tasks argument parsing", () => {
       "--qa-profile",
       "cli,chromium",
       "--qa-entry-url",
-      "http://localhost:3000",
+      "http://localhost:5173",
       "--qa-start-command",
       "npm run dev",
       "--qa-requires",
       "db,seed",
     ]);
     assert.deepEqual(parsed.qaProfiles, ["cli", "chromium"]);
-    assert.equal(parsed.qaEntryUrl, "http://localhost:3000");
+    assert.equal(parsed.qaEntryUrl, "http://localhost:5173");
     assert.equal(parsed.qaStartCommand, "npm run dev");
     assert.deepEqual(parsed.qaRequires, ["db", "seed"]);
   });
