@@ -27,6 +27,7 @@ Goal: ship the requested change with the smallest, safest diff while matching th
 - If a target file does not exist, create it in the repo with full content (no placeholder edits to missing paths).
 - Apply changes directly in the repo; do not output patches/diffs/FILE blocks. Summarize changes and tests instead of emitting diffs.
 - Guard inputs and edge cases; avoid silent failure paths; keep changes narrow and testable.
+- Do not hardcode ports; use env-configured ports (PORT/HOST or MCODA_QA_PORT/MCODA_QA_HOST) and document base URLs with http://localhost:<PORT> placeholders if needed.
 - Add or update tests alongside code, following the existing style and fixtures. For each task, identify the relevant unit/component/integration/API tests and implement them as part of the change.
 - Assume QA runs unit -> component -> integration -> api when test requirements are set; make sure those suites exist and pass.
 - Honor `metadata.qa` readiness (profiles/entrypoints/blockers) and keep browser testing Chromium-only.

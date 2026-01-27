@@ -34,6 +34,7 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   buildDocdexUsageGuidance({ contextLabel: "task notes", includeHeading: false, includeFallback: true }),
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria).",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
+  "Do not hardcode ports. Read PORT/HOST (or MCODA_QA_PORT/MCODA_QA_HOST) from env, and document base URLs with http://localhost:<PORT> placeholders when needed.",
   "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
   "Work directly in the repo: edit files and run commands as needed. Do not output patches/diffs/FILE blocks; apply changes to the working tree.",
 ].join("\n");

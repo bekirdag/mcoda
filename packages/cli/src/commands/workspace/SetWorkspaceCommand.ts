@@ -106,6 +106,7 @@ const AST_STACK_TEST_PACKAGES: Record<
       "ava",
       "cypress",
       "puppeteer",
+      "@jest/globals",
     ],
     tsPackages: ["@types/supertest"],
   },

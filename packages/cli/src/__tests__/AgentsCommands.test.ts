@@ -91,6 +91,8 @@ test("agent list supports JSON output", { concurrency: false }, async () => {
     const agent = parsed.find((entry: any) => entry.slug === "json-agent");
     assert.ok(agent);
     assert.equal(agent.adapter, "codex-cli");
+    assert.ok(agent.auth);
+    assert.equal(agent.auth.configured, false);
   });
 });
 

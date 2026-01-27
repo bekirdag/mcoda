@@ -124,6 +124,7 @@ test("QaApiRunner resolves base URL from package.json scripts", async () => {
     };
     await fs.writeFile(path.join(dir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
     const baseUrl = await runner.resolveBaseUrl({ env: {} as any });
+    assert.ok(baseUrl);
     assert.equal(baseUrl, "http://127.0.0.1:4567");
   });
 });
@@ -154,6 +155,7 @@ test("QaApiRunner normalizes 0.0.0.0 base URLs to localhost", async () => {
     const baseUrl = await runner.resolveBaseUrl({
       env: { MCODA_QA_API_BASE_URL: "http://0.0.0.0:7777" } as any,
     });
+    assert.ok(baseUrl);
     assert.equal(baseUrl, "http://127.0.0.1:7777");
   });
 });

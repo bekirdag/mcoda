@@ -126,6 +126,7 @@ describe("set-workspace node test package selection", () => {
       const resolved = await resolveNodeTestPackages(dir, pkg);
       assert.ok(resolved.packages.includes("vitest"));
       assert.ok(!resolved.packages.includes("jest"));
+      assert.ok(resolved.packages.includes("@jest/globals"));
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -150,6 +151,7 @@ describe("set-workspace node test package selection", () => {
       assert.ok(resolved.packages.includes("axios-mock-adapter"));
       assert.ok(resolved.packages.includes("cypress"));
       assert.ok(resolved.packages.includes("puppeteer"));
+      assert.ok(resolved.packages.includes("@jest/globals"));
       assert.ok(resolved.tsPackages.includes("@types/supertest"));
     } finally {
       await fs.rm(dir, { recursive: true, force: true });

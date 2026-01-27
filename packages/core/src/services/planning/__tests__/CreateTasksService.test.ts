@@ -492,7 +492,7 @@ test("createTasks records qa preflight scripts and entrypoints", async () => {
   assert.equal(preflight.details.scripts.dev, "vite");
   assert.equal(preflight.details.scripts.test, "node tests/all.js");
   assert.equal(preflight.details.entrypoints[0].command, "npm run dev");
-  assert.equal(preflight.details.entrypoints[0].base_url, "http://localhost:3000");
+  assert.equal(preflight.details.entrypoints[0].base_url, undefined);
 });
 
 test("createTasks records empty qa preflight when package.json is missing", async () => {
