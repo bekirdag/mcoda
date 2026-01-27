@@ -27,4 +27,4 @@ Ensure set-workspace, create-tasks, work-on-tasks, code-review, and qa-tasks ope
 - 2026-01-27: Added @jest/globals to Node setup packages; updated node package selection tests.
 - 2026-01-27: Confirmed QA base URL handling is dynamic (no hardcoded port defaults) and chromium-only prompts are in place.
 - 2026-01-27: Enforced Chromium-only env overrides for CLI browser tools and ensured Cypress flags are normalized.
-- 2026-01-27: Marked old QA prompts as stale when they include localhost:3000 so workspace prompts refresh to dynamic port examples.
+- 2026-01-27: Marked old QA prompts as stale when they include hardcoded localhost ports so workspace prompts refresh to dynamic port examples.

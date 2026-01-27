@@ -20,17 +20,20 @@ let originalHome: string | undefined;
 let originalProfile: string | undefined;
 let originalQaInterpretation: string | undefined;
 let originalQaStartServer: string | undefined;
+let originalQaInstallDeps: string | undefined;
 
 beforeEach(async () => {
   originalHome = process.env.HOME;
   originalProfile = process.env.USERPROFILE;
   originalQaInterpretation = process.env.MCODA_QA_AGENT_INTERPRETATION;
   originalQaStartServer = process.env.MCODA_QA_START_SERVER;
+  originalQaInstallDeps = process.env.MCODA_QA_INSTALL_DEPS;
   tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-home-"));
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
   process.env.MCODA_QA_AGENT_INTERPRETATION = "1";
   process.env.MCODA_QA_START_SERVER = "0";
+  process.env.MCODA_QA_INSTALL_DEPS = "0";
 });
 
 afterEach(async () => {
@@ -56,6 +59,11 @@ afterEach(async () => {
     delete process.env.MCODA_QA_START_SERVER;
   } else {
     process.env.MCODA_QA_START_SERVER = originalQaStartServer;
+  }
+  if (originalQaInstallDeps === undefined) {
+    delete process.env.MCODA_QA_INSTALL_DEPS;
+  } else {
+    process.env.MCODA_QA_INSTALL_DEPS = originalQaInstallDeps;
   }
 });
 
