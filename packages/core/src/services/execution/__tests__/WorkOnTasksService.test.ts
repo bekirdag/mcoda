@@ -2317,15 +2317,61 @@ test("workOnTasks includes unresolved review + QA comment backlog", async () => 
       limit: 1,
     });
     const input = agent.lastInput ?? "";
-    assert.ok(input.includes("Comment backlog:"));
+    assert.ok(input.includes("Comment backlog (highest priority):"));
     assert.ok(input.includes("review-1"));
     assert.ok(input.includes("qa-1"));
-    assert.ok(!input.includes("work-1"));
+    assert.ok(input.includes("Work log (recent):"));
+    assert.ok(input.includes("work-1"));
     assert.ok(!input.includes("resolved-1"));
     assert.equal((input.match(/review-1/g) ?? []).length, 1);
     assert.ok(input.includes("src/app.ts:12"));
     assert.ok(input.includes("tests/ui.spec.ts:5"));
     assert.ok(input.includes("Suggested fix: Add early return when value missing"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks logs comment progress when unresolved comments exist", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await fs.writeFile(path.join(dir, "tmp.txt"), "foo", "utf8");
+  await repo.createTaskComment({
+    taskId: tasks[0].id,
+    sourceCommand: "code-review",
+    authorType: "agent",
+    slug: "review-open",
+    status: "open",
+    body: "Fix missing guard",
+    createdAt: new Date().toISOString(),
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results[0]?.status, "succeeded");
+    const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
+    assert.ok(comments.some((comment) => comment.category === "comment_progress"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -2397,7 +2443,7 @@ test("workOnTasks applies comment resolutions from JSON output", async () => {
   }
 });
 
-test("workOnTasks completes no-change runs when comment backlog is resolved", async () => {
+test("workOnTasks fails no-change runs when comment backlog remains unresolved", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2433,15 +2479,14 @@ test("workOnTasks completes no-change runs when comment backlog is resolved", as
       noCommit: true,
       limit: 1,
     });
-    assert.equal(result.results[0]?.status, "succeeded");
-    assert.equal(result.results[0]?.notes, "no_changes");
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "comment_backlog_unaddressed");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "ready_to_code_review");
+    assert.equal(updated?.status, "changes_requested");
     const resolved = await repo.listTaskComments(tasks[0].id, { slug: "review-open", resolved: true });
-    assert.ok(resolved.length > 0);
+    assert.equal(resolved.length, 0);
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
-    assert.ok(comments.some((comment) => comment.category === "comment_resolution"));
-    assert.ok(comments.some((comment) => comment.category === "no_changes"));
+    assert.ok(comments.some((comment) => comment.category === "comment_backlog"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -2497,7 +2542,7 @@ test("workOnTasks blocks when agent reports missing comment backlog", async () =
   }
 });
 
-test("workOnTasks completes no-change runs when unresolved comments exist", async () => {
+test("workOnTasks fails no-change runs when unresolved comments exist", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2533,16 +2578,16 @@ test("workOnTasks completes no-change runs when unresolved comments exist", asyn
       noCommit: true,
       limit: 1,
     });
-    assert.equal(result.results[0]?.status, "succeeded");
-    assert.equal(result.results[0]?.notes, "no_changes");
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "comment_backlog_unaddressed");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "ready_to_code_review");
+    assert.equal(updated?.status, "changes_requested");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const backlog = comments.find((comment) => comment.category === "comment_backlog");
     assert.ok(backlog?.body.includes("Open comment slugs: review-1"));
     assert.ok(backlog?.body.includes("Justification:"));
     assert.ok((backlog?.metadata as any)?.justification);
-    assert.equal((backlog?.metadata as any)?.reason, "no_changes_completed");
+    assert.equal((backlog?.metadata as any)?.reason, "comment_backlog_unaddressed");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

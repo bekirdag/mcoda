@@ -34,6 +34,8 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "You are not the QA agent. Do not run qa-tasks, generate QA plans, or write QA reports.",
   buildDocdexUsageGuidance({ contextLabel: "task notes", includeHeading: false, includeFallback: true }),
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria).",
+  "When a comment backlog is provided (code-review/qa-tasks), resolve those items first and do not mark a slug resolved unless you made real repo changes that address it.",
+  "Do not ignore the main task description or acceptance criteria; address them after resolving comment backlog items.",
   "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
   "Do not hardcode ports. Read PORT/HOST (or MCODA_QA_PORT/MCODA_QA_HOST) from env, and document base URLs with http://localhost:<PORT> placeholders when needed.",
   "Do not create docs/qa/* reports unless the task explicitly requests one. Work-on-tasks should not generate QA reports.",
@@ -2010,6 +2012,20 @@ export class WorkOnTasksService {
     return lines.join("\n");
   }
 
+  private buildWorkLog(comments: TaskCommentRow[]): string {
+    if (!comments.length) return "";
+    const toSingleLine = (value: string) => value.replace(/\s+/g, " ").trim();
+    const lines: string[] = [];
+    for (const comment of comments) {
+      const details = this.parseCommentBody(comment.body);
+      const summary = toSingleLine(details.message || comment.body || "(no details provided)");
+      const stamp = comment.createdAt ? new Date(comment.createdAt).toISOString() : "unknown time";
+      const category = comment.category ?? comment.sourceCommand ?? "work-on-tasks";
+      lines.push(`- [${category}] ${stamp}: ${summary}`);
+    }
+    return lines.join("\n");
+  }
+
   private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
       sourceCommands: ["code-review", "qa-tasks"],
@@ -2017,6 +2033,13 @@ export class WorkOnTasksService {
     });
     const unresolved = comments.filter((comment) => !comment.resolvedAt);
     return { comments, unresolved };
+  }
+
+  private async loadWorkLog(taskId: string): Promise<TaskCommentRow[]> {
+    return this.deps.workspaceRepo.listTaskComments(taskId, {
+      sourceCommands: ["work-on-tasks"],
+      limit: 5,
+    });
   }
 
   private async applyCommentResolutions(params: {
@@ -2128,20 +2151,26 @@ export class WorkOnTasksService {
     docSummary: string,
     fileScope: string[],
     commentBacklog: string,
+    workLog: string,
   ): string {
     const deps = task.dependencies.keys.length ? `Depends on: ${task.dependencies.keys.join(", ")}` : "No open dependencies.";
     const acceptance = (task.task.acceptanceCriteria ?? []).join("; ");
     const docdexHint =
       docSummary ||
       "Use docdex: search workspace docs with project key and fetch linked documents when present (doc_links metadata).";
-    const backlog = commentBacklog ? `Comment backlog:\n${commentBacklog}` : "";
+    const backlog = commentBacklog
+      ? `Comment backlog (highest priority):\n${commentBacklog}`
+      : "";
+    const workLogSection = workLog ? `Work log (recent):\n${workLog}` : "";
     return [
       `Task ${task.task.key}: ${task.task.title}`,
       `Description: ${task.task.description ?? "(none)"}`,
       `Epic: ${task.task.epicKey} (${task.task.epicTitle ?? "n/a"}), Story: ${task.task.storyKey} (${task.task.storyTitle ?? "n/a"})`,
       `Acceptance: ${acceptance || "Refer to SDS/OpenAPI for expected behavior."}`,
       deps,
+      commentBacklog ? "Priority: resolve the comment backlog before any other work." : "",
       backlog,
+      workLogSection,
       `Allowed files: ${fileScope.length ? fileScope.join(", ") : "(not constrained)"}`,
       `Doc context:\n${docdexHint}`,
       "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, emit a new-file diff with full content (and parent dirs) instead of editing a non-existent file so git apply succeeds. Use valid unified diffs without JSON wrappers.",
@@ -3236,13 +3265,16 @@ export class WorkOnTasksService {
         let runAllScriptCreated = false;
         let allowedFiles: string[] = [];
         let touched: string[] = [];
+        let hasChanges = false;
         let dirtyBeforeAgent: string[] = [];
         let unresolvedComments: TaskCommentRow[] = [];
         let commentContext: { comments: TaskCommentRow[]; unresolved: TaskCommentRow[] } | null = null;
+        let workLog: TaskCommentRow[] = [];
         let commentResolution:
           | { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string }
           | null = null;
         let commentResolutionApplied = false;
+        let commentProgressLogged = false;
         let taskBranchName: string | null = task.task.vcsBranch ?? null;
         let baseBranchName: string | null = task.task.vcsBaseBranch ?? baseBranch;
         let branchInfo: { branch: string; base: string; mergeConflicts?: string[]; remoteSyncNote?: string } | null = {
@@ -3260,6 +3292,56 @@ export class WorkOnTasksService {
         };
         const setMergeNote = (note: string | undefined | null): void => {
           if (!mergeNote && note) mergeNote = note;
+        };
+        const addCommentProgress = async (params: {
+          openSlugs: string[];
+          resolvedSlugs: string[];
+          unresolvedSlugs: string[];
+          status: string;
+          touchedFiles: string[];
+          hasChanges: boolean;
+        }): Promise<void> => {
+          if (commentProgressLogged) return;
+          commentProgressLogged = true;
+          const messageLines = [
+            "[work-on-tasks]",
+            "Comment backlog follow-up (priority applied).",
+            `Open slugs: ${formatSlugList(params.openSlugs)}`,
+            `Resolved slugs (reported): ${formatSlugList(params.resolvedSlugs)}`,
+            `Unresolved slugs (reported): ${formatSlugList(params.unresolvedSlugs)}`,
+            `Comment backlog status: ${params.status || "missing"}`,
+            `Repo changes: ${params.hasChanges ? "yes" : "no"}`,
+            `Touched files: ${
+              params.touchedFiles.length ? params.touchedFiles.join(", ") : "(none)"
+            }`,
+          ];
+          const body = messageLines.join("\n");
+          const slug = createTaskCommentSlug({
+            source: "work-on-tasks",
+            message: "comment_progress",
+            category: "comment_progress",
+          });
+          await this.deps.workspaceRepo.createTaskComment({
+            taskId: task.task.id,
+            taskRunId: taskRun.id,
+            jobId: job.id,
+            sourceCommand: "work-on-tasks",
+            authorType: "agent",
+            authorAgentId: agent.id,
+            category: "comment_progress",
+            slug,
+            status: "open",
+            body,
+            createdAt: new Date().toISOString(),
+            metadata: {
+              openSlugs: params.openSlugs,
+              resolvedSlugs: params.resolvedSlugs,
+              unresolvedSlugs: params.unresolvedSlugs,
+              commentBacklogStatus: params.status || "missing",
+              hasChanges: params.hasChanges,
+              touchedFiles: params.touchedFiles,
+            },
+          });
         };
         const applyCommentResolutionIfNeeded = async (): Promise<{
           resolved: string[];
@@ -3871,7 +3953,9 @@ export class WorkOnTasksService {
           commentContext = await this.loadCommentContext(task.task.id);
           unresolvedComments = commentContext.unresolved;
           const commentBacklog = this.buildCommentBacklog(unresolvedComments);
-          const promptBase = this.buildPrompt(task, docSummary, allowedFiles, commentBacklog);
+          workLog = await this.loadWorkLog(task.task.id);
+          const workLogSummary = this.buildWorkLog(workLog);
+          const promptBase = this.buildPrompt(task, docSummary, allowedFiles, commentBacklog, workLogSummary);
           const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
           const testExpectationNote = shouldRunTests
             ? testsRequired
@@ -3879,14 +3963,15 @@ export class WorkOnTasksService {
               : "Tests must pass before the task can be finalized."
             : "";
           const commentBacklogNote = commentBacklog
-            ? "Comment backlog: resolve or reopen slugs as needed. If you return JSON, include resolvedSlugs/unresolvedSlugs. If no backlog was provided, set commentBacklogStatus to \"none\"."
+            ? "Comment backlog is highest priority. Resolve those items first and focus on them before other task work. If you cannot resolve a comment, explain why and leave the slug unresolved. Do not mark slugs resolved unless you made repo changes that address them. If you return JSON, include resolvedSlugs/unresolvedSlugs and set commentBacklogStatus (e.g., in_progress/resolved/blocked)."
             : "";
           const outputRequirementNote = [
             "Output requirements (strict):",
             "- Apply changes directly in the repo; do not output patches/diffs/FILE blocks.",
             "- Do not commit changes; leave the working tree for mcoda to stage and commit.",
             "- Summarize what you changed and any test results.",
-            "- If comment backlog is present and you need to report comment resolution, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus (no patches/files).",
+            "- If comment backlog is present, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus (no patches/files).",
+            "- Do not mark comment slugs resolved without corresponding repo changes.",
             "- Do not create docs/qa/* reports unless explicitly required by the task.",
           ].join("\n");
           const promptExtras = [
@@ -4988,7 +5073,7 @@ export class WorkOnTasksService {
             }
 
             if (!request.dryRun) {
-              let hasChanges = touched.length > 0;
+              hasChanges = touched.length > 0;
               let dirtyPaths: string[] = [];
               if (!hasChanges) {
                 try {
@@ -5004,41 +5089,28 @@ export class WorkOnTasksService {
                   ? `No touched files detected; dirty paths present: ${dirtyPaths.join(", ")}`
                   : "No touched files detected after applying patches."
                 : undefined;
+              if (unresolvedComments.length > 0) {
+                const openSlugs = unresolvedComments
+                  .map((comment) => comment.slug)
+                  .filter((slug): slug is string => Boolean(slug && slug.trim()));
+                await addCommentProgress({
+                  openSlugs,
+                  resolvedSlugs: commentResolution?.resolvedSlugs ?? [],
+                  unresolvedSlugs: commentResolution?.unresolvedSlugs ?? [],
+                  status: commentResolution?.commentBacklogStatus ?? "missing",
+                  touchedFiles: touched,
+                  hasChanges,
+                });
+              }
               if (!hasChanges && unresolvedComments.length > 0) {
-                const appliedResolution = await applyCommentResolutionIfNeeded();
-                const openSlugs =
-                  appliedResolution?.open ??
-                  unresolvedComments.map((comment) => comment.slug).filter((slug): slug is string => Boolean(slug && slug.trim()));
+                const openSlugs = unresolvedComments
+                  .map((comment) => comment.slug)
+                  .filter((slug): slug is string => Boolean(slug && slug.trim()));
                 const slugList = openSlugs.length ? openSlugs.join(", ") : "untracked";
-                if (openSlugs.length === 0) {
-                  const body = [
-                    "[work-on-tasks]",
-                    "No changes were required; task appears already satisfied.",
-                    `Justification: ${noChangeJustification ?? "No justification provided."}`,
-                  ].join("\n");
-                  await this.deps.workspaceRepo.createTaskComment({
-                    taskId: task.task.id,
-                    taskRunId: taskRun.id,
-                    jobId: job.id,
-                    sourceCommand: "work-on-tasks",
-                    authorType: "agent",
-                    authorAgentId: agent.id,
-                    category: "no_changes",
-                    body,
-                    createdAt: new Date().toISOString(),
-                    metadata: { reason: "no_changes_completed", initialStatus, justification: noChangeJustification, dirtyPaths },
-                  });
-                  await this.logTask(taskRun.id, "No changes required; marking task ready for code review.", "execution");
-                  await this.stateService.markReadyToReview(task.task, { completed_reason: "no_changes" }, statusContext);
-                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "succeeded", finishedAt: new Date().toISOString() });
-                  results.push({ taskKey: task.task.key, status: "succeeded", notes: "no_changes" });
-                  taskStatus = "succeeded";
-                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                  continue taskLoop;
-                }
                 const body = [
                   "[work-on-tasks]",
-                  "No changes were required; task appears already satisfied.",
+                  "No repo changes were detected while comment backlog remains unresolved.",
+                  "Comment backlog must be addressed before completing the task.",
                   `Open comment slugs: ${slugList}`,
                   `Justification: ${noChangeJustification ?? "No justification provided."}`,
                 ].join("\n");
@@ -5052,17 +5124,29 @@ export class WorkOnTasksService {
                   category: "comment_backlog",
                   body,
                   createdAt: new Date().toISOString(),
-                  metadata: { reason: "no_changes_completed", openSlugs, justification: noChangeJustification, dirtyPaths },
+                  metadata: {
+                    reason: "comment_backlog_unaddressed",
+                    openSlugs,
+                    justification: noChangeJustification,
+                    dirtyPaths,
+                    resolvedSlugs: commentResolution?.resolvedSlugs ?? [],
+                    unresolvedSlugs: commentResolution?.unresolvedSlugs ?? [],
+                  },
                 });
                 await this.logTask(
                   taskRun.id,
-                  `No changes required; unresolved comments remain (${slugList}).`,
+                  `Comment backlog unresolved with no repo changes (${slugList}).`,
                   "execution",
                 );
-                await this.stateService.markReadyToReview(task.task, { completed_reason: "no_changes" }, statusContext);
-                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "succeeded", finishedAt: new Date().toISOString() });
-                results.push({ taskKey: task.task.key, status: "succeeded", notes: "no_changes" });
-                taskStatus = "succeeded";
+                await this.stateService.markChangesRequested(
+                  task.task,
+                  { failed_reason: "comment_backlog_unaddressed" },
+                  statusContext,
+                );
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
+                setFailureReason("comment_backlog_unaddressed");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_unaddressed" });
+                taskStatus = "failed";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                 continue taskLoop;
               }
@@ -5103,7 +5187,15 @@ export class WorkOnTasksService {
 
         if (commentResolution?.resolvedSlugs?.length || commentResolution?.unresolvedSlugs?.length) {
           if (!commentResolutionApplied) {
-            await applyCommentResolutionIfNeeded();
+            if (!hasChanges && unresolvedComments.length > 0) {
+              await this.logTask(
+                taskRun.id,
+                "Skipping comment resolution because no repo changes were detected for an unresolved backlog.",
+                "comment_resolution",
+              );
+            } else {
+              await applyCommentResolutionIfNeeded();
+            }
           }
         }
 

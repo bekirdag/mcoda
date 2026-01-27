@@ -632,8 +632,14 @@ export class GatewayTrioService {
     return progress.attempts < maxIterations;
   }
 
-  private shouldReopenFailedTask(progress: TaskProgress | undefined, taskKey: string, warnings: string[]): boolean {
+  private shouldReopenFailedTask(
+    progress: TaskProgress | undefined,
+    taskKey: string,
+    warnings: string[],
+    continuousMode: boolean,
+  ): boolean {
     if (!progress) return true;
+    if (continuousMode) return true;
     const lastFailure = progress.failureHistory?.[progress.failureHistory.length - 1];
     const lastReasonRaw = progress.lastError ?? lastFailure?.reason ?? "";
     const lastReason = normalizeFailureReason(lastReasonRaw);
@@ -666,6 +672,7 @@ export class GatewayTrioService {
     maxIterations: number | undefined,
     warnings: string[],
   ): Promise<void> {
+    const continuousMode = maxIterations === undefined;
     const keys = new Set<string>([...explicitTasks, ...Object.keys(state.tasks)]);
     for (const taskKey of keys) {
       const progress = state.tasks[taskKey];
@@ -701,16 +708,16 @@ export class GatewayTrioService {
           const depsReady = await this.dependenciesReady(task.id, warnings);
           if (!depsReady) continue;
         }
-        if (failedReason && NON_RETRYABLE_FAILURE_REASONS.has(failedReason)) {
+        if (!continuousMode && failedReason && NON_RETRYABLE_FAILURE_REASONS.has(failedReason)) {
           warnings.push(`Task ${taskKey} failed with non-retryable reason ${failedReason}; skipping reopen.`);
           continue;
         }
-        if (progress && !this.shouldReopenFailedTask(progress, taskKey, warnings)) {
+        if (!continuousMode && progress && !this.shouldReopenFailedTask(progress, taskKey, warnings, continuousMode)) {
           continue;
         }
       } else if (progress?.status !== "failed") {
         continue;
-      } else if (!this.shouldReopenFailedTask(progress, taskKey, warnings)) {
+      } else if (!continuousMode && !this.shouldReopenFailedTask(progress, taskKey, warnings, continuousMode)) {
         continue;
       }
       const nextMetadata = { ...metadata };
@@ -758,7 +765,9 @@ export class GatewayTrioService {
   }
 
   private resolveRequest(request: GatewayTrioRequest, payload?: Record<string, unknown>): GatewayTrioRequest {
-    if (!payload) return request;
+    if (!payload) {
+      return { ...request, rateAgents: request.rateAgents ?? true };
+    }
     const raw = payload as any;
     const payloadTasks = Array.isArray(raw.tasks) ? raw.tasks : undefined;
     const payloadStatuses = Array.isArray(raw.statusFilter) ? raw.statusFilter : undefined;
@@ -781,6 +790,7 @@ export class GatewayTrioService {
       qaAgentName: request.qaAgentName ?? raw.qaAgentName,
       maxDocs: request.maxDocs ?? raw.maxDocs,
       agentStream: request.agentStream ?? raw.agentStream,
+      rateAgents: request.rateAgents ?? raw.rateAgents ?? true,
       noCommit: request.noCommit ?? raw.noCommit,
       dryRun: request.dryRun ?? raw.dryRun,
       reviewBase: request.reviewBase ?? raw.reviewBase,
@@ -1153,7 +1163,7 @@ export class GatewayTrioService {
     await this.deps.gatewayService.preflightExecutionAgents("work-on-tasks", request.workAgentName);
     try {
       gateway = await this.runGateway("work-on-tasks", taskKey, projectKey, request, agentOptions);
-      resolvedAgent = request.workAgentName ?? gateway.chosenAgent.agentSlug;
+      resolvedAgent = request.workAgentName ?? gateway.chosenAgent.agentSlug ?? gateway.chosenAgent.agentId;
       const missingContext = await this.guardMissingContext("work", jobId, taskKey, gateway, warnings, resolvedAgent);
       if (missingContext) {
         return missingContext;
@@ -1386,6 +1396,7 @@ export class GatewayTrioService {
     }
     const resolvedRequest = this.resolveRequest(request, resumeJob?.payload as Record<string, unknown> | undefined);
     const maxIterations = resolvedRequest.maxIterations;
+    const continuousMode = maxIterations === undefined;
     const maxCycles = resolvedRequest.maxCycles;
     const maxAgentSeconds = resolvedRequest.maxAgentSeconds;
     if (!resolvedRequest.rateAgents) {
@@ -1525,11 +1536,7 @@ export class GatewayTrioService {
     await this.writeState(state);
     let cycle = state.cycle ?? 0;
     const taskLimit = resolvedRequest.limit;
-    const startedTaskKeys = new Set(
-      Object.values(state.tasks)
-        .filter((task) => task.attempts > 0 || task.lastStep)
-        .map((task) => task.taskKey),
-    );
+    let activeTaskKey: string | null = null;
     let abortRemainingReason: string | null = null;
 
     try {
@@ -1559,7 +1566,31 @@ export class GatewayTrioService {
             .filter((task) => task.status === "completed")
             .map((task) => task.taskKey),
         );
-        const orderedCandidates = this.prioritizeFeedbackTasks(selection.ordered, state);
+        let orderedCandidates = this.prioritizeFeedbackTasks(selection.ordered, state);
+        if (activeTaskKey) {
+          const activeIndex = orderedCandidates.findIndex((entry) => entry.task.key === activeTaskKey);
+          if (activeIndex >= 0) {
+            const activeEntry = orderedCandidates[activeIndex];
+            orderedCandidates = [
+              activeEntry,
+              ...orderedCandidates.slice(0, activeIndex),
+              ...orderedCandidates.slice(activeIndex + 1),
+            ];
+          } else {
+            const activeSelection = await this.selectionService.selectTasks({
+              taskKeys: [activeTaskKey],
+              ignoreStatusFilter: true,
+              limit: 1,
+              parallel: resolvedRequest.parallel,
+            });
+            const activeEntry = activeSelection.ordered[0];
+            if (activeEntry) {
+              orderedCandidates = [activeEntry, ...orderedCandidates];
+            } else {
+              activeTaskKey = null;
+            }
+          }
+        }
         const ordered: TaskSelectionPlan["ordered"] = [];
         const seenOrdered = new Set<string>();
         for (const entry of orderedCandidates) {
@@ -1576,14 +1607,23 @@ export class GatewayTrioService {
             progress.lastError = "cancelled_in_db";
             state.tasks[taskKey] = progress;
             warnings.push(`Task ${taskKey} is cancelled; skipping.`);
+            if (activeTaskKey === taskKey) {
+              activeTaskKey = null;
+            }
             continue;
           }
           if (completedKeys.has(taskKey)) {
             warnings.push(`Task ${taskKey} already completed earlier in this run; skipping.`);
+            if (activeTaskKey === taskKey) {
+              activeTaskKey = null;
+            }
             continue;
           }
           if (this.isPseudoTaskKey(taskKey)) {
             this.skipPseudoTask(state, taskKey, warnings);
+            if (activeTaskKey === taskKey) {
+              activeTaskKey = null;
+            }
             continue;
           }
           ordered.push(entry);
@@ -1602,133 +1642,134 @@ export class GatewayTrioService {
         const seenThisCycle = new Set<string>();
         for (const entry of ordered) {
           if (abortRemainingReason) break;
+          if (typeof taskLimit === "number" && taskLimit > 0 && completedKeys.size >= taskLimit) {
+            warnings.push(`Completed task limit ${taskLimit} reached; stopping run.`);
+            abortRemainingReason = "limit_reached";
+            break;
+          }
+          if (activeTaskKey && entry.task.key !== activeTaskKey) {
+            const activeProgress = state.tasks[activeTaskKey];
+            if (activeProgress && activeProgress.status !== "completed") {
+              break;
+            }
+            activeTaskKey = null;
+          }
           let attempted = false;
+          let holdAfterTask = false;
+          let currentTaskKey: string | undefined;
           try {
-            const taskKey = entry.task.key;
-          if (seenThisCycle.has(taskKey)) {
-            warnings.push(`Task ${taskKey} appears multiple times in this cycle; skipping duplicate entry.`);
-            continue;
-          }
-          seenThisCycle.add(taskKey);
-          if (completedKeys.has(taskKey)) {
-            warnings.push(`Task ${taskKey} already completed earlier in this run; skipping.`);
-            continue;
-          }
-          if (
-            typeof taskLimit === "number" &&
-            taskLimit > 0 &&
-            startedTaskKeys.size >= taskLimit &&
-            !startedTaskKeys.has(taskKey)
-          ) {
-            warnings.push(`Task ${taskKey} skipped; limit ${taskLimit} reached.`);
+            const taskKey: string = entry.task.key;
+            currentTaskKey = taskKey;
+            if (seenThisCycle.has(taskKey)) {
+              warnings.push(`Task ${taskKey} appears multiple times in this cycle; skipping duplicate entry.`);
+              continue;
+            }
+            seenThisCycle.add(taskKey);
+            if (completedKeys.has(taskKey)) {
+              warnings.push(`Task ${taskKey} already completed earlier in this run; skipping.`);
+              continue;
+            }
+            if (typeof taskLimit === "number" && taskLimit > 0 && completedKeys.size >= taskLimit) {
+              warnings.push(`Completed task limit ${taskLimit} reached; stopping run.`);
+              abortRemainingReason = "limit_reached";
+              break;
+            }
+            const normalizedStatus = this.normalizeStatus(entry.task.status);
+            if (normalizedStatus && TERMINAL_STATUSES.has(normalizedStatus)) {
+              warnings.push(`Skipping terminal task ${taskKey} (${normalizedStatus}).`);
+              continue;
+            }
+
             const progress = this.ensureProgress(state, taskKey);
-            if (progress.status !== "completed") {
-              progress.status = "skipped";
-              progress.lastError = "limit_reached";
-              state.tasks[taskKey] = progress;
-              await this.writeState(state);
+            if (progress.status === "skipped") {
+              progress.status = "pending";
+              progress.lastError = undefined;
             }
-            continue;
-          }
-          const normalizedStatus = this.normalizeStatus(entry.task.status);
-          if (normalizedStatus && TERMINAL_STATUSES.has(normalizedStatus)) {
-            warnings.push(`Skipping terminal task ${taskKey} (${normalizedStatus}).`);
-            continue;
-          }
 
-          const progress = this.ensureProgress(state, taskKey);
-          if (progress.status === "skipped") {
-            progress.status = "pending";
-            progress.lastError = undefined;
-          }
-
-          if (progress.status === "completed") {
-            continue;
-          }
-          if (progress.status === "failed") {
-            if (progress.lastError === ZERO_TOKEN_ERROR) {
-              warnings.push(`Task ${taskKey} failed after repeated zero-token runs.`);
+            if (progress.status === "completed") {
               continue;
             }
-            const normalizedReason = normalizeFailureReason(
-              progress.lastError ?? progress.failureHistory?.[progress.failureHistory.length - 1]?.reason ?? "",
-            );
-            if (normalizedReason && NON_RETRYABLE_FAILURE_REASONS.has(normalizedReason)) {
-              warnings.push(`Task ${taskKey} failed with non-retryable reason ${normalizedReason}; skipping.`);
-              continue;
-            }
-            if (this.hasReachedMaxIterations(progress, maxIterations)) {
-              continue;
-            }
-            if (!this.shouldReopenFailedTask(progress, taskKey, warnings)) {
-              continue;
-            }
-            progress.status = "pending";
-            progress.lastError = undefined;
-            state.tasks[taskKey] = progress;
-          }
-
-          const projectKey = await this.projectKeyForTask(entry.task.projectId);
-          let currentStatus = this.normalizeStatus(entry.task.status);
-          const readStatus = async (): Promise<string | undefined> => {
-            if (resolvedRequest.dryRun) return currentStatus;
-            return await this.refreshTaskStatus(taskKey, warnings);
-          };
-          const setDryRunStatus = (next?: string) => {
-            if (resolvedRequest.dryRun) {
-              currentStatus = next;
-            }
-          };
-
-          let taskCompleted = false;
-          while (!taskCompleted) {
-            const statusNow = await readStatus();
-            if (!statusNow) {
-              progress.status = "failed";
-              progress.lastError = "status_unknown";
-              state.tasks[taskKey] = progress;
-              await this.writeState(state);
-              warnings.push(`Task ${taskKey} status unknown; skipping.`);
-              break;
-            }
-            if (TERMINAL_STATUSES.has(statusNow)) {
-              progress.status = statusNow === "completed" ? "completed" : "skipped";
-              progress.lastError = statusNow === "completed" ? "completed_in_db" : "cancelled_in_db";
-              state.tasks[taskKey] = progress;
-              await this.writeState(state);
-              if (statusNow === "completed") {
-                completedKeys.add(taskKey);
-                completedThisCycle += 1;
+            if (progress.status === "failed") {
+              if (progress.lastError === ZERO_TOKEN_ERROR && !continuousMode) {
+                warnings.push(`Task ${taskKey} failed after repeated zero-token runs.`);
+                continue;
               }
-              break;
-            }
-            if (statusNow === "blocked") {
-              progress.status = "failed";
-              progress.lastError = "legacy_blocked";
+              const normalizedReason = normalizeFailureReason(
+                progress.lastError ?? progress.failureHistory?.[progress.failureHistory.length - 1]?.reason ?? "",
+              );
+              if (!continuousMode && normalizedReason && NON_RETRYABLE_FAILURE_REASONS.has(normalizedReason)) {
+                warnings.push(`Task ${taskKey} failed with non-retryable reason ${normalizedReason}; skipping.`);
+                continue;
+              }
+              if (this.hasReachedMaxIterations(progress, maxIterations)) {
+                continue;
+              }
+              if (!this.shouldReopenFailedTask(progress, taskKey, warnings, continuousMode)) {
+                continue;
+              }
+              progress.status = "pending";
+              progress.lastError = undefined;
               state.tasks[taskKey] = progress;
-              if (!resolvedRequest.dryRun) {
-                await this.deps.workspaceRepo.updateTask(entry.task.id, {
-                  status: "failed",
-                  metadata: {
-                    ...(entry.task.metadata as Record<string, unknown> | undefined),
-                    failed_reason: "legacy_blocked",
-                  },
-                });
-              }
-              await this.writeState(state);
-              warnings.push(`Task ${taskKey} had legacy blocked status; marked failed.`);
-              break;
             }
 
-            if (!attempted) {
-              attemptedThisCycle += 1;
-              attempted = true;
-              if (!startedTaskKeys.has(taskKey)) {
-                startedTaskKeys.add(taskKey);
+            const projectKey = await this.projectKeyForTask(entry.task.projectId);
+            let currentStatus = this.normalizeStatus(entry.task.status);
+            const readStatus = async (): Promise<string | undefined> => {
+              if (resolvedRequest.dryRun) return currentStatus;
+              return await this.refreshTaskStatus(taskKey, warnings);
+            };
+            const setDryRunStatus = (next?: string) => {
+              if (resolvedRequest.dryRun) {
+                currentStatus = next;
               }
-            }
+            };
 
-            if (isReadyToReviewStatus(statusNow)) {
+            let taskCompleted = false;
+            while (!taskCompleted) {
+              const statusNow = await readStatus();
+              if (!statusNow) {
+                progress.status = "failed";
+                progress.lastError = "status_unknown";
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                warnings.push(`Task ${taskKey} status unknown; skipping.`);
+                break;
+              }
+              if (TERMINAL_STATUSES.has(statusNow)) {
+                progress.status = statusNow === "completed" ? "completed" : "skipped";
+                progress.lastError = statusNow === "completed" ? "completed_in_db" : "cancelled_in_db";
+                state.tasks[taskKey] = progress;
+                await this.writeState(state);
+                if (statusNow === "completed") {
+                  completedKeys.add(taskKey);
+                  completedThisCycle += 1;
+                }
+                break;
+              }
+              if (statusNow === "blocked") {
+                progress.status = "failed";
+                progress.lastError = "legacy_blocked";
+                state.tasks[taskKey] = progress;
+                if (!resolvedRequest.dryRun) {
+                  await this.deps.workspaceRepo.updateTask(entry.task.id, {
+                    status: "failed",
+                    metadata: {
+                      ...(entry.task.metadata as Record<string, unknown> | undefined),
+                      failed_reason: "legacy_blocked",
+                    },
+                  });
+                }
+                await this.writeState(state);
+                warnings.push(`Task ${taskKey} had legacy blocked status; marked failed.`);
+                break;
+              }
+
+              if (!attempted) {
+                attemptedThisCycle += 1;
+                attempted = true;
+              }
+
+              if (isReadyToReviewStatus(statusNow)) {
               const attemptIndex = Math.max(progress.attempts, 1);
               const reviewAgentOptions = this.buildAgentOptions(progress, "review", resolvedRequest);
               progress.lastStep = "review";
@@ -1779,8 +1820,7 @@ export class GatewayTrioService {
                     },
                   });
                 }
-                warnings.push(`Task ${taskKey} failed due to auth/rate limit during review; stopping run. ${message}`);
-                abortRemainingReason = message;
+                warnings.push(`Task ${taskKey} failed due to auth/rate limit during review; continuing run. ${message}`);
                 break;
               }
               this.recordFailure(progress, reviewOutcome, attemptIndex);
@@ -1925,8 +1965,7 @@ export class GatewayTrioService {
                     },
                   });
                 }
-                warnings.push(`Task ${taskKey} failed due to auth/rate limit during QA; stopping run. ${message}`);
-                abortRemainingReason = message;
+                warnings.push(`Task ${taskKey} failed due to auth/rate limit during QA; continuing run. ${message}`);
                 break;
               }
               this.recordFailure(progress, qaOutcome, attemptIndex);
@@ -2078,8 +2117,7 @@ export class GatewayTrioService {
                   },
                 });
               }
-              warnings.push(`Task ${taskKey} failed due to auth/rate limit during work; stopping run. ${message}`);
-              abortRemainingReason = message;
+              warnings.push(`Task ${taskKey} failed due to auth/rate limit during work; continuing run. ${message}`);
               break;
             }
             this.recordFailure(progress, workOutcome, attemptIndex);
@@ -2216,6 +2254,21 @@ export class GatewayTrioService {
             warnings.push(`Task ${taskKey} status missing after work; retrying work step.`);
             continue;
           }
+          if (attempted && !abortRemainingReason) {
+            const finalProgress = currentTaskKey ? state.tasks[currentTaskKey] : undefined;
+            if (finalProgress) {
+              if (finalProgress.status === "completed") {
+                activeTaskKey = null;
+              } else {
+                activeTaskKey = currentTaskKey ?? activeTaskKey;
+                holdAfterTask = true;
+              }
+            }
+            if (typeof taskLimit === "number" && taskLimit > 0 && completedKeys.size >= taskLimit) {
+              warnings.push(`Completed task limit ${taskLimit} reached; stopping run.`);
+              abortRemainingReason = "limit_reached";
+            }
+          }
           } finally {
             if (attempted) {
               processedThisCycle += 1;
@@ -2224,6 +2277,7 @@ export class GatewayTrioService {
               });
             }
           }
+          if (abortRemainingReason || holdAfterTask) break;
         }
 
         if (abortRemainingReason) break;
@@ -2232,20 +2286,17 @@ export class GatewayTrioService {
         await this.writeState(state);
 
         if (attemptedThisCycle === 0) {
-          const hasPending = Object.values(state.tasks).some(
-            (task) => task.status === "pending" && this.hasIterationsRemaining(task, maxIterations),
-          );
-          if (hasPending) {
-            if (maxCycles === undefined) {
-              warnings.push(
-                "No tasks attempted in this cycle; pending tasks remain, stopping to avoid infinite loop without max-cycles.",
-              );
-              break;
-            }
-            warnings.push("No tasks attempted in this cycle; pending tasks remain, continuing.");
+          const hasRemaining = Object.values(state.tasks).some((task) => {
+            if (task.status === "completed" || task.status === "skipped") return false;
+            if (maxIterations !== undefined && task.attempts >= maxIterations) return false;
+            return true;
+          });
+          if (hasRemaining) {
+            warnings.push("No tasks attempted in this cycle; tasks remain, continuing.");
+            await new Promise((resolve) => setTimeout(resolve, 1000));
             continue;
           }
-          warnings.push("No tasks attempted in this cycle; stopping to avoid infinite loop.");
+          warnings.push("No tasks attempted in this cycle; stopping.");
           break;
         }
       }

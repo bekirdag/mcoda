@@ -281,7 +281,7 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let reviewFollowups = false;
   let qaAllowDirty = false;
   let resumeJobId: string | undefined;
-  let rateAgents = false;
+  let rateAgents = true;
   let escalateOnNoChange = true;
   let watch = false;
   let json = false;
