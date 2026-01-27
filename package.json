@@ -43,8 +43,18 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/supertest": "^6.0.3",
+    "ava": "^6.4.1",
+    "axios-mock-adapter": "^2.1.0",
+    "chai": "^6.2.2",
+    "cypress": "^15.9.0",
     "eslint": "^8.57.0",
+    "jest": "^30.2.0",
+    "mocha": "^11.7.5",
+    "nock": "^14.0.10",
     "prettier": "^3.2.5",
+    "puppeteer": "^24.36.0",
+    "supertest": "^7.2.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.0"
   }
