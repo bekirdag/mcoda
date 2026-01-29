@@ -201,6 +201,27 @@ test("skips unhealthy or incapable agents and falls back", async () => {
   assert.equal(resolved.healthStatus, "healthy");
 });
 
+test("falls back when override lacks required capabilities", async () => {
+  const agents = new StubAgentService();
+  const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a-global", agent("a-global", "global"));
+  routingApi.agents.set("a-override", agent("a-override", "override"));
+  agents.register(agent("a-global", "global"));
+  agents.register(agent("a-override", "override"));
+  routingApi.defaults.set("__GLOBAL__", new Map([["work-on-tasks", "a-global"]]));
+  agents.capabilities.set("a-global", ["code_write"]);
+  agents.capabilities.set("a-override", []);
+  const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
+
+  const resolved = await service.resolveAgentForCommand({
+    workspace: workspace as any,
+    commandName: "work-on-tasks",
+    overrideAgentSlug: "override",
+  });
+  assert.equal(resolved.agentId, "a-global");
+  assert.equal(resolved.source, "global_default");
+});
+
 test("throws when no defaults are configured", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));

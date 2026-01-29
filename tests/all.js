@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-const { spawnSync } = require("node:child_process");
-const { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 
 const run = (label, cmd, args, options = {}) => {
@@ -137,6 +139,7 @@ if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
       "@mcoda/agents",
       "@mcoda/core",
       "mcoda",
+      "@mcoda/codali",
       "@mcoda/testing",
     ];
     for (const pkg of workspacePackages) {

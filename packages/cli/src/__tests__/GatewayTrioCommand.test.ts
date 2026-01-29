@@ -43,6 +43,20 @@ describe("gateway-trio argument parsing", () => {
     assert.equal(parsed.maxCycles, 4);
   });
 
+  it("parses work runner flags", () => {
+    const parsed = parseGatewayTrioArgs(["--work-runner", "codali"]);
+    assert.equal(parsed.workRunner, "codali");
+    assert.equal(parsed.useCodali, true);
+    assert.equal(parsed.agentAdapterOverride, "codali-cli");
+  });
+
+  it("derives runner from use-codali flag", () => {
+    const parsed = parseGatewayTrioArgs(["--use-codali"]);
+    assert.equal(parsed.useCodali, true);
+    assert.equal(parsed.workRunner, "codali");
+    assert.equal(parsed.agentAdapterOverride, "codali-cli");
+  });
+
   it("normalizes task keys and flags invalid entries", () => {
     const parsed = parseGatewayTrioArgs(["--task", "TASK-1\nTASK-2", "--task", "TASK-2", "--task", "bad$key"]);
     assert.deepEqual(parsed.taskKeys, ["TASK-1", "TASK-2"]);

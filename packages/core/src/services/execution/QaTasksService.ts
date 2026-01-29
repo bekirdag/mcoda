@@ -628,6 +628,7 @@ export class QaTasksService {
       if (!value) return false;
       return (
         /playwright/i.test(value) ||
+        /legacy/i.test(value) ||
         /MCODA_QA_BROWSER_URL/i.test(value) ||
         /http:\/\/(?:localhost|127\.0\.0\.1):\d{2,5}/i.test(value)
       );
@@ -3278,15 +3279,15 @@ export class QaTasksService {
           if (envPort && envPort !== parsed.port) {
             adjusted = true;
             adjustReason = 'env';
-          } else if (apiProbeRequests?.length) {
-            const probeOk = await apiRunner.probeBaseUrl(baseUrlCandidate, apiProbeRequests);
-            if (!probeOk) {
-              const open = await isPortOpen(parsed.url.hostname, parsed.port);
-              if (open) {
-                desiredPort = await pickFreePort(parsed.url.hostname);
-                adjusted = true;
-                adjustReason = 'in_use';
-              }
+          } else {
+            const probeOk = apiProbeRequests?.length
+              ? await apiRunner.probeBaseUrl(baseUrlCandidate, apiProbeRequests)
+              : undefined;
+            const open = await isPortOpen(parsed.url.hostname, parsed.port);
+            if (open && (!apiProbeRequests?.length || !probeOk)) {
+              desiredPort = await pickFreePort(parsed.url.hostname);
+              adjusted = true;
+              adjustReason = 'in_use';
             }
           }
           if (desiredPort !== parsed.port) {
@@ -3316,6 +3317,7 @@ export class QaTasksService {
     ): Promise<string | undefined> => {
       if (!baseUrl) return baseUrl;
       if (explicitBaseUrl) return baseUrl;
+      if (reason === 'browser' && !probeRequests?.length) return baseUrl;
       if (!isLocalBaseUrl(baseUrl)) return baseUrl;
       const parsed = resolveUrlPort(baseUrl);
       if (!parsed) return baseUrl;

@@ -157,6 +157,7 @@ const makeService = async (options: {
   workSequence?: Array<"succeeded" | "failed">;
   workNotesSequence?: Array<string | undefined>;
   workCalls?: string[];
+  workRequests?: any[];
   stepCalls?: string[];
   reviewSequence?: Array<"approve" | "changes_requested" | "block" | "info_only">;
   reviewErrorSequence?: Array<string | undefined>;
@@ -281,8 +282,9 @@ const makeService = async (options: {
   let workIndex = 0;
 
   const workService = {
-    workOnTasks: async ({ taskKeys, dryRun }: any) => {
-      const key = taskKeys[0];
+    workOnTasks: async (request: any) => {
+      const key = request.taskKeys[0];
+      if (options.workRequests) options.workRequests.push(request);
       if (options.workCalls) options.workCalls.push(key);
       if (options.stepCalls) options.stepCalls.push("work");
       const sequence = options.workSequence ?? (options.workOutcome ? [options.workOutcome] : ["succeeded"]);
@@ -290,7 +292,7 @@ const makeService = async (options: {
       const notes =
         options.workNotesSequence?.[Math.min(workIndex, options.workNotesSequence.length - 1)];
       workIndex += 1;
-      if (!dryRun) {
+      if (!request.dryRun) {
         const next = outcome === "failed" ? "in_progress" : "ready_to_code_review";
         statusStore.set(key, next);
       }
@@ -500,6 +502,32 @@ test("GatewayTrioService completes work-review-qa successfully", async () => {
   }
 });
 
+test("GatewayTrioService forwards work-on-tasks overrides", async () => {
+  const statusStore = makeStatusStore({ "TASK-1": "in_progress" });
+  const workRequests: any[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-1"],
+    workRequests,
+  });
+  try {
+    await service.run({
+      workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any,
+      workRunner: "codali",
+      useCodali: true,
+      agentAdapterOverride: "codali-cli",
+    });
+    assert.ok(workRequests.length > 0);
+    const request = workRequests[0];
+    assert.equal(request.workRunner, "codali");
+    assert.equal(request.useCodali, true);
+    assert.equal(request.agentAdapterOverride, "codali-cli");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService skips work when task is ready_to_code_review", async () => {
   const statusStore = makeStatusStore({ "TASK-R": "ready_to_code_review" });
   const stepCalls: string[] = [];
@@ -553,6 +581,34 @@ test("GatewayTrioService skips cancelled tasks before running steps", async () =
     assert.equal(result.tasks[0].attempts, 0);
     assert.equal(workCalls.length, 0);
     assert.equal(stepCalls.length, 0);
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GatewayTrioService stops when job is cancelled", async () => {
+  const statusStore = makeStatusStore({ "TASK-1": "in_progress" });
+  const jobStatusUpdates: Array<{ state: string; payload: Record<string, unknown> }> = [];
+  const { service, dir, jobService } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-1"],
+    jobStatusUpdates,
+  });
+  const originalGetJob = jobService.getJob.bind(jobService);
+  let getCalls = 0;
+  jobService.getJob = async (jobId: string) => {
+    const job = await originalGetJob(jobId);
+    getCalls += 1;
+    if (job && getCalls >= 1) {
+      return { ...job, state: "cancelled", jobState: "cancelled" };
+    }
+    return job;
+  };
+  try {
+    const result = await service.run({ workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any, maxCycles: 1 });
+    assert.ok(result.tasks.length >= 0);
+    assert.ok(jobStatusUpdates.some((update) => update.state === "cancelled"));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

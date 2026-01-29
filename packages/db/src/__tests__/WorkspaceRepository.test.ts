@@ -187,18 +187,24 @@ test("WorkspaceRepository releaseTaskLocksByJob clears locks for a job", async (
         status: "in_progress",
       },
     ]);
+    const job = await repo.createJob({
+      workspaceId: "workspace",
+      type: "work",
+      state: "running",
+      commandName: "work-on-tasks",
+    });
     const run = await repo.createTaskRun({
       taskId: task.id,
       command: "work-on-tasks",
-      jobId: "job-1",
+      jobId: job.id,
       commandRunId: null,
       agentId: null,
       status: "running",
       startedAt: new Date().toISOString(),
     });
-    await repo.tryAcquireTaskLock(task.id, run.id, "job-1", 3600);
+    await repo.tryAcquireTaskLock(task.id, run.id, job.id, 3600);
 
-    const cleared = await repo.releaseTaskLocksByJob("job-1");
+    const cleared = await repo.releaseTaskLocksByJob(job.id);
     assert.deepEqual(cleared, ["task-1"]);
     const lock = await repo.getTaskLock(task.id);
     assert.equal(lock, undefined);

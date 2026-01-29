@@ -59,4 +59,49 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.workspaceRoot, root);
     assert.equal(parsed.projectKey, "proj");
   });
+
+  it("parses work runner overrides", () => {
+    const parsed = parseWorkOnTasksArgs(["--work-runner", "codali"]);
+    assert.equal(parsed.workRunner, "codali");
+    assert.equal(parsed.useCodali, true);
+    assert.equal(parsed.agentAdapterOverride, "codali-cli");
+  });
+
+  it("derives runner from use-codali flag", () => {
+    const parsed = parseWorkOnTasksArgs(["--use-codali"]);
+    assert.equal(parsed.useCodali, true);
+    assert.equal(parsed.workRunner, "codali");
+    assert.equal(parsed.agentAdapterOverride, "codali-cli");
+  });
+
+  it("respects environment runner defaults", () => {
+    const originalRunner = process.env.MCODA_WORK_ON_TASKS_ADAPTER;
+    const originalUse = process.env.MCODA_WORK_ON_TASKS_USE_CODALI;
+    try {
+      process.env.MCODA_WORK_ON_TASKS_ADAPTER = "codali-cli";
+      delete process.env.MCODA_WORK_ON_TASKS_USE_CODALI;
+      const parsed = parseWorkOnTasksArgs([]);
+      assert.equal(parsed.workRunner, "codali-cli");
+      assert.equal(parsed.useCodali, true);
+      assert.equal(parsed.agentAdapterOverride, "codali-cli");
+
+      delete process.env.MCODA_WORK_ON_TASKS_ADAPTER;
+      process.env.MCODA_WORK_ON_TASKS_USE_CODALI = "1";
+      const parsedUse = parseWorkOnTasksArgs([]);
+      assert.equal(parsedUse.workRunner, "codali");
+      assert.equal(parsedUse.useCodali, true);
+      assert.equal(parsedUse.agentAdapterOverride, "codali-cli");
+    } finally {
+      if (originalRunner === undefined) {
+        delete process.env.MCODA_WORK_ON_TASKS_ADAPTER;
+      } else {
+        process.env.MCODA_WORK_ON_TASKS_ADAPTER = originalRunner;
+      }
+      if (originalUse === undefined) {
+        delete process.env.MCODA_WORK_ON_TASKS_USE_CODALI;
+      } else {
+        process.env.MCODA_WORK_ON_TASKS_USE_CODALI = originalUse;
+      }
+    }
+  });
 });

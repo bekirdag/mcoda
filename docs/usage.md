@@ -65,6 +65,19 @@ mcoda qa-tasks --workspace-root . --project WEB --status ready_to_qa --profile i
 
 Note: `--max-iterations` and `--max-cycles` are optional; omit them to run without caps.
 
+Runner selection for `work-on-tasks`:
+- CLI flags (`--work-runner`, `--use-codali`) override env vars (`MCODA_WORK_ON_TASKS_ADAPTER`, `MCODA_WORK_ON_TASKS_USE_CODALI`), which override defaults.
+- codali runs are non-streaming; legacy patch mode (`MCODA_WORK_ON_TASKS_PATCH_MODE=1`) is ignored when codali is required.
+
+## codali (tool runner)
+codali is a standalone, non-streaming tool runner that can edit a repo directly and can be used as a mcoda agent adapter.
+
+```sh
+codali run --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
+```
+
+Use `--smart` to enable the multi-phase pipeline, and configure per-phase routing in `codali.config.json` (or override models/providers via `CODALI_MODEL_*` and `CODALI_PROVIDER_*`). See `docs/codali-usage.md` for full routing/config examples and docdex setup.
+
 ## Jobs and telemetry
 Inspect long-running jobs and token usage.
 

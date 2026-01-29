@@ -418,6 +418,7 @@ export class QaTestCommandBuilder {
     if (await this.findFileByExtension('.csproj')) return 'dotnet';
     if (
       (await this.pathExists(path.join(this.workspaceRoot, 'pom.xml'))) ||
+      (await this.pathExists(path.join(this.workspaceRoot, 'gradlew'))) ||
       (await this.pathExists(path.join(this.workspaceRoot, 'build.gradle'))) ||
       (await this.pathExists(path.join(this.workspaceRoot, 'build.gradle.kts')))
     ) {

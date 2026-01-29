@@ -4,5 +4,8 @@ export * from "./openapi/OpenApiTypes.js";
 export * from "./qa/QaProfile.js";
 export * from "./qa/QaPlan.js";
 export * from "./qa/QaReadiness.js";
-export type { BacklogLaneTotals, BacklogTotals, BacklogSummary, EffectiveVelocity, EstimateResult, EstimateDurations, EstimateEtas, VelocitySource, RefineTasksRequest, RefineTasksPlan, RefineTasksResult, RefineStrategy, RefineOperation, UpdateTaskOp, SplitTaskOp, MergeTasksOp, UpdateEstimateOp, UpdateInfo, UpdateChannel, ApplyUpdateResponse, } from "./openapi/OpenApiTypes.js";
+export * from "./qa/QaTechStack.js";
+export * from "./metadata/CommandMetadata.js";
+export * from "./status/TaskStatus.js";
+export type { BacklogLaneTotals, BacklogTotals, BacklogSummary, EffectiveVelocity, EstimateResult, EstimateDurations, EstimateEtas, VelocitySource, AgentHealth, AgentHealthStatus, RoutingDefaults, RoutingDefault, RoutingProvenance, RoutingCandidate, RoutingPreview, RoutingDefaultsUpdate, RefineTasksRequest, RefineTasksPlan, RefineTasksResult, RefineStrategy, RefineOperation, UpdateTaskOp, SplitTaskOp, MergeTasksOp, UpdateEstimateOp, UpdateInfo, UpdateChannel, ApplyUpdateResponse, } from "./openapi/OpenApiTypes.js";
 //# sourceMappingURL=index.d.ts.map
