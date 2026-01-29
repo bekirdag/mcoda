@@ -3,12 +3,13 @@
 This document describes the current `work-on-tasks` command flow as implemented in `WorkOnTasksService` (`packages/core/src/services/execution/WorkOnTasksService.ts`).
 
 ## Overview
-`work-on-tasks` selects tasks from the backlog, builds an execution prompt with docdex + project guidance, invokes a work agent to edit the repo directly, checks git for changes, runs task-specific tests + run-all tests, and then moves the task to `ready_to_code_review` if everything passes. It also manages task locks, VCS branches, and logs/telemetry for each run. A legacy patch-apply mode is still available for compatibility (set `MCODA_WORK_ON_TASKS_PATCH_MODE=1`), but direct edits are the default.
+`work-on-tasks` selects tasks from the backlog, builds an execution prompt with docdex + project guidance, invokes a work agent to edit the repo directly (via codali when required), checks git for changes, runs task-specific tests + run-all tests, and then moves the task to `ready_to_code_review` if everything passes. It also manages task locks, VCS branches, and logs/telemetry for each run. A legacy patch-apply mode is still available for compatibility (set `MCODA_WORK_ON_TASKS_PATCH_MODE=1`), but direct edits are the default and patch mode is ignored when codali is required.
 
 ## Inputs and defaults
 - Task scope: `projectKey`, `epicKey`, `storyKey`, `taskKeys`, `statusFilter`, `limit`, `parallel`.
 - Execution flags: `dryRun`, `noCommit`, `agentName`, `agentStream`, `maxAgentSeconds`, `autoMerge`, `autoPush`.
-- Base branch: uses workspace config branch when set; defaults to `mcoda-dev`.
+- Runner selection: `workRunner` / `useCodali` (CLI flags override env and config; codali disables streaming).
+- Base branch: always `mcoda-dev` (workspace config branch is ignored by design).
 - Tests: driven from task metadata (`tests`, `test_requirements`) and the presence of `tests/all.js` (auto-created when missing and tests are required).
 
 ## High-level phases
@@ -66,10 +67,10 @@ This document describes the current `work-on-tasks` command flow as implemented 
 
 #### 2.6 Agent execution loop
 1. Move task to `in_progress`.
-2. Invoke the agent (streaming or sync); the agent edits the repo directly.
+2. Invoke the agent (streaming or sync); codali runs are non-streaming and edit the repo directly.
 3. Detect changed files via git dirty paths and treat them as touched.
 4. Enforce allowed file scope (if set); out‑of‑scope changes fail the task with `scope_violation`.
-5. Legacy patch mode (optional): when enabled, parse/apply patch or FILE output and fall back on patch errors.
+5. Legacy patch mode (optional): when enabled and codali is not required, parse/apply patch or FILE output and fall back on patch errors.
 
 #### 2.7 Tests
 1. Run task-specific test commands (from metadata or QA builder) followed by run‑all tests (`tests/all.js`).
@@ -112,6 +113,8 @@ This document describes the current `work-on-tasks` command flow as implemented 
 - `no_changes`: no diffs produced (no comment backlog).
 - `comment_backlog_unaddressed`: no diffs produced while unresolved review/QA comments remain.
 - `vcs_failed`: commit/merge/push failed.
+- `codali_unavailable`: codali CLI missing or not healthy.
+- `codali_provider_unsupported`: codali provider mapping missing or unsupported.
 - `agent_timeout`: abort/timeout triggered.
 - `task_lock_lost`: lock was stolen or expired.
 - `merge_conflict`: merge conflict detected while syncing branches; task fails for manual resolution.

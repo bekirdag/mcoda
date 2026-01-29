@@ -171,6 +171,9 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   resumeJobId?: string;
   rateAgents?: boolean;
   escalateOnNoChange?: boolean;
+  workRunner?: string;
+  useCodali?: boolean;
+  agentAdapterOverride?: string;
 }
 
 export interface GatewayLogDetails {
@@ -806,6 +809,9 @@ export class GatewayTrioService {
       qaEvidenceUrl: request.qaEvidenceUrl ?? raw.qaEvidenceUrl,
       qaAllowDirty: request.qaAllowDirty ?? raw.qaAllowDirty,
       escalateOnNoChange: request.escalateOnNoChange ?? raw.escalateOnNoChange,
+      workRunner: request.workRunner ?? raw.workRunner,
+      useCodali: request.useCodali ?? raw.useCodali,
+      agentAdapterOverride: request.agentAdapterOverride ?? raw.agentAdapterOverride,
     };
   }
 
@@ -1201,6 +1207,9 @@ export class GatewayTrioService {
         dryRun: request.dryRun,
         agentName: resolvedAgent,
         agentStream: request.agentStream,
+        workRunner: request.workRunner,
+        useCodali: request.useCodali,
+        agentAdapterOverride: request.agentAdapterOverride,
         rateAgents: request.rateAgents,
         abortSignal,
         maxAgentSeconds: request.maxAgentSeconds,
@@ -1538,9 +1547,22 @@ export class GatewayTrioService {
     const taskLimit = resolvedRequest.limit;
     let activeTaskKey: string | null = null;
     let abortRemainingReason: string | null = null;
+    const resolveJobState = (job?: { state?: JobState; jobState?: JobState }): JobState | undefined =>
+      job?.jobState ?? job?.state;
+    const checkCancellation = async (label?: string): Promise<boolean> => {
+      const job = await this.deps.jobService.getJob(jobId);
+      const stateNow = resolveJobState(job);
+      if (stateNow === "cancelled") {
+        abortRemainingReason = "cancelled";
+        warnings.push(`Job ${jobId} cancelled${label ? ` (${label})` : ""}; stopping.`);
+        return true;
+      }
+      return false;
+    };
 
     try {
       while ((maxCycles === undefined || cycle < maxCycles) && !abortRemainingReason) {
+        if (await checkCancellation("cycle_start")) break;
         await this.reopenRetryableFailedTasks(state, explicitTasks, maxIterations, warnings);
         await this.writeState(state);
         const selection =
@@ -1642,6 +1664,7 @@ export class GatewayTrioService {
         const seenThisCycle = new Set<string>();
         for (const entry of ordered) {
           if (abortRemainingReason) break;
+          if (await checkCancellation(`task:${entry.task.key}`)) break;
           if (typeof taskLimit === "number" && taskLimit > 0 && completedKeys.size >= taskLimit) {
             warnings.push(`Completed task limit ${taskLimit} reached; stopping run.`);
             abortRemainingReason = "limit_reached";
@@ -2307,10 +2330,14 @@ export class GatewayTrioService {
       const pending = summaries.filter((t) => t.status === "pending").map((t) => t.taskKey);
 
       const failureCount = failed.length + skipped.length + pending.length;
-      const endState: JobState = failureCount === 0 ? "completed" : "partial";
-      const errorSummary = failureCount ? `${failureCount} task(s) not fully completed` : undefined;
+      const jobSnapshot = await this.deps.jobService.getJob(jobId);
+      const jobStateNow = resolveJobState(jobSnapshot);
+      const cancelled = jobStateNow === "cancelled" || abortRemainingReason === "cancelled";
+      const endState: JobState = cancelled ? "cancelled" : failureCount === 0 ? "completed" : "partial";
+      const errorSummary = cancelled ? "Job cancelled by user" : failureCount ? `${failureCount} task(s) not fully completed` : undefined;
       await this.deps.jobService.updateJobStatus(jobId, endState, { errorSummary });
-      await this.deps.jobService.finishCommandRun(commandRun.id, endState === "completed" ? "succeeded" : "failed", errorSummary);
+      const commandStatus = endState === "completed" ? "succeeded" : endState === "cancelled" ? "cancelled" : "failed";
+      await this.deps.jobService.finishCommandRun(commandRun.id, commandStatus, errorSummary);
       await this.deps.jobService.writeCheckpoint(jobId, {
         stage: "completed",
         timestamp: new Date().toISOString(),

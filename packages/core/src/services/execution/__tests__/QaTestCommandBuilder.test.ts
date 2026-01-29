@@ -252,7 +252,7 @@ test('qa test command builder uses gradle wrapper when present', async () => {
     const result = await builder.build({
       task: makeTask({ unit: [], component: [], integration: ['i'], api: [] }),
     });
-    assert.deepEqual(result.commands, ['./gradlew test --tests \\\"*integration*\\\"']);
+    assert.deepEqual(result.commands, ['./gradlew test --tests "*integration*"']);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -348,7 +348,7 @@ test('qa test command builder uses minitest when no rakefile or specs exist', as
       task: makeTask({ unit: ['u'], component: [], integration: [], api: [] }),
     });
     assert.deepEqual(result.commands, [
-      'bundle exec ruby -I test -e \\\"Dir[\'test/unit/**/*_test.rb\'].each { |f| require f }\\\"',
+      "bundle exec ruby -I test -e \"Dir['test/unit/**/*_test.rb'].each { |f| require f }\"",
     ]);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });

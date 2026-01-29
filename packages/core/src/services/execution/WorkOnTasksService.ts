@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { AgentService } from "@mcoda/agents";
+import { AgentService, cliHealthy, resolveCodaliProviderFromAdapter } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
 import { resolveChromiumBinary } from "@mcoda/integrations/qa/ChromiumQaAdapter.js";
 import { GlobalRepository, WorkspaceRepository, type TaskCommentRow } from "@mcoda/db";
@@ -27,6 +27,7 @@ const TASK_LOCK_TTL_SECONDS = 60 * 60;
 const MAX_TEST_FIX_ATTEMPTS = 3;
 const DEFAULT_TEST_OUTPUT_CHARS = 1200;
 const WORK_ON_TASKS_PATCH_MODE_ENV = "MCODA_WORK_ON_TASKS_PATCH_MODE";
+const WORK_ON_TASKS_ENFORCE_COMMENT_BACKLOG_ENV = "MCODA_WOT_ENFORCE_COMMENT_BACKLOG";
 const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_CODE_WRITER_PROMPT = [
@@ -40,7 +41,7 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "Do not hardcode ports. Read PORT/HOST (or MCODA_QA_PORT/MCODA_QA_HOST) from env, and document base URLs with http://localhost:<PORT> placeholders when needed.",
   "Do not create docs/qa/* reports unless the task explicitly requests one. Work-on-tasks should not generate QA reports.",
   "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
-  "Work directly in the repo: edit files and run commands as needed. Do not output patches/diffs/FILE blocks; apply changes to the working tree.",
+  "Work directly in the repo: edit files and run commands as needed. If you cannot edit files directly, output a minimal patch/diff or patch_json response per the output requirements.",
 ].join("\n");
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
@@ -102,6 +103,9 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   baseBranch?: string;
   autoMerge?: boolean;
   autoPush?: boolean;
+  workRunner?: string;
+  useCodali?: boolean;
+  agentAdapterOverride?: string;
   onAgentChunk?: (chunk: string) => void;
   abortSignal?: AbortSignal;
   maxAgentSeconds?: number;
@@ -129,6 +133,25 @@ const isPatchModeEnabled = (): boolean => {
   if (!raw) return false;
   const normalized = raw.trim().toLowerCase();
   return !["0", "false", "off", "no"].includes(normalized);
+};
+const isCommentBacklogEnforced = (): boolean => {
+  const raw = process.env[WORK_ON_TASKS_ENFORCE_COMMENT_BACKLOG_ENV];
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(normalized);
+};
+const buildCodaliEnvOverrides = (): Record<string, string> => {
+  const overrides: Record<string, string> = {};
+  const setIfMissing = (key: string, value: string) => {
+    if (process.env[key] === undefined) {
+      overrides[key] = value;
+    }
+  };
+  setIfMissing("CODALI_SMART", "1");
+  setIfMissing("CODALI_BUILDER_MODE", "patch_json");
+  setIfMissing("CODALI_BUILDER_PATCH_FORMAT", "file_writes");
+  setIfMissing("CODALI_FORMAT_BUILDER", "json");
+  return overrides;
 };
 
 const normalizeSlugList = (input?: unknown): string[] => {
@@ -230,6 +253,15 @@ const sanitizeAgentOutput = (output: string): string => {
     if (stripped.trim()) cleaned.push(stripped);
   }
   return cleaned.join("\n");
+};
+
+const resolveCodaliFailureReason = (message: string): string | null => {
+  if (!message) return null;
+  const lower = message.toLowerCase();
+  if (lower.includes("codali_unavailable")) return "codali_unavailable";
+  if (lower.includes("codali_provider_unsupported")) return "codali_provider_unsupported";
+  if (message.includes("CODALI_UNSUPPORTED_ADAPTER")) return "codali_provider_unsupported";
+  return null;
 };
 
 const DIFF_METADATA_SUFFIX =
@@ -2021,7 +2053,9 @@ export class WorkOnTasksService {
       const summary = toSingleLine(details.message || comment.body || "(no details provided)");
       const stamp = comment.createdAt ? new Date(comment.createdAt).toISOString() : "unknown time";
       const category = comment.category ?? comment.sourceCommand ?? "work-on-tasks";
-      lines.push(`- [${category}] ${stamp}: ${summary}`);
+      const slug = comment.slug?.trim();
+      const label = slug ? `${category}:${slug}` : category;
+      lines.push(`- [${label}] ${stamp}: ${summary}`);
     }
     return lines.join("\n");
   }
@@ -2152,6 +2186,7 @@ export class WorkOnTasksService {
     fileScope: string[],
     commentBacklog: string,
     workLog: string,
+    enforceCommentBacklog: boolean,
   ): string {
     const deps = task.dependencies.keys.length ? `Depends on: ${task.dependencies.keys.join(", ")}` : "No open dependencies.";
     const acceptance = (task.task.acceptanceCriteria ?? []).join("; ");
@@ -2159,7 +2194,7 @@ export class WorkOnTasksService {
       docSummary ||
       "Use docdex: search workspace docs with project key and fetch linked documents when present (doc_links metadata).";
     const backlog = commentBacklog
-      ? `Comment backlog (highest priority):\n${commentBacklog}`
+      ? `Comment backlog${enforceCommentBacklog ? " (highest priority)" : ""}:\n${commentBacklog}`
       : "";
     const workLogSection = workLog ? `Work log (recent):\n${workLog}` : "";
     return [
@@ -2168,12 +2203,16 @@ export class WorkOnTasksService {
       `Epic: ${task.task.epicKey} (${task.task.epicTitle ?? "n/a"}), Story: ${task.task.storyKey} (${task.task.storyTitle ?? "n/a"})`,
       `Acceptance: ${acceptance || "Refer to SDS/OpenAPI for expected behavior."}`,
       deps,
-      commentBacklog ? "Priority: resolve the comment backlog before any other work." : "",
+      commentBacklog
+        ? enforceCommentBacklog
+          ? "Priority: resolve the comment backlog before any other work."
+          : "Comment backlog provided; address relevant items and report status."
+        : "",
       backlog,
       workLogSection,
       `Allowed files: ${fileScope.length ? fileScope.join(", ") : "(not constrained)"}`,
       `Doc context:\n${docdexHint}`,
-      "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, emit a new-file diff with full content (and parent dirs) instead of editing a non-existent file so git apply succeeds. Use valid unified diffs without JSON wrappers.",
+      "Verify target paths against the current workspace (use docdex/file hints); do not assume hashed or generated asset names exist. If a path is missing, create the file with full content (and parent dirs) or state clearly what is missing so the change can be applied.",
     ]
       .filter(Boolean)
       .join("\n");
@@ -2203,7 +2242,7 @@ export class WorkOnTasksService {
     const committerName = agentId ? `mcoda-code-writer (${agentId})` : "mcoda-code-writer";
     return {
       ...process.env,
-      GIT_AUTHOR_NAME: "mcoda-code-writer",
+      GIT_AUTHOR_NAME: committerName,
       GIT_AUTHOR_EMAIL: "code-writer@mcoda.local",
       GIT_COMMITTER_NAME: committerName,
       GIT_COMMITTER_EMAIL: "code-writer@mcoda.local",
@@ -2944,9 +2983,24 @@ export class WorkOnTasksService {
 
   async workOnTasks(request: WorkOnTasksRequest): Promise<WorkOnTasksResult> {
     await this.ensureMcoda();
-    const agentStream = request.agentStream ?? process.env.MCODA_STREAM_IO === "1";
-    const patchModeEnabled = isPatchModeEnabled();
+    const commandName = "work-on-tasks";
+    const requestedAgentStream = request.agentStream ?? process.env.MCODA_STREAM_IO === "1";
+    const normalizedWorkRunner = request.workRunner?.trim().toLowerCase();
+    const requestedAdapterOverride = request.agentAdapterOverride?.trim();
+    const normalizedAdapterOverride = requestedAdapterOverride?.toLowerCase();
+    const codaliRequired =
+      Boolean(request.useCodali) ||
+      normalizedWorkRunner === "codali" ||
+      normalizedWorkRunner === "codali-cli" ||
+      normalizedAdapterOverride === "codali" ||
+      normalizedAdapterOverride === "codali-cli";
+    const resolvedWorkRunner = normalizedWorkRunner ?? (codaliRequired ? "codali" : undefined);
+    const agentAdapterOverride = codaliRequired ? "codali-cli" : requestedAdapterOverride;
+    const agentStream = codaliRequired ? false : requestedAgentStream;
+    const patchModeEnabled = !codaliRequired && isPatchModeEnabled();
     const directEditsEnabled = !patchModeEnabled;
+    const enforceCommentBacklog = isCommentBacklogEnforced();
+    const codaliEnvOverrides = codaliRequired ? buildCodaliEnvOverrides() : {};
     const configuredBaseBranch = this.workspace.config?.branch;
     const requestedBaseBranch = request.baseBranch;
     const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
@@ -2958,6 +3012,7 @@ export class WorkOnTasksService {
     const autoPush = request.autoPush ?? configuredAutoPush ?? true;
     const baseBranchWarnings: string[] = [];
     const statusWarnings: string[] = [];
+    const runnerWarnings: string[] = [];
     const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
     const { filtered: statusFilter, rejected } = ignoreStatusFilter
       ? { filtered: request.statusFilter ?? [], rejected: [] as string[] }
@@ -2977,16 +3032,22 @@ export class WorkOnTasksService {
     if (ignoreStatusFilter) {
       statusWarnings.push("work-on-tasks ignores status filters when explicit --task keys are provided.");
     }
+    if (codaliRequired && requestedAgentStream) {
+      runnerWarnings.push("work-on-tasks disables streaming when codali is required.");
+    }
+    if (codaliRequired && isPatchModeEnabled()) {
+      runnerWarnings.push("work-on-tasks patch mode is ignored when codali is required.");
+    }
     if (normalizedBaseBranch && normalizedBaseBranch !== DEFAULT_BASE_BRANCH) {
       baseBranchWarnings.push(
         `Base branch ${normalizedBaseBranch} ignored; work-on-tasks always uses ${DEFAULT_BASE_BRANCH}.`,
       );
     }
-    const commandRun = await this.deps.jobService.startCommandRun("work-on-tasks", request.projectKey, {
+    const commandRun = await this.deps.jobService.startCommandRun(commandName, request.projectKey, {
       taskIds: request.taskKeys,
     });
     const job = await this.deps.jobService.startJob("work", commandRun.id, request.projectKey, {
-      commandName: "work-on-tasks",
+      commandName,
       payload: {
         projectKey: request.projectKey,
         epicKey: request.epicKey,
@@ -3005,6 +3066,32 @@ export class WorkOnTasksService {
         agentStream,
       },
     });
+
+    const workspaceRoot = request.workspace.workspaceRoot;
+    const repoRoot = workspaceRoot;
+    const docdexBaseUrl =
+      process.env.CODALI_DOCDEX_BASE_URL ??
+      process.env.DOCDEX_HTTP_BASE_URL ??
+      this.workspace.config?.docdexUrl ??
+      process.env.MCODA_DOCDEX_URL ??
+      process.env.DOCDEX_URL;
+    const docdexRepoId =
+      process.env.CODALI_DOCDEX_REPO_ID ??
+      this.workspace.config?.docdexRepoId ??
+      process.env.MCODA_DOCDEX_REPO_ID ??
+      process.env.DOCDEX_REPO_ID;
+    const docdexRepoRoot = process.env.CODALI_DOCDEX_REPO_ROOT ?? workspaceRoot;
+    const baseInvocationMetadata: Record<string, unknown> = {
+      command: commandName,
+      workspaceRoot,
+      repoRoot,
+      docdexBaseUrl,
+      docdexRepoId,
+      docdexRepoRoot,
+      projectKey: request.projectKey,
+      jobId: job.id,
+      commandRunId: commandRun.id,
+    };
 
     let selection: TaskSelectionPlan;
     let storyPointsProcessed = 0;
@@ -3068,9 +3155,46 @@ export class WorkOnTasksService {
         processedItems: 0,
       });
 
+      type WorkOnTasksTaskSummary = {
+        taskKey: string;
+        adapter: string;
+        adapterOverride?: string;
+        provider: string;
+        model: string;
+        sourceAdapter?: string;
+        codali?: {
+          logPath?: string;
+          touchedFiles?: string[];
+          runId?: string;
+        };
+      };
       const results: TaskExecutionResult[] = [];
-      const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...selection.warnings];
+      const taskSummaries = new Map<string, WorkOnTasksTaskSummary>();
+      const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings, ...selection.warnings];
       const agent = await this.resolveAgent(request.agentName);
+      let codaliProviderInfo: { provider: string; sourceAdapter?: string; requiresApiKey: boolean } | null = null;
+      if (codaliRequired) {
+        const config = agent.config as Record<string, unknown> | undefined;
+        const explicitProvider =
+          (typeof config?.provider === "string" ? config.provider : undefined) ??
+          (typeof config?.llmProvider === "string" ? config.llmProvider : undefined);
+        try {
+          codaliProviderInfo = resolveCodaliProviderFromAdapter({
+            sourceAdapter: agent.adapter ?? undefined,
+            explicitProvider,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`codali_provider_unsupported: ${message}`);
+        }
+        const health = cliHealthy();
+        if (!health.ok) {
+          const detail = (health.details?.error as string | undefined) ?? "codali CLI unavailable";
+          throw new Error(
+            `codali_unavailable: codali CLI unavailable (${detail}). Set CODALI_BIN or install codali.`,
+          );
+        }
+      }
       const prompts = await this.loadPrompts(agent.id);
       const formatSessionId = (iso: string): string => {
         const date = new Date(iso);
@@ -3248,10 +3372,27 @@ export class WorkOnTasksService {
         const initialStatus = (task.task.status ?? "").toLowerCase().trim();
         const taskAlias = `Working on task ${task.task.key}`;
         const taskSummary = task.task.title || task.task.description || "(none)";
+        const adapterLabel = agent.adapter ?? "n/a";
         const modelLabel = agent.defaultModel ?? "(default)";
-        const providerLabel = resolveProvider(agent.adapter);
+        const providerLabel =
+          codaliRequired && codaliProviderInfo ? codaliProviderInfo.provider : resolveProvider(adapterLabel);
         const reasoningLabel = resolveReasoning(agent.config as Record<string, unknown> | undefined);
         const stepLabel = directEditsEnabled ? "direct" : "patch";
+        await this.logTask(taskRun.id, "Adapter context", "agent", {
+          adapter: adapterLabel,
+          adapterOverride: agentAdapterOverride,
+          provider: providerLabel,
+          model: modelLabel,
+          sourceAdapter: codaliProviderInfo?.sourceAdapter ?? adapterLabel,
+        });
+        taskSummaries.set(task.task.key, {
+          taskKey: task.task.key,
+          adapter: adapterLabel,
+          adapterOverride: agentAdapterOverride,
+          provider: providerLabel,
+          model: modelLabel,
+          sourceAdapter: codaliProviderInfo?.sourceAdapter ?? adapterLabel,
+        });
         const taskStartMs = Date.now();
         let taskStatus: TaskExecutionResult["status"] | null = null;
         let tokensPromptTotal = 0;
@@ -3266,6 +3407,7 @@ export class WorkOnTasksService {
         let allowedFiles: string[] = [];
         let touched: string[] = [];
         let hasChanges = false;
+        let codaliRunMeta: { logPath?: string; touchedFiles?: string[]; runId?: string } | null = null;
         let dirtyBeforeAgent: string[] = [];
         let unresolvedComments: TaskCommentRow[] = [];
         let commentContext: { comments: TaskCommentRow[]; unresolved: TaskCommentRow[] } | null = null;
@@ -3955,7 +4097,14 @@ export class WorkOnTasksService {
           const commentBacklog = this.buildCommentBacklog(unresolvedComments);
           workLog = await this.loadWorkLog(task.task.id);
           const workLogSummary = this.buildWorkLog(workLog);
-          const promptBase = this.buildPrompt(task, docSummary, allowedFiles, commentBacklog, workLogSummary);
+          const promptBase = this.buildPrompt(
+            task,
+            docSummary,
+            allowedFiles,
+            commentBacklog,
+            workLogSummary,
+            enforceCommentBacklog,
+          );
           const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
           const testExpectationNote = shouldRunTests
             ? testsRequired
@@ -3963,17 +4112,27 @@ export class WorkOnTasksService {
               : "Tests must pass before the task can be finalized."
             : "";
           const commentBacklogNote = commentBacklog
-            ? "Comment backlog is highest priority. Resolve those items first and focus on them before other task work. If you cannot resolve a comment, explain why and leave the slug unresolved. Do not mark slugs resolved unless you made repo changes that address them. If you return JSON, include resolvedSlugs/unresolvedSlugs and set commentBacklogStatus (e.g., in_progress/resolved/blocked)."
+            ? enforceCommentBacklog
+              ? "Comment backlog is highest priority. Resolve those items first and focus on them before other task work. If you cannot resolve a comment, explain why and leave the slug unresolved. Do not mark slugs resolved unless you made repo changes that address them. If you return JSON, include resolvedSlugs/unresolvedSlugs and set commentBacklogStatus (e.g., in_progress/resolved/blocked)."
+              : "Comment backlog is provided. Address relevant items and report status. Avoid marking slugs resolved unless your changes address them. If you return JSON, include resolvedSlugs/unresolvedSlugs/commentBacklogStatus when possible."
             : "";
           const outputRequirementNote = [
-            "Output requirements (strict):",
-            "- Apply changes directly in the repo; do not output patches/diffs/FILE blocks.",
+            "Output requirements:",
+            "- Prefer direct repo edits when tools are available. If direct edits are not possible, output a minimal patch/diff or patch_json response with no extra prose.",
             "- Do not commit changes; leave the working tree for mcoda to stage and commit.",
             "- Summarize what you changed and any test results.",
-            "- If comment backlog is present, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus (no patches/files).",
-            "- Do not mark comment slugs resolved without corresponding repo changes.",
+            commentBacklog
+              ? enforceCommentBacklog
+                ? "- If comment backlog is present, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus."
+                : "- If comment backlog is present, include resolvedSlugs/unresolvedSlugs/commentBacklogStatus when possible."
+              : "",
+            enforceCommentBacklog
+              ? "- Do not mark comment slugs resolved without corresponding repo changes."
+              : "- Avoid marking comment slugs resolved unless repo changes address them.",
             "- Do not create docs/qa/* reports unless explicitly required by the task.",
-          ].join("\n");
+          ]
+            .filter(Boolean)
+            .join("\n");
           const promptExtras = [
             testRequirementsNote,
             testCommandNote,
@@ -4024,6 +4183,20 @@ export class WorkOnTasksService {
               process.stdout.write(text);
             }
           };
+          if (codaliRequired && requestedAgentStream) {
+            await this.logTask(taskRun.id, "Streaming disabled for codali; forcing non-streaming invocation.", "agent");
+          }
+          const taskInvocationMetadata: Record<string, unknown> = {
+            ...baseInvocationMetadata,
+            taskId: task.task.id,
+            taskKey: task.task.key,
+            agentId: agent.id,
+            agentSlug: agent.slug ?? agent.id,
+            sourceAdapter: codaliProviderInfo?.sourceAdapter ?? adapterLabel,
+          };
+          if (codaliRequired && Object.keys(codaliEnvOverrides).length > 0) {
+            taskInvocationMetadata.codaliEnv = codaliEnvOverrides;
+          }
 
           const patchOnlyAgentSlug = (() => {
             const config = agent.config as Record<string, unknown> | undefined;
@@ -4066,6 +4239,9 @@ export class WorkOnTasksService {
             const shouldChdir = previousCwd !== targetCwd;
             const activeAgent = agentOverride ?? agent;
             let output = "";
+            let invocationMetadata: Record<string, unknown> | undefined;
+            let invocationAdapter: string | undefined;
+            let invocationModel: string | undefined;
             const started = Date.now();
             try {
               if (shouldChdir) {
@@ -4075,7 +4251,8 @@ export class WorkOnTasksService {
                 const stream = await withAbort(
                   this.deps.agentService.invokeStream(activeAgent.id, {
                     input,
-                    metadata: { taskKey: task.task.key },
+                    adapterType: agentAdapterOverride,
+                    metadata: taskInvocationMetadata,
                   }),
                 );
                 let pollLockLost = false;
@@ -4093,6 +4270,15 @@ export class WorkOnTasksService {
                   for await (const chunk of stream) {
                     if (aborted) {
                       throw new Error(resolveAbortReason());
+                    }
+                    if (!invocationMetadata && chunk.metadata) {
+                      invocationMetadata = chunk.metadata as Record<string, unknown>;
+                    }
+                    if (!invocationAdapter && typeof chunk.adapter === "string") {
+                      invocationAdapter = chunk.adapter;
+                    }
+                    if (!invocationModel && typeof chunk.model === "string") {
+                      invocationModel = chunk.model;
                     }
                     output += chunk.output ?? "";
                     streamChunk(chunk.output);
@@ -4127,7 +4313,11 @@ export class WorkOnTasksService {
                   });
                 }, getLockRefreshIntervalMs());
                 const invokePromise = withAbort(
-                  this.deps.agentService.invoke(activeAgent.id, { input, metadata: { taskKey: task.task.key } }),
+                  this.deps.agentService.invoke(activeAgent.id, {
+                    input,
+                    adapterType: agentAdapterOverride,
+                    metadata: taskInvocationMetadata,
+                  }),
                 ).catch((error) => {
                   if (pollLockLost) return null as any;
                   throw error;
@@ -4136,6 +4326,9 @@ export class WorkOnTasksService {
                   const result = await Promise.race([invokePromise, lockLostPromise]);
                   if (result) {
                     output = result.output ?? "";
+                    invocationMetadata = (result.metadata as Record<string, unknown> | undefined) ?? invocationMetadata;
+                    invocationAdapter = result.adapter ?? invocationAdapter;
+                    invocationModel = result.model ?? invocationModel;
                   }
                 } finally {
                   clearInterval(refreshTimer);
@@ -4160,7 +4353,14 @@ export class WorkOnTasksService {
                 }
               }
             }
-            return { output, durationSeconds: (Date.now() - started) / 1000, agentUsed: activeAgent };
+            return {
+              output,
+              durationSeconds: (Date.now() - started) / 1000,
+              agentUsed: activeAgent,
+              metadata: invocationMetadata,
+              adapter: invocationAdapter,
+              model: invocationModel,
+            };
           };
 
           const recordUsage = async (
@@ -4226,6 +4426,9 @@ export class WorkOnTasksService {
               output: string;
               durationSeconds: number;
               agentUsed: { id: string; defaultModel?: string };
+              metadata?: Record<string, unknown>;
+              adapter?: string;
+              model?: string;
             } | null = null;
             let triedRetry = false;
             let triedPatchFallback = false;
@@ -4254,8 +4457,10 @@ export class WorkOnTasksService {
                 status: "failed",
                 finishedAt: new Date().toISOString(),
               });
-              setFailureReason(message);
-              results.push({ taskKey: task.task.key, status: "failed", notes: message });
+              const codaliReason = resolveCodaliFailureReason(message);
+              const failureNote = codaliReason ?? message;
+              setFailureReason(failureNote);
+              results.push({ taskKey: task.task.key, status: "failed", notes: failureNote });
               if (isAuthErrorMessage(message)) {
                 abortRemainingReason = message;
                 setFailureReason(AUTH_ERROR_REASON);
@@ -4270,6 +4475,37 @@ export class WorkOnTasksService {
               throw new Error("Agent invocation did not return a response.");
             }
             await recordUsage("agent", agentInvocation.output ?? "", agentDuration, agentInput, agentInvocation.agentUsed, attempt);
+
+            const invocationMeta = (agentInvocation.metadata ?? {}) as Record<string, unknown>;
+            const rawTouched = Array.isArray(invocationMeta.touchedFiles) ? invocationMeta.touchedFiles : [];
+            const touchedFiles = rawTouched.filter(
+              (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+            );
+            const logPath = typeof invocationMeta.logPath === "string" ? invocationMeta.logPath : undefined;
+            const runId = typeof invocationMeta.runId === "string" ? invocationMeta.runId : undefined;
+            if (logPath || touchedFiles.length || runId) {
+              const codali = { logPath, touchedFiles: touchedFiles.length ? touchedFiles : undefined, runId };
+              codaliRunMeta = codali;
+              const summary = taskSummaries.get(task.task.key);
+              if (summary) {
+                summary.codali = codali;
+              } else {
+                taskSummaries.set(task.task.key, {
+                  taskKey: task.task.key,
+                  adapter: adapterLabel,
+                  adapterOverride: agentAdapterOverride,
+                  provider: providerLabel,
+                  model: modelLabel,
+                  sourceAdapter: codaliProviderInfo?.sourceAdapter ?? adapterLabel,
+                  codali,
+                });
+              }
+              await this.logTask(taskRun.id, "Codali artifacts captured.", "codali", {
+                logPath,
+                touchedFiles: touchedFiles.length ? touchedFiles : undefined,
+                runId,
+              });
+            }
 
             let {
               patches,
@@ -4464,17 +4700,24 @@ export class WorkOnTasksService {
                   createdAt: new Date().toISOString(),
                   metadata: { reason: "comment_backlog_missing", openSlugs, status: normalizedStatus || "none" },
                 });
-                await this.logTask(taskRun.id, "Comment backlog missing in agent output; failing task.", "execution");
-                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-                  status: "failed",
-                  finishedAt: new Date().toISOString(),
-                });
-                await this.stateService.markFailed(task.task, "comment_backlog_missing", statusContext);
-                setFailureReason("comment_backlog_missing");
-                results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_missing" });
-                taskStatus = "failed";
-                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                continue taskLoop;
+                if (enforceCommentBacklog) {
+                  await this.logTask(taskRun.id, "Comment backlog missing in agent output; failing task.", "execution");
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                    status: "failed",
+                    finishedAt: new Date().toISOString(),
+                  });
+                  await this.stateService.markFailed(task.task, "comment_backlog_missing", statusContext);
+                  setFailureReason("comment_backlog_missing");
+                  results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_missing" });
+                  taskStatus = "failed";
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue taskLoop;
+                }
+                await this.logTask(
+                  taskRun.id,
+                  "Comment backlog missing in agent output; guardrails relaxed, continuing.",
+                  "execution",
+                );
               }
             }
 
@@ -5133,22 +5376,32 @@ export class WorkOnTasksService {
                     unresolvedSlugs: commentResolution?.unresolvedSlugs ?? [],
                   },
                 });
+                if (enforceCommentBacklog) {
+                  await this.logTask(
+                    taskRun.id,
+                    `Comment backlog unresolved with no repo changes (${slugList}).`,
+                    "execution",
+                  );
+                  await this.stateService.markChangesRequested(
+                    task.task,
+                    { failed_reason: "comment_backlog_unaddressed" },
+                    statusContext,
+                  );
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                    status: "failed",
+                    finishedAt: new Date().toISOString(),
+                  });
+                  setFailureReason("comment_backlog_unaddressed");
+                  results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_unaddressed" });
+                  taskStatus = "failed";
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue taskLoop;
+                }
                 await this.logTask(
                   taskRun.id,
-                  `Comment backlog unresolved with no repo changes (${slugList}).`,
+                  `Comment backlog unresolved with no repo changes (${slugList}); guardrails relaxed, continuing.`,
                   "execution",
                 );
-                await this.stateService.markChangesRequested(
-                  task.task,
-                  { failed_reason: "comment_backlog_unaddressed" },
-                  statusContext,
-                );
-                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "failed", finishedAt: new Date().toISOString() });
-                setFailureReason("comment_backlog_unaddressed");
-                results.push({ taskKey: task.task.key, status: "failed", notes: "comment_backlog_unaddressed" });
-                taskStatus = "failed";
-                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-                continue taskLoop;
               }
               if (!hasChanges) {
                 const body = [
@@ -5315,9 +5568,31 @@ export class WorkOnTasksService {
           ? "failed"
           : ("partial" as JobState);
     const errorSummary = abortRemainingReason ?? (failureCount ? `${failureCount} task(s) failed` : undefined);
+    const summaryTasks = results.map((result) => {
+      const existing = taskSummaries.get(result.taskKey);
+      if (existing) return existing;
+      const fallbackAdapter = agent.adapter ?? "n/a";
+      return {
+        taskKey: result.taskKey,
+        adapter: fallbackAdapter,
+        adapterOverride: agentAdapterOverride,
+        provider:
+          codaliRequired && codaliProviderInfo ? codaliProviderInfo.provider : resolveProvider(fallbackAdapter),
+        model: agent.defaultModel ?? "(default)",
+        sourceAdapter: codaliProviderInfo?.sourceAdapter ?? fallbackAdapter,
+      };
+    });
     await this.deps.jobService.updateJobStatus(job.id, state, {
       processedItems: results.length,
       errorSummary,
+      payload: {
+        workOnTasks: {
+          workRunner: resolvedWorkRunner,
+          useCodali: codaliRequired,
+          agentAdapterOverride,
+          tasks: summaryTasks,
+        },
+      },
     });
     await this.deps.jobService.finishCommandRun(
       commandRun.id,

@@ -549,6 +549,10 @@ export class QaApiRunner {
     }
     const expanded = expandPortCandidates(Array.from(ports));
     if (expanded.length === 0) return undefined;
+    if (!probeRequests) {
+      const port = expanded[0];
+      return port ? `http://${DEFAULT_API_HOST}:${port}` : undefined;
+    }
     const baseProbeRequests = probeRequests ?? [{ method: "GET", path: "/" } as QaApiRequest];
     for (const port of expanded) {
       const baseUrl = `http://${DEFAULT_API_HOST}:${port}`;

@@ -6,6 +6,7 @@ import { GlobalRepository } from "@mcoda/db";
 import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
 import { GeminiAdapter } from "../adapters/gemini/GeminiAdapter.js";
 import { LocalAdapter } from "../adapters/local/LocalAdapter.js";
+import { CodaliAdapter } from "../adapters/codali/CodaliAdapter.js";
 import { OllamaRemoteAdapter } from "../adapters/ollama/OllamaRemoteAdapter.js";
 import { OllamaCliAdapter } from "../adapters/ollama/OllamaCliAdapter.js";
 import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
@@ -14,7 +15,7 @@ import { ZhipuApiAdapter } from "../adapters/zhipu/ZhipuApiAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
 
-const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli"]);
+const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli", "codali-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
 const SUPPORTED_ADAPTERS = new Set([
   "openai-api",
@@ -26,6 +27,7 @@ const SUPPORTED_ADAPTERS = new Set([
   "qa-cli",
   "ollama-remote",
   "ollama-cli",
+  "codali-cli",
 ]);
 
 const DEFAULT_JOB_PROMPT =
@@ -252,12 +254,12 @@ export class AgentService {
     };
   }
 
-  private resolveAdapterType(agent: Agent, apiKey?: string): string {
+  private resolveAdapterType(agent: Agent, apiKey?: string, adapterOverride?: string): string {
     const hasSecret = Boolean(apiKey);
     const config = agent.config as any;
     const cliAdapter = config?.cliAdapter as string | undefined;
     const localAdapter = config?.localAdapter as string | undefined;
-    let adapterType = agent.adapter;
+    let adapterType = adapterOverride?.trim() || agent.adapter;
 
     if (!SUPPORTED_ADAPTERS.has(adapterType)) {
       throw new Error(`Unsupported adapter type: ${adapterType}`);
@@ -283,9 +285,9 @@ export class AgentService {
     return adapterType;
   }
 
-  async getAdapter(agent: Agent): Promise<AgentAdapter> {
+  async getAdapter(agent: Agent, adapterOverride?: string): Promise<AgentAdapter> {
     const config = await this.buildAdapterConfig(agent);
-    const adapterType = this.resolveAdapterType(agent, config.apiKey);
+    const adapterType = this.resolveAdapterType(agent, config.apiKey, adapterOverride);
     const configWithAdapter = { ...config, adapter: adapterType };
 
     if (adapterType === "openai-api") {
@@ -311,6 +313,9 @@ export class AgentService {
     }
     if (adapterType === "ollama-cli") {
       return new OllamaCliAdapter(configWithAdapter);
+    }
+    if (adapterType === "codali-cli") {
+      return new CodaliAdapter(configWithAdapter);
     }
     if (adapterType === "gemini-cli") {
       return new GeminiAdapter(configWithAdapter);
@@ -342,7 +347,7 @@ export class AgentService {
 
   async invoke(agentId: string, request: InvocationRequest): Promise<InvocationResult> {
     const agent = await this.resolveAgent(agentId);
-    const adapter = await this.getAdapter(agent);
+    const adapter = await this.getAdapter(agent, request.adapterType);
     if (!adapter.invoke) {
       throw new Error("Adapter does not support invoke");
     }
@@ -362,7 +367,7 @@ export class AgentService {
 
   async invokeStream(agentId: string, request: InvocationRequest): Promise<AsyncGenerator<InvocationResult>> {
     const agent = await this.resolveAgent(agentId);
-    const adapter = await this.getAdapter(agent);
+    const adapter = await this.getAdapter(agent, request.adapterType);
     if (!adapter.invokeStream) {
       throw new Error("Adapter does not support streaming");
     }

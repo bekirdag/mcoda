@@ -3,6 +3,7 @@ import assert from "node:assert";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { CodaliAdapter } from "@mcoda/agents";
 import { WorkspaceRepository } from "@mcoda/db";
 import { WorkspaceResolver } from "../../../workspace/WorkspaceManager.js";
 import { TaskSelectionService } from "../TaskSelectionService.js";
@@ -196,6 +197,92 @@ class StubAgentServiceCapture {
     const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
     return { output: patch, adapter: "local-model" };
   }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceCaptureRequest {
+  lastRequest: any | null = null;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, req: any) {
+    this.lastRequest = req ?? null;
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    return { output: patch, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceStreamable {
+  streamCalls = 0;
+  invokeCalls = 0;
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invokeCalls += 1;
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    return { output: patch, adapter: "local-model" };
+  }
+  async *invokeStream(_id: string, _req: any) {
+    this.streamCalls += 1;
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    yield { output: patch } as any;
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
+class StubAgentServiceCodaliAdapter {
+  lastRequest: any | null = null;
+  private adapter: CodaliAdapter;
+  private agent: any;
+
+  constructor() {
+    this.agent = {
+      id: "agent-1",
+      slug: "agent-1",
+      adapter: "openai-api",
+      defaultModel: "stub-model",
+      config: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    this.adapter = new CodaliAdapter({
+      agent: this.agent,
+      capabilities: ["code_write"],
+      model: "stub-model",
+      apiKey: "test-key",
+      adapter: "codali-cli",
+    });
+  }
+
+  async resolveAgent() {
+    return this.agent;
+  }
+
+  async invoke(_id: string, req: any) {
+    this.lastRequest = req ?? null;
+    return this.adapter.invoke(req);
+  }
+
   async getPrompts() {
     return {
       jobPrompt: "You are a worker.",
@@ -838,6 +925,15 @@ class StubVcs {
   async resetHard(_cwd: string, _options?: { exclude?: string[] }) {}
 }
 
+class DirtyAfterInvokeVcs extends StubVcs {
+  dirtyCalls = 0;
+  override async dirtyPaths(): Promise<string[]> {
+    this.dirtyCalls += 1;
+    if (this.dirtyCalls === 1) return [];
+    return ["tmp.txt"];
+  }
+}
+
 class BaseBranchRecordingVcs extends StubVcs {
   bases: string[] = [];
   override async ensureBaseBranch(_cwd: string, base: string) {
@@ -1134,6 +1230,536 @@ test("workOnTasks marks tasks ready_to_code_review and records task runs", async
     const exists = await fs.stat(checkpointPath).then(() => true, () => false);
     assert.equal(exists, true);
   } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks passes adapter override into invocation request", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCaptureRequest();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      agentAdapterOverride: "codali-cli",
+    });
+    assert.equal(agentService.lastRequest?.adapterType, "codali-cli");
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks attaches docdex and workspace metadata for agent invocation", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCaptureRequest();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const originalBase = process.env.CODALI_DOCDEX_BASE_URL;
+  const originalRepoId = process.env.CODALI_DOCDEX_REPO_ID;
+  const originalRepoRoot = process.env.CODALI_DOCDEX_REPO_ROOT;
+  try {
+    process.env.CODALI_DOCDEX_BASE_URL = "http://127.0.0.1:7777";
+    process.env.CODALI_DOCDEX_REPO_ID = "repo-123";
+    process.env.CODALI_DOCDEX_REPO_ROOT = "/tmp/demo-repo";
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+    });
+    const metadata = agentService.lastRequest?.metadata as Record<string, unknown>;
+    assert.equal(metadata.command, "work-on-tasks");
+    assert.equal(metadata.workspaceRoot, workspace.workspaceRoot);
+    assert.equal(metadata.repoRoot, workspace.workspaceRoot);
+    assert.equal(metadata.docdexBaseUrl, "http://127.0.0.1:7777");
+    assert.equal(metadata.docdexRepoId, "repo-123");
+    assert.equal(metadata.docdexRepoRoot, "/tmp/demo-repo");
+    assert.equal(metadata.projectKey, "proj");
+    assert.equal(metadata.agentId, "agent-1");
+    assert.equal(metadata.agentSlug, "agent-1");
+  } finally {
+    if (originalBase === undefined) {
+      delete process.env.CODALI_DOCDEX_BASE_URL;
+    } else {
+      process.env.CODALI_DOCDEX_BASE_URL = originalBase;
+    }
+    if (originalRepoId === undefined) {
+      delete process.env.CODALI_DOCDEX_REPO_ID;
+    } else {
+      process.env.CODALI_DOCDEX_REPO_ID = originalRepoId;
+    }
+    if (originalRepoRoot === undefined) {
+      delete process.env.CODALI_DOCDEX_REPO_ROOT;
+    } else {
+      process.env.CODALI_DOCDEX_REPO_ROOT = originalRepoRoot;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks disables streaming when codali is required", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceStreamable();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: true,
+      useCodali: true,
+      dryRun: false,
+    });
+    assert.equal(agentService.streamCalls, 0);
+    assert.ok(agentService.invokeCalls > 0);
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks fails fast when codali CLI is unavailable", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCaptureRequest();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const originalBin = process.env.CODALI_BIN;
+  const originalStub = process.env.MCODA_CLI_STUB;
+  const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
+  try {
+    process.env.CODALI_BIN = "/__missing__/codali";
+    delete process.env.MCODA_CLI_STUB;
+    delete process.env.MCODA_SKIP_CLI_CHECKS;
+    await assert.rejects(
+      service.workOnTasks({
+        workspace,
+        projectKey: "proj",
+        agentStream: false,
+        useCodali: true,
+        dryRun: false,
+      }),
+      /codali_unavailable: .*CODALI_BIN/i,
+    );
+  } finally {
+    if (originalBin === undefined) {
+      delete process.env.CODALI_BIN;
+    } else {
+      process.env.CODALI_BIN = originalBin;
+    }
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    if (originalSkip === undefined) {
+      delete process.env.MCODA_SKIP_CLI_CHECKS;
+    } else {
+      process.env.MCODA_SKIP_CLI_CHECKS = originalSkip;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks maps codali provider errors to failure reason", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = {
+    async resolveAgent() {
+      return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+    },
+    async invoke() {
+      throw new Error("CODALI_UNSUPPORTED_ADAPTER: gemini-cli");
+    },
+    async getPrompts() {
+      return {
+        jobPrompt: "You are a worker.",
+        characterPrompt: "Be concise.",
+        commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+      };
+    },
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+    });
+    assert.ok(result.results.every((r) => r.notes === "codali_provider_unsupported"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks logs adapter and provider metadata", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+    });
+    const db = repo.getDb();
+    const row = await db.get<{ details_json: string | null }>(
+      "SELECT details_json FROM task_logs WHERE message = 'Adapter context' LIMIT 1",
+    );
+    assert.ok(row?.details_json);
+    const details = JSON.parse(row?.details_json ?? "{}") as Record<string, unknown>;
+    assert.equal(details.adapter, "local-model");
+    assert.equal(details.provider, "local");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks logs codali artifacts from invocation metadata", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = {
+    async resolveAgent() {
+      return { id: "agent-1", slug: "agent-1", adapter: "openai-api", defaultModel: "stub" } as any;
+    },
+    async invoke() {
+      const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+      return {
+        output: patch,
+        adapter: "codali-cli",
+        metadata: { logPath: "/tmp/codali.jsonl", touchedFiles: ["tmp.txt"], runId: "run-abc" },
+      };
+    },
+    async getPrompts() {
+      return {
+        jobPrompt: "You are a worker.",
+        characterPrompt: "Be concise.",
+        commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+      };
+    },
+  };
+  const routingService = {
+    async resolveAgentForCommand() {
+      return {
+        agent: { id: "agent-1", slug: "agent-1", adapter: "openai-api", defaultModel: "stub" } as any,
+      };
+    },
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: routingService as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      useCodali: true,
+      dryRun: false,
+    });
+    const db = repo.getDb();
+    const row = await db.get<{ details_json: string | null }>(
+      "SELECT details_json FROM task_logs WHERE message = 'Codali artifacts captured.' LIMIT 1",
+    );
+    assert.ok(row?.details_json);
+    const details = JSON.parse(row?.details_json ?? "{}") as Record<string, unknown>;
+    assert.equal(details.logPath, "/tmp/codali.jsonl");
+    assert.deepEqual(details.touchedFiles, ["tmp.txt"]);
+    assert.equal(details.runId, "run-abc");
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks includes codali metadata in job summary", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = {
+    async resolveAgent() {
+      return { id: "agent-1", slug: "agent-1", adapter: "openai-api", defaultModel: "stub" } as any;
+    },
+    async invoke() {
+      const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+      return {
+        output: patch,
+        adapter: "codali-cli",
+        metadata: { logPath: "/tmp/codali.jsonl", touchedFiles: ["tmp.txt"], runId: "run-abc" },
+      };
+    },
+    async getPrompts() {
+      return {
+        jobPrompt: "You are a worker.",
+        characterPrompt: "Be concise.",
+        commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+      };
+    },
+  };
+  const routingService = {
+    async resolveAgentForCommand() {
+      return {
+        agent: { id: "agent-1", slug: "agent-1", adapter: "openai-api", defaultModel: "stub" } as any,
+      };
+    },
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: routingService as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      useCodali: true,
+      dryRun: false,
+    });
+    const job = await jobService.getJob(result.jobId);
+    const summary = (job?.payload as any)?.workOnTasks;
+    assert.ok(summary);
+    assert.equal(summary.useCodali, true);
+    assert.equal(summary.agentAdapterOverride, "codali-cli");
+    assert.ok(Array.isArray(summary.tasks));
+    const withArtifacts = summary.tasks.find((task: any) => task?.codali?.runId === "run-abc");
+    assert.ok(withArtifacts);
+    assert.equal(withArtifacts.adapter, "openai-api");
+    assert.equal(withArtifacts.provider, "openai-compatible");
+    assert.equal(withArtifacts.model, "stub");
+    assert.equal(withArtifacts.adapterOverride, "codali-cli");
+    assert.equal(withArtifacts.codali.logPath, "/tmp/codali.jsonl");
+    assert.deepEqual(withArtifacts.codali.touchedFiles, ["tmp.txt"]);
+    assert.equal(withArtifacts.codali.runId, "run-abc");
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks uses codali adapter path with stubbed CLI", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCodaliAdapter();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new DirtyAfterInvokeVcs() as any,
+  });
+
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      useCodali: true,
+      agentStream: false,
+      dryRun: false,
+    });
+    assert.equal(agentService.lastRequest?.adapterType, "codali-cli");
+    assert.ok(result.results.every((r) => r.status === "succeeded"));
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks ignores patch mode when codali is required", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCodaliAdapter();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new DirtyAfterInvokeVcs() as any,
+  });
+
+  const originalStub = process.env.MCODA_CLI_STUB;
+  const originalPatchMode = process.env.MCODA_WORK_ON_TASKS_PATCH_MODE;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    process.env.MCODA_WORK_ON_TASKS_PATCH_MODE = "1";
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      useCodali: true,
+      agentStream: false,
+      dryRun: false,
+    });
+    assert.ok(
+      result.warnings.some((warning) =>
+        warning.includes("work-on-tasks patch mode is ignored when codali is required."),
+      ),
+    );
+    assert.ok(result.results.every((r) => r.status === "succeeded"));
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    if (originalPatchMode === undefined) {
+      delete process.env.MCODA_WORK_ON_TASKS_PATCH_MODE;
+    } else {
+      process.env.MCODA_WORK_ON_TASKS_PATCH_MODE = originalPatchMode;
+    }
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
@@ -1992,7 +2618,7 @@ test("workOnTasks prompt omits plan instruction in favor of patch-only output", 
     });
     const input = agent.lastInput ?? "";
     assert.ok(!input.includes("Provide a concise plan"));
-    assert.ok(input.includes("Output requirements (strict):"));
+    assert.ok(input.includes("Output requirements:"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -2317,7 +2943,7 @@ test("workOnTasks includes unresolved review + QA comment backlog", async () => 
       limit: 1,
     });
     const input = agent.lastInput ?? "";
-    assert.ok(input.includes("Comment backlog (highest priority):"));
+    assert.ok(input.includes("Comment backlog"));
     assert.ok(input.includes("review-1"));
     assert.ok(input.includes("qa-1"));
     assert.ok(input.includes("Work log (recent):"));
@@ -2470,7 +3096,9 @@ test("workOnTasks fails no-change runs when comment backlog remains unresolved",
     createdAt: new Date().toISOString(),
   });
 
+  const originalEnforce = process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG;
   try {
+    process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG = "1";
     const result = await service.workOnTasks({
       workspace,
       projectKey: "proj",
@@ -2488,6 +3116,11 @@ test("workOnTasks fails no-change runs when comment backlog remains unresolved",
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     assert.ok(comments.some((comment) => comment.category === "comment_backlog"));
   } finally {
+    if (originalEnforce === undefined) {
+      delete process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG;
+    } else {
+      process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG = originalEnforce;
+    }
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
@@ -2520,7 +3153,9 @@ test("workOnTasks blocks when agent reports missing comment backlog", async () =
     createdAt: new Date().toISOString(),
   });
 
+  const originalEnforce = process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG;
   try {
+    process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG = "1";
     const result = await service.workOnTasks({
       workspace,
       projectKey: "proj",
@@ -2537,6 +3172,11 @@ test("workOnTasks blocks when agent reports missing comment backlog", async () =
     const backlog = comments.find((comment) => comment.category === "comment_backlog");
     assert.ok(backlog?.body.includes("Open comment slugs: review-open"));
   } finally {
+    if (originalEnforce === undefined) {
+      delete process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG;
+    } else {
+      process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG = originalEnforce;
+    }
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
@@ -2569,7 +3209,9 @@ test("workOnTasks fails no-change runs when unresolved comments exist", async ()
     createdAt: new Date().toISOString(),
   });
 
+  const originalEnforce = process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG;
   try {
+    process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG = "1";
     const result = await service.workOnTasks({
       workspace,
       projectKey: "proj",
@@ -2589,6 +3231,11 @@ test("workOnTasks fails no-change runs when unresolved comments exist", async ()
     assert.ok((backlog?.metadata as any)?.justification);
     assert.equal((backlog?.metadata as any)?.reason, "comment_backlog_unaddressed");
   } finally {
+    if (originalEnforce === undefined) {
+      delete process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG;
+    } else {
+      process.env.MCODA_WOT_ENFORCE_COMMENT_BACKLOG = originalEnforce;
+    }
     await service.close();
     await cleanupWorkspace(dir, repo);
   }

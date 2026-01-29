@@ -81,6 +81,42 @@ test("CLI adapter works without stored secret", async () => {
   assert.equal(result.metadata?.mode, "cli");
 });
 
+test("adapter override uses the requested adapter for invoke", async () => {
+  const originalKey = process.env.CODALI_API_KEY;
+  const agent = await repo.createAgent({
+    slug: "override",
+    adapter: "openai-api",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  try {
+    process.env.CODALI_API_KEY = process.env.CODALI_API_KEY ?? "test-key";
+    const result = await service.invoke(agent.id, { input: "ping", adapterType: "codali-cli" });
+    assert.equal(result.adapter, "codali-cli");
+    assert.equal(result.metadata?.mode, "cli");
+    assert.match(result.output, /codali-stub/);
+  } finally {
+    if (originalKey === undefined) {
+      delete process.env.CODALI_API_KEY;
+    } else {
+      process.env.CODALI_API_KEY = originalKey;
+    }
+  }
+});
+
+test("adapter override rejects unsupported adapter types", async () => {
+  const agent = await repo.createAgent({
+    slug: "override-bad",
+    adapter: "openai-api",
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+  });
+  await assert.rejects(
+    service.invoke(agent.id, { input: "ping", adapterType: "unknown-adapter" }),
+    /Unsupported adapter type: unknown-adapter/,
+  );
+});
+
 test("CLI adapter reports unreachable health when binary is missing", async () => {
   const agent = await repo.createAgent({
     slug: "cli-health",

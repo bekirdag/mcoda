@@ -24,6 +24,9 @@ interface ParsedArgs {
   noCommit: boolean;
   dryRun: boolean;
   agentStream?: boolean;
+  workRunner?: string;
+  useCodali?: boolean;
+  agentAdapterOverride?: string;
   reviewBase?: string;
   qaProfileName?: string;
   qaLevel?: string;
@@ -51,6 +54,8 @@ const usage = `mcoda gateway-trio \\
   [--max-agent-seconds N] (default disabled) \\
   [--gateway-agent <NAME>] \\
   [--work-agent <NAME>] \\
+  [--work-runner <codali|default>] \\
+  [--use-codali <true|false>] \\
   [--review-agent <NAME>] \\
   [--qa-agent <NAME>] \\
   [--max-docs N] \\
@@ -185,6 +190,32 @@ const parseCsv = (value: string | undefined): string[] => {
     .filter(Boolean);
 };
 
+const normalizeRunner = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toLowerCase();
+};
+
+const resolveEnvRunner = (): string | undefined => normalizeRunner(process.env.MCODA_WORK_ON_TASKS_ADAPTER);
+
+const resolveRunnerOverride = (
+  workRunner?: string,
+): { agentAdapterOverride?: string; workRunner?: string } => {
+  if (!workRunner) return {};
+  const normalized = normalizeRunner(workRunner);
+  if (!normalized || normalized === "default") {
+    return {};
+  }
+  if (normalized === "codali") {
+    return { workRunner: normalized, agentAdapterOverride: "codali-cli" };
+  }
+  if (normalized === "codali-cli") {
+    return { workRunner: normalized, agentAdapterOverride: "codali-cli" };
+  }
+  return { workRunner: normalized, agentAdapterOverride: normalized };
+};
+
 const TASK_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-_]*$/;
 
 const normalizeTaskKeys = (inputs: string[]): { keys: string[]; invalid: string[] } => {
@@ -272,6 +303,8 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let noCommit = false;
   let dryRun = false;
   let agentStream: boolean | undefined;
+  let workRunner: string | undefined;
+  let useCodali: boolean | undefined;
   let reviewBase: string | undefined;
   let qaProfileName: string | undefined;
   let qaLevel: string | undefined;
@@ -324,6 +357,24 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
         errors.push("gateway-trio: --agent-stream requires a value");
       } else {
         agentStream = parseBooleanFlag(raw, true);
+      }
+      continue;
+    }
+    if (arg.startsWith("--work-runner=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --work-runner requires a value");
+      } else {
+        workRunner = normalizeRunner(raw);
+      }
+      continue;
+    }
+    if (arg.startsWith("--use-codali=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --use-codali requires a value");
+      } else {
+        useCodali = parseBooleanFlag(raw, true);
       }
       continue;
     }
@@ -720,6 +771,24 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--work-runner": {
+        const { value, consumed } = takeValue("--work-runner", argv, i, errors);
+        if (consumed) {
+          workRunner = normalizeRunner(value);
+          i += 1;
+        }
+        break;
+      }
+      case "--use-codali": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          useCodali = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          useCodali = true;
+        }
+        break;
+      }
       case "--rate-agents": {
         const next = argv[i + 1];
         if (next && !next.startsWith("--")) {
@@ -794,6 +863,21 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   const normalizedStatuses = normalizeReviewStatuses(statusFilter);
   statusFilter.splice(0, statusFilter.length, ...normalizedStatuses);
 
+  if (!workRunner) {
+    workRunner = resolveEnvRunner();
+  }
+  const envUseCodali = parseBooleanFlag(process.env.MCODA_WORK_ON_TASKS_USE_CODALI, false);
+  const runnerImpliesCodali = workRunner === "codali" || workRunner === "codali-cli";
+  if (useCodali === undefined) {
+    useCodali = runnerImpliesCodali || envUseCodali;
+  }
+  if (!workRunner && useCodali) {
+    workRunner = "codali";
+  }
+  const runnerOverride = resolveRunnerOverride(workRunner);
+  workRunner = runnerOverride.workRunner ?? workRunner;
+  const agentAdapterOverride = runnerOverride.agentAdapterOverride;
+
   return {
     workspaceRoot,
     projectKey,
@@ -815,6 +899,9 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     noCommit,
     dryRun,
     agentStream: agentStream ?? false,
+    workRunner,
+    useCodali,
+    agentAdapterOverride,
     reviewBase,
     qaProfileName,
     qaLevel,
@@ -873,11 +960,35 @@ export class GatewayTrioCommand {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
+    const jobService = new JobService(workspace);
     const service = await GatewayTrioService.create(workspace);
     try {
       let watchDone = false;
       let watchPromise: Promise<void> | undefined;
       let watchResolve: ((value: { jobId: string; commandRunId: string }) => void) | undefined;
+      let activeJobId: string | undefined;
+      let cancelHandled = false;
+      const handleCancel = async (signal: NodeJS.Signals) => {
+        if (cancelHandled) return;
+        cancelHandled = true;
+        watchDone = true;
+        if (activeJobId) {
+          try {
+            await jobService.updateJobStatus(activeJobId, "cancelled", {
+              errorSummary: `Cancelled by ${signal}`,
+              job_state_detail: "cancelled_by_user",
+            } as any);
+          } catch {
+            // ignore cancellation failures
+          }
+        }
+      };
+      process.once("SIGINT", () => {
+        void handleCancel("SIGINT");
+      });
+      process.once("SIGTERM", () => {
+        void handleCancel("SIGTERM");
+      });
       const watchStart = new Promise<{ jobId: string; commandRunId: string }>((resolve) => {
         watchResolve = resolve;
       });
@@ -934,6 +1045,9 @@ export class GatewayTrioCommand {
         noCommit: parsed.noCommit,
         dryRun: parsed.dryRun,
         agentStream: parsed.agentStream,
+        workRunner: parsed.workRunner,
+        useCodali: parsed.useCodali,
+        agentAdapterOverride: parsed.agentAdapterOverride,
         reviewBase: parsed.reviewBase,
         qaProfileName: parsed.qaProfileName,
         qaLevel: parsed.qaLevel,
@@ -949,6 +1063,7 @@ export class GatewayTrioCommand {
         onGatewayChunk: gatewayLogger.onGatewayChunk,
         onGatewayEnd: gatewayLogger.onGatewayEnd,
         onJobStart: (jobId, commandRunId) => {
+          activeJobId = jobId;
           if (watchResolve) {
             watchResolve({ jobId, commandRunId });
             watchResolve = undefined;

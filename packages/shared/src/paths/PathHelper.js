@@ -40,8 +40,8 @@ export class PathHelper {
     static getWorkspaceDir(workspaceRoot = process.cwd()) {
         return this.getGlobalWorkspaceDir(workspaceRoot);
     }
-    static getWorkspaceDbPath(cwd = process.cwd()) {
-        return path.join(this.getWorkspaceDir(cwd), "mcoda.db");
+    static getWorkspaceDbPath(workspaceRoot = process.cwd()) {
+        return path.join(this.getWorkspaceDir(workspaceRoot), "mcoda.db");
     }
     static async ensureDir(dir) {
         await fs.mkdir(dir, { recursive: true });

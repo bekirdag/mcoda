@@ -97,6 +97,15 @@ class StubProfileService {
   }
 }
 
+class StubProfileServiceNoCommand {
+  async loadProfiles() {
+    return [{ name: "unit", runner: "cli", default: true }];
+  }
+  async resolveProfileForTask() {
+    return { name: "unit", runner: "cli" };
+  }
+}
+
 class StubAgentService {
   async resolveAgent() {
     return { id: "qa-agent", defaultModel: "stub" } as any;
@@ -208,6 +217,14 @@ class StubVcs {
           // ignore bin copy failures
         }
       }
+      const testsAll = path.join(cwd, "tests", "all.js");
+      const testsTarget = path.join(worktreePath, "tests", "all.js");
+      try {
+        await fs.mkdir(path.dirname(testsTarget), { recursive: true });
+        await fs.copyFile(testsAll, testsTarget);
+      } catch {
+        // ignore missing tests/all.js
+      }
     } catch {
       // ignore
     }
@@ -290,7 +307,7 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new StubProfileServiceNoCommand() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
     agentService: new StubAgentService() as any,
@@ -373,7 +390,7 @@ test("qa-tasks routing-only skips agent interpretation by default", async () => 
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new StubProfileServiceNoCommand() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
     agentService: {
@@ -456,7 +473,7 @@ test("qa-tasks skips execution when review shows no code changes", async () => {
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new StubProfileServiceNoCommand() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
     agentService: new StubAgentService() as any,
@@ -953,7 +970,7 @@ test("qa-tasks passes clean ignore paths to VCS", async () => {
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new StubProfileServiceNoCommand() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: vcs as any,
     agentService: new StubAgentService() as any,
@@ -1632,7 +1649,7 @@ test("qa-tasks uses category commands in unit/component/integration/api order", 
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new StubProfileServiceNoCommand() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
     agentService: new StubAgentService() as any,
@@ -1730,7 +1747,7 @@ test("qa-tasks falls back to tests/all.js when category commands are missing", a
     jobService,
     selectionService,
     stateService,
-    profileService: new StubProfileService() as any,
+    profileService: new StubProfileServiceNoCommand() as any,
     followupService: { createFollowupTask: async () => ({}) } as any,
     vcsClient: new StubVcs() as any,
     agentService: new StubAgentService() as any,
