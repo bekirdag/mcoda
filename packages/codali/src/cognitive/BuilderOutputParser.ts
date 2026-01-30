@@ -21,6 +21,47 @@ export interface PatchPayload {
   patches: PatchAction[];
 }
 
+const extractJsonCandidate = (raw: string): string | undefined => {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch?.[1]) {
+    return fenceMatch[1].trim();
+  }
+  const startIndex = trimmed.search(/[\[{]/);
+  if (startIndex === -1) return undefined;
+  const stack: string[] = [];
+  let inString = false;
+  let escape = false;
+  for (let i = startIndex; i < trimmed.length; i += 1) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\\\") {
+        escape = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      stack.push(ch);
+    } else if (ch === "}" || ch === "]") {
+      if (!stack.length) continue;
+      stack.pop();
+      if (stack.length === 0) {
+        return trimmed.slice(startIndex, i + 1);
+      }
+    }
+  }
+  return undefined;
+};
+
 const assertString = (value: unknown, field: string): string => {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`Patch field '${field}' must be a non-empty string`);
@@ -53,6 +94,9 @@ const parsePatchAction = (raw: Record<string, unknown>): PatchAction => {
 };
 
 const parseSearchReplacePayload = (payload: unknown): PatchPayload => {
+  if (Array.isArray(payload)) {
+    return parseSearchReplacePayload({ patches: payload });
+  }
   if (!payload || typeof payload !== "object") {
     throw new Error("Patch payload must be an object");
   }
@@ -107,10 +151,14 @@ export const parsePatchOutput = (
     throw new Error("Patch output is empty");
   }
   let payload: unknown;
+  const candidate = extractJsonCandidate(content);
   try {
-    payload = JSON.parse(content);
+    payload = JSON.parse(candidate ?? content);
   } catch {
     throw new Error("Patch output is not valid JSON");
+  }
+  if (format === "search_replace" && Array.isArray(payload)) {
+    return parseSearchReplacePayload({ patches: payload });
   }
   if (format === "file_writes") {
     return parseFileWritesPayload(payload);

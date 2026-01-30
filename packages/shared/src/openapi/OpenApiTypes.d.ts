@@ -4,6 +4,10 @@ export interface Agent {
     slug: string;
     adapter: string;
     defaultModel?: string;
+    openaiCompatible?: boolean;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
     rating?: number;
     reasoningRating?: number;
     bestUsage?: string;
@@ -27,6 +31,10 @@ export interface CreateAgentInput {
     slug: string;
     adapter: string;
     defaultModel?: string;
+    openaiCompatible?: boolean;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
     rating?: number;
     reasoningRating?: number;
     bestUsage?: string;
@@ -45,6 +53,10 @@ export interface CreateAgentInput {
 export interface UpdateAgentInput {
     adapter?: string;
     defaultModel?: string;
+    openaiCompatible?: boolean;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
     rating?: number;
     reasoningRating?: number;
     bestUsage?: string;

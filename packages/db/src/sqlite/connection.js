@@ -4,8 +4,9 @@ import { PathHelper } from "@mcoda/shared";
 import { Pragmas } from "./pragmas.js";
 import path from "node:path";
 export class Connection {
-    constructor(database) {
+    constructor(database, dbPath) {
         this.database = database;
+        this.dbPath = dbPath;
     }
     get db() {
         return this.database;
@@ -17,7 +18,7 @@ export class Connection {
             driver: sqlite3.Database,
         });
         await Pragmas.apply(database);
-        return new Connection(database);
+        return new Connection(database, dbPath);
     }
     static async openGlobal() {
         return this.open(PathHelper.getGlobalDbPath());

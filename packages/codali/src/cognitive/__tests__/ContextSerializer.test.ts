@@ -16,6 +16,8 @@ const baseBundle: ContextBundle = {
   profile: [],
   index: { last_updated_epoch_ms: 0, num_docs: 0 },
   warnings: ["docdex_low_confidence"],
+  allow_write_paths: ["src/auth.ts"],
+  read_only_paths: ["docs/sds"],
   files: [
     {
       path: "src/auth.ts",
@@ -42,7 +44,21 @@ test("ContextSerializer outputs bundle_text with headers", { concurrency: false 
   const serialized = serializeContext(baseBundle, { mode: "bundle_text" });
   assert.ok(serialized.content.includes("[FOCUS FILE]"));
   assert.ok(serialized.content.includes("[DEPENDENCY]"));
+  assert.ok(serialized.content.includes("WRITE POLICY:"));
   assert.ok(serialized.content.includes("Fix login"));
+});
+
+test("ContextSerializer shows allow-all when only read-only paths provided", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      allow_write_paths: [],
+      read_only_paths: ["docs/sds", "docs/rfp"],
+    },
+    { mode: "bundle_text" },
+  );
+  assert.ok(serialized.content.includes("Allowed write paths: all (except read-only)"));
+  assert.ok(serialized.content.includes("Read-only paths: docs/sds, docs/rfp"));
 });
 
 test("ContextSerializer outputs json when requested", { concurrency: false }, () => {

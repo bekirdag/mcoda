@@ -11,6 +11,17 @@ export interface PatchApplierOptions {
   validateFile?: (filePath: string) => Promise<void> | void;
 }
 
+export interface PatchRollbackEntry {
+  file: string;
+  resolved: string;
+  existed: boolean;
+  content?: string;
+}
+
+export interface PatchRollbackPlan {
+  entries: PatchRollbackEntry[];
+}
+
 const resolvePath = (workspaceRoot: string, targetPath: string): string => {
   const resolved = path.resolve(workspaceRoot, targetPath);
   const relative = path.relative(workspaceRoot, resolved);
@@ -56,6 +67,36 @@ const replaceOnce = (content: string, search: string, replace: string): string =
 
 export class PatchApplier {
   constructor(private options: PatchApplierOptions) {}
+
+  async createRollback(patches: PatchAction[]): Promise<PatchRollbackPlan> {
+    const entries: PatchRollbackEntry[] = [];
+    for (const patch of patches) {
+      const resolved = resolvePath(this.options.workspaceRoot, patch.file);
+      try {
+        const content = await fs.readFile(resolved, "utf8");
+        entries.push({ file: patch.file, resolved, existed: true, content });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("no such file") || message.includes("ENOENT")) {
+          entries.push({ file: patch.file, resolved, existed: false });
+        } else {
+          throw error;
+        }
+      }
+    }
+    return { entries };
+  }
+
+  async rollback(plan: PatchRollbackPlan): Promise<void> {
+    for (const entry of plan.entries) {
+      if (entry.existed) {
+        await fs.mkdir(path.dirname(entry.resolved), { recursive: true });
+        await fs.writeFile(entry.resolved, entry.content ?? "", "utf8");
+      } else {
+        await fs.rm(entry.resolved, { force: true });
+      }
+    }
+  }
 
   async apply(patches: PatchAction[]): Promise<PatchApplyResult> {
     const touched: string[] = [];

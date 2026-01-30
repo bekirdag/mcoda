@@ -357,12 +357,17 @@ export class AgentService {
     if (ioEnabled) {
       renderIoHeader(agent, enriched, "invoke");
     }
-    const result = await adapter.invoke(enriched);
-    if (ioEnabled) {
-      renderIoChunk(result);
-      renderIoEnd();
+    try {
+      const result = await adapter.invoke(enriched);
+      if (ioEnabled) {
+        renderIoChunk(result);
+        renderIoEnd();
+      }
+      return result;
+    } catch (error) {
+      await this.recordInvocationFailure(agent, error);
+      throw error;
     }
-    return result;
   }
 
   async invokeStream(agentId: string, request: InvocationRequest): Promise<AsyncGenerator<InvocationResult>> {
@@ -374,17 +379,29 @@ export class AgentService {
     const withDocdex = await this.applyDocdexGuidance(request);
     const enriched = await this.applyGatewayHandoff(withDocdex);
     const ioEnabled = isIoEnabled();
-    const generator = await adapter.invokeStream(enriched);
+    let generator: AsyncGenerator<InvocationResult, void, unknown>;
+    try {
+      generator = await adapter.invokeStream(enriched);
+    } catch (error) {
+      await this.recordInvocationFailure(agent, error);
+      throw error;
+    }
+    const recordFailure = (error: unknown) => this.recordInvocationFailure(agent, error);
     async function* wrap(): AsyncGenerator<InvocationResult, void, unknown> {
       const streamIo = ioEnabled ? createStreamIoRenderer() : undefined;
       if (ioEnabled) {
         renderIoHeader(agent, enriched, "stream");
       }
-      for await (const chunk of generator) {
-        if (ioEnabled) {
-          streamIo?.push(chunk);
+      try {
+        for await (const chunk of generator) {
+          if (ioEnabled) {
+            streamIo?.push(chunk);
+          }
+          yield chunk;
         }
-        yield chunk;
+      } catch (error) {
+        await recordFailure(error);
+        throw error;
       }
       if (ioEnabled) {
         streamIo?.flush();
@@ -410,6 +427,30 @@ export class AgentService {
     const suffix = `\n\n${HANDOFF_HEADER}\n${handoff}`;
     const metadata = { ...(request.metadata ?? {}), gatewayHandoffApplied: true };
     return { ...request, input: `${currentInput}${suffix}`, metadata };
+  }
+
+  private async recordInvocationFailure(agent: Agent, error: unknown): Promise<void> {
+    const adapter = (agent.adapter ?? "").toLowerCase();
+    if (adapter !== "ollama-remote") return;
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    if (!/MODEL_NOT_FOUND/i.test(message)) return;
+    const baseUrl = (agent.config as any)?.baseUrl;
+    const health: AgentHealth = {
+      agentId: agent.id,
+      status: "unreachable",
+      lastCheckedAt: new Date().toISOString(),
+      details: {
+        reason: "model_missing",
+        model: agent.defaultModel ?? null,
+        baseUrl,
+        error: message,
+      },
+    };
+    try {
+      await this.repo.setAgentHealth(health);
+    } catch {
+      // ignore health update failures
+    }
   }
 
   private async applyDocdexGuidance(request: InvocationRequest): Promise<InvocationRequest> {

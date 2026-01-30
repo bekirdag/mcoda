@@ -1,6 +1,6 @@
 import { AgentHealth } from "@mcoda/shared";
 import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
-import { cliHealthy, runCodaliExec } from "./CodaliCliRunner.js";
+import { cliHealthy, runCodaliExec, runCodaliStream } from "./CodaliCliRunner.js";
 
 const resolveString = (value: unknown): string | undefined => (typeof value === "string" && value.trim() ? value : undefined);
 
@@ -40,6 +40,7 @@ const resolveCodaliEnv = (metadata: Record<string, unknown>): Record<string, str
 };
 
 const PROVIDERS_REQUIRING_API_KEY = new Set(["openai-compatible"]);
+const SESSION_AUTH_ADAPTERS = new Set(["codex-cli", "openai-cli", "gemini-cli"]);
 const UNSUPPORTED_CODALI_ADAPTERS = new Set(["gemini-cli", "zhipu-api"]);
 
 const resolveSourceAdapter = (request: InvocationRequest, config: AdapterConfig): string | undefined => {
@@ -78,10 +79,12 @@ export const resolveCodaliProviderFromAdapter = (params: {
   const sourceAdapter = params.sourceAdapter;
   const explicitProvider = params.explicitProvider;
   if (explicitProvider) {
+    const providerRequires = PROVIDERS_REQUIRING_API_KEY.has(explicitProvider);
+    const requiresApiKey = providerRequires && !SESSION_AUTH_ADAPTERS.has(sourceAdapter ?? "");
     return {
       provider: explicitProvider,
       sourceAdapter,
-      requiresApiKey: PROVIDERS_REQUIRING_API_KEY.has(explicitProvider),
+      requiresApiKey,
     };
   }
 
@@ -91,15 +94,20 @@ export const resolveCodaliProviderFromAdapter = (params: {
         `CODALI_UNSUPPORTED_ADAPTER: ${sourceAdapter} is not supported; configure a codali provider explicitly or use an openai/ollama adapter.`,
       );
     }
-    if (["openai-api", "openai-cli", "codex-cli"].includes(sourceAdapter)) {
+    if (sourceAdapter === "openai-api") {
       return { provider: "openai-compatible", sourceAdapter, requiresApiKey: true };
+    }
+    if (["openai-cli", "codex-cli"].includes(sourceAdapter)) {
+      return { provider: "codex-cli", sourceAdapter, requiresApiKey: false };
     }
     if (["ollama-remote", "ollama-cli", "local-model"].includes(sourceAdapter)) {
       return { provider: "ollama-remote", sourceAdapter, requiresApiKey: false };
     }
   }
 
-  return { provider: "openai-compatible", sourceAdapter, requiresApiKey: true };
+  const requiresApiKey =
+    PROVIDERS_REQUIRING_API_KEY.has("openai-compatible") && !SESSION_AUTH_ADAPTERS.has(sourceAdapter ?? "");
+  return { provider: "openai-compatible", sourceAdapter, requiresApiKey };
 };
 
 const resolveProviderInfo = (
@@ -112,8 +120,13 @@ const resolveProviderInfo = (
   return resolveCodaliProviderFromAdapter({ sourceAdapter, explicitProvider });
 };
 
-const ensureApiKey = (provider: string, sourceAdapter: string | undefined, config: AdapterConfig): void => {
-  if (!PROVIDERS_REQUIRING_API_KEY.has(provider)) return;
+const ensureApiKey = (
+  provider: string,
+  sourceAdapter: string | undefined,
+  requiresApiKey: boolean,
+  config: AdapterConfig,
+): void => {
+  if (!requiresApiKey || !PROVIDERS_REQUIRING_API_KEY.has(provider)) return;
   if (config.apiKey || process.env.CODALI_API_KEY) return;
   const agentLabel = config.agent.slug ?? config.agent.id;
   const sourceLabel = sourceAdapter ? ` (source adapter: ${sourceAdapter})` : "";
@@ -124,7 +137,17 @@ const ensureApiKey = (provider: string, sourceAdapter: string | undefined, confi
 
 const resolveBaseUrl = (config: AdapterConfig): string | undefined => {
   const anyConfig = config as unknown as Record<string, unknown>;
-  return resolveString(anyConfig.baseUrl) ?? resolveString(anyConfig.endpoint) ?? resolveString(anyConfig.apiBaseUrl);
+  const agentConfig = (config.agent as unknown as Record<string, unknown>)?.config as
+    | Record<string, unknown>
+    | undefined;
+  return (
+    resolveString(anyConfig.baseUrl) ??
+    resolveString(anyConfig.endpoint) ??
+    resolveString(anyConfig.apiBaseUrl) ??
+    resolveString(agentConfig?.baseUrl) ??
+    resolveString(agentConfig?.endpoint) ??
+    resolveString(agentConfig?.apiBaseUrl)
+  );
 };
 
 const resolveDocdexBaseUrl = (config: AdapterConfig): string | undefined => {
@@ -176,7 +199,7 @@ export class CodaliAdapter implements AgentAdapter {
   const metadata = (request.metadata ?? {}) as Record<string, unknown>;
   const workspaceRoot = resolveWorkspaceRoot(request);
   const providerInfo = resolveProviderInfo(request, this.config);
-  ensureApiKey(providerInfo.provider, providerInfo.sourceAdapter, this.config);
+  ensureApiKey(providerInfo.provider, providerInfo.sourceAdapter, providerInfo.requiresApiKey, this.config);
   const provider = providerInfo.provider;
   const agentId = resolveAgentId(request, this.config);
   const agentSlug = resolveAgentSlug(request, this.config);
@@ -227,6 +250,7 @@ export class CodaliAdapter implements AgentAdapter {
         authMode: "cli",
         provider,
         sourceAdapter: providerInfo.sourceAdapter,
+        baseUrl,
         logPath: result.meta?.logPath,
         touchedFiles: result.meta?.touchedFiles,
         runId: result.meta?.runId,
@@ -241,5 +265,79 @@ export class CodaliAdapter implements AgentAdapter {
         raw: result.raw,
       },
     };
+  }
+
+  async *invokeStream(request: InvocationRequest): AsyncGenerator<InvocationResult, void, unknown> {
+    const metadata = (request.metadata ?? {}) as Record<string, unknown>;
+    const workspaceRoot = resolveWorkspaceRoot(request);
+    const providerInfo = resolveProviderInfo(request, this.config);
+    ensureApiKey(providerInfo.provider, providerInfo.sourceAdapter, providerInfo.requiresApiKey, this.config);
+    const provider = providerInfo.provider;
+    const agentId = resolveAgentId(request, this.config);
+    const agentSlug = resolveAgentSlug(request, this.config);
+    const baseUrl = resolveBaseUrl(this.config);
+    const docdexBaseUrl =
+      resolveMetadataValue(metadata, ["docdexBaseUrl", "docdex_base_url"]) ?? resolveDocdexBaseUrl(this.config);
+    const docdexRepoId =
+      resolveMetadataValue(metadata, ["docdexRepoId", "docdex_repo_id"]) ?? resolveDocdexRepoId(this.config);
+    const docdexRepoRoot =
+      resolveMetadataValue(metadata, ["docdexRepoRoot", "docdex_repo_root"]) ?? resolveDocdexRepoRoot(this.config);
+    const codaliEnv = resolveCodaliEnv(metadata);
+    const runId = resolveRunId(metadata);
+    const taskId = resolveMetadataValue(metadata, ["taskId", "task_id"]);
+    const taskKey = resolveMetadataValue(metadata, ["taskKey", "task_key"]);
+    const project = resolveMetadataValue(metadata, ["projectKey", "project_key", "project"]);
+    const command = resolveMetadataValue(metadata, ["command"]);
+    const commandRunId = resolveMetadataValue(metadata, ["commandRunId", "command_run_id"]);
+    const jobId = resolveMetadataValue(metadata, ["jobId", "job_id"]);
+
+    const baseMetadata = {
+      mode: "cli",
+      capabilities: this.config.capabilities,
+      adapterType: this.config.adapter ?? "codali-cli",
+      authMode: "cli",
+      provider,
+      sourceAdapter: providerInfo.sourceAdapter,
+      baseUrl,
+      command,
+      commandRunId,
+      jobId,
+      agentId,
+      agentSlug,
+      project,
+      taskId,
+      taskKey,
+    };
+
+    const stream = runCodaliStream(request.input, {
+      workspaceRoot,
+      project,
+      command,
+      commandRunId,
+      jobId,
+      runId,
+      taskId,
+      taskKey,
+      agentId,
+      agentSlug,
+      provider,
+      model: this.config.model ?? "default",
+      apiKey: this.config.apiKey,
+      baseUrl,
+      docdexBaseUrl,
+      docdexRepoId,
+      docdexRepoRoot,
+      env: codaliEnv,
+    });
+
+    for await (const chunk of stream) {
+      const mergedMetadata = chunk.meta ? { ...baseMetadata, ...chunk.meta } : undefined;
+      yield {
+        output: chunk.output,
+        adapter: this.config.adapter ?? "codali-cli",
+        model: this.config.model,
+        metadata: mergedMetadata,
+      };
+    }
   }
 }

@@ -1,5 +1,6 @@
 import type { LocalContextConfig } from "../config/Config.js";
 import type { ProviderMessage } from "../providers/ProviderTypes.js";
+import type { AgentRequest } from "../agents/AgentProtocol.js";
 
 export type { LocalContextConfig };
 
@@ -118,6 +119,8 @@ export interface ContextBundle {
   files?: ContextFileEntry[];
   serialized?: SerializedContext;
   selection?: ContextSelection;
+  allow_write_paths?: string[];
+  read_only_paths?: string[];
   redaction?: { count: number; ignored: string[] };
   memory: ContextMemoryEntry[];
   preferences_detected: ContextPreferenceDetected[];
@@ -143,6 +146,16 @@ export interface CriticResult {
   status: "PASS" | "FAIL";
   reasons: string[];
   retryable: boolean;
+  report?: CriticReport;
+  request?: AgentRequest;
+}
+
+export interface CriticReport {
+  status: "PASS" | "FAIL";
+  reasons: string[];
+  suggested_fixes: string[];
+  touched_files?: string[];
+  plan_targets?: string[];
 }
 
 export interface PhaseUsage {

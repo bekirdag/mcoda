@@ -49,3 +49,32 @@ test("parsePatchOutput rejects invalid payload", { concurrency: false }, () => {
   assert.throws(() => parsePatchOutput("{}", "file_writes"), /files/);
   assert.throws(() => parsePatchOutput("not-json", "search_replace"), /valid JSON/);
 });
+
+test("parsePatchOutput extracts JSON from fenced output", { concurrency: false }, () => {
+  const payload = [
+    "Here is the patch:",
+    "```json",
+    JSON.stringify({
+      patches: [
+        { action: "replace", file: "src/a.ts", search_block: "a", replace_block: "b" },
+      ],
+    }),
+    "```",
+  ].join("\n");
+  const parsed = parsePatchOutput(payload, "search_replace");
+  assert.equal(parsed.patches.length, 1);
+  assert.equal(parsed.patches[0].action, "replace");
+});
+
+test("parsePatchOutput extracts JSON from mixed output", { concurrency: false }, () => {
+  const payload = [
+    "NOTE: apply changes below",
+    JSON.stringify({
+      files: [{ path: "src/a.ts", content: "export const a = 1;" }],
+    }),
+    "Thanks!",
+  ].join("\n");
+  const parsed = parsePatchOutput(payload, "file_writes");
+  assert.equal(parsed.patches.length, 1);
+  assert.equal(parsed.patches[0].action, "create");
+});

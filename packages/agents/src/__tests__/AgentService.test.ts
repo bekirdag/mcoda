@@ -403,6 +403,35 @@ test("ollama-remote rejects when baseUrl is missing", async () => {
   await assert.rejects(() => service.invoke(agent.id, { input: "ping" }), /baseUrl/i);
 });
 
+test("ollama-remote marks health unreachable when model is missing", async () => {
+  const agent = await repo.createAgent({
+    slug: "remote-missing-model",
+    adapter: "ollama-remote",
+    defaultModel: "glm-4.7-flash",
+    capabilities: ["plan"],
+    config: { baseUrl: "http://localhost:11434" },
+  });
+  const previousFetch = global.fetch;
+  global.fetch = async (input: any) => {
+    const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
+    if (url.includes("/api/generate")) {
+      return new Response(`{\"error\":\"model 'glm-4.7-flash' not found\"}`, {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("ok", { status: 200 });
+  };
+  try {
+    await assert.rejects(() => service.invoke(agent.id, { input: "ping" }), /MODEL_NOT_FOUND/i);
+    const health = await repo.getAgentHealth(agent.id);
+    assert.equal(health?.status, "unreachable");
+    assert.equal((health?.details as any)?.reason, "model_missing");
+  } finally {
+    global.fetch = previousFetch as any;
+  }
+});
+
 test("agent io output lines stay atomic when streams overlap", async () => {
   const agent = await repo.createAgent({
     slug: "io-lines",

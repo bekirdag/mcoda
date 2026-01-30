@@ -1,5 +1,6 @@
 import type { ProviderMessage } from "../providers/ProviderTypes.js";
-import type { Plan, CriticResult } from "./Types.js";
+import type { Plan, CriticReport, CriticResult } from "./Types.js";
+import type { AgentRequest } from "../agents/AgentProtocol.js";
 import type { ValidationRunner } from "./ValidationRunner.js";
 import type { ContextManager } from "./ContextManager.js";
 
@@ -24,16 +25,48 @@ export class CriticEvaluator {
     plan: Plan,
     builderOutput: string,
     touchedFiles?: string[],
-    options: { contextManager?: ContextManager; laneId?: string; model?: string } = {},
+    options: {
+      contextManager?: ContextManager;
+      laneId?: string;
+      model?: string;
+      allowedPaths?: string[];
+      readOnlyPaths?: string[];
+      allowProtocolRequest?: boolean;
+    } = {},
   ): Promise<CriticResult> {
     if (options.contextManager) this.contextManager = options.contextManager;
     if (options.laneId) this.laneId = options.laneId;
     if (options.model) this.model = options.model;
-    if (!builderOutput.trim()) {
-      return { status: "FAIL", reasons: ["builder output is empty"], retryable: true };
-    }
-
     const targetFiles = (plan.target_files ?? []).filter((file) => file !== "unknown");
+    const buildReport = (
+      status: "PASS" | "FAIL",
+      reasons: string[],
+      touched?: string[],
+    ): CriticReport => ({
+      status,
+      reasons,
+      suggested_fixes: reasons.map((reason) => `Address: ${reason}`),
+      touched_files: touched,
+      plan_targets: targetFiles.length ? targetFiles : undefined,
+    });
+
+    const buildRequest = (): AgentRequest => ({
+      version: "v1",
+      role: "critic",
+      request_id: `critic-${Date.now()}`,
+      needs: targetFiles.map((file) => ({ type: "file.read", path: file })),
+      context: { summary: "Need target file contents to validate changes." },
+    });
+
+    if (!builderOutput.trim()) {
+      const reasons = ["builder output is empty"];
+      return {
+        status: "FAIL",
+        reasons,
+        retryable: true,
+        report: buildReport("FAIL", reasons, touchedFiles),
+      };
+    }
 
     const inferTouchedFiles = (output: string): string[] | undefined => {
       const trimmed = output.trim();
@@ -68,45 +101,101 @@ export class CriticEvaluator {
       }
     }
 
-    if (effectiveTouched && targetFiles.length > 0) {
-      if (effectiveTouched.length === 0) {
+    const normalizePath = (value: string) => value.replace(/\\/g, "/").replace(/^\.?\//, "");
+    const allowedPaths = (options.allowedPaths ?? []).map(normalizePath).filter(Boolean);
+    const readOnlyPaths = (options.readOnlyPaths ?? []).map(normalizePath).filter(Boolean);
+    if (effectiveTouched && effectiveTouched.length > 0) {
+      const normalizedTouched = effectiveTouched.map(normalizePath);
+      const readOnlyHits = readOnlyPaths.length
+        ? normalizedTouched.filter((file) =>
+            readOnlyPaths.some((entry) => file === entry || file.startsWith(`${entry}/`)),
+          )
+        : [];
+      if (readOnlyHits.length) {
+        const reasons = [`touched read-only paths: ${readOnlyHits.join(", ")}`];
         return {
           status: "FAIL",
-          reasons: ["no files were touched for planned targets"],
+          reasons,
           retryable: true,
+          report: buildReport("FAIL", reasons, effectiveTouched),
+        };
+      }
+      if (allowedPaths.length) {
+        const allowSet = new Set(allowedPaths);
+        const invalid = normalizedTouched.filter((file) => !allowSet.has(file));
+        if (invalid.length) {
+          const reasons = [`touched files outside allowed paths: ${invalid.join(", ")}`];
+          return {
+            status: "FAIL",
+            reasons,
+            retryable: true,
+            report: buildReport("FAIL", reasons, effectiveTouched),
+          };
+        }
+      }
+    }
+
+    if (effectiveTouched && targetFiles.length > 0) {
+      if (effectiveTouched.length === 0) {
+        const reasons = ["no files were touched for planned targets"];
+        const request = options.allowProtocolRequest ? buildRequest() : undefined;
+        return {
+          status: "FAIL",
+          reasons,
+          retryable: true,
+          report: buildReport("FAIL", reasons, effectiveTouched),
+          request,
         };
       }
       const touched = new Set(effectiveTouched);
       const matched = targetFiles.some((target) => touched.has(target));
       if (!matched) {
+        const reasons = [
+          `touched files do not match plan targets (touched: ${effectiveTouched.join(", ")})`,
+        ];
+        const request = options.allowProtocolRequest ? buildRequest() : undefined;
         return {
           status: "FAIL",
-          reasons: [
-            `touched files do not match plan targets (touched: ${effectiveTouched.join(", ")})`,
-          ],
+          reasons,
           retryable: true,
+          report: buildReport("FAIL", reasons, effectiveTouched),
+          request,
         };
       }
     }
 
     const validation = await this.validator.run(plan.verification ?? []);
     if (!validation.ok) {
-      const result = { status: "FAIL", reasons: validation.errors, retryable: true } as CriticResult;
+      const result = {
+        status: "FAIL",
+        reasons: validation.errors,
+        retryable: true,
+        report: buildReport("FAIL", validation.errors, effectiveTouched),
+      } as CriticResult;
       await this.appendCriticResult(result);
       return result;
     }
 
-    const result = { status: "PASS", reasons: [], retryable: false } as CriticResult;
+    const result = {
+      status: "PASS",
+      reasons: [],
+      retryable: false,
+      report: buildReport("PASS", [], effectiveTouched),
+    } as CriticResult;
     await this.appendCriticResult(result);
     return result;
   }
 
   private async appendCriticResult(result: CriticResult): Promise<void> {
     if (!this.contextManager || !this.laneId) return;
-    const reasons = result.reasons.length ? ` Reasons: ${result.reasons.join("; ")}` : "";
+    const payload = result.report ?? {
+      status: result.status,
+      reasons: result.reasons,
+      suggested_fixes: [],
+    };
     const message: ProviderMessage = {
       role: "assistant",
-      content: `Critic result: ${result.status}.${reasons}`.trim(),
+      content: `CRITIC_RESULT v1\n${JSON.stringify(payload, null, 2)}`,
     };
     await this.contextManager.append(this.laneId, message, { role: "critic", model: this.model });
   }

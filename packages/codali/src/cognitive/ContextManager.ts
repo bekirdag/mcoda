@@ -157,6 +157,10 @@ export class ContextManager {
       this.options.config.modelTokenLimits,
       DEFAULT_MODEL_TOKEN_LIMIT,
     );
+    const rawThreshold = this.options.config.summarize.thresholdPct ?? 0.9;
+    const thresholdPct =
+      Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold <= 1 ? rawThreshold : 0.9;
+    const triggerLimit = Math.floor(modelLimit * thresholdPct);
     const beforeMessages = state.messages.length;
     const beforeTokens = estimateMessagesTokens(state.messages, this.charPerToken);
     let messages = state.messages;
@@ -169,7 +173,7 @@ export class ContextManager {
     let iterations = 0;
     let updated = false;
 
-    while (estimate.totalTokens > modelLimit && messages.length > 1 && iterations < 5) {
+    while (estimate.totalTokens > triggerLimit && messages.length > 1 && iterations < 5) {
       const splitIndex = Math.max(1, Math.floor(messages.length / 2));
       const summary = await this.options.summarizer.summarize(messages.slice(0, splitIndex));
       const summaryRecord: ContextMessageRecord = { ...summary, ts: Date.now() };

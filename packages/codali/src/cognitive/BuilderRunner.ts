@@ -1,16 +1,44 @@
-import type { Provider, ProviderMessage, ProviderResponseFormat } from "../providers/ProviderTypes.js";
+import type {
+  AgentEvent,
+  Provider,
+  ProviderMessage,
+  ProviderResponseFormat,
+} from "../providers/ProviderTypes.js";
 import type { ToolContext } from "../tools/ToolTypes.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { RunLogger } from "../runtime/RunLogger.js";
 import { Runner, type RunnerResult } from "../runtime/Runner.js";
 import type { ContextBundle, ContextRequest, Plan } from "./Types.js";
-import { buildBuilderPrompt } from "./Prompts.js";
-import { parsePatchOutput, type PatchFormat } from "./BuilderOutputParser.js";
+import {
+  buildBuilderPrompt,
+  BUILDER_PATCH_GBNF_FILE_WRITES,
+  BUILDER_PATCH_GBNF_SEARCH_REPLACE,
+} from "./Prompts.js";
+import { serializeContext } from "./ContextSerializer.js";
+import type { PatchAction, PatchFormat, PatchPayload } from "./BuilderOutputParser.js";
 import { PatchApplier } from "./PatchApplier.js";
 import type { ContextManager } from "./ContextManager.js";
+import type { PatchInterpreterClient } from "./PatchInterpreter.js";
 
 export interface BuilderRunResult extends RunnerResult {
   contextRequest?: ContextRequest;
+}
+
+export interface PatchApplyFailure {
+  source: string;
+  error: string;
+  patches: PatchAction[];
+  rollback: { attempted: boolean; ok: boolean; error?: string };
+  rawOutput: string;
+}
+
+export class PatchApplyError extends Error {
+  readonly details: PatchApplyFailure;
+
+  constructor(details: PatchApplyFailure) {
+    super(`Patch apply failed (${details.source}): ${details.error}`);
+    this.details = details;
+  }
 }
 
 export interface BuilderRunnerOptions {
@@ -24,13 +52,16 @@ export interface BuilderRunnerOptions {
   temperature?: number;
   responseFormat?: ProviderResponseFormat;
   logger?: RunLogger;
-  mode?: "tool_calls" | "patch_json";
+  mode?: "tool_calls" | "patch_json" | "freeform";
   patchFormat?: PatchFormat;
   patchApplier?: PatchApplier;
+  interpreter?: PatchInterpreterClient;
+  fallbackToInterpreter?: boolean;
   contextManager?: ContextManager;
   laneId?: string;
   model?: string;
   stream?: boolean;
+  onEvent?: (event: AgentEvent) => void;
   onToken?: (token: string) => void;
   streamFlushMs?: number;
 }
@@ -71,56 +102,265 @@ export class BuilderRunner {
     this.options = options;
   }
 
+  private isToolSupportError(message: string): boolean {
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes("does not support tools") ||
+      normalized.includes("tools are not supported") ||
+      normalized.includes("tool is not supported") ||
+      (normalized.includes("tool") && normalized.includes("not supported"))
+    );
+  }
+
   async run(
     plan: Plan,
     contextBundle: ContextBundle,
-    options: { contextManager?: ContextManager; laneId?: string; model?: string } = {},
+    options: { contextManager?: ContextManager; laneId?: string; model?: string; note?: string } = {},
   ): Promise<BuilderRunResult> {
-    const mode = this.options.mode ?? "tool_calls";
+    let mode = this.options.mode ?? "tool_calls";
     const patchFormat = this.options.patchFormat ?? "search_replace";
-    const contextContent = contextBundle.serialized?.content ?? JSON.stringify(contextBundle, null, 2);
-    const systemMessage: ProviderMessage = {
+    const emitPatchStatus = (message?: string) => {
+      this.options.onEvent?.({ type: "status", phase: "patching", message });
+    };
+    const contextContent =
+      contextBundle.serialized?.mode === "bundle_text"
+        ? contextBundle.serialized.content
+        : serializeContext(contextBundle, { mode: "bundle_text" }).content;
+    const buildSystemMessage = (modeOverride: typeof mode): ProviderMessage => ({
       role: "system",
-      content: buildBuilderPrompt(mode, patchFormat),
+      content: buildBuilderPrompt(modeOverride, patchFormat),
+    });
+    const planTargets = Array.isArray(plan.target_files) ? plan.target_files.filter(Boolean) : [];
+    const bundlePaths = (contextBundle.files ?? []).map((entry) => entry.path).filter(Boolean);
+    const normalizePath = (value: string) =>
+      value.replace(/\\/g, "/").replace(/^\.?\//, "");
+    const bundleReadOnly = (contextBundle.read_only_paths ?? []).map(normalizePath).filter(Boolean);
+    const readOnlyPaths = bundleReadOnly;
+    const looksLikePlaceholderPath = (value: string) =>
+      value.startsWith("path/to/") || value.includes("<") || value.includes("...") || value.startsWith("your/");
+    const isReadOnlyPath = (value: string) => {
+      const normalized = normalizePath(value);
+      return readOnlyPaths.some((entry) => normalized === entry || normalized.startsWith(`${entry}/`));
     };
-    const userMessage: ProviderMessage = {
+    const bundleAllow = (contextBundle.allow_write_paths ?? [])
+      .map(normalizePath)
+      .filter(Boolean)
+      .filter((path) => !isReadOnlyPath(path));
+    const fallbackAllow = [...planTargets, ...bundlePaths]
+      .map(normalizePath)
+      .filter(Boolean)
+      .filter((path) => !isReadOnlyPath(path));
+    const allowedPaths = new Set(
+      bundleAllow.length
+        ? bundleAllow
+        : readOnlyPaths.length > 0
+          ? []
+          : fallbackAllow,
+    );
+    const validatePatchTargets = (paths: string[]) => {
+      const invalid = paths.filter((path) => {
+        if (!path.trim()) return true;
+        if (looksLikePlaceholderPath(path)) return true;
+        const normalized = normalizePath(path);
+        if (isReadOnlyPath(normalized)) return true;
+        if (allowedPaths.size === 0) return false;
+        return !allowedPaths.has(normalized);
+      });
+      if (invalid.length) {
+        throw new Error(`Patch references disallowed files: ${invalid.join(", ")}`);
+      }
+    };
+    const logPatchPayload = async (payload: { patches: Array<{ file: string }> }, source: string) => {
+      if (!this.options.logger) return;
+      const path = await this.options.logger.writePhaseArtifact("builder", "patch", payload);
+      await this.options.logger.log("builder_patch", {
+        patches: payload.patches.length,
+        source,
+        path,
+      });
+    };
+    const applyPayload = async (
+      payload: PatchPayload,
+      source: string,
+      rawOutput: string,
+    ): Promise<void> => {
+      const patchApplier = this.options.patchApplier;
+      if (!patchApplier) {
+        throw new Error("PatchApplier is required to apply patches");
+      }
+      validatePatchTargets(payload.patches.map((patch) => patch.file));
+      emitPatchStatus("applying patches");
+      const rollbackPlan = await patchApplier.createRollback(payload.patches);
+      try {
+        const applyResult = await patchApplier.apply(payload.patches);
+        if (this.options.logger) {
+          await this.options.logger.log("patch_applied", {
+            patches: payload.patches.length,
+            touchedFiles: applyResult.touched,
+            source,
+          });
+        }
+      } catch (error) {
+        let rollbackOk = false;
+        let rollbackError: string | undefined;
+        try {
+          await patchApplier.rollback(rollbackPlan);
+          rollbackOk = true;
+        } catch (rollbackErr) {
+          rollbackError =
+            rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+        }
+        if (this.options.logger) {
+          await this.options.logger.log("patch_rollback", {
+            source,
+            ok: rollbackOk,
+            error: rollbackError ?? null,
+          });
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new PatchApplyError({
+          source,
+          error: message,
+          patches: payload.patches,
+          rollback: { attempted: true, ok: rollbackOk, error: rollbackError },
+          rawOutput,
+        });
+      }
+    };
+    const buildUserContent = (note?: string) =>
+      [
+        note ? `RETRY NOTE: ${note}` : null,
+        "PLAN (read-only):",
+        JSON.stringify(plan, null, 2),
+        "",
+        "CONTEXT BUNDLE (read-only; do not output):",
+        contextContent,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    const buildSchemaOnlyContent = (note: string, previousOutput: string) => {
+      const allowList =
+        allowedPaths.size > 0
+          ? Array.from(allowedPaths).join(", ")
+          : readOnlyPaths.length > 0
+            ? "all (except read-only)"
+            : "unspecified";
+      const readOnlyList = readOnlyPaths.length ? readOnlyPaths.join(", ") : "none";
+      return [
+        note,
+        "Return ONLY the JSON payload that matches the schema in the system prompt.",
+        "Do not include any prose, markdown, or extra keys.",
+        "Do NOT include plan or context.",
+        "Never include changes for read-only paths.",
+        `Allowed paths: ${allowList}`,
+        `Read-only paths: ${readOnlyList}`,
+        "",
+        "PREVIOUS_OUTPUT:",
+        previousOutput,
+      ].join("\n");
+    };
+    const parseDisallowed = (message: string): string | undefined => {
+      const match = message.match(/disallowed files:\\s*(.+)$/i);
+      return match ? match[1]?.trim() : undefined;
+    };
+    const isDisallowedError = (message: string): boolean => /disallowed files/i.test(message);
+    const buildDisallowedNote = (message: string) => {
+      const disallowed = parseDisallowed(message) ?? "unknown";
+      return `Your patch included disallowed files: ${disallowed}. Remove any changes to read-only paths and return JSON for allowed paths only.`;
+    };
+    const buildUserMessage = (): ProviderMessage => ({
       role: "user",
-      content: ["PLAN:", JSON.stringify(plan, null, 2), "", contextContent].join("\n"),
-    };
+      content: buildUserContent(options.note),
+    });
     const contextManager = options.contextManager ?? this.options.contextManager;
     const laneId = options.laneId ?? this.options.laneId;
     const model = options.model ?? this.options.model;
-    const history =
-      contextManager && laneId
-        ? await contextManager.prepare(laneId, {
-            systemPrompt: systemMessage.content,
-            bundle: userMessage.content,
-            model,
-          })
-        : [];
-    const messages: ProviderMessage[] = [systemMessage, ...history, userMessage];
+    const buildMessages = async (modeOverride: typeof mode) => {
+      const systemMessage = buildSystemMessage(modeOverride);
+      const userMessage = buildUserMessage();
+      const history =
+        contextManager && laneId
+          ? await contextManager.prepare(laneId, {
+              systemPrompt: systemMessage.content,
+              bundle: userMessage.content,
+              model,
+            })
+          : [];
+      return { systemMessage, userMessage, history, messages: [systemMessage, ...history, userMessage] };
+    };
+    let messageState = await buildMessages(mode);
 
-    const runner = new Runner({
-      provider: this.options.provider,
-      tools: this.options.tools,
-      context: this.options.context,
-      maxSteps: this.options.maxSteps,
-      maxToolCalls: this.options.maxToolCalls,
-      maxTokens: this.options.maxTokens,
-      timeoutMs: this.options.timeoutMs,
-      temperature: this.options.temperature,
-      responseFormat: this.options.responseFormat,
-      toolChoice: mode === "patch_json" ? "none" : "auto",
-      stream: this.options.stream,
-      onToken: this.options.onToken,
-      streamFlushMs: this.options.streamFlushMs,
-      logger: this.options.logger,
-    });
+    const resolveResponseFormat = (modeOverride: typeof mode): ProviderResponseFormat | undefined =>
+      modeOverride === "patch_json" && this.options.provider.name === "ollama-remote"
+        ? {
+            type: "gbnf",
+            grammar:
+              patchFormat === "file_writes"
+                ? BUILDER_PATCH_GBNF_FILE_WRITES
+                : BUILDER_PATCH_GBNF_SEARCH_REPLACE,
+          }
+        : this.options.responseFormat;
 
-    const result = await runner.run(messages);
+    const buildRunner = (
+      modeOverride: typeof mode = mode,
+      responseFormat: ProviderResponseFormat | undefined = resolveResponseFormat(modeOverride),
+    ) =>
+      new Runner({
+        provider: this.options.provider,
+        tools: this.options.tools,
+        context: this.options.context,
+        maxSteps: this.options.maxSteps,
+        maxToolCalls: this.options.maxToolCalls,
+        maxTokens: this.options.maxTokens,
+        timeoutMs: this.options.timeoutMs,
+        temperature: this.options.temperature,
+        responseFormat,
+        toolChoice: modeOverride === "patch_json" || modeOverride === "freeform" ? "none" : "auto",
+        stream: this.options.stream,
+        onEvent: this.options.onEvent,
+        onToken: this.options.onToken,
+        streamFlushMs: this.options.streamFlushMs,
+        logger: this.options.logger,
+      });
+    const mergeUsage = (a?: RunnerResult["usage"], b?: RunnerResult["usage"]) => {
+      if (!a) return b;
+      if (!b) return a;
+      return {
+        inputTokens: (a.inputTokens ?? 0) + (b.inputTokens ?? 0),
+        outputTokens: (a.outputTokens ?? 0) + (b.outputTokens ?? 0),
+        totalTokens: (a.totalTokens ?? 0) + (b.totalTokens ?? 0),
+      };
+    };
+
+    let result: RunnerResult;
+    try {
+      result = await buildRunner(mode).run(messageState.messages);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (mode === "tool_calls" && this.isToolSupportError(message)) {
+        this.options.onEvent?.({
+          type: "status",
+          phase: "executing",
+          message: "builder: tools unsupported, retrying with patch_json",
+        });
+        if (this.options.logger) {
+          await this.options.logger.log("builder_tool_fallback", {
+            from: "tool_calls",
+            to: "patch_json",
+            error: message,
+          });
+        }
+        mode = "patch_json";
+        messageState = await buildMessages(mode);
+        result = await buildRunner(mode).run(messageState.messages);
+      } else {
+        throw error;
+      }
+    }
+    const initialOutput = result.finalMessage.content;
 
     if (contextManager && laneId) {
-      await contextManager.append(laneId, userMessage, {
+      await contextManager.append(laneId, messageState.userMessage, {
         role: "builder",
         model,
       });
@@ -142,18 +382,172 @@ export class BuilderRunner {
       }
       return { ...result, contextRequest };
     }
-    if (mode === "patch_json") {
+    if (mode === "freeform") {
       const patchApplier = this.options.patchApplier;
+      const interpreter = this.options.interpreter;
       if (!patchApplier) {
-        throw new Error("PatchApplier is required for patch_json mode");
+        throw new Error("PatchApplier is required for freeform mode");
       }
-      const payload = parsePatchOutput(result.finalMessage.content, patchFormat);
-      const applyResult = await patchApplier.apply(payload.patches);
+      if (!interpreter) {
+        throw new Error("PatchInterpreter is required for freeform mode");
+      }
       if (this.options.logger) {
-        await this.options.logger.log("patch_applied", {
-          patches: payload.patches.length,
-          touchedFiles: applyResult.touched,
+        await this.options.logger.log("builder_freeform_output", {
+          length: result.finalMessage.content.length,
+          preview: result.finalMessage.content.slice(0, 200),
         });
+      }
+      const payload = await interpreter.interpret(result.finalMessage.content);
+      await logPatchPayload(payload, "interpreter_freeform");
+      await applyPayload(payload, "interpreter_freeform", result.finalMessage.content);
+      return result;
+    }
+
+    if (mode === "patch_json") {
+      const interpreter = this.options.interpreter;
+      if (!interpreter) {
+        throw new Error("PatchInterpreter is required for patch_json mode");
+      }
+      const interpretAndApply = async (
+        content: string,
+        format: PatchFormat,
+        source: string,
+      ) => {
+        if (this.options.logger) {
+          await this.options.logger.log("patch_interpreter_precheck", {
+            length: content.length,
+            format,
+          });
+        }
+        const payload = await interpreter.interpret(content, format);
+        await logPatchPayload(payload, source);
+        await applyPayload(payload, source, content);
+      };
+
+      let processingError: Error | undefined;
+      try {
+        await interpretAndApply(result.finalMessage.content, patchFormat, "interpreter_primary");
+        return result;
+      } catch (error) {
+        if (error instanceof PatchApplyError) {
+          throw error;
+        }
+        processingError = error instanceof Error ? error : new Error(String(error));
+      }
+
+      if (processingError && patchFormat === "file_writes") {
+        const retryNote = isDisallowedError(processingError.message)
+          ? buildDisallowedNote(processingError.message)
+          : 'Your output did not match schema. Respond ONLY with JSON and include a top-level "files" array.';
+        const retrySystem: ProviderMessage = {
+          role: "system",
+          content: buildBuilderPrompt(mode, "file_writes"),
+        };
+        const retryUser: ProviderMessage = {
+          role: "user",
+          content: buildSchemaOnlyContent(
+            retryNote,
+            result.finalMessage.content,
+          ),
+        };
+        if (this.options.logger) {
+          await this.options.logger.log("patch_retry", { format: "file_writes", error: processingError.message });
+        }
+        const retryResult = await buildRunner(
+          mode,
+          {
+            type: "gbnf",
+            grammar: BUILDER_PATCH_GBNF_FILE_WRITES,
+          },
+        ).run([retrySystem, ...messageState.history, retryUser]);
+        result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
+        try {
+          await interpretAndApply(result.finalMessage.content, "file_writes", "interpreter_retry");
+          return result;
+        } catch (retryError) {
+          if (retryError instanceof PatchApplyError) {
+            throw retryError;
+          }
+          const retryMessage =
+            retryError instanceof Error ? retryError.message : String(retryError);
+          if (this.options.logger) {
+            await this.options.logger.log("patch_retry_failed", { format: "file_writes", error: retryMessage });
+          }
+          const fallbackNote = isDisallowedError(retryMessage)
+            ? buildDisallowedNote(retryMessage)
+            : 'Fallback required. Respond ONLY with JSON patch schema using a top-level "patches" array.';
+          const fallbackSystem: ProviderMessage = {
+            role: "system",
+            content: buildBuilderPrompt(mode, "search_replace"),
+          };
+          const fallbackUser: ProviderMessage = {
+            role: "user",
+            content: buildSchemaOnlyContent(
+              fallbackNote,
+              result.finalMessage.content,
+            ),
+          };
+          if (this.options.logger) {
+            await this.options.logger.log("patch_fallback", { format: "search_replace" });
+          }
+          const fallbackResult = await buildRunner(
+            mode,
+            {
+              type: "gbnf",
+              grammar: BUILDER_PATCH_GBNF_SEARCH_REPLACE,
+            },
+          ).run([fallbackSystem, ...messageState.history, fallbackUser]);
+          result = { ...fallbackResult, usage: mergeUsage(result.usage, fallbackResult.usage) };
+          try {
+            await interpretAndApply(result.finalMessage.content, "search_replace", "interpreter_fallback");
+            return result;
+          } catch (fallbackError) {
+            if (fallbackError instanceof PatchApplyError) {
+              throw fallbackError;
+            }
+            const fallbackMessage =
+              fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            if (isDisallowedError(fallbackMessage)) {
+              const guardSystem: ProviderMessage = {
+                role: "system",
+                content: buildBuilderPrompt(mode, "search_replace"),
+              };
+              const guardUser: ProviderMessage = {
+                role: "user",
+                content: buildSchemaOnlyContent(buildDisallowedNote(fallbackMessage), result.finalMessage.content),
+              };
+              const guardResult = await buildRunner(
+                mode,
+                {
+                  type: "gbnf",
+                  grammar: BUILDER_PATCH_GBNF_SEARCH_REPLACE,
+                },
+              ).run([guardSystem, ...messageState.history, guardUser]);
+              result = { ...guardResult, usage: mergeUsage(result.usage, guardResult.usage) };
+              try {
+                await interpretAndApply(result.finalMessage.content, "search_replace", "interpreter_guard");
+                return result;
+              } catch (guardError) {
+                if (guardError instanceof PatchApplyError) {
+                  throw guardError;
+                }
+                const guardMessage =
+                  guardError instanceof Error ? guardError.message : String(guardError);
+                processingError = new Error(
+                  `Patch parsing failed. initial=${processingError.message}; retry=${retryMessage}; fallback=${fallbackMessage}; guard=${guardMessage}`,
+                );
+              }
+            } else {
+              processingError = new Error(
+                `Patch parsing failed. initial=${processingError.message}; retry=${retryMessage}; fallback=${fallbackMessage}`,
+              );
+            }
+          }
+        }
+      }
+
+      if (processingError) {
+        throw processingError;
       }
     }
     return result;

@@ -103,6 +103,9 @@ export class OllamaRemoteAdapter implements AgentAdapter {
     const resp = await fetch(`${url}/api/generate`, init);
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
+      if (resp.status === 404 && /model.*not found/i.test(text)) {
+        throw new Error(`MODEL_NOT_FOUND: model=${model} baseUrl=${url} ${text}`.trim());
+      }
       throw new Error(`Ollama generate failed (${resp.status}): ${text}`);
     }
     const data: any = await resp.json().catch(() => ({}));
@@ -138,6 +141,9 @@ export class OllamaRemoteAdapter implements AgentAdapter {
     const resp = await fetch(`${url}/api/generate`, init);
     if (!resp.ok || !resp.body) {
       const text = !resp.ok ? await resp.text().catch(() => "") : "";
+      if (resp.status === 404 && /model.*not found/i.test(text)) {
+        throw new Error(`MODEL_NOT_FOUND: model=${model} baseUrl=${url} ${text}`.trim());
+      }
       throw new Error(`Ollama generate (stream) failed (${resp.status}): ${text}`);
     }
 

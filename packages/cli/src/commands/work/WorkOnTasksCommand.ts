@@ -1,5 +1,5 @@
 import path from "node:path";
-import { WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
+import { JobService, WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
 import { WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
@@ -335,6 +335,23 @@ export class WorkOnTasksCommand {
     }
     const service = await WorkOnTasksService.create(workspace);
     try {
+      const abortController = new AbortController();
+      let cancelHandled = false;
+      const handleCancel = async (signal: NodeJS.Signals) => {
+        if (cancelHandled) return;
+        cancelHandled = true;
+        abortController.abort(new Error(`Cancelled by ${signal}`));
+        await JobService.cancelActiveJobs(signal);
+      };
+      process.once("SIGINT", () => {
+        void handleCancel("SIGINT");
+      });
+      process.once("SIGTERM", () => {
+        void handleCancel("SIGTERM");
+      });
+      process.once("SIGTSTP", () => {
+        void handleCancel("SIGTSTP");
+      });
       const streamSink = (chunk: string) => {
         const target = parsed.json ? process.stderr : process.stdout;
         target.write(chunk);
@@ -361,6 +378,7 @@ export class WorkOnTasksCommand {
         useCodali: parsed.useCodali,
         agentAdapterOverride: parsed.agentAdapterOverride,
         onAgentChunk,
+        abortSignal: abortController.signal,
       });
 
       const success = result.results.filter((r) => r.status === "succeeded").length;

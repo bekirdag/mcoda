@@ -27,6 +27,10 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
     slug: "test-agent",
     adapter: "openai-api",
     defaultModel: "gpt-4o",
+    openaiCompatible: true,
+    contextWindow: 16000,
+    maxOutputTokens: 4096,
+    supportsTools: true,
     maxComplexity: 6,
     ratingSamples: 3,
     ratingLastScore: 8.4,
@@ -45,6 +49,10 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
   const fetched = await repo.getAgentBySlug("test-agent");
   assert.ok(fetched);
   assert.equal(fetched?.defaultModel, "gpt-4o");
+  assert.equal(fetched?.openaiCompatible, true);
+  assert.equal(fetched?.contextWindow, 16000);
+  assert.equal(fetched?.maxOutputTokens, 4096);
+  assert.equal(fetched?.supportsTools, true);
   assert.equal(fetched?.maxComplexity, 6);
   assert.equal(fetched?.ratingSamples, 3);
   assert.equal(fetched?.ratingLastScore, 8.4);
@@ -62,11 +70,19 @@ test("creates, updates, and deletes an agent with capabilities and prompts", asy
   assert.equal(models.length, 2);
   assert.equal(models[0]?.agentId, created.id);
 
-  await repo.updateAgent(created.id, { defaultModel: "gpt-4.1-mini", maxComplexity: 7, ratingSamples: 4 });
+  await repo.updateAgent(created.id, {
+    defaultModel: "gpt-4.1-mini",
+    maxComplexity: 7,
+    ratingSamples: 4,
+    supportsTools: false,
+    contextWindow: 32000,
+  });
   const updated = await repo.getAgentById(created.id);
   assert.equal(updated?.defaultModel, "gpt-4.1-mini");
   assert.equal(updated?.maxComplexity, 7);
   assert.equal(updated?.ratingSamples, 4);
+  assert.equal(updated?.supportsTools, false);
+  assert.equal(updated?.contextWindow, 32000);
 
   await repo.deleteAgent(created.id);
   const afterDelete = await repo.getAgentById(created.id);

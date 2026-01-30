@@ -33,6 +33,7 @@ import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
+import { normalizeReviewOutput } from "./ReviewNormalizer.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (mcodaDir: string, jobId: string) => path.join(mcodaDir, "jobs", jobId, "review");
@@ -168,56 +169,6 @@ interface ReviewJobState {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
-const extractJsonCandidate = (raw: string): string | undefined => {
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch) {
-    return fenceMatch[1].trim();
-  }
-  const start = trimmed.indexOf("{");
-  if (start === -1) return undefined;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < trimmed.length; i += 1) {
-    const ch = trimmed[i];
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (ch === "\\") {
-        escape = true;
-      } else if (ch === "\"") {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === "\"") {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") depth += 1;
-    if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return trimmed.slice(start, i + 1);
-      }
-    }
-  }
-  return undefined;
-};
-
-const parseJsonOutput = (raw: string): ReviewAgentResult | undefined => {
-  const candidate = extractJsonCandidate(raw);
-  if (!candidate) return undefined;
-  try {
-    const parsed = JSON.parse(candidate) as ReviewAgentResult;
-    return { ...parsed, raw: raw };
-  } catch {
-    return undefined;
-  }
-};
-
 const summarizeComments = (comments: { category?: string; body: string; file?: string; line?: number }[]): string => {
   if (!comments.length) return "No prior comments.";
   return comments
@@ -234,6 +185,17 @@ const truncateSection = (label: string, text: string, limit: number): string => 
   const trimmed = text.slice(0, limit);
   const remaining = text.length - limit;
   return `${trimmed}\n...[truncated ${remaining} chars from ${label}]`;
+};
+
+const isNonBlockingFinding = (finding: ReviewFinding): boolean => {
+  const severity = (finding.severity ?? "").toLowerCase();
+  if (["info", "low"].includes(severity)) return true;
+  return false;
+};
+
+const isNonBlockingOnly = (findings: ReviewFinding[] = []): boolean => {
+  if (!findings.length) return false;
+  return findings.every((finding) => isNonBlockingFinding(finding));
 };
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
@@ -273,6 +235,11 @@ const JSON_RETRY_RULES = [
   "The response must start with '{' and end with '}'.",
   "Match the schema exactly; use empty arrays when no items apply.",
 ].join("\n");
+
+const isRetryableAgentError = (message: string): boolean =>
+  /unexpected eof|econnreset|etimedout|socket hang up|fetch failed|connection closed/i.test(
+    message.toLowerCase(),
+  );
 
 const normalizeSingleLine = (value: string | undefined, fallback: string): string => {
   const trimmed = (value ?? "").replace(/\s+/g, " ").trim();
@@ -1935,7 +1902,6 @@ export class CodeReviewService {
       let decision: ReviewAgentResult["decision"] | undefined;
       let statusAfter: string | undefined;
       let reviewErrorCode: string | undefined;
-      let invalidJson = false;
       const followupCreated: { taskId: string; taskKey: string; epicId: string; userStoryId: string; generic?: boolean }[] = [];
       let commentResolution: { resolved: string[]; reopened: string[]; open: string[] } | undefined;
 
@@ -2112,43 +2078,89 @@ export class CodeReviewService {
 
         agentOutput = "";
         let durationSeconds = 0;
-        const started = Date.now();
         let lastStreamMeta: any;
-        if (agentStream && this.deps.agentService.invokeStream) {
-          const stream = await withAbort(
-            this.deps.agentService.invokeStream(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
-          );
-          while (true) {
-            abortIfSignaled();
-            const { value, done } = await withAbort(stream.next());
-            if (done) break;
-            const chunk = value;
-            agentOutput += chunk.output ?? "";
-            lastStreamMeta = chunk.metadata ?? lastStreamMeta;
+        let agentUsedForOutput: Agent = agent;
+        let outputAttempt = 1;
+        const invokeReviewAgent = async (
+          agentToUse: Agent,
+          useStream: boolean,
+          logSource: "agent" | "agent_retry",
+        ): Promise<{ output: string; durationSeconds: number; metadata?: any }> => {
+          let output = "";
+          let metadata: any;
+          const started = Date.now();
+          if (useStream && this.deps.agentService.invokeStream) {
+            const stream = await withAbort(
+              this.deps.agentService.invokeStream(agentToUse.id, {
+                input: prompt,
+                metadata: { taskKey: task.key, retry: logSource === "agent_retry" },
+              }),
+            );
+            while (true) {
+              abortIfSignaled();
+              const { value, done } = await withAbort(stream.next());
+              if (done) break;
+              const chunk = value;
+              output += chunk.output ?? "";
+              metadata = chunk.metadata ?? metadata;
+              await this.deps.workspaceRepo.insertTaskLog({
+                taskRunId: taskRun.id,
+                sequence: this.sequenceForTask(taskRun.id),
+                timestamp: new Date().toISOString(),
+                source: logSource,
+                message: chunk.output ?? "",
+              });
+            }
+          } else {
+            const response = await withAbort(
+              this.deps.agentService.invoke(agentToUse.id, {
+                input: prompt,
+                metadata: { taskKey: task.key, retry: logSource === "agent_retry" },
+              }),
+            );
+            output = response.output ?? "";
+            metadata = response.metadata;
             await this.deps.workspaceRepo.insertTaskLog({
               taskRunId: taskRun.id,
               sequence: this.sequenceForTask(taskRun.id),
               timestamp: new Date().toISOString(),
-              source: "agent",
-              message: chunk.output ?? "",
+              source: logSource,
+              message: output,
             });
           }
-          durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
-        } else {
-          const response = await withAbort(
-            this.deps.agentService.invoke(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
+          const durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
+          return { output, durationSeconds, metadata };
+        };
+
+        try {
+          const invocation = await invokeReviewAgent(
+            agent,
+            Boolean(agentStream && this.deps.agentService.invokeStream),
+            "agent",
           );
-          agentOutput = response.output ?? "";
-          durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
+          agentOutput = invocation.output;
+          durationSeconds = invocation.durationSeconds;
+          lastStreamMeta = invocation.metadata;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!isRetryableAgentError(message)) {
+            throw error;
+          }
+          outputAttempt = 2;
+          agentUsedForOutput = reviewJsonAgent ?? agent;
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
             timestamp: new Date().toISOString(),
-            source: "agent",
-            message: agentOutput,
+            source: "agent_retry",
+            message: `Transient agent error (${message}); retrying once with ${agentUsedForOutput.slug ?? agentUsedForOutput.id}.`,
           });
-          lastStreamMeta = response.metadata;
+          const invocation = await invokeReviewAgent(agentUsedForOutput, false, "agent_retry");
+          agentOutput = invocation.output;
+          durationSeconds = invocation.durationSeconds;
+          lastStreamMeta = invocation.metadata;
         }
+
         const tokenMetaMain = lastStreamMeta
           ? {
               tokensPrompt: typeof lastStreamMeta.tokensPrompt === "number" ? lastStreamMeta.tokensPrompt : (lastStreamMeta.tokens_prompt as number | undefined),
@@ -2160,17 +2172,15 @@ export class CodeReviewService {
               model: (lastStreamMeta.model ?? lastStreamMeta.model_name ?? null) as string | null,
             }
           : undefined;
-        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain, agent, 1);
+        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain, agentUsedForOutput, outputAttempt);
 
         const primaryOutput = agentOutput;
         let retryOutput: string | undefined;
         let retryAgentUsed: Agent | undefined;
-        let parsed = parseJsonOutput(agentOutput);
-        let validationError = parsed ? validateReviewOutput(parsed, { requireCommentSlugs }) : undefined;
-        if (
-          parsed &&
-          validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists."
-        ) {
+        let normalization = normalizeReviewOutput(agentOutput);
+        let parsed = normalization.result;
+        let validationError = validateReviewOutput(parsed, { requireCommentSlugs });
+        if (validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists.") {
           const warning = `Review output missing comment slugs for ${task.key}; assuming no backlog items resolved.`;
           warnings.push(warning);
           await this.deps.workspaceRepo.insertTaskLog({
@@ -2182,25 +2192,30 @@ export class CodeReviewService {
           });
           validationError = undefined;
         }
-        if (parsed && validationError) {
+
+        const needsRetry = Boolean(validationError) || normalization.usedFallback;
+        if (needsRetry) {
+          const retryReason = validationError
+            ? `Invalid review schema (${validationError}); retrying once with stricter instructions.`
+            : "Unstructured review output; retrying once with stricter instructions.";
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
             timestamp: new Date().toISOString(),
             source: "agent",
-            message: `Invalid review schema (${validationError}); retrying once with stricter instructions.`,
+            message: retryReason,
           });
-          parsed = undefined;
-        }
-        if (!parsed) {
-          await this.deps.workspaceRepo.insertTaskLog({
-            taskRunId: taskRun.id,
-            sequence: this.sequenceForTask(taskRun.id),
-            timestamp: new Date().toISOString(),
-            source: "agent",
-            message: "Invalid JSON from agent; retrying once with stricter instructions.",
-          });
-          const retryPrompt = `${prompt}\n\n${JSON_RETRY_RULES}`;
+          const buildRetryPrompt = (raw: string): string =>
+            [
+              "Your previous response was invalid JSON. Reformat it to match the schema below.",
+              JSON_RETRY_RULES,
+              JSON_CONTRACT,
+              "RESPONSE_TO_CONVERT:",
+              raw,
+            ].join("\n");
+          const retryPrompt = agentOutput.trim()
+            ? buildRetryPrompt(agentOutput)
+            : `${prompt}\n\n${JSON_RETRY_RULES}\n${JSON_CONTRACT}`;
           const retryStarted = Date.now();
           retryAgentUsed = reviewJsonAgent ?? agent;
           if (retryAgentUsed.id !== agent.id) {
@@ -2242,12 +2257,10 @@ export class CodeReviewService {
               }
             : undefined;
           await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed, 2);
-          parsed = parseJsonOutput(retryOutput);
-          validationError = parsed ? validateReviewOutput(parsed, { requireCommentSlugs }) : undefined;
-          if (
-            parsed &&
-            validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists."
-          ) {
+          normalization = normalizeReviewOutput(retryOutput);
+          parsed = normalization.result;
+          validationError = validateReviewOutput(parsed, { requireCommentSlugs });
+          if (validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists.") {
             const warning = `Review output missing comment slugs for ${task.key} after retry; assuming no backlog items resolved.`;
             warnings.push(warning);
             await this.deps.workspaceRepo.insertTaskLog({
@@ -2259,28 +2272,38 @@ export class CodeReviewService {
             });
             validationError = undefined;
           }
-          if (parsed && validationError) {
-            parsed = undefined;
-          }
           agentOutput = retryOutput;
         }
-        if (!parsed) {
-          invalidJson = true;
-          reviewErrorCode = "review_invalid_output";
-          const fallbackSummary = validationError
-            ? `Review output missing required fields (${validationError}); block review and re-run with a stricter JSON-only model.`
-            : "Review agent returned non-JSON output after retry; block review and re-run with a stricter JSON-only model.";
-          warnings.push(
-            validationError
-              ? `Review output missing required fields for ${task.key}; blocking review.`
-              : `Review agent returned non-JSON output for ${task.key}; blocking review.`,
-          );
+
+        if (validationError) {
+          const fallbackSummary = `Review output missing required fields (${validationError}); treated as informational.`;
+          warnings.push(`Review output missing required fields for ${task.key}; proceeding with info_only.`);
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
             timestamp: new Date().toISOString(),
             source: "review_warning",
             message: fallbackSummary,
+          });
+          parsed = {
+            decision: "info_only",
+            summary: fallbackSummary,
+            findings: [],
+            testRecommendations: [],
+            raw: retryOutput ?? agentOutput,
+          };
+          normalization = { parsedFromJson: false, usedFallback: true, issues: ["validation_error"], result: parsed };
+        }
+
+        if (normalization.usedFallback) {
+          const fallbackMessage = `Review output was not valid JSON for ${task.key}; treated as informational.`;
+          warnings.push(fallbackMessage);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message: fallbackMessage,
           });
           try {
             const artifactPath = await this.persistReviewOutput(jobId, task.id, {
@@ -2299,15 +2322,8 @@ export class CodeReviewService {
               `Failed to persist review output for ${task.key}: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
             );
           }
-          parsed = {
-            decision: "block",
-            summary: fallbackSummary,
-            findings: [],
-            testRecommendations: [],
-            raw: agentOutput,
-          };
         }
-        parsed.raw = agentOutput;
+        parsed.raw = parsed.raw ?? agentOutput;
         const originalDecision = parsed.decision;
         decision = parsed.decision;
         findings.push(...(parsed.findings ?? []));
@@ -2323,6 +2339,12 @@ export class CodeReviewService {
         if (diffEmpty && approveDecision && !(summarySupportsNoChanges && historySupportsNoChanges)) {
           finalDecision = "changes_requested";
           emptyDiffOverride = true;
+        }
+        if (finalDecision === "changes_requested" && isNonBlockingOnly(parsed.findings ?? []) && !emptyDiffOverride) {
+          finalDecision = "info_only";
+          warnings.push(
+            `Review for ${task.key} requested changes but only low/info findings were reported; downgrading to info_only.`,
+          );
         }
 
         commentResolution = await this.applyCommentResolutions({
@@ -2461,26 +2483,21 @@ export class CodeReviewService {
 
         let taskStatusUpdate = statusBefore;
         if (!request.dryRun) {
-          if (invalidJson) {
-            await this.stateService.markFailed(task, "review_invalid_output", statusContext);
-            taskStatusUpdate = "failed";
-          } else {
-            const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
-            if (approveDecision) {
-              if (diffEmpty) {
-                await this.stateService.markCompleted(task, { review_no_changes: true }, statusContext);
-                taskStatusUpdate = "completed";
-              } else {
-                await this.stateService.markReadyToQa(task, undefined, statusContext);
-                taskStatusUpdate = "ready_to_qa";
-              }
-            } else if (parsed.decision === "changes_requested") {
-              await this.stateService.markChangesRequested(task, undefined, statusContext);
-              taskStatusUpdate = "changes_requested";
-            } else if (parsed.decision === "block") {
-              await this.stateService.markFailed(task, "review_blocked", statusContext);
-              taskStatusUpdate = "failed";
+          const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
+          if (approveDecision) {
+            if (diffEmpty) {
+              await this.stateService.markCompleted(task, { review_no_changes: true }, statusContext);
+              taskStatusUpdate = "completed";
+            } else {
+              await this.stateService.markReadyToQa(task, undefined, statusContext);
+              taskStatusUpdate = "ready_to_qa";
             }
+          } else if (parsed.decision === "changes_requested") {
+            await this.stateService.markChangesRequested(task, undefined, statusContext);
+            taskStatusUpdate = "changes_requested";
+          } else if (parsed.decision === "block") {
+            await this.stateService.markFailed(task, "review_blocked", statusContext);
+            taskStatusUpdate = "failed";
           }
         } else {
           await this.deps.workspaceRepo.insertTaskLog({
@@ -2596,12 +2613,6 @@ export class CodeReviewService {
         continue;
       }
 
-      if (invalidJson && !reviewErrorCode) {
-        reviewErrorCode = "review_invalid_output";
-      }
-      if (!reviewErrorCode && agentOutput && !parseJsonOutput(agentOutput)) {
-        reviewErrorCode = "review_invalid_output";
-      }
       results.push({
         taskId: task.id,
         taskKey: task.key,

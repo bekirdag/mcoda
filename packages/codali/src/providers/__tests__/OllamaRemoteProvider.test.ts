@@ -28,6 +28,39 @@ const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>):
   }
 };
 
+type FetchResponseHandler = (url: string, body: string) => {
+  status: number;
+  ok: boolean;
+  json?: unknown;
+  text?: string;
+};
+
+const withStubbedFetchResponse = async (
+  handler: FetchResponseHandler,
+  fn: () => Promise<void>,
+): Promise<void> => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const body = typeof init?.body === "string" ? init.body : "";
+    const response = handler(String(input), body);
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: async () => response.json ?? {},
+      text: async () => response.text ?? "",
+      headers: {
+        get: () => "application/json",
+      },
+    } as unknown as Response;
+  }) as typeof fetch;
+
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+};
+
 test("OllamaRemoteProvider returns content", { concurrency: false }, async () => {
   await withStubbedFetch(
     () => ({
@@ -143,6 +176,47 @@ test("OllamaRemoteProvider sends format and temperature options", { concurrency:
       await provider.generate(request);
       assert.deepEqual(received?.options, { temperature: 0.15 });
       assert.equal(received?.format, "json");
+    },
+  );
+});
+
+test("OllamaRemoteProvider retries with fallback model when not found", { concurrency: false }, async () => {
+  let call = 0;
+  await withStubbedFetchResponse(
+    (url, body) => {
+      if (url.endsWith("/api/tags")) {
+        return {
+          status: 200,
+          ok: true,
+          json: { models: [{ name: "glm-4.7-flash:latest" }] },
+        };
+      }
+      call += 1;
+      if (call === 1) {
+        return {
+          status: 404,
+          ok: false,
+          text: "{\"error\":\"model 'glm-4.7-flash' not found\"}",
+        };
+      }
+      const parsed = JSON.parse(body) as { model?: string };
+      assert.equal(parsed.model, "glm-4.7-flash:latest");
+      return {
+        status: 200,
+        ok: true,
+        json: { message: { role: "assistant", content: "ok" }, done: true },
+      };
+    },
+    async () => {
+      const provider = new OllamaRemoteProvider({
+        model: "glm-4.7-flash",
+        baseUrl: "http://127.0.0.1:11434",
+      });
+      const request: ProviderRequest = {
+        messages: [{ role: "user", content: "hi" }],
+      };
+      const result = await provider.generate(request);
+      assert.equal(result.message.content, "ok");
     },
   );
 });

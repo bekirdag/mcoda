@@ -21,10 +21,16 @@ class StubProvider implements Provider {
 
 class StubLogger {
   logPath = "";
+  logDir = "";
+  runId = "run-test";
   events: { type: string; data: Record<string, unknown> }[] = [];
 
   async log(type: string, data: Record<string, unknown>): Promise<void> {
     this.events.push({ type, data });
+  }
+
+  async writePhaseArtifact(_phase: string, _kind: string, _payload: unknown): Promise<string> {
+    return "artifact.json";
   }
 }
 
@@ -40,6 +46,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
     provider: "librarian",
     model: "gemma2:2b",
     targetTokens: 1200,
+    thresholdPct: 0.9,
   },
   ...overrides,
 });
@@ -108,7 +115,13 @@ test("ContextManager summarizes when over budget", { concurrency: false }, async
   const summarizer = new ContextSummarizer(provider, { maxTokens: 64 });
   const manager = new ContextManager({
     config: makeConfig({
-      summarize: { enabled: true, provider: "librarian", model: "gemma2:2b", targetTokens: 64 },
+      summarize: {
+        enabled: true,
+        provider: "librarian",
+        model: "gemma2:2b",
+        targetTokens: 64,
+        thresholdPct: 0.9,
+      },
       modelTokenLimits: { tiny: 10 },
     }),
     store,
@@ -133,7 +146,13 @@ test("ContextManager logs lane updates and summaries", { concurrency: false }, a
   const logger = new StubLogger();
   const manager = new ContextManager({
     config: makeConfig({
-      summarize: { enabled: true, provider: "librarian", model: "gemma2:2b", targetTokens: 64 },
+      summarize: {
+        enabled: true,
+        provider: "librarian",
+        model: "gemma2:2b",
+        targetTokens: 64,
+        thresholdPct: 0.9,
+      },
       modelTokenLimits: { tiny: 10 },
     }),
     store,

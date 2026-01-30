@@ -1806,6 +1806,46 @@ export class QaTasksService {
     missingEnv: string[];
     message?: string;
   }> {
+    const resolveCommandBinary = (command: string): string | undefined => {
+      const tokens = command.trim().split(/\s+/).filter(Boolean);
+      if (!tokens.length) return undefined;
+      let idx = 0;
+      while (idx < tokens.length) {
+        const token = tokens[idx];
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token) && !token.includes("/") && !token.includes("\\")) {
+          idx += 1;
+          continue;
+        }
+        return token.replace(/^['"]|['"]$/g, "");
+      }
+      return undefined;
+    };
+    const commandExists = (command: string): boolean => {
+      if (!command) return false;
+      if (command.includes("/") || command.includes("\\")) {
+        const resolved = path.isAbsolute(command) ? command : path.resolve(workspaceRoot, command);
+        return fsSync.existsSync(resolved);
+      }
+      const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+      const extensions =
+        process.platform === "win32"
+          ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+          : [""];
+      return pathEntries.some((entry) =>
+        extensions.some((ext) => fsSync.existsSync(path.join(entry, `${command}${ext}`))),
+      );
+    };
+    if (testCommand) {
+      const binary = resolveCommandBinary(testCommand);
+      if (binary && !commandExists(binary)) {
+        return {
+          ok: false,
+          missingDeps: [],
+          missingEnv: [],
+          message: `Missing CLI binary for QA command: ${binary}. Ensure it is installed and on PATH.`,
+        };
+      }
+    }
     const pkg = await this.readPackageJson(workspaceRoot);
     const declared = new Set([
       ...Object.keys(pkg?.dependencies ?? {}),

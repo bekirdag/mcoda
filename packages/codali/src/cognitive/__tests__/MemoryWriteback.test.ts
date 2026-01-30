@@ -55,3 +55,23 @@ test("MemoryWriteback uses default agent id when missing", { concurrency: false 
 
   assert.equal(stub.prefCalls[0]?.agentId, "default-agent");
 });
+
+test("MemoryWriteback ignores unsupported docdex preference writes", { concurrency: false }, async () => {
+  class ThrowingDocdexClient extends StubDocdexClient {
+    override async savePreference(): Promise<void> {
+      throw new Error("unknown method: docdex_save_preference");
+    }
+  }
+
+  const stub = new ThrowingDocdexClient();
+  const writeback = new MemoryWriteback(stub as unknown as DocdexClient);
+
+  await assert.doesNotReject(
+    writeback.persist({
+      failures: 0,
+      maxRetries: 1,
+      lesson: "",
+      preferences: [{ category: "constraint", content: "use date-fns" }],
+    }),
+  );
+});

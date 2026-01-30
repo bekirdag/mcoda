@@ -51,18 +51,38 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
   },
   {
     name: "docdex_open",
-    description: "Fetch a snippet by doc id.",
+    description: "Open a file by path or fetch a snippet by doc id.",
     inputSchema: {
       type: "object",
-      required: ["docId"],
       properties: {
         docId: { type: "string" },
+        path: { type: "string" },
         window: { type: "number" },
         textOnly: { type: "boolean" },
+        startLine: { type: "number" },
+        endLine: { type: "number" },
+        head: { type: "number" },
+        clamp: { type: "boolean" },
       },
     },
     handler: async (args) => {
-      const { docId, window, textOnly } = args as { docId: string; window?: number; textOnly?: boolean };
+      const { docId, path, window, textOnly, startLine, endLine, head, clamp } = args as {
+        docId?: string;
+        path?: string;
+        window?: number;
+        textOnly?: boolean;
+        startLine?: number;
+        endLine?: number;
+        head?: number;
+        clamp?: boolean;
+      };
+      if (path) {
+        const result = await client.openFile(path, { startLine, endLine, head, clamp });
+        return toOutput(result);
+      }
+      if (!docId) {
+        throw new Error("docdex_open requires either docId or path");
+      }
       const result = await client.openSnippet(docId, { window, textOnly });
       return toOutput(result);
     },

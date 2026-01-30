@@ -130,6 +130,12 @@ const createGatewayLogger = (options: { agentStream: boolean }) => {
     if (!chunk) return;
     process.stdout.write(chunk);
   };
+  const onGatewaySelection = (details: GatewayLogDetails): void => {
+    if (!details.chosenAgent) return;
+    const modelLabel = details.chosenModel ? ` | model ${details.chosenModel}` : "";
+    const adapterLabel = details.chosenAdapter ? ` | adapter ${details.chosenAdapter}` : "";
+    emitLine(`  [🎯] Selected:      ${details.chosenAgent}${modelLabel}${adapterLabel}`);
+  };
   const onGatewayStart = (details: GatewayLogDetails): void => {
     const sessionId = formatSessionId(details.startedAt);
     emitLine("╭──────────────────────────────────────────────────────────╮");
@@ -171,7 +177,7 @@ const createGatewayLogger = (options: { agentStream: boolean }) => {
     emitBlank();
     emitLine("    ░░░░░ END OF GATEWAY TASK ░░░░░");
   };
-  return { onGatewayStart, onGatewayChunk, onGatewayEnd };
+  return { onGatewayStart, onGatewayChunk, onGatewaySelection, onGatewayEnd };
 };
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -972,6 +978,7 @@ export class GatewayTrioCommand {
         if (cancelHandled) return;
         cancelHandled = true;
         watchDone = true;
+        await JobService.cancelActiveJobs(signal);
         if (activeJobId) {
           try {
             await jobService.updateJobStatus(activeJobId, "cancelled", {
@@ -988,6 +995,9 @@ export class GatewayTrioCommand {
       });
       process.once("SIGTERM", () => {
         void handleCancel("SIGTERM");
+      });
+      process.once("SIGTSTP", () => {
+        void handleCancel("SIGTSTP");
       });
       const watchStart = new Promise<{ jobId: string; commandRunId: string }>((resolve) => {
         watchResolve = resolve;
@@ -1061,6 +1071,7 @@ export class GatewayTrioCommand {
         escalateOnNoChange: parsed.escalateOnNoChange,
         onGatewayStart: gatewayLogger.onGatewayStart,
         onGatewayChunk: gatewayLogger.onGatewayChunk,
+        onGatewaySelection: gatewayLogger.onGatewaySelection,
         onGatewayEnd: gatewayLogger.onGatewayEnd,
         onJobStart: (jobId, commandRunId) => {
           activeJobId = jobId;

@@ -43,6 +43,89 @@ test("CodaliAdapter uses stub CLI output", { concurrency: false }, async () => {
   }
 });
 
+test("CodaliAdapter streams stub CLI output", { concurrency: false }, async () => {
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+
+    const agent: Agent = {
+      id: "agent-stream",
+      slug: "agent-stream",
+      adapter: "codali-cli",
+      defaultModel: "stub-model",
+      config: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AdapterConfig = {
+      agent,
+      capabilities: ["code_write"],
+      model: "stub-model",
+      provider: "stub",
+      adapter: "codali-cli",
+    };
+
+    const adapter = new CodaliAdapter(config);
+    const stream = await adapter.invokeStream({
+      input: "hello",
+      metadata: { workspaceRoot: process.cwd() },
+    });
+
+    let output = "";
+    for await (const chunk of stream) {
+      output += chunk.output ?? "";
+    }
+
+    assert.equal(output, "codali-stub:hello");
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+  }
+});
+
+test("CodaliAdapter resolves baseUrl from agent config", { concurrency: false }, async () => {
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+
+    const agent: Agent = {
+      id: "agent-baseurl",
+      slug: "agent-baseurl",
+      adapter: "ollama-remote",
+      defaultModel: "glm-4.7-flash",
+      config: { baseUrl: "http://example.com:11434" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AdapterConfig = {
+      agent,
+      capabilities: ["code_write"],
+      model: "glm-4.7-flash",
+      adapter: "codali-cli",
+    };
+
+    const adapter = new CodaliAdapter(config);
+    const result = await adapter.invoke({
+      input: "hello",
+      metadata: { workspaceRoot: process.cwd() },
+    });
+
+    const meta = result.metadata as Record<string, unknown>;
+    assert.equal(meta.baseUrl, "http://example.com:11434");
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+  }
+});
+
 test("CodaliAdapter consumes command metadata from invocation", { concurrency: false }, async () => {
   const originalStub = process.env.MCODA_CLI_STUB;
   try {
@@ -98,7 +181,7 @@ test("CodaliAdapter consumes command metadata from invocation", { concurrency: f
   }
 });
 
-test("CodaliAdapter maps openai adapters and requires api key", { concurrency: false }, async () => {
+test("CodaliAdapter maps openai-api adapters and requires api key", { concurrency: false }, async () => {
   const originalStub = process.env.MCODA_CLI_STUB;
   const originalKey = process.env.CODALI_API_KEY;
   try {
@@ -127,6 +210,49 @@ test("CodaliAdapter maps openai adapters and requires api key", { concurrency: f
       adapter.invoke({ input: "hello", metadata: { workspaceRoot: process.cwd() } }),
       /AUTH_REQUIRED: API key missing for codali provider openai-compatible/,
     );
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    if (originalKey === undefined) {
+      delete process.env.CODALI_API_KEY;
+    } else {
+      process.env.CODALI_API_KEY = originalKey;
+    }
+  }
+});
+
+test("CodaliAdapter allows codex-cli adapters without api key", { concurrency: false }, async () => {
+  const originalStub = process.env.MCODA_CLI_STUB;
+  const originalKey = process.env.CODALI_API_KEY;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    delete process.env.CODALI_API_KEY;
+
+    const agent: Agent = {
+      id: "agent-2b",
+      slug: "agent-2b",
+      adapter: "codex-cli",
+      defaultModel: "gpt-4o-mini",
+      config: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AdapterConfig = {
+      agent,
+      capabilities: ["code_write"],
+      model: "gpt-4o-mini",
+      adapter: "codali-cli",
+    };
+
+    const adapter = new CodaliAdapter(config);
+    const result = await adapter.invoke({ input: "hello", metadata: { workspaceRoot: process.cwd() } });
+    assert.ok(result.output.includes("codali-stub:hello"));
+    const meta = result.metadata as Record<string, unknown>;
+    assert.equal(meta.provider, "codex-cli");
   } finally {
     if (originalStub === undefined) {
       delete process.env.MCODA_CLI_STUB;

@@ -110,6 +110,38 @@ const normalizeBaseUrl = (baseUrl?: string): string => {
   return root.endsWith("/") ? root : `${root}/`;
 };
 
+const parseModelNotFound = (errorBody: string): string | undefined => {
+  const match = errorBody.match(/model ['"]?([^'"]+)['"]? not found/i);
+  return match?.[1];
+};
+
+const fetchModelTags = async (baseUrl: string): Promise<string[]> => {
+  const url = new URL("api/tags", baseUrl).toString();
+  const resp = await fetch(url, { method: "GET" });
+  if (!resp.ok) {
+    return [];
+  }
+  try {
+    const data = (await resp.json()) as { models?: { name?: string }[] };
+    return (data.models ?? []).map((entry) => entry.name).filter((name): name is string => Boolean(name));
+  } catch {
+    return [];
+  }
+};
+
+const pickFallbackModel = (requested: string, available: string[]): string | undefined => {
+  if (!available.length) return undefined;
+  const normalized = requested.toLowerCase();
+  const exact = available.find((name) => name.toLowerCase() === normalized);
+  if (exact) return undefined;
+  const base = requested.split(":")[0]?.toLowerCase();
+  if (!base) return undefined;
+  const candidates = available.filter((name) => name.toLowerCase() === base || name.toLowerCase().startsWith(`${base}:`));
+  if (!candidates.length) return undefined;
+  const latest = candidates.find((name) => name.toLowerCase() === `${base}:latest`);
+  return latest ?? candidates[0];
+};
+
 const applyResponseFormat = (
   body: Record<string, unknown>,
   format: ProviderResponseFormat | undefined,
@@ -136,41 +168,71 @@ export class OllamaRemoteProvider implements Provider {
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     const baseUrl = normalizeBaseUrl(this.config.baseUrl);
     const url = new URL("api/chat", baseUrl).toString();
-
-    const body: Record<string, unknown> = {
-      model: this.config.model,
-      messages: request.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-        name: message.name,
-      })),
-      tools: request.tools?.map((tool) => ({
-        type: "function",
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema ?? {},
-        },
-      })),
-      stream: request.stream ?? false,
+    let resolvedModel = this.config.model;
+    const emitToken = (token: string) => {
+      if (request.onEvent) {
+        request.onEvent({ type: "token", content: token });
+        return;
+      }
+      request.onToken?.(token);
     };
 
-    if (request.temperature !== undefined) {
-      body.options = { temperature: request.temperature };
-    }
-    applyResponseFormat(body, request.responseFormat);
+    const buildBody = (model: string): Record<string, unknown> => {
+      const body: Record<string, unknown> = {
+        model,
+        messages: request.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+          name: message.name,
+        })),
+        tools: request.tools?.map((tool) => ({
+          type: "function",
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema ?? {},
+          },
+        })),
+        stream: request.stream ?? false,
+      };
+      if (request.temperature !== undefined) {
+        body.options = { temperature: request.temperature };
+      }
+      applyResponseFormat(body, request.responseFormat);
+      return body;
+    };
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+    const execute = async (model: string): Promise<{ response: Response; errorBody?: string }> => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(buildBody(model)),
+      });
+      if (!response.ok) {
+        const errorBody = await response.text();
+        return { response, errorBody };
+      }
+      return { response };
+    };
 
+    let { response, errorBody } = await execute(resolvedModel);
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Ollama error ${response.status}: ${errorBody}`);
+      const missingModel = errorBody ? parseModelNotFound(errorBody) : undefined;
+      if (response.status === 404 && missingModel) {
+        const available = await fetchModelTags(baseUrl);
+        const fallback = pickFallbackModel(resolvedModel, available);
+        if (fallback) {
+          resolvedModel = fallback;
+          const retry = await execute(resolvedModel);
+          response = retry.response;
+          errorBody = retry.errorBody;
+        }
+      }
+      if (!response.ok) {
+        throw new Error(`Ollama error ${response.status}: ${errorBody ?? ""}`.trim());
+      }
     }
 
     if (request.stream) {
@@ -199,7 +261,7 @@ export class OllamaRemoteProvider implements Provider {
             const message = chunk.message ?? {};
             if (message.content) {
               content += message.content;
-              request.onToken?.(message.content);
+              emitToken(message.content);
             }
             if (message.tool_calls && message.tool_calls.length > 0) {
               toolCalls = message.tool_calls.map((call, index) => ({
@@ -220,7 +282,7 @@ export class OllamaRemoteProvider implements Provider {
           const message = chunk.message ?? {};
           if (message.content) {
             content += message.content;
-            request.onToken?.(message.content);
+            emitToken(message.content);
           }
           if (message.tool_calls && message.tool_calls.length > 0) {
             toolCalls = message.tool_calls.map((call, index) => ({

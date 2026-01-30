@@ -1,15 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { createWriteStream, existsSync } from "node:fs";
+import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 import { loadConfig } from "../config/ConfigLoader.js";
 import type { ToolConfig } from "../config/Config.js";
 import { createProvider } from "../providers/ProviderRegistry.js";
-import type { Provider, ProviderConfig, ProviderRequest, ProviderResponse } from "../providers/ProviderTypes.js";
+import type {
+  AgentEvent,
+  AgentStatusPhase,
+  Provider,
+  ProviderConfig,
+  ProviderRequest,
+  ProviderResponse,
+  ProviderResponseFormat,
+} from "../providers/ProviderTypes.js";
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
 import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
+import { CodexCliProvider } from "../providers/CodexCliProvider.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
 import { createDiffTool } from "../tools/diff/DiffTool.js";
@@ -30,6 +40,7 @@ import { CriticEvaluator } from "../cognitive/CriticEvaluator.js";
 import { ValidationRunner } from "../cognitive/ValidationRunner.js";
 import { MemoryWriteback } from "../cognitive/MemoryWriteback.js";
 import { PatchApplier } from "../cognitive/PatchApplier.js";
+import { PatchInterpreter } from "../cognitive/PatchInterpreter.js";
 import { SmartPipeline } from "../cognitive/SmartPipeline.js";
 import { buildRoutedProvider, type PipelinePhase } from "../cognitive/ProviderRouting.js";
 import type { ContextBundle, LaneScope } from "../cognitive/Types.js";
@@ -39,6 +50,8 @@ import { ContextSummarizer } from "../cognitive/ContextSummarizer.js";
 import { ContextRedactor } from "../cognitive/ContextRedactor.js";
 import { estimateCostFromChars, estimateCostFromUsage, resolvePricing } from "../cognitive/CostEstimator.js";
 import { getGlobalWorkspaceDir } from "../runtime/StoragePaths.js";
+import { resolveAgentConfig } from "../agents/AgentResolver.js";
+import { selectPhaseAgents, type PhaseAgentSelection } from "../agents/PhaseAgentSelector.js";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -49,9 +62,16 @@ interface ParsedArgs {
   runId?: string;
   taskId?: string;
   taskKey?: string;
+  agent?: string;
   agentId?: string;
   agentSlug?: string;
+  agentLibrarian?: string;
+  agentArchitect?: string;
+  agentBuilder?: string;
+  agentCritic?: string;
+  agentInterpreter?: string;
   smart?: boolean;
+  planHint?: string;
   provider?: string;
   model?: string;
   apiKey?: string;
@@ -76,13 +96,19 @@ interface ParsedArgs {
   contextRedactSecrets?: boolean;
   contextIgnoreFilesFrom?: string[];
   securityRedactPatterns?: string[];
-  builderMode?: "tool_calls" | "patch_json";
+  builderMode?: "tool_calls" | "patch_json" | "freeform";
   builderPatchFormat?: "search_replace" | "file_writes";
-  streamingEnabled?: boolean;
+  interpreterProvider?: string;
+  interpreterModel?: string;
+  interpreterFormat?: string;
+  interpreterGrammar?: string;
+  interpreterMaxRetries?: number;
+  interpreterTimeoutMs?: number;
   streamingFlushMs?: number;
   costMaxPerRun?: number;
   costCharPerToken?: number;
   costPricingOverrides?: string;
+  inlineTask?: string;
 }
 
 export const parseArgs = (argv: string[]): ParsedArgs => {
@@ -108,6 +134,7 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
   };
 
   const parsed: ParsedArgs = {};
+  const positionals: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
@@ -151,6 +178,11 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       i += 1;
       continue;
     }
+    if (arg === "--agent" && next) {
+      parsed.agent = next;
+      i += 1;
+      continue;
+    }
     if (arg === "--agent-id" && next) {
       parsed.agentId = next;
       i += 1;
@@ -158,6 +190,36 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg === "--agent-slug" && next) {
       parsed.agentSlug = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--agent-librarian" && next) {
+      parsed.agentLibrarian = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--agent-architect" && next) {
+      parsed.agentArchitect = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--agent-builder" && next) {
+      parsed.agentBuilder = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--agent-critic" && next) {
+      parsed.agentCritic = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--agent-interpreter" && next) {
+      parsed.agentInterpreter = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--plan-hint" && next) {
+      parsed.planHint = next;
       i += 1;
       continue;
     }
@@ -286,7 +348,9 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       continue;
     }
     if (arg === "--builder-mode" && next) {
-      if (next === "tool_calls" || next === "patch_json") parsed.builderMode = next;
+      if (next === "tool_calls" || next === "patch_json" || next === "freeform") {
+        parsed.builderMode = next;
+      }
       i += 1;
       continue;
     }
@@ -295,8 +359,33 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       i += 1;
       continue;
     }
-    if (arg === "--streaming-enabled" && next) {
-      parsed.streamingEnabled = parseBooleanArg(next);
+    if (arg === "--interpreter-provider" && next) {
+      parsed.interpreterProvider = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--interpreter-model" && next) {
+      parsed.interpreterModel = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--interpreter-format" && next) {
+      parsed.interpreterFormat = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--interpreter-grammar" && next) {
+      parsed.interpreterGrammar = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--interpreter-max-retries" && next) {
+      parsed.interpreterMaxRetries = parseNumberArg(next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--interpreter-timeout-ms" && next) {
+      parsed.interpreterTimeoutMs = parseNumberArg(next);
       i += 1;
       continue;
     }
@@ -320,8 +409,54 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       i += 1;
       continue;
     }
+    if (!arg.startsWith("-")) {
+      positionals.push(arg);
+    }
+  }
+  if (positionals.length) {
+    parsed.inlineTask = positionals.join(" ");
   }
   return parsed;
+};
+
+const ROOT_MARKERS = [
+  ".git",
+  "package.json",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "go.mod",
+  "Cargo.toml",
+  "pyproject.toml",
+  "requirements.txt",
+  "Gemfile",
+  "composer.json",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "codali.config.json",
+  ".codalirc",
+];
+
+export const resolveWorkspaceRoot = (
+  cwd: string,
+  explicitRoot?: string,
+): string => {
+  if (explicitRoot) {
+    return path.resolve(cwd, explicitRoot);
+  }
+  let current = path.resolve(cwd);
+  let previous = "";
+  while (current !== previous) {
+    for (const marker of ROOT_MARKERS) {
+      if (existsSync(path.join(current, marker))) {
+        return current;
+      }
+    }
+    previous = current;
+    current = path.dirname(current);
+  }
+  return path.resolve(cwd);
 };
 
 const formatCost = (cost?: number): string => {
@@ -356,31 +491,85 @@ const confirmOverage = async (message: string): Promise<boolean> => {
   }
 };
 
-const createStreamState = (enabled: boolean, flushEveryMs: number) => {
+const createStreamState = (flushEveryMs: number, outputStream?: NodeJS.WritableStream) => {
   let buffer = "";
   let lastFlush = Date.now();
   let didStream = false;
+  const forceColor = process.env.FORCE_COLOR;
+  const supportsColor =
+    (forceColor && forceColor !== "0") || (!!process.stderr.isTTY && !process.env.NO_COLOR);
+  const colorize = (code: string, text: string) =>
+    supportsColor ? `\u001b[${code}m${text}\u001b[0m` : text;
+  const indent = "  ";
+  const statusColor = (phase: AgentStatusPhase) => {
+    if (phase === "executing") return "35";
+    if (phase === "patching") return "33";
+    if (phase === "done") return "32";
+    return "36";
+  };
+  const tag = (phase: AgentStatusPhase) => colorize(statusColor(phase), `[${phase}]`);
+  const toolTag = (name: string) => colorize("34", `[tool:${name}]`);
+  const toolLead = () => colorize("34", "[tool]");
+  const okTag = () => colorize("32", "ok");
+  const errTag = () => colorize("31", "error");
+  const errorLine = (message: string) => colorize("31", message);
   const flush = () => {
     if (buffer.length > 0) {
       process.stdout.write(buffer);
+      outputStream?.write(buffer);
       buffer = "";
     }
     lastFlush = Date.now();
   };
-  const onToken = enabled
-    ? (token: string) => {
-        didStream = true;
-        buffer += token;
-        const now = Date.now();
-        if (now - lastFlush >= flushEveryMs) {
-          flush();
-        }
+  const writeStatus = (line: string) => {
+    flush();
+    process.stderr.write(`${line}\n`);
+    outputStream?.write(`${line.replace(/\u001b\[[0-9;]*m/g, "")}\n`);
+  };
+  const onEvent = (event: AgentEvent) => {
+    if (event.type === "token") {
+      didStream = true;
+      buffer += event.content;
+      const now = Date.now();
+      if (now - lastFlush >= flushEveryMs) {
+        flush();
       }
-    : undefined;
+      return;
+    }
+    if (event.type === "status") {
+      const suffix = event.message ? ` ${event.message}` : "";
+      writeStatus(`${indent}${tag(event.phase)}${suffix}`);
+      return;
+    }
+    if (event.type === "tool_call") {
+      writeStatus(`${indent}${toolLead()} ${event.name}`);
+      return;
+    }
+    if (event.type === "tool_result") {
+      const outcome = event.ok === false ? errTag() : okTag();
+      writeStatus(`${indent}${toolTag(event.name)} ${outcome}`);
+      return;
+    }
+    if (event.type === "error") {
+      writeStatus(`${indent}${colorize("31", "[error]")} ${errorLine(event.message)}`);
+    }
+  };
+  const onToken = (token: string) => {
+    didStream = true;
+    buffer += token;
+    const now = Date.now();
+    if (now - lastFlush >= flushEveryMs) {
+      flush();
+    }
+  };
   return {
+    onEvent,
     onToken,
     flush,
     didStream: () => didStream,
+    writeOutput: (text: string) => {
+      outputStream?.write(text);
+    },
   };
 };
 
@@ -413,7 +602,64 @@ const createPatchValidator = (
 };
 
 const isPhaseProvider = (value: string): value is PipelinePhase =>
-  value === "librarian" || value === "architect" || value === "builder" || value === "critic";
+  value === "librarian" ||
+  value === "architect" ||
+  value === "builder" ||
+  value === "critic" ||
+  value === "interpreter";
+
+const resolveInterpreterRoute = (
+  config: {
+    interpreter: { provider: string; model: string; timeoutMs: number };
+    model: string;
+    apiKey?: string;
+    baseUrl?: string;
+  },
+  phaseRoutes: Record<PipelinePhase, { provider: string; config: ProviderConfig; temperature?: number }>,
+): { provider: string; config: ProviderConfig; temperature?: number } => {
+  const requestedProvider = config.interpreter.provider?.trim() || "auto";
+  const requestedModel = config.interpreter.model?.trim() || "auto";
+  const fallbackRoute =
+    phaseRoutes.interpreter ??
+    phaseRoutes.critic ??
+    phaseRoutes.architect ??
+    phaseRoutes.builder ??
+    phaseRoutes.librarian;
+  const routed =
+    requestedProvider === "auto"
+      ? fallbackRoute
+      : isPhaseProvider(requestedProvider)
+        ? phaseRoutes[requestedProvider]
+        : undefined;
+  const provider = routed?.provider ?? requestedProvider;
+  const baseConfig: ProviderConfig = routed
+    ? { ...routed.config }
+    : {
+        model: config.model,
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl,
+        timeoutMs: config.interpreter.timeoutMs,
+      };
+  if (!baseConfig.baseUrl) {
+    const sameProviderBaseUrl = Object.values(phaseRoutes)
+      .map((route) => (route.provider === provider ? route.config.baseUrl : undefined))
+      .find((value): value is string => typeof value === "string" && value.length > 0);
+    baseConfig.baseUrl = sameProviderBaseUrl ?? config.baseUrl ?? baseConfig.baseUrl;
+  }
+  const resolvedModel =
+    requestedModel !== "auto"
+      ? requestedModel
+      : baseConfig.model ?? fallbackRoute?.config.model ?? config.model;
+  return {
+    provider,
+    config: {
+      ...baseConfig,
+      model: resolvedModel,
+      timeoutMs: config.interpreter.timeoutMs ?? baseConfig.timeoutMs,
+    },
+    temperature: routed?.temperature,
+  };
+};
 
 export const isToolEnabled = (name: string, tools: ToolConfig): boolean => {
   if (name === "run_shell" && !tools.allowShell) {
@@ -433,6 +679,19 @@ const readStdin = async (): Promise<string> => {
   });
 };
 
+const resolveTaskInput = async (parsed: ParsedArgs): Promise<string> => {
+  if (parsed.taskFile) {
+    return readFile(parsed.taskFile, "utf8");
+  }
+  if (parsed.inlineTask) {
+    return parsed.inlineTask;
+  }
+  if (process.stdin.isTTY) {
+    return "";
+  }
+  return readStdin();
+};
+
 const isTrivialRequest = (request: string): boolean => {
   const normalized = request.trim().toLowerCase();
   if (normalized.length === 0) return false;
@@ -446,7 +705,59 @@ class StubProvider implements Provider {
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     const last = request.messages[request.messages.length - 1];
-    if (request.responseFormat?.type === "json") {
+    if (request.responseFormat?.type === "json" || request.responseFormat?.type === "gbnf") {
+      const system = request.messages[0]?.content ?? "";
+      if (/REVIEW:/i.test(system) && /STATUS:/i.test(system)) {
+        return {
+          message: {
+            role: "assistant",
+            content: ["REVIEW:", "STATUS: PASS", "FEEDBACK:"].join("\n"),
+          },
+        };
+      }
+      if (/PLAN:/i.test(system) && /TARGETS:/i.test(system)) {
+        return {
+          message: {
+            role: "assistant",
+            content: [
+              "PLAN:",
+              "- Apply change",
+              "TARGETS:",
+              "- src/index.ts",
+              "RISK: low",
+              "VERIFY:",
+            ].join("\n"),
+          },
+        };
+      }
+      if (system.includes("\"files\"")) {
+        return {
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              files: [{ path: "src/index.ts", content: "const value = 2;\n" }],
+              delete: [],
+            }),
+          },
+        };
+      }
+      if (system.includes("\"patches\"")) {
+        return {
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              patches: [
+                {
+                  action: "replace",
+                  file: "src/index.ts",
+                  search_block: "const value = 1;",
+                  replace_block: "const value = 2;",
+                },
+              ],
+            }),
+          },
+        };
+      }
       return {
         message: {
           role: "assistant",
@@ -475,6 +786,11 @@ const registerBuiltins = () => {
     // ignore duplicate registrations
   }
   try {
+    registerProvider("codex-cli", (config: ProviderConfig) => new CodexCliProvider(config));
+  } catch {
+    // ignore duplicate registrations
+  }
+  try {
     registerProvider("stub", () => new StubProvider());
   } catch {
     // ignore duplicate registrations
@@ -485,6 +801,24 @@ export class RunCommand {
   static async run(argv: string[]): Promise<void> {
     registerBuiltins();
     const parsed = parseArgs(argv);
+    const resolvedWorkspaceRoot = resolveWorkspaceRoot(process.cwd(), parsed.workspaceRoot);
+
+    const agentRef = parsed.agent ?? parsed.agentId ?? parsed.agentSlug;
+    const resolvedAgent = agentRef
+      ? await resolveAgentConfig(agentRef, {
+          provider: parsed.provider,
+          model: parsed.model,
+          baseUrl: parsed.baseUrl,
+          apiKey: parsed.apiKey,
+        })
+      : undefined;
+
+    const provider = parsed.provider ?? resolvedAgent?.provider;
+    const model = parsed.model ?? resolvedAgent?.model;
+    const apiKey = parsed.apiKey ?? resolvedAgent?.apiKey;
+    const baseUrl = parsed.baseUrl ?? resolvedAgent?.baseUrl;
+    const agentId = resolvedAgent?.agent.id ?? parsed.agentId;
+    const agentSlug = resolvedAgent?.agent.slug ?? parsed.agentSlug;
 
     const cliConfig: Record<string, unknown> = {};
     if (parsed.workspaceRoot) cliConfig.workspaceRoot = parsed.workspaceRoot;
@@ -495,13 +829,14 @@ export class RunCommand {
     if (parsed.runId) cliConfig.runId = parsed.runId;
     if (parsed.taskId) cliConfig.taskId = parsed.taskId;
     if (parsed.taskKey) cliConfig.taskKey = parsed.taskKey;
-    if (parsed.agentId) cliConfig.agentId = parsed.agentId;
-    if (parsed.agentSlug) cliConfig.agentSlug = parsed.agentSlug;
+    if (agentId) cliConfig.agentId = agentId;
+    if (agentSlug) cliConfig.agentSlug = agentSlug;
     if (parsed.smart !== undefined) cliConfig.smart = parsed.smart;
-    if (parsed.provider) cliConfig.provider = parsed.provider;
-    if (parsed.model) cliConfig.model = parsed.model;
-    if (parsed.apiKey) cliConfig.apiKey = parsed.apiKey;
-    if (parsed.baseUrl) cliConfig.baseUrl = parsed.baseUrl;
+    if (parsed.planHint) cliConfig.planHint = parsed.planHint;
+    if (provider) cliConfig.provider = provider;
+    if (model) cliConfig.model = model;
+    if (apiKey) cliConfig.apiKey = apiKey;
+    if (baseUrl) cliConfig.baseUrl = baseUrl;
 
     const docdexOverrides: Record<string, string> = {};
     if (parsed.docdexBaseUrl) docdexOverrides.baseUrl = parsed.docdexBaseUrl;
@@ -543,8 +878,22 @@ export class RunCommand {
       cliConfig.builder = builderOverrides;
     }
 
+    const interpreterOverrides: Record<string, unknown> = {};
+    if (parsed.interpreterProvider) interpreterOverrides.provider = parsed.interpreterProvider;
+    if (parsed.interpreterModel) interpreterOverrides.model = parsed.interpreterModel;
+    if (parsed.interpreterFormat) interpreterOverrides.format = parsed.interpreterFormat;
+    if (parsed.interpreterGrammar) interpreterOverrides.grammar = parsed.interpreterGrammar;
+    if (parsed.interpreterMaxRetries !== undefined) {
+      interpreterOverrides.maxRetries = parsed.interpreterMaxRetries;
+    }
+    if (parsed.interpreterTimeoutMs !== undefined) {
+      interpreterOverrides.timeoutMs = parsed.interpreterTimeoutMs;
+    }
+    if (Object.keys(interpreterOverrides).length) {
+      cliConfig.interpreter = interpreterOverrides;
+    }
+
     const streamingOverrides: Record<string, unknown> = {};
-    if (parsed.streamingEnabled !== undefined) streamingOverrides.enabled = parsed.streamingEnabled;
     if (parsed.streamingFlushMs !== undefined) streamingOverrides.flushEveryMs = parsed.streamingFlushMs;
     if (Object.keys(streamingOverrides).length) {
       cliConfig.streaming = streamingOverrides;
@@ -564,14 +913,52 @@ export class RunCommand {
       cliConfig.cost = costOverrides;
     }
 
+    const routingOverrides: Record<string, unknown> = {};
+    const setRoutingOverride = (
+      phase: "librarian" | "architect" | "builder" | "critic" | "interpreter",
+      key: "agent",
+      value?: string,
+    ): void => {
+      if (!value) return;
+      routingOverrides[phase] = {
+        ...(routingOverrides[phase] ?? {}),
+        [key]: value,
+      };
+    };
+    setRoutingOverride("librarian", "agent", parsed.agentLibrarian);
+    setRoutingOverride("architect", "agent", parsed.agentArchitect);
+    setRoutingOverride("builder", "agent", parsed.agentBuilder);
+    setRoutingOverride("critic", "agent", parsed.agentCritic);
+    setRoutingOverride("interpreter", "agent", parsed.agentInterpreter);
+    if (Object.keys(routingOverrides).length) {
+      cliConfig.routing = routingOverrides;
+    }
+
     const config = await loadConfig({
       cli: cliConfig,
       configPath: parsed.configPath,
+      cwd: resolvedWorkspaceRoot,
     });
 
-    const taskInput = parsed.taskFile ? await readFile(parsed.taskFile, "utf8") : await readStdin();
+    if (!config.smart && resolvedAgent?.agent) {
+      const { contextWindow, maxOutputTokens, supportsTools } = resolvedAgent.agent;
+      if (contextWindow && model) {
+        config.localContext.modelTokenLimits = {
+          ...config.localContext.modelTokenLimits,
+          [model]: contextWindow,
+        };
+      }
+      if (maxOutputTokens && config.limits.maxTokens === undefined) {
+        config.limits.maxTokens = maxOutputTokens;
+      }
+      if (supportsTools === false && config.builder.mode === "tool_calls") {
+        config.builder.mode = "freeform";
+      }
+    }
+
+    const taskInput = await resolveTaskInput(parsed);
     if (!taskInput.trim()) {
-      throw new Error("Task input is empty; provide --task <file> or pass text via stdin.");
+      throw new Error("Task input is empty; provide --task <file>, inline text, or pass text via stdin.");
     }
 
     const runId = config.runId ?? randomUUID();
@@ -580,6 +967,27 @@ export class RunCommand {
     const lock = new WorkspaceLock(storageRoot, runId);
     await lock.acquire();
     const logger = new RunLogger(storageRoot, config.logging.directory, runId);
+    const outputLogPath = path.join(path.dirname(logger.logPath), `${runId}.output.log`);
+    await mkdir(path.dirname(outputLogPath), { recursive: true });
+    const outputStream = createWriteStream(outputLogPath, { flags: "a" });
+    const unregisterSignals = lock.registerSignalHandlers({
+      onSignal: async (signal) => {
+        try {
+          await logger.log("run_cancelled", {
+            runId,
+            signal,
+            command: config.command,
+            commandRunId: config.commandRunId,
+            jobId: config.jobId,
+            project: config.project,
+            taskId: config.taskId,
+            taskKey: config.taskKey,
+          });
+        } catch {
+          // ignore logging failures during shutdown
+        }
+      },
+    });
     await logger.log("run_start", {
       runId,
       command: config.command,
@@ -620,7 +1028,7 @@ export class RunCommand {
         allowShell: config.tools.allowShell,
         shellAllowlist: config.tools.shellAllowlist,
       };
-      const streamState = createStreamState(config.streaming.enabled, config.streaming.flushEveryMs);
+      const streamState = createStreamState(config.streaming.flushEveryMs, outputStream);
 
       let finalMessageContent = "";
       let usage;
@@ -634,6 +1042,74 @@ export class RunCommand {
       let estimatedPeriphery = 0;
 
       if (config.smart) {
+        const hasRoutingAgent = Object.values(config.routing ?? {}).some((phase) =>
+          Boolean(phase?.agent),
+        );
+        const hasExplicitProvider = Boolean(
+          parsed.provider || parsed.model || parsed.baseUrl || parsed.apiKey,
+        );
+        const shouldForceAgentDefaults =
+          !agentRef && !hasRoutingAgent && !hasExplicitProvider;
+        const shouldSelectAgents = config.provider !== "stub";
+        const emptySelection = (phase: PipelinePhase): PhaseAgentSelection => ({
+          phase,
+          capabilities: [],
+          source: "none" as const,
+        });
+        const phaseSelections = shouldSelectAgents
+          ? await selectPhaseAgents({
+              overrides: {
+                librarian: config.routing?.librarian?.agent,
+                architect: config.routing?.architect?.agent,
+                builder: config.routing?.builder?.agent,
+                critic: config.routing?.critic?.agent,
+                interpreter: config.routing?.interpreter?.agent,
+              },
+              builderMode: config.builder.mode,
+              fallbackAgent: resolvedAgent,
+              allowCloudModels: config.security.allowCloudModels,
+            })
+          : {
+              librarian: emptySelection("librarian"),
+              architect: emptySelection("architect"),
+              builder: emptySelection("builder"),
+              critic: emptySelection("critic"),
+              interpreter: emptySelection("interpreter"),
+            };
+
+        const fallbackResolved =
+          phaseSelections.builder.resolved ??
+          phaseSelections.architect.resolved ??
+          phaseSelections.critic.resolved ??
+          phaseSelections.librarian.resolved ??
+          phaseSelections.interpreter.resolved ??
+          resolvedAgent;
+
+        if (shouldForceAgentDefaults) {
+          if (!fallbackResolved) {
+            throw new Error(
+              "No eligible agents found in the mcoda agent registry. Run `mcoda agent list` or supply --agent/--provider/--model.",
+            );
+          }
+          config.provider = fallbackResolved.provider;
+          config.model = fallbackResolved.model;
+          config.apiKey = fallbackResolved.apiKey;
+          config.baseUrl = fallbackResolved.baseUrl;
+        } else if (!config.provider || !config.model) {
+          if (fallbackResolved) {
+            config.provider = config.provider || fallbackResolved.provider;
+            config.model = config.model || fallbackResolved.model;
+            config.apiKey = config.apiKey ?? fallbackResolved.apiKey;
+            config.baseUrl = config.baseUrl ?? fallbackResolved.baseUrl;
+          }
+        }
+
+        if (!config.provider || !config.model) {
+          throw new Error(
+            "Missing provider/model after agent resolution. Provide --agent or configure routing defaults.",
+          );
+        }
+
         const defaults = {
           provider: config.provider,
           config: {
@@ -644,20 +1120,114 @@ export class RunCommand {
           },
         };
 
-        const librarianRoute = config.routing?.librarian
-          ? buildRoutedProvider("librarian", defaults, config.routing)
-          : undefined;
-        const librarianProvider = librarianRoute
-          ? createProvider(librarianRoute.provider, librarianRoute.config)
-          : undefined;
-        const architectRoute = buildRoutedProvider("architect", defaults, config.routing);
-        const builderRoute = buildRoutedProvider("builder", defaults, config.routing);
-        const criticRoute = buildRoutedProvider("critic", defaults, config.routing);
+        for (const selection of Object.values(phaseSelections)) {
+          if (!selection.resolved) continue;
+          const contextWindow = selection.resolved.agent.contextWindow;
+          if (contextWindow) {
+            config.localContext.modelTokenLimits = {
+              ...config.localContext.modelTokenLimits,
+              [selection.resolved.model]: contextWindow,
+            };
+          }
+        }
+        const builderSelection = phaseSelections.builder;
+        if (builderSelection.resolved?.agent.maxOutputTokens && config.limits.maxTokens === undefined) {
+          config.limits.maxTokens = builderSelection.resolved.agent.maxOutputTokens;
+        }
+        if (
+          builderSelection.resolved?.agent.supportsTools === false &&
+          config.builder.mode === "tool_calls"
+        ) {
+          config.builder.mode = "freeform";
+        }
 
+        for (const selection of Object.values(phaseSelections)) {
+          if (!selection.resolved) continue;
+          await logger.log("phase_agent_selected", {
+            phase: selection.phase,
+            agentId: selection.resolved.agent.id,
+            agentSlug: selection.resolved.agent.slug,
+            provider: selection.resolved.provider,
+            model: selection.resolved.model,
+            source: selection.source,
+            score: selection.score,
+            reason: selection.reason,
+          });
+        }
+
+        const buildDefaultsForPhase = (phase: PipelinePhase) => {
+          const selected = phaseSelections[phase].resolved;
+          return selected
+            ? {
+                provider: selected.provider,
+                config: {
+                  model: selected.model,
+                  apiKey: selected.apiKey,
+                  baseUrl: selected.baseUrl,
+                  timeoutMs: config.limits.timeoutMs,
+                },
+              }
+            : defaults;
+        };
+
+        const librarianDefaults = buildDefaultsForPhase("librarian");
+        const architectDefaults = buildDefaultsForPhase("architect");
+        const builderDefaults = buildDefaultsForPhase("builder");
+        const criticDefaults = buildDefaultsForPhase("critic");
+        const interpreterDefaults = buildDefaultsForPhase("interpreter");
+
+        const librarianRoute = buildRoutedProvider(
+          "librarian",
+          librarianDefaults,
+          config.routing,
+          Boolean(phaseSelections.librarian.resolved),
+        );
+        const architectRoute = buildRoutedProvider(
+          "architect",
+          architectDefaults,
+          config.routing,
+          Boolean(phaseSelections.architect.resolved),
+        );
+        const builderRoute = buildRoutedProvider(
+          "builder",
+          builderDefaults,
+          config.routing,
+          Boolean(phaseSelections.builder.resolved),
+        );
+        const criticRoute = buildRoutedProvider(
+          "critic",
+          criticDefaults,
+          config.routing,
+          Boolean(phaseSelections.critic.resolved),
+        );
+        const interpreterPhaseRoute = buildRoutedProvider(
+          "interpreter",
+          interpreterDefaults,
+          config.routing,
+          Boolean(phaseSelections.interpreter.resolved),
+        );
+
+        const phaseRoutes: Record<PipelinePhase, typeof builderRoute> = {
+          librarian: librarianRoute,
+          architect: architectRoute,
+          builder: builderRoute,
+          critic: criticRoute,
+          interpreter: interpreterPhaseRoute,
+        };
+
+        const librarianProvider = createProvider(librarianRoute.provider, librarianRoute.config);
         const architectProvider = createProvider(architectRoute.provider, architectRoute.config);
         const builderProvider = createProvider(builderRoute.provider, builderRoute.config);
 
-        const profileAgentId = config.agentId ?? config.agentSlug;
+        const profileAgentId =
+          config.agentId ??
+          config.agentSlug ??
+          phaseSelections.architect.resolved?.agent.id ??
+          phaseSelections.critic.resolved?.agent.id ??
+          phaseSelections.librarian.resolved?.agent.id ??
+          phaseSelections.builder.resolved?.agent.id ??
+          phaseSelections.interpreter.resolved?.agent.id ??
+          "codali";
         let contextManager: ContextManager | undefined;
         let laneScope: Omit<LaneScope, "role" | "ephemeral"> | undefined;
         if (config.localContext.enabled) {
@@ -683,7 +1253,7 @@ export class RunCommand {
             let summarizerConfig: ProviderConfig = { ...defaults.config };
             let summarizerTemperature: number | undefined;
             if (isPhaseProvider(providerKey)) {
-              const route = buildRoutedProvider(providerKey, defaults, config.routing);
+              const route = phaseRoutes[providerKey];
               summarizerProviderName = route.provider;
               summarizerConfig = { ...route.config };
               summarizerTemperature = route.temperature;
@@ -736,8 +1306,14 @@ export class RunCommand {
           redactSecrets: config.context.redactSecrets,
           redactPatterns: config.security.redactPatterns,
           ignoreFilesFrom: config.context.ignoreFilesFrom,
+          preferredFiles: config.context.preferredFiles,
+          recentFiles: config.context.recentFiles,
+          readOnlyPaths: config.security.readOnlyPaths,
+          allowDocEdits: config.security.allowDocEdits,
           contextManager,
           laneScope,
+          onEvent: streamState.onEvent,
+          logger,
         });
         const preflightContext = await contextAssembler.assemble(taskInput);
         const pricingResolution = resolvePricing(
@@ -786,6 +1362,9 @@ export class RunCommand {
           logger,
           model: architectRoute.config.model,
           responseFormat: architectRoute.responseFormat ?? { type: "json" },
+          planHint: config.planHint,
+          stream: config.streaming.enabled,
+          onEvent: streamState.onEvent,
         });
         const builderResponseFormat =
           builderRoute.responseFormat ?? (config.builder.mode === "patch_json" ? { type: "json" } : undefined);
@@ -794,9 +1373,37 @@ export class RunCommand {
           config.tools.allowShell ?? false,
           config.tools.shellAllowlist ?? [],
         );
-        const patchApplier =
-          config.builder.mode === "patch_json"
-            ? new PatchApplier({ workspaceRoot: config.workspaceRoot, validateFile: patchValidator })
+        const needsPatchApplier =
+          config.builder.mode === "patch_json" || config.builder.mode === "freeform" || config.builder.mode === "tool_calls";
+        const patchApplier = needsPatchApplier
+          ? new PatchApplier({ workspaceRoot: config.workspaceRoot, validateFile: patchValidator })
+          : undefined;
+        const wantsInterpreter =
+          config.builder.mode === "freeform" || config.builder.fallbackToInterpreter === true;
+        const interpreterRoute = wantsInterpreter
+          ? resolveInterpreterRoute(config, phaseRoutes)
+          : undefined;
+        const interpreterProvider = interpreterRoute
+          ? createProvider(interpreterRoute.provider, interpreterRoute.config)
+          : undefined;
+        const interpreterResponseFormat: ProviderResponseFormat = config.interpreter.format
+          ? {
+              type: config.interpreter.format as ProviderResponseFormat["type"],
+              grammar: config.interpreter.grammar,
+            }
+          : { type: "json" };
+        const patchInterpreter =
+          interpreterProvider && wantsInterpreter
+            ? new PatchInterpreter({
+                provider: interpreterProvider,
+                patchFormat: config.builder.patchFormat,
+                responseFormat: interpreterResponseFormat,
+                maxRetries: config.interpreter.maxRetries,
+                timeoutMs: config.interpreter.timeoutMs,
+                logger,
+                model: interpreterRoute?.config.model,
+                temperature: interpreterRoute?.temperature,
+              })
             : undefined;
         const builderRunner = new BuilderRunner({
           provider: builderProvider,
@@ -811,7 +1418,10 @@ export class RunCommand {
           mode: config.builder.mode,
           patchFormat: config.builder.patchFormat,
           patchApplier,
+          interpreter: patchInterpreter,
+          fallbackToInterpreter: config.builder.fallbackToInterpreter ?? false,
           stream: config.streaming.enabled,
+          onEvent: streamState.onEvent,
           onToken: streamState.onToken,
           streamFlushMs: config.streaming.flushEveryMs,
           logger,
@@ -834,11 +1444,12 @@ export class RunCommand {
           memoryWriteback,
           maxRetries: config.limits.maxRetries,
           maxContextRefreshes: config.context.maxContextRefreshes,
-          fastPath: isTrivialRequest,
+          fastPath: undefined,
           getTouchedFiles: () => runContext.getTouchedFiles(),
           logger,
           contextManager,
           laneScope,
+          onEvent: streamState.onEvent,
         });
 
         const result = await pipeline.run(taskInput);
@@ -903,6 +1514,7 @@ export class RunCommand {
           maxTokens: config.limits.maxTokens,
           timeoutMs: config.limits.timeoutMs,
           stream: config.streaming.enabled,
+          onEvent: streamState.onEvent,
           onToken: streamState.onToken,
           streamFlushMs: config.streaming.flushEveryMs,
           logger,
@@ -918,10 +1530,12 @@ export class RunCommand {
       if (streamState.didStream()) {
         if (!finalMessageContent.endsWith("\n")) {
           process.stdout.write("\n");
+          streamState.writeOutput("\n");
         }
       } else {
         // eslint-disable-next-line no-console
         console.log(finalMessageContent);
+        streamState.writeOutput(`${finalMessageContent}\n`);
       }
       const actualCost = estimateCostFromUsage(usage, pricingSpec);
       await logger.log("run_summary", {
@@ -949,6 +1563,7 @@ export class RunCommand {
       const meta = {
         runId,
         logPath: logger.logPath,
+        outputLogPath,
         touchedFiles: runContext.getTouchedFiles(),
         command: config.command,
         commandRunId: config.commandRunId,
@@ -965,6 +1580,8 @@ export class RunCommand {
         // ignore stderr write failures
       }
     } finally {
+      outputStream.end();
+      unregisterSignals();
       await lock.release();
     }
   }

@@ -52,6 +52,7 @@ This document describes the current `work-on-tasks` command flow as implemented 
 1. Query docdex for doc context (using metadata `doc_links`).
 2. Load project guidance (`docs/project-guidance.md` or `~/.mcoda/workspaces/<name>-<hash>/docs/project-guidance.md`).
 3. Load unresolved comment backlog from `code-review` and `qa-tasks` (up to 20).
+4. If a Gateway handoff file is present (via `MCODA_GATEWAY_HANDOFF_PATH`) and codali is used, skip docdex context gathering and rely on the gateway plan + file list. This avoids redundant retrieval and lets codali focus on pinned files.
 
 #### 2.5 Prompt assembly
 1. Build a task prompt with:
@@ -71,6 +72,11 @@ This document describes the current `work-on-tasks` command flow as implemented 
 3. Detect changed files via git dirty paths and treat them as touched.
 4. Enforce allowed file scope (if set); out‑of‑scope changes fail the task with `scope_violation`.
 5. Legacy patch mode (optional): when enabled and codali is not required, parse/apply patch or FILE output and fall back on patch errors.
+6. When codali is used, WOT injects a context handoff:
+   - `CODALI_CONTEXT_PREFERRED_FILES` (gateway file list + task scope)
+   - `CODALI_CONTEXT_SKIP_SEARCH=1` (skip docdex search when gateway files exist)
+   - `CODALI_PLAN_HINT` (gateway plan as JSON)
+   - `CODALI_SECURITY_READONLY_PATHS` (docs/sds, docs/rfp, openapi + openapi.yaml/yml/json)
 
 #### 2.7 Tests
 1. Run task-specific test commands (from metadata or QA builder) followed by run‑all tests (`tests/all.js`).

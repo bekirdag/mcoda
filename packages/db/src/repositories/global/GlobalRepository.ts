@@ -14,11 +14,18 @@ import {
 import { Connection } from "../../sqlite/connection.js";
 import { GlobalMigrations } from "../../migrations/global/GlobalMigrations.js";
 
+const toBool = (value: any): boolean | undefined =>
+  value === null || value === undefined ? undefined : Boolean(value);
+
 const mapAgentRow = (row: any): Agent => ({
   id: row.id,
   slug: row.slug,
   adapter: row.adapter,
   defaultModel: row.default_model ?? undefined,
+  openaiCompatible: toBool(row.openai_compatible),
+  contextWindow: row.context_window ?? undefined,
+  maxOutputTokens: row.max_output_tokens ?? undefined,
+  supportsTools: toBool(row.supports_tools),
   rating: row.rating ?? undefined,
   reasoningRating: row.reasoning_rating ?? undefined,
   bestUsage: row.best_usage ?? undefined,
@@ -116,14 +123,14 @@ export class GlobalRepository {
 
   async listAgents(): Promise<Agent[]> {
     const rows = await this.db.all(
-      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents ORDER BY slug ASC",
+      "SELECT id, slug, adapter, default_model, openai_compatible, context_window, max_output_tokens, supports_tools, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents ORDER BY slug ASC",
     );
     return rows.map(mapAgentRow);
   }
 
   async getAgentById(id: string): Promise<Agent | undefined> {
     const row = await this.db.get(
-      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents WHERE id = ?",
+      "SELECT id, slug, adapter, default_model, openai_compatible, context_window, max_output_tokens, supports_tools, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents WHERE id = ?",
       id,
     );
     return row ? mapAgentRow(row) : undefined;
@@ -131,7 +138,7 @@ export class GlobalRepository {
 
   async getAgentBySlug(slug: string): Promise<Agent | undefined> {
     const row = await this.db.get(
-      "SELECT id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents WHERE slug = ?",
+      "SELECT id, slug, adapter, default_model, openai_compatible, context_window, max_output_tokens, supports_tools, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at FROM agents WHERE slug = ?",
       slug,
     );
     return row ? mapAgentRow(row) : undefined;
@@ -141,12 +148,16 @@ export class GlobalRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO agents (id, slug, adapter, default_model, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (id, slug, adapter, default_model, openai_compatible, context_window, max_output_tokens, supports_tools, rating, reasoning_rating, best_usage, cost_per_million, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at, config_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.slug,
       input.adapter,
       input.defaultModel ?? null,
+      input.openaiCompatible === undefined ? null : input.openaiCompatible ? 1 : 0,
+      input.contextWindow ?? null,
+      input.maxOutputTokens ?? null,
+      input.supportsTools === undefined ? null : input.supportsTools ? 1 : 0,
       input.rating ?? null,
       input.reasoningRating ?? null,
       input.bestUsage ?? null,
@@ -184,6 +195,22 @@ export class GlobalRepository {
     if (patch.defaultModel !== undefined) {
       updates.push("default_model = ?");
       params.push(patch.defaultModel);
+    }
+    if (patch.openaiCompatible !== undefined) {
+      updates.push("openai_compatible = ?");
+      params.push(patch.openaiCompatible ? 1 : 0);
+    }
+    if (patch.contextWindow !== undefined) {
+      updates.push("context_window = ?");
+      params.push(patch.contextWindow);
+    }
+    if (patch.maxOutputTokens !== undefined) {
+      updates.push("max_output_tokens = ?");
+      params.push(patch.maxOutputTokens);
+    }
+    if (patch.supportsTools !== undefined) {
+      updates.push("supports_tools = ?");
+      params.push(patch.supportsTools ? 1 : 0);
     }
     if (patch.rating !== undefined) {
       updates.push("rating = ?");

@@ -12,6 +12,15 @@ export interface ProviderToolCall {
   args: unknown;
 }
 
+export type AgentStatusPhase = "thinking" | "executing" | "patching" | "done";
+
+export type AgentEvent =
+  | { type: "token"; content: string }
+  | { type: "tool_call"; name: string; args: unknown }
+  | { type: "tool_result"; name: string; output: string; ok?: boolean }
+  | { type: "status"; phase: AgentStatusPhase; message?: string }
+  | { type: "error"; message: string };
+
 export interface ProviderResponseFormat {
   type: "json" | "json_schema" | "text" | "gbnf";
   schema?: Record<string, unknown>;
@@ -39,6 +48,7 @@ export interface ProviderRequest {
   temperature?: number;
   responseFormat?: ProviderResponseFormat;
   stream?: boolean;
+  onEvent?: (event: AgentEvent) => void;
   onToken?: (token: string) => void;
   streamFlushMs?: number;
 }

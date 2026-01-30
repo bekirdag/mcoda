@@ -854,14 +854,29 @@ export class GatewayAgentService {
     const query = this.buildQuerySeed(tasks, request.inputText);
     const summaries: GatewayDocSummary[] = [];
     let openApiIncluded = false;
+    let reindexed = false;
     for (const docType of docTypes) {
       if (summaries.length >= maxDocs) break;
       try {
-        const docs = await this.deps.docdex.search({
+        let docs = await this.deps.docdex.search({
           projectKey: request.projectKey,
           docType,
           query,
         });
+        if (!docs.length && !reindexed && typeof (this.deps.docdex as any).reindex === "function") {
+          reindexed = true;
+          try {
+            warnings.push("Docdex search returned no results; reindexing and retrying.");
+            await (this.deps.docdex as any).reindex();
+            docs = await this.deps.docdex.search({
+              projectKey: request.projectKey,
+              docType,
+              query,
+            });
+          } catch (error) {
+            warnings.push(`Docdex reindex failed: ${(error as Error).message}`);
+          }
+        }
         for (const doc of docs) {
           if (summaries.length >= maxDocs) break;
           const ref = doc.path ?? doc.title ?? doc.id;

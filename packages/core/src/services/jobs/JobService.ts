@@ -148,13 +148,17 @@ export class JobService {
     JobService.activeJobs.delete(jobId);
   }
 
-  private static async handleProcessSignal(signal: NodeJS.Signals): Promise<void> {
-    if (JobService.handlingSignal) return;
-    JobService.handlingSignal = true;
+  static async cancelActiveJobs(signal: NodeJS.Signals): Promise<void> {
     const active = Array.from(JobService.activeJobs.entries());
     await Promise.all(
       active.map(async ([jobId, entry]) => entry.service.cancelJobOnSignal(jobId, entry.commandRunId, signal)),
     );
+  }
+
+  private static async handleProcessSignal(signal: NodeJS.Signals): Promise<void> {
+    if (JobService.handlingSignal) return;
+    JobService.handlingSignal = true;
+    await JobService.cancelActiveJobs(signal);
     const exitCode = signal === "SIGTERM" ? 143 : 130;
     process.exitCode = exitCode;
     process.exit(exitCode);

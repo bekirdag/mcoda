@@ -17,6 +17,13 @@ export interface MemoryWritebackOptions {
   agentId?: string;
 }
 
+const isUnsupportedDocdexMethod = (error: unknown): boolean => {
+  if (!error) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return normalized.includes("unknown method") || normalized.includes("method not found");
+};
+
 export class MemoryWriteback {
   private agentId: string;
 
@@ -26,15 +33,27 @@ export class MemoryWriteback {
 
   async persist(input: MemoryWritebackInput): Promise<void> {
     if (input.failures >= input.maxRetries && input.lesson.trim()) {
-      await this.client.memorySave(input.lesson.trim());
+      try {
+        await this.client.memorySave(input.lesson.trim());
+      } catch (error) {
+        if (!isUnsupportedDocdexMethod(error)) {
+          throw error;
+        }
+      }
     }
     if (input.preferences?.length) {
       for (const preference of input.preferences) {
-        await this.client.savePreference(
-          preference.agentId ?? this.agentId,
-          preference.category,
-          preference.content,
-        );
+        try {
+          await this.client.savePreference(
+            preference.agentId ?? this.agentId,
+            preference.category,
+            preference.content,
+          );
+        } catch (error) {
+          if (!isUnsupportedDocdexMethod(error)) {
+            throw error;
+          }
+        }
       }
     }
   }
