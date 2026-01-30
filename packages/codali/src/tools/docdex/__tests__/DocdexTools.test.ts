@@ -70,6 +70,61 @@ test("DocdexTools call health and search", { concurrency: false }, async () => {
   });
 });
 
+test("DocdexTools open uses MCP when path provided", { concurrency: false }, async () => {
+  let lastMcpMethod: string | undefined;
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.endsWith("/v1/mcp")) {
+      const body = typeof init?.body === "string" ? init.body : "{}";
+      const payload = JSON.parse(body) as { method?: string; id?: string };
+      lastMcpMethod = payload.method;
+      return makeJsonResponse({ jsonrpc: "2.0", id: payload.id, result: { ok: true } });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
+    const tools = createDocdexTools(client);
+    const openTool = tools.find((tool) => tool.name === "docdex_open");
+    assert.ok(openTool);
+
+    const result = await openTool!.handler(
+      { path: "README.md", head: 5 },
+      { workspaceRoot: process.cwd() },
+    );
+    assert.match(result.output, /ok/);
+    assert.equal(lastMcpMethod, "docdex_open");
+  });
+});
+
+test("DocdexTools open fetches snippet when docId provided", { concurrency: false }, async () => {
+  const calls: string[] = [];
+  await withStubbedFetch((url) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    calls.push(url);
+    if (url.includes("/snippet/")) {
+      return makeJsonResponse({ doc_id: "doc-1", snippet: "hello" });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
+    const tools = createDocdexTools(client);
+    const openTool = tools.find((tool) => tool.name === "docdex_open");
+    assert.ok(openTool);
+
+    const result = await openTool!.handler(
+      { docId: "doc-1", window: 3 },
+      { workspaceRoot: process.cwd() },
+    );
+    assert.match(result.output, /doc-1/);
+  });
+
+  assert.ok(calls.some((url) => url.includes("/snippet/doc-1")));
+});
+
 test("DocdexTools use MCP for symbols", { concurrency: false }, async () => {
   let lastMcpMethod: string | undefined;
   await withStubbedFetch((url, init) => {

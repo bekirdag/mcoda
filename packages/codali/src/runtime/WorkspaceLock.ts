@@ -6,6 +6,12 @@ export interface WorkspaceLockInfo {
   acquiredAt: number;
 }
 
+export interface WorkspaceLockSignalOptions {
+  exitOnSignal?: boolean;
+  onSignal?: (signal: NodeJS.Signals) => void | Promise<void>;
+  exitCodeForSignal?: (signal: NodeJS.Signals) => number;
+}
+
 export class WorkspaceLock {
   private lockPath: string;
   private acquired = false;
@@ -53,5 +59,41 @@ export class WorkspaceLock {
     }
     await fs.unlink(this.lockPath).catch(() => undefined);
     this.acquired = false;
+  }
+
+  registerSignalHandlers(options: WorkspaceLockSignalOptions = {}): () => void {
+    const exitOnSignal = options.exitOnSignal ?? true;
+    const exitCodeForSignal =
+      options.exitCodeForSignal ?? ((signal: NodeJS.Signals) => (signal === "SIGTERM" ? 143 : 130));
+    let handled = false;
+    const listeners = new Map<NodeJS.Signals, () => void>();
+    const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGTSTP", "SIGQUIT", "SIGHUP"];
+
+    const handler = (signal: NodeJS.Signals) => {
+      if (handled) return;
+      handled = true;
+      const releasePromise = this.release().catch(() => undefined);
+      // Fire and forget any extra signal handling to avoid delaying unlock/exit.
+      Promise.resolve(options.onSignal?.(signal)).catch(() => undefined);
+      releasePromise.finally(() => {
+        if (exitOnSignal) {
+          process.exitCode = exitCodeForSignal(signal);
+          process.exit();
+        }
+      });
+    };
+
+    for (const signal of signals) {
+      const listener = () => handler(signal);
+      listeners.set(signal, listener);
+      process.once(signal, listener);
+    }
+
+    return () => {
+      for (const [signal, listener] of listeners.entries()) {
+        process.off(signal, listener);
+      }
+      listeners.clear();
+    };
   }
 }

@@ -61,7 +61,8 @@ Routing config (per phase, optional) lives in `codali.config.json`:
     "librarian": { "provider": "ollama-remote", "model": "gemma2:2b", "temperature": 0.1 },
     "architect": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.4 },
     "builder": { "provider": "ollama-remote", "model": "deepseek-coder:6.7b", "temperature": 0.2, "format": "json" },
-    "critic": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 }
+    "critic": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 },
+    "interpreter": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 }
   },
   "limits": {
     "maxRetries": 3
@@ -84,18 +85,22 @@ Routing env overrides:
 - `CODALI_PROVIDER_ARCHITECT`
 - `CODALI_PROVIDER_BUILDER`
 - `CODALI_PROVIDER_CRITIC`
+- `CODALI_PROVIDER_INTERPRETER`
 - `CODALI_MODEL_LIBRARIAN`
 - `CODALI_MODEL_ARCHITECT`
 - `CODALI_MODEL_BUILDER`
 - `CODALI_MODEL_CRITIC`
+- `CODALI_MODEL_INTERPRETER`
 - `CODALI_FORMAT_LIBRARIAN`
 - `CODALI_FORMAT_ARCHITECT`
 - `CODALI_FORMAT_BUILDER`
 - `CODALI_FORMAT_CRITIC`
+- `CODALI_FORMAT_INTERPRETER`
 - `CODALI_GRAMMAR_LIBRARIAN`
 - `CODALI_GRAMMAR_ARCHITECT`
 - `CODALI_GRAMMAR_BUILDER`
 - `CODALI_GRAMMAR_CRITIC`
+- `CODALI_GRAMMAR_INTERPRETER`
 - `CODALI_LIMIT_MAX_RETRIES`
 
 ## Logs

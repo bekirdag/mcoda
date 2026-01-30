@@ -73,14 +73,22 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
     },
   });
 
-  assert.equal(config.context.mode, "json");
+  assert.equal(config.context.mode, "bundle_text");
   assert.equal(config.context.maxFiles, 8);
   assert.equal(config.security.redactPatterns.length > 0, true);
-  assert.equal(config.builder.mode, "tool_calls");
+  assert.equal(config.security.allowDocEdits, false);
+  assert.ok(config.security.readOnlyPaths.includes("docs/sds"));
+  assert.equal(config.builder.mode, "freeform");
+  assert.equal(config.builder.fallbackToInterpreter, true);
+  assert.equal(config.interpreter.provider, "auto");
+  assert.equal(config.interpreter.model, "auto");
+  assert.equal(config.interpreter.format, "json");
+  assert.equal(config.interpreter.maxRetries, 1);
+  assert.equal(config.interpreter.timeoutMs, 120_000);
   assert.equal(config.streaming.enabled, true);
   assert.equal(config.cost.maxCostPerRun, 0.5);
   assert.equal(config.cost.charPerToken, 4);
-  assert.equal(config.localContext.enabled, false);
+  assert.equal(config.localContext.enabled, true);
   assert.equal(config.localContext.storageDir, "codali/context");
   assert.equal(config.localContext.maxMessages, 200);
   assert.equal(config.localContext.summarize.enabled, true);
@@ -126,9 +134,13 @@ test("loadConfig applies context/builder/streaming/cost/localContext overrides f
       CODALI_MODEL: "gpt-test",
       CODALI_CONTEXT_MODE: "bundle_text",
       CODALI_CONTEXT_MAX_FILES: "9",
-      CODALI_BUILDER_MODE: "patch_json",
-      CODALI_STREAMING_ENABLED: "false",
+      CODALI_CONTEXT_PREFERRED_FILES: "src/index.ts,src/app.ts",
+      CODALI_CONTEXT_SKIP_SEARCH: "true",
+      CODALI_BUILDER_MODE: "freeform",
+      CODALI_BUILDER_FALLBACK_INTERPRETER: "true",
       CODALI_COST_MAX_PER_RUN: "0.25",
+      CODALI_SECURITY_ALLOW_DOC_EDITS: "true",
+      CODALI_SECURITY_READONLY_PATHS: "docs/qa,openapi.yaml",
       CODALI_LOCAL_CONTEXT_ENABLED: "true",
       CODALI_LOCAL_CONTEXT_MAX_MESSAGES: "150",
       CODALI_LOCAL_CONTEXT_SUMMARIZE_ENABLED: "false",
@@ -137,12 +149,85 @@ test("loadConfig applies context/builder/streaming/cost/localContext overrides f
 
   assert.equal(config.context.mode, "bundle_text");
   assert.equal(config.context.maxFiles, 9);
-  assert.equal(config.builder.mode, "patch_json");
-  assert.equal(config.streaming.enabled, false);
+  assert.ok(config.context.preferredFiles?.includes("src/index.ts"));
+  assert.equal(config.context.skipSearchWhenPreferred, true);
+  assert.equal(config.builder.mode, "freeform");
+  assert.equal(config.builder.fallbackToInterpreter, true);
+  assert.equal(config.streaming.enabled, true);
   assert.equal(config.cost.maxCostPerRun, 0.25);
+  assert.equal(config.security.allowDocEdits, true);
+  assert.ok(config.security.readOnlyPaths.includes("docs/qa"));
   assert.equal(config.localContext.enabled, true);
   assert.equal(config.localContext.maxMessages, 150);
   assert.equal(config.localContext.summarize.enabled, false);
+});
+
+test("loadConfig accepts CODALI_SECURITY_READ_ONLY_PATHS alias", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_SECURITY_READ_ONLY_PATHS: "docs/sds,openapi.yaml",
+    },
+  });
+
+  assert.ok(config.security.readOnlyPaths.includes("docs/sds"));
+  assert.ok(config.security.readOnlyPaths.includes("openapi.yaml"));
+
+  const configOverride = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_SECURITY_READ_ONLY_PATHS: "docs/sds",
+      CODALI_SECURITY_READONLY_PATHS: "docs/rfp",
+    },
+  });
+
+  assert.ok(configOverride.security.readOnlyPaths.includes("docs/rfp"));
+  assert.ok(!configOverride.security.readOnlyPaths.includes("docs/sds"));
+});
+
+test("loadConfig captures CODALI_PLAN_HINT from env", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_PLAN_HINT: "{\"steps\":[\"Do it\"],\"target_files\":[\"src/index.ts\"]}",
+    },
+  });
+
+  assert.equal(config.planHint, "{\"steps\":[\"Do it\"],\"target_files\":[\"src/index.ts\"]}");
+});
+
+test("loadConfig applies interpreter overrides from env", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_INTERPRETER_PROVIDER: "openai-compatible",
+      CODALI_INTERPRETER_MODEL: "gpt-override",
+      CODALI_INTERPRETER_FORMAT: "json",
+      CODALI_INTERPRETER_MAX_RETRIES: "2",
+      CODALI_INTERPRETER_TIMEOUT_MS: "90000",
+    },
+  });
+
+  assert.equal(config.interpreter.provider, "openai-compatible");
+  assert.equal(config.interpreter.model, "gpt-override");
+  assert.equal(config.interpreter.format, "json");
+  assert.equal(config.interpreter.maxRetries, 2);
+  assert.equal(config.interpreter.timeoutMs, 90000);
 });
 
 test("loadConfig applies routing model overrides from env", { concurrency: false }, async () => {
@@ -160,6 +245,42 @@ test("loadConfig applies routing model overrides from env", { concurrency: false
 
   assert.equal(config.routing?.builder?.model, "builder-model");
   assert.equal(config.routing?.architect?.model, "architect-model");
+});
+
+test("loadConfig applies routing agent overrides from env", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_AGENT_BUILDER: "builder-agent",
+      CODALI_AGENT_ARCHITECT: "architect-agent",
+      CODALI_AGENT_INTERPRETER: "interpreter-agent",
+    },
+  });
+
+  assert.equal(config.routing?.builder?.agent, "builder-agent");
+  assert.equal(config.routing?.architect?.agent, "architect-agent");
+  assert.equal(config.routing?.interpreter?.agent, "interpreter-agent");
+});
+
+test("loadConfig allows missing provider/model when smart routing agents set", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_SMART: "1",
+      CODALI_AGENT_BUILDER: "builder-agent",
+    },
+  });
+
+  assert.equal(config.smart, true);
+  assert.equal(config.provider, "");
+  assert.equal(config.model, "");
+  assert.equal(config.routing?.builder?.agent, "builder-agent");
 });
 
 test("loadConfig applies routing provider overrides from env", { concurrency: false }, async () => {
@@ -276,7 +397,9 @@ test("loadConfig throws on missing required fields", { concurrency: false }, asy
   await assert.rejects(async () => {
     await loadConfig({
       cwd: process.cwd(),
-      env: {},
+      env: {
+        CODALI_SMART: "0",
+      },
       cli: {},
     });
   }, /Missing required config/);

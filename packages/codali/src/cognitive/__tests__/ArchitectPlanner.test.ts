@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
+import type { AgentEvent, Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 import { ContextManager } from "../ContextManager.js";
 import { ContextStore } from "../ContextStore.js";
 import type { LocalContextConfig } from "../Types.js";
@@ -33,6 +33,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
     provider: "librarian",
     model: "gemma2:2b",
     targetTokens: 1200,
+    thresholdPct: 0.9,
   },
   ...overrides,
 });
@@ -45,6 +46,23 @@ const baseContext: ContextBundle = {
   ast: [],
   impact: [],
   impact_diagnostics: [],
+  files: [
+    {
+      path: "src/login.ts",
+      role: "focus",
+      content: "",
+      size: 0,
+      truncated: false,
+      sliceStrategy: "test",
+      origin: "docdex",
+    },
+  ],
+  selection: {
+    focus: ["src/login.ts"],
+    periphery: [],
+    all: ["src/login.ts"],
+    low_confidence: false,
+  },
   memory: [],
   preferences_detected: [],
   profile: [],
@@ -56,12 +74,15 @@ test("ArchitectPlanner returns a valid plan", { concurrency: false }, async () =
   const provider = new StubProvider({
     message: {
       role: "assistant",
-      content: JSON.stringify({
-        steps: ["1. Update file"],
-        target_files: ["src/login.ts"],
-        risk_assessment: "low",
-        verification: ["npm test"],
-      }),
+      content: [
+        "PLAN:",
+        "- Update file",
+        "TARGETS:",
+        "- src/login.ts",
+        "RISK: low minimal change",
+        "VERIFY:",
+        "- npm test",
+      ].join("\n"),
     },
   });
 
@@ -70,35 +91,88 @@ test("ArchitectPlanner returns a valid plan", { concurrency: false }, async () =
   assert.equal(plan.target_files[0], "src/login.ts");
 });
 
-test("ArchitectPlanner accepts plan alias fields", { concurrency: false }, async () => {
+test("ArchitectPlanner parses DSL steps/targets", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
       role: "assistant",
-      content: JSON.stringify({
-        plan: ["1. Update file"],
-        filesLikelyTouched: ["src/login.ts"],
-        risk_assessment: "low",
-        verification: [],
-      }),
+      content: [
+        "PLAN:",
+        "- Update file",
+        "TARGETS:",
+        "- src/login.ts",
+        "RISK: low",
+        "VERIFY:",
+      ].join("\n"),
     },
   });
 
   const planner = new ArchitectPlanner(provider);
   const plan = await planner.plan(baseContext);
-  assert.equal(plan.steps[0], "1. Update file");
+  assert.equal(plan.steps[0], "Update file");
   assert.equal(plan.target_files[0], "src/login.ts");
+});
+
+test("ArchitectPlanner uses DSL plan hint without calling provider", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "PLAN:",
+        "- Update file",
+        "TARGETS:",
+        "- src/ignored.ts",
+        "RISK: low",
+        "VERIFY:",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider, {
+    planHint: [
+      "PLAN:",
+      "- Use hint",
+      "TARGETS:",
+      "- src/login.ts",
+      "RISK: low",
+      "VERIFY:",
+    ].join("\n"),
+  });
+  const plan = await planner.plan(baseContext);
+  assert.equal(plan.steps[0], "Use hint");
+  assert.equal(plan.target_files[0], "src/login.ts");
+  assert.equal(provider.lastRequest, undefined);
+});
+
+test("ArchitectPlanner injects text plan hint into prompt", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: JSON.stringify({
+        steps: ["1. Update file"],
+        target_files: ["src/login.ts"],
+        risk_assessment: "low",
+        verification: [],
+      }),
+    },
+  });
+  const planner = new ArchitectPlanner(provider, { planHint: "Follow gateway plan strictly." });
+  await planner.plan(baseContext);
+  const systemPrompt = provider.lastRequest?.messages[0]?.content ?? "";
+  assert.ok(systemPrompt.includes("PLAN HINT"));
+  assert.ok(systemPrompt.includes("Follow gateway plan strictly."));
 });
 
 test("ArchitectPlanner uses responseFormat override", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
       role: "assistant",
-      content: JSON.stringify({
-        steps: ["1. Update file"],
-        target_files: ["src/login.ts"],
-        risk_assessment: "low",
-        verification: [],
-      }),
+      content: [
+        "PLAN:",
+        "- Update file",
+        "TARGETS:",
+        "- src/login.ts",
+        "RISK: low",
+        "VERIFY:",
+      ].join("\n"),
     },
   });
 
@@ -122,12 +196,14 @@ test("ArchitectPlanner prepends context history when configured", { concurrency:
   const provider = new StubProvider({
     message: {
       role: "assistant",
-      content: JSON.stringify({
-        steps: ["1. Update file"],
-        target_files: ["src/login.ts"],
-        risk_assessment: "low",
-        verification: [],
-      }),
+      content: [
+        "PLAN:",
+        "- Update file",
+        "TARGETS:",
+        "- src/login.ts",
+        "RISK: low",
+        "VERIFY:",
+      ].join("\n"),
     },
   });
   const planner = new ArchitectPlanner(provider, { contextManager, laneId: lane.id, model: "test" });
@@ -137,18 +213,68 @@ test("ArchitectPlanner prepends context history when configured", { concurrency:
   assert.ok(messages.some((msg) => msg.content.includes("prior note")));
 });
 
-test("ArchitectPlanner rejects invalid JSON", { concurrency: false }, async () => {
+test("ArchitectPlanner emits status events and forwards stream", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "PLAN:",
+        "- Update file",
+        "TARGETS:",
+        "- src/login.ts",
+        "RISK: low",
+        "VERIFY:",
+      ].join("\n"),
+    },
+  });
+  const events: AgentEvent[] = [];
+  const planner = new ArchitectPlanner(provider, {
+    onEvent: (event) => events.push(event),
+    stream: true,
+  });
+
+  await planner.plan(baseContext);
+
+  assert.equal(provider.lastRequest?.stream, true);
+  assert.ok(events.some((event) => event.type === "status" && event.phase === "thinking"));
+  assert.ok(events.some((event) => event.type === "status" && event.phase === "done"));
+});
+
+test("ArchitectPlanner falls back on invalid output", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: { role: "assistant", content: "not-json" },
   });
   const planner = new ArchitectPlanner(provider);
-  await assert.rejects(() => planner.plan(baseContext), /not valid JSON/);
+  const plan = await planner.plan(baseContext);
+  assert.ok(plan.steps.length > 0);
+  assert.ok(plan.target_files.length > 0);
 });
 
-test("ArchitectPlanner rejects missing fields", { concurrency: false }, async () => {
+test("ArchitectPlanner falls back on missing fields", { concurrency: false }, async () => {
   const provider = new StubProvider({
-    message: { role: "assistant", content: JSON.stringify({ steps: [] }) },
+    message: { role: "assistant", content: "PLAN:\nTARGETS:\nRISK:\nVERIFY:" },
   });
   const planner = new ArchitectPlanner(provider);
-  await assert.rejects(() => planner.plan(baseContext), /missing/);
+  const plan = await planner.plan(baseContext);
+  assert.ok(plan.steps.length > 0);
+  assert.ok(plan.target_files.length > 0);
+});
+
+test("ArchitectPlanner coerces string fields into arrays", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: JSON.stringify({
+        plan: "Inspect handler\nUpdate response",
+        target_files: "src/server.js, openapi/mcoda.yaml",
+        risk: "low",
+        verification: "npm test; npm run lint",
+      }),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const plan = await planner.plan(baseContext);
+  assert.equal(plan.steps.length, 2);
+  assert.equal(plan.target_files.length, 2);
+  assert.equal(plan.verification.length, 2);
 });

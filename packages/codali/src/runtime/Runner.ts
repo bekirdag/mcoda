@@ -1,4 +1,6 @@
 import type {
+  AgentEvent,
+  AgentStatusPhase,
   Provider,
   ProviderMessage,
   ProviderRequest,
@@ -21,6 +23,7 @@ export interface RunnerOptions {
   responseFormat?: ProviderResponseFormat;
   toolChoice?: ProviderRequest["toolChoice"];
   stream?: boolean;
+  onEvent?: (event: AgentEvent) => void;
   onToken?: (token: string) => void;
   streamFlushMs?: number;
   timeoutMs?: number;
@@ -52,6 +55,7 @@ export class Runner {
   private responseFormat?: ProviderResponseFormat;
   private toolChoice?: ProviderRequest["toolChoice"];
   private stream?: boolean;
+  private onEvent?: (event: AgentEvent) => void;
   private onToken?: (token: string) => void;
   private streamFlushMs?: number;
   private timeoutMs?: number;
@@ -68,6 +72,7 @@ export class Runner {
     this.responseFormat = options.responseFormat;
     this.toolChoice = options.toolChoice;
     this.stream = options.stream;
+    this.onEvent = options.onEvent;
     this.onToken = options.onToken;
     this.streamFlushMs = options.streamFlushMs;
     this.timeoutMs = options.timeoutMs;
@@ -79,6 +84,18 @@ export class Runner {
     let toolCallsExecuted = 0;
     let usageTotals: ProviderUsage | undefined;
     const deadline = this.timeoutMs ? Date.now() + this.timeoutMs : undefined;
+    const emitEvent = (event: AgentEvent) => {
+      if (this.onEvent) {
+        this.onEvent(event);
+        return;
+      }
+      if (event.type === "token") {
+        this.onToken?.(event.content);
+      }
+    };
+    const emitStatus = (phase: AgentStatusPhase, message?: string) => {
+      this.onEvent?.({ type: "status", phase, message });
+    };
 
     const recordUsage = (usage?: ProviderUsage): void => {
       if (!usage) return;
@@ -120,20 +137,36 @@ export class Runner {
       if (deadline && timeRemaining()! <= 0) {
         throw new Error("Runner timeout exceeded");
       }
+      const toolSpecs = this.tools.describe().map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      }));
+      const allowTools = toolSpecs.length > 0 && this.toolChoice !== "none";
+      emitStatus("thinking");
+      if (this.logger) {
+        await this.logger.log("provider_request", {
+          provider: this.provider.name,
+          messages,
+          tools: allowTools ? toolSpecs : [],
+          toolChoice: allowTools ? this.toolChoice ?? "auto" : "none",
+          responseFormat: this.responseFormat,
+          temperature: this.temperature,
+          maxTokens: this.maxTokens,
+          stream: this.stream ?? false,
+        });
+      }
       const response = await withTimeout(
         this.provider.generate({
           messages,
-          tools: this.tools.describe().map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          })),
-          toolChoice: this.toolChoice ?? "auto",
+          tools: allowTools ? toolSpecs : undefined,
+          toolChoice: allowTools ? this.toolChoice ?? "auto" : undefined,
           maxTokens: this.maxTokens,
           temperature: this.temperature,
           responseFormat: this.responseFormat,
           stream: this.stream,
-          onToken: this.onToken,
+          onEvent: emitEvent,
+          onToken: (token) => emitEvent({ type: "token", content: token }),
           streamFlushMs: this.streamFlushMs,
         }),
         "provider",
@@ -163,12 +196,15 @@ export class Runner {
           throw new Error("Tool call limit exceeded");
         }
         toolCallsExecuted += 1;
+        emitStatus("executing", call.name);
+        this.onEvent?.({ type: "tool_call", name: call.name, args: call.args });
         const result = await withTimeout(
           this.tools.execute(call.name, call.args, this.context),
           "tool",
         );
         const content = result.ok ? result.output : `ERROR: ${result.error ?? "tool failed"}`;
         messages.push(buildToolMessage(call, content));
+        this.onEvent?.({ type: "tool_result", name: call.name, output: content, ok: result.ok });
         if (this.logger) {
           await this.logger.log("tool_call", {
             name: call.name,

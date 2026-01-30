@@ -30,7 +30,34 @@ export const serializeContext = (
   }
 
   const lines: string[] = [];
+  lines.push("CODALI LIBRARIAN CONTEXT");
+  lines.push("");
+  lines.push("USER REQUEST:");
+  lines.push(bundle.request);
+  lines.push("");
+  if (bundle.selection) {
+    const focus = bundle.selection.focus.join(", ") || "none";
+    const periphery = bundle.selection.periphery.join(", ") || "none";
+    lines.push("SELECTION:");
+    lines.push(`- Focus files: ${focus}`);
+    lines.push(`- Periphery files: ${periphery}`);
+    lines.push("");
+  }
   lines.push("CONTEXT:");
+  if ((bundle.allow_write_paths?.length ?? 0) > 0 || (bundle.read_only_paths?.length ?? 0) > 0) {
+    const hasAllow = (bundle.allow_write_paths?.length ?? 0) > 0;
+    const hasReadOnly = (bundle.read_only_paths?.length ?? 0) > 0;
+    const allowList = hasAllow
+      ? bundle.allow_write_paths!.join(", ")
+      : hasReadOnly
+        ? "all (except read-only)"
+        : "unspecified";
+    const readOnlyList = hasReadOnly ? bundle.read_only_paths!.join(", ") : "none";
+    lines.push("WRITE POLICY:");
+    lines.push(`- Allowed write paths: ${allowList}`);
+    lines.push(`- Read-only paths: ${readOnlyList}`);
+    lines.push("");
+  }
   if (bundle.repo_map) {
     lines.push("REPO MAP:");
     lines.push(bundle.repo_map);
@@ -60,8 +87,8 @@ export const serializeContext = (
       lines.push(`- ${entry.file}: ${JSON.stringify(entry.diagnostics)}`);
     }
   }
-  lines.push("USER REQUEST:");
-  lines.push(bundle.request);
+  lines.push("");
+  lines.push("END OF CONTEXT");
 
   const focusFiles = files.filter((file) => file.role === "focus").length;
   const peripheryFiles = files.filter((file) => file.role === "periphery").length;

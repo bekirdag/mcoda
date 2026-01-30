@@ -6,6 +6,7 @@ import {
   DEFAULT_BUILDER,
   DEFAULT_CONTEXT,
   DEFAULT_COST,
+  DEFAULT_INTERPRETER,
   DEFAULT_LOCAL_CONTEXT,
   DEFAULT_LIMITS,
   DEFAULT_LOGGING,
@@ -20,6 +21,7 @@ import {
   type LocalContextConfig,
   type LoggingConfig,
   type CodaliConfig,
+  type InterpreterConfig,
   type RoutingConfig,
   type RoutingPhaseConfig,
   type SecurityConfig,
@@ -39,6 +41,7 @@ export interface ConfigSource {
   agentId?: string;
   agentSlug?: string;
   smart?: boolean;
+  planHint?: string;
   provider?: string;
   model?: string;
   apiKey?: string;
@@ -49,6 +52,7 @@ export interface ConfigSource {
   context?: Partial<ContextConfig>;
   security?: Partial<SecurityConfig>;
   builder?: Partial<BuilderConfig>;
+  interpreter?: Partial<InterpreterConfig>;
   streaming?: Partial<StreamingConfig>;
   cost?: Partial<CostConfig>;
   localContext?: Partial<LocalContextConfig>;
@@ -130,7 +134,7 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   const routing: Partial<RoutingConfig> = {};
   const setRouting = (
     phase: keyof RoutingConfig,
-    key: "provider" | "model" | "temperature" | "format" | "grammar",
+    key: "agent" | "provider" | "model" | "temperature" | "format" | "grammar",
     value: string | number | undefined,
   ): void => {
     if (value === undefined || value === "") return;
@@ -144,18 +148,27 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   setRouting("architect", "model", env.CODALI_MODEL_ARCHITECT);
   setRouting("builder", "model", env.CODALI_MODEL_BUILDER);
   setRouting("critic", "model", env.CODALI_MODEL_CRITIC);
+  setRouting("interpreter", "model", env.CODALI_MODEL_INTERPRETER);
+  setRouting("librarian", "agent", env.CODALI_AGENT_LIBRARIAN);
+  setRouting("architect", "agent", env.CODALI_AGENT_ARCHITECT);
+  setRouting("builder", "agent", env.CODALI_AGENT_BUILDER);
+  setRouting("critic", "agent", env.CODALI_AGENT_CRITIC);
+  setRouting("interpreter", "agent", env.CODALI_AGENT_INTERPRETER);
   setRouting("librarian", "provider", env.CODALI_PROVIDER_LIBRARIAN);
   setRouting("architect", "provider", env.CODALI_PROVIDER_ARCHITECT);
   setRouting("builder", "provider", env.CODALI_PROVIDER_BUILDER);
   setRouting("critic", "provider", env.CODALI_PROVIDER_CRITIC);
+  setRouting("interpreter", "provider", env.CODALI_PROVIDER_INTERPRETER);
   setRouting("librarian", "format", env.CODALI_FORMAT_LIBRARIAN);
   setRouting("architect", "format", env.CODALI_FORMAT_ARCHITECT);
   setRouting("builder", "format", env.CODALI_FORMAT_BUILDER);
   setRouting("critic", "format", env.CODALI_FORMAT_CRITIC);
+  setRouting("interpreter", "format", env.CODALI_FORMAT_INTERPRETER);
   setRouting("librarian", "grammar", env.CODALI_GRAMMAR_LIBRARIAN);
   setRouting("architect", "grammar", env.CODALI_GRAMMAR_ARCHITECT);
   setRouting("builder", "grammar", env.CODALI_GRAMMAR_BUILDER);
   setRouting("critic", "grammar", env.CODALI_GRAMMAR_CRITIC);
+  setRouting("interpreter", "grammar", env.CODALI_GRAMMAR_INTERPRETER);
 
   const tools: Partial<ToolConfig> = {};
   const enabledTools = parseList(env.CODALI_TOOLS_ENABLED);
@@ -205,20 +218,55 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   if (redactSecrets !== undefined) context.redactSecrets = redactSecrets;
   const ignoreFilesFrom = parseList(env.CODALI_CONTEXT_IGNORE_FILES_FROM);
   if (ignoreFilesFrom) context.ignoreFilesFrom = ignoreFilesFrom;
+  const preferredFiles = parseList(env.CODALI_CONTEXT_PREFERRED_FILES);
+  if (preferredFiles) context.preferredFiles = preferredFiles;
+  const recentFiles = parseList(env.CODALI_CONTEXT_RECENT_FILES);
+  if (recentFiles) context.recentFiles = recentFiles;
+  const skipSearchWhenPreferred = parseBoolean(env.CODALI_CONTEXT_SKIP_SEARCH);
+  if (skipSearchWhenPreferred !== undefined) {
+    context.skipSearchWhenPreferred = skipSearchWhenPreferred;
+  }
 
   const security: Partial<SecurityConfig> = {};
   const redactPatterns = parseList(env.CODALI_SECURITY_REDACT_PATTERNS);
   if (redactPatterns) security.redactPatterns = redactPatterns;
+  const readOnlyPaths =
+    parseList(env.CODALI_SECURITY_READONLY_PATHS) ?? parseList(env.CODALI_SECURITY_READ_ONLY_PATHS);
+  if (readOnlyPaths) security.readOnlyPaths = readOnlyPaths;
+  const allowDocEdits = parseBoolean(env.CODALI_SECURITY_ALLOW_DOC_EDITS);
+  if (allowDocEdits !== undefined) security.allowDocEdits = allowDocEdits;
+  const allowCloudModels =
+    parseBoolean(env.CODALI_SECURITY_ALLOW_CLOUD_MODELS) ??
+    parseBoolean(env.CODALI_ALLOW_CLOUD_MODELS);
+  if (allowCloudModels !== undefined) security.allowCloudModels = allowCloudModels;
 
   const builder: Partial<BuilderConfig> = {};
   const builderMode = env.CODALI_BUILDER_MODE;
-  if (builderMode === "tool_calls" || builderMode === "patch_json") builder.mode = builderMode;
+  if (builderMode === "tool_calls" || builderMode === "patch_json" || builderMode === "freeform") {
+    builder.mode = builderMode;
+  }
   const patchFormat = env.CODALI_BUILDER_PATCH_FORMAT;
   if (patchFormat === "search_replace" || patchFormat === "file_writes") builder.patchFormat = patchFormat;
+  const fallbackInterpreter = parseBoolean(env.CODALI_BUILDER_FALLBACK_INTERPRETER);
+  if (fallbackInterpreter !== undefined) builder.fallbackToInterpreter = fallbackInterpreter;
+  const fallbackMode = env.CODALI_BUILDER_FALLBACK;
+  if (fallbackMode) {
+    const normalized = fallbackMode.trim().toLowerCase();
+    builder.fallbackToInterpreter =
+      normalized === "interpreter" || normalized === "freeform" || normalized === "true" || normalized === "1";
+  }
+
+  const interpreter: Partial<InterpreterConfig> = {};
+  if (env.CODALI_INTERPRETER_PROVIDER) interpreter.provider = env.CODALI_INTERPRETER_PROVIDER;
+  if (env.CODALI_INTERPRETER_MODEL) interpreter.model = env.CODALI_INTERPRETER_MODEL;
+  if (env.CODALI_INTERPRETER_FORMAT) interpreter.format = env.CODALI_INTERPRETER_FORMAT;
+  if (env.CODALI_INTERPRETER_GRAMMAR) interpreter.grammar = env.CODALI_INTERPRETER_GRAMMAR;
+  const interpreterMaxRetries = parseNumber(env.CODALI_INTERPRETER_MAX_RETRIES);
+  if (interpreterMaxRetries !== undefined) interpreter.maxRetries = interpreterMaxRetries;
+  const interpreterTimeoutMs = parseNumber(env.CODALI_INTERPRETER_TIMEOUT_MS);
+  if (interpreterTimeoutMs !== undefined) interpreter.timeoutMs = interpreterTimeoutMs;
 
   const streaming: Partial<StreamingConfig> = {};
-  const streamingEnabled = parseBoolean(env.CODALI_STREAMING_ENABLED);
-  if (streamingEnabled !== undefined) streaming.enabled = streamingEnabled;
   const streamingFlush = parseNumber(env.CODALI_STREAMING_FLUSH_MS);
   if (streamingFlush !== undefined) streaming.flushEveryMs = streamingFlush;
 
@@ -255,6 +303,10 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   }
   const summarizeTargetTokens = parseNumber(env.CODALI_LOCAL_CONTEXT_SUMMARIZE_TARGET_TOKENS);
   if (summarizeTargetTokens !== undefined) summarize.targetTokens = summarizeTargetTokens;
+  const summarizeThreshold = parseNumber(env.CODALI_LOCAL_CONTEXT_SUMMARIZE_THRESHOLD_PCT);
+  if (summarizeThreshold !== undefined) {
+    summarize.thresholdPct = summarizeThreshold > 1 ? summarizeThreshold / 100 : summarizeThreshold;
+  }
   if (Object.keys(summarize).length) {
     localContext.summarize = summarize as LocalContextConfig["summarize"];
   }
@@ -267,6 +319,7 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
     context,
     security,
     builder,
+    interpreter,
     streaming,
     cost,
     localContext,
@@ -285,6 +338,7 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   if (env.CODALI_AGENT_SLUG) config.agentSlug = env.CODALI_AGENT_SLUG;
   const smart = parseBoolean(env.CODALI_SMART);
   if (smart !== undefined) config.smart = smart;
+  if (env.CODALI_PLAN_HINT) config.planHint = env.CODALI_PLAN_HINT;
   if (env.CODALI_PROVIDER) config.provider = env.CODALI_PROVIDER;
   if (env.CODALI_MODEL) config.model = env.CODALI_MODEL;
   if (env.CODALI_API_KEY) config.apiKey = env.CODALI_API_KEY;
@@ -334,6 +388,12 @@ const mergeConfigs = (
     ...fileConfig?.builder,
     ...envConfig?.builder,
     ...cliConfig?.builder,
+  };
+  const interpreter = {
+    ...defaults.interpreter,
+    ...fileConfig?.interpreter,
+    ...envConfig?.interpreter,
+    ...cliConfig?.interpreter,
   };
   const streaming = {
     ...defaults.streaming,
@@ -389,6 +449,7 @@ const mergeConfigs = (
     context,
     security,
     builder,
+    interpreter,
     streaming,
     cost,
     localContext,
@@ -400,7 +461,13 @@ const mergeConfigs = (
 const mergeRoutingConfigs = (
   ...sources: Array<RoutingConfig | Partial<RoutingConfig> | undefined>
 ): RoutingConfig | undefined => {
-  const phases: Array<keyof RoutingConfig> = ["librarian", "architect", "builder", "critic"];
+  const phases: Array<keyof RoutingConfig> = [
+    "librarian",
+    "architect",
+    "builder",
+    "critic",
+    "interpreter",
+  ];
   const merged: RoutingConfig = {};
   for (const phase of phases) {
     const phaseConfigs = sources.map((source) => {
@@ -420,6 +487,10 @@ const finalizeConfig = (cwd: string, config: CodaliConfig): CodaliConfig => {
   const workspaceRoot = path.resolve(cwd, config.workspaceRoot);
   return {
     ...config,
+    streaming: {
+      ...config.streaming,
+      enabled: true,
+    },
     workspaceRoot,
   };
 };
@@ -427,8 +498,14 @@ const finalizeConfig = (cwd: string, config: CodaliConfig): CodaliConfig => {
 const assertRequired = (config: CodaliConfig): void => {
   const missing: string[] = [];
   if (!config.workspaceRoot) missing.push("workspaceRoot");
-  if (!config.provider) missing.push("provider");
-  if (!config.model) missing.push("model");
+  const hasRoutingAgent =
+    config.smart &&
+    Object.values(config.routing ?? {}).some((phase) => Boolean(phase?.agent));
+  if (!config.smart && !config.provider) missing.push("provider");
+  if (!config.smart && !config.model) missing.push("model");
+  if (config.smart && !config.provider && !hasRoutingAgent) {
+    // allow auto-selection from agent DB
+  }
   if (missing.length) {
     throw new Error(`Missing required config: ${missing.join(", ")}`);
   }
@@ -440,6 +517,14 @@ const assertValid = (config: CodaliConfig): void => {
   if (localContext.maxMessages < 0) errors.push("localContext.maxMessages");
   if (localContext.maxBytesPerLane < 0) errors.push("localContext.maxBytesPerLane");
   if (localContext.summarize.targetTokens < 0) errors.push("localContext.summarize.targetTokens");
+  if (
+    localContext.summarize.thresholdPct <= 0 ||
+    localContext.summarize.thresholdPct > 1
+  ) {
+    errors.push("localContext.summarize.thresholdPct");
+  }
+  if (config.interpreter.maxRetries < 0) errors.push("interpreter.maxRetries");
+  if (config.interpreter.timeoutMs < 0) errors.push("interpreter.timeoutMs");
   for (const [key, value] of Object.entries(localContext.modelTokenLimits)) {
     if (value <= 0) errors.push(`localContext.modelTokenLimits.${key}`);
   }
@@ -456,12 +541,12 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Codal
   const envConfig = loadEnvConfig(env);
 
   const defaults: CodaliConfig = {
-    workspaceRoot: "",
+    workspaceRoot: ".",
     provider: "",
     model: "",
     apiKey: undefined,
     baseUrl: undefined,
-    smart: false,
+    smart: true,
     docdex: {
       baseUrl: envConfig.docdex?.baseUrl ?? DEFAULT_DOCDEX_BASE_URL,
       repoRoot: envConfig.docdex?.repoRoot,
@@ -472,6 +557,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Codal
     context: DEFAULT_CONTEXT,
     security: DEFAULT_SECURITY,
     builder: DEFAULT_BUILDER,
+    interpreter: DEFAULT_INTERPRETER,
     streaming: DEFAULT_STREAMING,
     cost: DEFAULT_COST,
     localContext: DEFAULT_LOCAL_CONTEXT,

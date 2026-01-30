@@ -528,6 +528,36 @@ test("GatewayTrioService forwards work-on-tasks overrides", async () => {
   }
 });
 
+test("GatewayTrioService completes work-review-qa with codali runner", async () => {
+  const statusStore = makeStatusStore({ "TASK-1": "in_progress" });
+  const workRequests: any[] = [];
+  const stepCalls: string[] = [];
+  const { service, dir } = await makeService({
+    statusStore,
+    selectionKeys: ["TASK-1"],
+    workRequests,
+    stepCalls,
+  });
+  try {
+    const result = await service.run({
+      workspace: { workspaceRoot: dir, workspaceId: "ws-1" } as any,
+      workRunner: "codali",
+      useCodali: true,
+      agentAdapterOverride: "codali-cli",
+    });
+    assert.equal(result.tasks[0].status, "completed");
+    assert.deepEqual(stepCalls, ["work", "review", "qa"]);
+    assert.ok(workRequests.length > 0);
+    const request = workRequests[0];
+    assert.equal(request.workRunner, "codali");
+    assert.equal(request.useCodali, true);
+    assert.equal(request.agentAdapterOverride, "codali-cli");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayTrioService skips work when task is ready_to_code_review", async () => {
   const statusStore = makeStatusStore({ "TASK-R": "ready_to_code_review" });
   const stepCalls: string[] = [];

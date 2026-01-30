@@ -57,11 +57,23 @@ test("agent add/list surfaces health from agent_health", { concurrency: false },
       "chat",
       "--max-complexity",
       "8",
+      "--openai-compatible",
+      "true",
+      "--context-window",
+      "16384",
+      "--max-output-tokens",
+      "2048",
+      "--supports-tools",
+      "true",
     ]);
 
     const repo = await GlobalRepository.create();
     const agent = await repo.getAgentBySlug(slug);
     assert.ok(agent);
+    assert.equal(agent.openaiCompatible, true);
+    assert.equal(agent.contextWindow, 16384);
+    assert.equal(agent.maxOutputTokens, 2048);
+    assert.equal(agent.supportsTools, true);
     await repo.setAgentHealth({
       agentId: agent.id,
       status: "healthy",
@@ -74,7 +86,7 @@ test("agent add/list surfaces health from agent_health", { concurrency: false },
     const output = logs.join("\n");
     assert.match(output, new RegExp(slug));
     assert.match(output, /healthy/);
-    assert.match(output, /MAX CX/);
+    assert.match(output, /MAX CPLX/);
     const row = output.split("\n").find((line) => line.includes(slug));
     assert.ok(row);
     const cells = row.split("│").map((cell) => cell.trim()).filter(Boolean);

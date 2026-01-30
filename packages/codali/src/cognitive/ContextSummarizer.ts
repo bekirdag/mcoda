@@ -28,11 +28,20 @@ export class ContextSummarizer {
   }
 
   async summarize(messages: ProviderMessage[]): Promise<ProviderMessage> {
+    const requestMessages: ProviderMessage[] = [
+      { role: "system", content: CONTEXT_SUMMARY_PROMPT },
+      { role: "user", content: formatHistory(messages) },
+    ];
+    if (this.logger) {
+      await this.logger.log("provider_request", {
+        provider: this.provider.name,
+        messages: requestMessages,
+        temperature: this.temperature,
+        maxTokens: this.maxTokens,
+      });
+    }
     const response = await this.provider.generate({
-      messages: [
-        { role: "system", content: CONTEXT_SUMMARY_PROMPT },
-        { role: "user", content: formatHistory(messages) },
-      ],
+      messages: requestMessages,
       temperature: this.temperature,
       maxTokens: this.maxTokens,
     });

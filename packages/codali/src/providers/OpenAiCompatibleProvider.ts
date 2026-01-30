@@ -68,6 +68,13 @@ export class OpenAiCompatibleProvider implements Provider {
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     const baseUrl = normalizeBaseUrl(this.config.baseUrl);
     const url = new URL("chat/completions", baseUrl).toString();
+    const emitToken = (token: string) => {
+      if (request.onEvent) {
+        request.onEvent({ type: "token", content: token });
+        return;
+      }
+      request.onToken?.(token);
+    };
 
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -147,7 +154,7 @@ export class OpenAiCompatibleProvider implements Provider {
               const delta = chunk.choices?.[0]?.delta;
               if (delta?.content) {
                 content += delta.content;
-                request.onToken?.(delta.content);
+                emitToken(delta.content);
               }
               if (Array.isArray(delta?.tool_calls)) {
                 for (const call of delta.tool_calls) {

@@ -1,7 +1,7 @@
 import type { ProviderConfig, ProviderResponseFormat } from "../providers/ProviderTypes.js";
 import type { RoutingConfig, RoutingPhaseConfig } from "../config/Config.js";
 
-export type PipelinePhase = "librarian" | "architect" | "builder" | "critic";
+export type PipelinePhase = "librarian" | "architect" | "builder" | "critic" | "interpreter";
 
 export interface ProviderDefaults {
   provider: string;
@@ -38,13 +38,14 @@ export const buildRoutedProvider = (
   phase: PipelinePhase,
   defaults: ProviderDefaults,
   routing?: RoutingConfig,
+  lockProviderModel = false,
 ): RoutedProvider => {
   const phaseConfig = resolvePhaseRouting(routing, phase);
   return {
-    provider: phaseConfig?.provider ?? defaults.provider,
+    provider: lockProviderModel ? defaults.provider : phaseConfig?.provider ?? defaults.provider,
     config: {
       ...defaults.config,
-      model: phaseConfig?.model ?? defaults.config.model,
+      model: lockProviderModel ? defaults.config.model : phaseConfig?.model ?? defaults.config.model,
     },
     temperature: phaseConfig?.temperature,
     responseFormat: toResponseFormat(phaseConfig?.format, phaseConfig?.grammar),

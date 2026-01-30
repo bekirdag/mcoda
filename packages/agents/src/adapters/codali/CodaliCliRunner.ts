@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 
 const CODALI_BIN_ENV = "CODALI_BIN";
@@ -89,22 +89,152 @@ export const buildArgs = (options: CodaliCliOptions): string[] => {
   return args;
 };
 
+export const buildEnv = (options: CodaliCliOptions): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(options.env ?? {}),
+  };
+  // Codali must never run under a sandboxed codex shell.
+  env.MCODA_CODEX_NO_SANDBOX = "1";
+  const apiKey = options.apiKey ?? env.CODALI_API_KEY;
+  if (apiKey) {
+    env.CODALI_API_KEY = apiKey;
+  }
+  if (options.baseUrl && !env.CODALI_BASE_URL) {
+    env.CODALI_BASE_URL = options.baseUrl;
+  }
+  return env;
+};
+
+const parseRunMetaLine = (line: string): Record<string, unknown> | undefined => {
+  if (!line.startsWith("CODALI_RUN_META ")) return undefined;
+  const payload = line.slice("CODALI_RUN_META ".length).trim();
+  if (!payload) return undefined;
+  try {
+    return JSON.parse(payload) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+};
+
 const parseRunMeta = (stderr: string | undefined): Record<string, unknown> | undefined => {
   if (!stderr) return undefined;
   const lines = stderr.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
-    if (!line.startsWith("CODALI_RUN_META ")) continue;
-    const payload = line.slice("CODALI_RUN_META ".length).trim();
-    if (!payload) return undefined;
-    try {
-      return JSON.parse(payload) as Record<string, unknown>;
-    } catch {
-      return undefined;
-    }
+    const parsed = parseRunMetaLine(line);
+    if (parsed) return parsed;
   }
   return undefined;
 };
+
+export async function* runCodaliStream(
+  input: string,
+  options: CodaliCliOptions,
+): AsyncGenerator<{ output: string; meta?: Record<string, unknown> }> {
+  if (process.env[CODALI_STUB_ENV] === "1") {
+    yield { output: `codali-stub:${input}` };
+    return;
+  }
+
+  const bin = process.env[CODALI_BIN_ENV] ?? "codali";
+  const args = buildArgs(options);
+  const env = buildEnv(options);
+  const child = spawn(bin, args, {
+    cwd: path.resolve(options.workspaceRoot),
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let stderrBuffer = "";
+  let stderr = "";
+  let meta: Record<string, unknown> | undefined;
+  let exitCode: number | null = null;
+  let spawnError: Error | null = null;
+  let done = false;
+  const queue: string[] = [];
+  let notify: (() => void) | null = null;
+
+  const push = (line: string) => {
+    if (!line) return;
+    queue.push(line);
+    if (notify) {
+      notify();
+      notify = null;
+    }
+  };
+
+  const handleStderrLine = (line: string) => {
+    const parsed = parseRunMetaLine(line);
+    if (parsed) {
+      meta = parsed;
+      return;
+    }
+    stderr += `${line}\n`;
+    push(`${line}\n`);
+  };
+
+  child.stdout.on("data", (chunk) => {
+    push(chunk.toString());
+  });
+
+  child.stderr.on("data", (chunk) => {
+    stderrBuffer += chunk.toString();
+    const lines = stderrBuffer.split(/\r?\n/);
+    stderrBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      handleStderrLine(line);
+    }
+  });
+
+  child.on("error", (error) => {
+    spawnError = error;
+    done = true;
+    if (notify) {
+      notify();
+      notify = null;
+    }
+  });
+
+  child.on("close", (code) => {
+    exitCode = code ?? 0;
+    if (stderrBuffer.trim()) {
+      handleStderrLine(stderrBuffer.trim());
+    }
+    done = true;
+    if (notify) {
+      notify();
+      notify = null;
+    }
+  });
+
+  child.stdin.write(input);
+  child.stdin.end();
+
+  while (!done || queue.length > 0) {
+    if (queue.length > 0) {
+      const next = queue.shift();
+      if (next !== undefined) {
+        yield { output: next };
+      }
+      continue;
+    }
+    await new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+  }
+
+  if (spawnError) {
+    throw spawnError;
+  }
+  if (exitCode !== 0) {
+    throw new Error(`codali CLI failed: ${stderr}`.trim());
+  }
+
+  if (meta) {
+    yield { output: "", meta };
+  }
+}
 
 export const runCodaliExec = (
   input: string,
@@ -118,14 +248,7 @@ export const runCodaliExec = (
   }
   const bin = process.env[CODALI_BIN_ENV] ?? "codali";
   const args = buildArgs(options);
-  const env = {
-    ...process.env,
-    ...(options.env ?? {}),
-  };
-  const apiKey = options.apiKey ?? env.CODALI_API_KEY;
-  if (apiKey) {
-    env.CODALI_API_KEY = apiKey;
-  }
+  const env = buildEnv(options);
 
   const result = spawnSync(bin, args, {
     cwd: path.resolve(options.workspaceRoot),

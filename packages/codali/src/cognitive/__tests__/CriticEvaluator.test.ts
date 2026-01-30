@@ -28,6 +28,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
     provider: "librarian",
     model: "gemma2:2b",
     targetTokens: 1200,
+    thresholdPct: 0.9,
   },
   ...overrides,
 });
@@ -70,6 +71,24 @@ test("CriticEvaluator fails when no files touched for plan targets", { concurren
   assert.equal(result.status, "FAIL");
 });
 
+test("CriticEvaluator fails when touched files are read-only", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(new StubValidator({ ok: true, errors: [] }) as any);
+  const result = await evaluator.evaluate(plan, "output", ["docs/sds/spec.md"], {
+    readOnlyPaths: ["docs/sds"],
+  });
+  assert.equal(result.status, "FAIL");
+  assert.ok(result.reasons.some((reason) => reason.includes("read-only")));
+});
+
+test("CriticEvaluator fails when touched files are outside allowed paths", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(new StubValidator({ ok: true, errors: [] }) as any);
+  const result = await evaluator.evaluate(plan, "output", ["src/other.ts"], {
+    allowedPaths: ["src/allowed.ts"],
+  });
+  assert.equal(result.status, "FAIL");
+  assert.ok(result.reasons.some((reason) => reason.includes("allowed paths")));
+});
+
 test("CriticEvaluator infers touched files from patch output", { concurrency: false }, async () => {
   const evaluator = new CriticEvaluator(new StubValidator({ ok: true, errors: [] }) as any);
   const patchOutput = JSON.stringify({
@@ -109,5 +128,5 @@ test("CriticEvaluator appends summary to context manager", { concurrency: false 
   await evaluator.evaluate(plan, "output");
   const snapshot = await store.loadLane(lane.id);
   assert.equal(snapshot.messageCount, 1);
-  assert.ok(snapshot.messages[0].content.includes("Critic result"));
+  assert.ok(snapshot.messages[0].content.includes("CRITIC_RESULT v1"));
 });

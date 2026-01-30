@@ -34,15 +34,31 @@ export interface ContextConfig {
   skeletonizeLargeFiles: boolean;
   redactSecrets: boolean;
   ignoreFilesFrom: string[];
+  preferredFiles?: string[];
+  recentFiles?: string[];
+  skipSearchWhenPreferred?: boolean;
 }
 
 export interface SecurityConfig {
   redactPatterns: string[];
+  readOnlyPaths: string[];
+  allowDocEdits: boolean;
+  allowCloudModels: boolean;
 }
 
 export interface BuilderConfig {
-  mode: "tool_calls" | "patch_json";
+  mode: "tool_calls" | "patch_json" | "freeform";
   patchFormat: "search_replace" | "file_writes";
+  fallbackToInterpreter?: boolean;
+}
+
+export interface InterpreterConfig {
+  provider: string;
+  model: string;
+  format: string;
+  grammar?: string;
+  maxRetries: number;
+  timeoutMs: number;
 }
 
 export interface StreamingConfig {
@@ -61,6 +77,7 @@ export interface LocalContextSummarizeConfig {
   provider: string;
   model: string;
   targetTokens: number;
+  thresholdPct: number;
 }
 
 export interface LocalContextConfig {
@@ -74,6 +91,7 @@ export interface LocalContextConfig {
 }
 
 export interface RoutingPhaseConfig {
+  agent?: string;
   provider?: string;
   model?: string;
   temperature?: number;
@@ -86,6 +104,7 @@ export interface RoutingConfig {
   architect?: RoutingPhaseConfig;
   builder?: RoutingPhaseConfig;
   critic?: RoutingPhaseConfig;
+  interpreter?: RoutingPhaseConfig;
 }
 
 export interface LoggingConfig {
@@ -104,6 +123,7 @@ export interface CodaliConfig {
   agentId?: string;
   agentSlug?: string;
   smart?: boolean;
+  planHint?: string;
   provider: string;
   model: string;
   apiKey?: string;
@@ -114,6 +134,7 @@ export interface CodaliConfig {
   context: ContextConfig;
   security: SecurityConfig;
   builder: BuilderConfig;
+  interpreter: InterpreterConfig;
   streaming: StreamingConfig;
   cost: CostConfig;
   localContext: LocalContextConfig;
@@ -132,7 +153,7 @@ export const DEFAULT_LIMITS: LimitsConfig = {
 };
 
 export const DEFAULT_CONTEXT: ContextConfig = {
-  mode: "json",
+  mode: "bundle_text",
   maxFiles: 8,
   maxTotalBytes: 40_000,
   tokenBudget: 120_000,
@@ -146,15 +167,35 @@ export const DEFAULT_CONTEXT: ContextConfig = {
   skeletonizeLargeFiles: true,
   redactSecrets: true,
   ignoreFilesFrom: [".gitignore", ".codaliignore"],
+  skipSearchWhenPreferred: false,
 };
 
 export const DEFAULT_SECURITY: SecurityConfig = {
   redactPatterns: ["AKIA[0-9A-Z]{16}", "-----BEGIN PRIVATE KEY-----"],
+  readOnlyPaths: [
+    "docs/sds",
+    "docs/rfp",
+    "openapi",
+    "openapi.yaml",
+    "openapi.yml",
+    "openapi.json",
+  ],
+  allowDocEdits: false,
+  allowCloudModels: false,
 };
 
 export const DEFAULT_BUILDER: BuilderConfig = {
-  mode: "tool_calls",
+  mode: "freeform",
   patchFormat: "search_replace",
+  fallbackToInterpreter: true,
+};
+
+export const DEFAULT_INTERPRETER: InterpreterConfig = {
+  provider: "auto",
+  model: "auto",
+  format: "json",
+  maxRetries: 1,
+  timeoutMs: 120_000,
 };
 
 export const DEFAULT_STREAMING: StreamingConfig = {
@@ -169,7 +210,7 @@ export const DEFAULT_COST: CostConfig = {
 };
 
 export const DEFAULT_LOCAL_CONTEXT: LocalContextConfig = {
-  enabled: false,
+  enabled: true,
   storageDir: "codali/context",
   persistToolMessages: false,
   maxMessages: 200,
@@ -184,6 +225,7 @@ export const DEFAULT_LOCAL_CONTEXT: LocalContextConfig = {
     provider: "librarian",
     model: "gemma2:2b",
     targetTokens: 1200,
+    thresholdPct: 0.9,
   },
 };
 

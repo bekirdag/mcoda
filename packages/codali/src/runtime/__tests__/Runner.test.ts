@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Runner } from "../Runner.js";
 import { ToolRegistry } from "../../tools/ToolRegistry.js";
-import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
+import type { AgentEvent, Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 
 class StubProvider implements Provider {
   name = "stub";
@@ -50,6 +50,41 @@ test("Runner executes tool calls", { concurrency: false }, async () => {
   const result = await runner.run([{ role: "user", content: "hi" }]);
   assert.equal(result.finalMessage.content, "done");
   assert.equal(result.toolCallsExecuted, 1);
+});
+
+test("Runner emits tool events", { concurrency: false }, async () => {
+  const tools = new ToolRegistry();
+  tools.register({
+    name: "echo",
+    description: "echo",
+    inputSchema: { type: "object" },
+    handler: async (args) => ({ output: JSON.stringify(args) }),
+  });
+
+  const provider = new StubProvider([
+    {
+      message: { role: "assistant", content: "" },
+      toolCalls: [{ id: "call_1", name: "echo", args: { ok: true } }],
+    },
+    {
+      message: { role: "assistant", content: "done" },
+    },
+  ]);
+
+  const events: AgentEvent[] = [];
+  const runner = new Runner({
+    provider,
+    tools,
+    context: { workspaceRoot: process.cwd() },
+    maxSteps: 3,
+    maxToolCalls: 3,
+    onEvent: (event) => events.push(event),
+  });
+
+  await runner.run([{ role: "user", content: "hi" }]);
+  assert.ok(events.some((event) => event.type === "status" && event.phase === "thinking"));
+  assert.ok(events.some((event) => event.type === "tool_call" && event.name === "echo"));
+  assert.ok(events.some((event) => event.type === "tool_result" && event.name === "echo"));
 });
 
 test("Runner enforces step limit", { concurrency: false }, async () => {
@@ -138,8 +173,14 @@ test("Runner passes maxTokens to provider", { concurrency: false }, async () => 
   assert.equal(received?.maxTokens, 128);
 });
 
-test("Runner passes toolChoice override", { concurrency: false }, async () => {
+test("Runner omits tools when toolChoice is none", { concurrency: false }, async () => {
   const tools = new ToolRegistry();
+  tools.register({
+    name: "read_file",
+    description: "read file",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    handler: async () => ({ output: "ok" }),
+  });
   let received: ProviderRequest | undefined;
   const provider: Provider = {
     name: "capture",
@@ -159,7 +200,8 @@ test("Runner passes toolChoice override", { concurrency: false }, async () => {
   });
 
   await runner.run([{ role: "user", content: "hi" }]);
-  assert.equal(received?.toolChoice, "none");
+  assert.equal(received?.tools, undefined);
+  assert.equal(received?.toolChoice, undefined);
 });
 
 test("Runner enforces timeout", { concurrency: false }, async () => {

@@ -1,4 +1,5 @@
 import type { Provider, ProviderMessage } from "../providers/ProviderTypes.js";
+import type { RunLogger } from "../runtime/RunLogger.js";
 
 const STOPWORDS = new Set([
   "the",
@@ -149,12 +150,22 @@ export const expandQueriesWithProvider = async (
   maxQueries = 3,
   temperature?: number,
   fileHints?: string[],
+  logger?: RunLogger,
 ): Promise<string[]> => {
+  const messages: ProviderMessage[] = [
+    { role: "system", content: QUERY_EXPANDER_PROMPT },
+    buildQueryMessage(request, baseQueries, maxQueries, fileHints),
+  ];
+  if (logger) {
+    await logger.log("provider_request", {
+      provider: provider.name,
+      messages,
+      responseFormat: { type: "json" },
+      temperature,
+    });
+  }
   const response = await provider.generate({
-    messages: [
-      { role: "system", content: QUERY_EXPANDER_PROMPT },
-      buildQueryMessage(request, baseQueries, maxQueries, fileHints),
-    ],
+    messages,
     responseFormat: { type: "json" },
     temperature,
   });

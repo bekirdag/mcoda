@@ -10,6 +10,7 @@ import { TaskSelectionService } from "../TaskSelectionService.js";
 import { TaskStateService } from "../TaskStateService.js";
 import { WorkOnTasksService } from "../WorkOnTasksService.js";
 import { JobService } from "../../jobs/JobService.js";
+import { GATEWAY_HANDOFF_ENV_PATH } from "../../agents/GatewayHandoff.js";
 
 let tempHome: string | undefined;
 let originalHome: string | undefined;
@@ -1337,7 +1338,146 @@ test("workOnTasks attaches docdex and workspace metadata for agent invocation", 
   }
 });
 
-test("workOnTasks disables streaming when codali is required", async () => {
+test("workOnTasks seeds codali env overrides from gateway handoff", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCaptureRequest();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const handoffPath = path.join(dir, "gateway-handoff.md");
+  const handoffContent = [
+    "# Gateway Handoff",
+    "",
+    "## Plan",
+    "1. Update src/auth/login.ts to include the header.",
+    "2. Run the relevant tests.",
+    "",
+    "## Files Likely Touched",
+    "- src/auth/login.ts",
+    "- src/auth/helpers.ts",
+    "",
+    "## Files To Create",
+    "- src/auth/new.ts",
+    "",
+    "## Dirs To Create",
+    "- src/auth/utils",
+    "",
+    "## Risks",
+    "- Auth flows may regress.",
+  ].join("\n");
+  const originalHandoff = process.env[GATEWAY_HANDOFF_ENV_PATH];
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    await fs.writeFile(handoffPath, handoffContent, "utf8");
+    process.env[GATEWAY_HANDOFF_ENV_PATH] = handoffPath;
+    process.env.MCODA_CLI_STUB = "1";
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      useCodali: true,
+      dryRun: false,
+      taskKeys: ["proj-epic-us-01-t01"],
+    });
+    const metadata = agentService.lastRequest?.metadata as Record<string, any>;
+    assert.ok(metadata?.codaliEnv);
+    const codaliEnv = metadata.codaliEnv as Record<string, string>;
+    assert.equal(codaliEnv.CODALI_CONTEXT_SKIP_SEARCH, "1");
+    const preferred = (codaliEnv.CODALI_CONTEXT_PREFERRED_FILES ?? "").split(",").filter(Boolean);
+    assert.ok(preferred.includes("src/auth/login.ts"));
+    assert.ok(preferred.includes("src/auth/new.ts"));
+    assert.ok(codaliEnv.CODALI_SECURITY_READONLY_PATHS?.includes("docs/sds"));
+    const planHint = JSON.parse(codaliEnv.CODALI_PLAN_HINT ?? "{}");
+    assert.deepEqual(planHint.steps, [
+      "Update src/auth/login.ts to include the header.",
+      "Run the relevant tests.",
+    ]);
+    assert.ok(planHint.target_files.includes("src/auth/login.ts"));
+  } finally {
+    if (originalHandoff === undefined) {
+      delete process.env[GATEWAY_HANDOFF_ENV_PATH];
+    } else {
+      process.env[GATEWAY_HANDOFF_ENV_PATH] = originalHandoff;
+    }
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks skips docdex context when gateway handoff is present", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceCaptureRequest();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdexScopeFail() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  const handoffPath = path.join(dir, "gateway-handoff.md");
+  const originalHandoff = process.env[GATEWAY_HANDOFF_ENV_PATH];
+  const originalStub = process.env.MCODA_CLI_STUB;
+  try {
+    await fs.writeFile(
+      handoffPath,
+      ["# Gateway Handoff", "", "## Plan", "1. Use gateway plan", "", "## Files Likely Touched", "- src/app.ts"].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    process.env[GATEWAY_HANDOFF_ENV_PATH] = handoffPath;
+    process.env.MCODA_CLI_STUB = "1";
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      useCodali: true,
+      dryRun: false,
+      taskKeys: ["proj-epic-us-01-t01"],
+    });
+    assert.ok(result.results.every((r) => r.notes !== "missing_docdex"));
+  } finally {
+    if (originalHandoff === undefined) {
+      delete process.env[GATEWAY_HANDOFF_ENV_PATH];
+    } else {
+      process.env[GATEWAY_HANDOFF_ENV_PATH] = originalHandoff;
+    }
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks streams when codali is required", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -1365,8 +1505,8 @@ test("workOnTasks disables streaming when codali is required", async () => {
       useCodali: true,
       dryRun: false,
     });
-    assert.equal(agentService.streamCalls, 0);
-    assert.ok(agentService.invokeCalls > 0);
+    assert.ok(agentService.streamCalls > 0);
+    assert.equal(agentService.invokeCalls, 0);
   } finally {
     if (originalStub === undefined) {
       delete process.env.MCODA_CLI_STUB;
@@ -2497,19 +2637,19 @@ test("workOnTasks blocks destructive doc edits without allow flag", async () => 
     assert.equal(updated?.status, "failed");
     const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
     const guardComment = comments.find((comment) => comment.category === "doc_edit_guard");
-    assert.ok(guardComment?.body.includes("allow_large_doc_edits"));
+    assert.ok(guardComment?.body.includes("allow_doc_edits"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
 });
 
-test("workOnTasks allows large doc edits when metadata allows", async () => {
+test("workOnTasks allows doc edits when metadata allows", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
-  await repo.updateTask(tasks[0].id, { metadata: { allow_large_doc_edits: true } });
+  await repo.updateTask(tasks[0].id, { metadata: { allow_doc_edits: true } });
   const service = new WorkOnTasksService(workspace, {
     agentService: new StubAgentServiceLargeDocDeletion() as any,
     docdex: new StubDocdex() as any,

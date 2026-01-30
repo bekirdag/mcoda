@@ -1,0 +1,214 @@
+import { GlobalRepository } from "@mcoda/db";
+import type { Agent } from "@mcoda/shared";
+import type { PipelinePhase } from "../cognitive/ProviderRouting.js";
+import type { BuilderConfig } from "../config/Config.js";
+import {
+  resolveAgentConfigFromRecord,
+  type ResolvedAgentConfig,
+} from "./AgentResolver.js";
+
+export type PhaseAgentSource = "override" | "auto" | "fallback" | "none";
+
+export interface PhaseAgentSelection {
+  phase: PipelinePhase;
+  agent?: Agent;
+  capabilities: string[];
+  resolved?: ResolvedAgentConfig;
+  source: PhaseAgentSource;
+  score?: number;
+  reason?: string;
+}
+
+export interface PhaseAgentSelectionOptions {
+  overrides: Partial<Record<PipelinePhase, string>>;
+  builderMode: BuilderConfig["mode"];
+  fallbackAgent?: ResolvedAgentConfig;
+  allowCloudModels?: boolean;
+}
+
+const PHASE_CAPABILITIES: Record<PipelinePhase, string[]> = {
+  librarian: ["docdex_query", "summarization", "keyword_extraction", "log_analysis"],
+  architect: ["plan", "system_architecture", "architectural_design", "deep_reasoning"],
+  builder: ["code_write", "complex_refactoring", "migration_assist", "debugging"],
+  critic: ["code_review", "pull_request_review", "final_code_review", "standard_compliance"],
+  interpreter: ["code_review", "pull_request_review", "final_code_review", "standard_compliance"],
+};
+
+const PHASE_REQUIRED_CAPS: Record<PipelinePhase, string[]> = {
+  librarian: ["docdex_query", "summarization", "keyword_extraction", "log_analysis"],
+  architect: ["plan", "system_architecture", "architectural_design", "deep_reasoning"],
+  builder: ["code_write", "simple_refactor", "iterative_coding", "migration_assist"],
+  critic: ["code_review", "pull_request_review", "final_code_review", "standard_compliance"],
+  interpreter: ["code_review", "pull_request_review", "final_code_review", "standard_compliance"],
+};
+
+const PHASE_BEST_USAGE: Record<PipelinePhase, string[]> = {
+  librarian: ["lightweight_tasks", "log_analysis", "summarization", "doc_generation"],
+  architect: ["system_architecture", "architectural_design", "deep_reasoning", "plan"],
+  builder: ["code_write", "coding_light", "iterative_coding", "rapid_prototyping"],
+  critic: ["code_review", "code_review_secondary", "production_verification"],
+  interpreter: ["code_review", "code_review_secondary", "production_verification"],
+};
+
+const countMatches = (capabilities: string[], required: string[]): number =>
+  required.filter((cap) => capabilities.includes(cap)).length;
+
+const isCloudModel = (model?: string): boolean => {
+  if (!model) return false;
+  return model.toLowerCase().includes(":cloud");
+};
+
+const scoreAgent = (
+  phase: PipelinePhase,
+  agent: Agent,
+  capabilities: string[],
+  builderMode: BuilderConfig["mode"],
+): number => {
+  if (builderMode === "tool_calls" && phase === "builder" && agent.supportsTools === false) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const rating = agent.rating ?? 0;
+  const reasoning = agent.reasoningRating ?? rating;
+  const cost = agent.costPerMillion ?? 0;
+  const maxComplexity = agent.maxComplexity ?? 0;
+  const capHits = countMatches(capabilities, PHASE_CAPABILITIES[phase]);
+  const requiredHits = countMatches(capabilities, PHASE_REQUIRED_CAPS[phase]);
+  const usageBoost = agent.bestUsage && PHASE_BEST_USAGE[phase].includes(agent.bestUsage) ? 2 : 0;
+
+  let score = 0;
+  if (phase === "architect" || phase === "critic" || phase === "interpreter") {
+    score += reasoning * 3 + rating * 2;
+  } else if (phase === "builder") {
+    score += rating * 2 + reasoning;
+  } else {
+    score += rating + reasoning * 0.5;
+  }
+
+  score += capHits * 4;
+  if (capHits === 0) score -= 3;
+  score += requiredHits * 2;
+  score += usageBoost;
+
+  const costPenalty =
+    phase === "builder" ? 5 : phase === "librarian" ? 4 : phase === "architect" ? 1.5 : 1;
+  if (phase === "builder") {
+    score -= cost * costPenalty;
+    score -= maxComplexity * 0.5;
+  } else if (phase === "librarian") {
+    score -= cost * costPenalty;
+    score -= maxComplexity;
+  } else {
+    score -= cost * costPenalty;
+  }
+
+  return score;
+};
+
+const resolveOverrideAgent = async (
+  repo: GlobalRepository,
+  agentRef: string,
+): Promise<{ agent: Agent; capabilities: string[]; resolved: ResolvedAgentConfig }> => {
+  const agent =
+    (await repo.getAgentById(agentRef)) ?? (await repo.getAgentBySlug(agentRef));
+  if (!agent) {
+    throw new Error(`Agent ${agentRef} not found`);
+  }
+  const capabilities = await repo.getAgentCapabilities(agent.id);
+  const resolved = await resolveAgentConfigFromRecord(agent, repo);
+  return { agent, capabilities, resolved };
+};
+
+export const selectPhaseAgents = async (
+  options: PhaseAgentSelectionOptions,
+): Promise<Record<PipelinePhase, PhaseAgentSelection>> => {
+  const repo = await GlobalRepository.create();
+  try {
+    const agents = await repo.listAgents();
+    const capCache = new Map<string, string[]>();
+    const getCaps = async (agent: Agent): Promise<string[]> => {
+      const cached = capCache.get(agent.id);
+      if (cached) return cached;
+      const caps = await repo.getAgentCapabilities(agent.id);
+      capCache.set(agent.id, caps);
+      return caps;
+    };
+
+    const buildSelection = async (phase: PipelinePhase): Promise<PhaseAgentSelection> => {
+      const overrideRef = options.overrides[phase];
+      if (overrideRef) {
+        const resolvedOverride = await resolveOverrideAgent(repo, overrideRef);
+        return {
+          phase,
+          agent: resolvedOverride.agent,
+          capabilities: resolvedOverride.capabilities,
+          resolved: resolvedOverride.resolved,
+          source: "override",
+          reason: "routing.agent override",
+        };
+      }
+
+      const scored: Array<{
+        agent: Agent;
+        caps: string[];
+        score: number;
+        requiredHits: number;
+      }> = [];
+      for (const agent of agents) {
+        if (!agent.defaultModel) continue;
+        if (!options.allowCloudModels && isCloudModel(agent.defaultModel)) continue;
+        const caps = await getCaps(agent);
+        const requiredHits = countMatches(caps, PHASE_REQUIRED_CAPS[phase]);
+        const score = scoreAgent(phase, agent, caps, options.builderMode);
+        if (!Number.isFinite(score)) continue;
+        scored.push({ agent, caps, score, requiredHits });
+      }
+      const hasRequired = scored.some((candidate) => candidate.requiredHits > 0);
+      const candidates = hasRequired
+        ? scored.filter((candidate) => candidate.requiredHits > 0)
+        : scored;
+      candidates.sort((a, b) => b.score - a.score);
+
+      for (const candidate of candidates) {
+        try {
+          const resolved = await resolveAgentConfigFromRecord(candidate.agent, repo);
+          return {
+            phase,
+            agent: candidate.agent,
+            capabilities: candidate.caps,
+            resolved,
+            source: "auto",
+            score: candidate.score,
+            reason: "scored capability match",
+          };
+        } catch {
+          continue;
+        }
+      }
+
+      if (options.fallbackAgent) {
+        const fallbackCaps = await getCaps(options.fallbackAgent.agent);
+        return {
+          phase,
+          agent: options.fallbackAgent.agent,
+          capabilities: fallbackCaps,
+          resolved: options.fallbackAgent,
+          source: "fallback",
+          reason: "auto selection failed",
+        };
+      }
+
+      return { phase, capabilities: [], source: "none", reason: "no eligible agents" };
+    };
+
+    const result: Record<PipelinePhase, PhaseAgentSelection> = {
+      librarian: await buildSelection("librarian"),
+      architect: await buildSelection("architect"),
+      builder: await buildSelection("builder"),
+      critic: await buildSelection("critic"),
+      interpreter: await buildSelection("interpreter"),
+    };
+    return result;
+  } finally {
+    await repo.close();
+  }
+};

@@ -147,6 +147,7 @@ export interface GatewayTrioRequest extends TaskSelectionFilters {
   onJobStart?: (jobId: string, commandRunId: string) => void;
   onGatewayStart?: (details: GatewayLogDetails) => void;
   onGatewayChunk?: (chunk: string) => void;
+  onGatewaySelection?: (details: GatewayLogDetails) => void;
   onGatewayEnd?: (details: GatewayLogDetails) => void;
   gatewayAgentName?: string;
   workAgentName?: string;
@@ -181,6 +182,8 @@ export interface GatewayLogDetails {
   job: string;
   gatewayAgent?: string;
   chosenAgent?: string;
+  chosenModel?: string;
+  chosenAdapter?: string;
   startedAt: string;
   endedAt?: string;
   status?: "completed" | "failed";
@@ -1077,6 +1080,8 @@ export class GatewayTrioService {
     const shouldSuppressIo = Boolean(request.onGatewayStart || request.onGatewayEnd || request.onGatewayChunk);
     let gatewaySlug = request.gatewayAgentName ?? "auto";
     let chosenSlug: string | undefined;
+    let chosenModel: string | undefined;
+    let chosenAdapter: string | undefined;
     let status: "completed" | "failed" = "failed";
     let errorMessage: string | undefined;
     let startEmitted = false;
@@ -1105,6 +1110,27 @@ export class GatewayTrioService {
       const result = shouldSuppressIo ? await this.withGatewayIoSuppressed(invoke) : await invoke();
       gatewaySlug = result.gatewayAgent.slug ?? result.gatewayAgent.id;
       chosenSlug = result.chosenAgent.agentSlug ?? result.chosenAgent.agentId;
+      try {
+        const resolved = await this.deps.routingService.resolveAgentForCommand({
+          workspace: this.workspace,
+          commandName: job,
+          overrideAgentSlug: chosenSlug,
+        });
+        chosenModel = resolved.model ?? resolved.agent.defaultModel;
+        chosenAdapter = resolved.agent.adapter;
+      } catch {
+        chosenModel = undefined;
+        chosenAdapter = undefined;
+      }
+      request.onGatewaySelection?.({
+        taskKey,
+        job,
+        gatewayAgent: gatewaySlug,
+        chosenAgent: chosenSlug,
+        chosenModel,
+        chosenAdapter,
+        startedAt,
+      });
       status = "completed";
       return result;
     } catch (error) {
@@ -1119,6 +1145,8 @@ export class GatewayTrioService {
           job,
           gatewayAgent: gatewaySlug,
           chosenAgent: chosenSlug,
+          chosenModel,
+          chosenAdapter,
           startedAt,
           endedAt: new Date().toISOString(),
           status,

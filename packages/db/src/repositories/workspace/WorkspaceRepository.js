@@ -1,10 +1,73 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { Connection } from "../../sqlite/connection.js";
 import { WorkspaceMigrations } from "../../migrations/workspace/WorkspaceMigrations.js";
+const DOD_HEADER = /(definition of done|dod)\b/i;
+const SECTION_HEADER = /^(?:\*+\s*)?(?:\*\*)?\s*(objective|context|inputs|implementation plan|testing|dependencies|risks|references|related documentation|acceptance criteria)\b/i;
+const extractTaskDodCriteria = (description) => {
+    if (!description)
+        return [];
+    const lines = description.split(/\r?\n/);
+    let startIndex = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i].trim();
+        if (!line)
+            continue;
+        if (DOD_HEADER.test(line)) {
+            startIndex = i;
+            break;
+        }
+    }
+    if (startIndex === -1)
+        return [];
+    const results = [];
+    const addInline = (line) => {
+        const parts = line.split(":");
+        if (parts.length < 2)
+            return;
+        const tail = parts.slice(1).join(":").trim();
+        if (!tail)
+            return;
+        tail
+            .split(/\s*;\s*/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .forEach((item) => results.push(item));
+    };
+    const isBullet = (line) => /^[-*]\s+/.test(line);
+    const isHeading = (line) => SECTION_HEADER.test(line) ||
+        (/^\*+\s*\*\*.+\*\*\s*:?\s*$/.test(line) && !DOD_HEADER.test(line)) ||
+        (/^[A-Z][A-Za-z0-9 &/]{2,}:\s*$/.test(line) && !DOD_HEADER.test(line));
+    const headerLine = lines[startIndex].trim();
+    addInline(headerLine);
+    for (let i = startIndex + 1; i < lines.length; i += 1) {
+        const rawLine = lines[i];
+        const line = rawLine.trim();
+        if (!line) {
+            if (results.length)
+                break;
+            continue;
+        }
+        if (!isBullet(line) && isHeading(line))
+            break;
+        if (isBullet(line)) {
+            results.push(line.replace(/^[-*]\s+/, "").trim());
+            continue;
+        }
+        if (results.length) {
+            results[results.length - 1] = `${results[results.length - 1]} ${line}`.trim();
+        }
+        else {
+            results.push(line);
+        }
+    }
+    return Array.from(new Set(results.filter(Boolean)));
+};
 export class WorkspaceRepository {
     constructor(db, connection) {
         this.db = db;
         this.connection = connection;
+        this.workspaceKey = connection?.dbPath ?? "workspace";
     }
     static async create(cwd) {
         const connection = await Connection.openWorkspace(cwd);
@@ -19,20 +82,78 @@ export class WorkspaceRepository {
     getDb() {
         return this.db;
     }
-    async withTransaction(fn) {
-        await this.db.exec("BEGIN IMMEDIATE");
+    async serialize(fn) {
+        const key = this.workspaceKey;
+        const prev = WorkspaceRepository.txLocks.get(key) ?? Promise.resolve();
+        let release;
+        const next = new Promise((resolve) => {
+            release = resolve;
+        });
+        WorkspaceRepository.txLocks.set(key, prev
+            .catch(() => {
+            /* ignore */
+        })
+            .then(() => next));
         try {
             const result = await fn();
-            await this.db.exec("COMMIT");
             return result;
         }
-        catch (error) {
-            await this.db.exec("ROLLBACK");
-            throw error;
+        finally {
+            release();
         }
+    }
+    async withTransaction(fn) {
+        const MAX_RETRIES = 5;
+        const BASE_BACKOFF_MS = 200;
+        const run = async () => {
+            await this.db.exec("BEGIN IMMEDIATE");
+            try {
+                const result = await fn();
+                await this.db.exec("COMMIT");
+                return result;
+            }
+            catch (error) {
+                await this.db.exec("ROLLBACK");
+                throw error;
+            }
+        };
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                return await this.serialize(run);
+            }
+            catch (error) {
+                const message = error.message ?? "";
+                const isBusy = message.includes("SQLITE_BUSY") || message.includes("database is locked") || message.includes("busy");
+                if (!isBusy || attempt === MAX_RETRIES) {
+                    if (isBusy && attempt === MAX_RETRIES) {
+                        console.warn(`Workspace DB is busy/locked after ${MAX_RETRIES} attempts for ${this.workspaceKey}. ` +
+                            `If another mcoda command is running, please wait and retry.`);
+                    }
+                    throw error;
+                }
+                const backoff = BASE_BACKOFF_MS * attempt;
+                await delay(backoff);
+            }
+        }
+        // Should never reach here
+        return this.serialize(run);
     }
     async getProjectByKey(key) {
         const row = await this.db.get(`SELECT id, key, name, description, metadata_json, created_at, updated_at FROM projects WHERE key = ?`, key);
+        if (!row)
+            return undefined;
+        return {
+            id: row.id,
+            key: row.key,
+            name: row.name ?? undefined,
+            description: row.description ?? undefined,
+            metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        };
+    }
+    async getProjectById(id) {
+        const row = await this.db.get(`SELECT id, key, name, description, metadata_json, created_at, updated_at FROM projects WHERE id = ?`, id);
         if (!row)
             return undefined;
         return {
@@ -147,6 +268,27 @@ export class WorkspaceRepository {
     async deleteTaskDependenciesForTask(taskId) {
         await this.db.run(`DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?`, taskId, taskId);
     }
+    async deleteProjectBacklog(projectId, useTransaction = true) {
+        const run = async () => {
+            // Remove task-related rows first to satisfy foreign keys.
+            await this.db.run(`DELETE FROM task_dependencies WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+           OR depends_on_task_id IN (SELECT id FROM tasks WHERE project_id = ?)`, projectId, projectId);
+            await this.db.run(`DELETE FROM task_runs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`, projectId);
+            await this.db.run(`DELETE FROM task_qa_runs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`, projectId);
+            await this.db.run(`DELETE FROM task_revisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`, projectId);
+            await this.db.run(`DELETE FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`, projectId);
+            await this.db.run(`DELETE FROM task_reviews WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`, projectId);
+            await this.db.run(`DELETE FROM tasks WHERE project_id = ?`, projectId);
+            await this.db.run(`DELETE FROM user_stories WHERE project_id = ?`, projectId);
+            await this.db.run(`DELETE FROM epics WHERE project_id = ?`, projectId);
+        };
+        if (useTransaction) {
+            await this.withTransaction(run);
+        }
+        else {
+            await run();
+        }
+    }
     async updateTask(taskId, updates) {
         const fields = [];
         const params = [];
@@ -205,6 +347,11 @@ export class WorkspaceRepository {
         params.push(taskId);
         await this.db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, ...params);
     }
+    async recordTaskStatusEvent(entry) {
+        const id = randomUUID();
+        await this.db.run(`INSERT INTO task_status_events (id, task_id, from_status, to_status, timestamp, command_name, job_id, task_run_id, agent_id, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, entry.taskId, entry.fromStatus ?? null, entry.toStatus, entry.timestamp, entry.commandName ?? null, entry.jobId ?? null, entry.taskRunId ?? null, entry.agentId ?? null, entry.metadata ? JSON.stringify(entry.metadata) : null);
+    }
     async getTaskById(taskId) {
         const row = await this.db.get(`SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
        FROM tasks WHERE id = ?`, taskId);
@@ -261,6 +408,34 @@ export class WorkspaceRepository {
             updatedAt: row.updated_at,
         };
     }
+    async listTasksByMetadataValue(projectId, metadataKey, metadataValue) {
+        const rows = await this.db.all(`SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
+       FROM tasks WHERE project_id = ?`, projectId);
+        return rows
+            .map((row) => ({
+            id: row.id,
+            projectId: row.project_id,
+            epicId: row.epic_id,
+            userStoryId: row.user_story_id,
+            key: row.key,
+            title: row.title,
+            description: row.description ?? undefined,
+            type: row.type ?? undefined,
+            status: row.status,
+            storyPoints: row.story_points ?? undefined,
+            priority: row.priority ?? undefined,
+            assignedAgentId: row.assigned_agent_id ?? undefined,
+            assigneeHuman: row.assignee_human ?? undefined,
+            vcsBranch: row.vcs_branch ?? undefined,
+            vcsBaseBranch: row.vcs_base_branch ?? undefined,
+            vcsLastCommitSha: row.vcs_last_commit_sha ?? undefined,
+            metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+            openapiVersionAtCreation: row.openapi_version_at_creation ?? undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+        }))
+            .filter((task) => task.metadata?.[metadataKey] === metadataValue);
+    }
     async getTasksByIds(taskIds) {
         if (!taskIds.length)
             return [];
@@ -305,8 +480,8 @@ export class WorkspaceRepository {
     async createJob(record) {
         const now = new Date().toISOString();
         const id = randomUUID();
-        await this.db.run(`INSERT INTO jobs (id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.workspaceId, record.type, record.state, record.commandName ?? null, record.payload ? JSON.stringify(record.payload) : null, record.totalItems ?? null, record.processedItems ?? null, record.lastCheckpoint ?? null, now, now);
+        await this.db.run(`INSERT INTO jobs (id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.workspaceId, record.type, record.state, record.commandName ?? null, record.payload ? JSON.stringify(record.payload) : null, record.totalItems ?? null, record.processedItems ?? null, record.lastCheckpoint ?? null, record.agentId ?? null, record.agentIds ? JSON.stringify(record.agentIds) : null, now, now);
         return {
             id,
             ...record,
@@ -317,7 +492,7 @@ export class WorkspaceRepository {
         };
     }
     async listJobs() {
-        const rows = await this.db.all(`SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+        const rows = await this.db.all(`SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at, completed_at, error_summary
        FROM jobs ORDER BY updated_at DESC`);
         return rows.map((row) => ({
             id: row.id,
@@ -329,6 +504,8 @@ export class WorkspaceRepository {
             totalItems: row.total_items ?? undefined,
             processedItems: row.processed_items ?? undefined,
             lastCheckpoint: row.last_checkpoint ?? undefined,
+            agentId: row.agent_id ?? undefined,
+            agentIds: row.agent_ids_json ? JSON.parse(row.agent_ids_json) : undefined,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             completedAt: row.completed_at ?? undefined,
@@ -336,7 +513,7 @@ export class WorkspaceRepository {
         }));
     }
     async getJob(id) {
-        const row = await this.db.get(`SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+        const row = await this.db.get(`SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at, completed_at, error_summary
        FROM jobs WHERE id = ?`, id);
         if (!row)
             return undefined;
@@ -350,6 +527,8 @@ export class WorkspaceRepository {
             totalItems: row.total_items ?? undefined,
             processedItems: row.processed_items ?? undefined,
             lastCheckpoint: row.last_checkpoint ?? undefined,
+            agentId: row.agent_id ?? undefined,
+            agentIds: row.agent_ids_json ? JSON.parse(row.agent_ids_json) : undefined,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             completedAt: row.completed_at ?? undefined,
@@ -382,6 +561,14 @@ export class WorkspaceRepository {
             fields.push("last_checkpoint = ?");
             params.push(update.lastCheckpoint ?? null);
         }
+        if (update.agentId !== undefined) {
+            fields.push("agent_id = ?");
+            params.push(update.agentId ?? null);
+        }
+        if (update.agentIds !== undefined) {
+            fields.push("agent_ids_json = ?");
+            params.push(update.agentIds ? JSON.stringify(update.agentIds) : null);
+        }
         if (update.errorSummary !== undefined) {
             fields.push("error_summary = ?");
             params.push(update.errorSummary ?? null);
@@ -401,12 +588,34 @@ export class WorkspaceRepository {
     }
     async createCommandRun(record) {
         const id = randomUUID();
-        await this.db.run(`INSERT INTO command_runs (id, workspace_id, command_name, job_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.workspaceId, record.commandName, record.jobId ?? null, record.taskIds ? JSON.stringify(record.taskIds) : null, record.gitBranch ?? null, record.gitBaseBranch ?? null, record.startedAt, record.status, record.spProcessed ?? null);
+        await this.db.run(`INSERT INTO command_runs (id, workspace_id, command_name, job_id, agent_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.workspaceId, record.commandName, record.jobId ?? null, record.agentId ?? null, record.taskIds ? JSON.stringify(record.taskIds) : null, record.gitBranch ?? null, record.gitBaseBranch ?? null, record.startedAt, record.status, record.spProcessed ?? null);
         return { id, ...record, completedAt: null, errorSummary: null, durationSeconds: null };
     }
     async setCommandRunJobId(id, jobId) {
         await this.db.run(`UPDATE command_runs SET job_id = ? WHERE id = ?`, jobId, id);
+    }
+    async setCommandRunAgentId(id, agentId) {
+        await this.db.run(`UPDATE command_runs SET agent_id = COALESCE(agent_id, ?) WHERE id = ?`, agentId, id);
+    }
+    async setJobAgentIds(id, agentId) {
+        const row = await this.db.get(`SELECT agent_id, agent_ids_json FROM jobs WHERE id = ?`, id);
+        if (!row)
+            return;
+        let existing = [];
+        if (row.agent_ids_json) {
+            try {
+                const parsed = JSON.parse(row.agent_ids_json);
+                if (Array.isArray(parsed))
+                    existing = parsed;
+            }
+            catch {
+                existing = [];
+            }
+        }
+        const merged = Array.from(new Set([...existing, agentId]));
+        const primary = row.agent_id ?? merged[0] ?? agentId;
+        await this.db.run(`UPDATE jobs SET agent_id = ?, agent_ids_json = ? WHERE id = ?`, primary, JSON.stringify(merged), id);
     }
     async completeCommandRun(id, update) {
         await this.db.run(`UPDATE command_runs
@@ -450,45 +659,128 @@ export class WorkspaceRepository {
         JOIN user_stories us ON us.id = t.user_story_id
         WHERE t.id IN (${placeholders})
       `, ...taskIds);
-        return rows.map((row) => ({
-            id: row.task_id,
-            projectId: row.project_id,
-            epicId: row.epic_id,
-            userStoryId: row.story_id,
-            key: row.task_key,
-            title: row.task_title,
-            description: row.task_description ?? "",
-            type: row.task_type ?? undefined,
-            status: row.task_status,
-            storyPoints: row.task_story_points ?? undefined,
-            priority: row.task_priority ?? undefined,
-            assignedAgentId: row.task_assigned_agent_id ?? undefined,
-            assigneeHuman: row.task_assignee_human ?? undefined,
-            vcsBranch: row.task_vcs_branch ?? undefined,
-            vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
-            vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
-            metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
-            openapiVersionAtCreation: undefined,
-            createdAt: row.task_created_at,
-            updatedAt: row.task_updated_at,
-            epicKey: row.epic_key,
-            storyKey: row.story_key,
-            epicTitle: row.epic_title ?? undefined,
-            storyTitle: row.story_title ?? undefined,
-            storyDescription: row.story_description ?? undefined,
-            acceptanceCriteria: row.story_acceptance
+        return rows.map((row) => {
+            const taskDod = extractTaskDodCriteria(row.task_description ?? "");
+            const storyAcceptance = row.story_acceptance
                 ? row.story_acceptance
                     .split(/\r?\n/)
                     .map((s) => s.trim())
                     .filter(Boolean)
-                : undefined,
-        }));
+                : undefined;
+            return {
+                id: row.task_id,
+                projectId: row.project_id,
+                epicId: row.epic_id,
+                userStoryId: row.story_id,
+                key: row.task_key,
+                title: row.task_title,
+                description: row.task_description ?? "",
+                type: row.task_type ?? undefined,
+                status: row.task_status,
+                storyPoints: row.task_story_points ?? undefined,
+                priority: row.task_priority ?? undefined,
+                assignedAgentId: row.task_assigned_agent_id ?? undefined,
+                assigneeHuman: row.task_assignee_human ?? undefined,
+                vcsBranch: row.task_vcs_branch ?? undefined,
+                vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
+                vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
+                metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
+                openapiVersionAtCreation: undefined,
+                createdAt: row.task_created_at,
+                updatedAt: row.task_updated_at,
+                epicKey: row.epic_key,
+                storyKey: row.story_key,
+                epicTitle: row.epic_title ?? undefined,
+                epicDescription: row.epic_description ?? undefined,
+                storyTitle: row.story_title ?? undefined,
+                storyDescription: row.story_description ?? undefined,
+                acceptanceCriteria: taskDod.length ? taskDod : storyAcceptance,
+            };
+        });
     }
     async createTaskRun(record) {
         const id = randomUUID();
         await this.db.run(`INSERT INTO task_runs (id, task_id, command, job_id, command_run_id, agent_id, status, started_at, finished_at, story_points_at_run, sp_per_hour_effective, git_branch, git_base_branch, git_commit_sha, run_context_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.taskId, record.command, record.jobId ?? null, record.commandRunId ?? null, record.agentId ?? null, record.status, record.startedAt, record.finishedAt ?? null, record.storyPointsAtRun ?? null, record.spPerHourEffective ?? null, record.gitBranch ?? null, record.gitBaseBranch ?? null, record.gitCommitSha ?? null, record.runContext ? JSON.stringify(record.runContext) : null);
         return { id, ...record };
+    }
+    async getTaskLock(taskId) {
+        const row = await this.db.get(`SELECT task_id, task_run_id, job_id, acquired_at, expires_at FROM task_locks WHERE task_id = ?`, taskId);
+        if (!row)
+            return undefined;
+        return {
+            taskId: row.task_id,
+            taskRunId: row.task_run_id,
+            jobId: row.job_id ?? undefined,
+            acquiredAt: row.acquired_at,
+            expiresAt: row.expires_at,
+        };
+    }
+    async cleanupExpiredTaskLocks(nowIso = new Date().toISOString()) {
+        return this.withTransaction(async () => {
+            const rows = await this.db.all(`SELECT t.key as task_key, l.task_id as task_id
+         FROM task_locks l
+         LEFT JOIN tasks t ON t.id = l.task_id
+         WHERE l.expires_at < ?`, nowIso);
+            if (!rows.length)
+                return [];
+            await this.db.run(`DELETE FROM task_locks WHERE expires_at < ?`, nowIso);
+            return rows.map((row) => row.task_key ?? row.task_id);
+        });
+    }
+    async releaseTaskLocksByJob(jobId) {
+        return this.withTransaction(async () => {
+            const rows = await this.db.all(`SELECT t.key as task_key, l.task_id as task_id
+         FROM task_locks l
+         LEFT JOIN tasks t ON t.id = l.task_id
+         WHERE l.job_id = ?`, jobId);
+            if (!rows.length)
+                return [];
+            await this.db.run(`DELETE FROM task_locks WHERE job_id = ?`, jobId);
+            return rows.map((row) => row.task_key ?? row.task_id);
+        });
+    }
+    async tryAcquireTaskLock(taskId, taskRunId, jobId, ttlSeconds = 3600) {
+        const nowIso = new Date().toISOString();
+        const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+        return this.withTransaction(async () => {
+            const result = await this.db.run(`INSERT INTO task_locks (task_id, task_run_id, job_id, acquired_at, expires_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           task_run_id = excluded.task_run_id,
+           job_id = excluded.job_id,
+           acquired_at = excluded.acquired_at,
+           expires_at = excluded.expires_at
+         WHERE task_locks.expires_at < ?
+           OR NOT EXISTS (
+             SELECT 1
+             FROM task_runs
+             WHERE task_runs.id = task_locks.task_run_id
+               AND task_runs.status = 'running'
+           )`, taskId, taskRunId, jobId ?? null, nowIso, expiresAt, nowIso);
+            if (result?.changes && result.changes > 0) {
+                return {
+                    acquired: true,
+                    lock: {
+                        taskId,
+                        taskRunId,
+                        jobId: jobId ?? undefined,
+                        acquiredAt: nowIso,
+                        expiresAt,
+                    },
+                };
+            }
+            const existing = await this.getTaskLock(taskId);
+            return { acquired: false, lock: existing };
+        });
+    }
+    async releaseTaskLock(taskId, taskRunId) {
+        await this.db.run(`DELETE FROM task_locks WHERE task_id = ? AND task_run_id = ?`, taskId, taskRunId);
+    }
+    async refreshTaskLock(taskId, taskRunId, ttlSeconds = 3600) {
+        const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+        const result = await this.db.run(`UPDATE task_locks SET expires_at = ? WHERE task_id = ? AND task_run_id = ?`, expiresAt, taskId, taskRunId);
+        return Boolean(result?.changes && result.changes > 0);
     }
     async createTaskQaRun(record) {
         const id = randomUUID();
@@ -620,9 +912,9 @@ export class WorkspaceRepository {
     }
     async createTaskComment(record) {
         const id = randomUUID();
-        await this.db.run(`INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.taskId, record.taskRunId ?? null, record.jobId ?? null, record.sourceCommand, record.authorType, record.authorAgentId ?? null, record.category ?? null, record.file ?? null, record.line ?? null, record.pathHint ?? null, record.body, record.metadata ? JSON.stringify(record.metadata) : null, record.createdAt, record.resolvedAt ?? null, record.resolvedBy ?? null);
-        return { ...record, id };
+        await this.db.run(`INSERT INTO task_comments (id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, slug, status, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, record.taskId, record.taskRunId ?? null, record.jobId ?? null, record.sourceCommand, record.authorType, record.authorAgentId ?? null, record.category ?? null, record.slug ?? null, record.status ?? "open", record.file ?? null, record.line ?? null, record.pathHint ?? null, record.body, record.metadata ? JSON.stringify(record.metadata) : null, record.createdAt, record.resolvedAt ?? null, record.resolvedBy ?? null);
+        return { ...record, id, status: record.status ?? "open" };
     }
     async listTaskComments(taskId, options = {}) {
         const clauses = ["task_id = ?"];
@@ -631,9 +923,22 @@ export class WorkspaceRepository {
             clauses.push(`source_command IN (${options.sourceCommands.map(() => "?").join(", ")})`);
             params.push(...options.sourceCommands);
         }
+        if (options.slug) {
+            const slugs = Array.isArray(options.slug) ? options.slug : [options.slug];
+            if (slugs.length) {
+                clauses.push(`slug IN (${slugs.map(() => "?").join(", ")})`);
+                params.push(...slugs);
+            }
+        }
+        if (options.resolved === true) {
+            clauses.push("resolved_at IS NOT NULL");
+        }
+        else if (options.resolved === false) {
+            clauses.push("resolved_at IS NULL");
+        }
         const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
         const limitClause = options.limit ? `LIMIT ${options.limit}` : "";
-        const rows = await this.db.all(`SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
+        const rows = await this.db.all(`SELECT id, task_id, task_run_id, job_id, source_command, author_type, author_agent_id, category, slug, status, file, line, path_hint, body, metadata_json, created_at, resolved_at, resolved_by
        FROM task_comments
        ${where}
        ORDER BY datetime(created_at) DESC
@@ -647,6 +952,8 @@ export class WorkspaceRepository {
             authorType: row.author_type,
             authorAgentId: row.author_agent_id ?? undefined,
             category: row.category ?? undefined,
+            slug: row.slug ?? undefined,
+            status: row.status ?? undefined,
             file: row.file ?? undefined,
             line: row.line ?? undefined,
             pathHint: row.path_hint ?? undefined,
@@ -656,6 +963,16 @@ export class WorkspaceRepository {
             resolvedAt: row.resolved_at ?? undefined,
             resolvedBy: row.resolved_by ?? undefined,
         }));
+    }
+    async resolveTaskComment(params) {
+        await this.db.run(`UPDATE task_comments
+       SET resolved_at = ?, resolved_by = ?, status = ?
+       WHERE task_id = ? AND slug = ?`, params.resolvedAt, params.resolvedBy ?? null, "resolved", params.taskId, params.slug);
+    }
+    async reopenTaskComment(params) {
+        await this.db.run(`UPDATE task_comments
+       SET resolved_at = NULL, resolved_by = NULL, status = ?
+       WHERE task_id = ? AND slug = ?`, "open", params.taskId, params.slug);
     }
     async createTaskReview(record) {
         const id = randomUUID();
@@ -688,8 +1005,37 @@ export class WorkspaceRepository {
     }
     async recordTokenUsage(entry) {
         const id = randomUUID();
-        await this.db.run(`INSERT INTO token_usage (id, workspace_id, agent_id, model_name, job_id, command_run_id, task_run_id, task_id, project_id, epic_id, user_story_id, tokens_prompt, tokens_completion, tokens_total, cost_estimate, duration_seconds, timestamp, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, entry.workspaceId, entry.agentId ?? null, entry.modelName ?? null, entry.jobId ?? null, entry.commandRunId ?? null, entry.taskRunId ?? null, entry.taskId ?? null, entry.projectId ?? null, entry.epicId ?? null, entry.userStoryId ?? null, entry.tokensPrompt ?? null, entry.tokensCompletion ?? null, entry.tokensTotal ?? null, entry.costEstimate ?? null, entry.durationSeconds ?? null, entry.timestamp, entry.metadata ? JSON.stringify(entry.metadata) : null);
+        await this.db.run(`INSERT INTO token_usage (
+        id,
+        workspace_id,
+        agent_id,
+        model_name,
+        job_id,
+        command_run_id,
+        task_run_id,
+        task_id,
+        project_id,
+        epic_id,
+        user_story_id,
+        command_name,
+        action,
+        invocation_kind,
+        provider,
+        currency,
+        tokens_prompt,
+        tokens_completion,
+        tokens_total,
+        tokens_cached,
+        tokens_cache_read,
+        tokens_cache_write,
+        cost_estimate,
+        duration_seconds,
+        duration_ms,
+        started_at,
+        finished_at,
+        timestamp,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, entry.workspaceId, entry.agentId ?? null, entry.modelName ?? null, entry.jobId ?? null, entry.commandRunId ?? null, entry.taskRunId ?? null, entry.taskId ?? null, entry.projectId ?? null, entry.epicId ?? null, entry.userStoryId ?? null, entry.commandName ?? null, entry.action ?? null, entry.invocationKind ?? null, entry.provider ?? null, entry.currency ?? null, entry.tokensPrompt ?? null, entry.tokensCompletion ?? null, entry.tokensTotal ?? null, entry.tokensCached ?? null, entry.tokensCacheRead ?? null, entry.tokensCacheWrite ?? null, entry.costEstimate ?? null, entry.durationSeconds ?? null, entry.durationMs ?? null, entry.startedAt ?? null, entry.finishedAt ?? null, entry.timestamp, entry.metadata ? JSON.stringify(entry.metadata) : null);
     }
     async insertTaskRevision(record) {
         const id = randomUUID();
@@ -751,23 +1097,5 @@ export class WorkspaceRepository {
             updatedAt: row.updated_at,
         };
     }
-    async getStoryByProjectAndKey(projectId, key) {
-        const row = await this.db.get(`SELECT id, project_id, epic_id, key, title, description, acceptance_criteria, story_points_total, priority, metadata_json, created_at, updated_at FROM user_stories WHERE project_id = ? AND key = ?`, projectId, key);
-        if (!row)
-            return undefined;
-        return {
-            id: row.id,
-            projectId: row.project_id,
-            epicId: row.epic_id,
-            key: row.key,
-            title: row.title,
-            description: row.description ?? undefined,
-            acceptanceCriteria: row.acceptance_criteria ?? undefined,
-            storyPointsTotal: row.story_points_total ?? undefined,
-            priority: row.priority ?? undefined,
-            metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-        };
-    }
 }
+WorkspaceRepository.txLocks = new Map();

@@ -14,6 +14,7 @@ import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from ".
 import { TaskStateService } from "./TaskStateService.js";
 import { QaTestCommandBuilder } from "./QaTestCommandBuilder.js";
 import { RoutingService } from "../agents/RoutingService.js";
+import { GATEWAY_HANDOFF_ENV_PATH } from "../agents/GatewayHandoff.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
@@ -28,6 +29,8 @@ const MAX_TEST_FIX_ATTEMPTS = 3;
 const DEFAULT_TEST_OUTPUT_CHARS = 1200;
 const WORK_ON_TASKS_PATCH_MODE_ENV = "MCODA_WORK_ON_TASKS_PATCH_MODE";
 const WORK_ON_TASKS_ENFORCE_COMMENT_BACKLOG_ENV = "MCODA_WOT_ENFORCE_COMMENT_BACKLOG";
+const WORK_ON_TASKS_SCOPE_MODE_ENV = "MCODA_WOT_SCOPE_MODE";
+const WORK_ON_TASKS_COMMENT_BACKLOG_MAX_FAILS_ENV = "MCODA_WOT_COMMENT_BACKLOG_MAX_FAILS";
 const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
 const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_CODE_WRITER_PROMPT = [
@@ -140,7 +143,44 @@ const isCommentBacklogEnforced = (): boolean => {
   const normalized = raw.trim().toLowerCase();
   return !["0", "false", "off", "no"].includes(normalized);
 };
-const buildCodaliEnvOverrides = (): Record<string, string> => {
+const resolveScopeMode = (): "strict" | "dir" => {
+  const raw = process.env[WORK_ON_TASKS_SCOPE_MODE_ENV];
+  if (!raw) return "dir";
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "strict") return "strict";
+  if (normalized === "dir" || normalized === "directory") return "dir";
+  return "dir";
+};
+const resolveCommentBacklogMaxFails = (): number => {
+  const raw = process.env[WORK_ON_TASKS_COMMENT_BACKLOG_MAX_FAILS_ENV];
+  if (!raw) return 2;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 2;
+  return parsed;
+};
+type CodaliEnvOverrideOptions = {
+  preferredFiles?: string[];
+  readOnlyPaths?: string[];
+  planHint?: string;
+  skipSearch?: boolean;
+};
+
+const mergeUnique = (values: string[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+};
+
+const buildCodaliEnvOverrides = (
+  options: CodaliEnvOverrideOptions | string[] = [],
+): Record<string, string> => {
+  const resolvedOptions = Array.isArray(options) ? { preferredFiles: options } : options;
   const overrides: Record<string, string> = {};
   const setIfMissing = (key: string, value: string) => {
     if (process.env[key] === undefined) {
@@ -151,6 +191,20 @@ const buildCodaliEnvOverrides = (): Record<string, string> => {
   setIfMissing("CODALI_BUILDER_MODE", "patch_json");
   setIfMissing("CODALI_BUILDER_PATCH_FORMAT", "file_writes");
   setIfMissing("CODALI_FORMAT_BUILDER", "json");
+  const preferredFiles = mergeUnique(resolvedOptions.preferredFiles ?? []);
+  if (preferredFiles.length > 0) {
+    setIfMissing("CODALI_CONTEXT_PREFERRED_FILES", preferredFiles.join(","));
+  }
+  const readOnlyPaths = mergeUnique(resolvedOptions.readOnlyPaths ?? []);
+  if (readOnlyPaths.length > 0) {
+    setIfMissing("CODALI_SECURITY_READONLY_PATHS", readOnlyPaths.join(","));
+  }
+  if (resolvedOptions.planHint && resolvedOptions.planHint.trim().length > 0) {
+    setIfMissing("CODALI_PLAN_HINT", resolvedOptions.planHint.trim());
+  }
+  if (resolvedOptions.skipSearch) {
+    setIfMissing("CODALI_CONTEXT_SKIP_SEARCH", "1");
+  }
   return overrides;
 };
 
@@ -159,6 +213,120 @@ const normalizeSlugList = (input?: unknown): string[] => {
   return input
     .map((slug) => (typeof slug === "string" ? slug.trim() : ""))
     .filter((slug) => slug.length > 0);
+};
+const normalizeDirList = (input?: unknown): string[] => {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((entry) => (typeof entry === "string" ? entry.trim().replace(/\\/g, "/") : ""))
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.replace(/^\.\/+/, "").replace(/\/+$/, ""));
+};
+const deriveParentDirs = (paths: string[]): string[] => {
+  const dirs = new Set<string>();
+  for (const entry of paths) {
+    const normalized = entry.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    const dir = path.posix.dirname(normalized);
+    if (dir && dir !== "." && dir !== "/") {
+      dirs.add(dir);
+    }
+  }
+  return Array.from(dirs);
+};
+
+type GatewayHandoffSummary = {
+  planSteps: string[];
+  filesLikelyTouched: string[];
+  filesToCreate: string[];
+  dirsToCreate: string[];
+  risks: string[];
+};
+
+const normalizeGatewayItem = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "(none)") return "";
+  let cleaned = trimmed.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, "").trim();
+  if (!cleaned || cleaned === "(none)") return "";
+  cleaned = cleaned.replace(/^`|`$/g, "").replace(/^file:\s*/i, "");
+  cleaned = cleaned.replace(/^\.\/+/, "");
+  return cleaned.trim();
+};
+
+const resolveGatewaySection = (header: string): keyof GatewayHandoffSummary | null => {
+  const normalized = header.trim().toLowerCase();
+  if (normalized.startsWith("plan")) return "planSteps";
+  if (normalized.startsWith("files likely touched")) return "filesLikelyTouched";
+  if (normalized.startsWith("files to create")) return "filesToCreate";
+  if (normalized.startsWith("dirs to create")) return "dirsToCreate";
+  if (normalized.startsWith("risks")) return "risks";
+  return null;
+};
+
+const parseGatewayHandoff = (content: string): GatewayHandoffSummary => {
+  const summary: GatewayHandoffSummary = {
+    planSteps: [],
+    filesLikelyTouched: [],
+    filesToCreate: [],
+    dirsToCreate: [],
+    risks: [],
+  };
+  let section: keyof GatewayHandoffSummary | null = null;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("## ")) {
+      section = resolveGatewaySection(trimmed.slice(3));
+      continue;
+    }
+    if (!section) continue;
+    if (!trimmed || trimmed === "(none)") continue;
+    const item = normalizeGatewayItem(trimmed);
+    if (!item) continue;
+    summary[section].push(item);
+  }
+  summary.planSteps = mergeUnique(summary.planSteps);
+  summary.filesLikelyTouched = mergeUnique(summary.filesLikelyTouched);
+  summary.filesToCreate = mergeUnique(summary.filesToCreate);
+  summary.dirsToCreate = mergeUnique(summary.dirsToCreate);
+  summary.risks = mergeUnique(summary.risks);
+  return summary;
+};
+
+const readGatewayHandoffFile = async (handoffPath: string): Promise<GatewayHandoffSummary> => {
+  const content = await fs.promises.readFile(handoffPath, "utf8");
+  return parseGatewayHandoff(content);
+};
+
+const buildGatewayPreferredFiles = (handoff: GatewayHandoffSummary | null): string[] => {
+  if (!handoff) return [];
+  return mergeUnique([...handoff.filesLikelyTouched, ...handoff.filesToCreate]);
+};
+
+const buildGatewayPlanHint = (handoff: GatewayHandoffSummary | null): string | undefined => {
+  if (!handoff) return undefined;
+  const steps = mergeUnique(handoff.planSteps);
+  const targetFiles = mergeUnique([...handoff.filesLikelyTouched, ...handoff.filesToCreate]);
+  const risks = mergeUnique(handoff.risks);
+  if (!steps.length && !targetFiles.length && !risks.length) return undefined;
+  const riskAssessment = risks.length ? risks.join("; ") : "gateway: not provided";
+  return JSON.stringify({
+    steps,
+    target_files: targetFiles,
+    risk_assessment: riskAssessment,
+    verification: [],
+  });
+};
+
+const NON_BLOCKING_COMMENT_SEVERITIES = new Set(["info", "low", "minor", "nit", "nitpick"]);
+const NON_BLOCKING_COMMENT_CATEGORIES = new Set(["suggestion", "nitpick"]);
+
+const isNonBlockingComment = (comment: TaskCommentRow): boolean => {
+  const category = (comment.category ?? "").trim().toLowerCase();
+  if (NON_BLOCKING_COMMENT_CATEGORIES.has(category)) return true;
+  const meta = (comment.metadata ?? {}) as Record<string, unknown>;
+  const severityRaw = meta.severity ?? meta.level ?? meta.priority;
+  const severity = typeof severityRaw === "string" ? severityRaw.trim().toLowerCase() : "";
+  if (severity && NON_BLOCKING_COMMENT_SEVERITIES.has(severity)) return true;
+  return false;
 };
 
 const formatSlugList = (slugs: string[], limit = 12): string => {
@@ -408,9 +576,14 @@ const extractPatchesFromJson = (payload: unknown): string[] => {
 
 const extractFileBlocksFromJson = (
   payload: unknown,
-): { fileBlocks: Array<{ path: string; content: string }>; invalidPaths: string[] } => {
+): {
+  fileBlocks: Array<{ path: string; content: string }>;
+  invalidPaths: string[];
+  allowOverwrite: boolean;
+} => {
   const files = new Map<string, string>();
   const invalidPaths: string[] = [];
+  let allowOverwrite = false;
   const addFile = (filePath: string, content: string) => {
     const normalized = normalizeFileBlockPath(filePath);
     if (normalized.invalid) {
@@ -422,10 +595,40 @@ const extractFileBlocksFromJson = (
     files.set(normalizedPath, content);
   };
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { fileBlocks: [], invalidPaths };
+    return { fileBlocks: [], invalidPaths, allowOverwrite };
   }
   const record = payload as Record<string, unknown>;
-  const fileContainers = ["files", "fileBlocks", "file_blocks", "newFiles", "writeFiles"];
+  const fileContainers = ["files", "fileBlocks", "file_blocks", "newFiles", "writeFiles", "file_writes", "fileWrites"];
+  const detectOverwrite = (value: unknown, containerKey?: string) => {
+    if (containerKey && ["file_writes", "filewrites", "writefiles"].includes(containerKey.toLowerCase())) {
+      allowOverwrite = true;
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const entryRecord = entry as Record<string, unknown>;
+        const explicit =
+          entryRecord.overwrite === true ||
+          String(entryRecord.mode ?? "").toLowerCase() === "overwrite" ||
+          String(entryRecord.action ?? "").toLowerCase() === "overwrite";
+        if (explicit) {
+          allowOverwrite = true;
+          return;
+        }
+      }
+      return;
+    }
+    const recordValue = value as Record<string, unknown>;
+    const explicit =
+      recordValue.overwrite === true ||
+      String(recordValue.mode ?? "").toLowerCase() === "overwrite" ||
+      String(recordValue.action ?? "").toLowerCase() === "overwrite";
+    if (explicit) {
+      allowOverwrite = true;
+    }
+  };
   const addFromContainer = (container: unknown) => {
     if (!container || typeof container !== "object") return;
     if (Array.isArray(container)) {
@@ -455,11 +658,16 @@ const extractFileBlocksFromJson = (
     }
   };
   for (const key of fileContainers) {
-    addFromContainer(record[key]);
+    const container = record[key];
+    if (container !== undefined) {
+      detectOverwrite(container, key);
+      addFromContainer(container);
+    }
   }
   return {
     fileBlocks: Array.from(files.entries()).map(([filePath, content]) => ({ path: filePath, content })),
     invalidPaths,
+    allowOverwrite,
   };
 };
 
@@ -482,22 +690,148 @@ const extractCommentResolutionFromJson = (
   };
 };
 
+type StructuredPatchAction =
+  | { action: "replace"; file: string; search_block: string; replace_block: string }
+  | { action: "create"; file: string; content: string }
+  | { action: "delete"; file: string };
+
+const normalizeActionValue = (value: unknown): string =>
+  typeof value === "string" ? value.trim().toLowerCase() : "";
+
+const extractPatchActionsFromJson = (
+  payload: unknown,
+): { actions: StructuredPatchAction[]; invalid: string[] } => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { actions: [], invalid: [] };
+  }
+  const record = payload as Record<string, unknown>;
+  const containers = [
+    record.patches,
+    record.patch_actions,
+    record.patchActions,
+    record.actions,
+    record.changes,
+  ].filter((entry) => entry !== undefined);
+  const actions: StructuredPatchAction[] = [];
+  const invalid: string[] = [];
+  const handleEntry = (entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const item = entry as Record<string, unknown>;
+    const action = normalizeActionValue(item.action ?? item.type ?? item.kind);
+    const fileRaw = typeof item.file === "string" ? item.file : typeof item.path === "string" ? item.path : "";
+    const file = fileRaw.trim();
+    if (!action || !file) {
+      invalid.push(`missing action or file for ${fileRaw || "entry"}`);
+      return;
+    }
+    if (action === "replace") {
+      const search =
+        typeof item.search_block === "string"
+          ? item.search_block
+          : typeof item.search === "string"
+            ? item.search
+            : typeof item.find === "string"
+              ? item.find
+              : "";
+      const replace =
+        typeof item.replace_block === "string"
+          ? item.replace_block
+          : typeof item.replace === "string"
+            ? item.replace
+            : typeof item.with === "string"
+              ? item.with
+              : "";
+      if (!search || !replace) {
+        invalid.push(`replace action missing search/replace for ${file}`);
+        return;
+      }
+      actions.push({ action: "replace", file, search_block: search, replace_block: replace });
+      return;
+    }
+    if (action === "create") {
+      const content =
+        typeof item.content === "string"
+          ? item.content
+          : typeof item.contents === "string"
+            ? item.contents
+            : typeof item.body === "string"
+              ? item.body
+              : "";
+      if (!content) {
+        invalid.push(`create action missing content for ${file}`);
+        return;
+      }
+      actions.push({ action: "create", file, content });
+      return;
+    }
+    if (action === "delete") {
+      actions.push({ action: "delete", file });
+      return;
+    }
+    invalid.push(`unsupported action '${action}' for ${file}`);
+  };
+  for (const container of containers) {
+    if (Array.isArray(container)) {
+      container.forEach(handleEntry);
+    } else {
+      handleEntry(container);
+    }
+  }
+  return { actions, invalid };
+};
+
 const placeholderTokenRegex = /\?\?\?|rest of existing code/i;
 const placeholderEllipsisRegex = /^[\s+-]*\.{3}\s*$/m;
 
 const containsPlaceholderContent = (content: string): boolean =>
   placeholderTokenRegex.test(content) || placeholderEllipsisRegex.test(content);
 
+const escapeRegex = (input: string): string => input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const buildWhitespaceRegex = (search: string): RegExp => {
+  let pattern = "";
+  for (const char of search) {
+    if (/\s/.test(char)) {
+      pattern += "\\s*";
+    } else {
+      pattern += `${escapeRegex(char)}\\s*`;
+    }
+  }
+  return new RegExp(pattern, "g");
+};
+
+const replaceOnce = (content: string, search: string, replace: string): string => {
+  const occurrences = content.split(search).length - 1;
+  if (occurrences === 1) {
+    return content.replace(search, replace);
+  }
+  if (occurrences > 1) {
+    throw new Error("Ambiguous search block. Provide more context.");
+  }
+  const regex = buildWhitespaceRegex(search);
+  const matches = [...content.matchAll(regex)];
+  if (matches.length === 0) {
+    throw new Error("Search block not found in file.");
+  }
+  if (matches.length > 1) {
+    throw new Error("Ambiguous search block. Provide more context.");
+  }
+  return content.replace(regex, replace);
+};
+
 const extractAgentChanges = (
   output: string,
 ): {
   patches: string[];
   fileBlocks: Array<{ path: string; content: string }>;
+  structuredActions: StructuredPatchAction[];
   jsonDetected: boolean;
   commentResolution?: { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string };
   unfencedFileHeader: boolean;
   placeholderFileBlocks: boolean;
   invalidFileBlockPaths: string[];
+  invalidPatchActions: string[];
+  allowFileOverwrite: boolean;
 } => {
   let patches = extractPatches(output);
   const fileBlockResult = extractFileBlocks(output);
@@ -506,6 +840,9 @@ const extractAgentChanges = (
   const unfencedFileHeader = hasUnfencedFileHeader(output);
   let placeholderFileBlocks = fileBlocks.some((block) => containsPlaceholderContent(block.content));
   let jsonDetected = false;
+  let structuredActions: StructuredPatchAction[] = [];
+  let invalidPatchActions: string[] = [];
+  let allowFileOverwrite = false;
   let commentResolution: { resolvedSlugs?: string[]; unresolvedSlugs?: string[]; commentBacklogStatus?: string } | undefined;
   if (patches.length) {
     patches = patches.filter((patch) => !containsPlaceholderContent(patch));
@@ -518,8 +855,12 @@ const extractAgentChanges = (
       const jsonFiles = extractFileBlocksFromJson(payload);
       fileBlocks = jsonFiles.fileBlocks;
       invalidFileBlockPaths = [...invalidFileBlockPaths, ...jsonFiles.invalidPaths];
+      allowFileOverwrite = jsonFiles.allowOverwrite;
       placeholderFileBlocks = fileBlocks.some((block) => containsPlaceholderContent(block.content));
       commentResolution = extractCommentResolutionFromJson(payload) ?? undefined;
+      const actionResult = extractPatchActionsFromJson(payload);
+      structuredActions = actionResult.actions;
+      invalidPatchActions = actionResult.invalid;
       if (patches.length) {
         patches = patches.filter((patch) => !containsPlaceholderContent(patch));
       }
@@ -530,11 +871,14 @@ const extractAgentChanges = (
   return {
     patches,
     fileBlocks,
+    structuredActions,
     jsonDetected,
     commentResolution,
     unfencedFileHeader,
     placeholderFileBlocks,
     invalidFileBlockPaths,
+    invalidPatchActions,
+    allowFileOverwrite,
   };
 };
 
@@ -832,11 +1176,44 @@ const resolveNodeCommand = (): string => {
   return resolved.includes(" ") ? `"${resolved}"` : resolved;
 };
 
+const resolvePowerShellCommand = (): string => (process.platform === "win32" ? "powershell" : "pwsh");
+
+const detectRunAllTestsScript = (workspaceRoot: string): string | undefined => {
+  const candidates = ["tests/all.js", "tests/all.sh", "tests/all.ps1", "tests/all"];
+  for (const candidate of candidates) {
+    const scriptPath = path.join(workspaceRoot, ...candidate.split("/"));
+    if (fs.existsSync(scriptPath)) {
+      return candidate;
+    }
+  }
+  return undefined;
+};
+
+const buildRunAllTestsCommand = (relativePath: string): string => {
+  const normalized = relativePath.split(path.sep).join("/");
+  if (normalized.endsWith(".js")) return `${resolveNodeCommand()} ${normalized}`;
+  if (normalized.endsWith(".ps1")) return `${resolvePowerShellCommand()} -File ${quoteShellPath(normalized)}`;
+  if (normalized.endsWith(".sh")) return `bash ${quoteShellPath(normalized)}`;
+  if (normalized.startsWith(".")) return normalized;
+  return `./${normalized}`;
+};
+
+const isNodeWorkspace = (workspaceRoot: string, seedCommands: string[] = []): boolean => {
+  const hasNodeFiles =
+    fs.existsSync(path.join(workspaceRoot, "package.json")) ||
+    fs.existsSync(path.join(workspaceRoot, "pnpm-lock.yaml")) ||
+    fs.existsSync(path.join(workspaceRoot, "pnpm-workspace.yaml")) ||
+    fs.existsSync(path.join(workspaceRoot, "yarn.lock")) ||
+    fs.existsSync(path.join(workspaceRoot, "package-lock.json")) ||
+    fs.existsSync(path.join(workspaceRoot, "npm-shrinkwrap.json"));
+  if (hasNodeFiles) return true;
+  return seedCommands.some((command) => /\b(node|npm|pnpm|yarn)\b/i.test(command));
+};
+
 const detectRunAllTestsCommand = (workspaceRoot: string): string | undefined => {
-  const scriptPath = path.join(workspaceRoot, "tests", "all.js");
-  if (!fs.existsSync(scriptPath)) return undefined;
-  const relative = path.relative(workspaceRoot, scriptPath).split(path.sep).join("/");
-  return `${resolveNodeCommand()} ${relative}`;
+  const script = detectRunAllTestsScript(workspaceRoot);
+  if (!script) return undefined;
+  return buildRunAllTestsCommand(script);
 };
 
 const pickSeedTestCategory = (requirements: TestRequirements): keyof TestRequirements => {
@@ -889,6 +1266,7 @@ const ensureRunAllTestsScript = async (
   requirements: TestRequirements,
   seedCommands: string[],
 ): Promise<boolean> => {
+  if (!isNodeWorkspace(workspaceRoot, seedCommands)) return false;
   const scriptPath = path.join(workspaceRoot, "tests", "all.js");
   if (fs.existsSync(scriptPath)) return false;
   await PathHelper.ensureDir(path.dirname(scriptPath));
@@ -988,6 +1366,21 @@ const findOutOfScopePatchPaths = (patches: string[], workspaceRoot: string): str
       if (!PathHelper.isPathInside(workspaceRoot, file)) {
         invalid.add(file);
       }
+    }
+  }
+  return Array.from(invalid);
+};
+
+const findOutOfScopeActionPaths = (
+  actions: StructuredPatchAction[],
+  workspaceRoot: string,
+): string[] => {
+  const invalid = new Set<string>();
+  for (const action of actions) {
+    const file = action.file?.trim();
+    if (!file) continue;
+    if (!PathHelper.isPathInside(workspaceRoot, file)) {
+      invalid.add(file);
     }
   }
   return Array.from(invalid);
@@ -1171,6 +1564,11 @@ const normalizeDiffPaths = (patch: string, workspaceRoot: string): string => {
 
 const DOC_GUARD_DIRS = ["docs/sds", "docs/rfp", "openapi"];
 const DOC_GUARD_FILES = ["openapi.yaml", "openapi.yml", "openapi.json"];
+
+const formatDocGuardList = (): string => {
+  const dirs = DOC_GUARD_DIRS.map((dir) => `${dir}/**`);
+  return [...dirs, ...DOC_GUARD_FILES].join(", ");
+};
 
 const isGuardedDocPath = (filePath: string): boolean => {
   const normalized = filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -2065,7 +2463,7 @@ export class WorkOnTasksService {
       sourceCommands: ["code-review", "qa-tasks"],
       limit: 50,
     });
-    const unresolved = comments.filter((comment) => !comment.resolvedAt);
+    const unresolved = comments.filter((comment) => !comment.resolvedAt && !isNonBlockingComment(comment));
     return { comments, unresolved };
   }
 
@@ -2074,6 +2472,18 @@ export class WorkOnTasksService {
       sourceCommands: ["work-on-tasks"],
       limit: 5,
     });
+  }
+
+  private async countCommentBacklogFailures(taskId: string): Promise<number> {
+    const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
+      sourceCommands: ["work-on-tasks"],
+      limit: 50,
+    });
+    return comments.filter((comment) => {
+      if (comment.category !== "comment_backlog") return false;
+      const reason = (comment.metadata as any)?.reason;
+      return reason === "comment_backlog_unaddressed" || reason === "comment_backlog_missing";
+    }).length;
   }
 
   private async applyCommentResolutions(params: {
@@ -2239,7 +2649,8 @@ export class WorkOnTasksService {
   }
 
   private buildCommitEnv(agentId?: string): NodeJS.ProcessEnv {
-    const committerName = agentId ? `mcoda-code-writer (${agentId})` : "mcoda-code-writer";
+    const shortAgentId = agentId ? agentId.slice(0, 8) : "";
+    const committerName = agentId ? `mcoda-code-writer (${shortAgentId})` : "mcoda-code-writer";
     return {
       ...process.env,
       GIT_AUTHOR_NAME: committerName,
@@ -2588,12 +2999,123 @@ export class WorkOnTasksService {
 
   private validateScope(allowed: string[], touched: string[]): { ok: boolean; message?: string } {
     if (!allowed.length) return { ok: true };
-    const normalizedAllowed = allowed.map((f) => f.replace(/\\/g, "/"));
-    const outOfScope = touched.filter((f) => !normalizedAllowed.some((allowedPath) => f === allowedPath || f.startsWith(`${allowedPath}/`)));
+    const normalizedAllowed = allowed.map((f) => f.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, ""));
+    const mode = resolveScopeMode();
+    const expandedAllowed =
+      mode === "dir"
+        ? Array.from(new Set([...normalizedAllowed, ...deriveParentDirs(normalizedAllowed)]))
+        : normalizedAllowed;
+    const outOfScope = touched.filter(
+      (f) => !expandedAllowed.some((allowedPath) => f === allowedPath || f.startsWith(`${allowedPath}/`)),
+    );
     if (outOfScope.length) {
       return { ok: false, message: `Patch touches files outside allowed scope: ${outOfScope.join(", ")}` };
     }
     return { ok: true };
+  }
+
+  private async buildStructuredFileBlocks(
+    actions: StructuredPatchAction[],
+    workspaceRoot: string,
+  ): Promise<{ fileBlocks: Array<{ path: string; content: string }>; errors: string[] }> {
+    const fileBlocks: Array<{ path: string; content: string }> = [];
+    const errors: string[] = [];
+    for (const action of actions) {
+      const rawPath = action.file?.trim();
+      if (!rawPath) {
+        errors.push("Structured patch action missing file path.");
+        continue;
+      }
+      if (!PathHelper.isPathInside(workspaceRoot, rawPath)) {
+        errors.push(`Structured patch action path outside workspace: ${rawPath}`);
+        continue;
+      }
+      const resolved = path.resolve(workspaceRoot, rawPath);
+      if (action.action === "create") {
+        fileBlocks.push({ path: rawPath, content: action.content });
+        continue;
+      }
+      if (action.action === "delete") {
+        if (!fs.existsSync(resolved)) {
+          errors.push(`Structured delete target missing: ${rawPath}`);
+          continue;
+        }
+        fileBlocks.push({ path: rawPath, content: "" });
+        continue;
+      }
+      if (action.action === "replace") {
+        try {
+          const current = await fs.promises.readFile(resolved, "utf8");
+          const updated = replaceOnce(current, action.search_block, action.replace_block);
+          fileBlocks.push({ path: rawPath, content: updated });
+        } catch (error) {
+          errors.push(
+            `Structured replace failed for ${rawPath}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    }
+    return { fileBlocks, errors };
+  }
+
+  private async applyStructuredActions(
+    actions: StructuredPatchAction[],
+    workspaceRoot: string,
+    dryRun: boolean,
+    allowOverwrite: boolean,
+  ): Promise<{ touched: string[]; error?: string; warnings?: string[] }> {
+    const touched = new Set<string>();
+    const warnings: string[] = [];
+    for (const action of actions) {
+      const rawPath = action.file?.trim();
+      if (!rawPath) {
+        return { touched: Array.from(touched), error: "Structured patch action missing file path." };
+      }
+      if (!PathHelper.isPathInside(workspaceRoot, rawPath)) {
+        return { touched: Array.from(touched), error: `Structured patch path outside workspace: ${rawPath}` };
+      }
+      const resolved = path.resolve(workspaceRoot, rawPath);
+      if (action.action === "create") {
+        if (fs.existsSync(resolved) && !allowOverwrite) {
+          return { touched: Array.from(touched), error: `File already exists: ${rawPath}` };
+        }
+        if (!dryRun) {
+          await PathHelper.ensureDir(path.dirname(resolved));
+          await fs.promises.writeFile(resolved, action.content, "utf8");
+        }
+        touched.add(rawPath);
+        continue;
+      }
+      if (action.action === "delete") {
+        if (!fs.existsSync(resolved)) {
+          return { touched: Array.from(touched), error: `File not found for deletion: ${rawPath}` };
+        }
+        if (!dryRun) {
+          await fs.promises.rm(resolved, { force: true });
+        }
+        touched.add(rawPath);
+        continue;
+      }
+      if (action.action === "replace") {
+        if (!fs.existsSync(resolved)) {
+          return { touched: Array.from(touched), error: `File not found for replace: ${rawPath}` };
+        }
+        try {
+          const current = await fs.promises.readFile(resolved, "utf8");
+          const updated = replaceOnce(current, action.search_block, action.replace_block);
+          if (!dryRun) {
+            await fs.promises.writeFile(resolved, updated, "utf8");
+          }
+          touched.add(rawPath);
+        } catch (error) {
+          return {
+            touched: Array.from(touched),
+            error: `Structured replace failed for ${rawPath}: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      }
+    }
+    return { touched: Array.from(touched), warnings };
   }
 
   private async applyPatches(
@@ -2996,11 +3518,12 @@ export class WorkOnTasksService {
       normalizedAdapterOverride === "codali-cli";
     const resolvedWorkRunner = normalizedWorkRunner ?? (codaliRequired ? "codali" : undefined);
     const agentAdapterOverride = codaliRequired ? "codali-cli" : requestedAdapterOverride;
-    const agentStream = codaliRequired ? false : requestedAgentStream;
+    const agentStream = requestedAgentStream;
     const patchModeEnabled = !codaliRequired && isPatchModeEnabled();
     const directEditsEnabled = !patchModeEnabled;
     const enforceCommentBacklog = isCommentBacklogEnforced();
-    const codaliEnvOverrides = codaliRequired ? buildCodaliEnvOverrides() : {};
+    const commentBacklogMaxFails = resolveCommentBacklogMaxFails();
+    const baseCodaliEnvOverrides = codaliRequired ? buildCodaliEnvOverrides() : {};
     const configuredBaseBranch = this.workspace.config?.branch;
     const requestedBaseBranch = request.baseBranch;
     const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
@@ -3171,6 +3694,20 @@ export class WorkOnTasksService {
       const results: TaskExecutionResult[] = [];
       const taskSummaries = new Map<string, WorkOnTasksTaskSummary>();
       const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings, ...selection.warnings];
+      const gatewayHandoffPath = codaliRequired ? process.env[GATEWAY_HANDOFF_ENV_PATH] : undefined;
+      let gatewayHandoff: GatewayHandoffSummary | null = null;
+      if (gatewayHandoffPath) {
+        try {
+          gatewayHandoff = await readGatewayHandoffFile(gatewayHandoffPath);
+        } catch (error) {
+          warnings.push(
+            `gateway_handoff_unavailable: ${gatewayHandoffPath} (${error instanceof Error ? error.message : String(error)})`,
+          );
+        }
+      }
+      const gatewayPreferredFiles = buildGatewayPreferredFiles(gatewayHandoff);
+      const gatewayPlanHint = buildGatewayPlanHint(gatewayHandoff);
+      const skipDocContext = codaliRequired && Boolean(gatewayHandoff);
       const agent = await this.resolveAgent(request.agentName);
       let codaliProviderInfo: { provider: string; sourceAdapter?: string; requiresApiKey: boolean } | null = null;
       if (codaliRequired) {
@@ -3410,6 +3947,8 @@ export class WorkOnTasksService {
         let codaliRunMeta: { logPath?: string; touchedFiles?: string[]; runId?: string } | null = null;
         let dirtyBeforeAgent: string[] = [];
         let unresolvedComments: TaskCommentRow[] = [];
+        let commentBacklogFailures = 0;
+        let commentBacklogEnforced = enforceCommentBacklog;
         let commentContext: { comments: TaskCommentRow[]; unresolved: TaskCommentRow[] } | null = null;
         let workLog: TaskCommentRow[] = [];
         let commentResolution:
@@ -3637,12 +4176,23 @@ export class WorkOnTasksService {
           abortIfSignaled();
           const metadata = (task.task.metadata as any) ?? {};
           allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
+          const allowedDirs = normalizeDirList(metadata.allowed_dirs ?? metadata.allowedDirs);
+          if (allowedDirs.length) {
+            const normalizedDirs = normalizePaths(this.workspace.workspaceRoot, allowedDirs);
+            allowedFiles = Array.from(new Set([...allowedFiles, ...normalizedDirs]));
+          }
           const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
           const testRequirementsNote = formatTestRequirementsNote(testRequirements);
           const qaReadinessNote = formatQaReadinessNote(metadata.qa);
           const testsRequired = hasTestRequirements(testRequirements);
           let testCommands = normalizeTestCommands(metadata.tests ?? metadata.testCommands);
+          const allowDocEdits =
+            metadata.allow_doc_edits === true ||
+            metadata.allowDocEdits === true ||
+            metadata.allow_doc_edits === "true" ||
+            metadata.allowDocEdits === "true";
           const allowLargeDocEdits =
+            allowDocEdits ||
             metadata.allow_large_doc_edits === true ||
             metadata.allowLargeDocEdits === true ||
             metadata.allow_large_doc_edits === "true" ||
@@ -3676,6 +4226,7 @@ export class WorkOnTasksService {
             if (fallbackCommand) testCommands = [fallbackCommand];
           }
           let runAllTestsCommandHint = testsRequired ? detectRunAllTestsCommand(this.workspace.workspaceRoot) : undefined;
+          let runAllTestsScriptPath = testsRequired ? detectRunAllTestsScript(this.workspace.workspaceRoot) : undefined;
           if (!runAllTestsCommandHint && !request.dryRun && testsRequired && testCommands.length > 0) {
             try {
               runAllScriptCreated = await ensureRunAllTestsScript(
@@ -3685,7 +4236,12 @@ export class WorkOnTasksService {
               );
               if (runAllScriptCreated) {
                 runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
-                await this.logTask(taskRun.id, "Created run-all tests script (tests/all.js).", "tests");
+                runAllTestsScriptPath = detectRunAllTestsScript(this.workspace.workspaceRoot);
+                await this.logTask(
+                  taskRun.id,
+                  `Created run-all tests script (${runAllTestsScriptPath ?? "tests/all.js"}).`,
+                  "tests",
+                );
               }
             } catch (error) {
               await this.logTask(
@@ -3695,8 +4251,11 @@ export class WorkOnTasksService {
               );
             }
           }
-          if (testsRequired && runAllScriptCreated && allowedFiles.length && !allowedFiles.includes("tests/all.js")) {
-            allowedFiles = [...allowedFiles, "tests/all.js"];
+          if (testsRequired && runAllScriptCreated && runAllTestsScriptPath) {
+            const normalizedScript = runAllTestsScriptPath.replace(/\\/g, "/");
+            if (allowedFiles.length && !allowedFiles.includes(normalizedScript)) {
+              allowedFiles = [...allowedFiles, normalizedScript];
+            }
           }
           if (!testCommands.length && testsRequired && runAllTestsCommandHint) {
             testCommands = [runAllTestsCommandHint];
@@ -3705,7 +4264,7 @@ export class WorkOnTasksService {
             testsRequired && !request.dryRun
               ? runAllTestsCommandHint
                 ? `Run-all tests command: ${runAllTestsCommandHint}`
-                : "Run-all tests script missing (tests/all.js). Create it and register new tests."
+                : "Run-all tests script missing (tests/all.js | tests/all.sh | tests/all.ps1). Create it or configure test commands."
               : "";
           const hasRunnableTests = testCommands.length > 0 || Boolean(runAllTestsCommandHint);
           if (testsRequired && !hasRunnableTests) {
@@ -4055,13 +4614,24 @@ export class WorkOnTasksService {
             }
           }
 
-          await startPhase("context", { allowedFiles, tests: testCommands, testRequirements });
+          await startPhase("context", {
+            allowedFiles,
+            tests: testCommands,
+            testRequirements,
+            skipDocdex: skipDocContext,
+          });
           const docLinks = Array.isArray((metadata as any).doc_links) ? (metadata as any).doc_links : [];
-          const {
-            summary: docSummary,
-            warnings: docWarnings,
-            docdexUnavailable,
-          } = await this.gatherDocContext(request.projectKey, docLinks);
+          let docSummary = "";
+          let docWarnings: string[] = [];
+          let docdexUnavailable = false;
+          if (skipDocContext) {
+            docWarnings = ["Gateway handoff present; skipping docdex context gathering."];
+          } else {
+            const docContext = await this.gatherDocContext(request.projectKey, docLinks);
+            docSummary = docContext.summary;
+            docWarnings = docContext.warnings;
+            docdexUnavailable = docContext.docdexUnavailable;
+          }
           if (docWarnings.length) {
             warnings.push(...docWarnings);
             await this.logTask(taskRun.id, docWarnings.join("; "), "docdex");
@@ -4094,6 +4664,9 @@ export class WorkOnTasksService {
           await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });
           commentContext = await this.loadCommentContext(task.task.id);
           unresolvedComments = commentContext.unresolved;
+          commentBacklogFailures = await this.countCommentBacklogFailures(task.task.id);
+          commentBacklogEnforced =
+            enforceCommentBacklog && commentBacklogFailures < commentBacklogMaxFails;
           const commentBacklog = this.buildCommentBacklog(unresolvedComments);
           workLog = await this.loadWorkLog(task.task.id);
           const workLogSummary = this.buildWorkLog(workLog);
@@ -4103,7 +4676,7 @@ export class WorkOnTasksService {
             allowedFiles,
             commentBacklog,
             workLogSummary,
-            enforceCommentBacklog,
+            commentBacklogEnforced,
           );
           const testCommandNote = testCommands.length ? `Test commands: ${testCommands.join(" && ")}` : "";
           const testExpectationNote = shouldRunTests
@@ -4112,21 +4685,31 @@ export class WorkOnTasksService {
               : "Tests must pass before the task can be finalized."
             : "";
           const commentBacklogNote = commentBacklog
-            ? enforceCommentBacklog
+            ? commentBacklogEnforced
               ? "Comment backlog is highest priority. Resolve those items first and focus on them before other task work. If you cannot resolve a comment, explain why and leave the slug unresolved. Do not mark slugs resolved unless you made repo changes that address them. If you return JSON, include resolvedSlugs/unresolvedSlugs and set commentBacklogStatus (e.g., in_progress/resolved/blocked)."
               : "Comment backlog is provided. Address relevant items and report status. Avoid marking slugs resolved unless your changes address them. If you return JSON, include resolvedSlugs/unresolvedSlugs/commentBacklogStatus when possible."
             : "";
+          if (commentBacklog && enforceCommentBacklog && !commentBacklogEnforced) {
+            await this.logTask(
+              taskRun.id,
+              `Comment backlog enforcement disabled after ${commentBacklogFailures} failure(s) (max ${commentBacklogMaxFails}).`,
+              "execution",
+            );
+          }
           const outputRequirementNote = [
             "Output requirements:",
             "- Prefer direct repo edits when tools are available. If direct edits are not possible, output a minimal patch/diff or patch_json response with no extra prose.",
             "- Do not commit changes; leave the working tree for mcoda to stage and commit.",
             "- Summarize what you changed and any test results.",
+            allowDocEdits
+              ? ""
+              : `- Protected paths are read-only unless allow_doc_edits=true: ${formatDocGuardList()}. Do not edit these to shortcut the task; fix code instead and call out spec mismatches.`,
             commentBacklog
-              ? enforceCommentBacklog
+              ? commentBacklogEnforced
                 ? "- If comment backlog is present, include a JSON object with resolvedSlugs/unresolvedSlugs/commentBacklogStatus."
                 : "- If comment backlog is present, include resolvedSlugs/unresolvedSlugs/commentBacklogStatus when possible."
               : "",
-            enforceCommentBacklog
+            commentBacklogEnforced
               ? "- Do not mark comment slugs resolved without corresponding repo changes."
               : "- Avoid marking comment slugs resolved unless repo changes address them.",
             "- Do not create docs/qa/* reports unless explicitly required by the task.",
@@ -4183,20 +4766,30 @@ export class WorkOnTasksService {
               process.stdout.write(text);
             }
           };
-          if (codaliRequired && requestedAgentStream) {
-            await this.logTask(taskRun.id, "Streaming disabled for codali; forcing non-streaming invocation.", "agent");
-          }
-          const taskInvocationMetadata: Record<string, unknown> = {
-            ...baseInvocationMetadata,
-            taskId: task.task.id,
-            taskKey: task.task.key,
-            agentId: agent.id,
-            agentSlug: agent.slug ?? agent.id,
-            sourceAdapter: codaliProviderInfo?.sourceAdapter ?? adapterLabel,
+        const taskInvocationMetadata: Record<string, unknown> = {
+          ...baseInvocationMetadata,
+          taskId: task.task.id,
+          taskKey: task.task.key,
+          agentId: agent.id,
+          agentSlug: agent.slug ?? agent.id,
+          sourceAdapter: codaliProviderInfo?.sourceAdapter ?? adapterLabel,
+        };
+        if (codaliRequired) {
+          const codaliPreferredFiles = mergeUnique([...gatewayPreferredFiles, ...allowedFiles]);
+          const readOnlyPaths = allowDocEdits ? [] : [...DOC_GUARD_DIRS, ...DOC_GUARD_FILES];
+          const taskCodaliEnvOverrides = {
+            ...baseCodaliEnvOverrides,
+            ...buildCodaliEnvOverrides({
+              preferredFiles: codaliPreferredFiles,
+              readOnlyPaths: readOnlyPaths.length ? readOnlyPaths : undefined,
+              planHint: gatewayPlanHint,
+              skipSearch: gatewayPreferredFiles.length > 0,
+            }),
           };
-          if (codaliRequired && Object.keys(codaliEnvOverrides).length > 0) {
-            taskInvocationMetadata.codaliEnv = codaliEnvOverrides;
+          if (Object.keys(taskCodaliEnvOverrides).length > 0) {
+            taskInvocationMetadata.codaliEnv = taskCodaliEnvOverrides;
           }
+        }
 
           const patchOnlyAgentSlug = (() => {
             const config = agent.config as Record<string, unknown> | undefined;
@@ -4510,26 +5103,56 @@ export class WorkOnTasksService {
             let {
               patches,
               fileBlocks,
+              structuredActions,
               jsonDetected,
               commentResolution: agentCommentResolution,
               unfencedFileHeader,
               placeholderFileBlocks,
               invalidFileBlockPaths,
+              invalidPatchActions,
+              allowFileOverwrite,
             } = extractAgentChanges(agentOutput);
             commentResolution = agentCommentResolution ?? null;
             const patchOutputDetected =
               patches.length > 0 ||
               fileBlocks.length > 0 ||
+              structuredActions.length > 0 ||
               unfencedFileHeader ||
               placeholderFileBlocks ||
-              invalidFileBlockPaths.length > 0;
+              invalidFileBlockPaths.length > 0 ||
+              invalidPatchActions.length > 0;
             if (patchModeEnabled) {
               if (fileBlocks.length && patches.length) {
-                const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
-                if (existing.length) {
-                  await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                if (!allowFileOverwrite) {
+                  const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
+                  if (existing.length) {
+                    await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                  }
+                  fileBlocks = remaining;
                 }
-                fileBlocks = remaining;
+              }
+              if (structuredActions.length && patches.length) {
+                await this.logTask(
+                  taskRun.id,
+                  "Structured patch actions detected; ignoring unified diff patches in favor of structured edits.",
+                  "agent",
+                );
+                patches = [];
+              }
+              if (structuredActions.length && fileBlocks.length) {
+                await this.logTask(
+                  taskRun.id,
+                  "Structured patch actions detected; ignoring FILE blocks in favor of structured edits.",
+                  "agent",
+                );
+                fileBlocks = [];
+              }
+              if (structuredActions.length && invalidPatchActions.length) {
+                await this.logTask(
+                  taskRun.id,
+                  `Some structured patch actions were invalid: ${invalidPatchActions.join("; ")}`,
+                  "agent",
+                );
               }
               if (placeholderFileBlocks) {
                 await this.logTask(
@@ -4539,6 +5162,8 @@ export class WorkOnTasksService {
                 );
                 patches = [];
                 fileBlocks = [];
+                structuredActions = [];
+                invalidPatchActions = [];
                 jsonDetected = false;
               }
               if (unfencedFileHeader) {
@@ -4559,6 +5184,8 @@ export class WorkOnTasksService {
                 );
                 patches = [];
                 fileBlocks = [];
+                structuredActions = [];
+                invalidPatchActions = [];
                 jsonDetected = false;
               }
               if ((patches.length > 0 || fileBlocks.length > 0) && hasExtraneousOutput(agentOutput, jsonDetected)) {
@@ -4569,9 +5196,11 @@ export class WorkOnTasksService {
                 );
                 patches = [];
                 fileBlocks = [];
+                structuredActions = [];
+                invalidPatchActions = [];
                 jsonDetected = false;
               }
-              if (patches.length === 0 && fileBlocks.length === 0 && !triedRetry) {
+              if (patches.length === 0 && fileBlocks.length === 0 && structuredActions.length === 0 && !triedRetry) {
                 triedRetry = true;
                 const retryReason = jsonDetected
                   ? "Agent output was JSON-only and did not include patch or file blocks; retrying with explicit output instructions."
@@ -4594,19 +5223,47 @@ export class WorkOnTasksService {
                   ({
                     patches,
                     fileBlocks,
+                    structuredActions,
                     jsonDetected,
                     commentResolution: agentCommentResolution,
                     unfencedFileHeader,
                     placeholderFileBlocks,
                     invalidFileBlockPaths,
+                    invalidPatchActions,
+                    allowFileOverwrite,
                   } = extractAgentChanges(agentOutput));
                   commentResolution = agentCommentResolution ?? null;
                   if (fileBlocks.length && patches.length) {
-                    const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
-                    if (existing.length) {
-                      await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                    if (!allowFileOverwrite) {
+                      const { existing, remaining } = splitFileBlocksByExistence(fileBlocks, this.workspace.workspaceRoot);
+                      if (existing.length) {
+                        await this.logTask(taskRun.id, `Skipped FILE blocks for existing files: ${existing.join(", ")}`, "agent");
+                      }
+                      fileBlocks = remaining;
                     }
-                    fileBlocks = remaining;
+                  }
+                  if (structuredActions.length && patches.length) {
+                    await this.logTask(
+                      taskRun.id,
+                      "Structured patch actions detected; ignoring unified diff patches in favor of structured edits.",
+                      "agent",
+                    );
+                    patches = [];
+                  }
+                  if (structuredActions.length && fileBlocks.length) {
+                    await this.logTask(
+                      taskRun.id,
+                      "Structured patch actions detected; ignoring FILE blocks in favor of structured edits.",
+                      "agent",
+                    );
+                    fileBlocks = [];
+                  }
+                  if (structuredActions.length && invalidPatchActions.length) {
+                    await this.logTask(
+                      taskRun.id,
+                      `Some structured patch actions were invalid: ${invalidPatchActions.join("; ")}`,
+                      "agent",
+                    );
                   }
                   if (placeholderFileBlocks) {
                     await this.logTask(
@@ -4616,6 +5273,8 @@ export class WorkOnTasksService {
                     );
                     patches = [];
                     fileBlocks = [];
+                    structuredActions = [];
+                    invalidPatchActions = [];
                     jsonDetected = false;
                   }
                   if (unfencedFileHeader) {
@@ -4636,6 +5295,8 @@ export class WorkOnTasksService {
                     );
                     patches = [];
                     fileBlocks = [];
+                    structuredActions = [];
+                    invalidPatchActions = [];
                     jsonDetected = false;
                   }
                   if ((patches.length > 0 || fileBlocks.length > 0) && hasExtraneousOutput(agentOutput, jsonDetected)) {
@@ -4646,6 +5307,8 @@ export class WorkOnTasksService {
                     );
                     patches = [];
                     fileBlocks = [];
+                    structuredActions = [];
+                    invalidPatchActions = [];
                     jsonDetected = false;
                   }
                 } catch (error) {
@@ -4700,7 +5363,7 @@ export class WorkOnTasksService {
                   createdAt: new Date().toISOString(),
                   metadata: { reason: "comment_backlog_missing", openSlugs, status: normalizedStatus || "none" },
                 });
-                if (enforceCommentBacklog) {
+                if (commentBacklogEnforced) {
                   await this.logTask(taskRun.id, "Comment backlog missing in agent output; failing task.", "execution");
                   await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
                     status: "failed",
@@ -4738,6 +5401,64 @@ export class WorkOnTasksService {
                 touched = Array.from(merged);
                 patchApplied = true;
               }
+              if (!allowDocEdits && directTouched.length) {
+                const guarded = directTouched.filter((path) => isGuardedDocPath(path));
+                if (guarded.length) {
+                  const details = guarded.map((path) => `- ${path}`).join("\n");
+                  const body = [
+                    "[work-on-tasks]",
+                    "Blocked edits to SDS/RFP/OpenAPI content.",
+                    "Set metadata.allow_doc_edits=true (or allow_large_doc_edits=true) to allow this change.",
+                    "Touched paths:",
+                    details,
+                  ].join("\n");
+                  await this.deps.workspaceRepo.createTaskComment({
+                    taskId: task.task.id,
+                    taskRunId: taskRun.id,
+                    jobId: job.id,
+                    sourceCommand: "work-on-tasks",
+                    authorType: "agent",
+                    authorAgentId: agent.id,
+                    category: "doc_edit_guard",
+                    body,
+                    createdAt: new Date().toISOString(),
+                    metadata: { reason: "doc_edit_guard", paths: guarded },
+                  });
+                  await this.logTask(
+                    taskRun.id,
+                    "Blocked edits to guarded docs; add allow_doc_edits=true to task metadata to override.",
+                    "scope",
+                  );
+                  await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
+                    error: "doc_edit_guard",
+                    violations: guarded,
+                    attempt,
+                  });
+                  await this.stateService.markFailed(task.task, "doc_edit_guard", statusContext);
+                  await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                    status: "failed",
+                    finishedAt: new Date().toISOString(),
+                  });
+                  setFailureReason("doc_edit_guard");
+                  results.push({ taskKey: task.task.key, status: "failed", notes: "doc_edit_guard" });
+                  taskStatus = "failed";
+                  try {
+                    await this.vcs.resetHard(this.workspace.workspaceRoot, { exclude: [".mcoda"] });
+                    touched = [];
+                    patchApplied = false;
+                  } catch (error) {
+                    await this.logTask(
+                      taskRun.id,
+                      `Failed to rollback workspace after doc guard violation: ${
+                        error instanceof Error ? error.message : String(error)
+                      }`,
+                      "scope",
+                    );
+                  }
+                  await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                  continue taskLoop;
+                }
+              }
               if (!allowLargeDocEdits && directTouched.length) {
                 let diffText = "";
                 try {
@@ -4762,7 +5483,7 @@ export class WorkOnTasksService {
                     const body = [
                       "[work-on-tasks]",
                       "Blocked destructive doc edit in SDS/RFP/OpenAPI content.",
-                      "Set metadata.allow_large_doc_edits=true on the task to allow this change.",
+                      "Set metadata.allow_doc_edits=true (or allow_large_doc_edits=true) on the task to allow this change.",
                       "Violations:",
                       details,
                     ].join("\n");
@@ -4816,7 +5537,7 @@ export class WorkOnTasksService {
               }
             }
 
-            if (patchModeEnabled && patches.length === 0 && fileBlocks.length === 0) {
+            if (patchModeEnabled && patches.length === 0 && fileBlocks.length === 0 && structuredActions.length === 0) {
               if (!commentResolution) {
                 const message = "Agent output did not include a patch or file blocks.";
                 await this.logTask(taskRun.id, message, "agent");
@@ -4857,8 +5578,56 @@ export class WorkOnTasksService {
               }
             }
 
+            if (patchModeEnabled && structuredActions.length) {
+              const outOfScopeActions = findOutOfScopeActionPaths(
+                structuredActions,
+                this.workspace.workspaceRoot,
+              );
+              if (outOfScopeActions.length) {
+                const message = `Structured patch actions reference paths outside workspace: ${outOfScopeActions.join(", ")}`;
+                await this.logTask(taskRun.id, message, "scope");
+                await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
+                  error: "scope_violation",
+                  outOfScope: outOfScopeActions,
+                  attempt,
+                });
+                await this.stateService.markFailed(task.task, "scope_violation", statusContext);
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                setFailureReason("scope_violation");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "scope_violation" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+            }
+
             if (patchModeEnabled && !allowLargeDocEdits) {
-              const violations = await detectLargeDocEdits(patches, fileBlocks, this.workspace.workspaceRoot);
+              const structuredBlocks = structuredActions.length
+                ? await this.buildStructuredFileBlocks(structuredActions, this.workspace.workspaceRoot)
+                : { fileBlocks: [], errors: [] as string[] };
+              if (structuredBlocks.errors.length) {
+                await this.logTask(
+                  taskRun.id,
+                  `Structured patch actions failed validation: ${structuredBlocks.errors.join("; ")}`,
+                  "patch",
+                );
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                setFailureReason("missing_patch");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "missing_patch" });
+                taskStatus = "failed";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+              const combinedFileBlocks = structuredBlocks.fileBlocks.length
+                ? [...fileBlocks, ...structuredBlocks.fileBlocks]
+                : fileBlocks;
+              const violations = await detectLargeDocEdits(patches, combinedFileBlocks, this.workspace.workspaceRoot);
               if (violations.length) {
                 const details = violations
                   .map(
@@ -4869,7 +5638,7 @@ export class WorkOnTasksService {
                 const body = [
                   "[work-on-tasks]",
                   "Blocked destructive doc edit in SDS/RFP/OpenAPI content.",
-                  "Set metadata.allow_large_doc_edits=true on the task to allow this change.",
+                  "Set metadata.allow_doc_edits=true (or allow_large_doc_edits=true) on the task to allow this change.",
                   "Violations:",
                   details,
                 ].join("\n");
@@ -4887,7 +5656,7 @@ export class WorkOnTasksService {
                 });
                 await this.logTask(
                   taskRun.id,
-                  "Blocked destructive doc edit; add allow_large_doc_edits=true to task metadata to override.",
+                  "Blocked destructive doc edit; add allow_doc_edits=true (or allow_large_doc_edits=true) to task metadata to override.",
                   "scope",
                 );
                 await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "apply", "error", {
@@ -4908,15 +5677,17 @@ export class WorkOnTasksService {
               }
             }
 
-            if (patchModeEnabled && (patches.length || fileBlocks.length)) {
+            if (patchModeEnabled && (patches.length || fileBlocks.length || structuredActions.length)) {
               if (!(await refreshLock("apply_start", true))) {
                 await this.logTask(taskRun.id, "Aborting task: lock lost before apply.", "vcs");
                 throw new Error("Task lock lost before apply.");
               }
               const applyDetails: Record<string, unknown> = { attempt };
+              if (structuredActions.length) applyDetails.actionCount = structuredActions.length;
               if (patches.length) applyDetails.patchCount = patches.length;
               if (fileBlocks.length) applyDetails.fileCount = fileBlocks.length;
-              if (fileBlocks.length && !patches.length) applyDetails.mode = "direct";
+              if (structuredActions.length && !patches.length && !fileBlocks.length) applyDetails.mode = "structured";
+              if (fileBlocks.length && !patches.length && !structuredActions.length) applyDetails.mode = "direct";
               await startPhase("apply", applyDetails);
               let patchApplyError: string | null = null;
               const touchedBeforeApply = [...touched];
@@ -4970,6 +5741,29 @@ export class WorkOnTasksService {
                   );
                 }
               };
+              if (structuredActions.length) {
+                const allowStructuredOverwrite = request.allowFileOverwrite === true || allowFileOverwrite;
+                const applied = await this.applyStructuredActions(
+                  structuredActions,
+                  this.workspace.workspaceRoot,
+                  request.dryRun ?? false,
+                  allowStructuredOverwrite,
+                );
+                if (applied.touched.length) {
+                  const merged = new Set([...touched, ...applied.touched]);
+                  touched = Array.from(merged);
+                }
+                if (applied.warnings?.length) {
+                  await this.logTask(taskRun.id, applied.warnings.join("; "), "patch");
+                }
+                if (applied.error) {
+                  patchApplyError = applied.error;
+                  await this.logTask(taskRun.id, `Structured patch apply failed: ${applied.error}`, "patch");
+                  await rollbackWorkspace(`structured patch apply failed: ${applied.error}`);
+                }
+                patches = [];
+                fileBlocks = [];
+              }
               if (patches.length) {
                 const applied = await this.applyPatches(
                   patches,
@@ -5155,13 +5949,14 @@ export class WorkOnTasksService {
                     return fs.existsSync(resolved);
                   });
                 const allowNoop = patchApplyError === null && (touched.length > 0 || onlyExistingFileBlocks);
-                const allowFileOverwrite = request.allowFileOverwrite === true && fileFallbackMode;
+                const allowFileOverwriteForBlocks =
+                  request.allowFileOverwrite === true || allowFileOverwrite || fileFallbackMode;
                 const applied = await this.applyFileBlocks(
                   fileBlocks,
                   this.workspace.workspaceRoot,
                   request.dryRun ?? false,
                   allowNoop,
-                  allowFileOverwrite,
+                  allowFileOverwriteForBlocks,
                 );
                 if (applied.touched.length) {
                   const merged = new Set([...touched, ...applied.touched]);
@@ -5376,7 +6171,7 @@ export class WorkOnTasksService {
                     unresolvedSlugs: commentResolution?.unresolvedSlugs ?? [],
                   },
                 });
-                if (enforceCommentBacklog) {
+                if (commentBacklogEnforced) {
                   await this.logTask(
                     taskRun.id,
                     `Comment backlog unresolved with no repo changes (${slugList}).`,
@@ -5450,6 +6245,44 @@ export class WorkOnTasksService {
               await applyCommentResolutionIfNeeded();
             }
           }
+        }
+
+        if (!request.dryRun) {
+          const runAllTestsCommand = testsRequired ? detectRunAllTestsCommand(this.workspace.workspaceRoot) : undefined;
+          const combinedCommands = runAllTestsCommand
+            ? dedupeCommands([...testCommands, runAllTestsCommand])
+            : testCommands;
+          const summaryLines = [
+            "[work-on-tasks]",
+            `Summary: ${task.task.key} completed.`,
+            `Touched files: ${touched.length ? touched.join(", ") : "(none)"}`,
+            `Tests run: ${shouldRunTests ? (combinedCommands.length ? combinedCommands.join(" && ") : "(none)") : "skipped"}`,
+            testsRequired ? `Run-all tests: ${runAllTestsCommand ?? "(missing)"}` : "",
+            commentResolution
+              ? `Comment backlog: resolved=${formatSlugList(commentResolution.resolvedSlugs ?? [])}, unresolved=${formatSlugList(
+                  commentResolution.unresolvedSlugs ?? [],
+                )}, status=${commentResolution.commentBacklogStatus ?? "missing"}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+          await this.deps.workspaceRepo.createTaskComment({
+            taskId: task.task.id,
+            taskRunId: taskRun.id,
+            jobId: job.id,
+            sourceCommand: "work-on-tasks",
+            authorType: "agent",
+            authorAgentId: agent.id,
+            category: "work_summary",
+            body: summaryLines,
+            createdAt: new Date().toISOString(),
+            metadata: {
+              touchedFiles: touched,
+              testCommands: combinedCommands,
+              runAllTestsCommand: runAllTestsCommand ?? null,
+              commentResolution: commentResolution ?? null,
+            },
+          });
         }
 
         await startPhase("finalize");

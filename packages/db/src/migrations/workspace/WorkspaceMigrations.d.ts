@@ -5,5 +5,6 @@ import { Database } from "sqlite";
  */
 export declare class WorkspaceMigrations {
     static run(db: Database): Promise<void>;
+    private static ensureColumn;
 }
 //# sourceMappingURL=WorkspaceMigrations.d.ts.map

@@ -316,6 +316,13 @@ describe("gateway-trio CLI output shape", () => {
           gatewayAgent: "gateway-router",
           startedAt,
         });
+        request.onGatewaySelection?.({
+          taskKey: "TASK-1",
+          job: "work-on-tasks",
+          gatewayAgent: "gateway-router",
+          chosenAgent: "worker-agent",
+          startedAt,
+        });
         request.onGatewayChunk?.("gateway-output");
         request.onGatewayEnd?.({
           taskKey: "TASK-1",
@@ -338,6 +345,8 @@ describe("gateway-trio CLI output shape", () => {
     }
     const output = captured.join("");
     assert.ok(output.includes("START OF GATEWAY TASK"));
+    assert.ok(output.includes("Selected:"));
+    assert.ok(output.includes("worker-agent"));
     assert.ok(output.includes("END OF GATEWAY TASK"));
     assert.ok(output.includes("gateway-output"));
   });

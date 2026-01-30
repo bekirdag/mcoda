@@ -20,3 +20,12 @@ test("codali --help prints usage", { concurrency: false }, () => {
   assert.match(output, /Usage: codali/);
   assert.match(output, /--smart/);
 });
+
+test("codali doctor prints paths", { concurrency: false }, () => {
+  const result = runCli(["doctor"]);
+  assert.equal(result.status, 0);
+  const output = typeof result.stdout === "string" ? result.stdout : result.stdout?.toString() ?? "";
+  assert.match(output, /codali doctor/);
+  assert.match(output, /CLI Path:/);
+  assert.match(output, /Package Root:/);
+});
