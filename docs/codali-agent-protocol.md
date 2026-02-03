@@ -93,6 +93,13 @@ meta:
 - Always return **all results** in a single `CODALI_RESPONSE`.
 - For file content, include full content (unless budgeted), and note truncation.
 - Include `meta.warnings` for any failures or skips.
+- Librarian output must be a **plain-text narrative bundle** (not JSON) that includes:
+  - Request and intent signals.
+  - Selected focus/periphery files.
+  - Write policy (allowed + read-only paths).
+  - Full focus file contents and periphery summaries.
+  - Explicit missing-data statements when targets/content are unavailable.
+  - Warnings at the end.
 
 ### Critic Result (quality gate)
 Critic output is carried back to the Architect as a protocol result:

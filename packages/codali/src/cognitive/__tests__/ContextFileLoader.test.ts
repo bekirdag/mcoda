@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { DocdexClient } from "../../docdex/DocdexClient.js";
@@ -56,6 +56,26 @@ test("ContextFileLoader loads periphery as symbols", { concurrency: false }, asy
   assert.equal(periphery.length, 1);
   assert.ok(periphery[0]?.content.includes("symbols"));
   assert.equal(periphery[0]?.role, "periphery");
+});
+
+test("ContextFileLoader loads doc periphery as content", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-loader-"));
+  const docsDir = path.join(tmpDir, "docs");
+  mkdirSync(docsDir, { recursive: true });
+  writeFileSync(path.join(docsDir, "readme.md"), "Doc content", "utf8");
+  const loader = new ContextFileLoader(new StubDocdexClient() as unknown as DocdexClient, {
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    focusMaxFileBytes: 80,
+    peripheryMaxBytes: 40,
+    skeletonizeLargeFiles: true,
+  });
+
+  const periphery = await loader.loadPeriphery(["docs/readme.md"]);
+  assert.equal(periphery.length, 1);
+  assert.equal(periphery[0]?.role, "periphery");
+  assert.ok(periphery[0]?.content.includes("Doc content"));
+  assert.equal(periphery[0]?.sliceStrategy, "doc_full");
 });
 
 test("ContextFileLoader truncates periphery when over limit", { concurrency: false }, async () => {

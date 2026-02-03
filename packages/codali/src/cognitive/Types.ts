@@ -1,4 +1,5 @@
 import type { LocalContextConfig } from "../config/Config.js";
+import type { IntentSignals } from "./IntentSignals.js";
 import type { ProviderMessage } from "../providers/ProviderTypes.js";
 import type { AgentRequest } from "../agents/AgentProtocol.js";
 
@@ -50,6 +51,18 @@ export interface ContextImpactSummary {
 export interface ContextImpactDiagnostics {
   file: string;
   diagnostics: unknown;
+}
+
+export interface ContextSearchResult {
+  query: string;
+  hits: Array<{ doc_id?: string; path?: string; score?: number }>;
+}
+
+export interface ContextProjectInfo {
+  workspace_root?: string;
+  docs?: string[];
+  manifests?: string[];
+  file_types?: string[];
 }
 
 export interface ContextSelection {
@@ -109,13 +122,17 @@ export interface SerializedContext {
 
 export interface ContextBundle {
   request: string;
+  intent?: IntentSignals;
   queries: string[];
+  search_results?: ContextSearchResult[];
   snippets: ContextSnippet[];
   symbols: ContextSymbolSummary[];
   ast: ContextAstSummary[];
   impact: ContextImpactSummary[];
   impact_diagnostics: ContextImpactDiagnostics[];
   repo_map?: string;
+  repo_map_raw?: string;
+  project_info?: ContextProjectInfo;
   files?: ContextFileEntry[];
   serialized?: SerializedContext;
   selection?: ContextSelection;
@@ -123,10 +140,13 @@ export interface ContextBundle {
   read_only_paths?: string[];
   redaction?: { count: number; ignored: string[] };
   memory: ContextMemoryEntry[];
+  episodic_memory?: Array<{ intent: string; plan: string; diff: string }>;
+  golden_examples?: Array<{ intent: string; patch: string }>;
   preferences_detected: ContextPreferenceDetected[];
   profile: ContextProfileEntry[];
   index: ContextIndexInfo;
   warnings: string[];
+  missing?: string[];
 }
 
 export interface ContextRequest {

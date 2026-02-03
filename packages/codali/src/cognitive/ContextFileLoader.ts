@@ -26,6 +26,16 @@ const estimateTokens = (content: string): number => {
   return Math.max(1, Math.ceil(content.length / 4));
 };
 
+const DOC_EXTENSIONS = new Set([".md", ".mdx", ".rst", ".txt"]);
+
+const isDocPath = (value: string): boolean => {
+  const normalized = value.replace(/\\\\/g, "/").toLowerCase();
+  if (normalized.startsWith("docs/")) return true;
+  const ext = path.extname(normalized);
+  if (!ext) return false;
+  return DOC_EXTENSIONS.has(ext);
+};
+
 const readLineValue = (value: unknown): number | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (value && typeof value === "object" && "line" in value) {
@@ -202,8 +212,11 @@ export class ContextFileLoader {
         this.ignoredPaths.push(filePath);
         continue;
       }
-      const symbols = await this.safeSymbols(filePath);
-      let content = symbols ?? "";
+      const docFile = isDocPath(filePath);
+      const symbols = docFile ? "" : await this.safeSymbols(filePath);
+      let content = docFile
+        ? await this.readContent(filePath, this.options.peripheryMaxBytes)
+        : symbols ?? "";
       const warnings: string[] = [];
       let redactions = 0;
       let truncated = false;
@@ -226,8 +239,18 @@ export class ContextFileLoader {
         content,
         size: content.length,
         truncated,
-        sliceStrategy: truncated ? "symbols_truncated" : "symbols",
-        origin: "docdex",
+        sliceStrategy: docFile
+          ? truncated
+            ? "doc_truncated"
+            : "doc_full"
+          : truncated
+            ? "symbols_truncated"
+            : "symbols",
+        origin: docFile
+          ? this.options.readStrategy === "docdex"
+            ? "docdex"
+            : "fs"
+          : "docdex",
         token_estimate: estimateTokens(content),
         warnings: warnings.length ? warnings : undefined,
         redactions: redactions || undefined,

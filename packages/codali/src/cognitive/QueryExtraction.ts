@@ -24,6 +24,65 @@ const STOPWORDS = new Set([
   "those",
   "it",
   "its",
+  "add",
+  "adds",
+  "added",
+  "adding",
+  "change",
+  "changes",
+  "changed",
+  "changing",
+  "update",
+  "updates",
+  "updated",
+  "updating",
+  "modify",
+  "modifies",
+  "modified",
+  "modifying",
+  "make",
+  "makes",
+  "making",
+  "create",
+  "creates",
+  "created",
+  "creating",
+  "only",
+  "just",
+  "please",
+  "visible",
+  "show",
+  "shows",
+  "showing",
+  "display",
+  "displayed",
+  "touch",
+  "edit",
+  "edits",
+  "editing",
+  "fix",
+  "fixes",
+  "fixed",
+  "fixing",
+  "ensure",
+  "set",
+  "sets",
+  "setting",
+  "new",
+  "develop",
+  "develops",
+  "developed",
+  "developing",
+  "engineer",
+  "engineering",
+  "implement",
+  "implements",
+  "implemented",
+  "implementing",
+  "build",
+  "builds",
+  "building",
+  "built",
 ]);
 
 const FILE_EXTENSIONS = [
@@ -87,6 +146,20 @@ const extractKeywords = (input: string): string[] => {
     .filter((token) => token.length >= 3 && !STOPWORDS.has(token));
 };
 
+const buildKeywordFallbackQueries = (request: string, keywords: string[], maxQueries: number): string[] => {
+  const keyTerms = unique(keywords.filter((token) => token.length >= 4));
+  const longPhrase = keyTerms.slice(0, 4).join(" ");
+  const corePhrase = keyTerms.slice(0, 2).join(" ");
+  const fallback = unique([
+    request,
+    longPhrase,
+    corePhrase,
+    ...keyTerms,
+    ...keywords,
+  ]);
+  return fallback.slice(0, Math.max(1, maxQueries));
+};
+
 export const extractQueries = (input: string, maxQueries = 3): string[] => {
   const trimmed = input.trim();
   if (!trimmed) return [];
@@ -97,8 +170,7 @@ export const extractQueries = (input: string, maxQueries = 3): string[] => {
 
   const hasAnchors = phrases.length > 0 || fileTokens.length > 0;
   if (!hasAnchors) {
-    const fallback = unique([trimmed, ...keywords]);
-    return fallback.slice(0, Math.max(1, maxQueries));
+    return buildKeywordFallbackQueries(trimmed, keywords, maxQueries);
   }
 
   const combined = unique([...phrases, ...fileTokens, ...keywords]);
@@ -174,7 +246,7 @@ export const expandQueriesWithProvider = async (
   try {
     const parsed = JSON.parse(content);
     const expanded = parseExpandedQueries(parsed);
-    const merged = unique([...expanded, ...baseQueries]);
+    const merged = unique([...baseQueries, ...expanded]);
     return merged.slice(0, Math.max(1, maxQueries));
   } catch {
     return baseQueries;

@@ -12,6 +12,8 @@ import {
   ARCHITECT_PROMPT,
   ARCHITECT_REVIEW_GBNF,
   ARCHITECT_REVIEW_PROMPT,
+  ARCHITECT_VALIDATE_GBNF,
+  ARCHITECT_VALIDATE_PROMPT,
 } from "./Prompts.js";
 import type { ContextManager } from "./ContextManager.js";
 import { parseAgentRequest, type AgentRequest } from "../agents/AgentProtocol.js";
@@ -342,6 +344,7 @@ export interface ArchitectPlannerOptions {
   model?: string;
   responseFormat?: ProviderResponseFormat;
   planHint?: string;
+  validatePlanHint?: boolean;
   stream?: boolean;
   onEvent?: (event: AgentEvent) => void;
 }
@@ -368,6 +371,7 @@ export class ArchitectPlanner {
   private model?: string;
   private responseFormat?: ProviderResponseFormat;
   private planHint?: string;
+  private validatePlanHint?: boolean;
   private stream?: boolean;
   private onEvent?: (event: AgentEvent) => void;
 
@@ -379,6 +383,7 @@ export class ArchitectPlanner {
     this.model = options.model;
     this.responseFormat = options.responseFormat;
     this.planHint = options.planHint;
+    this.validatePlanHint = options.validatePlanHint;
     this.stream = options.stream;
     this.onEvent = options.onEvent;
   }
@@ -407,6 +412,7 @@ export class ArchitectPlanner {
       model?: string;
       responseFormat?: ProviderResponseFormat;
       planHint?: string;
+      validatePlanHint?: boolean;
       stream?: boolean;
       onEvent?: (event: AgentEvent) => void;
     } = {},
@@ -415,6 +421,7 @@ export class ArchitectPlanner {
     const laneId = options.laneId ?? this.laneId;
     const model = options.model ?? this.model;
     const planHint = options.planHint ?? this.planHint;
+    const validatePlanHint = options.validatePlanHint ?? this.validatePlanHint;
     const stream = options.stream ?? this.stream;
     const onEvent = options.onEvent ?? this.onEvent;
     const requestedFormat: ProviderResponseFormat =
@@ -435,6 +442,16 @@ export class ArchitectPlanner {
         if (this.logger) {
           await this.logger.log("architect_plan_hint_used", {
             hasWarnings: hintParsed.warnings.length > 0,
+            validated: !!validatePlanHint,
+          });
+        }
+        if (validatePlanHint) {
+          return this.validatePlanWithProvider(hintParsed.plan, context, {
+            contextManager,
+            laneId,
+            model,
+            stream,
+            onEvent,
           });
         }
         return {
@@ -626,5 +643,92 @@ export class ArchitectPlanner {
     }
 
     return { status, feedback: parsed.feedback, raw, warnings };
+  }
+
+  async validatePlanWithProvider(
+    plan: Plan,
+    context: ContextBundle,
+    options: {
+      contextManager?: ContextManager;
+      laneId?: string;
+      model?: string;
+      stream?: boolean;
+      onEvent?: (event: AgentEvent) => void;
+    } = {},
+  ): Promise<ArchitectPlanResult> {
+    const contextManager = options.contextManager;
+    const laneId = options.laneId;
+    const model = options.model ?? this.model;
+    const stream = options.stream;
+    const onEvent = options.onEvent;
+
+    const systemMessage: ProviderMessage = { role: "system", content: ARCHITECT_VALIDATE_PROMPT };
+    const contextContent = buildContextNarrative(context);
+    const userMessage: ProviderMessage = {
+      role: "user",
+      content: [
+        "PROPOSED PLAN:",
+        JSON.stringify(plan, null, 2),
+        "",
+        "CONTEXT:",
+        contextContent,
+      ].join("\n"),
+    };
+
+    const history =
+      contextManager && laneId
+        ? await contextManager.prepare(laneId, {
+            systemPrompt: systemMessage.content,
+            bundle: userMessage.content,
+            model,
+          })
+        : [];
+
+    onEvent?.({ type: "status", phase: "thinking", message: "architect_validate" });
+    if (this.logger) {
+      await this.logger.log("provider_request", {
+        provider: this.provider.name,
+        model,
+        messages: [systemMessage, ...history, userMessage],
+        responseFormat: { type: "gbnf", grammar: ARCHITECT_VALIDATE_GBNF },
+        temperature: this.temperature,
+        stream: stream ?? false,
+      });
+    }
+    const response = await this.provider.generate({
+      messages: [systemMessage, ...history, userMessage],
+      responseFormat: { type: "gbnf", grammar: ARCHITECT_VALIDATE_GBNF },
+      temperature: this.temperature,
+      stream,
+      onEvent,
+    });
+    onEvent?.({ type: "status", phase: "done", message: "architect_validate" });
+
+    if (response.usage && this.logger) {
+      await this.logger.log("phase_usage", { phase: "architect_validate", usage: response.usage });
+    }
+
+    const content = response.message.content?.trim() ?? "";
+    const parsedPlan = parsePlanOutput(content, context);
+    const { plan: validatedPlan, warnings } = parsedPlan;
+
+    if (warnings.length && this.logger) {
+      await this.logger.log("architect_plan_normalized", {
+        warnings,
+        parseError: parsedPlan.parseError,
+        source: "validation",
+      });
+    }
+
+    if (contextManager && laneId) {
+      await contextManager.append(laneId, userMessage, { role: "architect", model });
+      await contextManager.append(laneId, response.message, {
+        role: "architect",
+        model,
+        tokens: response.usage?.totalTokens,
+      });
+    }
+
+    return { plan: validatedPlan, raw: content, warnings };
   }
 }

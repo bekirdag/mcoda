@@ -16,6 +16,21 @@ const withTempDir = async <T>(fn: (dir: string) => Promise<T>): Promise<T> => {
   }
 };
 
+const isListenPermissionError = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EPERM" || code === "EACCES";
+};
+
+const closeServer = async (server: http.Server): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+};
+
 const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<void> }> => {
   const server = http.createServer((req, res) => {
     if (req.url === "/health") {
@@ -52,18 +67,43 @@ const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<vo
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   return {
     baseUrl: `http://127.0.0.1:${port}`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => closeServer(server),
   };
 };
 
-test("QaApiRunner executes requests and validates expectations", async () => {
+const startServerOrSkip = async (t: { skip: (message?: string) => void }) => {
+  try {
+    return await startServer();
+  } catch (error) {
+    if (isListenPermissionError(error)) {
+      t.skip(`Skipping local HTTP server test: ${(error as Error).message}`);
+      return undefined;
+    }
+    throw error;
+  }
+};
+
+test("QaApiRunner executes requests and validates expectations", async (t) => {
   await withTempDir(async (dir) => {
-    const server = await startServer();
+    const server = await startServerOrSkip(t);
+    if (!server) return;
     const runner = new QaApiRunner(dir);
     const artifactDir = path.join(PathHelper.getWorkspaceDir(dir), "jobs", "job-1", "qa", "task-1", "api");
     try {
@@ -91,9 +131,10 @@ test("QaApiRunner executes requests and validates expectations", async () => {
   });
 });
 
-test("QaApiRunner fails when expectations are not met", async () => {
+test("QaApiRunner fails when expectations are not met", async (t) => {
   await withTempDir(async (dir) => {
-    const server = await startServer();
+    const server = await startServerOrSkip(t);
+    if (!server) return;
     const runner = new QaApiRunner(dir);
     try {
       const result = await runner.run({
@@ -129,9 +170,10 @@ test("QaApiRunner resolves base URL from package.json scripts", async () => {
   });
 });
 
-test("QaApiRunner chains auth tokens across requests", async () => {
+test("QaApiRunner chains auth tokens across requests", async (t) => {
   await withTempDir(async (dir) => {
-    const server = await startServer();
+    const server = await startServerOrSkip(t);
+    if (!server) return;
     const runner = new QaApiRunner(dir);
     try {
       const result = await runner.run({
@@ -160,9 +202,10 @@ test("QaApiRunner normalizes 0.0.0.0 base URLs to localhost", async () => {
   });
 });
 
-test("QaApiRunner validates response schema from OpenAPI spec", async () => {
+test("QaApiRunner validates response schema from OpenAPI spec", async (t) => {
   await withTempDir(async (dir) => {
-    const server = await startServer();
+    const server = await startServerOrSkip(t);
+    if (!server) return;
     const runner = new QaApiRunner(dir);
     const spec = `
 openapi: 3.0.0

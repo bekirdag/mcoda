@@ -288,7 +288,54 @@ export class DocdexClient {
     if (raw.error) {
       throw new Error(raw.error.message ?? "Docdex MCP error");
     }
-    return raw.result as T;
+    return this.normalizeMcpResult(raw.result) as T;
+  }
+
+  private normalizeMcpResult(payload: unknown): unknown {
+    if (!payload || typeof payload !== "object") return payload;
+    const record = payload as {
+      structuredContent?: unknown;
+      content?: unknown;
+      isError?: unknown;
+    };
+
+    if (record.structuredContent !== undefined) {
+      return record.structuredContent;
+    }
+
+    if (!Array.isArray(record.content) || record.content.length === 0) {
+      return payload;
+    }
+
+    const textChunks = record.content
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return undefined;
+        const text = (entry as { text?: unknown }).text;
+        return typeof text === "string" ? text : undefined;
+      })
+      .filter((text): text is string => typeof text === "string");
+
+    if (textChunks.length === 0) {
+      return payload;
+    }
+
+    const joined = textChunks.join("\n").trim();
+    if (joined.length === 0) {
+      return payload;
+    }
+
+    const parsed = this.tryParseJson(joined);
+    return parsed ?? joined;
+  }
+
+  private tryParseJson(text: string): unknown | undefined {
+    const trimmed = text.trim();
+    if (!trimmed) return undefined;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return undefined;
+    }
   }
 
   private buildProjectParams(extra: Record<string, unknown>): Record<string, unknown> {

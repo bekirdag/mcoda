@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +49,7 @@ const nodeBin = resolveNode();
 console.log(`[tests] using node: ${nodeBin}`);
 let failed = false;
 let markerPrinted = false;
-let winTestHome;
+let testHomeDir;
 
 if (process.env.DOCDEX_UPDATE_CHECK == null) {
   process.env.DOCDEX_UPDATE_CHECK = "0";
@@ -80,12 +80,12 @@ process.on("unhandledRejection", (error) => {
 });
 
 if (process.platform === "win32") {
-  winTestHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
-  const parsed = path.parse(winTestHome);
-  process.env.HOME = winTestHome;
-  process.env.USERPROFILE = winTestHome;
+  testHomeDir = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
+  const parsed = path.parse(testHomeDir);
+  process.env.HOME = testHomeDir;
+  process.env.USERPROFILE = testHomeDir;
   process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, "");
-  process.env.HOMEPATH = winTestHome.slice(parsed.root.length - 1);
+  process.env.HOMEPATH = testHomeDir.slice(parsed.root.length - 1);
   process.env.MCODA_SKIP_DOCDEX_CHECKS = "1";
   process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS = "1";
   if (!process.env.MCODA_FS_RM_RETRIES) {
@@ -103,9 +103,12 @@ if (process.platform === "win32") {
   if (!process.env.NODE_TEST_CONCURRENCY) {
     process.env.NODE_TEST_CONCURRENCY = "1";
   }
+}
+
+if (testHomeDir) {
   process.on("exit", () => {
     try {
-      rmSync(winTestHome, { recursive: true, force: true });
+      rmSync(testHomeDir, { recursive: true, force: true });
     } catch {
       // ignore cleanup errors
     }
@@ -223,12 +226,40 @@ const resolvedExtras = repoOverride.length
   : [...extraTests, ...extraWorkspaceTests].filter((file) => existsSync(path.join(root, file)));
 const allTests = repoOverride.length ? Array.from(new Set(repoOverride)) : Array.from(new Set([...testFiles, ...resolvedExtras]));
 if (process.env.MCODA_SKIP_REPO_TESTS !== "1") {
-  const repoTests = run("repo-tests", nodeBin, ["--test", ...allTests]);
+  let repoTestsHome;
+  let repoTestsEnv = process.env;
+  const configuredHome = process.env.HOME ?? process.env.USERPROFILE;
+  let homeWritable = false;
+  if (configuredHome && configuredHome.trim().length > 0) {
+    try {
+      accessSync(configuredHome, constants.W_OK);
+      homeWritable = true;
+    } catch {
+      homeWritable = false;
+    }
+  }
+  if (!homeWritable) {
+    repoTestsHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-test-home-"));
+    repoTestsEnv = {
+      ...process.env,
+      HOME: repoTestsHome,
+      USERPROFILE: repoTestsHome,
+    };
+  }
+
+  const repoTests = run("repo-tests", nodeBin, ["--test", ...allTests], { env: repoTestsEnv });
   results.push(repoTests);
   if (repoTests.error) {
     console.error(`[${repoTests.label}] ${repoTests.error}`);
   }
   if (repoTests.status !== 0) failed = true;
+  if (repoTestsHome) {
+    try {
+      rmSync(repoTestsHome, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  }
 }
 
 const artifactsDir = path.join(root, "tests", "results");

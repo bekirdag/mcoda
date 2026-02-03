@@ -67,6 +67,55 @@ afterEach(async () => {
   }
 });
 
+const isListenPermissionError = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EPERM" || code === "EACCES";
+};
+
+const closeServer = async (server: http.Server): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+};
+
+const listenServerOrSkip = async (
+  t: { skip: (message?: string) => void },
+  server: http.Server,
+  host?: string,
+): Promise<boolean> => {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        server.off("listening", onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        resolve();
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      if (host) {
+        server.listen(0, host);
+      } else {
+        server.listen(0);
+      }
+    });
+    return true;
+  } catch (error) {
+    if (isListenPermissionError(error)) {
+      await closeServer(server);
+      t.skip(`Skipping local HTTP server test: ${(error as Error).message}`);
+      return false;
+    }
+    throw error;
+  }
+};
+
 class StubQaAdapter {
   async ensureInstalled() {
     return { ok: true };
@@ -1988,7 +2037,7 @@ test("qa-tasks appends CLI checklist commands when scripts exist", async () => {
   }
 });
 
-test("qa-tasks shifts local base URL to a free port when CLI runs and port is in use", async () => {
+test("qa-tasks shifts local base URL to a free port when CLI runs and port is in use", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   await fs.writeFile(
     path.join(dir, "package.json"),
@@ -2037,7 +2086,11 @@ test("qa-tasks shifts local base URL to a free port when CLI runs and port is in
     res.writeHead(200);
     res.end("ok");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const listening = await listenServerOrSkip(t, server, "127.0.0.1");
+  if (!listening) {
+    await fs.rm(dir, { recursive: true, force: true });
+    return;
+  }
   const usedPort = (server.address() as any).port as number;
 
   const captured: { env?: NodeJS.ProcessEnv } = {};
@@ -2092,7 +2145,7 @@ test("qa-tasks shifts local base URL to a free port when CLI runs and port is in
     assert.ok(Number.isFinite(envPort));
     assert.notEqual(envPort, usedPort);
   } finally {
-    server.close();
+    await closeServer(server);
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -2591,7 +2644,7 @@ test("qa-tasks injects default browser actions when missing", async () => {
   }
 });
 
-test("qa-tasks runs API actions from routing plan", async () => {
+test("qa-tasks runs API actions from routing plan", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -2632,7 +2685,11 @@ test("qa-tasks runs API actions from routing plan", async () => {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const listening = await listenServerOrSkip(t, server);
+  if (!listening) {
+    await fs.rm(dir, { recursive: true, force: true });
+    return;
+  }
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -2699,12 +2756,12 @@ test("qa-tasks runs API actions from routing plan", async () => {
     assert.ok(artifacts.some((artifact) => artifact.endsWith("api-results.json")));
   } finally {
     await service.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServer(server);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test("qa-tasks injects default API requests when missing", async () => {
+test("qa-tasks injects default API requests when missing", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -2747,7 +2804,11 @@ test("qa-tasks injects default API requests when missing", async () => {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const listening = await listenServerOrSkip(t, server);
+  if (!listening) {
+    await fs.rm(dir, { recursive: true, force: true });
+    return;
+  }
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -2812,12 +2873,12 @@ test("qa-tasks injects default API requests when missing", async () => {
     assert.ok(hits.includes("/health"));
   } finally {
     await service.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServer(server);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
 
-test("qa-tasks skips API runs when an explicit non-api profile is requested", async () => {
+test("qa-tasks skips API runs when an explicit non-api profile is requested", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
@@ -2855,7 +2916,11 @@ test("qa-tasks skips API runs when an explicit non-api profile is requested", as
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const listening = await listenServerOrSkip(t, server);
+  if (!listening) {
+    await fs.rm(dir, { recursive: true, force: true });
+    return;
+  }
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -2905,7 +2970,7 @@ test("qa-tasks skips API runs when an explicit non-api profile is requested", as
       process.env.MCODA_QA_API_BASE_URL = originalApiBase;
     }
     await service.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServer(server);
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
