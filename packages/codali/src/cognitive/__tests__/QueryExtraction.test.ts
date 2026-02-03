@@ -27,6 +27,14 @@ test("extractQueries falls back to full request", { concurrency: false }, () => 
   assert.ok(queries.includes("fix typo"));
 });
 
+test("extractQueries preserves key nouns for generic action verbs", { concurrency: false }, () => {
+  const queries = extractQueries("Develop Secure Task Rendering Engine.", 3);
+  const joined = queries.join(" ").toLowerCase();
+  assert.ok(joined.includes("secure"));
+  assert.ok(joined.includes("task"));
+  assert.ok(joined.includes("rendering"));
+});
+
 test("expandQueriesWithProvider merges provider suggestions", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: { role: "assistant", content: JSON.stringify(["auth", "login flow"]) },
@@ -41,4 +49,17 @@ test("expandQueriesWithProvider merges provider suggestions", { concurrency: fal
   );
   assert.ok(expanded.includes("auth"));
   assert.ok(expanded.includes("login"));
+});
+
+test("expandQueriesWithProvider keeps base queries when max queries is tight", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: { role: "assistant", content: JSON.stringify(["generic", "query", "noise"]) },
+  });
+  const expanded = await expandQueriesWithProvider(
+    provider,
+    "secure task rendering",
+    ["secure task rendering", "task rendering"],
+    2,
+  );
+  assert.deepEqual(expanded, ["secure task rendering", "task rendering"]);
 });

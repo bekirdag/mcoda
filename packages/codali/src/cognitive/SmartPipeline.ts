@@ -13,7 +13,7 @@ import { MemoryWriteback } from "./MemoryWriteback.js";
 import type { RunLogger } from "../runtime/RunLogger.js";
 import type { ContextManager } from "./ContextManager.js";
 import { buildLaneId } from "./ContextManager.js";
-import { serializeContext } from "./ContextSerializer.js";
+import { sanitizeContextBundleForOutput, serializeContext } from "./ContextSerializer.js";
 import type { AgentRequest, CodaliResponse } from "../agents/AgentProtocol.js";
 
 export interface SmartPipelineOptions {
@@ -91,10 +91,16 @@ export class SmartPipeline {
       await this.options.logger.log(`phase_${kind}`, { phase, path });
       return path;
     };
-    const buildSerializedContext = (bundle: ContextBundle) =>
-      bundle.serialized?.mode === "bundle_text"
-        ? bundle.serialized
-        : serializeContext(bundle, { mode: "bundle_text" });
+    const sanitizeForOutput = (bundle: ContextBundle): ContextBundle => {
+      const sanitized = sanitizeContextBundleForOutput(bundle);
+      const mode = bundle.serialized?.mode ?? "bundle_text";
+      sanitized.serialized = serializeContext(sanitized, { mode });
+      return sanitized;
+    };
+    const buildSerializedContext = (bundle: ContextBundle) => {
+      const sanitized = sanitizeContextBundleForOutput(bundle);
+      return serializeContext(sanitized, { mode: "bundle_text" });
+    };
     const formatCodaliResponse = (response: CodaliResponse): string =>
       ["CODALI_RESPONSE v1", JSON.stringify(response, null, 2)].join("\n");
     const appendArchitectHistory = async (content: string): Promise<void> => {
@@ -150,7 +156,7 @@ export class SmartPipeline {
     if (this.options.initialContext) {
       await logPhaseArtifact("librarian", "input", { request });
       context = this.options.initialContext;
-      await logPhaseArtifact("librarian", "output", context);
+      await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
       if (this.options.logger) {
         await this.options.logger.log("phase_start", { phase: "librarian" });
         await this.options.logger.log("phase_end", { phase: "librarian", duration_ms: 0 });
@@ -159,7 +165,7 @@ export class SmartPipeline {
     } else {
       await logPhaseArtifact("librarian", "input", { request });
       context = await this.runPhase("librarian", () => this.options.contextAssembler.assemble(request));
-      await logPhaseArtifact("librarian", "output", context);
+      await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
     }
     if (this.options.logger) {
       const files = context.files ?? [];

@@ -3,13 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RunCommand } from "./cli/RunCommand.js";
+import { FeedbackCommand } from "./cli/FeedbackCommand.js";
 
 const HELP_TEXT =
   "Usage: codali run [--workspace-root <path>] --agent <slug> [--task <file>]\n" +
   "   or: codali run [--workspace-root <path>] --provider <name> --model <model> [--task <file>]\n" +
+  "   or: codali learn --file <path/to/file>\n" +
   "\n" +
   "Commands:\n" +
   "  run      Run a single task (supports streaming output).\n" +
+  "  learn    Analyze a file to learn from user edits/reverts.\n" +
   "  doctor   Print environment and install paths.\n" +
   "\n" +
   "Options:\n" +
@@ -74,6 +77,11 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
 
   if (command === "run") {
     await RunCommand.run(rest);
+    return;
+  }
+
+  if (command === "learn") {
+    await FeedbackCommand.run(rest);
     return;
   }
 

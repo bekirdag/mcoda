@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,8 +52,36 @@ testArgs.push(...filteredTests);
 
 const nodeBin = process.env.NODE_BIN ?? (process.platform === "win32" ? "node.exe" : "node");
 console.log(`[tests] using node: ${nodeBin}`);
+const resolveTestHome = () => {
+  const configuredHome = process.env.HOME ?? process.env.USERPROFILE;
+  if (configuredHome && configuredHome.trim().length > 0) {
+    try {
+      accessSync(configuredHome, constants.W_OK);
+      return { path: configuredHome, temporary: false };
+    } catch {
+      // Fall through to a temporary writable home.
+    }
+  }
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-test-home-"));
+  return { path: tempHome, temporary: true };
+};
+
+const testHome = resolveTestHome();
 const result = spawnSync(nodeBin, testArgs, {
   stdio: "inherit",
+  env: {
+    ...process.env,
+    HOME: testHome.path,
+    USERPROFILE: testHome.path,
+  },
 });
+
+if (testHome.temporary) {
+  try {
+    rmSync(testHome.path, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup failures in tests.
+  }
+}
 
 process.exit(result.status ?? 1);

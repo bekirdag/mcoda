@@ -13,11 +13,14 @@ import type {
 } from "../agents/AgentProtocol.js";
 import { normalizeAgentRequest } from "../agents/AgentProtocol.js";
 import { expandQueriesWithProvider, extractQueries } from "./QueryExtraction.js";
+import { RunHistoryIndexer } from "./RunHistoryIndexer.js";
+import { GoldenExampleIndexer } from "./GoldenExampleIndexer.js";
 import { extractPreferences } from "./PreferenceExtraction.js";
 import { selectContextFiles } from "./ContextSelector.js";
 import { ContextFileLoader } from "./ContextFileLoader.js";
 import { ContextRedactor } from "./ContextRedactor.js";
-import { serializeContext } from "./ContextSerializer.js";
+import { sanitizeContextBundleForOutput, serializeContext } from "./ContextSerializer.js";
+import { deriveIntentSignals, type IntentSignals } from "./IntentSignals.js";
 import type { ContextManager } from "./ContextManager.js";
 import type {
   ContextBundle,
@@ -27,6 +30,8 @@ import type {
   ContextSnippet,
   ContextSymbolSummary,
   ContextAstSummary,
+  ContextProjectInfo,
+  ContextSearchResult,
   LaneScope,
 } from "./Types.js";
 
@@ -74,13 +79,169 @@ const toStringPayload = (payload: unknown): string => {
   }
 };
 
+const extractTreeText = (payload: unknown): string | undefined => {
+  if (typeof payload === "string") {
+    const text = payload.trim();
+    return text.length > 0 ? text : undefined;
+  }
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as {
+    tree?: unknown;
+    data?: { tree?: unknown };
+  };
+  if (typeof record.tree === "string" && record.tree.trim().length > 0) {
+    return record.tree;
+  }
+  if (record.data && typeof record.data.tree === "string" && record.data.tree.trim().length > 0) {
+    return record.data.tree;
+  }
+  return undefined;
+};
+
+const compactTreeForPrompt = (treeText: string): string => {
+  const lines = treeText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/g, ""))
+    .filter((line) => line.length > 0);
+  const compacted: string[] = [];
+  for (const line of lines) {
+    if (compacted[compacted.length - 1] === line) continue;
+    compacted.push(line);
+  }
+  return compacted.join("\n");
+};
+
+const SECTION_LIMITS = {
+  snippetChars: 2_400,
+  symbolChars: 3_200,
+  symbolEntries: 40,
+  astNodes: 80,
+};
+
+const truncateText = (content: string, maxChars: number): string => {
+  if (maxChars <= 0 || content.length <= maxChars) return content;
+  const marker = "\n/* ...truncated... */\n";
+  if (maxChars <= marker.length) return content.slice(0, maxChars);
+  return `${content.slice(0, maxChars - marker.length)}${marker}`;
+};
+
+const extractSnippetContent = (payload: unknown): string => {
+  if (typeof payload === "string") {
+    return truncateText(payload, SECTION_LIMITS.snippetChars);
+  }
+  if (payload && typeof payload === "object") {
+    const record = payload as {
+      snippet?: { text?: unknown };
+      content?: unknown;
+      text?: unknown;
+      doc?: { summary?: unknown };
+    };
+    const snippetText = record.snippet && typeof record.snippet.text === "string"
+      ? record.snippet.text
+      : undefined;
+    if (snippetText && snippetText.trim().length > 0) {
+      return truncateText(snippetText, SECTION_LIMITS.snippetChars);
+    }
+    if (typeof record.text === "string" && record.text.trim().length > 0) {
+      return truncateText(record.text, SECTION_LIMITS.snippetChars);
+    }
+    if (typeof record.content === "string" && record.content.trim().length > 0) {
+      return truncateText(record.content, SECTION_LIMITS.snippetChars);
+    }
+    if (record.doc && typeof record.doc.summary === "string" && record.doc.summary.trim().length > 0) {
+      return truncateText(record.doc.summary, SECTION_LIMITS.snippetChars);
+    }
+  }
+  return truncateText(toStringPayload(payload), SECTION_LIMITS.snippetChars);
+};
+
+const simplifyRange = (value: unknown): unknown => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const simplified: Record<string, unknown> = {};
+  for (const key of ["start_line", "start_col", "end_line", "end_col"]) {
+    if (typeof record[key] === "number") simplified[key] = record[key];
+  }
+  return Object.keys(simplified).length > 0 ? simplified : undefined;
+};
+
+const summarizeSymbolsPayload = (payload: unknown): string => {
+  if (payload && typeof payload === "object") {
+    const record = payload as {
+      file?: unknown;
+      symbols?: unknown;
+      outcome?: unknown;
+    };
+    if (Array.isArray(record.symbols)) {
+      const simplified = record.symbols.slice(0, SECTION_LIMITS.symbolEntries).map((symbol) => {
+        if (!symbol || typeof symbol !== "object") return symbol;
+        const item = symbol as Record<string, unknown>;
+        const mapped: Record<string, unknown> = {};
+        for (const key of ["kind", "name", "signature", "symbol_id"]) {
+          if (typeof item[key] === "string" && item[key].length > 0) {
+            mapped[key] = item[key];
+          }
+        }
+        const range = simplifyRange(item.range);
+        if (range) mapped.range = range;
+        return mapped;
+      });
+      const normalized = {
+        file: typeof record.file === "string" ? record.file : undefined,
+        symbol_count: record.symbols.length,
+        symbols: simplified,
+        truncated: record.symbols.length > SECTION_LIMITS.symbolEntries,
+      };
+      return truncateText(JSON.stringify(normalized, null, 2), SECTION_LIMITS.symbolChars);
+    }
+  }
+  return truncateText(toStringPayload(payload), SECTION_LIMITS.symbolChars);
+};
+
+const simplifyAstNode = (value: unknown): unknown => {
+  if (!value || typeof value !== "object") return value;
+  const item = value as Record<string, unknown>;
+  const mapped: Record<string, unknown> = {};
+  for (const key of ["kind", "name", "field", "is_named"]) {
+    if (typeof item[key] === "string" || typeof item[key] === "boolean") {
+      mapped[key] = item[key];
+    }
+  }
+  if (typeof item.id === "number") mapped.id = item.id;
+  if (typeof item.parent_id === "number") mapped.parent_id = item.parent_id;
+  const range = simplifyRange(item.range);
+  if (range) mapped.range = range;
+  return mapped;
+};
+
+const compactAstNodes = (payload: unknown): unknown[] => {
+  const nodes = (payload as { nodes?: unknown[] } | undefined)?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  const trimmed = nodes.slice(0, SECTION_LIMITS.astNodes).map((entry) => simplifyAstNode(entry));
+  if (nodes.length > SECTION_LIMITS.astNodes) {
+    trimmed.push({
+      kind: "__truncated__",
+      remaining: nodes.length - SECTION_LIMITS.astNodes,
+    });
+  }
+  return trimmed;
+};
+
 const execFileAsync = promisify(execFile);
 
-const collectHits = (result: unknown): Array<{ doc_id?: string; path?: string }> => {
+const collectHits = (
+  result: unknown,
+): Array<{ doc_id?: string; path?: string; score?: number }> => {
   if (!result || typeof result !== "object") return [];
-  const hits = (result as { hits?: Array<{ doc_id?: string; path?: string }> }).hits;
+  const hits = (
+    result as { hits?: Array<{ doc_id?: string; path?: string; score?: number }> }
+  ).hits;
   if (!Array.isArray(hits)) return [];
-  return hits;
+  return hits.map((hit) => ({
+    doc_id: hit.doc_id,
+    path: hit.path,
+    score: typeof hit.score === "number" ? hit.score : undefined,
+  }));
 };
 
 const extractFileHints = (result: unknown): string[] => {
@@ -177,21 +338,160 @@ const FRONTEND_GLOBS = [
   "*.svelte",
 ];
 
+const isFrontendPath = (value: string): boolean => {
+  const normalized = normalizePath(value).toLowerCase();
+  const dot = normalized.lastIndexOf(".");
+  if (dot === -1) return false;
+  return FRONTEND_EXTENSIONS.has(normalized.slice(dot));
+};
+
+const INTENT_HINTS: Record<IntentSignals["intents"][number], string[]> = {
+  ui: ["index", "home", "landing", "public", "view", "page", "template", "ui", "app", "client"],
+  content: ["copy", "content", "text", "strings", "locale", "i18n"],
+  behavior: ["service", "handler", "controller", "api", "server", "logic", "process"],
+  data: ["model", "schema", "db", "data", "store", "migration"],
+};
+
 const EXCLUDED_WALK_DIRS = new Set([
   ".git",
-  "node_modules",
+  ".hg",
+  ".svn",
+  ".docdex",
+  ".mcoda",
+  ".cache",
+  ".tmp",
+  ".temp",
+  "tmp",
+  "logs",
   "dist",
   "build",
   "out",
   "coverage",
+  "lib-cov",
+  "target",
+  "bin",
+  "obj",
   ".next",
   ".nuxt",
   ".svelte-kit",
-  ".docdex",
-  ".mcoda",
-  ".cache",
-  "tmp",
+  ".vercel",
+  ".serverless",
+  ".parcel-cache",
+  ".nyc_output",
+  ".gradle",
+  ".m2",
+  ".idea",
+  ".vscode",
+  ".yarn",
+  ".pnpm-store",
+  ".npm",
+  ".bun",
+  ".cargo",
+  "node_modules",
+  "bower_components",
+  "jspm_packages",
+  "vendor",
+  "Pods",
+  "Carthage",
+  "DerivedData",
+  ".bundle",
+  ".stack-work",
+  "deps",
+  "_build",
+  ".dart_tool",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
 ]);
+
+const EXCLUDED_WALK_DIRS_LOWER = new Set(
+  Array.from(EXCLUDED_WALK_DIRS, (entry) => entry.toLowerCase()),
+);
+
+const isExcludedDirName = (value: string): boolean => {
+  if (!value) return false;
+  return (
+    EXCLUDED_WALK_DIRS.has(value) ||
+    EXCLUDED_WALK_DIRS_LOWER.has(value.toLowerCase())
+  );
+};
+
+const isExcludedPath = (value: string): boolean => {
+  if (!value) return false;
+  const normalized = normalizePath(value);
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.some((segment) => isExcludedDirName(segment));
+};
+
+const EXCLUDED_RG_GLOBS = Array.from(EXCLUDED_WALK_DIRS).flatMap((dir) => {
+  const lower = dir.toLowerCase();
+  if (lower === dir) return [`!**/${dir}/**`];
+  return [`!**/${dir}/**`, `!**/${lower}/**`];
+});
+
+const filterExcludedPaths = (paths: string[]): string[] =>
+  paths.filter((entry) => !isExcludedPath(entry));
+
+const isBackoffError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("backoff") ||
+    normalized.includes("index writer unavailable")
+  );
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const retryDocdexCall = async <T>(
+  fn: () => Promise<T>,
+  retries = 2,
+  delayMs = 150,
+): Promise<{ ok: true; value: T } | { ok: false; backoff: boolean; error: unknown }> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return { ok: true, value: await fn() };
+    } catch (error) {
+      lastError = error;
+      const backoff = isBackoffError(error);
+      if (!backoff || attempt === retries) {
+        return { ok: false, backoff, error: lastError };
+      }
+      await sleep(delayMs * (attempt + 1));
+    }
+  }
+  return { ok: false, backoff: false, error: lastError };
+};
+
+const DOC_SUPPORT_PATTERNS = [
+  /(^|\/)docs\/rfp\.md$/i,
+  /(^|\/)docs\/sds\/.+\.md$/i,
+  /(^|\/)docs\/pdr\/.+\.md$/i,
+  /(^|\/)docs\/pdr\/.+\.mdx$/i,
+];
+
+const MANIFEST_FILES = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "package-lock.json",
+  "pyproject.toml",
+  "requirements.txt",
+  "Pipfile",
+  "go.mod",
+  "Cargo.toml",
+  "composer.json",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "Gemfile",
+];
 
 const supportsImpactGraph = (value: string): boolean => {
   const normalized = normalizePath(value).toLowerCase();
@@ -208,6 +508,36 @@ const isDocPath = (value: string): boolean => {
     normalized.endsWith(".md") ||
     normalized.endsWith(".mdx")
   );
+};
+
+const isSupportDoc = (value: string): boolean =>
+  DOC_SUPPORT_PATTERNS.some((pattern) => pattern.test(normalizePath(value)));
+
+const extractFileTypes = (paths: string[]): string[] => {
+  const types = new Set<string>();
+  for (const value of paths) {
+    const normalized = normalizePath(value).toLowerCase();
+    const dot = normalized.lastIndexOf(".");
+    if (dot === -1) continue;
+    types.add(normalized.slice(dot));
+  }
+  return Array.from(types).sort();
+};
+
+const detectManifests = async (workspaceRoot?: string): Promise<string[]> => {
+  if (!workspaceRoot) return [];
+  const found: string[] = [];
+  await Promise.all(
+    MANIFEST_FILES.map(async (name) => {
+      try {
+        await readFile(path.join(workspaceRoot, name), "utf8");
+        found.push(name);
+      } catch {
+        // ignore missing manifests
+      }
+    }),
+  );
+  return found.sort();
 };
 
 const reorderHits = (
@@ -276,14 +606,324 @@ const inferPreferredFiles = (request: string, fileHints: string[]): string[] => 
     .slice(0, 3);
 };
 
+const buildFileQueryHints = (paths: string[], maxHints = 3): string[] => {
+  if (!paths.length || maxHints <= 0) return [];
+  const normalizedPaths = uniqueValues(paths.map(normalizePath));
+  const hints: string[] = [];
+  for (const value of normalizedPaths) {
+    hints.push(value);
+    const base = value.split("/").pop();
+    if (base && base !== value) {
+      hints.push(base);
+      const stem = base.replace(/\.[^.]+$/, "");
+      if (stem && stem !== base) hints.push(stem);
+    }
+    if (hints.length >= maxHints * 3) break;
+  }
+  return uniqueValues(hints).slice(0, maxHints);
+};
+
+const isTestPath = (value: string): boolean => {
+  const normalized = normalizePath(value).toLowerCase();
+  return (
+    normalized.includes("/tests/") ||
+    normalized.includes("/test/") ||
+    normalized.includes("__tests__") ||
+    normalized.endsWith(".test.ts") ||
+    normalized.endsWith(".test.js") ||
+    normalized.endsWith(".spec.ts") ||
+    normalized.endsWith(".spec.js")
+  );
+};
+
+const selectAnalysisPaths = (
+  paths: string[],
+  options: {
+    intent?: IntentSignals;
+    docTask: boolean;
+    preferred: string[];
+    focus: string[];
+    maxPaths: number;
+  },
+): string[] => {
+  if (!paths.length) return [];
+  const focus = uniqueValues(options.focus.map((entry) => normalizePath(entry)));
+  const preferred = new Set(options.preferred.map((entry) => normalizePath(entry)));
+  for (const focusPath of focus) {
+    preferred.add(focusPath);
+  }
+  const uiOnlyIntent =
+    options.intent?.intents.includes("ui") &&
+    !options.intent?.intents.includes("behavior") &&
+    !options.intent?.intents.includes("data");
+  const ranked = uniqueValues(paths.map((entry) => normalizePath(entry)))
+    .map((pathValue, index) => {
+      let score = 0;
+      if (preferred.has(pathValue)) score += 600;
+      if (options.intent?.intents.includes("ui") && isFrontendPath(pathValue)) score += 140;
+      if (options.intent?.intents.includes("behavior") && supportsImpactGraph(pathValue)) score += 40;
+      if (options.intent?.intents.includes("data") && supportsImpactGraph(pathValue)) score += 30;
+      if (!options.docTask && isDocPath(pathValue)) score -= 120;
+      if (!options.docTask && isSupportDoc(pathValue)) score -= 80;
+      if (!options.docTask && isTestPath(pathValue) && uiOnlyIntent) score -= 50;
+      return { path: pathValue, score, index };
+    })
+    .sort((a, b) => {
+      if (a.score === b.score) return a.index - b.index;
+      return b.score - a.score;
+    });
+
+  const base = ranked.map((entry) => entry.path);
+  if (options.docTask) {
+    return uniqueValues([...focus, ...base]).slice(0, Math.max(1, options.maxPaths));
+  }
+  const nonDoc = base.filter((entry) => !isDocPath(entry) && !isSupportDoc(entry));
+  if (uiOnlyIntent) {
+    const uiNonTest = nonDoc.filter((entry) => !isTestPath(entry));
+    if (uiNonTest.length > 0) {
+      return uniqueValues([...focus, ...uiNonTest]).slice(0, Math.max(1, options.maxPaths));
+    }
+  }
+  const chosen = nonDoc.length > 0 ? nonDoc : base;
+  return uniqueValues([...focus, ...chosen]).slice(0, Math.max(1, options.maxPaths));
+};
+
+const MEMORY_NEGATIVE_PATTERN =
+  /\b(no|not|missing|misses|lacks|lack|absent|without|does not|doesn't|is not|isn't)\b/i;
+const MEMORY_POSITIVE_PATTERN =
+  /\b(has|have|contains|includes|exists|present|already|available)\b/i;
+const MEMORY_TOKEN_PATTERN = /[a-z0-9_./-]{3,}/gi;
+const MEMORY_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "this",
+  "that",
+  "task",
+  "file",
+  "path",
+  "page",
+  "root",
+  "main",
+  "user",
+  "request",
+  "develop",
+  "developed",
+  "developing",
+  "build",
+  "built",
+  "implement",
+  "implemented",
+  "engine",
+]);
+
+type MemoryFact = {
+  text: string;
+  score: number;
+  pathHint?: string;
+  polarity: -1 | 0 | 1;
+  tokens: Set<string>;
+};
+
+const extractPathHint = (text: string): string | undefined => {
+  const match = text.match(/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+\.[A-Za-z0-9]+/);
+  return match ? normalizePath(match[0]).toLowerCase() : undefined;
+};
+
+const extractMemoryTokens = (text: string): Set<string> => {
+  const tokens = new Set<string>();
+  const matches = text.toLowerCase().match(MEMORY_TOKEN_PATTERN) ?? [];
+  for (const token of matches) {
+    if (MEMORY_STOP_WORDS.has(token)) continue;
+    tokens.add(token);
+  }
+  return tokens;
+};
+
+const detectPolarity = (text: string): -1 | 0 | 1 => {
+  const negative = MEMORY_NEGATIVE_PATTERN.test(text);
+  const positive = MEMORY_POSITIVE_PATTERN.test(text);
+  if (negative && !positive) return -1;
+  if (positive && !negative) return 1;
+  return 0;
+};
+
+const tokenOverlap = (a: Set<string>, b: Set<string>): number => {
+  let count = 0;
+  for (const token of a) {
+    if (b.has(token)) count += 1;
+  }
+  return count;
+};
+
+const memoryFactsConflict = (a: MemoryFact, b: MemoryFact): boolean => {
+  if (a.polarity === 0 || b.polarity === 0) return false;
+  if (a.polarity === b.polarity) return false;
+  const overlap = tokenOverlap(a.tokens, b.tokens);
+  if (a.pathHint && b.pathHint && a.pathHint === b.pathHint && overlap >= 2) {
+    return true;
+  }
+  return overlap >= 4;
+};
+
+const pruneConflictingMemoryFacts = (
+  entries: Array<{ content?: string; score?: number }>,
+): { facts: Array<{ text: string; source: string }>; pruned: number } => {
+  const normalized: MemoryFact[] = entries
+    .map((entry, index) => ({
+      text: typeof entry.content === "string" ? entry.content.trim() : "",
+      score:
+        typeof entry.score === "number" && Number.isFinite(entry.score)
+          ? entry.score
+          : Number.MIN_SAFE_INTEGER + index,
+    }))
+    .filter((entry) => entry.text.length > 0)
+    .map((entry) => ({
+      ...entry,
+      pathHint: extractPathHint(entry.text),
+      polarity: detectPolarity(entry.text),
+      tokens: extractMemoryTokens(entry.text),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const kept: MemoryFact[] = [];
+  let pruned = 0;
+  for (const candidate of normalized) {
+    const conflict = kept.some((existing) => memoryFactsConflict(existing, candidate));
+    if (conflict) {
+      pruned += 1;
+      continue;
+    }
+    kept.push(candidate);
+  }
+  return {
+    facts: kept.map((entry) => ({ text: entry.text, source: "repo" })),
+    pruned,
+  };
+};
+
+const extractPathTokens = (paths: string[]): Set<string> => {
+  const tokens = new Set<string>();
+  for (const value of paths) {
+    const normalized = normalizePath(value).toLowerCase();
+    for (const piece of normalized.split(/[/._-]+/)) {
+      if (piece.length < 3) continue;
+      if (MEMORY_STOP_WORDS.has(piece)) continue;
+      tokens.add(piece);
+    }
+  }
+  return tokens;
+};
+
+const filterRelevantMemoryFacts = (
+  entries: Array<{ text: string; source: string }>,
+  request: string,
+  focusPaths: string[],
+): { facts: Array<{ text: string; source: string }>; filtered: number } => {
+  if (!entries.length) return { facts: [], filtered: 0 };
+  const normalizedFocusPaths = new Set(
+    uniqueValues(focusPaths.map((entry) => normalizePath(entry).toLowerCase())),
+  );
+  const requestTokens = extractMemoryTokens(request);
+  const focusTokens = extractPathTokens(focusPaths);
+  const scored = entries.map((entry) => {
+    const text = entry.text.toLowerCase();
+    const memoryTokens = extractMemoryTokens(entry.text);
+    const overlapRequest = tokenOverlap(memoryTokens, requestTokens);
+    const overlapFocus = tokenOverlap(memoryTokens, focusTokens);
+    let score = overlapRequest * 2 + overlapFocus;
+    const pathHint = extractPathHint(entry.text);
+    if (pathHint && normalizedFocusPaths.has(pathHint)) {
+      score += 3;
+    } else if (pathHint && normalizedFocusPaths.size > 0) {
+      score -= 2;
+    }
+    for (const focusPath of normalizedFocusPaths) {
+      if (text.includes(focusPath)) {
+        score += 4;
+      }
+    }
+    return { entry, score };
+  });
+
+  const kept = scored
+    .filter((candidate) => {
+      if (normalizedFocusPaths.size === 0 && requestTokens.size === 0) return true;
+      return candidate.score >= 2;
+    })
+    .map((candidate) => candidate.entry);
+
+  return {
+    facts: kept,
+    filtered: Math.max(0, entries.length - kept.length),
+  };
+};
+
+const reconcileWarnings = (
+  warnings: string[],
+  context: {
+    intent?: IntentSignals;
+    selection?: ContextBundle["selection"];
+    index: { last_updated_epoch_ms: number; num_docs: number };
+    filesSucceeded: boolean;
+    statsSucceeded: boolean;
+    snippets: ContextSnippet[];
+  },
+): string[] => {
+  const uniqueWarnings = uniqueValues(warnings);
+  const filtered = uniqueWarnings.filter((warning) => {
+    if (
+      warning === "librarian_ui_candidates" &&
+      context.intent?.intents.includes("ui") &&
+      context.selection &&
+      !context.selection.low_confidence &&
+      context.selection.all.some((entry) => isFrontendPath(entry))
+    ) {
+      return false;
+    }
+    if (warning === "docdex_low_confidence" && context.selection && !context.selection.low_confidence) {
+      return false;
+    }
+    if (warning === "docdex_ui_no_hits" && context.selection?.all.some((entry) => isFrontendPath(entry))) {
+      return false;
+    }
+    if (
+      warning === "docdex_index_empty" &&
+      context.statsSucceeded &&
+      context.filesSucceeded &&
+      context.index.num_docs > 0
+    ) {
+      return false;
+    }
+    if (
+      warning === "docdex_index_stale" &&
+      context.statsSucceeded &&
+      context.filesSucceeded &&
+      (context.index.last_updated_epoch_ms > 0 || context.snippets.length > 0)
+    ) {
+      return false;
+    }
+    return true;
+  });
+  return filtered;
+};
+
 const listWorkspaceFiles = async (workspaceRoot: string, globs: string[]): Promise<string[]> => {
   try {
-    const args = ["--files", ...globs.flatMap((glob) => ["-g", glob])];
+    const args = [
+      "--files",
+      ...EXCLUDED_RG_GLOBS.flatMap((glob) => ["-g", glob]),
+      ...globs.flatMap((glob) => ["-g", glob]),
+    ];
     const { stdout } = await execFileAsync("rg", args, { cwd: workspaceRoot });
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    return filterExcludedPaths(
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+    );
   } catch {
     const results: string[] = [];
     const queue: string[] = [workspaceRoot];
@@ -299,7 +939,7 @@ const listWorkspaceFiles = async (workspaceRoot: string, globs: string[]): Promi
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
         if (entry.isDirectory()) {
-          if (EXCLUDED_WALK_DIRS.has(entry.name)) continue;
+          if (isExcludedDirName(entry.name)) continue;
           queue.push(path.join(current, entry.name));
           continue;
         }
@@ -310,8 +950,50 @@ const listWorkspaceFiles = async (workspaceRoot: string, globs: string[]): Promi
         if (results.length >= 2000) break;
       }
     }
-    return results;
+    return filterExcludedPaths(results);
   }
+};
+
+const tokenizeRequest = (request: string): string[] =>
+  request
+    .toLowerCase()
+    .replace(/[^a-z0-9\\s]/g, " ")
+    .split(/\\s+/)
+    .filter((token) => token.length >= 3);
+
+const scoreCandidate = (candidate: string, tokens: string[], intent: IntentSignals): number => {
+  const normalized = normalizePath(candidate).toLowerCase();
+  let score = 0;
+  for (const token of tokens) {
+    if (normalized.includes(token)) score += 2;
+  }
+  if (intent.intents.includes("ui")) {
+    const ext = path.extname(normalized);
+    if (FRONTEND_EXTENSIONS.has(ext)) score += 4;
+  }
+  for (const bucket of intent.intents) {
+    for (const hint of INTENT_HINTS[bucket]) {
+      if (normalized.includes(hint)) score += 1;
+    }
+  }
+  return score;
+};
+
+const collectFallbackCandidates = async (
+  workspaceRoot: string,
+  request: string,
+  intent: IntentSignals,
+  limit = 20,
+): Promise<string[]> => {
+  const tokens = tokenizeRequest(request);
+  const allFiles = await listWorkspaceFilesByPattern(workspaceRoot, ".", undefined);
+  if (allFiles.length === 0) return [];
+  const scored = allFiles
+    .map((file) => ({ file, score: scoreCandidate(file, tokens, intent) }))
+    .sort((a, b) => b.score - a.score);
+  const nonZero = scored.filter((entry) => entry.score > 0);
+  const selected = (nonZero.length ? nonZero : scored).slice(0, limit);
+  return selected.map((entry) => entry.file);
 };
 
 const matchPattern = (relativePath: string, pattern?: string): boolean => {
@@ -333,7 +1015,7 @@ const listWorkspaceFilesByPattern = async (
   pattern?: string,
 ): Promise<string[]> => {
   const normalizedRoot = normalizePath(root || ".");
-  const args = ["--files"];
+  const args = ["--files", ...EXCLUDED_RG_GLOBS.flatMap((glob) => ["-g", glob])];
   if (pattern) {
     args.push("-g", pattern);
   }
@@ -342,10 +1024,12 @@ const listWorkspaceFilesByPattern = async (
   }
   try {
     const { stdout } = await execFileAsync("rg", args, { cwd: workspaceRoot });
-    return stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    return filterExcludedPaths(
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+    );
   } catch {
     const results: string[] = [];
     const resolvedRoot = resolveWorkspacePath(workspaceRoot, normalizedRoot || ".");
@@ -362,7 +1046,7 @@ const listWorkspaceFilesByPattern = async (
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
         if (entry.isDirectory()) {
-          if (EXCLUDED_WALK_DIRS.has(entry.name)) continue;
+          if (isExcludedDirName(entry.name)) continue;
           queue.push(path.join(current, entry.name));
           continue;
         }
@@ -372,7 +1056,7 @@ const listWorkspaceFilesByPattern = async (
         if (results.length >= 5000) break;
       }
     }
-    return results;
+    return filterExcludedPaths(results);
   }
 };
 
@@ -390,7 +1074,16 @@ const hasDiagnostics = (diagnostics: unknown): boolean => {
   for (const candidate of candidates) {
     if (Array.isArray(candidate) && candidate.length > 0) return true;
   }
-  return Object.keys(record).length > 0;
+  for (const value of Object.values(record)) {
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (typeof value === "string" && value.trim().length > 0) return true;
+    if (typeof value === "number" && Number.isFinite(value)) return true;
+    if (typeof value === "boolean" && value) return true;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (Object.keys(value as Record<string, unknown>).length > 0) return true;
+    }
+  }
+  return false;
 };
 
 const estimateTokens = (content: string, provided?: number): number => {
@@ -563,6 +1256,7 @@ export class ContextAssembler {
     const pushWarning = (warning: string): void => {
       if (!warnings.includes(warning)) warnings.push(warning);
     };
+    let searchResults: ContextSearchResult[] = [];
     const emit = this.onEvent;
     const emitStatus = (phase: AgentStatusPhase, message?: string) => {
       emit?.({ type: "status", phase, message });
@@ -574,21 +1268,26 @@ export class ContextAssembler {
       emit?.({ type: "tool_result", name, output, ok });
     };
     emitStatus("thinking", "librarian: start");
-    const baseQueries = extractQueries(request, this.options.maxQueries);
+    const requestQuery = request.trim();
+    const maxQueries = Math.max(1, this.options.maxQueries);
+    const baseQueries = extractQueries(request, maxQueries);
+    const intent = deriveIntentSignals(request);
+    const docTask = /\b(doc|docs|documentation|readme|rfp|sds|pdr)\b/i.test(request);
     const supplementalQueries = uniqueValues(options.additionalQueries ?? []);
-    let queries = uniqueValues([...supplementalQueries, ...baseQueries]).slice(
-      0,
-      Math.max(1, this.options.maxQueries),
-    );
+    let queries = uniqueValues([...supplementalQueries, ...baseQueries]).slice(0, maxQueries);
     const preferencesDetected = extractPreferences(request);
-    const preferredSeed = uniqueValues([
-      ...(this.options.preferredFiles ?? []),
-      ...(options.preferredFiles ?? []),
-    ]);
-    const recentFiles = uniqueValues([
-      ...(this.options.recentFiles ?? []),
-      ...(options.recentFiles ?? []),
-    ]);
+    const preferredSeed = filterExcludedPaths(
+      uniqueValues([
+        ...(this.options.preferredFiles ?? []),
+        ...(options.preferredFiles ?? []),
+      ]),
+    );
+    const recentFiles = filterExcludedPaths(
+      uniqueValues([
+        ...(this.options.recentFiles ?? []),
+        ...(options.recentFiles ?? []),
+      ]),
+    );
     const contextManager = this.contextManager;
     const laneScope = this.laneScope;
 
@@ -603,8 +1302,9 @@ export class ContextAssembler {
         false,
       );
       pushWarning("docdex_unavailable");
-      return {
+      const bundle: ContextBundle = {
         request,
+        intent,
         queries,
         snippets: [],
         symbols: [],
@@ -616,7 +1316,13 @@ export class ContextAssembler {
         profile: [],
         index: { last_updated_epoch_ms: 0, num_docs: 0 },
         warnings,
+        missing: ["docdex_unavailable", "no_context_files_loaded", "no_focus_files_selected"],
       };
+      const sanitizedBundle = sanitizeContextBundleForOutput(bundle);
+      bundle.serialized = serializeContext(sanitizedBundle, {
+        mode: this.options.serializationMode ?? "bundle_text",
+      });
+      return bundle;
     }
     if (!this.client.getRepoId()) {
       const repoRoot = this.client.getRepoRoot();
@@ -634,57 +1340,100 @@ export class ContextAssembler {
     }
     let stats: unknown = { last_updated_epoch_ms: 0, num_docs: 0 };
     let statsSucceeded = false;
-    try {
-      emitToolCall("docdex.stats", {});
-      stats = await this.client.stats();
+    emitToolCall("docdex.stats", {});
+    const statsResult = await retryDocdexCall(() => this.client.stats());
+    if (statsResult.ok) {
+      stats = statsResult.value;
       statsSucceeded = true;
       emitToolResult("docdex.stats", "ok", true);
-    } catch {
+    } else {
       emitToolResult("docdex.stats", "failed", false);
       pushWarning("docdex_stats_failed");
+      if (statsResult.backoff) {
+        pushWarning("docdex_stats_backoff");
+      }
     }
     let fileHints: string[] = [];
     let filesSucceeded = false;
-    try {
-      emitToolCall("docdex.files", { limit: 20, offset: 0 });
-      const filesResult = await this.client.files(20, 0);
-      fileHints = extractFileHints(filesResult);
+    emitToolCall("docdex.files", { limit: 20, offset: 0 });
+    const filesResult = await retryDocdexCall(() => this.client.files(20, 0));
+    if (filesResult.ok) {
+      fileHints = filterExcludedPaths(extractFileHints(filesResult.value));
       filesSucceeded = true;
       emitToolResult("docdex.files", "ok", true);
-    } catch {
+    } else {
       emitToolResult("docdex.files", "failed", false);
       pushWarning("docdex_files_failed");
-    }
-
-    let inferredPreferred = inferPreferredFiles(request, fileHints);
-    const wantsFrontend = /\\b(html|css|landing page|homepage|style|theme)\\b/i.test(request);
-    if (wantsFrontend && inferredPreferred.length === 0 && fileHints.length < 5 && this.options.workspaceRoot) {
-      const fsHints = await listWorkspaceFiles(this.options.workspaceRoot, FRONTEND_GLOBS);
-      if (fsHints.length) {
-        fileHints = uniqueValues([...fileHints, ...fsHints]);
-        inferredPreferred = inferPreferredFiles(request, fileHints);
+      if (filesResult.backoff) {
+        pushWarning("docdex_files_backoff");
       }
     }
-    const preferredFiles = uniqueValues([...preferredSeed, ...inferredPreferred]);
+
+    let inferredPreferred = filterExcludedPaths(
+      inferPreferredFiles(request, fileHints),
+    );
+    const wantsFrontend = /\\b(html|css|landing page|homepage|style|theme)\\b/i.test(request);
+    if (wantsFrontend && inferredPreferred.length === 0 && this.options.workspaceRoot) {
+      const fsHints = await listWorkspaceFiles(this.options.workspaceRoot, FRONTEND_GLOBS);
+      if (fsHints.length) {
+        fileHints = filterExcludedPaths(uniqueValues([...fileHints, ...fsHints]));
+        inferredPreferred = filterExcludedPaths(
+          inferPreferredFiles(request, fileHints),
+        );
+      }
+    }
+    let supportDocs = filterExcludedPaths(fileHints.filter(isSupportDoc));
+    if (supportDocs.length === 0 && this.options.workspaceRoot) {
+      const docsFromDisk = await listWorkspaceFilesByPattern(this.options.workspaceRoot, "docs", "**/*");
+      supportDocs = filterExcludedPaths(docsFromDisk.filter(isSupportDoc));
+    }
+    let preferredFiles = filterExcludedPaths(
+      uniqueValues([...preferredSeed, ...inferredPreferred]),
+    );
+    if (docTask && supportDocs.length > 0) {
+      preferredFiles = filterExcludedPaths(
+        uniqueValues([...preferredFiles, ...supportDocs]),
+      );
+    }
+    const queryHintSources =
+      inferredPreferred.length > 0
+        ? inferredPreferred
+        : preferredSeed.filter((path) => !isDocPath(path));
+    const hintBudget = Math.max(0, maxQueries - (requestQuery ? 1 : 0));
+    const fileQueryHints = buildFileQueryHints(queryHintSources, hintBudget);
+    if (requestQuery || fileQueryHints.length > 0) {
+      const remaining = queries.filter((query) => query !== requestQuery);
+      queries = uniqueValues([
+        ...(requestQuery ? [requestQuery] : []),
+        ...fileQueryHints,
+        ...remaining,
+      ]).slice(0, maxQueries);
+    }
     const skipSearchWhenPreferred =
       this.options.skipSearchWhenPreferred && preferredFiles.length > 0;
 
     const runSearch = async (queriesToUse: string[]) => {
-      const hitList: Array<{ doc_id?: string; path?: string }> = [];
+      const hitList: Array<{ doc_id?: string; path?: string; score?: number }> = [];
+      const results: ContextSearchResult[] = [];
       let searchSucceeded = false;
       for (const query of queriesToUse) {
         try {
           emitToolCall("docdex.search", { query, limit: this.options.maxHitsPerQuery });
           const result = await this.client.search(query, { limit: this.options.maxHitsPerQuery });
-          hitList.push(...collectHits(result));
+          const hits = collectHits(result).filter(
+            (hit) => !hit.path || !isExcludedPath(hit.path),
+          );
+          hitList.push(...hits);
+          results.push({ query, hits });
           searchSucceeded = true;
           emitToolResult("docdex.search", "ok", true);
         } catch {
+          results.push({ query, hits: [] });
           emitToolResult("docdex.search", "failed", false);
           pushWarning("docdex_search_failed");
         }
       }
-      return { hitList, searchSucceeded };
+      return { hitList, searchSucceeded, searchResults: results };
     };
 
     let hitList: Array<{ doc_id?: string; path?: string }> = [];
@@ -697,6 +1446,7 @@ export class ContextAssembler {
       const initialSearch = await runSearch(queries);
       hitList = initialSearch.hitList;
       searchSucceeded = initialSearch.searchSucceeded;
+      searchResults = initialSearch.searchResults;
     }
 
     let uniqueHits = hitList.filter((hit, index, self) => {
@@ -763,6 +1513,7 @@ export class ContextAssembler {
           const expandedSearch = await runSearch(queries);
           hitList = expandedSearch.hitList;
           searchSucceeded = expandedSearch.searchSucceeded;
+          searchResults = expandedSearch.searchResults;
           uniqueHits = hitList.filter((hit, index, self) => {
             const key = `${hit.doc_id ?? ""}:${hit.path ?? ""}`;
             return self.findIndex((entry) => `${entry.doc_id ?? ""}:${entry.path ?? ""}` === key) === index;
@@ -785,29 +1536,58 @@ export class ContextAssembler {
 
     uniqueHits = reorderHits(uniqueHits);
 
-    const snippets: ContextSnippet[] = [];
-    if (this.options.includeSnippets) {
-      emitStatus("thinking", "librarian: snippets");
-      for (const hit of uniqueHits) {
-        if (!hit.doc_id) continue;
-        try {
-          emitToolCall("docdex.snippet", { doc_id: hit.doc_id, window: this.options.snippetWindow });
-          const snippetResult = await this.client.openSnippet(hit.doc_id, { window: this.options.snippetWindow });
-          snippets.push({
-            doc_id: hit.doc_id,
-            path: hit.path,
-            content: toStringPayload(snippetResult),
-          });
-          emitToolResult("docdex.snippet", "ok", true);
-        } catch {
-          emitToolResult("docdex.snippet", "failed", false);
-          pushWarning(`docdex_snippet_failed:${hit.doc_id}`);
-        }
+    const selectionOptions = {
+      maxFiles: this.options.maxFiles,
+      minHitCount: Math.min(2, this.options.maxHitsPerQuery),
+    };
+    const computeSelection = (impactInput: ContextImpactSummary[]) =>
+      selectContextFiles(
+        {
+          hits: uniqueHits,
+          impact: impactInput,
+          intent,
+          docTask,
+          recentFiles,
+          preferredFiles,
+        },
+        selectionOptions,
+      );
+    let selection = computeSelection([]);
+
+    const needsUiFallback =
+      intent?.intents.includes("ui") &&
+      selection?.all &&
+      !selection.all.some((entry) => isFrontendPath(entry));
+    if (needsUiFallback && this.options.workspaceRoot) {
+      emitStatus("thinking", "librarian: ui fallback discovery");
+      const uiCandidates = await listWorkspaceFiles(this.options.workspaceRoot, FRONTEND_GLOBS);
+      if (uiCandidates.length > 0) {
+        preferredFiles = uniqueValues([...preferredFiles, ...uiCandidates]);
+        selection = computeSelection([]);
+        pushWarning("librarian_ui_candidates");
+      }
+    }
+
+    const needsFallback =
+      selection.low_confidence && (uniqueHits.length === 0 || !searchSucceeded);
+    if (needsFallback && this.options.workspaceRoot) {
+      emitStatus("thinking", "librarian: fallback file discovery");
+      const fallbackCandidates = await collectFallbackCandidates(
+        this.options.workspaceRoot,
+        request,
+        intent,
+        Math.max(10, this.options.maxFiles),
+      );
+      if (fallbackCandidates.length > 0) {
+        preferredFiles = uniqueValues([...preferredFiles, ...fallbackCandidates]);
+        selection = computeSelection([]);
+        pushWarning("librarian_fallback_candidates");
       }
     }
 
     const filePaths = Array.from(
       new Set([
+        ...selection.all,
         ...uniqueHits
           .map((hit) => hit.path)
           .filter((value): value is string => typeof value === "string" && value.length > 0),
@@ -815,34 +1595,95 @@ export class ContextAssembler {
         ...recentFiles,
       ]),
     );
+    const analysisPaths = selectAnalysisPaths(filePaths, {
+      intent,
+      docTask,
+      preferred: preferredFiles,
+      focus: selection.focus,
+      maxPaths: Math.min(this.options.maxFiles, 6),
+    });
+    const analysisPathSet = new Set(analysisPaths.map((entry) => normalizePath(entry)));
+
+    const snippets: ContextSnippet[] = [];
+    if (this.options.includeSnippets) {
+      emitStatus("thinking", "librarian: snippets");
+      for (const hit of uniqueHits) {
+        if (!hit.doc_id) continue;
+        if (hit.path && !analysisPathSet.has(normalizePath(hit.path))) continue;
+        try {
+          emitToolCall("docdex.snippet", { doc_id: hit.doc_id, window: this.options.snippetWindow });
+          const snippetResult = await this.client.openSnippet(hit.doc_id, { window: this.options.snippetWindow });
+          snippets.push({
+            doc_id: hit.doc_id,
+            path: hit.path,
+            content: extractSnippetContent(snippetResult),
+          });
+          emitToolResult("docdex.snippet", "ok", true);
+        } catch {
+          emitToolResult("docdex.snippet", "failed", false);
+          pushWarning(`docdex_snippet_failed:${hit.doc_id}`);
+        }
+      }
+      const snippetPathSet = new Set(
+        snippets
+          .map((entry) => entry.path)
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+          .map((entry) => normalizePath(entry)),
+      );
+      const clientWithOpen = this.client as unknown as {
+        openFile?: (pathValue: string, options?: unknown) => Promise<unknown>;
+      };
+      if (typeof clientWithOpen.openFile === "function") {
+        for (const focusPath of selection.focus) {
+          const normalizedFocus = normalizePath(focusPath);
+          if (snippetPathSet.has(normalizedFocus)) continue;
+          try {
+            const openOptions = { head: this.options.snippetWindow, clamp: true };
+            emitToolCall("docdex.open", { path: focusPath, ...openOptions });
+            const openResult = await clientWithOpen.openFile(focusPath, openOptions);
+            snippets.push({
+              path: focusPath,
+              content: extractSnippetContent(openResult),
+            });
+            snippetPathSet.add(normalizedFocus);
+            emitToolResult("docdex.open", "ok", true);
+          } catch {
+            emitToolResult("docdex.open", "failed", false);
+            pushWarning(`docdex_open_failed:${focusPath}`);
+          }
+        }
+      }
+    }
 
     const symbols: ContextSymbolSummary[] = [];
     const ast: ContextAstSummary[] = [];
     const impact: ContextImpactSummary[] = [];
     const impactDiagnostics: ContextImpactDiagnostics[] = [];
-    if (filePaths.length) {
+    if (analysisPaths.length) {
       emitStatus("thinking", "librarian: symbols/ast/impact");
     }
-    for (const file of filePaths) {
+    for (const file of analysisPaths) {
       try {
         emitToolCall("docdex.symbols", { file });
         const symbolsResult = await this.client.symbols(file);
-        symbols.push({ path: file, summary: toStringPayload(symbolsResult) });
+        symbols.push({ path: file, summary: summarizeSymbolsPayload(symbolsResult) });
         emitToolResult("docdex.symbols", "ok", true);
       } catch {
         emitToolResult("docdex.symbols", "failed", false);
         pushWarning(`docdex_symbols_failed:${file}`);
       }
 
-      try {
-        emitToolCall("docdex.ast", { file });
-        const astResult = await this.client.ast(file);
-        const nodes = (astResult as { nodes?: unknown[] } | undefined)?.nodes ?? [];
-        ast.push({ path: file, nodes });
-        emitToolResult("docdex.ast", "ok", true);
-      } catch {
-        emitToolResult("docdex.ast", "failed", false);
-        pushWarning(`docdex_ast_failed:${file}`);
+      if (!isDocPath(file) && !isSupportDoc(file)) {
+        try {
+          emitToolCall("docdex.ast", { file });
+          const astResult = await this.client.ast(file);
+          const nodes = compactAstNodes(astResult);
+          ast.push({ path: file, nodes });
+          emitToolResult("docdex.ast", "ok", true);
+        } catch {
+          emitToolResult("docdex.ast", "failed", false);
+          pushWarning(`docdex_ast_failed:${file}`);
+        }
       }
 
       if (this.options.includeImpact && supportsImpactGraph(file)) {
@@ -867,11 +1708,11 @@ export class ContextAssembler {
               impactDiagnostics.push({ file, diagnostics });
               emitToolResult("docdex.impact_diagnostics", "ok", true);
               if (hasDiagnostics(diagnostics)) {
-                warnings.push(`impact_graph_sparse:${file}`);
+                pushWarning(`impact_graph_sparse:${file}`);
               }
             } catch {
               emitToolResult("docdex.impact_diagnostics", "failed", false);
-              warnings.push(`impact_diagnostics_failed:${file}`);
+              pushWarning(`impact_diagnostics_failed:${file}`);
             }
           }
         } catch {
@@ -881,59 +1722,37 @@ export class ContextAssembler {
       }
     }
 
-    let selection = selectContextFiles(
-      {
-        hits: uniqueHits,
-        impact,
-        recentFiles,
-        preferredFiles,
-      },
-      { maxFiles: this.options.maxFiles, minHitCount: Math.min(2, this.options.maxHitsPerQuery) },
-    );
+    selection = computeSelection(impact);
+
+    const uiMissing =
+      intent?.intents.includes("ui") &&
+      selection?.all &&
+      !selection.all.some((entry) => isFrontendPath(entry));
+    if (uiMissing) {
+      pushWarning("docdex_ui_no_hits");
+      selection = { ...selection, low_confidence: true };
+    }
     if (selection.low_confidence) {
-      warnings.push("docdex_low_confidence");
+      pushWarning("docdex_low_confidence");
     }
 
     let repoMap: string | undefined;
-    if (this.options.includeRepoMap && (selection.low_confidence || uniqueHits.length === 0)) {
+    let repoMapRaw: string | undefined;
+    if (this.options.includeRepoMap) {
       const clientWithTree = this.client as unknown as { tree?: (options?: unknown) => Promise<unknown> };
       if (typeof clientWithTree.tree === "function") {
         try {
-          emitToolCall("docdex.tree", { maxDepth: 3 });
-          const treeResult = await clientWithTree.tree({ maxDepth: 3 });
-          repoMap = toStringPayload(treeResult);
+          const treeOptions = { includeHidden: true };
+          emitToolCall("docdex.tree", treeOptions);
+          const treeResult = await clientWithTree.tree(treeOptions);
+          const treeText = extractTreeText(treeResult) ?? toStringPayload(treeResult);
+          repoMapRaw = treeText;
+          repoMap = compactTreeForPrompt(treeText);
           emitToolResult("docdex.tree", "ok", true);
         } catch {
           emitToolResult("docdex.tree", "failed", false);
           pushWarning("docdex_tree_failed");
         }
-      }
-    }
-    if (this.options.includeRepoMap && !repoMap) {
-      const entries: string[] = [];
-      const seen = new Set<string>();
-      for (const entry of symbols) {
-        if (!entry.path || seen.has(entry.path)) continue;
-        seen.add(entry.path);
-        entries.push(`## ${entry.path}\n${entry.summary}`);
-        if (entries.length >= 20) break;
-      }
-      if (entries.length < 20 && fileHints.length > 0) {
-        const remaining = fileHints.filter((file) => !seen.has(file)).slice(0, 20 - entries.length);
-        for (const file of remaining) {
-          try {
-            emitToolCall("docdex.symbols", { file });
-            const symbolsResult = await this.client.symbols(file);
-            entries.push(`## ${file}\n${toStringPayload(symbolsResult)}`);
-            emitToolResult("docdex.symbols", "ok", true);
-          } catch {
-            emitToolResult("docdex.symbols", "failed", false);
-            pushWarning(`docdex_symbols_failed:${file}`);
-          }
-        }
-      }
-      if (entries.length > 0) {
-        repoMap = entries.join("\n\n");
       }
     }
 
@@ -988,20 +1807,29 @@ export class ContextAssembler {
       }
     }
 
-    let memoryItems: Array<{ content?: string }> = [];
+    let memoryItems: Array<{ content?: string; score?: number }> = [];
     try {
       emitToolCall("docdex.memory_recall", { query: request, top_k: 5 });
       const memoryResult = await this.client.memoryRecall(request, 5);
-      memoryItems = (memoryResult as { results?: Array<{ content?: string }> } | undefined)?.results ?? [];
+      memoryItems = (memoryResult as { results?: Array<{ content?: string; score?: number }> } | undefined)?.results ?? [];
       emitToolResult("docdex.memory_recall", "ok", true);
     } catch {
       emitToolResult("docdex.memory_recall", "failed", false);
       pushWarning("docdex_memory_recall_failed");
     }
-    const memory = memoryItems
-      .map((item) => item.content)
-      .filter((text): text is string => typeof text === "string" && text.length > 0)
-      .map((text) => ({ text, source: "repo" }));
+    const memoryPruneResult = pruneConflictingMemoryFacts(memoryItems);
+    if (memoryPruneResult.pruned > 0) {
+      pushWarning("memory_conflicts_pruned");
+    }
+    const memoryFilterResult = filterRelevantMemoryFacts(
+      memoryPruneResult.facts,
+      request,
+      selection?.all ?? [],
+    );
+    if (memoryFilterResult.filtered > 0) {
+      pushWarning("memory_irrelevant_filtered");
+    }
+    const memory = memoryFilterResult.facts;
 
     let profileEntries: Array<{ content?: string }> = [];
     try {
@@ -1019,16 +1847,32 @@ export class ContextAssembler {
       .filter((text): text is string => typeof text === "string" && text.length > 0)
       .map((content) => ({ content, source: "agent" }));
 
-    const indexInfo = {
-      last_updated_epoch_ms: (stats as { last_updated_epoch_ms?: number }).last_updated_epoch_ms ?? 0,
-      num_docs: (stats as { num_docs?: number }).num_docs ?? 0,
-    };
+    const runIndexer = new RunHistoryIndexer(this.client);
+    const episodicMemory = await runIndexer.findSimilarRuns(request);
+
+    const goldenIndexer = new GoldenExampleIndexer(this.client);
+    const goldenExamples = await goldenIndexer.findExamples(request);
+
+    const indexInfo = statsSucceeded
+      ? {
+          last_updated_epoch_ms:
+            (stats as { last_updated_epoch_ms?: number }).last_updated_epoch_ms ??
+            0,
+          num_docs: (stats as { num_docs?: number }).num_docs ?? 0,
+        }
+      : { last_updated_epoch_ms: -1, num_docs: -1 };
     if (statsSucceeded) {
-      const hasFileHints = filesSucceeded && fileHints.length > 0;
-      const indexEmpty = filesSucceeded && indexInfo.num_docs === 0 && !hasFileHints;
-      const indexStale = filesSucceeded && indexInfo.last_updated_epoch_ms === 0 && !hasFileHints;
+      const indexEmpty =
+        filesSucceeded &&
+        indexInfo.num_docs === 0 &&
+        fileHints.length === 0 &&
+        snippets.length === 0;
+      const indexStale =
+        filesSucceeded &&
+        indexInfo.last_updated_epoch_ms === 0 &&
+        indexInfo.num_docs === 0;
       if (indexEmpty) {
-        warnings.push("docdex_index_empty");
+        pushWarning("docdex_index_empty");
       }
       if (indexStale) {
         pushWarning("docdex_index_stale");
@@ -1056,17 +1900,25 @@ export class ContextAssembler {
       }
     }
 
-    const explicitReadOnly = this.options.readOnlyPaths ?? [];
-    const docReadOnly = this.options.allowDocEdits
-      ? []
-      : [
-          "docs",
-          ...((selection?.all ?? []).filter((entry) => isDocPath(entry))),
-        ];
-    const readOnlySeed = uniqueValues([...explicitReadOnly, ...docReadOnly]).map(normalizePath);
+    const explicitReadOnly = uniqueValues(this.options.readOnlyPaths ?? []).map(normalizePath);
+    const readOnlySeed = uniqueValues([...explicitReadOnly]).map(normalizePath);
+    const focusPaths = new Set((selection?.focus ?? []).map(normalizePath));
+    const isExplicitReadOnly = (value: string) =>
+      explicitReadOnly.some(
+        (entry) => value === entry || value.startsWith(`${entry}/`),
+      );
+    const readOnlyPaths = readOnlySeed.filter((entry) => {
+      if (isExplicitReadOnly(entry)) return true;
+      for (const focus of focusPaths) {
+        if (focus === entry || focus.startsWith(`${entry}/`)) {
+          return false;
+        }
+      }
+      return true;
+    });
     const isReadOnlyPath = (value: string) => {
       const normalized = normalizePath(value);
-      return readOnlySeed.some(
+      return readOnlyPaths.some(
         (entry) => normalized === entry || normalized.startsWith(`${entry}/`),
       );
     };
@@ -1076,31 +1928,96 @@ export class ContextAssembler {
       ...recentFiles,
     ]).map(normalizePath);
     const allowWritePaths = allowWriteSeed.filter((path) => !isReadOnlyPath(path));
-    const readOnlyPaths = readOnlySeed;
+    const blockedFocus = (selection?.focus ?? []).filter((path) => isReadOnlyPath(path));
+    if (blockedFocus.length > 0) {
+      pushWarning("write_policy_blocks_focus");
+      for (const path of blockedFocus) {
+        pushWarning(`write_policy_blocks_focus:${path}`);
+      }
+    }
+
+    const missing: string[] = [];
+    if (!selection || selection.focus.length === 0) {
+      missing.push("no_focus_files_selected");
+    }
+    if (selection?.low_confidence) {
+      missing.push("low_confidence_selection");
+    }
+    if (intent?.intents.includes("ui") && selection?.all) {
+      const hasUiFile = selection.all.some((entry) => isFrontendPath(entry));
+      if (!hasUiFile) {
+        missing.push("no_ui_files_selected");
+      }
+    }
+    if (!contextFiles || contextFiles.length === 0) {
+      missing.push("no_context_files_loaded");
+    } else if (selection) {
+      const loadedPaths = new Set(contextFiles.map((entry) => normalizePath(entry.path)));
+      for (const path of selection.focus) {
+        if (!loadedPaths.has(normalizePath(path))) {
+          missing.push(`focus_content_missing:${path}`);
+        }
+      }
+      for (const path of selection.periphery) {
+        if (!loadedPaths.has(normalizePath(path))) {
+          missing.push(`periphery_content_missing:${path}`);
+        }
+      }
+    }
+
+    const manifestFiles = await detectManifests(this.options.workspaceRoot);
+    const fileTypeInputs = uniqueValues([
+      ...fileHints,
+      ...(selection?.all ?? []),
+      ...preferredFiles,
+      ...recentFiles,
+    ]);
+    const projectInfo: ContextProjectInfo = {
+      workspace_root: this.options.workspaceRoot,
+      docs: supportDocs.length > 0 ? supportDocs : undefined,
+      manifests: manifestFiles.length > 0 ? manifestFiles : undefined,
+      file_types: fileTypeInputs.length > 0 ? extractFileTypes(fileTypeInputs) : undefined,
+    };
+    const finalWarnings = reconcileWarnings(warnings, {
+      intent,
+      selection,
+      index: indexInfo,
+      filesSucceeded,
+      statsSucceeded,
+      snippets,
+    });
 
     const bundle: ContextBundle = {
       request,
+      intent,
       queries,
+      search_results: searchResults,
       snippets,
       symbols,
       ast,
       impact,
       impact_diagnostics: impactDiagnostics,
       repo_map: repoMap,
+      repo_map_raw: repoMapRaw,
+      project_info: projectInfo,
       selection,
       allow_write_paths: allowWritePaths,
       read_only_paths: readOnlyPaths,
       files: contextFiles,
       redaction: redactionInfo,
       memory,
+      episodic_memory: episodicMemory,
+      golden_examples: goldenExamples,
       preferences_detected: preferencesDetected,
       profile,
       index: indexInfo,
-      warnings,
+      warnings: finalWarnings,
+      missing,
     };
-    if ((contextFiles && contextFiles.length > 0) || repoMap) {
-      bundle.serialized = serializeContext(bundle, { mode: this.options.serializationMode });
-    }
+    const sanitizedBundle = sanitizeContextBundleForOutput(bundle);
+    bundle.serialized = serializeContext(sanitizedBundle, {
+      mode: this.options.serializationMode ?? "bundle_text",
+    });
     emitStatus("done", "librarian: bundle ready");
     return bundle;
   }

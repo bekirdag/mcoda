@@ -228,6 +228,77 @@ test("DocdexClient uses MCP for tree/open/profile/web", { concurrency: false }, 
   assert.equal(webCall?.params?.project_root, process.cwd());
 });
 
+test("DocdexClient unwraps MCP text payloads", { concurrency: false }, async () => {
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.endsWith("/v1/mcp")) {
+      const body = typeof init?.body === "string" ? init.body : "{}";
+      const payload = JSON.parse(body) as { method?: string; id?: string };
+      if (payload.method === "docdex_stats") {
+        return makeJsonResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ last_updated_epoch_ms: 123, num_docs: 14 }),
+              },
+            ],
+            isError: false,
+          },
+        });
+      }
+      if (payload.method === "docdex_files") {
+        return makeJsonResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  results: [{ rel_path: "src/public/index.html" }],
+                  total: 1,
+                }),
+              },
+            ],
+            isError: false,
+          },
+        });
+      }
+      if (payload.method === "docdex_tree") {
+        return makeJsonResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ tree: "repo\\n└── src\\n    └── index.ts" }),
+              },
+            ],
+            isError: false,
+          },
+        });
+      }
+      return makeJsonResponse({ jsonrpc: "2.0", id: payload.id, result: { ok: true } });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
+    const stats = await client.stats();
+    const files = await client.files(20, 0);
+    const tree = await client.tree({ includeHidden: true });
+
+    assert.deepEqual(stats, { last_updated_epoch_ms: 123, num_docs: 14 });
+    assert.deepEqual(files, { results: [{ rel_path: "src/public/index.html" }], total: 1 });
+    assert.deepEqual(tree, { tree: "repo\\n└── src\\n    └── index.ts" });
+  });
+});
+
 test("DocdexTools expose expanded docdex toolset", { concurrency: false }, async () => {
   const calls: string[] = [];
   const mcpMethods: string[] = [];
