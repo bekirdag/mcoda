@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
-import { expandQueriesWithProvider, extractQueries } from "../QueryExtraction.js";
+import { expandQueriesWithProvider, extractQueries, extractQuerySignals } from "../QueryExtraction.js";
 
 class StubProvider implements Provider {
   name = "stub";
@@ -33,6 +33,13 @@ test("extractQueries preserves key nouns for generic action verbs", { concurrenc
   assert.ok(joined.includes("secure"));
   assert.ok(joined.includes("task"));
   assert.ok(joined.includes("rendering"));
+});
+
+test("extractQuerySignals returns keyword phrases for fuzzy requests", { concurrency: false }, () => {
+  const signals = extractQuerySignals("Change heading colors to blue on the main page");
+  assert.ok(signals.keywords.includes("heading"));
+  assert.ok(signals.keywords.includes("colors"));
+  assert.ok(signals.keyword_phrases.some((entry) => entry.includes("heading colors")));
 });
 
 test("expandQueriesWithProvider merges provider suggestions", { concurrency: false }, async () => {

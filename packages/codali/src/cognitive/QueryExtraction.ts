@@ -101,6 +101,13 @@ const FILE_EXTENSIONS = [
   ".cs",
 ];
 
+export interface QuerySignals {
+  phrases: string[];
+  file_tokens: string[];
+  keywords: string[];
+  keyword_phrases: string[];
+}
+
 const unique = (values: string[]): string[] => {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -146,6 +153,42 @@ const extractKeywords = (input: string): string[] => {
     .filter((token) => token.length >= 3 && !STOPWORDS.has(token));
 };
 
+const extractKeywordPhrases = (keywords: string[], maxPhrases = 6): string[] => {
+  if (keywords.length < 2) return [];
+  const phrases: string[] = [];
+  for (let index = 0; index < keywords.length; index += 1) {
+    const two = keywords.slice(index, index + 2);
+    const three = keywords.slice(index, index + 3);
+    if (two.length === 2) phrases.push(two.join(" "));
+    if (three.length === 3) phrases.push(three.join(" "));
+    if (phrases.length >= maxPhrases * 2) break;
+  }
+  return unique(phrases).slice(0, Math.max(0, maxPhrases));
+};
+
+export const extractQuerySignals = (input: string): QuerySignals => {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return { phrases: [], file_tokens: [], keywords: [], keyword_phrases: [] };
+  }
+  const phrases = unique([
+    ...extractQuotedPhrases(trimmed),
+    ...trimmed
+      .split(/[.!?;:]+/g)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length >= 8),
+  ]);
+  const fileTokens = unique(extractFileTokens(trimmed));
+  const keywords = unique(extractKeywords(trimmed));
+  const keywordPhrases = extractKeywordPhrases(keywords);
+  return {
+    phrases,
+    file_tokens: fileTokens,
+    keywords,
+    keyword_phrases: keywordPhrases,
+  };
+};
+
 const buildKeywordFallbackQueries = (request: string, keywords: string[], maxQueries: number): string[] => {
   const keyTerms = unique(keywords.filter((token) => token.length >= 4));
   const longPhrase = keyTerms.slice(0, 4).join(" ");
@@ -164,20 +207,18 @@ export const extractQueries = (input: string, maxQueries = 3): string[] => {
   const trimmed = input.trim();
   if (!trimmed) return [];
 
-  const phrases = extractQuotedPhrases(trimmed);
-  const fileTokens = extractFileTokens(trimmed);
-  const keywords = extractKeywords(trimmed);
+  const signals = extractQuerySignals(trimmed);
+  const phrases = signals.phrases;
+  const fileTokens = signals.file_tokens;
+  const keywords = signals.keywords;
 
   const hasAnchors = phrases.length > 0 || fileTokens.length > 0;
   if (!hasAnchors) {
     return buildKeywordFallbackQueries(trimmed, keywords, maxQueries);
   }
 
-  const combined = unique([...phrases, ...fileTokens, ...keywords]);
+  const combined = unique([trimmed, ...phrases, ...fileTokens, ...signals.keyword_phrases, ...keywords]);
   const limited = combined.slice(0, Math.max(1, maxQueries));
-  if (!limited.includes(trimmed) && limited.length < maxQueries) {
-    limited.push(trimmed);
-  }
   return limited;
 };
 

@@ -77,6 +77,9 @@ test("CriticEvaluator fails when touched files are read-only", { concurrency: fa
     readOnlyPaths: ["docs/sds"],
   });
   assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.equal(result.guardrail?.reason_code, "doc_edit_guard");
+  assert.equal(result.guardrail?.disposition, "non_retryable");
   assert.ok(result.reasons.some((reason) => reason.includes("read-only")));
 });
 
@@ -86,6 +89,9 @@ test("CriticEvaluator fails when touched files are outside allowed paths", { con
     allowedPaths: ["src/allowed.ts"],
   });
   assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.equal(result.guardrail?.reason_code, "scope_violation");
+  assert.equal(result.guardrail?.disposition, "non_retryable");
   assert.ok(result.reasons.some((reason) => reason.includes("allowed paths")));
 });
 
@@ -112,6 +118,17 @@ test("CriticEvaluator fails when inferred patch targets miss plan", { concurrenc
   });
   const result = await evaluator.evaluate(plan, patchOutput);
   assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.equal(result.guardrail?.reason_code, "scope_violation");
+});
+
+test("CriticEvaluator classifies guardrails from validation errors", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(new StubValidator({ ok: false, errors: ["merge_conflict"] }) as any);
+  const result = await evaluator.evaluate(plan, "output");
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.equal(result.guardrail?.reason_code, "merge_conflict");
+  assert.equal(result.guardrail?.disposition, "non_retryable");
 });
 
 test("CriticEvaluator appends summary to context manager", { concurrency: false }, async () => {

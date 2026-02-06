@@ -66,6 +66,8 @@ export interface BuilderRunnerOptions {
   streamFlushMs?: number;
 }
 
+const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values));
+
 const parseContextRequest = (content: string): ContextRequest | undefined => {
   const trimmed = content.trim();
   if (!trimmed) return undefined;
@@ -145,17 +147,19 @@ export class BuilderRunner {
     const bundleAllow = (contextBundle.allow_write_paths ?? [])
       .map(normalizePath)
       .filter(Boolean)
+      .filter((path) => path !== "unknown")
       .filter((path) => !isReadOnlyPath(path));
     const fallbackAllow = [...planTargets, ...bundlePaths]
       .map(normalizePath)
       .filter(Boolean)
+      .filter((path) => path !== "unknown")
       .filter((path) => !isReadOnlyPath(path));
+    // Only enforce a positive allow-list when the librarian explicitly provides one.
+    // Otherwise, treat writes as unrestricted except read-only/placeholder guards.
     const allowedPaths = new Set(
       bundleAllow.length
-        ? bundleAllow
-        : readOnlyPaths.length > 0
-          ? []
-          : fallbackAllow,
+        ? uniqueStrings([...bundleAllow, ...fallbackAllow])
+        : [],
     );
     const validatePatchTargets = (paths: string[]) => {
       const invalid = paths.filter((path) => {
@@ -242,9 +246,7 @@ export class BuilderRunner {
       const allowList =
         allowedPaths.size > 0
           ? Array.from(allowedPaths).join(", ")
-          : readOnlyPaths.length > 0
-            ? "all (except read-only)"
-            : "unspecified";
+          : "all (except read-only)";
       const readOnlyList = readOnlyPaths.length ? readOnlyPaths.join(", ") : "none";
       return [
         note,

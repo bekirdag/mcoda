@@ -3,15 +3,27 @@
 This document describes the current `qa-tasks` command flow as implemented in `QaTasksService` (`packages/core/src/services/execution/QaTasksService.ts`).
 
 ## Overview
-`qa-tasks` runs automated QA checks using a selected QA profile (CLI/browser/etc.). It uses a routing agent to decide which profiles to run, then records a deterministic QA summary from the runner outputs. Optional agent interpretation can be enabled by setting `MCODA_QA_AGENT_INTERPRETATION=1`.
+`qa-tasks` runs automated QA checks using selected QA profiles (CLI/browser/etc.). It uses a routing agent to decide which profiles to run and can return a QA plan with per-task action lists (CLI commands, API requests, browser actions, stress). Optional agent interpretation can be enabled by setting `MCODA_QA_AGENT_INTERPRETATION=1`.
 
 ## Inputs and defaults
 - Task scope: `projectKey`, `epicKey`, `storyKey`, `taskKeys`, `statusFilter`.
   - Default status filter: `ready_to_qa`.
 - Mode: `mode=auto` (default) or `mode=manual`.
 - QA profile: `profileName`, `level`, `testCommand` override.
+- QA readiness metadata: if `task.metadata.qa.profiles_expected` is present (from `create-tasks`), profile resolution prefers those profiles before heuristic routing.
 - Output options: `agentName`, `agentStream`, `createFollowupTasks`, `dryRun`, `rateAgents`.
 - Resume: `resumeJobId` (checkpoint-based resume).
+
+## QA plan schema (routing output)
+The routing agent may return a JSON plan with:
+- `task_profiles`: map of task key → profile names to run.
+- `task_plans`: optional per-task action lists:
+  - `profiles`: explicit profiles for the task.
+  - `cli.commands`: list of CLI commands to execute (unit → component → integration → api when categories are available).
+  - `api.base_url` + `api.requests`: HTTP checks.
+  - `browser.base_url` + `browser.actions`: Chromium steps.
+  - `stress.api` / `stress.browser`: repeat/burst actions.
+  - Base URLs must be dynamic: avoid hardcoded ports; use `http://localhost:<PORT>` placeholders or omit `base_url` so qa-tasks resolves via env/detected ports.
 
 ## High-level phases
 1. Init + selection (including resume handling)
@@ -25,7 +37,7 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 2. If `dryRun`:
    - Resolve QA profile per task when possible.
    - Return planned results without running tests.
-3. Ensure `.mcoda/` exists and is in `.gitignore`.
+3. Ensure the global workspace `.mcoda` directory exists (outside the repo); QA artifacts never write into the repo.
 4. If resuming:
    - Load checkpoints to skip completed tasks.
 
@@ -35,7 +47,7 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
 1. Create a `task_run` row (status: `running`).
 2. Resolve QA profiles using the QA routing agent:
    - If `profileName` is provided, run only that profile (explicit override).
-   - Otherwise, the routing agent chooses profiles per task based on task content and available profiles.
+   - Otherwise, the routing agent chooses profiles per task based on task content and available profiles, and may return a QA plan with action lists.
    - If the routing output is invalid, fall back to the default CLI profile.
 3. If the latest code review indicates an empty diff (no code changes) and the decision is `approve`/`info_only`, skip QA and mark the task as passed.
 
@@ -48,12 +60,18 @@ This document describes the current `qa-tasks` command flow as implemented in `Q
    - Continue running other profiles if available.
 
 #### 2.3 Execute QA tests
-1. Resolve test command (per CLI profile + optional override).
+1. Resolve CLI commands:
+   - Prefer CLI override or routing plan commands when provided.
+   - Otherwise build category commands from `test_requirements` (unit → component → integration → api) using stack-appropriate tools or project scripts.
+   - If no category split is possible, fall back to `tests/all.js`, a package.json test script, or the profile's `test_command`.
+   - If CLI commands include browser tooling (Cypress/Puppeteer/Selenium/Capybara/Dusk), QA injects Chromium env defaults and appends `--browser chromium` for direct Cypress run/open commands; missing Chromium yields `infra_issue`.
 2. Build QA context (workspace root, job id, task key, env).
-3. Run each adapter (`invoke`) and collect outputs.
+   - QA injects localhost defaults (`HOST=127.0.0.1`, `BIND_ADDR=127.0.0.1`) and normalizes any `0.0.0.0` host values.
+3. If a local base URL is required and not reachable, QA auto-starts the dev server (dev/start/serve) and waits for readiness.
+4. Run each adapter (`invoke`) and collect outputs.
 4. Normalize outcomes:
    - CLI adapter may treat “no tests found / skipping tests” as `infra_issue`.
-   - If `tests/all.js` is used, it must emit `MCODA_RUN_ALL_TESTS_COMPLETE`; missing markers are treated as `infra_issue`.
+   - If `tests/all.js` is used, missing `MCODA_RUN_ALL_TESTS_COMPLETE` is a warning when tests pass, but remains an `infra_issue` when tests fail under strict policy.
 5. Aggregate multiple runs into a single combined QA result for summary (and optional agent interpretation when enabled).
 
 #### 2.4 Optional agent interpretation (disabled by default)
@@ -74,9 +92,9 @@ Agent interpretation runs only when `MCODA_QA_AGENT_INTERPRETATION=1`.
    - `unclear` is preserved if the agent requests it.
 2. Apply state transition:
    - `pass` → `completed`
-   - `fix_required` → `in_progress`
-   - `infra_issue` → `failed` with `qa_infra_issue`
-   - `unclear` → `failed` with `qa_unclear`
+   - `fix_required` → `not_started`
+   - `infra_issue` → `not_started` with `qa_failure_reason=qa_infra_issue`
+   - `unclear` → `not_started` with `qa_failure_reason=qa_unclear`
 3. Resolve QA comment slugs:
    - Mark `resolvedSlugs`, reopen `unresolvedSlugs`.
    - Create new QA comment(s) for failures.

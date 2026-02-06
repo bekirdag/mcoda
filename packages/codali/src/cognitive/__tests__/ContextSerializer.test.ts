@@ -5,6 +5,19 @@ import type { ContextBundle } from "../Types.js";
 
 const baseBundle: ContextBundle = {
   request: "Fix login",
+  query_signals: {
+    phrases: ["Fix login"],
+    file_tokens: ["src/auth.ts"],
+    keywords: ["login", "auth"],
+    keyword_phrases: ["fix login"],
+  },
+  request_digest: {
+    summary: "Update login/auth behavior in existing source files.",
+    refined_query: "login auth source flow",
+    confidence: "medium",
+    signals: ["login", "auth", "source"],
+    candidate_files: ["src/auth.ts"],
+  },
   queries: ["login"],
   search_results: [
     { query: "login", hits: [{ path: "src/auth.ts", score: 12 }] },
@@ -14,9 +27,20 @@ const baseBundle: ContextBundle = {
   ast: [{ path: "src/auth.ts", nodes: ["node"] }],
   impact: [{ file: "src/auth.ts", inbound: [], outbound: ["src/user.ts"] }],
   impact_diagnostics: [],
+  dag_summary: "src/auth.ts -> src/user.ts",
   intent: {
     intents: ["ui"],
-    matches: { ui: ["header"], content: [], behavior: [], data: [] },
+    matches: {
+      ui: ["header"],
+      content: [],
+      behavior: [],
+      data: [],
+      testing: [],
+      infra: [],
+      security: [],
+      performance: [],
+      observability: [],
+    },
   },
   project_info: {
     workspace_root: "/repo",
@@ -60,10 +84,13 @@ test("ContextSerializer outputs bundle_text with headers", { concurrency: false 
   assert.ok(serialized.content.includes("INTENT:"));
   assert.ok(serialized.content.includes("PROJECT INFO:"));
   assert.ok(serialized.content.includes("QUERIES:"));
+  assert.ok(serialized.content.includes("QUERY SIGNALS:"));
+  assert.ok(serialized.content.includes("REQUEST DIGEST:"));
   assert.ok(serialized.content.includes("SEARCH RESULTS:"));
   assert.ok(serialized.content.includes("SYMBOLS:"));
   assert.ok(serialized.content.includes("AST:"));
   assert.ok(serialized.content.includes("IMPACT GRAPH:"));
+  assert.ok(serialized.content.includes("DAG REASONING:"));
   assert.ok(serialized.content.includes("INDEX INFO:"));
   assert.ok(serialized.content.includes("Fix login"));
 });

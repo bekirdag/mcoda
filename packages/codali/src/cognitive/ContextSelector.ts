@@ -19,11 +19,57 @@ const FRONTEND_EXTENSIONS = new Set([
   ".svelte",
 ]);
 
+const HTML_EXTENSIONS = new Set([".html", ".htm"]);
+const STYLE_EXTENSIONS = new Set([
+  ".css",
+  ".scss",
+  ".sass",
+  ".less",
+  ".styl",
+]);
+
+const FRONTEND_SCRIPT_EXTENSIONS = new Set([
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".mjs",
+  ".cjs",
+]);
+
+const FRONTEND_DIR_HINT_PATTERN = /(^|\/)(public|frontend|client|web|ui)(\/|$)/i;
+const INFRA_PATH_PATTERN =
+  /(^|\/)(\.github\/workflows|\.github\/actions|\.circleci|buildkite|jenkins|infra|deploy|ops|k8s|kubernetes|helm|terraform|ansible)(\/|$)/i;
+const INFRA_FILE_PATTERN =
+  /(dockerfile|docker-compose|compose\.ya?ml|makefile|\.gitlab-ci\.ya?ml)$/i;
+const SECURITY_PATH_PATTERN =
+  /(^|\/)(auth|security|permissions?|rbac|acl|policy|oauth|jwt|sso|crypto|secrets?)(\/|$|[._-])/i;
+const PERFORMANCE_PATH_PATTERN =
+  /(^|\/)(perf|performance|benchmark|profil(e|ing)|cache|rate[-_]?limit|throttle|batch|queue)(\/|$|[._-])/i;
+const OBSERVABILITY_PATH_PATTERN =
+  /(^|\/)(log|logger|metrics?|monitor|monitoring|trace|tracing|otel|sentry|datadog|prometheus|grafana|alert)(\/|$|[._-])/i;
+
 const isFrontendFile = (value: string): boolean => {
   const normalized = value.toLowerCase();
   const dot = normalized.lastIndexOf(".");
   if (dot === -1) return false;
-  return FRONTEND_EXTENSIONS.has(normalized.slice(dot));
+  const ext = normalized.slice(dot);
+  if (FRONTEND_EXTENSIONS.has(ext)) return true;
+  return FRONTEND_SCRIPT_EXTENSIONS.has(ext) && FRONTEND_DIR_HINT_PATTERN.test(normalized);
+};
+
+const isHtmlPath = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  const dot = normalized.lastIndexOf(".");
+  if (dot === -1) return false;
+  return HTML_EXTENSIONS.has(normalized.slice(dot));
+};
+
+const isStylePath = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  const dot = normalized.lastIndexOf(".");
+  if (dot === -1) return false;
+  return STYLE_EXTENSIONS.has(normalized.slice(dot));
 };
 
 const isDocPath = (value: string): boolean => {
@@ -48,6 +94,26 @@ const isTestPath = (value: string): boolean => {
     normalized.endsWith(".spec.ts") ||
     normalized.endsWith(".spec.js")
   );
+};
+
+const isInfraPath = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  return INFRA_PATH_PATTERN.test(normalized) || INFRA_FILE_PATTERN.test(normalized);
+};
+
+const isSecurityPath = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  return SECURITY_PATH_PATTERN.test(normalized);
+};
+
+const isPerformancePath = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  return PERFORMANCE_PATH_PATTERN.test(normalized);
+};
+
+const isObservabilityPath = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  return OBSERVABILITY_PATH_PATTERN.test(normalized);
 };
 
 export interface ContextSelectorOptions {
@@ -100,6 +166,11 @@ const rankCandidates = (
   const contentIntent = input.intent?.intents.includes("content") ?? false;
   const behaviorIntent = input.intent?.intents.includes("behavior") ?? false;
   const dataIntent = input.intent?.intents.includes("data") ?? false;
+  const testingIntent = input.intent?.intents.includes("testing") ?? false;
+  const infraIntent = input.intent?.intents.includes("infra") ?? false;
+  const securityIntent = input.intent?.intents.includes("security") ?? false;
+  const performanceIntent = input.intent?.intents.includes("performance") ?? false;
+  const observabilityIntent = input.intent?.intents.includes("observability") ?? false;
   const docTask = input.docTask ?? false;
 
   const ranked: RankedCandidate[] = hitPaths.map((path, index) => {
@@ -109,9 +180,16 @@ const rankCandidates = (
     if (uiIntent && isFrontendFile(path)) score += 120;
     if (behaviorIntent && !isDocPath(path) && !isFrontendFile(path)) score += 30;
     if (dataIntent && !isDocPath(path) && !isFrontendFile(path)) score += 20;
+    if (testingIntent && isTestPath(path)) score += 120;
+    if (infraIntent && isInfraPath(path)) score += 120;
+    if (securityIntent && isSecurityPath(path)) score += 80;
+    if (performanceIntent && isPerformancePath(path)) score += 80;
+    if (observabilityIntent && isObservabilityPath(path)) score += 80;
     if (contentIntent && isDocPath(path)) score += 20;
     if (!docTask && isDocPath(path)) score -= 80;
-    if (!docTask && isTestPath(path) && !behaviorIntent && !dataIntent) score -= 30;
+    if (!docTask && isTestPath(path) && !behaviorIntent && !dataIntent && !testingIntent) {
+      score -= 30;
+    }
     return { path, score, index };
   });
 
@@ -129,9 +207,6 @@ export const selectContextFiles = (
   const maxFiles = Math.max(1, options.maxFiles);
   const focusCount = Math.max(1, options.focusCount ?? 2);
   const uiIntent = input.intent?.intents.includes("ui") ?? false;
-  const behaviorIntent = input.intent?.intents.includes("behavior") ?? false;
-  const dataIntent = input.intent?.intents.includes("data") ?? false;
-  const uiOnlyIntent = uiIntent && !behaviorIntent && !dataIntent;
   const preferred = unique(input.preferredFiles ?? []);
   const hitScores = new Map<string, number>();
   for (const hit of input.hits) {
@@ -171,6 +246,41 @@ export const selectContextFiles = (
     }
   }
 
+  if (uiIntent && !input.docTask) {
+    const pool = unique([
+      ...hitPaths,
+      ...(input.recentFiles ?? []),
+      ...(input.preferredFiles ?? []),
+    ]);
+    const needsHtml = !focus.some((entry) => isHtmlPath(entry));
+    const needsStyle = !focus.some((entry) => isStylePath(entry));
+    const pickCandidate = (predicate: (value: string) => boolean): string | undefined =>
+      pool.find((entry) => predicate(entry) && !focus.includes(entry));
+    const injectFocusCandidate = (candidate?: string): void => {
+      if (!candidate) return;
+      if (focus.includes(candidate)) return;
+      if (focus.length < focusCount) {
+        focus = unique([candidate, ...focus]).slice(0, Math.min(focusCount, maxFiles));
+        return;
+      }
+      const replaceIndex = focus.findIndex(
+        (entry) => isDocPath(entry) || isTestPath(entry),
+      );
+      const targetIndex = replaceIndex >= 0 ? replaceIndex : Math.max(0, focus.length - 1);
+      focus = [...focus];
+      focus[targetIndex] = candidate;
+    };
+
+    if (needsHtml || needsStyle) {
+      if (focusCount <= 1) {
+        injectFocusCandidate(pickCandidate(isHtmlPath) ?? pickCandidate(isStylePath));
+      } else {
+        if (needsHtml) injectFocusCandidate(pickCandidate(isHtmlPath));
+        if (needsStyle) injectFocusCandidate(pickCandidate(isStylePath));
+      }
+    }
+  }
+
   const impactMap = buildImpactMap(input.impact);
   const peripheryCandidates: string[] = [];
   for (const focusFile of focus) {
@@ -198,9 +308,35 @@ export const selectContextFiles = (
     }
   }
 
+  if (uiIntent && !input.docTask) {
+    const hasNonFrontendCodeCandidate = combined.some(
+      (path) => !isFrontendFile(path) && !isDocPath(path) && !isTestPath(path),
+    );
+    if (!hasNonFrontendCodeCandidate) {
+      const crossSurfaceCandidate = unique([
+        ...hitPaths,
+        ...(input.recentFiles ?? []),
+        ...(input.preferredFiles ?? []),
+      ]).find((path) => !isFrontendFile(path) && !isDocPath(path) && !isTestPath(path));
+      if (crossSurfaceCandidate && !combined.includes(crossSurfaceCandidate)) {
+        if (combined.length < maxFiles) {
+          combined.push(crossSurfaceCandidate);
+        } else {
+          const replaceIndex = [...combined]
+            .reverse()
+            .findIndex((entry) => isDocPath(entry) || isTestPath(entry));
+          if (replaceIndex >= 0) {
+            const targetIndex = combined.length - 1 - replaceIndex;
+            combined[targetIndex] = crossSurfaceCandidate;
+          }
+        }
+      }
+    }
+  }
+
   if (!input.docTask) {
-    const maxDocPeriphery = uiOnlyIntent ? 0 : 1;
-    const maxTestPeriphery = uiOnlyIntent ? 0 : 1;
+    const maxDocPeriphery = 1;
+    const maxTestPeriphery = 1;
     const filtered = [...focus];
     let docCount = 0;
     let testCount = 0;

@@ -70,6 +70,17 @@ test("buildGatewayHandoffContent includes task context when tasks are present", 
   assert.ok(content.includes("Dependencies: TASK-0"));
 });
 
+test("buildGatewayHandoffContent includes QA and learning context when provided", () => {
+  const content = buildGatewayHandoffContent(sampleResult as any, {
+    qaFailureSummary: "QA fix_required: failing test tests/api.test.ts",
+    learningSummary: "User reverted previous solution because endpoint path was incorrect.",
+  });
+  assert.ok(content.includes("## QA Failure Summary"));
+  assert.ok(content.includes("failing test tests/api.test.ts"));
+  assert.ok(content.includes("## Revert Learning"));
+  assert.ok(content.includes("endpoint path was incorrect"));
+});
+
 test("buildGatewayHandoffDocdexUsage uses unified guidance", () => {
   const guidance = buildGatewayHandoffDocdexUsage();
   assert.ok(guidance.includes("Docdex context is injected by mcoda; do not run docdexd directly."));

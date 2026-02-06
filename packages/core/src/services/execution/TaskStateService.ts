@@ -94,7 +94,11 @@ export class TaskStateService {
 
   async markCompleted(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
     const fromStatus = task.status;
-    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
+    const mergedMetadata = mergeMetadata(task.metadata, {
+      ...(metadataPatch ?? {}),
+      last_completed_at: new Date().toISOString(),
+      ...(metadataPatch?.revert_event_pending === undefined ? { revert_event_pending: false } : {}),
+    });
     await this.workspaceRepo.updateTask(task.id, {
       status: "completed",
       metadata: mergedMetadata ?? undefined,
@@ -118,12 +122,54 @@ export class TaskStateService {
 
   async markChangesRequested(task: TaskRow, metadataPatch?: Record<string, unknown>, context?: TaskStatusEventContext): Promise<void> {
     const fromStatus = task.status;
-    const mergedMetadata = mergeMetadata(task.metadata, metadataPatch ?? undefined);
+    const isRevert = fromStatus === "completed";
+    const baseMetadata = (task.metadata as Record<string, unknown> | undefined) ?? {};
+    const currentRevertCount =
+      typeof baseMetadata.revert_event_count === "number" && Number.isFinite(baseMetadata.revert_event_count)
+        ? baseMetadata.revert_event_count
+        : 0;
+    const reasonFromPatch = typeof metadataPatch?.revert_reason === "string" ? metadataPatch.revert_reason : undefined;
+    const reasonFromContext =
+      typeof context?.metadata?.revert_reason === "string"
+        ? String(context.metadata.revert_reason)
+        : typeof context?.metadata?.reason === "string"
+          ? String(context.metadata.reason)
+          : undefined;
+    const revertReason = reasonFromPatch ?? reasonFromContext;
+    const revertEvent =
+      isRevert
+        ? {
+            from_status: fromStatus,
+            to_status: "changes_requested",
+            timestamp: context?.timestamp ?? new Date().toISOString(),
+            reason: revertReason ?? "changes requested after completion",
+          }
+        : undefined;
+    const mergedMetadata = mergeMetadata(task.metadata, {
+      ...(metadataPatch ?? {}),
+      ...(isRevert
+        ? {
+            revert_event_pending: true,
+            revert_event_count: currentRevertCount + 1,
+            last_revert_event: revertEvent,
+          }
+        : {}),
+    });
     await this.workspaceRepo.updateTask(task.id, {
       status: "changes_requested",
       metadata: mergedMetadata ?? undefined,
     });
-    await this.recordStatusEvent(task, fromStatus, "changes_requested", context);
+    const eventContext =
+      isRevert
+        ? {
+            ...(context ?? {}),
+            metadata: mergeMetadata(context?.metadata ?? undefined, {
+              revert_event: true,
+              revert_reason: revertReason ?? "changes requested after completion",
+            }),
+          }
+        : context;
+    await this.recordStatusEvent(task, fromStatus, "changes_requested", eventContext);
     task.status = "changes_requested";
     task.metadata = mergedMetadata ?? undefined;
   }
