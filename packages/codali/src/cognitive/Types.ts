@@ -109,6 +109,14 @@ export interface ContextIndexInfo {
   num_docs: number;
 }
 
+export interface ContextRequestDigest {
+  summary: string;
+  refined_query: string;
+  confidence: "high" | "medium" | "low";
+  signals: string[];
+  candidate_files?: string[];
+}
+
 export interface SerializedContext {
   mode: "bundle_text" | "json";
   content: string;
@@ -123,6 +131,13 @@ export interface SerializedContext {
 export interface ContextBundle {
   request: string;
   intent?: IntentSignals;
+  query_signals?: {
+    phrases: string[];
+    file_tokens: string[];
+    keywords: string[];
+    keyword_phrases: string[];
+  };
+  request_digest?: ContextRequestDigest;
   queries: string[];
   search_results?: ContextSearchResult[];
   snippets: ContextSnippet[];
@@ -130,6 +145,7 @@ export interface ContextBundle {
   ast: ContextAstSummary[];
   impact: ContextImpactSummary[];
   impact_diagnostics: ContextImpactDiagnostics[];
+  dag_summary?: string;
   repo_map?: string;
   repo_map_raw?: string;
   project_info?: ContextProjectInfo;
@@ -162,10 +178,18 @@ export interface Plan {
   verification: string[];
 }
 
+export type GuardrailDisposition = "retryable" | "non_retryable";
+
+export interface GuardrailClassification {
+  disposition: GuardrailDisposition;
+  reason_code: string;
+}
+
 export interface CriticResult {
   status: "PASS" | "FAIL";
   reasons: string[];
   retryable: boolean;
+  guardrail?: GuardrailClassification;
   report?: CriticReport;
   request?: AgentRequest;
 }
@@ -176,6 +200,7 @@ export interface CriticReport {
   suggested_fixes: string[];
   touched_files?: string[];
   plan_targets?: string[];
+  guardrail?: GuardrailClassification;
 }
 
 export interface PhaseUsage {

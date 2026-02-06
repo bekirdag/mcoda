@@ -4789,6 +4789,16 @@ export class WorkOnTasksService {
           if (Object.keys(taskCodaliEnvOverrides).length > 0) {
             taskInvocationMetadata.codaliEnv = taskCodaliEnvOverrides;
           }
+          if (gatewayPlanHint) {
+            const planHintInjected = Boolean(taskCodaliEnvOverrides.CODALI_PLAN_HINT);
+            const message = planHintInjected
+              ? "Injected CODALI_PLAN_HINT from gateway handoff."
+              : "Skipped CODALI_PLAN_HINT injection; env already set.";
+            await this.logTask(taskRun.id, message, "codali", {
+              handoffPath: gatewayHandoffPath ?? null,
+              injected: planHintInjected,
+            });
+          }
         }
 
           const patchOnlyAgentSlug = (() => {

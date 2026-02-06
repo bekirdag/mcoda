@@ -112,6 +112,8 @@ const extractJsonOnly = (raw: string): { payload?: any; jsonOnly: boolean } => {
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+const STRONG_TIER_MIN_COMPLEXITY = 5;
+const SPECIALIST_TIER_MIN_COMPLEXITY = 8;
 
 const normalizeList = (value: unknown): string[] => {
   if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
@@ -446,6 +448,8 @@ export interface GatewayAgentResult {
   warnings: string[];
 }
 
+type AgentTierHint = "strong" | "specialist";
+
 export interface GatewayAgentRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
   job: string;
@@ -457,6 +461,7 @@ export interface GatewayAgentRequest extends TaskSelectionFilters {
   rateAgents?: boolean;
   avoidAgents?: string[];
   forceStronger?: boolean;
+  forceTier?: AgentTierHint;
 }
 
 type Candidate = {
@@ -551,6 +556,18 @@ export class GatewayAgentService {
     if (docdex && typeof docdex.disable === "function") {
       docdex.disable(reason);
     }
+  }
+
+  async saveRepoMemory(text: string): Promise<void> {
+    const docdex = this.deps.docdex as any;
+    if (!docdex || typeof docdex.memorySave !== "function") return;
+    await docdex.memorySave(text);
+  }
+
+  async savePreference(category: string, content: string, agentId = "default"): Promise<void> {
+    const docdex = this.deps.docdex as any;
+    if (!docdex || typeof docdex.savePreference !== "function") return;
+    await docdex.savePreference(agentId, category, content);
   }
 
   private async loadGatewayPrompts(agentId: string): Promise<{ jobPrompt: string; characterPrompt: string; commandPrompt: string }> {
@@ -1198,6 +1215,7 @@ export class GatewayAgentService {
     analysis: GatewayAnalysis,
     avoidAgents: string[] = [],
     forceStronger: boolean = false,
+    forceTier?: AgentTierHint,
     warnings: string[] = [],
   ): Promise<GatewayAgentDecision> {
     const normalizedJob = canonicalizeCommandName(job);
@@ -1210,9 +1228,33 @@ export class GatewayAgentService {
         warnings.push("Avoid list removed all eligible agents; reusing available agent.");
       }
     }
-    const boostedComplexity = forceStronger ? clamp(Math.round(analysis.complexity) + 1, 1, 10) : analysis.complexity;
+    const baseComplexity = Number.isFinite(analysis.complexity)
+      ? clamp(Math.round(analysis.complexity), 1, 10)
+      : 5;
+    const forcedMin =
+      forceTier === "specialist"
+        ? SPECIALIST_TIER_MIN_COMPLEXITY
+        : forceTier === "strong"
+          ? STRONG_TIER_MIN_COMPLEXITY
+          : undefined;
+    let boostedComplexity = baseComplexity;
+    if (typeof forcedMin === "number") {
+      boostedComplexity = Math.max(baseComplexity, forcedMin);
+    } else if (forceStronger) {
+      if (baseComplexity < STRONG_TIER_MIN_COMPLEXITY) {
+        boostedComplexity = STRONG_TIER_MIN_COMPLEXITY;
+      } else if (baseComplexity < SPECIALIST_TIER_MIN_COMPLEXITY) {
+        boostedComplexity = SPECIALIST_TIER_MIN_COMPLEXITY;
+      } else {
+        boostedComplexity = clamp(baseComplexity + 1, 1, 10);
+      }
+    }
     const { pick, rationale } = this.chooseCandidate(candidates, boostedComplexity, analysis.discipline);
-    const finalRationale = forceStronger ? `${rationale} (force_stronger applied)` : rationale;
+    const finalRationale = forceTier
+      ? `${rationale} (force_tier:${forceTier})`
+      : forceStronger
+        ? `${rationale} (force_stronger applied)`
+        : rationale;
     return {
       agentId: pick.agent.id,
       agentSlug: pick.agent.slug ?? pick.agent.id,
@@ -1372,6 +1414,7 @@ export class GatewayAgentService {
         analysis,
         request.avoidAgents ?? [],
         request.forceStronger ?? false,
+        request.forceTier,
         warnings,
       );
       await this.deps.jobService.finishCommandRun(commandRun.id, "succeeded");

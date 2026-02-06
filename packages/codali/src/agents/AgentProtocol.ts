@@ -36,6 +36,10 @@ export type CodaliResponseResult =
       suggested_fixes?: string[];
       touched_files?: string[];
       plan_targets?: string[];
+      guardrail?: {
+        disposition: "retryable" | "non_retryable";
+        reason_code: string;
+      };
     };
 
 export type CodaliResponse = {

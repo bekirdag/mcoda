@@ -71,6 +71,15 @@ test("TaskStateService merges metadata and updates status", async () => {
     const reset = await repo.getTaskByKey(task.key);
     assert.equal(reset?.status, "not_started");
     assert.equal((reset?.metadata as any)?.qa_reset, true);
+    await service.markCompleted(task, { completed_by: "qa" }, statusContext);
+    await service.markChangesRequested(task, { revert_reason: "UI regression" }, statusContext);
+    const reverted = await repo.getTaskByKey(task.key);
+    assert.equal(reverted?.status, "changes_requested");
+    assert.equal((reverted?.metadata as any)?.revert_event_pending, true);
+    assert.equal((reverted?.metadata as any)?.revert_event_count, 1);
+    assert.equal((reverted?.metadata as any)?.last_revert_event?.from_status, "completed");
+    assert.equal((reverted?.metadata as any)?.last_revert_event?.to_status, "changes_requested");
+    assert.equal((reverted?.metadata as any)?.last_revert_event?.reason, "UI regression");
 
     const db = repo.getDb();
     const events = await db.all<{
@@ -85,7 +94,7 @@ test("TaskStateService merges metadata and updates status", async () => {
       "SELECT from_status, to_status, command_name, job_id, task_run_id, agent_id, metadata_json FROM task_status_events WHERE task_id = ? ORDER BY timestamp",
       task.id,
     );
-    assert.equal(events.length, 4);
+    assert.equal(events.length, 6);
     assert.equal(events[0]?.from_status, "not_started");
     assert.equal(events[0]?.to_status, "ready_to_code_review");
     assert.equal(events[0]?.command_name, "work-on-tasks");
@@ -107,6 +116,15 @@ test("TaskStateService merges metadata and updates status", async () => {
     assert.equal(events[3]?.to_status, "not_started");
     const fourthMeta = events[3]?.metadata_json ? JSON.parse(events[3].metadata_json) : {};
     assert.equal(fourthMeta.lane, "work");
+    assert.equal(events[4]?.from_status, "not_started");
+    assert.equal(events[4]?.to_status, "completed");
+    const fifthMeta = events[4]?.metadata_json ? JSON.parse(events[4].metadata_json) : {};
+    assert.equal(fifthMeta.lane, "work");
+    assert.equal(events[5]?.from_status, "completed");
+    assert.equal(events[5]?.to_status, "changes_requested");
+    const sixthMeta = events[5]?.metadata_json ? JSON.parse(events[5].metadata_json) : {};
+    assert.equal(sixthMeta.revert_event, true);
+    assert.equal(sixthMeta.revert_reason, "UI regression");
   } finally {
     await repo.close();
     await fs.rm(dir, { recursive: true, force: true });

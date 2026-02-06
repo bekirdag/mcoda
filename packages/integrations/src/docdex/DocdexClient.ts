@@ -426,4 +426,46 @@ export class DocdexClient {
       return this.buildLocalDoc(inferredType, normalizedPath, content, metadata);
     }
   }
+
+  private async callMcp(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+    const payload = {
+      jsonrpc: "2.0",
+      id: randomUUID(),
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: args,
+      },
+    };
+    const response = await this.fetchRemote("/v1/mcp", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const raw = (await response.json()) as { result?: any; error?: { message?: string } };
+    if (raw.error) {
+      throw new Error(raw.error.message ?? "Docdex MCP call failed");
+    }
+    const result = raw.result;
+    if (result && typeof result === "object" && result.structuredContent !== undefined) {
+      return result.structuredContent;
+    }
+    return result;
+  }
+
+  async memorySave(text: string): Promise<void> {
+    if (!text.trim()) return;
+    await this.callMcp("docdex_memory_save", {
+      project_root: this.options.workspaceRoot,
+      text,
+    });
+  }
+
+  async savePreference(agentId: string, category: string, content: string): Promise<void> {
+    if (!agentId.trim() || !category.trim() || !content.trim()) return;
+    await this.callMcp("docdex_save_preference", {
+      agent_id: agentId,
+      category,
+      content,
+    });
+  }
 }

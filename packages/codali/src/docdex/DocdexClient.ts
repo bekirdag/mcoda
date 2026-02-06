@@ -6,10 +6,12 @@ export interface DocdexClientOptions {
   repoRoot?: string;
   repoId?: string;
   authToken?: string;
+  dagSessionId?: string;
 }
 
 export interface DocdexSearchOptions {
   limit?: number;
+  dagSessionId?: string;
 }
 
 export interface DocdexSnippetOptions {
@@ -58,10 +60,12 @@ export interface DocdexWebResearchOptions {
 
 export class DocdexClient {
   private repoId?: string;
+  private dagSessionId?: string;
   private healthChecked = false;
 
   constructor(private options: DocdexClientOptions) {
     this.repoId = options.repoId;
+    this.dagSessionId = options.dagSessionId;
   }
 
   setRepoId(repoId: string): void {
@@ -76,16 +80,26 @@ export class DocdexClient {
     return this.options.repoRoot;
   }
 
+  setDagSessionId(sessionId: string): void {
+    this.dagSessionId = sessionId;
+  }
+
+  getDagSessionId(): string | undefined {
+    return this.dagSessionId;
+  }
+
   private resolveBaseUrl(): string {
     const base = this.options.baseUrl.trim();
     return base.endsWith("/") ? base.slice(0, -1) : base;
   }
 
-  private buildHeaders(): Record<string, string> {
+  private buildHeaders(dagSessionId?: string): Record<string, string> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;
     if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
     if (this.options.repoRoot) headers["x-docdex-repo-root"] = path.resolve(this.options.repoRoot);
+    const resolvedDagSessionId = dagSessionId ?? this.dagSessionId;
+    if (resolvedDagSessionId) headers["x-docdex-dag-session"] = resolvedDagSessionId;
     return headers;
   }
 
@@ -130,9 +144,11 @@ export class DocdexClient {
     await this.ensureHealth();
     const params = new URLSearchParams({ q: query });
     if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const dagSessionId = options.dagSessionId ?? this.dagSessionId;
+    if (dagSessionId) params.set("dag_session_id", dagSessionId);
     this.withRepoId(params);
     const response = await fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
-      headers: this.buildHeaders(),
+      headers: this.buildHeaders(dagSessionId),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -260,11 +276,19 @@ export class DocdexClient {
     const response = await fetch(`${this.resolveBaseUrl()}/v1/dag/export?${params.toString()}`, {
       headers: this.buildHeaders(),
     });
+    const body = await response.text();
     if (!response.ok) {
-      const body = await response.text();
       throw new Error(`Docdex dag export failed (${response.status}): ${body}`);
     }
-    return response.json();
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        return JSON.parse(body) as unknown;
+      } catch {
+        return body;
+      }
+    }
+    return body;
   }
 
   async callMcp<T>(method: string, params: Record<string, unknown>): Promise<T> {

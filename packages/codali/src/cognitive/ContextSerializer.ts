@@ -33,6 +33,78 @@ const formatFileHeader = (file: ContextFileEntry): string => {
   return `=== [${role}] ${file.path} (${detail}) ===`;
 };
 
+const listOrNone = (values: string[] = []): string =>
+  values.length ? values.join(", ") : "none";
+
+const formatRunSummary = (bundle: ContextBundle): string[] => {
+  const lines: string[] = [];
+  const request = bundle.request?.trim() || "unknown";
+  const intentBuckets = bundle.intent?.intents?.join(", ") || "unknown";
+  const digest = bundle.request_digest;
+  const digestSummary = digest?.summary ?? "not available";
+  const digestConfidence = digest?.confidence ?? "unknown";
+  const project = bundle.project_info;
+  const workspaceRoot = project?.workspace_root ?? "unknown";
+  const docs = listOrNone(project?.docs ?? []);
+  const manifests = listOrNone(project?.manifests ?? []);
+  const fileTypes = listOrNone(project?.file_types ?? []);
+  lines.push("RUN SUMMARY:");
+  lines.push(`- Repo root: ${workspaceRoot}`);
+  lines.push(`- Request (verbatim): ${request}`);
+  lines.push(`- Intent buckets: ${intentBuckets}`);
+  lines.push(`- Inferred outcome (${digestConfidence}): ${digestSummary}`);
+  lines.push(`- Repo docs (purpose hints): ${docs}`);
+  lines.push(`- Manifests: ${manifests}`);
+  lines.push(`- File types: ${fileTypes}`);
+  lines.push("");
+  return lines;
+};
+
+const formatDeliverables = (bundle: ContextBundle): string[] => {
+  const lines: string[] = [];
+  const request = bundle.request?.trim() || "unknown";
+  const digest = bundle.request_digest;
+  const digestSummary = digest?.summary ?? "not available";
+  const digestConfidence = digest?.confidence ?? "unknown";
+  lines.push("WHAT TO DELIVER:");
+  lines.push(`- Must satisfy request exactly: ${request}`);
+  lines.push(`- Inferred deliverables (${digestConfidence}): ${digestSummary}`);
+  lines.push("");
+  return lines;
+};
+
+const formatContextCoverage = (bundle: ContextBundle): string[] => {
+  const lines: string[] = [];
+  const files = bundle.files ?? [];
+  const focusContent = files.filter((file) => file.role === "focus").map((file) => file.path);
+  const peripheryContent = files
+    .filter((file) => file.role === "periphery")
+    .map((file) => file.path);
+  const selection = bundle.selection;
+  const focusSelected = selection?.focus ?? [];
+  const peripherySelected = selection?.periphery ?? [];
+  const missing = bundle.missing?.length ? bundle.missing.join(", ") : "none";
+  const warningSummary = bundle.warnings?.length
+    ? `${bundle.warnings.length} warnings (see WARNINGS section)`
+    : "none";
+  const formatValue = (value: number | undefined): string =>
+    typeof value === "number" && value >= 0 ? String(value) : "unknown";
+  const indexInfo = bundle.index;
+  const indexSummary = `docs_indexed=${formatValue(indexInfo?.num_docs)}, last_updated=${formatValue(
+    indexInfo?.last_updated_epoch_ms,
+  )}`;
+  lines.push("CONTEXT COVERAGE:");
+  lines.push(`- Focus files (selected): ${listOrNone(focusSelected)}`);
+  lines.push(`- Periphery files (selected): ${listOrNone(peripherySelected)}`);
+  lines.push(`- Full content included (focus): ${listOrNone(focusContent)}`);
+  lines.push(`- Content included (periphery): ${listOrNone(peripheryContent)}`);
+  lines.push(`- Index status: ${indexSummary}`);
+  lines.push(`- Missing data: ${missing}`);
+  lines.push(`- Warnings: ${warningSummary}`);
+  lines.push("");
+  return lines;
+};
+
 const formatIntent = (bundle: ContextBundle): string[] => {
   const intent = bundle.intent;
   if (!intent) return [];
@@ -73,6 +145,37 @@ const formatQueries = (bundle: ContextBundle): string[] => {
   lines.push("QUERIES:");
   for (const query of bundle.queries) {
     lines.push(`- ${query}`);
+  }
+  lines.push("");
+  return lines;
+};
+
+const formatQuerySignals = (bundle: ContextBundle): string[] => {
+  const signals = bundle.query_signals;
+  if (!signals) return [];
+  const lines: string[] = [];
+  lines.push("QUERY SIGNALS:");
+  if (signals.phrases.length) lines.push(`- Phrases: ${signals.phrases.join(", ")}`);
+  if (signals.file_tokens.length) lines.push(`- File tokens: ${signals.file_tokens.join(", ")}`);
+  if (signals.keyword_phrases.length) lines.push(`- Keyword phrases: ${signals.keyword_phrases.join(", ")}`);
+  if (signals.keywords.length) lines.push(`- Keywords: ${signals.keywords.join(", ")}`);
+  lines.push("");
+  return lines;
+};
+
+const formatRequestDigest = (bundle: ContextBundle): string[] => {
+  const digest = bundle.request_digest;
+  if (!digest) return [];
+  const lines: string[] = [];
+  lines.push("REQUEST DIGEST:");
+  lines.push(`- Summary: ${digest.summary}`);
+  lines.push(`- Refined query: ${digest.refined_query}`);
+  lines.push(`- Confidence: ${digest.confidence}`);
+  if (digest.signals.length) {
+    lines.push(`- Signals: ${digest.signals.join(", ")}`);
+  }
+  if (digest.candidate_files && digest.candidate_files.length) {
+    lines.push(`- Candidate files: ${digest.candidate_files.join(", ")}`);
   }
   lines.push("");
   return lines;
@@ -150,6 +253,15 @@ const formatImpact = (bundle: ContextBundle): string[] => {
     lines.push(`  - inbound: ${entry.inbound.join(", ") || "none"}`);
     lines.push(`  - outbound: ${entry.outbound.join(", ") || "none"}`);
   }
+  lines.push("");
+  return lines;
+};
+
+const formatDagSummary = (bundle: ContextBundle): string[] => {
+  if (!bundle.dag_summary) return [];
+  const lines: string[] = [];
+  lines.push("DAG REASONING:");
+  lines.push(bundle.dag_summary);
   lines.push("");
   return lines;
 };
@@ -249,12 +361,17 @@ export const serializeContext = (
   const lines: string[] = [];
   lines.push("CODALI LIBRARIAN CONTEXT");
   lines.push("");
+  lines.push(...formatRunSummary(bundle));
   lines.push("USER REQUEST:");
   lines.push(bundle.request);
   lines.push("");
+  lines.push(...formatDeliverables(bundle));
+  lines.push(...formatContextCoverage(bundle));
   lines.push(...formatIntent(bundle));
   lines.push(...formatProjectInfo(bundle));
   lines.push(...formatQueries(bundle));
+  lines.push(...formatQuerySignals(bundle));
+  lines.push(...formatRequestDigest(bundle));
   lines.push(...formatSearchResults(bundle));
   if (bundle.selection) {
     const focus = bundle.selection.focus.join(", ") || "none";
@@ -309,6 +426,7 @@ export const serializeContext = (
   lines.push(...formatSymbols(bundle));
   lines.push(...formatAst(bundle));
   lines.push(...formatImpact(bundle));
+  lines.push(...formatDagSummary(bundle));
   lines.push(...formatMemory(bundle));
   lines.push(...formatEpisodicMemory(bundle));
   lines.push(...formatGoldenExamples(bundle));

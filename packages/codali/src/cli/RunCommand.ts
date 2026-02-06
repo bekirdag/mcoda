@@ -705,32 +705,34 @@ class StubProvider implements Provider {
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     const last = request.messages[request.messages.length - 1];
+    const promptText = request.messages.map((message) => message.content ?? "").join("\n");
+    const isArchitectPrompt = /ROLE:\s*Technical Architect/i.test(promptText);
+    if (isArchitectPrompt && /REVIEW:/i.test(promptText) && /STATUS:/i.test(promptText)) {
+      return {
+        message: {
+          role: "assistant",
+          content: ["REVIEW:", "STATUS: PASS", "REASONS:", "- Request intent and plan targets are covered.", "FEEDBACK:"].join("\n"),
+        },
+      };
+    }
+    if (isArchitectPrompt && /PLAN:/i.test(promptText) && /TARGETS:/i.test(promptText)) {
+      return {
+        message: {
+          role: "assistant",
+          content: [
+            "PLAN:",
+            "- Update src/index.ts to implement the requested change.",
+            "TARGETS:",
+            "- src/index.ts",
+            "RISK: low",
+            "VERIFY:",
+            "- Run unit tests: pnpm test --filter codali",
+          ].join("\n"),
+        },
+      };
+    }
     if (request.responseFormat?.type === "json" || request.responseFormat?.type === "gbnf") {
-      const system = request.messages[0]?.content ?? "";
-      if (/REVIEW:/i.test(system) && /STATUS:/i.test(system)) {
-        return {
-          message: {
-            role: "assistant",
-            content: ["REVIEW:", "STATUS: PASS", "FEEDBACK:"].join("\n"),
-          },
-        };
-      }
-      if (/PLAN:/i.test(system) && /TARGETS:/i.test(system)) {
-        return {
-          message: {
-            role: "assistant",
-            content: [
-              "PLAN:",
-              "- Apply change",
-              "TARGETS:",
-              "- src/index.ts",
-              "RISK: low",
-              "VERIFY:",
-            ].join("\n"),
-          },
-        };
-      }
-      if (system.includes("\"files\"")) {
+      if (promptText.includes("\"files\"")) {
         return {
           message: {
             role: "assistant",
@@ -741,7 +743,7 @@ class StubProvider implements Provider {
           },
         };
       }
-      if (system.includes("\"patches\"")) {
+      if (promptText.includes("\"patches\"")) {
         return {
           message: {
             role: "assistant",
@@ -765,7 +767,7 @@ class StubProvider implements Provider {
             steps: ["1. Apply change"],
             target_files: ["src/index.ts"],
             risk_assessment: "low",
-            verification: [],
+            verification: ["Run unit tests: pnpm test --filter codali"],
           }),
         },
       };
@@ -1018,6 +1020,7 @@ export class RunCommand {
         baseUrl: config.docdex.baseUrl,
         repoId: config.docdex.repoId,
         repoRoot: config.docdex.repoRoot ?? config.workspaceRoot,
+        dagSessionId: runId,
       });
       for (const tool of createDocdexTools(docdexClient)) registerIfEnabled(tool);
 
@@ -1361,7 +1364,7 @@ export class RunCommand {
           temperature: architectRoute.temperature,
           logger,
           model: architectRoute.config.model,
-          responseFormat: architectRoute.responseFormat ?? { type: "json" },
+          responseFormat: architectRoute.responseFormat,
           planHint: config.planHint,
           stream: config.streaming.enabled,
           onEvent: streamState.onEvent,

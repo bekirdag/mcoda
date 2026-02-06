@@ -51,16 +51,22 @@ const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>):
 };
 
 test("DocdexTools call health and search", { concurrency: false }, async () => {
+  let searchUrl: string | undefined;
   await withStubbedFetch((url) => {
     if (url.endsWith("/healthz")) {
       return makeTextResponse("ok");
     }
     if (url.includes("/search")) {
+      searchUrl = url;
       return makeJsonResponse({ hits: [{ doc_id: "doc-1", snippet: "Hello" }] });
     }
     return makeErrorResponse(404, "not found");
   }, async () => {
-    const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoRoot: process.cwd(),
+      dagSessionId: "run-123",
+    });
     const tools = createDocdexTools(client);
     const searchTool = tools.find((tool) => tool.name === "docdex_search");
     assert.ok(searchTool);
@@ -68,6 +74,10 @@ test("DocdexTools call health and search", { concurrency: false }, async () => {
     const result = await searchTool!.handler({ query: "hello" }, { workspaceRoot: process.cwd() });
     assert.match(result.output, /doc-1/);
   });
+
+  assert.ok(searchUrl);
+  const parsed = new URL(searchUrl!);
+  assert.equal(parsed.searchParams.get("dag_session_id"), "run-123");
 });
 
 test("DocdexTools open uses MCP when path provided", { concurrency: false }, async () => {
@@ -172,6 +182,9 @@ test("DocdexClient hits new HTTP endpoints", { concurrency: false }, async () =>
     if (url.endsWith("/v1/delegate")) {
       return makeJsonResponse({ ok: true });
     }
+    if (url.includes("/v1/dag/export")) {
+      return makeTextResponse("dag-text");
+    }
     return makeErrorResponse(404, "not found");
   }, async () => {
     const client = new DocdexClient({ baseUrl: "http://127.0.0.1:28491", repoRoot: process.cwd() });
@@ -180,6 +193,8 @@ test("DocdexClient hits new HTTP endpoints", { concurrency: false }, async () =>
     await client.indexIngest("src/index.ts");
     await client.hooksValidate(["src/index.ts"]);
     await client.delegate({ task_type: "format_code", instruction: "x", context: "y" });
+    const dagText = await client.dagExport("session-1", { format: "text", maxNodes: 3 });
+    assert.equal(dagText, "dag-text");
   });
 
   assert.ok(calls.some((url) => url.includes("/v1/graph/impact/diagnostics")));
@@ -187,6 +202,7 @@ test("DocdexClient hits new HTTP endpoints", { concurrency: false }, async () =>
   assert.ok(calls.some((url) => url.endsWith("/v1/index/ingest")));
   assert.ok(calls.some((url) => url.endsWith("/v1/hooks/validate")));
   assert.ok(calls.some((url) => url.endsWith("/v1/delegate")));
+  assert.ok(calls.some((url) => url.includes("/v1/dag/export")));
 });
 
 test("DocdexClient uses MCP for tree/open/profile/web", { concurrency: false }, async () => {

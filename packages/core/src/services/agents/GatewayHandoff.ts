@@ -6,6 +6,11 @@ import { PathHelper } from "@mcoda/shared";
 
 export const GATEWAY_HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
 
+export interface GatewayHandoffContext {
+  qaFailureSummary?: string;
+  learningSummary?: string;
+}
+
 export const buildGatewayHandoffDocdexUsage = (): string => {
   return buildDocdexUsageGuidance({
     contextLabel: "docdexNotes or task comments",
@@ -14,7 +19,10 @@ export const buildGatewayHandoffDocdexUsage = (): string => {
   });
 };
 
-export const buildGatewayHandoffContent = (result: GatewayAgentResult): string => {
+export const buildGatewayHandoffContent = (
+  result: GatewayAgentResult,
+  context?: GatewayHandoffContext,
+): string => {
   const lines: string[] = [];
   const analysis = result.analysis;
   const filesLikelyTouched = analysis.filesLikelyTouched ?? [];
@@ -97,6 +105,16 @@ export const buildGatewayHandoffContent = (result: GatewayAgentResult): string =
     lines.push("");
     lines.push("## Docdex Notes");
     docdexNotes.forEach((item) => lines.push(`- ${item}`));
+  }
+  if (context?.qaFailureSummary?.trim()) {
+    lines.push("");
+    lines.push("## QA Failure Summary");
+    lines.push(context.qaFailureSummary.trim());
+  }
+  if (context?.learningSummary?.trim()) {
+    lines.push("");
+    lines.push("## Revert Learning");
+    lines.push(context.learningSummary.trim());
   }
   lines.push("");
   lines.push(buildGatewayHandoffDocdexUsage());

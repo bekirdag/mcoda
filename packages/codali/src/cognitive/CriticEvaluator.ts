@@ -1,5 +1,5 @@
 import type { ProviderMessage } from "../providers/ProviderTypes.js";
-import type { Plan, CriticReport, CriticResult } from "./Types.js";
+import type { GuardrailClassification, Plan, CriticReport, CriticResult } from "./Types.js";
 import type { AgentRequest } from "../agents/AgentProtocol.js";
 import type { ValidationRunner } from "./ValidationRunner.js";
 import type { ContextManager } from "./ContextManager.js";
@@ -9,6 +9,33 @@ export interface CriticEvaluatorOptions {
   laneId?: string;
   model?: string;
 }
+
+const GUARDRAIL_REASON_PATTERNS: Array<{ code: string; pattern: RegExp }> = [
+  { code: "scope_violation", pattern: /\bscope_violation\b/i },
+  { code: "doc_edit_guard", pattern: /\bdoc_edit_guard\b/i },
+  { code: "merge_conflict", pattern: /\bmerge_conflict\b/i },
+];
+
+const NON_RETRYABLE_GUARDRAIL_CODES = new Set(["scope_violation", "doc_edit_guard", "merge_conflict"]);
+
+const detectGuardrailReasonCode = (reasons: string[]): string | undefined => {
+  for (const reason of reasons) {
+    for (const candidate of GUARDRAIL_REASON_PATTERNS) {
+      if (candidate.pattern.test(reason)) {
+        return candidate.code;
+      }
+    }
+  }
+  return undefined;
+};
+
+const buildGuardrailClassification = (reasonCode?: string): GuardrailClassification | undefined => {
+  if (!reasonCode) return undefined;
+  return {
+    reason_code: reasonCode,
+    disposition: NON_RETRYABLE_GUARDRAIL_CODES.has(reasonCode) ? "non_retryable" : "retryable",
+  };
+};
 
 export class CriticEvaluator {
   private contextManager?: ContextManager;
@@ -42,13 +69,34 @@ export class CriticEvaluator {
       status: "PASS" | "FAIL",
       reasons: string[],
       touched?: string[],
+      guardrail?: GuardrailClassification,
     ): CriticReport => ({
       status,
       reasons,
       suggested_fixes: reasons.map((reason) => `Address: ${reason}`),
       touched_files: touched,
       plan_targets: targetFiles.length ? targetFiles : undefined,
+      guardrail,
     });
+
+    const buildFailure = (
+      reasons: string[],
+      touched?: string[],
+      options: { reasonCode?: string; retryable?: boolean } = {},
+    ): CriticResult => {
+      const inferredReasonCode = options.reasonCode ?? detectGuardrailReasonCode(reasons);
+      const guardrail = buildGuardrailClassification(inferredReasonCode);
+      const retryable = guardrail
+        ? guardrail.disposition === "retryable"
+        : (options.retryable ?? true);
+      return {
+        status: "FAIL",
+        reasons,
+        retryable,
+        guardrail,
+        report: buildReport("FAIL", reasons, touched, guardrail),
+      };
+    };
 
     const buildRequest = (): AgentRequest => ({
       version: "v1",
@@ -60,12 +108,7 @@ export class CriticEvaluator {
 
     if (!builderOutput.trim()) {
       const reasons = ["builder output is empty"];
-      return {
-        status: "FAIL",
-        reasons,
-        retryable: true,
-        report: buildReport("FAIL", reasons, touchedFiles),
-      };
+      return buildFailure(reasons, touchedFiles);
     }
 
     const inferTouchedFiles = (output: string): string[] | undefined => {
@@ -113,24 +156,14 @@ export class CriticEvaluator {
         : [];
       if (readOnlyHits.length) {
         const reasons = [`touched read-only paths: ${readOnlyHits.join(", ")}`];
-        return {
-          status: "FAIL",
-          reasons,
-          retryable: true,
-          report: buildReport("FAIL", reasons, effectiveTouched),
-        };
+        return buildFailure(reasons, effectiveTouched, { reasonCode: "doc_edit_guard" });
       }
       if (allowedPaths.length) {
         const allowSet = new Set(allowedPaths);
         const invalid = normalizedTouched.filter((file) => !allowSet.has(file));
         if (invalid.length) {
           const reasons = [`touched files outside allowed paths: ${invalid.join(", ")}`];
-          return {
-            status: "FAIL",
-            reasons,
-            retryable: true,
-            report: buildReport("FAIL", reasons, effectiveTouched),
-          };
+          return buildFailure(reasons, effectiveTouched, { reasonCode: "scope_violation" });
         }
       }
     }
@@ -140,10 +173,7 @@ export class CriticEvaluator {
         const reasons = ["no files were touched for planned targets"];
         const request = options.allowProtocolRequest ? buildRequest() : undefined;
         return {
-          status: "FAIL",
-          reasons,
-          retryable: true,
-          report: buildReport("FAIL", reasons, effectiveTouched),
+          ...buildFailure(reasons, effectiveTouched),
           request,
         };
       }
@@ -155,10 +185,7 @@ export class CriticEvaluator {
         ];
         const request = options.allowProtocolRequest ? buildRequest() : undefined;
         return {
-          status: "FAIL",
-          reasons,
-          retryable: true,
-          report: buildReport("FAIL", reasons, effectiveTouched),
+          ...buildFailure(reasons, effectiveTouched, { reasonCode: "scope_violation" }),
           request,
         };
       }
@@ -166,12 +193,7 @@ export class CriticEvaluator {
 
     const validation = await this.validator.run(plan.verification ?? []);
     if (!validation.ok) {
-      const result = {
-        status: "FAIL",
-        reasons: validation.errors,
-        retryable: true,
-        report: buildReport("FAIL", validation.errors, effectiveTouched),
-      } as CriticResult;
+      const result = buildFailure(validation.errors, effectiveTouched);
       await this.appendCriticResult(result);
       return result;
     }

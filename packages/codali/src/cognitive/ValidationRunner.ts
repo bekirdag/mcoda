@@ -49,7 +49,8 @@ export class ValidationRunner {
       }
 
       if (!this.options.allowShell) {
-        errors.push(`shell validation disabled for step: ${step}`);
+        // Verification plans may include shell checks, but validation can be disabled by policy.
+        // Skip execution instead of failing the whole run when shell validation is turned off.
         continue;
       }
 

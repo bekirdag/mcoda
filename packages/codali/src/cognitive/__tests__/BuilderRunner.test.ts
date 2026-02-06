@@ -112,6 +112,25 @@ class AnyFileWriteProvider implements Provider {
   }
 }
 
+class PlannedTargetFileWriteProvider implements Provider {
+  name = "patch-planned-target";
+  async generate(): Promise<ProviderResponse> {
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          files: [
+            {
+              path: "src/healthz.js",
+              content: "export const healthz = () => ({ ok: true });\n",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
 class RetryFileWriteProvider implements Provider {
   name = "retry-files";
   calls = 0;
@@ -654,6 +673,42 @@ test("BuilderRunner allows non-read-only edits when allow list is empty", { conc
   await builder.run(plan, bundle);
   const updated = await readFile(path.join(workspaceRoot, "src/other.ts"), "utf8");
   assert.match(updated, /export const other/);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner allows architect-planned new files even when bundle allow list is narrow", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-planned-target-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const patchApplier = new PatchApplier({ workspaceRoot });
+  const builder = new BuilderRunner({
+    provider: new PlannedTargetFileWriteProvider(),
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "file_writes",
+    patchApplier,
+    interpreter: new PassThroughInterpreter(),
+  });
+  const bundle: ContextBundle = {
+    ...contextBundle,
+    allow_write_paths: ["src/example.ts"],
+    read_only_paths: ["docs/sds"],
+  };
+  const planWithPlannedCreate: Plan = {
+    ...plan,
+    target_files: ["src/healthz.js"],
+  };
+
+  await builder.run(planWithPlannedCreate, bundle);
+  const created = await readFile(path.join(workspaceRoot, "src/healthz.js"), "utf8");
+  assert.match(created, /healthz/);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
