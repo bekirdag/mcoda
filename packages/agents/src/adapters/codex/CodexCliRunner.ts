@@ -584,6 +584,7 @@ export const runCodexExec = (prompt: string, model?: string): { output: string; 
   if (reasoningEffort) {
     args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
   }
+  args.push("-");
   const result = spawnSync("codex", args, {
     input: prompt,
     encoding: "utf8",
@@ -644,6 +645,7 @@ export async function* runCodexExecStream(
   if (reasoningEffort) {
     args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
   }
+  args.push("-");
   const child = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.write(prompt);
   child.stdin.end();

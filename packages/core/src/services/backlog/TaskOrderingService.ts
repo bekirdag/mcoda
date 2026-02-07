@@ -160,19 +160,98 @@ type TaskNode = TaskRow & {
 
 type AgentRanking = Map<string, number>;
 
+const extractJson = (raw: string): any | undefined => {
+  if (!raw) return undefined;
+  const fencedMatches = [...raw.matchAll(/```json([\s\S]*?)```/g)].map((match) => match[1]);
+  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/g, "");
+  const candidates = [...fencedMatches, stripped, raw].filter((candidate) => candidate.trim().length > 0);
+  for (const candidate of candidates) {
+    const parsed = tryParseJson(candidate);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+};
+
+const tryParseJson = (value: string): any | undefined => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    // continue
+  }
+  const blocks = extractJsonBlocks(value).reverse();
+  for (const block of blocks) {
+    try {
+      return JSON.parse(block);
+    } catch {
+      // continue
+    }
+  }
+  return undefined;
+};
+
+const extractJsonBlocks = (value: string): string[] => {
+  const results: string[] = [];
+  const stack: string[] = [];
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (stack.length === 0) start = i;
+      stack.push("}");
+      continue;
+    }
+    if (ch === "[") {
+      if (stack.length === 0) start = i;
+      stack.push("]");
+      continue;
+    }
+    if (stack.length > 0 && ch === stack[stack.length - 1]) {
+      stack.pop();
+      if (stack.length === 0 && start >= 0) {
+        results.push(value.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return results;
+};
+
 export const parseDependencyInferenceOutput = (
   output: string,
   validTaskKeys: Set<string>,
   warnings: string[],
 ): InferredDependency[] => {
-  let parsed: any;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
+  const parsed = extractJson(output);
+  if (!parsed) {
     warnings.push("Agent dependency inference output could not be parsed; skipping.");
     return [];
   }
-  if (!Array.isArray(parsed?.dependencies)) {
+  const dependencyEntries = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.dependencies)
+      ? parsed.dependencies
+      : Array.isArray(parsed?.deps)
+        ? parsed.deps
+        : undefined;
+  if (!Array.isArray(dependencyEntries)) {
     warnings.push("Agent dependency inference missing dependencies list; skipping.");
     return [];
   }
@@ -180,7 +259,7 @@ export const parseDependencyInferenceOutput = (
   let invalidTasks = 0;
   let invalidDeps = 0;
   let selfDeps = 0;
-  for (const entry of parsed.dependencies) {
+  for (const entry of dependencyEntries) {
     const taskKey =
       typeof entry?.task_key === "string"
         ? entry.task_key
@@ -566,6 +645,7 @@ export class TaskOrderingService {
     const dependencyGraph = this.buildDependencyGraph(tasks, deps);
     const inserts: { taskId: string; dependsOnTaskId: string; relationType: string }[] = [];
     let skippedCycles = 0;
+    const skippedEdges: string[] = [];
 
     for (const task of nonFoundationTasks) {
       const existing = new Set(
@@ -578,6 +658,9 @@ export class TaskOrderingService {
         if (existing.has(foundation.id)) continue;
         if (this.hasDependencyPath(dependencyGraph, foundation.id, task.id)) {
           skippedCycles += 1;
+          if (skippedEdges.length < 5) {
+            skippedEdges.push(`${task.key}->${foundation.key}`);
+          }
           continue;
         }
         inserts.push({
@@ -595,6 +678,9 @@ export class TaskOrderingService {
     if (inserts.length === 0) {
       if (skippedCycles > 0) {
         warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
+        if (skippedEdges.length > 0) {
+          warnings.push(`Skipped inferred foundation deps (cycle sample): ${skippedEdges.join(", ")}`);
+        }
       }
       return;
     }
@@ -614,6 +700,9 @@ export class TaskOrderingService {
     warnings.push(`Injected ${inserts.length} inferred foundation deps.`);
     if (skippedCycles > 0) {
       warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
+      if (skippedEdges.length > 0) {
+        warnings.push(`Skipped inferred foundation deps (cycle sample): ${skippedEdges.join(", ")}`);
+      }
     }
   }
 
@@ -628,6 +717,7 @@ export class TaskOrderingService {
     const dependencyGraph = this.buildDependencyGraph(tasks, deps);
     const inserts: { taskId: string; dependsOnTaskId: string; relationType: string }[] = [];
     let skippedCycles = 0;
+    const skippedEdges: string[] = [];
 
     for (const entry of inferred) {
       const task = taskByKey.get(entry.taskKey);
@@ -644,6 +734,9 @@ export class TaskOrderingService {
         if (existing.has(dependsOn.id)) continue;
         if (this.hasDependencyPath(dependencyGraph, dependsOn.id, task.id)) {
           skippedCycles += 1;
+          if (skippedEdges.length < 5) {
+            skippedEdges.push(`${task.key}->${dependsOn.key}`);
+          }
           continue;
         }
         inserts.push({
@@ -661,6 +754,9 @@ export class TaskOrderingService {
     if (inserts.length === 0) {
       if (skippedCycles > 0) {
         warnings.push(`Skipped ${skippedCycles} inferred agent deps due to cycles.`);
+        if (skippedEdges.length > 0) {
+          warnings.push(`Skipped inferred agent deps (cycle sample): ${skippedEdges.join(", ")}`);
+        }
       }
       return;
     }
@@ -681,6 +777,9 @@ export class TaskOrderingService {
     warnings.push(`Applied ${inserts.length} inferred agent deps.`);
     if (skippedCycles > 0) {
       warnings.push(`Skipped ${skippedCycles} inferred agent deps due to cycles.`);
+      if (skippedEdges.length > 0) {
+        warnings.push(`Skipped inferred agent deps (cycle sample): ${skippedEdges.join(", ")}`);
+      }
     }
   }
 
@@ -851,12 +950,24 @@ export class TaskOrderingService {
   }
 
   private applyAgentRanking(ordered: TaskNode[], agentOutput: string, warnings: string[]): AgentRanking | undefined {
+    const parsed = extractJson(agentOutput) as
+      | { order?: Array<{ task_key?: string } | string> }
+      | Array<{ task_key?: string } | string>
+      | undefined;
+    if (!parsed) {
+      warnings.push("Agent output could not be parsed; using dependency-only ordering.");
+      return undefined;
+    }
+    const order = Array.isArray(parsed) ? parsed : parsed.order;
+    if (!Array.isArray(order)) {
+      warnings.push("Agent output missing order list; using dependency-only ordering.");
+      return undefined;
+    }
     try {
-      const parsed = JSON.parse(agentOutput) as { order?: Array<{ task_key?: string }> };
-      const order = parsed.order ?? [];
       const ranking = new Map<string, number>();
       order.forEach((entry, idx) => {
-        const key = entry.task_key ?? (entry as any).key;
+        const key =
+          typeof entry === "string" ? entry : (entry as any).task_key ?? (entry as any).taskKey ?? (entry as any).key;
         if (typeof key === "string") {
           ranking.set(key, idx);
         }

@@ -1002,6 +1002,24 @@ export class RefineTasksService {
     return false;
   }
 
+  private hasDependencyPath(graph: Map<string, Set<string>>, fromKey: string, toKey: string): boolean {
+    if (fromKey === toKey) return true;
+    const visited = new Set<string>();
+    const stack = [fromKey];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      if (current === toKey) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const neighbors = graph.get(current);
+      if (!neighbors) continue;
+      for (const next of neighbors) {
+        if (!visited.has(next)) stack.push(next);
+      }
+    }
+    return false;
+  }
+
   private async applyOperations(
     projectId: string,
     jobId: string,
@@ -1019,8 +1037,7 @@ export class RefineTasksService {
     await this.workspaceRepo.withTransaction(async () => {
       let stage = "start";
       const newTasks: TaskInsert[] = [];
-      const pendingDeps: { childKey: string; dependsOnId: string; relationType: string }[] = [];
-      const dependencyEdges: Array<{ from: string; to: string }> = [];
+      const pendingDeps: { childKey: string; dependsOnId: string; dependsOnKey: string; relationType: string }[] = [];
 
       try {
         stage = "load:storyKeys";
@@ -1148,11 +1165,15 @@ export class RefineTasksService {
               const dependsOn = child.dependsOn ?? [];
               for (const depKey of dependsOn) {
                 const depTask = taskByKey.get(depKey);
-              if (depTask) {
-                pendingDeps.push({ childKey, dependsOnId: depTask.id, relationType: "blocks" });
-                dependencyEdges.push({ from: childKey, to: depTask.key });
+                if (depTask) {
+                  pendingDeps.push({
+                    childKey,
+                    dependsOnId: depTask.id,
+                    dependsOnKey: depTask.key,
+                    relationType: "blocks",
+                  });
+                }
               }
-            }
               taskByKey.set(childKey, {
                 ...childInsert,
                 id: "",
@@ -1263,6 +1284,19 @@ export class RefineTasksService {
           }
         }
 
+        const dependencyGraph = new Map<string, Set<string>>();
+        const addEdge = (from: string, to: string) => {
+          if (!from || !to) return;
+          const edges = dependencyGraph.get(from) ?? new Set<string>();
+          edges.add(to);
+          dependencyGraph.set(from, edges);
+        };
+        for (const task of group.tasks) {
+          for (const dep of task.dependencies) {
+            addEdge(task.key, dep);
+          }
+        }
+
         if (newTasks.length > 0) {
           stage = "insert:newTasks";
           const inserted = await this.workspaceRepo.insertTasks(newTasks, false);
@@ -1276,7 +1310,28 @@ export class RefineTasksService {
             }
           }
           const deps: TaskDependencyInsert[] = [];
+          const allowedDeps: typeof pendingDeps = [];
+          const skippedDeps: Array<{ childKey: string; dependsOnKey: string }> = [];
           for (const dep of pendingDeps) {
+            if (!dep.dependsOnKey) continue;
+            if (this.hasDependencyPath(dependencyGraph, dep.dependsOnKey, dep.childKey)) {
+              skippedDeps.push({ childKey: dep.childKey, dependsOnKey: dep.dependsOnKey });
+              continue;
+            }
+            addEdge(dep.childKey, dep.dependsOnKey);
+            allowedDeps.push(dep);
+          }
+          if (skippedDeps.length > 0) {
+            const sample = skippedDeps
+              .slice(0, 5)
+              .map((dep) => `${dep.childKey}->${dep.dependsOnKey}`)
+              .join(", ");
+            warnings.push(
+              `Skipped ${skippedDeps.length} refine dependencies that would create cycles.` +
+                (sample ? ` Sample: ${sample}` : ""),
+            );
+          }
+          for (const dep of allowedDeps) {
             const childId = idByKey.get(dep.childKey);
             if (childId) {
               deps.push({ taskId: childId, dependsOnTaskId: dep.dependsOnId, relationType: dep.relationType });
@@ -1290,12 +1345,11 @@ export class RefineTasksService {
 
         // cycle detection on current + new dependencies (by key)
         const edgeSet: Array<{ from: string; to: string }> = [];
-        for (const task of group.tasks) {
-          for (const dep of task.dependencies) {
-            edgeSet.push({ from: task.key, to: dep });
+        for (const [from, deps] of dependencyGraph.entries()) {
+          for (const dep of deps) {
+            edgeSet.push({ from, to: dep });
           }
         }
-        edgeSet.push(...dependencyEdges);
         const hasCycle = this.detectCycle(edgeSet);
         if (hasCycle) {
           throw new Error("Dependency cycle detected after refinement; aborting apply.");
