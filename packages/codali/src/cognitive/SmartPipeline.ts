@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import type {
   ContextBundle,
   ContextResearchEvidence,
+  ContextResearchSummary,
   ContextResearchToolUsage,
   EvidenceGateAssessment,
   Plan,
@@ -316,6 +317,41 @@ const buildResearchEvidence = (
     repo_map: repoMap,
     dag_summary: dagSummary,
     warnings: warningList.length ? warningList : undefined,
+  };
+};
+
+const mergeResearchEvidence = (
+  evidence: ContextResearchEvidence | undefined,
+  evidenceGate?: EvidenceGateAssessment,
+): ContextResearchEvidence | undefined => {
+  if (!evidence) return evidence;
+  const warnings = uniqueStrings([
+    ...(evidence.warnings ?? []),
+    ...(evidenceGate?.warnings ?? []),
+  ]);
+  const gaps = uniqueStrings([
+    ...(evidence.gaps ?? []),
+    ...(evidenceGate?.gaps ?? []),
+  ]);
+  return {
+    ...evidence,
+    warnings: warnings.length ? warnings : undefined,
+    gaps: gaps.length ? gaps : undefined,
+  };
+};
+
+const buildResearchSummary = (
+  phase?: ResearchPhaseResult,
+): ContextResearchSummary | undefined => {
+  if (!phase) return undefined;
+  return {
+    status: phase.status,
+    started_at_ms: phase.startedAt,
+    ended_at_ms: phase.endedAt,
+    duration_ms: phase.durationMs,
+    tool_usage: phase.toolUsage,
+    evidence: mergeResearchEvidence(phase.evidence, phase.evidenceGate),
+    warnings: phase.warnings?.length ? uniqueStrings(phase.warnings) : undefined,
   };
 };
 
@@ -1698,6 +1734,12 @@ export class SmartPipeline {
     };
     if (deepMode) {
       researchPhase = await runDeepResearchPhase(context, "initial");
+      const researchSummary = buildResearchSummary(researchPhase);
+      if (researchSummary) {
+        const updated = { ...context, research: researchSummary };
+        updated.serialized = buildSerializedContext(updated);
+        context = updated;
+      }
     }
     const configuredFastPath = this.options.fastPath?.(request) ?? false;
     const useFastPath = deepMode ? false : configuredFastPath;
@@ -1946,6 +1988,12 @@ export class SmartPipeline {
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
             if (deepMode) {
               researchPhase = await runDeepResearchPhase(context, "architect_request");
+              const researchSummary = buildResearchSummary(researchPhase);
+              if (researchSummary) {
+                const updated = { ...context, research: researchSummary };
+                updated.serialized = buildSerializedContext(updated);
+                context = updated;
+              }
             }
           }
           if (pass >= maxPasses || requestRecoveryCount >= maxPasses) {

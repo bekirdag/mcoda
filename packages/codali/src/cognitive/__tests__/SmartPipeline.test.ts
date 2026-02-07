@@ -634,6 +634,8 @@ test("SmartPipeline runs research phase before architect in deep mode", { concur
   assert.ok(researchInputIndex < architectInputIndex);
   assert.ok(researchOutputIndex < architectInputIndex);
   assert.ok(telemetryEvent);
+  assert.equal(result.context.research?.status, "completed");
+  assert.equal(result.context.research?.tool_usage?.search, 1);
   const telemetry = telemetryEvent?.data as Record<string, unknown>;
   assert.equal(telemetry.phase, "research");
   assert.equal(telemetry.status, "completed");
