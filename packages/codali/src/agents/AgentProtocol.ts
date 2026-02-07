@@ -1,7 +1,14 @@
 export type AgentNeed =
   | { type: "docdex.search"; query: string; limit?: number }
+  | { type: "docdex.open"; path: string; start_line?: number; end_line?: number; head?: number; clamp?: boolean }
+  | { type: "docdex.snippet"; doc_id: string; window?: number }
+  | { type: "docdex.symbols"; file: string }
+  | { type: "docdex.ast"; file: string; max_nodes?: number }
   | { type: "docdex.web"; query: string; force_web?: boolean }
   | { type: "docdex.impact"; file: string }
+  | { type: "docdex.impact_diagnostics"; file?: string; limit?: number; offset?: number }
+  | { type: "docdex.tree"; path?: string; max_depth?: number; dirs_only?: boolean; include_hidden?: boolean }
+  | { type: "docdex.dag_export"; session_id?: string; format?: "json" | "text" | "dot"; max_nodes?: number }
   | { type: "file.read"; path: string }
   | { type: "file.list"; root: string; pattern?: string }
   | { type: "file.diff"; paths?: string[] };
@@ -18,8 +25,15 @@ export type AgentRequest = {
 
 export type CodaliResponseResult =
   | { type: "docdex.search"; query: string; hits: unknown[] }
+  | { type: "docdex.open"; path: string; content: string }
+  | { type: "docdex.snippet"; doc_id: string; content: string }
+  | { type: "docdex.symbols"; file: string; symbols: unknown }
+  | { type: "docdex.ast"; file: string; nodes: unknown }
   | { type: "docdex.web"; query: string; results: unknown[] }
   | { type: "docdex.impact"; file: string; inbound: unknown[]; outbound: unknown[] }
+  | { type: "docdex.impact_diagnostics"; file?: string; diagnostics: unknown }
+  | { type: "docdex.tree"; tree: string }
+  | { type: "docdex.dag_export"; session_id: string; format?: "json" | "text" | "dot"; content: unknown }
   | { type: "file.read"; path: string; content: string }
   | { type: "file.list"; root: string; files: string[] }
   | { type: "file.diff"; paths?: string[]; diff: string }
@@ -54,8 +68,24 @@ export type CodaliResponse = {
 
 export type NormalizedNeed =
   | { tool: "docdex.search"; params: { query: string; limit?: number } }
+  | {
+      tool: "docdex.open";
+      params: { path: string; start_line?: number; end_line?: number; head?: number; clamp?: boolean };
+    }
+  | { tool: "docdex.snippet"; params: { doc_id: string; window?: number } }
+  | { tool: "docdex.symbols"; params: { file: string } }
+  | { tool: "docdex.ast"; params: { file: string; max_nodes?: number } }
   | { tool: "docdex.web"; params: { query: string; force_web?: boolean } }
   | { tool: "docdex.impact"; params: { file: string } }
+  | { tool: "docdex.impact_diagnostics"; params: { file?: string; limit?: number; offset?: number } }
+  | {
+      tool: "docdex.tree";
+      params: { path?: string; max_depth?: number; dirs_only?: boolean; include_hidden?: boolean };
+    }
+  | {
+      tool: "docdex.dag_export";
+      params: { session_id?: string; format?: "json" | "text" | "dot"; max_nodes?: number };
+    }
   | { tool: "file.read"; params: { path: string } }
   | { tool: "file.list"; params: { root: string; pattern?: string } }
   | { tool: "file.diff"; params: { paths?: string[] } };
@@ -80,6 +110,17 @@ const parseYamlKeyValue = (line: string): { key: string; value: string } | null 
   return { key, value };
 };
 
+const parseOptionalNumber = (value?: string): number | undefined => {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const parseOptionalBoolean = (value?: string): boolean | undefined => {
+  if (value === undefined) return undefined;
+  return value.trim().toLowerCase() === "true";
+};
+
 const coerceNeed = (need: Record<string, string>): AgentNeed => {
   const type = need.type?.trim();
   if (!type) {
@@ -88,8 +129,34 @@ const coerceNeed = (need: Record<string, string>): AgentNeed => {
   if (type === "docdex.search") {
     const query = need.query?.trim();
     if (!query) throw new Error("docdex.search requires query");
-    const limit = need.limit ? Number(need.limit) : undefined;
+    const limit = parseOptionalNumber(need.limit);
     return { type, query, limit };
+  }
+  if (type === "docdex.open") {
+    const path = need.path?.trim();
+    if (!path) throw new Error("docdex.open requires path");
+    const start_line = parseOptionalNumber(need.start_line);
+    const end_line = parseOptionalNumber(need.end_line);
+    const head = parseOptionalNumber(need.head);
+    const clamp = parseOptionalBoolean(need.clamp);
+    return { type, path, start_line, end_line, head, clamp };
+  }
+  if (type === "docdex.snippet") {
+    const doc_id = need.doc_id?.trim();
+    if (!doc_id) throw new Error("docdex.snippet requires doc_id");
+    const window = parseOptionalNumber(need.window);
+    return { type, doc_id, window };
+  }
+  if (type === "docdex.symbols") {
+    const file = need.file?.trim();
+    if (!file) throw new Error("docdex.symbols requires file");
+    return { type, file };
+  }
+  if (type === "docdex.ast") {
+    const file = need.file?.trim();
+    if (!file) throw new Error("docdex.ast requires file");
+    const max_nodes = parseOptionalNumber(need.max_nodes);
+    return { type, file, max_nodes };
   }
   if (type === "docdex.web") {
     const query = need.query?.trim();
@@ -101,6 +168,32 @@ const coerceNeed = (need: Record<string, string>): AgentNeed => {
     const file = need.file?.trim();
     if (!file) throw new Error("docdex.impact requires file");
     return { type, file };
+  }
+  if (type === "docdex.impact_diagnostics") {
+    const file = need.file?.trim();
+    const limit = parseOptionalNumber(need.limit);
+    const offset = parseOptionalNumber(need.offset);
+    return { type, file: file || undefined, limit, offset };
+  }
+  if (type === "docdex.tree") {
+    const path = need.path?.trim();
+    const max_depth = parseOptionalNumber(need.max_depth);
+    const dirs_only = parseOptionalBoolean(need.dirs_only);
+    const include_hidden = parseOptionalBoolean(need.include_hidden);
+    return { type, path: path || undefined, max_depth, dirs_only, include_hidden };
+  }
+  if (type === "docdex.dag_export") {
+    const session_id = need.session_id?.trim();
+    const formatValue = need.format?.trim();
+    const format =
+      formatValue && ["json", "text", "dot"].includes(formatValue)
+        ? (formatValue as "json" | "text" | "dot")
+        : undefined;
+    if (formatValue && !format) {
+      throw new Error("docdex.dag_export format must be json, text, or dot");
+    }
+    const max_nodes = parseOptionalNumber(need.max_nodes);
+    return { type, session_id: session_id || undefined, format, max_nodes };
   }
   if (type === "file.read") {
     const path = need.path?.trim();
@@ -237,11 +330,55 @@ export const normalizeAgentRequest = (request: AgentRequest): NormalizedNeed[] =
     if (need.type === "docdex.search") {
       return { tool: "docdex.search", params: { query: need.query, limit: need.limit } };
     }
+    if (need.type === "docdex.open") {
+      return {
+        tool: "docdex.open",
+        params: {
+          path: need.path,
+          start_line: need.start_line,
+          end_line: need.end_line,
+          head: need.head,
+          clamp: need.clamp,
+        },
+      };
+    }
+    if (need.type === "docdex.snippet") {
+      return { tool: "docdex.snippet", params: { doc_id: need.doc_id, window: need.window } };
+    }
+    if (need.type === "docdex.symbols") {
+      return { tool: "docdex.symbols", params: { file: need.file } };
+    }
+    if (need.type === "docdex.ast") {
+      return { tool: "docdex.ast", params: { file: need.file, max_nodes: need.max_nodes } };
+    }
     if (need.type === "docdex.web") {
       return { tool: "docdex.web", params: { query: need.query, force_web: need.force_web } };
     }
     if (need.type === "docdex.impact") {
       return { tool: "docdex.impact", params: { file: need.file } };
+    }
+    if (need.type === "docdex.impact_diagnostics") {
+      return {
+        tool: "docdex.impact_diagnostics",
+        params: { file: need.file, limit: need.limit, offset: need.offset },
+      };
+    }
+    if (need.type === "docdex.tree") {
+      return {
+        tool: "docdex.tree",
+        params: {
+          path: need.path,
+          max_depth: need.max_depth,
+          dirs_only: need.dirs_only,
+          include_hidden: need.include_hidden,
+        },
+      };
+    }
+    if (need.type === "docdex.dag_export") {
+      return {
+        tool: "docdex.dag_export",
+        params: { session_id: need.session_id, format: need.format, max_nodes: need.max_nodes },
+      };
     }
     if (need.type === "file.list") {
       return { tool: "file.list", params: { root: need.root, pattern: need.pattern } };

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "key": "consent_token",
+      "term": "consent token",
+      "description": "Install-time token issued to capture user consent, including TTL and revoke behavior.",
+      "aliases": ["consent id", "consent key", "consent handle"]
+    },
+    {
+      "key": "anonymous_token",
+      "term": "anonymous token",
+      "description": "Token that represents a user without storing direct identifiers.",
+      "aliases": ["anon token", "anonymous identifier"]
+    },
+    {
+      "key": "identified_token",
+      "term": "identified token",
+      "description": "Token tied to a known identity with explicit consent.",
+      "aliases": ["non-anonymous token", "identified id"]
+    },
+    {
+      "key": "policy_owner",
+      "term": "policy owner",
+      "description": "Role responsible for approving policy and cache rule changes.",
+      "aliases": ["policy maintainer", "policy steward"]
+    },
+    {
+      "key": "data_pipeline",
+      "term": "data pipeline",
+      "description": "End-to-end flow for ingestion, normalization, and storage.",
+      "aliases": ["pipeline", "processing pipeline"]
+    },
+    {
+      "key": "telemetry_metering",
+      "term": "telemetry metering",
+      "description": "Explicit rules for event capture limits, sampling, and rate enforcement.",
+      "aliases": ["usage metering", "event metering"]
+    }
+  ],
+  "canonicalPhrases": {
+    "consent_flow": "install-time consent token issuance and revoke flow",
+    "anonymity": "anonymous vs identified token handling",
+    "pipeline": "data pipeline with ownership for normalization rules",
+    "telemetry": "telemetry metering and sampling policy"
+  }
+}

@@ -44,6 +44,8 @@ const baseBundle: ContextBundle = {
   },
   project_info: {
     workspace_root: "/repo",
+    readme_path: "README.md",
+    readme_summary: "Sample Repo: Test summary for context.",
     manifests: ["package.json"],
     docs: ["docs/rfp.md"],
     file_types: [".ts", ".md"],
@@ -78,21 +80,61 @@ const baseBundle: ContextBundle = {
 };
 
 test("ContextSerializer outputs bundle_text with headers", { concurrency: false }, () => {
-  const serialized = serializeContext(baseBundle, { mode: "bundle_text" });
-  assert.ok(serialized.content.includes("[FOCUS FILE]"));
-  assert.ok(serialized.content.includes("[DEPENDENCY]"));
+  const serialized = serializeContext(baseBundle, { mode: "bundle_text", audience: "librarian" });
+  assert.ok(serialized.content.includes("PROJECT SUMMARY (README):"));
+  assert.ok(serialized.content.includes("AGENT PROTOCOL (REQUEST MORE CONTEXT):"));
+  assert.ok(serialized.content.includes("FILE REFERENCES (CONTENT WITHHELD):"));
   assert.ok(serialized.content.includes("INTENT:"));
   assert.ok(serialized.content.includes("PROJECT INFO:"));
   assert.ok(serialized.content.includes("QUERIES:"));
   assert.ok(serialized.content.includes("QUERY SIGNALS:"));
   assert.ok(serialized.content.includes("REQUEST DIGEST:"));
   assert.ok(serialized.content.includes("SEARCH RESULTS:"));
-  assert.ok(serialized.content.includes("SYMBOLS:"));
-  assert.ok(serialized.content.includes("AST:"));
-  assert.ok(serialized.content.includes("IMPACT GRAPH:"));
-  assert.ok(serialized.content.includes("DAG REASONING:"));
+  assert.ok(serialized.content.includes("WARNINGS:"));
   assert.ok(serialized.content.includes("INDEX INFO:"));
   assert.ok(serialized.content.includes("Fix login"));
+  assert.ok(!serialized.content.includes("export const login"));
+});
+
+test("ContextSerializer expands known warnings and preserves unknown warnings", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      warnings: ["docdex_low_confidence", "unknown_warning_code"],
+    },
+    { mode: "bundle_text", audience: "librarian" },
+  );
+  assert.ok(serialized.content.includes("WARNINGS:"));
+  assert.ok(serialized.content.includes("docdex_low_confidence"));
+  assert.ok(serialized.content.includes("Low-confidence selection"));
+  assert.ok(serialized.content.includes("unknown_warning_code"));
+});
+
+test("ContextSerializer surfaces related search hits not in selection", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      selection: {
+        focus: ["src/auth.ts"],
+        periphery: ["src/user.ts"],
+        all: ["src/auth.ts", "src/user.ts"],
+        low_confidence: false,
+      },
+      search_results: [
+        {
+          query: "login",
+          hits: [
+            { path: "tests/auth.test.js", score: 12 },
+            { path: "docs/rfp.md", score: 10 },
+          ],
+        },
+      ],
+    },
+    { mode: "bundle_text", audience: "librarian" },
+  );
+  assert.ok(serialized.content.includes("RELATED HITS (NOT SELECTED):"));
+  assert.ok(serialized.content.includes("tests/auth.test.js"));
+  assert.ok(serialized.content.includes("docs/rfp.md"));
 });
 
 test("ContextSerializer outputs json when requested", { concurrency: false }, () => {
@@ -104,7 +146,7 @@ test("ContextSerializer outputs json when requested", { concurrency: false }, ()
 test("ContextSerializer includes missing data section when provided", { concurrency: false }, () => {
   const serialized = serializeContext(
     { ...baseBundle, files: [], missing: ["no_context_files_loaded"] },
-    { mode: "bundle_text" },
+    { mode: "bundle_text", audience: "librarian" },
   );
   assert.ok(serialized.content.includes("MISSING DATA:"));
   assert.ok(serialized.content.includes("no_context_files_loaded"));
@@ -126,17 +168,18 @@ test("ContextSerializer sanitizes policy fields for librarian output", { concurr
   assert.ok(sanitized.warnings.includes("docdex_low_confidence"));
 });
 
-test("ContextSerializer emits compact and full repo map sections when both are present", { concurrency: false }, () => {
+test("ContextSerializer emits a single repo map section when both are present", { concurrency: false }, () => {
   const serialized = serializeContext(
     {
       ...baseBundle,
       repo_map: "repo\n└── src",
       repo_map_raw: "repo\n├── docs\n└── src\n    └── index.html",
     },
-    { mode: "bundle_text" },
+    { mode: "bundle_text", audience: "librarian" },
   );
-  assert.ok(serialized.content.includes("REPO MAP (COMPACT VIEW):"));
-  assert.ok(serialized.content.includes("REPO MAP (FULL):"));
+  assert.ok(serialized.content.includes("REPO MAP:"));
+  assert.ok(!serialized.content.includes("REPO MAP (COMPACT VIEW):"));
+  assert.ok(!serialized.content.includes("REPO MAP (FULL):"));
   assert.ok(serialized.content.includes("└── index.html"));
 });
 
@@ -144,6 +187,7 @@ test("ContextSerializer caps large sections deterministically", { concurrency: f
   const oversized = "x".repeat(10_000);
   const bundle: ContextBundle = {
     ...baseBundle,
+    files: [],
     snippets: Array.from({ length: 8 }).map((_, index) => ({
       doc_id: `doc-${index}`,
       path: `src/file-${index}.ts`,
@@ -166,7 +210,7 @@ test("ContextSerializer caps large sections deterministically", { concurrency: f
       source: "agent",
     })),
   };
-  const serialized = serializeContext(bundle, { mode: "bundle_text" });
+  const serialized = serializeContext(bundle, { mode: "bundle_text", audience: "builder" });
   assert.ok(serialized.content.includes("Snippet entries truncated"));
   assert.ok(serialized.content.includes("Symbol entries truncated"));
   assert.ok(serialized.content.includes("AST entries truncated"));

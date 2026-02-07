@@ -110,18 +110,55 @@ const computeProgress = (job: { totalItems?: number | null; processedItems?: num
   return Math.round((completed / total) * 100);
 };
 
+const formatElapsed = (seconds?: number | null): string | undefined => {
+  if (!Number.isFinite(seconds) || seconds == null) return undefined;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds ? `${minutes}m${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes ? `${hours}h${remMinutes}m` : `${hours}h`;
+};
+
+const formatDocgenDetail = (payload?: Record<string, unknown>): string | undefined => {
+  if (!payload) return undefined;
+  const stage = payload.docgen_stage as string | undefined;
+  const message = payload.docgen_status_message as string | undefined;
+  const current = payload.docgen_iteration_current as number | undefined;
+  const max = payload.docgen_iteration_max as number | undefined;
+  const elapsedSeconds = payload.docgen_elapsed_seconds as number | undefined;
+  const parts: string[] = [];
+  if (message) {
+    parts.push(message);
+  } else if (stage) {
+    parts.push(`docgen:${stage}`);
+  }
+  if (Number.isFinite(current)) {
+    const maxLabel = Number.isFinite(max) && (max as number) > 0 ? `${max}` : "?";
+    parts.push(`iter:${current}/${maxLabel}`);
+  }
+  const elapsedLabel = formatElapsed(elapsedSeconds);
+  if (elapsedLabel) {
+    parts.push(`elapsed:${elapsedLabel}`);
+  }
+  return parts.length ? parts.join(" ") : undefined;
+};
+
 const mapJobRow = (row: any): JobSummary => {
   const payload = row.payload_json ? JSON.parse(row.payload_json) : undefined;
   const totalUnits = row.total_units ?? row.totalUnits ?? row.total_items ?? row.totalItems ?? undefined;
   const completedUnits = row.completed_units ?? row.completedUnits ?? row.processed_items ?? row.processedItems ?? undefined;
   const progressPct = computeProgress({ totalItems: totalUnits, processedItems: completedUnits });
+  const docgenDetail = formatDocgenDetail(payload);
+  const stateDetail = row.job_state_detail ?? row.state_detail ?? row.errorSummary ?? docgenDetail;
   return {
     id: row.id,
     type: row.type,
     state: row.state ?? row.job_state,
     jobState: row.job_state ?? row.state,
-    jobStateDetail: row.job_state_detail ?? row.state_detail ?? row.errorSummary,
-    stateDetail: row.job_state_detail ?? row.state_detail ?? row.errorSummary,
+    jobStateDetail: stateDetail,
+    stateDetail,
     commandName: row.command_name ?? row.commandName,
     commandRunId: row.command_run_id ?? row.commandRunId,
     workspaceId: row.workspace_id ?? row.workspaceId,
@@ -216,7 +253,11 @@ export class JobInsightsService {
     const remote = await this.apiClient.getJob(jobId);
     const job = remote ? mapJobRow(remote) : undefined;
     if (!job) return undefined;
-    const detail = (job as any).job_state_detail ?? (job as any).jobStateDetail ?? job.errorSummary;
+    const detail =
+      (job as any).job_state_detail ??
+      (job as any).jobStateDetail ??
+      job.errorSummary ??
+      formatDocgenDetail(job.payload);
     const totalUnits = (job as any).totalUnits ?? job.totalItems ?? (job as any).total_units ?? undefined;
     const completedUnits = (job as any).completedUnits ?? job.processedItems ?? (job as any).completed_units ?? undefined;
     return {

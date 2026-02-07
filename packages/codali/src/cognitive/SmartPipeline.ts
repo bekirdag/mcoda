@@ -1002,12 +1002,16 @@ export class SmartPipeline {
     const sanitizeForOutput = (bundle: ContextBundle): ContextBundle => {
       const sanitized = sanitizeContextBundleForOutput(bundle);
       const mode = bundle.serialized?.mode ?? "bundle_text";
-      sanitized.serialized = serializeContext(sanitized, { mode });
+      sanitized.serialized = serializeContext(sanitized, { mode, audience: "librarian" });
       return sanitized;
     };
-    const buildSerializedContext = (bundle: ContextBundle) => {
-      const sanitized = sanitizeContextBundleForOutput(bundle);
-      return serializeContext(sanitized, { mode: "bundle_text" });
+    const buildSerializedContext = (
+      bundle: ContextBundle,
+      audience: "librarian" | "builder" = "librarian",
+    ) => {
+      const mode = bundle.serialized?.mode ?? "bundle_text";
+      const target = audience === "librarian" ? sanitizeContextBundleForOutput(bundle) : bundle;
+      return serializeContext(target, { mode, audience });
     };
     const formatCodaliResponse = (response: CodaliResponse): string =>
       ["CODALI_RESPONSE v1", JSON.stringify(response, null, 2)].join("\n");
@@ -1869,7 +1873,7 @@ export class SmartPipeline {
       const note = builderNote;
       builderNote = undefined;
       const touchedBefore = this.options.getTouchedFiles?.() ?? [];
-      const builderContext = buildSerializedContext(context);
+      const builderContext = buildSerializedContext(context, "builder");
       const builderInputPath = await logPhaseArtifact("builder", "input", {
         plan,
         context: builderContext,

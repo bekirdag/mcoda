@@ -60,6 +60,8 @@ export interface ContextSearchResult {
 
 export interface ContextProjectInfo {
   workspace_root?: string;
+  readme_path?: string;
+  readme_summary?: string;
   docs?: string[];
   manifests?: string[];
   file_types?: string[];
@@ -119,6 +121,7 @@ export interface ContextRequestDigest {
 
 export interface SerializedContext {
   mode: "bundle_text" | "json";
+  audience?: "librarian" | "builder";
   content: string;
   token_estimate?: number;
   stats?: {

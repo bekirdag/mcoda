@@ -125,9 +125,10 @@ export class BuilderRunner {
       this.options.onEvent?.({ type: "status", phase: "patching", message });
     };
     const contextContent =
-      contextBundle.serialized?.mode === "bundle_text"
+      contextBundle.serialized?.mode === "bundle_text" &&
+      contextBundle.serialized.audience === "builder"
         ? contextBundle.serialized.content
-        : serializeContext(contextBundle, { mode: "bundle_text" }).content;
+        : serializeContext(contextBundle, { mode: "bundle_text", audience: "builder" }).content;
     const buildSystemMessage = (modeOverride: typeof mode): ProviderMessage => ({
       role: "system",
       content: buildBuilderPrompt(modeOverride, patchFormat),

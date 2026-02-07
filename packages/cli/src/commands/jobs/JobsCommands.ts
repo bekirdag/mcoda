@@ -199,6 +199,60 @@ const formatProgress = (total?: number | null, completed?: number | null): strin
   return `${pct}% (${completed ?? 0}/${total})`;
 };
 
+const formatElapsed = (seconds?: number | null): string | undefined => {
+  if (!Number.isFinite(seconds) || seconds == null) return undefined;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds ? `${minutes}m${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes ? `${hours}h${remMinutes}m` : `${hours}h`;
+};
+
+export const formatOpenapiDetail = (payload?: Record<string, unknown>): string | undefined => {
+  if (!payload) return undefined;
+  const stage = payload.openapi_stage as string | undefined;
+  const variant = payload.openapi_variant as string | undefined;
+  const label = payload.openapi_iteration_label as string | undefined;
+  const current = payload.openapi_iteration_current as number | undefined;
+  const max = payload.openapi_iteration_max as number | undefined;
+  let iteration: string | undefined = label;
+  if (!iteration && Number.isFinite(current)) {
+    iteration = Number.isFinite(max) && (max as number) > 0 ? `${current}/${max}` : `${current}`;
+  }
+  const parts = [
+    stage ? `openapi:${stage}` : undefined,
+    variant ? `variant:${variant}` : undefined,
+    iteration ? `iter:${iteration}` : undefined,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" ") : undefined;
+};
+
+export const formatDocgenDetail = (payload?: Record<string, unknown>): string | undefined => {
+  if (!payload) return undefined;
+  const stage = payload.docgen_stage as string | undefined;
+  const message = payload.docgen_status_message as string | undefined;
+  const current = payload.docgen_iteration_current as number | undefined;
+  const max = payload.docgen_iteration_max as number | undefined;
+  const elapsedSeconds = payload.docgen_elapsed_seconds as number | undefined;
+  const parts: string[] = [];
+  if (message) {
+    parts.push(message);
+  } else if (stage) {
+    parts.push(`docgen:${stage}`);
+  }
+  if (Number.isFinite(current)) {
+    const maxLabel = Number.isFinite(max) && (max as number) > 0 ? `${max}` : "?";
+    parts.push(`iter:${current}/${maxLabel}`);
+  }
+  const elapsedLabel = formatElapsed(elapsedSeconds);
+  if (elapsedLabel) {
+    parts.push(`elapsed:${elapsedLabel}`);
+  }
+  return parts.length ? parts.join(" ") : undefined;
+};
+
 const isTerminalState = (state: string | undefined): boolean => {
   if (!state) return false;
   return ["completed", "failed", "cancelled", "paused"].includes(state);
@@ -282,6 +336,7 @@ const printJobStatus = (
     stateDetail?: string;
     jobState?: string;
     jobStateDetail?: string;
+    payload?: Record<string, unknown>;
     errorSummary?: string;
     totalItems?: number | null;
     processedItems?: number | null;
@@ -292,7 +347,15 @@ const printJobStatus = (
     completedAt?: string | null;
   },
   checkpoint?: { stage?: string; timestamp?: string },
+  options: { mcodaDir?: string } = {},
 ): void => {
+  const detail =
+    formatOpenapiDetail(job.payload) ??
+    formatDocgenDetail(job.payload) ??
+    job.jobStateDetail ??
+    job.stateDetail ??
+    job.errorSummary ??
+    undefined;
   // eslint-disable-next-line no-console
   console.log(`Job ${job.id} (${job.commandName ?? job.type})`);
   if (job.commandRunId) {
@@ -301,7 +364,7 @@ const printJobStatus = (
   }
   // eslint-disable-next-line no-console
   console.log(
-    `State: ${job.jobState ?? job.state ?? "unknown"}${job.jobStateDetail ? ` (${job.jobStateDetail})` : job.stateDetail ? ` (${job.stateDetail})` : ""}${
+    `State: ${job.jobState ?? job.state ?? "unknown"}${detail ? ` (${detail})` : ""}${
       job.errorSummary ? ` [${job.errorSummary}]` : ""
     }`,
   );
@@ -327,6 +390,22 @@ const printJobStatus = (
   if (checkpoint?.stage || checkpoint?.timestamp) {
     // eslint-disable-next-line no-console
     console.log(`Last checkpoint: ${checkpoint?.stage ?? ""}${checkpoint?.timestamp ? ` @ ${checkpoint.timestamp}` : ""}`.trim());
+  }
+  const reviewReport =
+    (job.payload as any)?.reviewReportPath ??
+    (job.payload as any)?.review_report_path ??
+    (job.payload as any)?.review_report ??
+    (job.payload as any)?.reviewReport;
+  if (reviewReport) {
+    const jobDir = options.mcodaDir ? path.join(options.mcodaDir, "jobs", job.id) : undefined;
+    const fullPath =
+      typeof reviewReport === "string" && path.isAbsolute(reviewReport)
+        ? reviewReport
+        : jobDir && typeof reviewReport === "string"
+          ? path.join(jobDir, reviewReport)
+          : reviewReport;
+    // eslint-disable-next-line no-console
+    console.log(`Review report: ${fullPath}`);
   }
 };
 
@@ -425,16 +504,25 @@ export class JobsCommands {
           console.log("No jobs found.");
         } else {
           const headers = ["ID", "TYPE", "COMMAND", "STATE", "DETAIL", "PROGRESS", "CREATED", "UPDATED"];
-          const rows = jobs.map((job) => [
-            job.id,
-            job.type,
-            job.commandName ?? "-",
-            job.jobState ?? job.state ?? "-",
-            job.jobStateDetail ?? (job as any).stateDetail ?? job.errorSummary ?? "-",
-            formatProgress(job.totalUnits ?? job.totalItems, job.completedUnits ?? job.processedItems),
-            job.createdAt ?? "-",
-            job.updatedAt ?? "-",
-          ]);
+          const rows = jobs.map((job) => {
+            const detail =
+              formatOpenapiDetail(job.payload as Record<string, unknown> | undefined) ??
+              formatDocgenDetail(job.payload as Record<string, unknown> | undefined) ??
+              job.jobStateDetail ??
+              (job as any).stateDetail ??
+              job.errorSummary ??
+              "-";
+            return [
+              job.id,
+              job.type,
+              job.commandName ?? "-",
+              job.jobState ?? job.state ?? "-",
+              detail,
+              formatProgress(job.totalUnits ?? job.totalItems, job.completedUnits ?? job.processedItems),
+              job.createdAt ?? "-",
+              job.updatedAt ?? "-",
+            ];
+          });
           // eslint-disable-next-line no-console
           console.log(formatTable(headers, rows));
         }
@@ -460,7 +548,11 @@ export class JobsCommands {
           // eslint-disable-next-line no-console
           console.log(JSON.stringify(payload, null, 2));
         } else {
-          printJobStatus({ ...job, stateDetail: (job as any).stateDetail ?? job.errorSummary }, checkpoint);
+          printJobStatus(
+            { ...job, stateDetail: (job as any).stateDetail ?? job.errorSummary },
+            checkpoint,
+            { mcodaDir: workspace.mcodaDir },
+          );
         }
         const exit = statusExitCode(job.jobState ?? job.state);
         if (exit !== 0) process.exitCode = exit;
@@ -480,7 +572,7 @@ export class JobsCommands {
           const job = parsed.jobId ? await insights.getJob(parsed.jobId) : undefined;
           if (!job) throw new Error(`Job not found: ${parsed.jobId}`);
           const checkpoint = parsed.jobId ? await insights.latestCheckpoint(parsed.jobId) : undefined;
-          printJobStatus(job, checkpoint);
+          printJobStatus(job, checkpoint, { mcodaDir: workspace.mcodaDir });
           if (!parsed.noLogs) {
             const logs = await insights.getJobLogs(parsed.jobId!, { since: logCursor ? undefined : parsed.since, after: logCursor });
             printLogs(logs.entries);

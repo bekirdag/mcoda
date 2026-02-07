@@ -29,8 +29,10 @@ export const ARCHITECT_WARNING_USED_JSON_FALLBACK = "architect_output_used_json_
 export const ARCHITECT_WARNING_REPAIRED = "architect_output_repaired";
 
 const buildContextNarrative = (context: ContextBundle): string => {
-  if (context.serialized?.mode === "bundle_text") return context.serialized.content;
-  return serializeContext(context, { mode: "bundle_text" }).content;
+  if (context.serialized?.mode === "bundle_text" && context.serialized.audience === "librarian") {
+    return context.serialized.content;
+  }
+  return serializeContext(context, { mode: "bundle_text", audience: "librarian" }).content;
 };
 
 const buildUserMessage = (context: ContextBundle): ProviderMessage => ({

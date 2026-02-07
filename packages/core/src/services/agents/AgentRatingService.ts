@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { AgentService } from "@mcoda/agents";
 import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
-import { Agent } from "@mcoda/shared";
+import { Agent, AgentHealth } from "@mcoda/shared";
 import { RoutingService } from "./RoutingService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import {
@@ -71,6 +71,89 @@ type ReviewerResult = {
   qualityScore: number;
   raw: Record<string, unknown> | null;
   reasoning?: string;
+};
+
+export type AgentCapabilityCandidate = {
+  agent: Agent;
+  capabilities: string[];
+  healthStatus?: AgentHealth["status"] | "unknown";
+};
+
+export type AgentCapabilitySelection = {
+  agent: Agent;
+  capabilities: string[];
+  missingRequired: string[];
+  missingPreferred: string[];
+  meetsRequired: boolean;
+  reason: string;
+};
+
+const uniqueList = (values: Array<string | undefined>): string[] =>
+  Array.from(new Set(values.map((value) => (value ?? "").trim()).filter(Boolean)));
+
+const countMatches = (caps: string[], required: string[]): number =>
+  required.reduce((total, cap) => (caps.includes(cap) ? total + 1 : total), 0);
+
+export const selectBestAgentForCapabilities = (input: {
+  candidates: AgentCapabilityCandidate[];
+  required: string[];
+  preferred?: string[];
+}): AgentCapabilitySelection | undefined => {
+  const required = uniqueList(input.required ?? []);
+  const preferred = uniqueList(input.preferred ?? []);
+  const scored = input.candidates
+    .filter((candidate) => candidate.agent)
+    .filter((candidate) => candidate.healthStatus !== "unreachable")
+    .map((candidate) => {
+      const caps = uniqueList(candidate.capabilities ?? []);
+      const requiredMatches = countMatches(caps, required);
+      const preferredMatches = countMatches(caps, preferred);
+      const hasRequired = required.length === 0 || requiredMatches === required.length;
+      const rating = Number(candidate.agent.rating ?? 0);
+      const reasoning = Number(candidate.agent.reasoningRating ?? rating);
+      const cost = Number.isFinite(candidate.agent.costPerMillion)
+        ? Number(candidate.agent.costPerMillion)
+        : Number.POSITIVE_INFINITY;
+      const slug = candidate.agent.slug ?? candidate.agent.id;
+      return {
+        ...candidate,
+        caps,
+        requiredMatches,
+        preferredMatches,
+        hasRequired,
+        rating,
+        reasoning,
+        cost,
+        slug,
+      };
+    });
+
+  if (scored.length === 0) return undefined;
+  const hasFullRequired = scored.some((candidate) => candidate.hasRequired);
+  scored.sort((a, b) => {
+    if (a.hasRequired !== b.hasRequired) return a.hasRequired ? -1 : 1;
+    if (a.requiredMatches !== b.requiredMatches) return b.requiredMatches - a.requiredMatches;
+    if (a.preferredMatches !== b.preferredMatches) return b.preferredMatches - a.preferredMatches;
+    if (a.rating !== b.rating) return b.rating - a.rating;
+    if (a.reasoning !== b.reasoning) return b.reasoning - a.reasoning;
+    if (a.cost !== b.cost) return a.cost - b.cost;
+    return a.slug.localeCompare(b.slug);
+  });
+
+  const pick = scored[0];
+  const missingRequired = required.filter((cap) => !pick.caps.includes(cap));
+  const missingPreferred = preferred.filter((cap) => !pick.caps.includes(cap));
+  const reason = hasFullRequired
+    ? `selected highest-ranked agent with ${pick.preferredMatches}/${preferred.length} preferred capabilities`
+    : `no agent satisfies all required capabilities; selected highest-ranked match (${pick.requiredMatches}/${required.length} required)`;
+  return {
+    agent: pick.agent,
+    capabilities: pick.caps,
+    missingRequired,
+    missingPreferred,
+    meetsRequired: missingRequired.length === 0,
+    reason,
+  };
 };
 
 export class AgentRatingService {

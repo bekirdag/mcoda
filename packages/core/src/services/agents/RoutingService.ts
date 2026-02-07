@@ -21,6 +21,7 @@ export interface ResolveAgentParams {
   taskType?: string;
   overrideAgentSlug?: string;
   projectKey?: string;
+  requiredCapabilities?: string[];
 }
 
 export interface ResolvedAgent {
@@ -67,9 +68,13 @@ export class RoutingService {
     }
   }
 
-  private requiredCapabilities(commandName: string, taskType?: string): string[] {
+  private requiredCapabilities(
+    commandName: string,
+    taskType?: string,
+    extraCapabilities: string[] = [],
+  ): string[] {
     const normalized = this.normalizeCommand(commandName);
-    const required = [...getCommandRequiredCapabilities(normalized)];
+    const required = [...getCommandRequiredCapabilities(normalized), ...extraCapabilities];
     if (taskType) {
       const lower = taskType.toLowerCase();
       if (lower.includes("qa")) {
@@ -223,14 +228,22 @@ export class RoutingService {
       agentOverride: params.overrideAgentSlug,
       taskType: params.taskType,
       projectKey: params.projectKey,
-      requiredCapabilities: this.requiredCapabilities(commandName, params.taskType),
+      requiredCapabilities: this.requiredCapabilities(
+        commandName,
+        params.taskType,
+        params.requiredCapabilities,
+      ),
     };
   }
 
   async resolveAgentForCommand(params: ResolveAgentParams): Promise<ResolvedAgent> {
     await this.migrateLegacyDefaults(params.workspace);
     const normalizedCommand = this.normalizeCommand(params.commandName);
-    const requiredCaps = this.requiredCapabilities(normalizedCommand, params.taskType);
+    const requiredCaps = this.requiredCapabilities(
+      normalizedCommand,
+      params.taskType,
+      params.requiredCapabilities,
+    );
 
     const fillHealth = async (agentId: string, current?: AgentHealth): Promise<AgentHealth | undefined> => {
       if (current && current.status) return current;

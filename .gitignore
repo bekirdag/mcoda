@@ -14,3 +14,4 @@ pnpm-lock.yaml
 logs/
 tests/results/
 .mcoda/
+/.docdex-state/

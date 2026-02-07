@@ -69,3 +69,32 @@ needs:
     { tool: "file.diff", params: { paths: ["src/public/index.html", "src/styles.css"] } },
   ]);
 });
+
+test("normalizeAgentRequest supports docdex.open and docdex.tree", () => {
+  const input = `AGENT_REQUEST v1
+role: architect
+request_id: req-4
+needs:
+  - type: docdex.open
+    path: src/app.ts
+    start_line: 1
+    end_line: 20
+    clamp: true
+  - type: docdex.tree
+    path: .
+    max_depth: 3
+    dirs_only: true
+    include_hidden: true`;
+  const parsed = parseAgentRequest(input);
+  const normalized = normalizeAgentRequest(parsed);
+  assert.deepEqual(normalized, [
+    {
+      tool: "docdex.open",
+      params: { path: "src/app.ts", start_line: 1, end_line: 20, head: undefined, clamp: true },
+    },
+    {
+      tool: "docdex.tree",
+      params: { path: ".", max_depth: 3, dirs_only: true, include_hidden: true },
+    },
+  ]);
+});

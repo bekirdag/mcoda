@@ -74,17 +74,19 @@ meta:
 ### Docdex
 - `docdex.search` (query, limit)
 - `docdex.snippet` (doc_id, window)
-- `docdex.open` (path/doc_id, start_line/end_line/window)
+- `docdex.open` (path, start_line/end_line/head/clamp)
 - `docdex.symbols` (file)
 - `docdex.ast` (file)
 - `docdex.impact` (file)
 - `docdex.impact_diagnostics` (file, limit)
-- `docdex.tree` (maxDepth)
+- `docdex.tree` (path, max_depth, dirs_only, include_hidden)
+- `docdex.dag_export` (session_id, format, max_nodes)
 - `docdex.web` (query, force_web)
 
 ### Filesystem
 - `file.read` (path)
 - `file.list` (root, pattern)
+- `file.diff` (paths)
 
 ---
 
@@ -94,10 +96,10 @@ meta:
 - For file content, include full content (unless budgeted), and note truncation.
 - Include `meta.warnings` for any failures or skips.
 - Librarian output must be a **plain-text narrative bundle** (not JSON) that includes:
+  - Project summary derived from README.md when available.
   - Request and intent signals.
-  - Selected focus/periphery files.
-  - Write policy (allowed + read-only paths).
-  - Full focus file contents and periphery summaries.
+  - Selected focus/periphery file references (paths only).
+  - Agent protocol guidance for requesting additional context.
   - Explicit missing-data statements when targets/content are unavailable.
   - Warnings at the end.
 

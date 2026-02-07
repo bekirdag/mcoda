@@ -40,7 +40,12 @@ mcoda docs sds generate --workspace-root . --project WEB --agent codex --templat
 mcoda openapi-from-docs --workspace-root . --agent codex --force
 ```
 
-- Use `--fast` on PDR/SDS generation to skip iterative refinement and speed up runs when needed.
+- By default, PDR/SDS generation runs the review/patch/re-check loop up to `MCODA_DOCS_MAX_ITERATIONS` (default `2`). Use `--fast` or `--dry-run` to skip the loop, or `--iterate` to force it on.
+- `--quality build-ready` turns on strict quality gates and required artifacts; the command exits non-zero if blockers remain after the max iterations.
+- `--resolve-open-questions` resolves open questions and inserts a "Resolved Decisions" section; unresolved blockers are reported in the review report.
+- `--no-placeholders` and `--no-maybes` enforce placeholder/indecisive language removal (also implied by `--quality build-ready` and `--resolve-open-questions`).
+- `--cross-align false` disables cross-document alignment (default is on).
+- Review reports are written to `<workspace-dir>/jobs/<jobId>/review/` as `review-iteration-<n>.{json,md}` plus `review-final.{json,md}`.
 
 ## Planning and backlog
 Create tasks, refine them, and order them by dependencies.
@@ -119,9 +124,24 @@ Add `--agent-stream false` for a quieter run, or `--rfp-id <DOCDEX_ID>` to pull 
 
 - If docdex is unavailable, the command runs in a degraded "local RFP only" mode and warns you.
 - Agent selection uses the workspace default for `docs-pdr-generate` (or any agent with `docdex_query` + `doc_generation` capabilities); override with `--agent <name>`.
-- Flags: `--debug`, `--quiet`, `--no-color`, `--agent-stream false`, `--rate-agents`, `--json`, `--dry-run`, `--fast`, `--workspace-root <path>`, `--project <KEY>`, `--rfp-id` or `--rfp-path`.
+- Flags: `--debug`, `--quiet`, `--no-color`, `--agent-stream false`, `--rate-agents`, `--json`, `--dry-run`, `--fast`, `--iterate`, `--quality <build-ready>`, `--resolve-open-questions`, `--no-placeholders`, `--no-maybes`, `--cross-align <true|false>`, `--workspace-root <path>`, `--project <KEY>`, `--rfp-id` or `--rfp-path`.
 - Workspace config: `<workspace-dir>/config.json` supports `docdexUrl`, `mirrorDocs` (default true), `branch` metadata for docdex registration, and `projectKey` for the default planning scope.
 - Docdex state lives under `~/.docdex` (managed by the `docdex` CLI). mcoda does not write repo-local `.docdex` data.
+- Iterative runs stop after `MCODA_DOCS_MAX_ITERATIONS` (default `2`). If blockers remain, the command exits with an error and the `review-final` report is stamped with `max_iterations`.
+
+Build-ready example (strict gates + decision resolution):
+
+```sh
+mcoda docs pdr generate \
+  --workspace-root ~/Documents/apps/test1 \
+  --project TEST1 \
+  --rfp-path docs/rfp/test1-rfp.md \
+  --agent codex \
+  --quality build-ready \
+  --resolve-open-questions \
+  --no-placeholders \
+  --no-maybes
+```
 
 ### Generate an SDS from your PDR/RFP context
 
@@ -136,7 +156,7 @@ mcoda docs sds generate \
 - Streams agent output by default; pass `--agent-stream false` for quiet mode.
 - Default output: `<workspace-dir>/docs/sds/<project>.md` (override with `--out <FILE>`). Use `--force` to overwrite an existing SDS.
 - Context comes from docdex (RFP + PDR + any existing SDS + OpenAPI); if docdex is down the command falls back to local docs and warns.
-- Flags: `--template <NAME>`, `--agent <NAME>`, `--workspace-root <path>`, `--project <KEY>`, `--agent-stream <true|false>`, `--rate-agents`, `--fast`, `--force`, `--resume <JOB_ID>`, `--dry-run`, `--json`, `--debug`, `--no-color`, `--quiet`.
+- Flags: `--template <NAME>`, `--agent <NAME>`, `--workspace-root <path>`, `--project <KEY>`, `--agent-stream <true|false>`, `--rate-agents`, `--fast`, `--iterate`, `--quality <build-ready>`, `--resolve-open-questions`, `--no-placeholders`, `--no-maybes`, `--cross-align <true|false>`, `--force`, `--resume <JOB_ID>`, `--dry-run`, `--json`, `--debug`, `--no-color`, `--quiet`.
 - Alias: `mcoda sds ...` forwards to `mcoda docs sds generate`.
 
 ### Generate the OpenAPI spec from docs
