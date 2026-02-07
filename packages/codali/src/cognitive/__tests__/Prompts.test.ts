@@ -13,6 +13,8 @@ test("Architect prompt references focus/periphery context", () => {
   assert.match(ARCHITECT_PROMPT, /File contents are not included by default/);
   assert.match(ARCHITECT_PROMPT, /docdex\.open/);
   assert.match(ARCHITECT_PROMPT, /Do NOT use generic filler lines/i);
+  assert.match(ARCHITECT_PROMPT, /RESEARCH SUMMARY/i);
+  assert.match(ARCHITECT_PROMPT, /missing evidence|gaps/i);
   assert.match(ARCHITECT_PROMPT, /Every PLAN line must include request-specific nouns/i);
   assert.match(ARCHITECT_PROMPT, /Every VERIFY line must include request-specific nouns/i);
   assert.match(ARCHITECT_PROMPT, /TARGETS must be concrete repo-relative paths/i);

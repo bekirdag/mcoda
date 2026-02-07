@@ -7,6 +7,41 @@ export interface RunLogEvent {
   data: Record<string, unknown>;
 }
 
+export type InvestigationGateStatus = "not_checked" | "pass" | "fail";
+
+export interface InvestigationGateSummary {
+  status: InvestigationGateStatus;
+  reason?: string;
+  missing?: string[];
+  required?: Record<string, number>;
+  observed?: Record<string, number>;
+  score?: number;
+  threshold?: number;
+}
+
+export interface InvestigationTelemetry extends Record<string, unknown> {
+  phase: "research";
+  status: "skipped" | "completed";
+  duration_ms: number;
+  tool_usage: Record<string, { ok: number; failed: number; skipped: number; total: number }>;
+  tool_usage_totals: { ok: number; failed: number; skipped: number; total: number };
+  evidence_gate: InvestigationGateSummary;
+  quota: InvestigationGateSummary;
+  budget: InvestigationGateSummary & {
+    required_cycles?: number;
+    cycles?: number;
+    required_ms?: number;
+    elapsed_ms?: number;
+  };
+  warnings?: string[];
+  summary?: string;
+}
+
+export interface InvestigationTelemetryEvent extends RunLogEvent {
+  type: "investigation_telemetry";
+  data: InvestigationTelemetry;
+}
+
 export class RunLogger {
   readonly logPath: string;
   readonly logDir: string;

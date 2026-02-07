@@ -63,10 +63,20 @@ Phases:
 
 The smart pipeline is designed to reduce hallucinations in small models.
 
+### 2a) Deep investigation mode (smart pipeline only)
+Enabled via `CODALI_DEEP_INVESTIGATION_ENABLED=1` (requires `--smart`).
+- Adds a mandatory **research phase** before Architect that runs Docdex tools (tree/search/open/snippet/symbols/ast/impact/dag export when configured).
+- Captures a **research summary** and evidence metrics for the Architect.
+- Enforces **tool-use quotas**, **investigation budget** (min cycles/time), and **evidence gate** thresholds.
+- Fails closed if Docdex health/index coverage is missing or if quotas/budget/evidence are unmet.
+- Disables plan-hint/fast-path shortcuts so Architect plans from research outputs.
+- Optional deep-scan preset increases retrieval depth in Librarian/Research.
+
 Fast path behavior:
 - If `CODALI_PLAN_HINT` is present, Architect runs **validate-only** first.
 - If the hint passes validation, Codali uses that plan directly (no full re-planning).
 - If validation fails, Codali falls back to normal Architect planning and logs the fallback event.
+- Fast path and plan hints are ignored when deep investigation mode is enabled.
 - When run under gateway-trio, handoff context may also carry `QA Failure Summary` and `Revert Learning` sections into the next planning cycle.
 
 ### 2b) Event streaming (Codex-style UX)
@@ -156,6 +166,7 @@ Context bundle fields include:
 ## Key configuration and env
 - Provider/model: `CODALI_PROVIDER`, `CODALI_MODEL`, `CODALI_API_KEY`, `CODALI_BASE_URL`
 - Smart pipeline: `CODALI_SMART=1`
+- Deep investigation: `CODALI_DEEP_INVESTIGATION_ENABLED=1`, `CODALI_DEEP_INVESTIGATION_DEEP_SCAN_PRESET=1`, `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_*`, `CODALI_DEEP_INVESTIGATION_BUDGET_*`, `CODALI_DEEP_INVESTIGATION_EVIDENCE_*`
 - Builder mode: `CODALI_BUILDER_MODE`, `CODALI_BUILDER_PATCH_FORMAT`
 - Interpreter: `CODALI_INTERPRETER_PROVIDER` (`auto` or a phase name) and `CODALI_INTERPRETER_MODEL` (`auto` to use the phase model)
 - Interpreter agent override: `CODALI_AGENT_INTERPRETER` (or CLI `--agent-interpreter`)

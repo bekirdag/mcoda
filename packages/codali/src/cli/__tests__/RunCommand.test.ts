@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseArgs, isToolEnabled, resolveWorkspaceRoot } from "../RunCommand.js";
+import { parseArgs, isToolEnabled, resolveWorkspaceRoot, RunCommand } from "../RunCommand.js";
 import type { ToolConfig } from "../../config/Config.js";
 
 test("parseArgs captures cli flags", { concurrency: false }, () => {
@@ -128,4 +128,37 @@ test("resolveWorkspaceRoot falls back to cwd when no markers", { concurrency: fa
   const root = mkdtempSync(path.join(os.tmpdir(), "codali-root-"));
   const resolved = resolveWorkspaceRoot(root);
   assert.equal(resolved, path.resolve(root));
+});
+
+test("RunCommand rejects deep investigation without smart mode", { concurrency: false }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codali-deep-"));
+  const prior = process.env.CODALI_DEEP_INVESTIGATION_ENABLED;
+  const priorSmart = process.env.CODALI_SMART;
+  process.env.CODALI_DEEP_INVESTIGATION_ENABLED = "true";
+  process.env.CODALI_SMART = "false";
+  try {
+    await assert.rejects(
+      () =>
+        RunCommand.run([
+          "--workspace-root",
+          root,
+          "--provider",
+          "stub",
+          "--model",
+          "stub-model",
+        ]),
+      /deep investigation requires --smart/i,
+    );
+  } finally {
+    if (prior === undefined) {
+      delete process.env.CODALI_DEEP_INVESTIGATION_ENABLED;
+    } else {
+      process.env.CODALI_DEEP_INVESTIGATION_ENABLED = prior;
+    }
+    if (priorSmart === undefined) {
+      delete process.env.CODALI_SMART;
+    } else {
+      process.env.CODALI_SMART = priorSmart;
+    }
+  }
 });

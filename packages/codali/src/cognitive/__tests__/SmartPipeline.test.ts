@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SmartPipeline } from "../SmartPipeline.js";
+import type { ResearchToolExecution } from "../ContextAssembler.js";
 import type { ContextBundle, Plan, CriticResult } from "../Types.js";
 import type { BuilderRunResult } from "../BuilderRunner.js";
 import { PatchApplyError, type PatchApplyFailure } from "../BuilderRunner.js";
@@ -28,16 +29,86 @@ const basePlan: Plan = {
   verification: ["Run unit tests: pnpm test --filter codali"],
 };
 
+const baseResearchOutput: ResearchToolExecution = {
+  toolRuns: [{ tool: "docdex.search", ok: true }],
+  warnings: [],
+  outputs: {
+    searchResults: [],
+    snippets: [],
+    symbols: [],
+    ast: [],
+    impact: [],
+    impactDiagnostics: [],
+  },
+};
+
+const minimalToolQuota = {
+  search: 1,
+  openOrSnippet: 0,
+  symbolsOrAst: 0,
+  impact: 0,
+  tree: 0,
+  dagExport: 0,
+};
+
+const minimalInvestigationBudget = {
+  minCycles: 1,
+  minSeconds: 0,
+  maxCycles: 1,
+};
+
+const minimalEvidenceGate = {
+  minSearchHits: 0,
+  minOpenOrSnippet: 0,
+  minSymbolsOrAst: 0,
+  minImpact: 0,
+  maxWarnings: 10,
+};
+
+const assertDeepInvestigationError = (error: unknown, code: string): boolean => {
+  assert.ok(error && typeof error === "object");
+  const record = error as { code?: string; remediation?: string[] };
+  assert.equal(record.code, code);
+  assert.ok(Array.isArray(record.remediation));
+  return true;
+};
+
 class StubContextAssembler {
   calls = 0;
-  constructor(private contexts: ContextBundle | ContextBundle[] = baseContext) {}
-  async assemble(): Promise<ContextBundle> {
+  researchCalls = 0;
+  lastResearchRequest?: string;
+  lastAssembleRequest?: string;
+  lastAssembleOptions?: {
+    additionalQueries?: string[];
+    preferredFiles?: string[];
+    recentFiles?: string[];
+  };
+  constructor(
+    private contexts: ContextBundle | ContextBundle[] = baseContext,
+    private researchOutput: ResearchToolExecution = baseResearchOutput,
+  ) {}
+  async assemble(
+    request = "",
+    options: {
+      additionalQueries?: string[];
+      preferredFiles?: string[];
+      recentFiles?: string[];
+    } = {},
+  ): Promise<ContextBundle> {
     this.calls += 1;
+    this.lastAssembleRequest = request;
+    this.lastAssembleOptions = options;
     if (Array.isArray(this.contexts)) {
       const index = Math.min(this.calls - 1, this.contexts.length - 1);
       return this.contexts[index] ?? baseContext;
     }
     return this.contexts;
+  }
+
+  async runResearchTools(request: string): Promise<ResearchToolExecution> {
+    this.researchCalls += 1;
+    this.lastResearchRequest = request;
+    return this.researchOutput;
   }
 
   lastRequestId?: string;
@@ -59,12 +130,40 @@ class StubArchitectPlanner {
   }
 }
 
+class StubArchitectPlannerPlanHintProbe {
+  planHint = "PLAN:\n- Use hint\nTARGETS:\n- file.ts\nRISK: low\nVERIFY:\n- Verify behavior";
+  lastPlanHintPresent = false;
+  lastPlanHintValue: string | undefined;
+  async planWithRequest(
+    _context?: ContextBundle,
+    options: { planHint?: string } = {},
+  ): Promise<{ plan: Plan; warnings: string[] }> {
+    this.lastPlanHintPresent = Object.prototype.hasOwnProperty.call(
+      options,
+      "planHint",
+    );
+    this.lastPlanHintValue = options.planHint;
+    return { plan: basePlan, warnings: [] };
+  }
+}
+
 class StubArchitectPlannerWithRequest {
   calls = 0;
-  async planWithRequest(): Promise<{ plan: Plan; request?: { request_id: string } }> {
+  async planWithRequest(): Promise<{ plan: Plan; request?: any }> {
     this.calls += 1;
     if (this.calls === 1) {
-      return { plan: basePlan, request: { request_id: "req-1" } };
+      return {
+        plan: basePlan,
+        request: {
+          version: "v1",
+          role: "architect",
+          request_id: "req-1",
+          needs: [
+            { type: "docdex.search", query: "needs context", limit: 5 },
+            { type: "docdex.open", path: "src/index.ts", start_line: 1, end_line: 5 },
+          ],
+        },
+      };
     }
     return { plan: basePlan };
   }
@@ -486,6 +585,339 @@ test("SmartPipeline runs architect and passes", { concurrency: false }, async ()
   assert.equal(memory.calls.length, 0);
 });
 
+test("SmartPipeline runs research phase before architect in deep mode", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlanner();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: minimalInvestigationBudget,
+      evidenceGate: minimalEvidenceGate,
+    },
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("do thing");
+  assert.equal(assembler.researchCalls, 1);
+  assert.ok(result.research?.toolRuns.length);
+  const researchStart = logger.events.find(
+    (event) => event.type === "phase_start" && event.data.phase === "research",
+  );
+  const researchEnd = logger.events.find(
+    (event) => event.type === "phase_end" && event.data.phase === "research",
+  );
+  assert.ok(researchStart);
+  assert.ok(researchEnd);
+  const researchInputIndex = logger.artifacts.findIndex(
+    (artifact) => artifact.phase === "research" && artifact.kind === "input",
+  );
+  const researchOutputIndex = logger.artifacts.findIndex(
+    (artifact) => artifact.phase === "research" && artifact.kind === "output",
+  );
+  const architectInputIndex = logger.artifacts.findIndex(
+    (artifact) => artifact.phase === "architect" && artifact.kind === "input",
+  );
+  const telemetryEvent = logger.events.find(
+    (event) => event.type === "investigation_telemetry",
+  );
+  assert.ok(researchInputIndex >= 0);
+  assert.ok(researchOutputIndex >= 0);
+  assert.ok(architectInputIndex >= 0);
+  assert.ok(researchInputIndex < architectInputIndex);
+  assert.ok(researchOutputIndex < architectInputIndex);
+  assert.ok(telemetryEvent);
+  const telemetry = telemetryEvent?.data as Record<string, unknown>;
+  assert.equal(telemetry.phase, "research");
+  assert.equal(telemetry.status, "completed");
+  const evidenceGate = telemetry.evidence_gate as { status?: string };
+  const quota = telemetry.quota as { status?: string };
+  const budget = telemetry.budget as { status?: string };
+  assert.equal(evidenceGate?.status, "pass");
+  assert.equal(quota?.status, "met");
+  assert.equal(budget?.status, "met");
+  assert.ok(typeof telemetry.duration_ms === "number");
+  assert.ok(typeof telemetry.summary === "string");
+  const toolUsage = telemetry.tool_usage as Record<string, { total?: number }>;
+  assert.ok(toolUsage["docdex.search"]);
+  assert.equal(toolUsage["docdex.search"]?.total, 1);
+  const totals = telemetry.tool_usage_totals as { total?: number };
+  assert.equal(totals.total, 1);
+});
+
+test("SmartPipeline suppresses plan hints in deep mode", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlannerPlanHintProbe();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: minimalInvestigationBudget,
+      evidenceGate: minimalEvidenceGate,
+    },
+    maxRetries: 1,
+  });
+
+  await pipeline.run("do thing");
+  assert.equal(architect.lastPlanHintPresent, true);
+  assert.equal(architect.lastPlanHintValue, undefined);
+  const suppressionEvent = logger.events.find((event) => event.type === "plan_hint_suppressed");
+  assert.ok(suppressionEvent);
+});
+
+test("SmartPipeline preserves plan hints when deep mode is disabled", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlannerPlanHintProbe();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  await pipeline.run("do thing");
+  assert.equal(architect.lastPlanHintPresent, false);
+  const suppressionEvent = logger.events.find((event) => event.type === "plan_hint_suppressed");
+  assert.equal(suppressionEvent, undefined);
+});
+
+test("SmartPipeline blocks deep mode when tool quota is unmet", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlanner();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: {
+        search: 2,
+        openOrSnippet: 0,
+        symbolsOrAst: 0,
+        impact: 0,
+        tree: 0,
+        dagExport: 0,
+      },
+      investigationBudget: minimalInvestigationBudget,
+      evidenceGate: minimalEvidenceGate,
+    },
+    maxRetries: 1,
+  });
+
+  await assert.rejects(
+    () => pipeline.run("do thing"),
+    (error) =>
+      assertDeepInvestigationError(error, "deep_investigation_quota_unmet"),
+  );
+  assert.equal(architect.called, false);
+  const quotaEvent = logger.events.find(
+    (event) => event.type === "investigation_quota_failed",
+  );
+  assert.ok(quotaEvent);
+  const data = quotaEvent?.data as Record<string, unknown>;
+  const missing = data.missing as string[] | undefined;
+  assert.ok(missing?.includes("search"));
+});
+
+test("SmartPipeline blocks deep mode when evidence gate is unmet", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlanner();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: minimalInvestigationBudget,
+      evidenceGate: {
+        minSearchHits: 1,
+        minOpenOrSnippet: 0,
+        minSymbolsOrAst: 0,
+        minImpact: 0,
+        maxWarnings: 0,
+      },
+    },
+    maxRetries: 1,
+  });
+
+  await assert.rejects(
+    () => pipeline.run("do thing"),
+    (error) =>
+      assertDeepInvestigationError(error, "deep_investigation_evidence_unmet"),
+  );
+  assert.equal(architect.called, false);
+  const evidenceEvent = logger.events.find(
+    (event) => event.type === "investigation_evidence_failed",
+  );
+  assert.ok(evidenceEvent);
+  const data = evidenceEvent?.data as Record<string, unknown>;
+  const missing = data.missing as string[] | undefined;
+  assert.ok(missing?.includes("search_hits"));
+});
+
+test("SmartPipeline runs additional research cycles to satisfy evidence gate", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlanner();
+  class EvidenceGateAssembler extends StubContextAssembler {
+    async runResearchTools(request: string): Promise<ResearchToolExecution> {
+      this.researchCalls += 1;
+      this.lastResearchRequest = request;
+      return {
+        ...baseResearchOutput,
+        outputs: {
+          ...baseResearchOutput.outputs,
+          searchResults: [{ query: "evidence-gate", hits: [{}] }],
+        },
+      };
+    }
+  }
+  const assembler = new EvidenceGateAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: {
+        minCycles: 1,
+        minSeconds: 0,
+        maxCycles: 2,
+      },
+      evidenceGate: {
+        minSearchHits: 2,
+        minOpenOrSnippet: 0,
+        minSymbolsOrAst: 0,
+        minImpact: 0,
+        maxWarnings: 10,
+      },
+    },
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("do thing");
+  assert.equal(assembler.researchCalls, 2);
+  assert.equal(result.research?.evidenceGate?.status, "pass");
+  assert.equal(architect.called, true);
+});
+
+test("SmartPipeline runs additional research cycles to satisfy budget", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlanner();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: {
+        minCycles: 2,
+        minSeconds: 0,
+        maxCycles: 2,
+      },
+      evidenceGate: minimalEvidenceGate,
+    },
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("do thing");
+  assert.equal(assembler.researchCalls, 2);
+  assert.equal(result.research?.cycles, 2);
+  assert.equal(result.research?.budget?.status, "met");
+  assert.equal(architect.called, true);
+});
+
+test("SmartPipeline fails when investigation budget remains unmet", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: {
+        minCycles: 3,
+        minSeconds: 0,
+        maxCycles: 2,
+      },
+      evidenceGate: minimalEvidenceGate,
+    },
+    maxRetries: 1,
+  });
+
+  await assert.rejects(
+    () => pipeline.run("do thing"),
+    (error) =>
+      assertDeepInvestigationError(error, "deep_investigation_budget_unmet"),
+  );
+  assert.equal(assembler.researchCalls, 2);
+  const budgetEvent = logger.events.find(
+    (event) => event.type === "investigation_budget_failed",
+  );
+  assert.ok(budgetEvent);
+});
+
+test("SmartPipeline skips research phase when deep mode is disabled", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  await pipeline.run("do thing");
+  assert.equal(assembler.researchCalls, 0);
+  const researchArtifact = logger.artifacts.find((artifact) => artifact.phase === "research");
+  assert.equal(researchArtifact, undefined);
+  const researchEvent = logger.events.find(
+    (event) => event.data.phase === "research",
+  );
+  assert.equal(researchEvent, undefined);
+});
+
 test("SmartPipeline skips architect on fast path", { concurrency: false }, async () => {
   const architect = new StubArchitectPlanner();
   const pipeline = new SmartPipeline({
@@ -502,6 +934,35 @@ test("SmartPipeline skips architect on fast path", { concurrency: false }, async
   assert.equal(architect.called, false);
 });
 
+test("SmartPipeline ignores fast path in deep mode", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = new StubArchitectPlanner();
+  const assembler = new StubContextAssembler();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+    fastPath: () => true,
+    deepMode: true,
+    deepInvestigation: {
+      toolQuota: minimalToolQuota,
+      investigationBudget: minimalInvestigationBudget,
+      evidenceGate: minimalEvidenceGate,
+    },
+  });
+
+  await pipeline.run("deep investigation");
+  assert.equal(architect.called, true);
+  const overrideEvent = logger.events.find(
+    (event) => event.type === "fast_path_overridden",
+  );
+  assert.ok(overrideEvent);
+});
+
 test("SmartPipeline fulfills architect requests before planning", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerWithRequest();
   const assembler = new StubContextAssembler();
@@ -516,6 +977,13 @@ test("SmartPipeline fulfills architect requests before planning", { concurrency:
 
   await pipeline.run("needs context");
   assert.equal(assembler.lastRequestId, "req-1");
+  assert.equal(assembler.calls, 2);
+  assert.ok(
+    assembler.lastAssembleOptions?.additionalQueries?.includes("needs context"),
+  );
+  assert.ok(
+    assembler.lastAssembleOptions?.preferredFiles?.includes("src/index.ts"),
+  );
   assert.ok(architect.calls >= 2);
 });
 
@@ -536,7 +1004,7 @@ test("SmartPipeline bounds repeated architect request loops and applies strict r
   const result = await pipeline.run("needs context");
   assert.equal(result.criticResult.status, "PASS");
   assert.equal(architect.calls, 3);
-  assert.equal(assembler.calls, 1);
+  assert.equal(assembler.calls, 3);
   assert.ok((assembler.lastRequestId ?? "").startsWith("loop-req-"));
   assert.equal(architect.responseFormats[0], undefined);
   assert.equal(architect.responseFormats[1], undefined);

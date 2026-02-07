@@ -1,4 +1,9 @@
-import type { ContextBundle, ContextFileEntry, SerializedContext } from "./Types.js";
+import type {
+  ContextBundle,
+  ContextFileEntry,
+  ContextResearchSummary,
+  SerializedContext,
+} from "./Types.js";
 
 export interface ContextSerializerOptions {
   mode: "bundle_text" | "json";
@@ -19,6 +24,8 @@ const SECTION_LIMITS = {
   maxMemoryChars: 320,
   maxProfileEntries: 6,
   maxProfileChars: 240,
+  maxResearchItems: 6,
+  maxResearchChars: 200,
 };
 
 const WARNING_GLOSSARY: Record<
@@ -94,6 +101,12 @@ const truncateText = (value: string, maxChars: number): string => {
   return `${value.slice(0, maxChars - marker.length)}${marker}`;
 };
 
+const truncateSummary = (value: string, maxChars: number): string => {
+  if (maxChars <= 0 || value.length <= maxChars) return value;
+  if (maxChars <= 3) return value.slice(0, maxChars);
+  return `${value.slice(0, maxChars - 3)}...`;
+};
+
 const splitWarning = (warning: string): { code: string; detail?: string } => {
   const separator = warning.indexOf(":");
   if (separator === -1) return { code: warning };
@@ -112,6 +125,19 @@ const listOrNone = (values: string[] = []): string =>
   values.length ? values.join(", ") : "none";
 
 const uniqueValues = (values: string[]): string[] => Array.from(new Set(values));
+
+const formatSummaryList = (values: string[] | undefined): string => {
+  if (!values || values.length === 0) return "none";
+  const trimmed = values
+    .filter((entry) => entry.trim().length > 0)
+    .slice(0, SECTION_LIMITS.maxResearchItems)
+    .map((entry) => truncateSummary(entry, SECTION_LIMITS.maxResearchChars));
+  const remaining = values.length - trimmed.length;
+  if (remaining > 0) {
+    return `${trimmed.join(" | ")} (+${remaining} more)`;
+  }
+  return trimmed.join(" | ");
+};
 
 const isTestPath = (value: string): boolean => {
   const normalized = value.replace(/\\/g, "/").toLowerCase();
@@ -166,6 +192,41 @@ const formatRunSummary = (bundle: ContextBundle): string[] => {
   lines.push(`- Repo docs (purpose hints): ${docs}`);
   lines.push(`- Manifests: ${manifests}`);
   lines.push(`- File types: ${fileTypes}`);
+  lines.push("");
+  return lines;
+};
+
+const formatResearchSummary = (bundle: ContextBundle): string[] => {
+  const research = bundle.research;
+  if (!research) return [];
+  const lines: string[] = [];
+  const duration =
+    typeof research.duration_ms === "number" ? ` (${research.duration_ms}ms)` : "";
+  lines.push("RESEARCH SUMMARY:");
+  lines.push(`- Status: ${research.status}${duration}`);
+  if (research.tool_usage) {
+    lines.push(
+      `- Tool usage: search=${research.tool_usage.search}, open/snippet=${research.tool_usage.open_or_snippet}, symbols/ast=${research.tool_usage.symbols_or_ast}, impact=${research.tool_usage.impact}, tree=${research.tool_usage.tree}, dag_export=${research.tool_usage.dag_export}`,
+    );
+  } else {
+    lines.push("- Tool usage: unknown");
+  }
+  if (research.evidence) {
+    lines.push(
+      `- Evidence: search_hits=${research.evidence.search_hits}, snippet_count=${research.evidence.snippet_count}, symbol_files=${research.evidence.symbol_files}, ast_files=${research.evidence.ast_files}, impact_files=${research.evidence.impact_files}, impact_edges=${research.evidence.impact_edges}, repo_map=${research.evidence.repo_map ? "yes" : "no"}, dag_summary=${research.evidence.dag_summary ? "yes" : "no"}`,
+    );
+  } else {
+    lines.push("- Evidence: unknown");
+  }
+  const keyFindings = research.key_findings ?? research.notes;
+  lines.push(`- Key findings: ${formatSummaryList(keyFindings)}`);
+  const gaps = research.evidence?.gaps;
+  lines.push(`- Unresolved gaps: ${formatSummaryList(gaps)}`);
+  const warnings = [
+    ...(research.warnings ?? []),
+    ...(research.evidence?.warnings ?? []),
+  ];
+  lines.push(`- Warnings: ${formatSummaryList(warnings)}`);
   lines.push("");
   return lines;
 };
@@ -569,11 +630,34 @@ const formatWarnings = (bundle: ContextBundle): string[] => {
 const filterPolicyWarnings = (warnings: string[] = []): string[] =>
   warnings.filter((warning) => !warning.startsWith("write_policy_"));
 
+const sanitizeResearchSummary = (
+  summary?: ContextResearchSummary,
+): ContextResearchSummary | undefined => {
+  if (!summary) return undefined;
+  const toolUsage = summary.tool_usage ? { ...summary.tool_usage } : undefined;
+  const evidence = summary.evidence
+    ? {
+        ...summary.evidence,
+        warnings: summary.evidence.warnings?.filter(Boolean),
+        gaps: summary.evidence.gaps?.filter(Boolean),
+      }
+    : undefined;
+  return {
+    ...summary,
+    key_findings: summary.key_findings?.filter(Boolean),
+    tool_usage: toolUsage,
+    evidence,
+    warnings: summary.warnings?.filter(Boolean),
+    notes: summary.notes?.filter(Boolean),
+  };
+};
+
 export const sanitizeContextBundleForOutput = (bundle: ContextBundle): ContextBundle => {
   const sanitized: ContextBundle = { ...bundle };
   delete sanitized.allow_write_paths;
   delete sanitized.read_only_paths;
   sanitized.warnings = filterPolicyWarnings(bundle.warnings);
+  sanitized.research = sanitizeResearchSummary(bundle.research);
   return sanitized;
 };
 
@@ -602,6 +686,7 @@ export const serializeContext = (
   lines.push("");
   lines.push(...formatProjectSummary(bundle));
   lines.push(...formatRunSummary(bundle));
+  lines.push(...formatResearchSummary(bundle));
   lines.push("USER REQUEST:");
   lines.push(bundle.request);
   lines.push("");

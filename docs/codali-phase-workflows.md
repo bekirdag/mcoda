@@ -21,7 +21,8 @@ Source of truth in code:
 
 **High-level flow:**
 - Build context (Librarian).
-- Build a plan (Architect). If a plan hint is present, run Architect in validate-only mode first and use the validated hint directly.
+- If deep investigation is enabled, run a **research phase** (Docdex tools + evidence summary) and enforce budget/quota/evidence gates.
+- Build a plan (Architect). If a plan hint is present, run Architect in validate-only mode first and use the validated hint directly (unless deep mode disables hints).
 - Run Builder, then Critic. If the Critic fails and is retryable, loop Builder/Critic up to `maxRetries`.
 - If Builder requests more context (`needs_context`), rerun Librarian and Architect (bounded by `maxContextRefreshes`).
 
@@ -32,6 +33,7 @@ Source of truth in code:
 - Passes `allow_write_paths` and `read_only_paths` to Critic for enforcement.
 - Appends Critic results into local context lanes (if enabled).
 - Preserves gateway handoff context sections (for example QA failure summaries and revert learning notes) when present.
+- Deep investigation disables fast-path/plan-hint shortcuts and fails closed on missing Docdex health/index, quota, budget, or evidence gate requirements.
 
 ---
 
@@ -47,9 +49,9 @@ Source of truth in code:
 - Config options (query limits, snippet window, token budget, read strategy, write policy, etc.)
 
 **Core Steps:**
-1. **Docdex health check** (`docdex.health`). If this fails, return a minimal bundle with warnings.
+1. **Docdex health check** (`docdex.health`). In deep mode, failure throws a deterministic error (fail closed); otherwise a minimal bundle is returned with warnings.
 2. **Initialize repo binding** if needed (`docdex.initialize`).
-3. **Stats and file hints** (`docdex.stats`, `docdex.files`).
+3. **Stats and file hints** (`docdex.stats`, `docdex.files`). In deep mode, missing or empty index coverage throws a deterministic error.
 4. **Extract queries** from the request, merge with additional queries.
 5. **Infer preferred files** (e.g., HTML hints if the request mentions “landing page”).
 6. **Search** (`docdex.search`) unless `skipSearchWhenPreferred` is true.

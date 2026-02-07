@@ -4,8 +4,25 @@ import type {
   ProviderResponseFormat,
 } from "../providers/ProviderTypes.js";
 import { createHash } from "node:crypto";
-import type { ContextBundle, Plan, CriticResult, LaneScope } from "./Types.js";
-import { ContextAssembler } from "./ContextAssembler.js";
+import type {
+  ContextBundle,
+  ContextResearchEvidence,
+  ContextResearchToolUsage,
+  EvidenceGateAssessment,
+  Plan,
+  CriticResult,
+  LaneScope,
+} from "./Types.js";
+import { ContextAssembler, type ResearchToolExecution } from "./ContextAssembler.js";
+import {
+  DEFAULT_DEEP_INVESTIGATION_BUDGET,
+  DEFAULT_DEEP_INVESTIGATION_EVIDENCE,
+  DEFAULT_DEEP_INVESTIGATION_TOOL_QUOTA,
+  type DeepInvestigationBudgetConfig,
+  type DeepInvestigationEvidenceConfig,
+  type DeepInvestigationToolQuotaConfig,
+} from "../config/Config.js";
+import { evaluateEvidenceGate } from "./EvidenceGate.js";
 import {
   ArchitectPlanner,
   ARCHITECT_WARNING_CONTAINS_FENCE,
@@ -27,6 +44,11 @@ import {
 import { CriticEvaluator } from "./CriticEvaluator.js";
 import { MemoryWriteback } from "./MemoryWriteback.js";
 import type { RunLogger } from "../runtime/RunLogger.js";
+import {
+  createDeepInvestigationBudgetError,
+  createDeepInvestigationEvidenceError,
+  createDeepInvestigationQuotaError,
+} from "../runtime/DeepInvestigationErrors.js";
 import type { ContextManager } from "./ContextManager.js";
 import { buildLaneId } from "./ContextManager.js";
 import { sanitizeContextBundleForOutput, serializeContext } from "./ContextSerializer.js";
@@ -42,6 +64,13 @@ export interface SmartPipelineOptions {
   maxContextRefreshes?: number;
   initialContext?: ContextBundle;
   fastPath?: (request: string) => boolean;
+  deepMode?: boolean;
+  deepScanPreset?: boolean;
+  deepInvestigation?: {
+    toolQuota?: DeepInvestigationToolQuotaConfig;
+    investigationBudget?: DeepInvestigationBudgetConfig;
+    evidenceGate?: DeepInvestigationEvidenceConfig;
+  };
   getTouchedFiles?: () => string[];
   logger?: RunLogger;
   contextManager?: ContextManager;
@@ -49,8 +78,50 @@ export interface SmartPipelineOptions {
   onEvent?: (event: AgentEvent) => void;
 }
 
+export interface ResearchPhaseResult {
+  status: "skipped" | "completed";
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  cycles?: number;
+  budget?: {
+    status: "met" | "unmet";
+    minCycles: number;
+    minSeconds: number;
+    maxCycles: number;
+    elapsedMs: number;
+    cycles: number;
+  };
+  warnings: string[];
+  toolRuns: ResearchToolExecution["toolRuns"];
+  outputs?: ResearchToolExecution["outputs"];
+  evidence?: ContextResearchEvidence;
+  toolUsage?: ContextResearchToolUsage;
+  evidenceGate?: EvidenceGateAssessment;
+}
+
+type ToolUsageCounts = {
+  ok: number;
+  failed: number;
+  skipped: number;
+  total: number;
+};
+
+type ToolUsageSummary = {
+  totals: ToolUsageCounts;
+  byTool: Record<string, ToolUsageCounts>;
+};
+
+type ToolQuotaAssessment = {
+  ok: boolean;
+  missing: Array<keyof DeepInvestigationToolQuotaConfig>;
+  required: DeepInvestigationToolQuotaConfig;
+  observed: Record<keyof DeepInvestigationToolQuotaConfig, number>;
+};
+
 export interface SmartPipelineResult {
   context: ContextBundle;
+  research?: ResearchPhaseResult;
   plan: Plan;
   builderResult: BuilderRunResult;
   criticResult: CriticResult;
@@ -58,6 +129,195 @@ export interface SmartPipelineResult {
 }
 
 const ARCHITECT_NON_DSL_WARNING = ARCHITECT_WARNING_NON_DSL;
+
+const emptyToolUsageCounts = (): ToolUsageCounts => ({
+  ok: 0,
+  failed: 0,
+  skipped: 0,
+  total: 0,
+});
+
+const buildToolUsageSummary = (
+  toolRuns: ResearchToolExecution["toolRuns"],
+): ToolUsageSummary => {
+  const totals = emptyToolUsageCounts();
+  const byTool: Record<string, ToolUsageCounts> = {};
+  for (const run of toolRuns ?? []) {
+    const tool = run.tool || "unknown";
+    const bucket = byTool[tool] ?? emptyToolUsageCounts();
+    if (run.skipped) {
+      bucket.skipped += 1;
+      totals.skipped += 1;
+    } else if (run.ok) {
+      bucket.ok += 1;
+      totals.ok += 1;
+    } else {
+      bucket.failed += 1;
+      totals.failed += 1;
+    }
+    bucket.total += 1;
+    totals.total += 1;
+    byTool[tool] = bucket;
+  }
+  return { totals, byTool };
+};
+
+const formatToolUsageSummary = (summary: ToolUsageSummary): string => {
+  const entries = Object.entries(summary.byTool);
+  if (entries.length === 0) return "none";
+  return entries
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([tool, counts]) => `${tool}=${counts.total}`)
+    .join(", ");
+};
+
+const TOOL_QUOTA_CATEGORIES: Array<keyof DeepInvestigationToolQuotaConfig> = [
+  "search",
+  "openOrSnippet",
+  "symbolsOrAst",
+  "impact",
+  "tree",
+  "dagExport",
+];
+
+const TOOL_QUOTA_CATEGORY_MAP: Record<string, keyof DeepInvestigationToolQuotaConfig> = {
+  "docdex.search": "search",
+  "docdex.snippet": "openOrSnippet",
+  "docdex.open": "openOrSnippet",
+  "docdex.symbols": "symbolsOrAst",
+  "docdex.ast": "symbolsOrAst",
+  "docdex.impact": "impact",
+  "docdex.impact_diagnostics": "impact",
+  "docdex.tree": "tree",
+  "docdex.dag_export": "dagExport",
+};
+
+const resolveToolQuota = (
+  override?: Partial<DeepInvestigationToolQuotaConfig>,
+): DeepInvestigationToolQuotaConfig => ({
+  ...DEFAULT_DEEP_INVESTIGATION_TOOL_QUOTA,
+  ...(override ?? {}),
+});
+
+const resolveInvestigationBudget = (
+  override?: Partial<DeepInvestigationBudgetConfig>,
+): DeepInvestigationBudgetConfig => ({
+  ...DEFAULT_DEEP_INVESTIGATION_BUDGET,
+  ...(override ?? {}),
+});
+
+const resolveEvidenceGate = (
+  override?: Partial<DeepInvestigationEvidenceConfig>,
+): DeepInvestigationEvidenceConfig => ({
+  ...DEFAULT_DEEP_INVESTIGATION_EVIDENCE,
+  ...(override ?? {}),
+});
+
+const buildToolQuotaAssessment = (
+  toolRuns: ResearchToolExecution["toolRuns"],
+  quota: DeepInvestigationToolQuotaConfig,
+): ToolQuotaAssessment => {
+  const observed: Record<keyof DeepInvestigationToolQuotaConfig, number> = {
+    search: 0,
+    openOrSnippet: 0,
+    symbolsOrAst: 0,
+    impact: 0,
+    tree: 0,
+    dagExport: 0,
+  };
+  for (const run of toolRuns ?? []) {
+    if (!run.ok || run.skipped) continue;
+    const category = TOOL_QUOTA_CATEGORY_MAP[run.tool];
+    if (!category) continue;
+    observed[category] += 1;
+  }
+  const missing: Array<keyof DeepInvestigationToolQuotaConfig> = [];
+  for (const category of TOOL_QUOTA_CATEGORIES) {
+    if (quota[category] > observed[category]) {
+      missing.push(category);
+    }
+  }
+  return {
+    ok: missing.length === 0,
+    missing,
+    required: { ...quota },
+    observed,
+  };
+};
+
+const TOOL_USAGE_CATEGORY_MAP: Record<
+  string,
+  keyof ContextResearchToolUsage
+> = {
+  "docdex.search": "search",
+  "docdex.snippet": "open_or_snippet",
+  "docdex.open": "open_or_snippet",
+  "docdex.symbols": "symbols_or_ast",
+  "docdex.ast": "symbols_or_ast",
+  "docdex.impact": "impact",
+  "docdex.impact_diagnostics": "impact",
+  "docdex.tree": "tree",
+  "docdex.dag_export": "dag_export",
+};
+
+const buildResearchToolUsage = (
+  toolRuns: ResearchToolExecution["toolRuns"],
+): ContextResearchToolUsage => {
+  const counts: ContextResearchToolUsage = {
+    search: 0,
+    open_or_snippet: 0,
+    symbols_or_ast: 0,
+    impact: 0,
+    tree: 0,
+    dag_export: 0,
+  };
+  for (const run of toolRuns ?? []) {
+    if (!run.ok || run.skipped) continue;
+    const category = TOOL_USAGE_CATEGORY_MAP[run.tool];
+    if (!category) continue;
+    counts[category] += 1;
+  }
+  return counts;
+};
+
+const buildResearchEvidence = (
+  outputs: ResearchToolExecution["outputs"] | undefined,
+  warnings: string[],
+): ContextResearchEvidence => {
+  const searchHits = (outputs?.searchResults ?? []).reduce(
+    (total, result) => total + (result.hits?.length ?? 0),
+    0,
+  );
+  const snippetCount = outputs?.snippets?.length ?? 0;
+  const symbolFiles = new Set(
+    (outputs?.symbols ?? []).map((entry) => entry.path).filter(Boolean),
+  ).size;
+  const astFiles = new Set(
+    (outputs?.ast ?? []).map((entry) => entry.path).filter(Boolean),
+  ).size;
+  const impactFiles = new Set(
+    (outputs?.impact ?? []).map((entry) => entry.file).filter(Boolean),
+  ).size;
+  const impactEdges = (outputs?.impact ?? []).reduce(
+    (total, entry) =>
+      total + (entry.inbound?.length ?? 0) + (entry.outbound?.length ?? 0),
+    0,
+  );
+  const repoMap = Boolean(outputs?.repoMap || outputs?.repoMapRaw);
+  const dagSummary = Boolean(outputs?.dagSummary);
+  const warningList = warnings.length ? Array.from(new Set(warnings)) : [];
+  return {
+    search_hits: searchHits,
+    snippet_count: snippetCount,
+    symbol_files: symbolFiles,
+    ast_files: astFiles,
+    impact_files: impactFiles,
+    impact_edges: impactEdges,
+    repo_map: repoMap,
+    dag_summary: dagSummary,
+    warnings: warningList.length ? warningList : undefined,
+  };
+};
 
 const ARCHITECT_STRICT_DSL_HINT = [
   "STRICT MODE: Your previous response was low-quality or hard to normalize.",
@@ -259,6 +519,43 @@ const normalizePath = (value: string): string =>
   value.replace(/\\/g, "/").replace(/^\.?\//, "").trim();
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values));
+
+const extractAgentRequestContextInputs = (
+  request?: AgentRequest,
+): { additionalQueries: string[]; preferredFiles: string[] } => {
+  if (!request) return { additionalQueries: [], preferredFiles: [] };
+  const additionalQueries: string[] = [];
+  const preferredFiles: string[] = [];
+  for (const need of request.needs ?? []) {
+    if (need.type === "docdex.search" || need.type === "docdex.web") {
+      if (need.query) additionalQueries.push(need.query);
+      continue;
+    }
+    if (need.type === "docdex.open") {
+      preferredFiles.push(need.path);
+      continue;
+    }
+    if (
+      need.type === "docdex.symbols"
+      || need.type === "docdex.ast"
+      || need.type === "docdex.impact"
+    ) {
+      preferredFiles.push(need.file);
+      continue;
+    }
+    if (need.type === "docdex.impact_diagnostics") {
+      if (need.file) preferredFiles.push(need.file);
+      continue;
+    }
+    if (need.type === "file.read") {
+      preferredFiles.push(need.path);
+    }
+  }
+  return {
+    additionalQueries: uniqueStrings(additionalQueries.filter(Boolean)),
+    preferredFiles: uniqueStrings(preferredFiles.filter(Boolean)),
+  };
+};
 
 type RequestAnchorSet = {
   keywords: string[];
@@ -969,6 +1266,17 @@ export class SmartPipeline {
   }
 
   async run(request: string): Promise<SmartPipelineResult> {
+    if (this.options.deepScanPreset) {
+      this.options.contextAssembler.applyDeepScanPreset();
+    }
+    const deepMode = this.options.deepMode ?? false;
+    const architectPlannerWithHint = this.options
+      .architectPlanner as unknown as { planHint?: string };
+    const configuredPlanHint =
+      typeof architectPlannerWithHint.planHint === "string"
+        ? architectPlannerWithHint.planHint
+        : undefined;
+    let planHintSuppressedLogged = false;
     const laneScope = this.options.laneScope ?? {};
     const architectLaneId = this.options.contextManager
       ? buildLaneId({ ...laneScope, role: "architect" })
@@ -1034,6 +1342,18 @@ export class SmartPipeline {
         { role: "critic" },
       );
     };
+    const logPlanHintSuppressed = async (hint?: string): Promise<void> => {
+      if (!deepMode || planHintSuppressedLogged) return;
+      if (typeof hint !== "string" || hint.trim().length === 0) return;
+      if (!this.options.logger) return;
+      await this.options.logger.log("plan_hint_suppressed", {
+        reason: "deep_mode",
+      });
+      planHintSuppressedLogged = true;
+    };
+    if (deepMode) {
+      await logPlanHintSuppressed(configuredPlanHint);
+    }
     const buildApplyFailureResponse = (failure: PatchApplyFailure): CodaliResponse => ({
       version: "v1",
       request_id: `apply-failure-${Date.now()}`,
@@ -1068,6 +1388,280 @@ export class SmartPipeline {
       },
     });
 
+    const runDeepResearchPhase = async (
+      bundle: ContextBundle,
+      reason?: string,
+    ): Promise<ResearchPhaseResult> => {
+      await logPhaseArtifact("research", "input", {
+        request,
+        context_digest: bundle.request_digest ?? null,
+        focus_files: bundle.selection?.focus ?? [],
+        queries: bundle.queries ?? [],
+        reason: reason ?? null,
+      });
+      const resolvedQuota = resolveToolQuota(
+        this.options.deepInvestigation?.toolQuota,
+      );
+      const resolvedBudget = resolveInvestigationBudget(
+        this.options.deepInvestigation?.investigationBudget,
+      );
+      const resolvedEvidenceGate = resolveEvidenceGate(
+        this.options.deepInvestigation?.evidenceGate,
+      );
+      const minCycles = Math.max(0, Math.floor(resolvedBudget.minCycles ?? 0));
+      const minSeconds = Math.max(0, resolvedBudget.minSeconds ?? 0);
+      const maxCycles = Math.max(
+        0,
+        Math.floor(resolvedBudget.maxCycles ?? minCycles),
+      );
+      const researchStartedAt = Date.now();
+      const phaseResult = await this.runPhase<ResearchPhaseResult>(
+        "research",
+        async () => {
+          const researchRunner = this.options.contextAssembler as ContextAssembler & {
+            runResearchTools?: (
+              requestText: string,
+              bundle: ContextBundle,
+            ) => Promise<ResearchToolExecution>;
+          };
+          const outputs: ResearchToolExecution["outputs"] = {
+            searchResults: [],
+            snippets: [],
+            symbols: [],
+            ast: [],
+            impact: [],
+            impactDiagnostics: [],
+          };
+          const toolRuns: ResearchToolExecution["toolRuns"] = [];
+          const warnings: string[] = [];
+          const buildEvidenceGateAssessment = (): {
+            evidence: ContextResearchEvidence;
+            toolUsage: ContextResearchToolUsage;
+            evidenceGate: EvidenceGateAssessment;
+          } => {
+            const evidence = buildResearchEvidence(outputs, warnings);
+            const toolUsage = buildResearchToolUsage(toolRuns);
+            const evidenceGate = evaluateEvidenceGate({
+              config: resolvedEvidenceGate,
+              evidence,
+              toolUsage,
+              warnings,
+            });
+            return { evidence, toolUsage, evidenceGate };
+          };
+          if (typeof researchRunner.runResearchTools !== "function") {
+            warnings.push("research_executor_missing");
+            const { evidence, toolUsage, evidenceGate } =
+              buildEvidenceGateAssessment();
+            return {
+              status: "completed",
+              startedAt: researchStartedAt,
+              warnings: uniqueStrings(warnings),
+              toolRuns: [],
+              outputs,
+              cycles: 0,
+              budget: {
+                status: "unmet",
+                minCycles,
+                minSeconds,
+                maxCycles,
+                elapsedMs: 0,
+                cycles: 0,
+              },
+              evidence,
+              toolUsage,
+              evidenceGate,
+            };
+          }
+          let cycles = 0;
+          while (true) {
+            cycles += 1;
+            const execution = await researchRunner.runResearchTools(
+              request,
+              bundle,
+            );
+            toolRuns.push(...execution.toolRuns);
+            warnings.push(...execution.warnings);
+            outputs.searchResults.push(...execution.outputs.searchResults);
+            outputs.snippets.push(...execution.outputs.snippets);
+            outputs.symbols.push(...execution.outputs.symbols);
+            outputs.ast.push(...execution.outputs.ast);
+            outputs.impact.push(...execution.outputs.impact);
+            outputs.impactDiagnostics.push(...execution.outputs.impactDiagnostics);
+            if (execution.outputs.repoMap) outputs.repoMap = execution.outputs.repoMap;
+            if (execution.outputs.repoMapRaw) outputs.repoMapRaw = execution.outputs.repoMapRaw;
+            if (execution.outputs.dagSummary) outputs.dagSummary = execution.outputs.dagSummary;
+            const elapsedMs = Date.now() - researchStartedAt;
+            const quotaAssessment = buildToolQuotaAssessment(
+              toolRuns,
+              resolvedQuota,
+            );
+            const budgetMet = cycles >= minCycles && elapsedMs >= minSeconds * 1000;
+            const { evidence, toolUsage, evidenceGate } =
+              buildEvidenceGateAssessment();
+            const evidenceMet = evidenceGate.status === "pass";
+            const needsMore = !budgetMet || !quotaAssessment.ok || !evidenceMet;
+            if (!needsMore || cycles >= maxCycles) {
+              return {
+                status: "completed",
+                startedAt: researchStartedAt,
+                warnings: uniqueStrings(warnings),
+                toolRuns,
+                outputs,
+                cycles,
+                budget: {
+                  status: budgetMet ? "met" : "unmet",
+                  minCycles,
+                  minSeconds,
+                  maxCycles,
+                  elapsedMs,
+                  cycles,
+                },
+                evidence,
+                toolUsage,
+                evidenceGate,
+              };
+            }
+          }
+        },
+      );
+      const researchEndedAt = Date.now();
+      const evidence =
+        phaseResult.evidence ??
+        buildResearchEvidence(phaseResult.outputs, phaseResult.warnings);
+      const researchToolUsage =
+        phaseResult.toolUsage ?? buildResearchToolUsage(phaseResult.toolRuns);
+      const evidenceGate =
+        phaseResult.evidenceGate ??
+        evaluateEvidenceGate({
+          config: resolvedEvidenceGate,
+          evidence,
+          toolUsage: researchToolUsage,
+          warnings: phaseResult.warnings,
+        });
+      const researchPhase: ResearchPhaseResult = {
+        ...phaseResult,
+        endedAt: researchEndedAt,
+        durationMs: researchEndedAt - researchStartedAt,
+        evidence,
+        toolUsage: researchToolUsage,
+        evidenceGate,
+      };
+      await logPhaseArtifact("research", "output", researchPhase);
+      const toolUsage = buildToolUsageSummary(researchPhase.toolRuns);
+      const quotaAssessment = buildToolQuotaAssessment(
+        researchPhase.toolRuns,
+        resolvedQuota,
+      );
+      const budgetStatus = researchPhase.budget ?? {
+        status: "unmet",
+        minCycles,
+        minSeconds,
+        maxCycles,
+        elapsedMs: researchPhase.durationMs ?? 0,
+        cycles: researchPhase.cycles ?? 0,
+      };
+      if (this.options.logger) {
+        const evidenceGate = researchPhase.evidenceGate ?? {
+          status: "not_checked",
+          reason: "evidence_gate_not_enforced",
+        };
+        const quota = {
+          status: quotaAssessment.ok ? "met" : "unmet",
+          missing: quotaAssessment.missing,
+          required: quotaAssessment.required,
+          observed: quotaAssessment.observed,
+        };
+        const budget = {
+          status: budgetStatus.status,
+          required_cycles: budgetStatus.minCycles,
+          cycles: budgetStatus.cycles,
+          required_ms: budgetStatus.minSeconds * 1000,
+          elapsed_ms: budgetStatus.elapsedMs,
+        };
+        const summary = [
+          `Research ${researchPhase.status} in ${researchPhase.durationMs ?? 0}ms.`,
+          `Cycles: ${budgetStatus.cycles}/${budgetStatus.minCycles}.`,
+          `Tools: ${formatToolUsageSummary(toolUsage)}.`,
+          `Evidence gate: ${evidenceGate.status}.`,
+          `Quota: ${quota.status}.`,
+          `Budget: ${budget.status}.`,
+        ].join(" ");
+        await this.options.logger.log("investigation_telemetry", {
+          phase: "research",
+          status: researchPhase.status,
+          duration_ms: researchPhase.durationMs ?? 0,
+          tool_usage: toolUsage.byTool,
+          tool_usage_totals: toolUsage.totals,
+          evidence_gate: evidenceGate,
+          quota,
+          budget,
+          warnings: researchPhase.warnings,
+          summary,
+        });
+      }
+      if (!quotaAssessment.ok) {
+        if (this.options.logger) {
+          await this.options.logger.log("investigation_quota_failed", {
+            status: "unmet",
+            missing: quotaAssessment.missing,
+            required: quotaAssessment.required,
+            observed: quotaAssessment.observed,
+          });
+        }
+        throw createDeepInvestigationQuotaError({
+          missing: quotaAssessment.missing,
+          required: quotaAssessment.required,
+          observed: quotaAssessment.observed,
+        });
+      }
+      if (budgetStatus.status !== "met") {
+        if (this.options.logger) {
+          await this.options.logger.log("investigation_budget_failed", {
+            status: "unmet",
+            required_cycles: budgetStatus.minCycles,
+            cycles: budgetStatus.cycles,
+            required_ms: budgetStatus.minSeconds * 1000,
+            elapsed_ms: budgetStatus.elapsedMs,
+          });
+        }
+        throw createDeepInvestigationBudgetError({
+          minCycles: budgetStatus.minCycles,
+          minSeconds: budgetStatus.minSeconds,
+          maxCycles: budgetStatus.maxCycles,
+          cycles: budgetStatus.cycles,
+          elapsedMs: budgetStatus.elapsedMs,
+        });
+      }
+      if (researchPhase.evidenceGate?.status !== "pass") {
+        if (this.options.logger) {
+          await this.options.logger.log("investigation_evidence_failed", {
+            status: "unmet",
+            missing: researchPhase.evidenceGate?.missing ?? [],
+            required: researchPhase.evidenceGate?.required ?? {},
+            observed: researchPhase.evidenceGate?.observed ?? {},
+            warnings: researchPhase.evidenceGate?.warnings ?? [],
+            gaps: researchPhase.evidenceGate?.gaps ?? [],
+          });
+        }
+        const emptyEvidenceMetrics = {
+          search_hits: 0,
+          open_or_snippet: 0,
+          symbols_or_ast: 0,
+          impact: 0,
+          warnings: 0,
+        };
+        throw createDeepInvestigationEvidenceError({
+          missing: researchPhase.evidenceGate?.missing ?? [],
+          required: researchPhase.evidenceGate?.required ?? emptyEvidenceMetrics,
+          observed: researchPhase.evidenceGate?.observed ?? emptyEvidenceMetrics,
+          warnings: researchPhase.evidenceGate?.warnings ?? [],
+          gaps: researchPhase.evidenceGate?.gaps ?? [],
+        });
+      }
+      return researchPhase;
+    };
+
     let context: ContextBundle;
     if (this.options.initialContext) {
       await logPhaseArtifact("librarian", "input", { request });
@@ -1097,7 +1691,22 @@ export class SmartPipeline {
         ignoredFiles: context.redaction?.ignored ?? [],
       });
     }
-    const useFastPath = this.options.fastPath?.(request) ?? false;
+    let researchPhase: ResearchPhaseResult | undefined = {
+      status: "skipped",
+      warnings: [],
+      toolRuns: [],
+    };
+    if (deepMode) {
+      researchPhase = await runDeepResearchPhase(context, "initial");
+    }
+    const configuredFastPath = this.options.fastPath?.(request) ?? false;
+    const useFastPath = deepMode ? false : configuredFastPath;
+    if (deepMode && configuredFastPath && this.options.logger) {
+      await this.options.logger.log("fast_path_overridden", {
+        reason: "deep_mode",
+      });
+    }
+    let lastPlanHintUsed: string | undefined;
     const runArchitectPass = async (
       pass: number,
       options: {
@@ -1112,26 +1721,52 @@ export class SmartPipeline {
         planWithRequest?: (context: ContextBundle, opts: Record<string, unknown>) => Promise<ArchitectPlanResult>;
         plan: (context: ContextBundle, opts: Record<string, unknown>) => Promise<Plan>;
       };
+      const hasPlanHintOverride = Object.prototype.hasOwnProperty.call(
+        options,
+        "planHint",
+      );
+      const effectivePlanHint = deepMode
+        ? undefined
+        : hasPlanHintOverride
+          ? options.planHint
+          : configuredPlanHint;
+      if (deepMode) {
+        await logPlanHintSuppressed(options.planHint);
+      }
+      lastPlanHintUsed = effectivePlanHint;
       const architectContext = options.contextOverride ?? context;
       await logPhaseArtifact("architect", "input", {
         pass,
         request,
         context: buildSerializedContext(architectContext),
-        plan_hint: options.planHint ?? null,
+        plan_hint: effectivePlanHint ?? null,
         instruction_hint: options.instructionHint ?? null,
         validate_only: options.validateOnly ?? false,
       });
+      const buildPlannerOptions = (
+        extra: Record<string, unknown> = {},
+      ): Record<string, unknown> => {
+        const baseOptions: Record<string, unknown> = {
+          contextManager: this.options.contextManager,
+          laneId: architectLaneId,
+          instructionHint: options.instructionHint,
+          responseFormat: options.responseFormat,
+          ...extra,
+        };
+        if (deepMode || hasPlanHintOverride) {
+          baseOptions.planHint = effectivePlanHint;
+        }
+        return baseOptions;
+      };
       if (planner.planWithRequest) {
         try {
           return await this.runPhase("architect", () =>
-            planner.planWithRequest!(architectContext, {
-                contextManager: this.options.contextManager,
-                laneId: architectLaneId,
-                planHint: options.planHint,
-                instructionHint: options.instructionHint,
+            planner.planWithRequest!(
+              architectContext,
+              buildPlannerOptions({
                 validateOnly: options.validateOnly ?? false,
-                responseFormat: options.responseFormat,
               }),
+            ),
           );
         } catch (error) {
           if (options.validateOnly && error instanceof PlanHintValidationError) {
@@ -1143,6 +1778,7 @@ export class SmartPipeline {
                 parseError: error.parseError,
               });
             }
+            lastPlanHintUsed = undefined;
             return this.runPhase("architect", () =>
               planner.planWithRequest!(architectContext, {
                 contextManager: this.options.contextManager,
@@ -1158,13 +1794,7 @@ export class SmartPipeline {
         }
       }
       const plan = await this.runPhase("architect", () =>
-        planner.plan(architectContext, {
-          contextManager: this.options.contextManager,
-          laneId: architectLaneId,
-          planHint: options.planHint,
-          instructionHint: options.instructionHint,
-          responseFormat: options.responseFormat,
-        }),
+        planner.plan(architectContext, buildPlannerOptions()),
       );
       return { plan, raw: "", warnings: [] };
     };
@@ -1263,7 +1893,7 @@ export class SmartPipeline {
             buildArchitectOutputArtifactPayload({
               pass,
               strictRetry: strictRetryPass,
-              planHint: undefined,
+              planHint: lastPlanHintUsed,
               instructionHint,
               result,
               requestResponse: response,
@@ -1277,6 +1907,47 @@ export class SmartPipeline {
               responseFormat,
             }),
           );
+          if (pass < maxPasses && requestRecoveryCount < maxPasses) {
+            let refreshInputs = extractAgentRequestContextInputs(result.request);
+            if (typeof this.options.contextAssembler.buildContextRefreshOptions === "function") {
+              try {
+                refreshInputs = this.options.contextAssembler.buildContextRefreshOptions(
+                  result.request,
+                );
+              } catch (error) {
+                if (this.options.logger) {
+                  await this.options.logger.log("architect_request_refresh_failed", {
+                    request_id: result.request.request_id,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              }
+            }
+            const additionalQueries = uniqueStrings(refreshInputs.additionalQueries ?? []);
+            const preferredFiles = uniqueStrings(refreshInputs.preferredFiles ?? []);
+            const recentFiles = uniqueStrings([
+              ...(context.selection?.all ?? []),
+              ...preferredFiles,
+            ]).slice(0, 24);
+            await logPhaseArtifact("librarian", "input", {
+              request,
+              reason: "architect_request",
+              request_id: result.request.request_id,
+              additional_queries: additionalQueries,
+              preferred_files: preferredFiles,
+            });
+            context = await this.runPhase("librarian", () =>
+              this.options.contextAssembler.assemble(request, {
+                additionalQueries,
+                preferredFiles,
+                recentFiles,
+              }),
+            );
+            await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            if (deepMode) {
+              researchPhase = await runDeepResearchPhase(context, "architect_request");
+            }
+          }
           if (pass >= maxPasses || requestRecoveryCount >= maxPasses) {
             warnings.push("architect_degraded_request_loop");
             lastPlan = { ...result, warnings: uniqueStrings(warnings) };
@@ -1317,7 +1988,7 @@ export class SmartPipeline {
           buildArchitectOutputArtifactPayload({
             pass,
             strictRetry: strictRetryPass,
-            planHint: undefined,
+            planHint: lastPlanHintUsed,
             instructionHint,
             result,
             planHash,
@@ -2155,7 +2826,7 @@ export class SmartPipeline {
       });
     }
 
-    return { context, plan, builderResult, criticResult, attempts };
+    return { context, research: researchPhase, plan, builderResult, criticResult, attempts };
   }
 
   private async runPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {

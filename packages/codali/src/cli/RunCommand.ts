@@ -942,6 +942,12 @@ export class RunCommand {
       cwd: resolvedWorkspaceRoot,
     });
 
+    if (config.deepInvestigation?.enabled && !config.smart) {
+      throw new Error(
+        "Deep investigation requires --smart. Enable smart mode or disable deep investigation.",
+      );
+    }
+
     if (!config.smart && resolvedAgent?.agent) {
       const { contextWindow, maxOutputTokens, supportsTools } = resolvedAgent.agent;
       if (contextWindow && model) {
@@ -1290,6 +1296,7 @@ export class RunCommand {
             taskKey: config.taskKey,
           };
         }
+        const deepMode = Boolean(config.deepInvestigation?.enabled);
         const contextAssembler = new ContextAssembler(docdexClient, {
           workspaceRoot: config.workspaceRoot,
           queryProvider: librarianProvider,
@@ -1313,11 +1320,18 @@ export class RunCommand {
           recentFiles: config.context.recentFiles,
           readOnlyPaths: config.security.readOnlyPaths,
           allowDocEdits: config.security.allowDocEdits,
+          deepMode,
           contextManager,
           laneScope,
           onEvent: streamState.onEvent,
           logger,
         });
+        const deepScanPreset = Boolean(
+          config.deepInvestigation?.enabled && config.deepInvestigation?.deepScanPreset,
+        );
+        if (deepScanPreset) {
+          contextAssembler.applyDeepScanPreset();
+        }
         const preflightContext = await contextAssembler.assemble(taskInput);
         const pricingResolution = resolvePricing(
           config.cost.pricingOverrides,
@@ -1448,6 +1462,9 @@ export class RunCommand {
           maxRetries: config.limits.maxRetries,
           maxContextRefreshes: config.context.maxContextRefreshes,
           fastPath: undefined,
+          deepMode,
+          deepScanPreset,
+          deepInvestigation: config.deepInvestigation,
           getTouchedFiles: () => runContext.getTouchedFiles(),
           logger,
           contextManager,
