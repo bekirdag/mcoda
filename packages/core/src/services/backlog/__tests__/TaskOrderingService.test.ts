@@ -90,6 +90,41 @@ test("parses inferred dependencies output and ignores invalid entries", () => {
   assert.ok(warnings.some((warning) => warning.includes("self-dependencies")));
 });
 
+test("parses inferred dependencies output from fenced json and array payloads", () => {
+  const warnings: string[] = [];
+  const fenced = [
+    "Here is the result:",
+    "```json",
+    JSON.stringify({ dependencies: [{ task_key: "T1", depends_on: ["T2"] }] }, null, 2),
+    "```",
+  ].join("\n");
+  const result = parseDependencyInferenceOutput(fenced, new Set(["T1", "T2"]), warnings);
+  assert.deepEqual(result, [{ taskKey: "T1", dependsOnKeys: ["T2"] }]);
+  assert.ok(!warnings.some((warning) => warning.includes("could not be parsed")));
+
+  const warningsArray: string[] = [];
+  const arrayOutput = JSON.stringify([{ task_key: "T2", depends_on: ["T1"] }]);
+  const arrayResult = parseDependencyInferenceOutput(arrayOutput, new Set(["T1", "T2"]), warningsArray);
+  assert.deepEqual(arrayResult, [{ taskKey: "T2", dependsOnKeys: ["T1"] }]);
+  assert.ok(!warningsArray.some((warning) => warning.includes("could not be parsed")));
+});
+
+test("applyAgentRanking accepts string array ordering", () => {
+  const service = Object.create(TaskOrderingService.prototype) as TaskOrderingService;
+  const ordered = [
+    { id: "1", key: "T1" },
+    { id: "2", key: "T2" },
+  ] as any;
+  const warnings: string[] = [];
+  const ranking = (service as any).applyAgentRanking(ordered, JSON.stringify(["T2", "T1"]), warnings) as
+    | Map<string, number>
+    | undefined;
+  assert.ok(ranking);
+  assert.equal(ranking?.get("2"), 0);
+  assert.equal(ranking?.get("1"), 1);
+  assert.equal(warnings.length, 0);
+});
+
 test("orders tasks by dependency impact and normalizes priorities", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
