@@ -1,8 +1,9 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { AgentService } from "@mcoda/agents";
+import { DocsScaffolder } from "@mcoda/generators";
 import { GlobalRepository, WorkspaceRepository } from "@mcoda/db";
-import { Agent, AgentPromptManifest } from "@mcoda/shared";
+import { Agent, AgentHealth, AgentPromptManifest } from "@mcoda/shared";
 import { DocdexClient, DocdexDocument } from "@mcoda/integrations";
 import {
   DEFAULT_PDR_CHARACTER_PROMPT,
@@ -15,10 +16,67 @@ import {
   DEFAULT_SDS_RUNBOOK_PROMPT,
   DEFAULT_SDS_TEMPLATE,
 } from "../../prompts/SdsPrompts.js";
+import {
+  type DocgenCommandName,
+  type DocgenRunContext,
+  type DocArtifactRecord,
+  createEmptyArtifacts,
+} from "./DocgenRunContext.js";
+import { buildDocInventory } from "./DocInventory.js";
+import {
+  DocPatchEngine,
+  type DocPatchApplyResult,
+  type DocPatchRequest,
+} from "./patch/DocPatchEngine.js";
+import { runApiPathConsistencyGate } from "./review/gates/ApiPathConsistencyGate.js";
+import { runOpenApiCoverageGate } from "./review/gates/OpenApiCoverageGate.js";
+import { runBuildReadyCompletenessGate } from "./review/gates/BuildReadyCompletenessGate.js";
+import { runDeploymentBlueprintGate } from "./review/gates/DeploymentBlueprintGate.js";
+import { runPlaceholderArtifactGate } from "./review/gates/PlaceholderArtifactGate.js";
+import { runSqlSyntaxGate } from "./review/gates/SqlSyntaxGate.js";
+import { runSqlRequiredTablesGate } from "./review/gates/SqlRequiredTablesGate.js";
+import { runTerminologyNormalizationGate } from "./review/gates/TerminologyNormalizationGate.js";
+import { runOpenQuestionsGate } from "./review/gates/OpenQuestionsGate.js";
+import { runNoMaybesGate } from "./review/gates/NoMaybesGate.js";
+import { runRfpConsentGate } from "./review/gates/RfpConsentGate.js";
+import { runRfpDefinitionGate } from "./review/gates/RfpDefinitionGate.js";
+import { runPdrInterfacesGate } from "./review/gates/PdrInterfacesGate.js";
+import { runPdrOwnershipGate } from "./review/gates/PdrOwnershipGate.js";
+import { runPdrOpenQuestionsGate } from "./review/gates/PdrOpenQuestionsGate.js";
+import { runSdsDecisionsGate } from "./review/gates/SdsDecisionsGate.js";
+import { runSdsPolicyTelemetryGate } from "./review/gates/SdsPolicyTelemetryGate.js";
+import { runSdsOpsGate } from "./review/gates/SdsOpsGate.js";
+import { runSdsAdaptersGate } from "./review/gates/SdsAdaptersGate.js";
+import { runAdminOpenApiSpecGate } from "./review/gates/AdminOpenApiSpecGate.js";
+import { runOpenApiSchemaSanityGate } from "./review/gates/OpenApiSchemaSanityGate.js";
+import { renderReviewReport } from "./review/ReviewReportRenderer.js";
+import {
+  serializeReviewReport,
+  type ReviewReport,
+  type ReviewReportDelta,
+} from "./review/ReviewReportSchema.js";
+import {
+  aggregateReviewOutcome,
+  type ReviewGateResult,
+  type ReviewIssue,
+  type ReviewFix,
+  type ReviewDecision,
+} from "./review/ReviewTypes.js";
+import { findAdminSurfaceMentions, validateOpenApiSchemaContent } from "../openapi/OpenApiService.js";
 import { JobService, JobCheckpoint } from "../jobs/JobService.js";
-import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
-import { RoutingService } from "../agents/RoutingService.js";
-import { AgentRatingService } from "../agents/AgentRatingService.js";
+import {
+  WorkspaceResolution,
+  cleanupWorkspaceStateDirs,
+  resolveDocgenStatePath,
+} from "../../workspace/WorkspaceManager.js";
+import { RoutingService, type ResolvedAgent } from "../agents/RoutingService.js";
+import {
+  AgentRatingService,
+  selectBestAgentForCapabilities,
+  type AgentCapabilityCandidate,
+} from "../agents/AgentRatingService.js";
+import { DocAlignmentPatcher } from "./alignment/DocAlignmentPatcher.js";
+import { ToolDenylist } from "../system/ToolDenylist.js";
 
 export interface GeneratePdrOptions {
   workspace: WorkspaceResolution;
@@ -30,6 +88,12 @@ export interface GeneratePdrOptions {
   agentStream?: boolean;
   rateAgents?: boolean;
   fast?: boolean;
+  iterate?: boolean;
+  buildReady?: boolean;
+  noPlaceholders?: boolean;
+  resolveOpenQuestions?: boolean;
+  noMaybes?: boolean;
+  crossAlign?: boolean;
   dryRun?: boolean;
   json?: boolean;
   onToken?: (token: string) => void;
@@ -54,6 +118,12 @@ export interface GenerateSdsOptions {
   agentStream?: boolean;
   rateAgents?: boolean;
   fast?: boolean;
+  iterate?: boolean;
+  buildReady?: boolean;
+  noPlaceholders?: boolean;
+  resolveOpenQuestions?: boolean;
+  noMaybes?: boolean;
+  crossAlign?: boolean;
   dryRun?: boolean;
   json?: boolean;
   force?: boolean;
@@ -113,6 +183,41 @@ interface SdsContext {
 const ensureDir = async (targetPath: string): Promise<void> => {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
 };
+
+const parseDelimitedList = (value: string | undefined): string[] => {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
+const ALWAYS_BLOCKING_GATES = new Set([
+  "gate-placeholder-artifacts",
+  "gate-no-maybes",
+  "gate-pdr-open-questions-quality",
+]);
+
+const BUILD_READY_ONLY_GATES = new Set([
+  "gate-api-path-consistency",
+  "gate-openapi-schema-sanity",
+  "gate-openapi-coverage",
+  "gate-sql-syntax",
+  "gate-sql-required-tables",
+  "gate-admin-openapi-spec",
+  "gate-terminology-normalization",
+  "gate-open-questions",
+  "gate-rfp-consent-contradictions",
+  "gate-rfp-definition-coverage",
+  "gate-pdr-interfaces-pipeline",
+  "gate-pdr-ownership-consent-flow",
+  "gate-sds-explicit-decisions",
+  "gate-sds-policy-telemetry-metering",
+  "gate-sds-ops-observability-testing",
+  "gate-sds-external-adapters",
+  "gate-deployment-blueprint-validator",
+  "gate-build-ready-completeness",
+]);
 
 const readPromptIfExists = async (workspace: WorkspaceResolution, relative: string): Promise<string | undefined> => {
   const candidate = path.join(workspace.mcodaDir, relative);
@@ -666,7 +771,7 @@ const ensureStructuredDraft = (
     if (section.title === "Interfaces / APIs" && (context.openapi?.length ?? 0) === 0) {
       const scrubbed = stripInventedEndpoints(body);
       const openApiFallback =
-        "No OpenAPI excerpts available. Capture interface needs as open questions (auth/identity, restaurant suggestions, voting cycles, results/analytics).";
+        "No OpenAPI excerpts available. Capture interface needs as open questions (authentication/identity, data access, integrations, eventing, analytics/observability).";
       if (!scrubbed || scrubbed.length === 0 || /endpoint/i.test(scrubbed)) {
         body = cleanBody(openApiFallback);
       } else {
@@ -1380,17 +1485,213 @@ export class DocsService {
     return { name: templateName ?? "default", content: DEFAULT_SDS_TEMPLATE };
   }
 
-  private async resolveAgent(
-    agentName: string | undefined,
-    commandAliases: string[] = ["docs-pdr-generate", "docs:pdr:generate", "pdr"],
-  ): Promise<Agent> {
-    const commandName = commandAliases[commandAliases.length - 1] ?? "pdr";
-    const resolved = await this.routingService.resolveAgentForCommand({
-      workspace: this.workspace,
-      commandName,
-      overrideAgentSlug: agentName,
+  private buildDocgenCapabilityProfile(input: {
+    commandName: DocgenCommandName;
+    iterationEnabled: boolean;
+  }): { required: string[]; preferred: string[] } {
+    const required = ["doc_generation", "docdex_query"];
+    const preferred: string[] = [];
+    if (input.commandName === "docs-pdr-generate") {
+      preferred.push("rfp_creation", "spec_generation");
+    }
+    if (input.commandName === "docs-sds-generate") {
+      preferred.push("sds_writing", "spec_generation");
+    }
+    if (input.iterationEnabled) {
+      preferred.push("multiple_draft_generation", "quick_bug_patching", "code_review");
+    }
+    return {
+      required: Array.from(new Set(required)),
+      preferred: Array.from(new Set(preferred)),
+    };
+  }
+
+  private async collectDocgenCandidates(resolved?: ResolvedAgent): Promise<AgentCapabilityCandidate[]> {
+    const candidates = new Map<string, AgentCapabilityCandidate>();
+    let agents: Agent[] = [];
+    try {
+      agents = await this.repo.listAgents();
+    } catch {
+      agents = [];
+    }
+    let healthRows: AgentHealth[] = [];
+    try {
+      healthRows = await this.repo.listAgentHealthSummary();
+    } catch {
+      healthRows = [];
+    }
+    const healthById = new Map(healthRows.map((row) => [row.agentId, row.status]));
+    for (const agent of agents) {
+      let caps: string[] = [];
+      try {
+        caps = await this.repo.getAgentCapabilities(agent.id);
+      } catch {
+        caps = agent.capabilities ?? [];
+      }
+      candidates.set(agent.id, {
+        agent,
+        capabilities: caps,
+        healthStatus: healthById.get(agent.id),
+      });
+    }
+    if (resolved) {
+      const existing = candidates.get(resolved.agent.id);
+      if (!existing || existing.capabilities.length === 0) {
+        candidates.set(resolved.agent.id, {
+          agent: resolved.agent,
+          capabilities: resolved.capabilities ?? [],
+          healthStatus: resolved.healthStatus,
+        });
+      }
+    }
+    return Array.from(candidates.values());
+  }
+
+  private async selectDocgenAgent(input: {
+    agentName?: string;
+    commandName: DocgenCommandName;
+    commandAliases: string[];
+    jobId: string;
+    warnings: string[];
+    iterationEnabled: boolean;
+  }): Promise<Agent> {
+    const commandName = input.commandAliases[input.commandAliases.length - 1] ?? input.commandName;
+    const profile = this.buildDocgenCapabilityProfile({
+      commandName: input.commandName,
+      iterationEnabled: input.iterationEnabled,
     });
-    return resolved.agent;
+    let resolved: ResolvedAgent | undefined;
+    let resolveError: Error | undefined;
+    try {
+      resolved = await this.routingService.resolveAgentForCommand({
+        workspace: this.workspace,
+        commandName,
+        overrideAgentSlug: input.agentName,
+        requiredCapabilities: profile.required,
+      });
+    } catch (error) {
+      resolveError = error instanceof Error ? error : new Error(String(error));
+      resolved = undefined;
+    }
+    if (!resolved) {
+      const candidates = await this.collectDocgenCandidates();
+      const selection = selectBestAgentForCapabilities({
+        candidates,
+        required: profile.required,
+        preferred: profile.preferred,
+      });
+      if (!selection) {
+        throw resolveError ?? new Error("No agents available for doc generation.");
+      }
+      const selected = selection.agent;
+      const selectedLabel = selected.slug ?? selected.id;
+      const preferredLabel = input.agentName ?? "routing-default";
+      const warn = (message: string) => {
+        if (!input.warnings.includes(message)) {
+          input.warnings.push(message);
+        }
+      };
+      warn(
+        `Docgen preflight selected fallback agent ${selectedLabel} (preferred ${preferredLabel}).`,
+      );
+      if (selection.missingRequired.length > 0) {
+        warn(
+          `Docgen preflight selected agent ${selectedLabel} missing required capabilities: ${selection.missingRequired.join(", ")}.`,
+        );
+      }
+      const logLines = [
+        `[docgen preflight] command=${input.commandName} routing=${commandName}`,
+        `[docgen preflight] preferred=${preferredLabel} selected=${selectedLabel} fallback=yes`,
+        `[docgen preflight] required=${profile.required.join(", ") || "none"}`,
+        `[docgen preflight] preferred_caps=${profile.preferred.join(", ") || "none"}`,
+        `[docgen preflight] missing_required=${selection.missingRequired.join(", ") || "none"}`,
+        `[docgen preflight] missing_preferred=${selection.missingPreferred.join(", ") || "none"}`,
+        `[docgen preflight] reason=${selection.reason}`,
+        resolveError ? `[docgen preflight] routing_error=${resolveError.message}` : undefined,
+      ].filter(Boolean) as string[];
+      await this.jobService.appendLog(input.jobId, `${logLines.join("\n")}\n`);
+      await this.jobService.writeCheckpoint(input.jobId, {
+        stage: "agent_preflight",
+        timestamp: new Date().toISOString(),
+        details: {
+          commandName: input.commandName,
+          routingCommand: commandName,
+          preferredAgent: preferredLabel,
+          selectedAgent: selectedLabel,
+          fallbackUsed: true,
+          requiredCapabilities: profile.required,
+          preferredCapabilities: profile.preferred,
+          missingRequired: selection.missingRequired,
+          missingPreferred: selection.missingPreferred,
+          reason: selection.reason,
+          routingError: resolveError?.message,
+        },
+      });
+      return selected;
+    }
+    const resolvedMissing = profile.required.filter(
+      (cap) => !(resolved.capabilities ?? []).includes(cap),
+    );
+    const needsFallback = resolvedMissing.length > 0 || resolved.healthStatus === "unreachable";
+    const candidates = needsFallback ? await this.collectDocgenCandidates(resolved) : [];
+    const selection = needsFallback
+      ? selectBestAgentForCapabilities({
+          candidates,
+          required: profile.required,
+          preferred: profile.preferred,
+        })
+      : undefined;
+    const selected = selection?.agent ?? resolved.agent;
+    const missingRequired = selection?.missingRequired ?? resolvedMissing;
+    const missingPreferred =
+      selection?.missingPreferred ??
+      profile.preferred.filter((cap) => !(resolved.capabilities ?? []).includes(cap));
+    const fallbackUsed = selected.id !== resolved.agent.id;
+    const preferredLabel = resolved.agent.slug ?? resolved.agent.id;
+    const selectedLabel = selected.slug ?? selected.id;
+    const warn = (message: string) => {
+      if (!input.warnings.includes(message)) {
+        input.warnings.push(message);
+      }
+    };
+    if (fallbackUsed) {
+      warn(
+        `Docgen preflight selected fallback agent ${selectedLabel} (preferred ${preferredLabel}).`,
+      );
+    }
+    if (missingRequired.length > 0) {
+      warn(
+        `Docgen preflight selected agent ${selectedLabel} missing required capabilities: ${missingRequired.join(", ")}.`,
+      );
+    }
+    const logLines = [
+      `[docgen preflight] command=${input.commandName} routing=${commandName}`,
+      `[docgen preflight] preferred=${preferredLabel} selected=${selectedLabel} fallback=${fallbackUsed ? "yes" : "no"}`,
+      `[docgen preflight] required=${profile.required.join(", ") || "none"}`,
+      `[docgen preflight] preferred_caps=${profile.preferred.join(", ") || "none"}`,
+      `[docgen preflight] missing_required=${missingRequired.join(", ") || "none"}`,
+      `[docgen preflight] missing_preferred=${missingPreferred.join(", ") || "none"}`,
+      `[docgen preflight] reason=${selection?.reason ?? "routing default"}`,
+    ];
+    await this.jobService.appendLog(input.jobId, `${logLines.join("\n")}\n`);
+    await this.jobService.writeCheckpoint(input.jobId, {
+      stage: "agent_preflight",
+      timestamp: new Date().toISOString(),
+      details: {
+        commandName: input.commandName,
+        routingCommand: commandName,
+        preferredAgent: preferredLabel,
+        selectedAgent: selectedLabel,
+        fallbackUsed,
+        requiredCapabilities: profile.required,
+        preferredCapabilities: profile.preferred,
+        missingRequired,
+        missingPreferred,
+        reason: selection?.reason,
+      },
+    });
+
+    return selected;
   }
 
   private async ensureRatingService(): Promise<AgentRatingService> {
@@ -1408,6 +1709,1446 @@ export class DocsService {
       routingService: this.routingService,
     });
     return this.ratingService;
+  }
+
+  private createRunContext(input: {
+    commandName: DocgenCommandName;
+    commandRunId: string;
+    jobId: string;
+    projectKey?: string;
+    rfpId?: string;
+    rfpPath?: string;
+    templateName?: string;
+    outputPath: string;
+    flags: {
+      dryRun: boolean;
+      fast: boolean;
+      iterate: boolean;
+      json: boolean;
+      stream: boolean;
+      buildReady: boolean;
+      noPlaceholders: boolean;
+      resolveOpenQuestions: boolean;
+      noMaybes: boolean;
+      crossAlign: boolean;
+    };
+    warnings: string[];
+  }): DocgenRunContext {
+    return {
+      version: 1,
+      commandName: input.commandName,
+      commandRunId: input.commandRunId,
+      jobId: input.jobId,
+      workspace: this.workspace,
+      projectKey: input.projectKey,
+      rfpId: input.rfpId,
+      rfpPath: input.rfpPath,
+      templateName: input.templateName,
+      outputPath: input.outputPath,
+      createdAt: new Date().toISOString(),
+      flags: input.flags,
+      iteration: { current: 0, max: 0 },
+      artifacts: createEmptyArtifacts(),
+      warnings: input.warnings,
+    };
+  }
+
+  private async recordDocgenStage(
+    runContext: DocgenRunContext,
+    input: {
+      stage: string;
+      message: string;
+      phase?: string;
+      details?: Record<string, unknown>;
+      totalItems?: number;
+      processedItems?: number;
+      heartbeat?: boolean;
+    },
+  ): Promise<void> {
+    const iteration =
+      runContext.iteration.max > 0 && runContext.iteration.current > 0
+        ? { current: runContext.iteration.current, max: runContext.iteration.max, phase: input.phase }
+        : undefined;
+    await this.jobService.recordJobProgress(runContext.jobId, {
+      stage: input.stage,
+      message: input.message,
+      iteration,
+      details: input.details,
+      totalItems: input.totalItems,
+      processedItems: input.processedItems,
+      heartbeat: input.heartbeat,
+    });
+  }
+
+  private async enforceToolDenylist(input: {
+    runContext: DocgenRunContext;
+    agent: Agent;
+  }): Promise<void> {
+    const denylist = await ToolDenylist.load({
+      mcodaDir: this.workspace.mcodaDir,
+      env: process.env,
+    });
+    const identifiers = [input.agent.slug, input.agent.adapter, input.agent.id].filter(
+      (value): value is string => Boolean(value),
+    );
+    const matched = denylist.findMatch(identifiers);
+    if (!matched) return;
+
+    const message = denylist.formatViolation(matched);
+    const artifact = input.runContext.commandName === "docs-pdr-generate" ? "pdr" : "sds";
+    const issue: ReviewIssue = {
+      id: `gate-tool-denylist-${matched}`,
+      gateId: "gate-tool-denylist",
+      severity: "blocker",
+      category: "compliance",
+      artifact,
+      message,
+      remediation: "Select a non-deprecated agent or update the tool denylist configuration.",
+      location: {
+        kind: "heading",
+        heading: "Tooling Preflight",
+        path: input.runContext.outputPath,
+      },
+      metadata: {
+        matchedTool: matched,
+        identifiers,
+        agentId: input.agent.id,
+        agentSlug: input.agent.slug,
+        agentAdapter: input.agent.adapter,
+        denylist: denylist.list(),
+      },
+    };
+    const gateResult: ReviewGateResult = {
+      gateId: "gate-tool-denylist",
+      gateName: "Tool Denylist",
+      status: "fail",
+      issues: [issue],
+      notes: [message],
+      metadata: {
+        matchedTool: matched,
+      },
+    };
+    if (input.runContext.iteration.max === 0) {
+      input.runContext.iteration.max = 1;
+    }
+    const report = this.buildReviewReport({
+      runContext: input.runContext,
+      gateResults: [gateResult],
+      remainingOpenItems: [issue],
+      fixesApplied: [],
+      iterationStatus: "completed",
+    });
+    await this.persistReviewReport(input.runContext, "review-final", report);
+    await this.jobService.appendLog(input.runContext.jobId, `${message}\n`);
+    await this.jobService.writeCheckpoint(input.runContext.jobId, {
+      stage: "tool_denylist_blocked",
+      timestamp: new Date().toISOString(),
+      details: {
+        matchedTool: matched,
+        identifiers,
+        denylist: denylist.list(),
+      },
+    });
+    throw new Error(message);
+  }
+
+  private async applyDocPatches(
+    runContext: DocgenRunContext,
+    patches: DocPatchRequest[],
+    options?: { dryRun?: boolean },
+  ): Promise<DocPatchApplyResult> {
+    const engine = new DocPatchEngine();
+    return engine.apply({
+      runContext,
+      patches,
+      dryRun: options?.dryRun ?? runContext.flags.dryRun,
+    });
+  }
+
+  private resolveMaxIterations(): number {
+    const raw = process.env.MCODA_DOCS_MAX_ITERATIONS;
+    if (!raw) return 2;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 2;
+    return Math.max(1, parsed);
+  }
+
+  private isIterationEnabled(runContext: DocgenRunContext): boolean {
+    if (runContext.flags.dryRun) return false;
+    if (runContext.flags.iterate) return true;
+    if (runContext.flags.fast) return false;
+    return true;
+  }
+
+  private shouldBlockGate(gateId: string, runContext: DocgenRunContext): boolean {
+    if (ALWAYS_BLOCKING_GATES.has(gateId)) return true;
+    const resolveOpenQuestions =
+      runContext.flags.resolveOpenQuestions ||
+      process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+    if (gateId === "gate-open-questions" && resolveOpenQuestions) {
+      return true;
+    }
+    if (BUILD_READY_ONLY_GATES.has(gateId)) return runContext.flags.buildReady;
+    return false;
+  }
+
+  private appendUniqueWarnings(runContext: DocgenRunContext, values: string[]): void {
+    for (const value of values) {
+      if (!value) continue;
+      if (runContext.warnings.includes(value)) continue;
+      runContext.warnings.push(value);
+    }
+  }
+
+  private summarizeIssues(issues: ReviewIssue[]): string {
+    const summary = issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix = issues.length > 3 ? ` (+${issues.length - 3} more)` : "";
+    return `${summary}${suffix}`;
+  }
+
+  private appendGateWarnings(
+    runContext: DocgenRunContext,
+    gate: ReviewGateResult,
+    blocking: boolean,
+  ): void {
+    if (gate.notes?.length) {
+      this.appendUniqueWarnings(runContext, gate.notes);
+    }
+    if (blocking) return;
+    if (gate.issues.length === 0) return;
+    const summary = this.summarizeIssues(gate.issues);
+    this.appendUniqueWarnings(runContext, [
+      `${gate.gateName} issues (${gate.issues.length}). ${summary}`,
+    ]);
+  }
+
+  private async runReviewGates(
+    runContext: DocgenRunContext,
+    phase: "review" | "recheck" = "review",
+  ): Promise<{ gateResults: ReviewGateResult[]; blockingIssues: ReviewIssue[] }> {
+    const gateResults: ReviewGateResult[] = [];
+    const blockingIssues: ReviewIssue[] = [];
+    const phaseLabel = phase === "recheck" ? "Re-check" : "Review";
+
+    const runGate = async (
+      gateId: string,
+      gateName: string,
+      runner: () => Promise<ReviewGateResult> | ReviewGateResult,
+    ): Promise<ReviewGateResult> => {
+      await this.recordDocgenStage(runContext, {
+        stage: `${phase}:${gateId}`,
+        message: `${phaseLabel}: ${gateName}`,
+        phase,
+        heartbeat: true,
+        details: { gateId, gateName },
+      });
+      return await runner();
+    };
+
+    const addResult = (result: ReviewGateResult): void => {
+      const blocking = this.shouldBlockGate(result.gateId, runContext);
+      if (result.status === "fail" && blocking) {
+        blockingIssues.push(...result.issues);
+      }
+      const normalized: ReviewGateResult =
+        result.status === "fail" && !blocking ? { ...result, status: "warn" } : result;
+      this.appendGateWarnings(runContext, normalized, blocking);
+      gateResults.push(normalized);
+    };
+
+    const stateWarnings = (runContext.stateWarnings ?? []).filter(
+      (warning) => typeof warning === "string" && warning.trim().length > 0,
+    );
+    const stateArtifact = runContext.commandName === "docs-pdr-generate" ? "pdr" : "sds";
+    const stateIssues: ReviewIssue[] = stateWarnings.map((warning, index) => ({
+      id: `gate-state-dir-cleanup-${index + 1}`,
+      gateId: "gate-state-dir-cleanup",
+      severity: "info",
+      category: "compliance",
+      artifact: stateArtifact,
+      message: warning,
+      remediation:
+        "Keep docgen intermediate state under .mcoda or OS temp directories and relocate legacy state directories into .mcoda.",
+      location: { kind: "heading", heading: "State Directory Cleanup", path: runContext.outputPath },
+    }));
+    addResult({
+      gateId: "gate-state-dir-cleanup",
+      gateName: "State Directory Cleanup",
+      status: stateIssues.length > 0 ? "warn" : "pass",
+      issues: stateIssues,
+    });
+
+    if (runContext.flags.noPlaceholders || runContext.flags.buildReady) {
+      const allowlist = parseDelimitedList(process.env.MCODA_DOCS_PLACEHOLDER_ALLOWLIST);
+      const denylist = parseDelimitedList(process.env.MCODA_DOCS_PLACEHOLDER_DENYLIST);
+      addResult(
+        await runGate("gate-placeholder-artifacts", "Placeholder Artifacts", () =>
+          runPlaceholderArtifactGate({
+            artifacts: runContext.artifacts,
+            allowlist: allowlist.length > 0 ? allowlist : undefined,
+            denylist: denylist.length > 0 ? denylist : undefined,
+          }),
+        ),
+      );
+    } else {
+      const skippedGate: ReviewGateResult = {
+        gateId: "gate-placeholder-artifacts",
+        gateName: "Placeholder Artifacts",
+        status: "skipped",
+        issues: [],
+        notes: ["Placeholder gate disabled (noPlaceholders/buildReady not set)."],
+      };
+      addResult(skippedGate);
+    }
+
+    addResult(
+      await runGate("gate-api-path-consistency", "API Path Consistency", () =>
+        runApiPathConsistencyGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-openapi-schema-sanity", "OpenAPI Schema Sanity", () =>
+        runOpenApiSchemaSanityGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-openapi-coverage", "OpenAPI Coverage", () =>
+        runOpenApiCoverageGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sql-syntax", "SQL Syntax", () =>
+        runSqlSyntaxGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sql-required-tables", "SQL Required Tables", () =>
+        runSqlRequiredTablesGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-admin-openapi-spec", "Admin OpenAPI Spec", () =>
+        runAdminOpenApiSpecGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-terminology-normalization", "Terminology Normalization", () =>
+        runTerminologyNormalizationGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-open-questions", "Open Questions", () =>
+        runOpenQuestionsGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+
+    const resolveOpenQuestions =
+      runContext.flags.resolveOpenQuestions ||
+      process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+    const noMaybesEnabled =
+      runContext.flags.noMaybes ||
+      process.env.MCODA_DOCS_NO_MAYBES === "1" ||
+      resolveOpenQuestions;
+    addResult(
+      await runGate("gate-no-maybes", "No Maybes", () =>
+        runNoMaybesGate({
+          artifacts: runContext.artifacts,
+          enabled: noMaybesEnabled,
+        }),
+      ),
+    );
+
+    addResult(
+      await runGate("gate-rfp-consent", "RFP Consent", () =>
+        runRfpConsentGate({ rfpPath: runContext.rfpPath }),
+      ),
+    );
+
+    const definitionAllowlist = parseDelimitedList(
+      process.env.MCODA_DOCS_RFP_DEFINITION_ALLOWLIST,
+    );
+    addResult(
+      await runGate("gate-rfp-definition", "RFP Definition Coverage", () =>
+        runRfpDefinitionGate({
+          rfpPath: runContext.rfpPath,
+          allowlist: definitionAllowlist.length > 0 ? definitionAllowlist : undefined,
+        }),
+      ),
+    );
+
+    addResult(
+      await runGate("gate-pdr-interfaces", "PDR Interfaces", () =>
+        runPdrInterfacesGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-pdr-ownership", "PDR Ownership", () =>
+        runPdrOwnershipGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+
+    const openQuestionsEnabled = resolveOpenQuestions;
+    addResult(
+      await runGate("gate-pdr-open-questions", "PDR Open Questions", () =>
+        runPdrOpenQuestionsGate({
+          artifacts: runContext.artifacts,
+          enabled: openQuestionsEnabled,
+        }),
+      ),
+    );
+
+    addResult(
+      await runGate("gate-sds-explicit-decisions", "SDS Explicit Decisions", () =>
+        runSdsDecisionsGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sds-policy-telemetry", "SDS Policy Telemetry", () =>
+        runSdsPolicyTelemetryGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sds-ops-observability-testing", "SDS Ops/Observability/Testing", () =>
+        runSdsOpsGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sds-external-adapters", "SDS External Adapters", () =>
+        runSdsAdaptersGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-deployment-blueprint", "Deployment Blueprint", () =>
+        runDeploymentBlueprintGate({
+          artifacts: runContext.artifacts,
+          buildReady: runContext.flags.buildReady,
+        }),
+      ),
+    );
+    addResult(
+      await runGate("gate-build-ready-completeness", "Build Ready Completeness", () =>
+        runBuildReadyCompletenessGate({
+          artifacts: runContext.artifacts,
+          buildReady: runContext.flags.buildReady,
+        }),
+      ),
+    );
+
+    return { gateResults, blockingIssues };
+  }
+
+  private buildPatchPlanFromIssues(inputIssues: ReviewIssue[]): {
+    patches: DocPatchRequest[];
+    fixes: ReviewFix[];
+  } {
+    const patchesByPath = new Map<string, DocPatchRequest>();
+    const fixes: ReviewFix[] = [];
+    const seenRanges = new Set<string>();
+
+    for (const issue of inputIssues) {
+      if (issue.gateId !== "gate-placeholder-artifacts") continue;
+      if (issue.location.kind !== "line_range") continue;
+      const key = `${issue.location.path}:${issue.location.lineStart}-${issue.location.lineEnd}`;
+      if (seenRanges.has(key)) continue;
+      seenRanges.add(key);
+
+      const patch =
+        patchesByPath.get(issue.location.path) ??
+        {
+          path: issue.location.path,
+          operations: [],
+        };
+      patch.operations.push({
+        type: "remove_block",
+        location: issue.location,
+      });
+      patchesByPath.set(issue.location.path, patch);
+
+      fixes.push({
+        issueId: issue.id,
+        summary: `Removed placeholder content in ${path.basename(issue.location.path)}`,
+        appliedAt: new Date().toISOString(),
+        metadata: {
+          gateId: issue.gateId,
+          path: issue.location.path,
+          lineStart: issue.location.lineStart,
+          lineEnd: issue.location.lineEnd,
+        },
+      });
+    }
+
+    return { patches: Array.from(patchesByPath.values()), fixes };
+  }
+
+  private resolveQuestionDecision(question: string): string | undefined {
+    const trimmed = question.trim().replace(/\?+$/, "").trim();
+    if (!trimmed) return undefined;
+    const patterns: Array<{ pattern: RegExp; verb: string }> = [
+      { pattern: /should we use\s+(.+)$/i, verb: "Use" },
+      { pattern: /^use\s+(.+)$/i, verb: "Use" },
+      { pattern: /^choose\s+(.+)$/i, verb: "Choose" },
+      { pattern: /^select\s+(.+)$/i, verb: "Select" },
+      { pattern: /decide on\s+(.+)$/i, verb: "Use" },
+    ];
+    for (const entry of patterns) {
+      const match = trimmed.match(entry.pattern);
+      if (!match) continue;
+      const choice = match[1]?.trim() ?? "";
+      if (!choice) continue;
+      if (/\bor\b|\/|either/i.test(choice)) continue;
+      const suffix = choice.endsWith(".") ? "" : ".";
+      return `${entry.verb} ${choice}${suffix}`;
+    }
+    return undefined;
+  }
+
+  private sanitizeIndecisiveLine(line: string, patternId: string): string | undefined {
+    const patterns: Record<string, RegExp> = {
+      maybe: /\bmaybe\b/i,
+      optional: /\boptional\b/i,
+      could: /\bcould\b/i,
+      might: /\bmight\b/i,
+      possibly: /\bpossibly\b/i,
+      either: /\beither\b/i,
+      tbd: /\btbd\b/i,
+    };
+    const pattern = patterns[patternId];
+    if (!pattern) return undefined;
+    const match = line.match(/^(\s*[-*+]\s+|\s*)(.*)$/);
+    const prefix = match?.[1] ?? "";
+    const body = match?.[2] ?? line;
+    const cleaned = body
+      .replace(pattern, "")
+      .replace(/\s{2,}/g, " ")
+      .replace(/\s+([,.;:])/g, "$1")
+      .trim();
+    if (!cleaned || cleaned === body.trim()) return undefined;
+    return `${prefix}${cleaned}`;
+  }
+
+  private formatResolvedDecisions(decisions: ReviewDecision[]): string {
+    const lines: string[] = [];
+    for (const decision of decisions) {
+      const metadata = (decision.metadata ?? {}) as Record<string, unknown>;
+      const question =
+        typeof metadata.question === "string" && metadata.question.trim().length > 0
+          ? metadata.question.trim()
+          : undefined;
+      const suffix = question ? ` (question: ${question})` : "";
+      lines.push(`- ${decision.summary}${suffix}`);
+    }
+    return lines.join("\n");
+  }
+
+  private async resolveOpenQuestions(
+    runContext: DocgenRunContext,
+    gateResults: ReviewGateResult[],
+  ): Promise<{ decisions: ReviewDecision[]; warnings: string[] }> {
+    const enabled =
+      runContext.flags.resolveOpenQuestions ||
+      process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+    if (!enabled) return { decisions: [], warnings: [] };
+    const openQuestions = gateResults.find((gate) => gate.gateId === "gate-open-questions");
+    if (!openQuestions || openQuestions.issues.length === 0) {
+      return { decisions: [], warnings: [] };
+    }
+
+    const decisions: ReviewDecision[] = [];
+    const warnings: string[] = [];
+    const decisionTargets = new Map<string, ReviewDecision[]>();
+    const lineReplacements = new Map<string, Map<number, string>>();
+    const replacedLines = new Set<string>();
+
+    for (const issue of openQuestions.issues) {
+      if (issue.location.kind !== "line_range") continue;
+      const metadata = (issue.metadata ?? {}) as Record<string, unknown>;
+      const question =
+        typeof metadata.question === "string" && metadata.question.trim().length > 0
+          ? metadata.question.trim()
+          : undefined;
+      const normalized =
+        typeof metadata.normalized === "string" && metadata.normalized.trim().length > 0
+          ? metadata.normalized.trim()
+          : undefined;
+      const required = metadata.required === true;
+      if (!question) continue;
+
+      const decisionSummary = this.resolveQuestionDecision(question);
+      if (!decisionSummary) {
+        if (required) {
+          warnings.push(`Open question unresolved: ${question}`);
+        }
+        continue;
+      }
+
+      const fallbackId = question
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      const decisionIdBase = normalized ?? (fallbackId || issue.id);
+      const decisionId = `decision-${decisionIdBase}`;
+      const decision: ReviewDecision = {
+        id: decisionId,
+        summary: decisionSummary,
+        rationale: `Resolved from open question: "${question}"`,
+        decidedAt: new Date().toISOString(),
+        relatedIssueIds: [issue.id],
+        metadata: {
+          question,
+          normalized,
+          target: metadata.target,
+        },
+      };
+      decisions.push(decision);
+
+      const target =
+        typeof metadata.target === "string" && metadata.target.trim().length > 0
+          ? metadata.target.trim()
+          : issue.artifact;
+      let targetPath: string | undefined;
+      if (target === "pdr" || issue.artifact === "pdr") {
+        targetPath = runContext.artifacts.pdr?.path;
+      } else if (target === "sds" || issue.artifact === "sds") {
+        targetPath = runContext.artifacts.sds?.path;
+      } else {
+        targetPath = runContext.artifacts.sds?.path ?? runContext.artifacts.pdr?.path;
+      }
+      if (!targetPath) {
+        warnings.push(`Resolved decision could not be inserted (missing target doc): ${question}`);
+      } else {
+        const existing = decisionTargets.get(targetPath);
+        if (existing) {
+          existing.push(decision);
+        } else {
+          decisionTargets.set(targetPath, [decision]);
+        }
+      }
+
+      const lineIndex = issue.location.lineStart - 1;
+      const key = `${issue.location.path}:${lineIndex}`;
+      replacedLines.add(key);
+      if (!lineReplacements.has(issue.location.path)) {
+        lineReplacements.set(issue.location.path, new Map());
+      }
+      lineReplacements.get(issue.location.path)?.set(lineIndex, `Resolved: ${decision.summary}`);
+    }
+
+    const noMaybesGate = gateResults.find((gate) => gate.gateId === "gate-no-maybes");
+    if (noMaybesGate && noMaybesGate.issues.length > 0) {
+      const contentCache = new Map<string, string>();
+      const loadContent = async (filePath: string): Promise<string | undefined> => {
+        if (contentCache.has(filePath)) return contentCache.get(filePath);
+        try {
+          const content = await fs.readFile(filePath, "utf8");
+          contentCache.set(filePath, content);
+          return content;
+        } catch (error) {
+          warnings.push(`Unable to read ${filePath} for indecisive cleanup: ${(error as Error).message ?? String(error)}`);
+          return undefined;
+        }
+      };
+
+      for (const issue of noMaybesGate.issues) {
+        if (issue.location.kind !== "line_range") continue;
+        const lineIndex = issue.location.lineStart - 1;
+        const key = `${issue.location.path}:${lineIndex}`;
+        if (replacedLines.has(key)) continue;
+        const content = await loadContent(issue.location.path);
+        if (!content) continue;
+        const lines = content.split(/\r?\n/);
+        if (lineIndex < 0 || lineIndex >= lines.length) continue;
+        const line = lines[lineIndex] ?? "";
+        const metadata = (issue.metadata ?? {}) as Record<string, unknown>;
+        const patternId = typeof metadata.patternId === "string" ? metadata.patternId : "";
+        const sanitized = this.sanitizeIndecisiveLine(line, patternId);
+        if (!sanitized) continue;
+        if (!lineReplacements.has(issue.location.path)) {
+          lineReplacements.set(issue.location.path, new Map());
+        }
+        lineReplacements.get(issue.location.path)?.set(lineIndex, sanitized);
+      }
+    }
+
+    if (lineReplacements.size === 0 && decisionTargets.size === 0) {
+      return { decisions, warnings };
+    }
+
+    const patches: DocPatchRequest[] = [];
+    for (const [filePath, replacements] of lineReplacements.entries()) {
+      const operations: DocPatchRequest["operations"] = [];
+      const sorted = Array.from(replacements.entries()).sort((a, b) => a[0] - b[0]);
+      for (const [lineIndex, content] of sorted) {
+        const lineNumber = lineIndex + 1;
+        operations.push({
+          type: "replace_section",
+          location: {
+            kind: "line_range",
+            path: filePath,
+            lineStart: lineNumber,
+            lineEnd: lineNumber,
+          },
+          content,
+        });
+      }
+      const decisionSet = decisionTargets.get(filePath);
+      if (decisionSet && decisionSet.length > 0) {
+        operations.push({
+          type: "insert_section",
+          heading: "Resolved Decisions",
+          content: this.formatResolvedDecisions(decisionSet),
+          position: "append",
+          headingLevel: 2,
+        });
+      }
+      if (operations.length > 0) {
+        patches.push({ path: filePath, operations });
+      }
+    }
+
+    for (const [filePath, decisionSet] of decisionTargets.entries()) {
+      if (lineReplacements.has(filePath)) continue;
+      if (!decisionSet.length) continue;
+      patches.push({
+        path: filePath,
+        operations: [
+          {
+            type: "insert_section",
+            heading: "Resolved Decisions",
+            content: this.formatResolvedDecisions(decisionSet),
+            position: "append",
+            headingLevel: 2,
+          },
+        ],
+      });
+    }
+
+    if (patches.length > 0) {
+      const patchResult = await this.applyDocPatches(runContext, patches);
+      if (patchResult.warnings.length > 0) {
+        warnings.push(...patchResult.warnings);
+      }
+    }
+
+    return { decisions, warnings };
+  }
+
+  private reviewReportDir(runContext: DocgenRunContext): string {
+    return path.join(this.workspace.mcodaDir, "jobs", runContext.jobId, "review");
+  }
+
+  private reviewReportPaths(
+    runContext: DocgenRunContext,
+    label: string,
+  ): {
+    jsonPath: string;
+    markdownPath: string;
+    markdownRelative: string;
+  } {
+    const reportDir = this.reviewReportDir(runContext);
+    const jobDir = path.join(this.workspace.mcodaDir, "jobs", runContext.jobId);
+    const jsonPath = path.join(reportDir, `${label}.json`);
+    const markdownPath = path.join(reportDir, `${label}.md`);
+    const markdownRelative = path.relative(jobDir, markdownPath) || path.basename(markdownPath);
+    return { jsonPath, markdownPath, markdownRelative };
+  }
+
+  private buildReviewReport(input: {
+    runContext: DocgenRunContext;
+    gateResults: ReviewGateResult[];
+    remainingOpenItems: ReviewIssue[];
+    fixesApplied: ReviewFix[];
+    iterationStatus: "in_progress" | "completed" | "max_iterations";
+    deltas?: ReviewReportDelta[];
+    decisions?: ReviewDecision[];
+    iterationReports?: string[];
+  }): ReviewReport {
+    const outcome = aggregateReviewOutcome({
+      gateResults: input.gateResults,
+      remainingOpenItems: input.remainingOpenItems,
+      fixesApplied: input.fixesApplied,
+      decisions: input.decisions ?? [],
+      generatedAt: new Date().toISOString(),
+    });
+    const iterationReports =
+      input.iterationReports && input.iterationReports.length > 0
+        ? input.iterationReports
+        : undefined;
+
+    return {
+      version: 1,
+      generatedAt: outcome.generatedAt,
+      iteration: {
+        current: input.runContext.iteration.current,
+        max: input.runContext.iteration.max,
+        status: input.iterationStatus,
+      },
+      status: outcome.summary.status,
+      summary: outcome.summary,
+      gateResults: outcome.gateResults,
+      issues: outcome.issues,
+      remainingOpenItems: outcome.remainingOpenItems,
+      fixesApplied: outcome.fixesApplied,
+      decisions: outcome.decisions,
+      deltas: input.deltas ?? [],
+      metadata: {
+        commandName: input.runContext.commandName,
+        commandRunId: input.runContext.commandRunId,
+        jobId: input.runContext.jobId,
+        projectKey: input.runContext.projectKey,
+        iterationReports,
+      },
+    };
+  }
+
+  private async persistReviewReport(
+    runContext: DocgenRunContext,
+    label: string,
+    report: ReviewReport,
+  ): Promise<{ markdownRelative: string }> {
+    const paths = this.reviewReportPaths(runContext, label);
+    await ensureDir(paths.jsonPath);
+    await fs.writeFile(paths.jsonPath, serializeReviewReport(report), "utf8");
+    await fs.writeFile(paths.markdownPath, renderReviewReport(report), "utf8");
+    return { markdownRelative: paths.markdownRelative };
+  }
+
+  private async runIterationLoop(runContext: DocgenRunContext): Promise<{
+    gateResults: ReviewGateResult[];
+    fixesApplied: ReviewFix[];
+    reviewReportPath?: string;
+  }> {
+    const iterationEnabled = this.isIterationEnabled(runContext);
+    const maxIterations =
+      runContext.iteration.max > 0
+        ? runContext.iteration.max
+        : iterationEnabled
+          ? this.resolveMaxIterations()
+          : 1;
+    runContext.iteration.max = maxIterations;
+
+    const fixesApplied: ReviewFix[] = [];
+    const alignmentDeltas: ReviewReportDelta[] = [];
+    const decisions: ReviewDecision[] = [];
+    const iterationReports: string[] = [];
+    let lastGateResults: ReviewGateResult[] = [];
+    let lastBlockingIssues: ReviewIssue[] = [];
+    const alignmentPatcher = new DocAlignmentPatcher();
+    let finalReportRelative: string | undefined;
+
+    const persistIterationReport = async (status: "in_progress" | "completed" | "max_iterations") => {
+      const report = this.buildReviewReport({
+        runContext,
+        gateResults: lastGateResults,
+        remainingOpenItems: lastBlockingIssues,
+        fixesApplied,
+        deltas: alignmentDeltas,
+        decisions,
+        iterationStatus: status,
+      });
+      const { markdownRelative } = await this.persistReviewReport(
+        runContext,
+        `review-iteration-${runContext.iteration.current}`,
+        report,
+      );
+      iterationReports.push(markdownRelative);
+    };
+
+    const persistFinalReport = async (status: "completed" | "max_iterations") => {
+      const report = this.buildReviewReport({
+        runContext,
+        gateResults: lastGateResults,
+        remainingOpenItems: lastBlockingIssues,
+        fixesApplied,
+        deltas: alignmentDeltas,
+        decisions,
+        iterationStatus: status,
+        iterationReports,
+      });
+      const { markdownRelative } = await this.persistReviewReport(
+        runContext,
+        "review-final",
+        report,
+      );
+      finalReportRelative = markdownRelative;
+    };
+
+    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+      runContext.iteration.current = iteration;
+      await this.jobService.recordIterationProgress(runContext.jobId, {
+        current: iteration,
+        max: maxIterations,
+        phase: "review",
+      });
+
+      const review = await this.runReviewGates(runContext, "review");
+      lastGateResults = review.gateResults;
+      lastBlockingIssues = review.blockingIssues;
+
+      if (review.blockingIssues.length === 0) {
+        await persistIterationReport("completed");
+        await persistFinalReport("completed");
+        return { gateResults: review.gateResults, fixesApplied, reviewReportPath: finalReportRelative };
+      }
+
+      if (!iterationEnabled) {
+        await persistIterationReport("max_iterations");
+        await persistFinalReport("max_iterations");
+        const summary = this.summarizeIssues(review.blockingIssues);
+        throw new Error(`Doc generation review failed. ${summary}`);
+      }
+
+      const questionResolution = await this.resolveOpenQuestions(
+        runContext,
+        review.gateResults,
+      );
+      if (questionResolution.decisions.length > 0) {
+        decisions.push(...questionResolution.decisions);
+      }
+      if (questionResolution.warnings.length > 0) {
+        this.appendUniqueWarnings(runContext, questionResolution.warnings);
+      }
+
+      if (runContext.flags.crossAlign) {
+        const alignmentResult = await alignmentPatcher.apply({
+          runContext,
+          gateResults: review.gateResults,
+        });
+        if (alignmentResult.warnings.length > 0) {
+          this.appendUniqueWarnings(runContext, alignmentResult.warnings);
+        }
+        if (alignmentResult.deltas.length > 0) {
+          alignmentDeltas.push(...alignmentResult.deltas);
+        }
+      }
+
+      const patchPlan = this.buildPatchPlanFromIssues(review.blockingIssues);
+      await this.jobService.recordIterationProgress(runContext.jobId, {
+        current: iteration,
+        max: maxIterations,
+        phase: "patch",
+        details: { patches: patchPlan.patches.length, fixes: patchPlan.fixes.length },
+      });
+
+      if (patchPlan.patches.length > 0) {
+        fixesApplied.push(...patchPlan.fixes);
+        const patchResult = await this.applyDocPatches(runContext, patchPlan.patches);
+        if (patchResult.warnings.length > 0) {
+          this.appendUniqueWarnings(runContext, patchResult.warnings);
+        }
+
+        await this.jobService.recordIterationProgress(runContext.jobId, {
+          current: iteration,
+          max: maxIterations,
+          phase: "recheck",
+        });
+
+        const recheck = await this.runReviewGates(runContext, "recheck");
+        lastGateResults = recheck.gateResults;
+        lastBlockingIssues = recheck.blockingIssues;
+
+        if (recheck.blockingIssues.length === 0) {
+          await persistIterationReport("completed");
+          await persistFinalReport("completed");
+          return { gateResults: recheck.gateResults, fixesApplied, reviewReportPath: finalReportRelative };
+        }
+      }
+
+      const iterationStatus =
+        lastBlockingIssues.length === 0
+          ? "completed"
+          : iteration === maxIterations
+            ? "max_iterations"
+            : "in_progress";
+      await persistIterationReport(iterationStatus);
+    }
+
+    const summary = this.summarizeIssues(lastBlockingIssues);
+    await persistFinalReport("max_iterations");
+    throw new Error(
+      `Doc generation review failed after ${maxIterations} iteration(s). ${summary}`,
+    );
+  }
+
+  private async enforcePlaceholderArtifacts(runContext: DocgenRunContext): Promise<void> {
+    if (!runContext.flags.noPlaceholders) return;
+    const allowlist = parseDelimitedList(process.env.MCODA_DOCS_PLACEHOLDER_ALLOWLIST);
+    const denylist = parseDelimitedList(process.env.MCODA_DOCS_PLACEHOLDER_DENYLIST);
+    const result = await runPlaceholderArtifactGate({
+      artifacts: runContext.artifacts,
+      allowlist: allowlist.length > 0 ? allowlist : undefined,
+      denylist: denylist.length > 0 ? denylist : undefined,
+    });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status !== "fail") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    throw new Error(`Placeholder artifacts detected (${result.issues.length}). ${summary}${suffix}`);
+  }
+
+  private async enforceApiPathConsistency(runContext: DocgenRunContext): Promise<void> {
+    const result = await runApiPathConsistencyGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status !== "fail") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `API path consistency check failed (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceOpenApiSchemaSanity(runContext: DocgenRunContext): Promise<void> {
+    if (!runContext.artifacts.openapi?.length) return;
+    const issues: string[] = [];
+    for (const record of runContext.artifacts.openapi) {
+      try {
+        const content = await fs.readFile(record.path, "utf8");
+        const result = validateOpenApiSchemaContent(content);
+        if (result.errors.length > 0) {
+          issues.push(...result.errors.map((error) => `${record.path}: ${error}`));
+        }
+      } catch (error) {
+        runContext.warnings.push(
+          `Unable to read OpenAPI spec ${record.path}: ${(error as Error).message ?? String(error)}`,
+        );
+      }
+    }
+    if (issues.length === 0) return;
+    const summary = issues.slice(0, 3).join(" ");
+    const suffix = issues.length > 3 ? ` (+${issues.length - 3} more)` : "";
+    const message = `OpenAPI schema sanity issues (${issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceOpenApiCoverage(runContext: DocgenRunContext): Promise<void> {
+    const result = await runOpenApiCoverageGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status !== "fail") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix = result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `OpenAPI endpoint coverage check failed (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceSqlSyntax(runContext: DocgenRunContext): Promise<void> {
+    const result = await runSqlSyntaxGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status !== "fail") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix = result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `SQL syntax validation failed (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceSqlRequiredTables(runContext: DocgenRunContext): Promise<void> {
+    const result = await runSqlRequiredTablesGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status !== "fail") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix = result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `SQL required tables check failed (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async generateDeploymentBlueprint(
+    runContext: DocgenRunContext,
+    sdsContent: string,
+    projectKey?: string,
+  ): Promise<boolean> {
+    if (runContext.flags.dryRun) {
+      runContext.warnings.push("Dry run enabled; deployment blueprint generation skipped.");
+      return false;
+    }
+    const scaffolder = new DocsScaffolder();
+    const openapiRecords = runContext.artifacts.openapi ?? [];
+    const primaryOpenApi =
+      openapiRecords.find((record) => record.variant !== "admin") ?? openapiRecords[0];
+    let openapiContent: string | undefined;
+    if (primaryOpenApi) {
+      try {
+        openapiContent = await fs.readFile(primaryOpenApi.path, "utf8");
+      } catch (error) {
+        runContext.warnings.push(
+          `Unable to read OpenAPI spec ${primaryOpenApi.path} for deployment blueprint: ${(error as Error).message ?? String(error)}`,
+        );
+      }
+    }
+    try {
+      await scaffolder.generateDeploymentBlueprintFiles({
+        sdsContent,
+        openapiContent,
+        outputDir: path.join(this.workspace.workspaceRoot, "deploy"),
+        serviceName: projectKey ?? "app",
+      });
+      return true;
+    } catch (error) {
+      runContext.warnings.push(
+        `Deployment blueprint generation failed: ${(error as Error).message ?? String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  private async enforceAdminOpenApiSpec(runContext: DocgenRunContext): Promise<void> {
+    const docRecords = [runContext.artifacts.pdr, runContext.artifacts.sds].filter(
+      (record): record is DocArtifactRecord => Boolean(record),
+    );
+    if (docRecords.length === 0) return;
+
+    const mentions: Array<{ record: DocArtifactRecord; line: number; excerpt: string }> = [];
+    for (const record of docRecords) {
+      try {
+        const content = await fs.readFile(record.path, "utf8");
+        const found = findAdminSurfaceMentions(content);
+        for (const mention of found) {
+          mentions.push({
+            record,
+            line: mention.line,
+            excerpt: mention.heading ? `${mention.heading}: ${mention.excerpt}` : mention.excerpt,
+          });
+        }
+      } catch (error) {
+        runContext.warnings.push(
+          `Unable to scan ${record.path} for admin surface mentions: ${(error as Error).message ?? String(error)}`,
+        );
+      }
+    }
+    if (mentions.length === 0) return;
+
+    const openapiRecords = runContext.artifacts.openapi ?? [];
+    const hasAdminSpec = openapiRecords.some(
+      (record) => record.variant === "admin" || /admin/i.test(path.basename(record.path)),
+    );
+    if (hasAdminSpec) return;
+
+    const summary = mentions
+      .slice(0, 2)
+      .map((entry) => `${path.basename(entry.record.path)}:${entry.line} ${entry.excerpt}`)
+      .join(" | ");
+    const suffix = mentions.length > 2 ? ` (+${mentions.length - 2} more)` : "";
+    const message = `Admin OpenAPI spec required (admin surfaces referenced): ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceTerminologyNormalization(runContext: DocgenRunContext): Promise<void> {
+    const result = await runTerminologyNormalizationGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `Terminology normalization findings (${result.issues.length}). ${summary}${suffix}`;
+    if (result.status === "fail" && runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceOpenQuestions(runContext: DocgenRunContext): Promise<void> {
+    const result = await runOpenQuestionsGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `Open questions detected (${result.issues.length}). ${summary}${suffix}`;
+    if (result.status === "fail" && runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceNoMaybes(runContext: DocgenRunContext): Promise<void> {
+    const enabled =
+      runContext.flags.noMaybes ||
+      runContext.flags.resolveOpenQuestions ||
+      process.env.MCODA_DOCS_NO_MAYBES === "1" ||
+      process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+    const result = await runNoMaybesGate({ artifacts: runContext.artifacts, enabled });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status !== "fail") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    throw new Error(`Indecisive language detected (${result.issues.length}). ${summary}${suffix}`);
+  }
+
+  private async enforceRfpConsent(runContext: DocgenRunContext): Promise<void> {
+    const result = await runRfpConsentGate({ rfpPath: runContext.rfpPath });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `RFP consent contradictions detected (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceRfpDefinitionCoverage(runContext: DocgenRunContext): Promise<void> {
+    const allowlist = parseDelimitedList(process.env.MCODA_DOCS_RFP_DEFINITION_ALLOWLIST);
+    const result = await runRfpDefinitionGate({
+      rfpPath: runContext.rfpPath,
+      allowlist: allowlist.length > 0 ? allowlist : undefined,
+    });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `RFP definition coverage issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforcePdrInterfaces(runContext: DocgenRunContext): Promise<void> {
+    const result = await runPdrInterfacesGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `PDR interface/pipeline issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforcePdrOwnership(runContext: DocgenRunContext): Promise<void> {
+    const result = await runPdrOwnershipGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `PDR ownership/consent flow issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforcePdrOpenQuestionsQuality(runContext: DocgenRunContext): Promise<void> {
+    const enabled = process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+    const result = await runPdrOpenQuestionsGate({ artifacts: runContext.artifacts, enabled });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `PDR open question quality issues (${result.issues.length}). ${summary}${suffix}`;
+    throw new Error(message);
+  }
+
+  private async enforceSdsExplicitDecisions(runContext: DocgenRunContext): Promise<void> {
+    const result = await runSdsDecisionsGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `SDS explicit decision issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceSdsPolicyTelemetry(runContext: DocgenRunContext): Promise<void> {
+    const result = await runSdsPolicyTelemetryGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `SDS policy/telemetry/metering issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceSdsOpsObservabilityTesting(runContext: DocgenRunContext): Promise<void> {
+    const result = await runSdsOpsGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `SDS ops/observability/testing issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceSdsExternalAdapters(runContext: DocgenRunContext): Promise<void> {
+    const result = await runSdsAdaptersGate({ artifacts: runContext.artifacts });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `SDS external adapter issues (${result.issues.length}). ${summary}${suffix}`;
+    if (runContext.flags.buildReady) {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceDeploymentBlueprint(runContext: DocgenRunContext): Promise<void> {
+    const result = await runDeploymentBlueprintGate({
+      artifacts: runContext.artifacts,
+      buildReady: runContext.flags.buildReady,
+    });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `Deployment blueprint validation issues (${result.issues.length}). ${summary}${suffix}`;
+    if (result.status === "fail") {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
+  }
+
+  private async enforceBuildReadyCompleteness(runContext: DocgenRunContext): Promise<void> {
+    const result = await runBuildReadyCompletenessGate({
+      artifacts: runContext.artifacts,
+      buildReady: runContext.flags.buildReady,
+    });
+    if (result.notes?.length) {
+      runContext.warnings.push(...result.notes);
+    }
+    if (result.status === "pass" || result.status === "skipped") return;
+    const summary = result.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.artifact}: ${issue.message}`)
+      .join(" ");
+    const suffix =
+      result.issues.length > 3 ? ` (+${result.issues.length - 3} more)` : "";
+    const message = `Build-ready completeness check failed (${result.issues.length}). ${summary}${suffix}`;
+    if (result.status === "fail") {
+      throw new Error(message);
+    }
+    runContext.warnings.push(message);
   }
 
   private async writePdrFile(outPath: string, content: string): Promise<void> {
@@ -1544,7 +3285,83 @@ export class DocsService {
         metadata: { docdexAvailable: context.docdexAvailable },
       });
 
-      const agent = await this.resolveAgent(options.agentName);
+      const stream = options.agentStream ?? true;
+      const iterate = options.iterate === true;
+      const fastMode =
+        iterate ? false : options.fast === true || process.env.MCODA_DOCS_FAST === "1";
+      const skipValidation = process.env.MCODA_SKIP_PDR_VALIDATION === "1";
+      const buildReady = options.buildReady === true || process.env.MCODA_DOCS_BUILD_READY === "1";
+      const resolveOpenQuestions =
+        options.resolveOpenQuestions === true ||
+        process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+      const noMaybes =
+        options.noMaybes === true ||
+        process.env.MCODA_DOCS_NO_MAYBES === "1" ||
+        resolveOpenQuestions;
+      const noPlaceholders =
+        options.noPlaceholders === true ||
+        process.env.MCODA_DOCS_NO_PLACEHOLDERS === "1" ||
+        buildReady;
+      const crossAlign = options.crossAlign !== false;
+      const iterationEnabled = !options.dryRun && !fastMode;
+      const maxIterations = iterationEnabled ? this.resolveMaxIterations() : 1;
+
+      const agent = await this.selectDocgenAgent({
+        agentName: options.agentName,
+        commandName: "docs-pdr-generate",
+        commandAliases: ["docs-pdr-generate", "docs:pdr:generate", "pdr"],
+        jobId: job.id,
+        warnings: context.warnings,
+        iterationEnabled,
+      });
+      const outputPath =
+        options.outPath ?? this.defaultPdrOutputPath(options.projectKey, context.rfp.path);
+      const runContext = this.createRunContext({
+        commandName: "docs-pdr-generate",
+        commandRunId: commandRun.id,
+        jobId: job.id,
+        projectKey: options.projectKey,
+        rfpId: options.rfpId,
+        rfpPath: context.rfp.path ?? options.rfpPath,
+        outputPath,
+        flags: {
+          dryRun: options.dryRun === true,
+          fast: fastMode,
+          iterate,
+          json: options.json === true,
+          stream,
+          buildReady,
+          noPlaceholders,
+          resolveOpenQuestions,
+          noMaybes,
+          crossAlign,
+        },
+        warnings: context.warnings,
+      });
+      runContext.iteration.max = maxIterations;
+      const stateCleanupWarnings = await cleanupWorkspaceStateDirs({
+        workspaceRoot: this.workspace.workspaceRoot,
+        mcodaDir: this.workspace.mcodaDir,
+      });
+      const { statePath: iterativeOutputPath, warnings: statePathWarnings } = resolveDocgenStatePath({
+        outputPath: runContext.outputPath,
+        mcodaDir: this.workspace.mcodaDir,
+        jobId: runContext.jobId,
+        commandName: runContext.commandName,
+      });
+      const stateWarnings = [...stateCleanupWarnings, ...statePathWarnings];
+      if (stateWarnings.length > 0) {
+        runContext.stateWarnings = stateWarnings;
+        this.appendUniqueWarnings(runContext, stateWarnings);
+      }
+      runContext.artifacts.pdr = { kind: "pdr", path: runContext.outputPath, meta: {} };
+      await this.enforceToolDenylist({ runContext, agent });
+      await this.recordDocgenStage(runContext, {
+        stage: "generation",
+        message: "Generating PDR draft",
+        totalItems: maxIterations,
+        processedItems: 0,
+      });
       const prompts = await this.agentService.getPrompts(agent.id);
       const runbook =
         (await readPromptIfExists(this.workspace, path.join("prompts", "commands", "pdr-generate.md"))) ||
@@ -1554,9 +3371,6 @@ export class DocsService {
       let agentUsed = false;
       let agentMetadata: Record<string, unknown> | undefined;
       let adapter = agent.adapter;
-      const stream = options.agentStream ?? true;
-      const fastMode = options.fast === true || process.env.MCODA_DOCS_FAST === "1";
-      const skipValidation = process.env.MCODA_SKIP_PDR_VALIDATION === "1";
       let lastInvoke:
         | ((input: string) => Promise<{ output: string; adapter: string; metadata?: Record<string, unknown> }>)
         | undefined;
@@ -1638,13 +3452,12 @@ export class DocsService {
           context.warnings.push(`Tidy pass skipped: ${(error as Error).message ?? "unknown error"}`);
         }
       }
-      const outputPath = options.outPath ?? this.defaultPdrOutputPath(options.projectKey, context.rfp.path);
       if (!options.dryRun) {
         const firstDraftPath = path.join(
           this.workspace.mcodaDir,
           "docs",
           "pdr",
-          `${path.basename(outputPath, path.extname(outputPath))}-first-draft.md`,
+          `${path.basename(runContext.outputPath, path.extname(runContext.outputPath))}-first-draft.md`,
         );
         await ensureDir(firstDraftPath);
         await fs.writeFile(firstDraftPath, draft, "utf8");
@@ -1656,7 +3469,7 @@ export class DocsService {
               options.projectKey,
               context,
               draft,
-              outputPath,
+              iterativeOutputPath,
               lastInvoke ?? (async (input: string) => this.invokeAgent(agent, input, stream, job.id, options.onToken)),
             );
             draft = iterativeDraft;
@@ -1674,18 +3487,19 @@ export class DocsService {
       let docdexId: string | undefined;
       let segments: string[] | undefined;
       let mirrorStatus = "skipped";
+      let reviewReportPath: string | undefined;
       if (options.dryRun) {
         context.warnings.push("Dry run enabled; PDR was not written to disk or registered in docdex.");
       }
       if (!options.dryRun) {
-        await this.writePdrFile(outputPath, draft);
+        await this.writePdrFile(runContext.outputPath, draft);
         if (context.docdexAvailable) {
           try {
-            const registered = await this.registerPdr(outputPath, draft, options.projectKey);
+            const registered = await this.registerPdr(runContext.outputPath, draft, options.projectKey);
             docdexId = registered.id;
             segments = (registered.segments ?? []).map((s) => s.id);
             await fs.writeFile(
-              `${outputPath}.meta.json`,
+              `${runContext.outputPath}.meta.json`,
               JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
               "utf8",
             );
@@ -1698,7 +3512,7 @@ export class DocsService {
         if (shouldMirror) {
           try {
             await ensureDir(path.join(publicDocsDir, "placeholder"));
-            const mirrorPath = path.join(publicDocsDir, path.basename(outputPath));
+            const mirrorPath = path.join(publicDocsDir, path.basename(runContext.outputPath));
             await ensureDir(mirrorPath);
             await fs.writeFile(mirrorPath, draft, "utf8");
             mirrorStatus = "mirrored";
@@ -1707,10 +3521,30 @@ export class DocsService {
             mirrorStatus = "failed";
           }
         }
+        try {
+          await this.recordDocgenStage(runContext, {
+            stage: "inventory",
+            message: "Building doc inventory",
+          });
+          runContext.artifacts = await buildDocInventory({
+            workspace: this.workspace,
+            preferred: { pdrPath: runContext.outputPath },
+          });
+        } catch (error) {
+          runContext.warnings.push(`Doc inventory build failed: ${(error as Error).message ?? String(error)}`);
+        }
+        const iterationResult = await this.runIterationLoop(runContext);
+        reviewReportPath = iterationResult.reviewReportPath;
       }
 
       await this.jobService.updateJobStatus(job.id, "completed", {
-        payload: { outputPath, docdexId, segments, mirrorStatus },
+        payload: {
+          outputPath: runContext.outputPath,
+          docdexId,
+          segments,
+          mirrorStatus,
+          ...(reviewReportPath ? { reviewReportPath } : {}),
+        },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
       if (options.rateAgents && agentUsed) {
@@ -1730,10 +3564,10 @@ export class DocsService {
       return {
         jobId: job.id,
         commandRunId: commandRun.id,
-        outputPath,
+        outputPath: runContext.outputPath,
         draft,
         docdexId,
-        warnings: context.warnings,
+        warnings: runContext.warnings,
       };
     } catch (error) {
       await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });
@@ -1904,7 +3738,81 @@ export class DocsService {
         }
       }
 
-      const agent = await this.resolveAgent(options.agentName, ["docs-sds-generate", "docs:sds:generate", "sds"]);
+      const stream = options.agentStream ?? true;
+      const iterate = options.iterate === true;
+      const fastMode =
+        iterate ? false : options.fast === true || process.env.MCODA_DOCS_FAST === "1";
+      const skipValidation = process.env.MCODA_SKIP_SDS_VALIDATION === "1";
+      const buildReady = options.buildReady === true || process.env.MCODA_DOCS_BUILD_READY === "1";
+      const resolveOpenQuestions =
+        options.resolveOpenQuestions === true ||
+        process.env.MCODA_DOCS_RESOLVE_OPEN_QUESTIONS === "1";
+      const noMaybes =
+        options.noMaybes === true ||
+        process.env.MCODA_DOCS_NO_MAYBES === "1" ||
+        resolveOpenQuestions;
+      const noPlaceholders =
+        options.noPlaceholders === true ||
+        process.env.MCODA_DOCS_NO_PLACEHOLDERS === "1" ||
+        buildReady;
+      const crossAlign = options.crossAlign !== false;
+      const iterationEnabled = !options.dryRun && !fastMode;
+      const maxIterations = iterationEnabled ? this.resolveMaxIterations() : 1;
+
+      const agent = await this.selectDocgenAgent({
+        agentName: options.agentName,
+        commandName: "docs-sds-generate",
+        commandAliases: ["docs-sds-generate", "docs:sds:generate", "sds"],
+        jobId: job.id,
+        warnings,
+        iterationEnabled,
+      });
+      const runContext = this.createRunContext({
+        commandName: "docs-sds-generate",
+        commandRunId: commandRun.id,
+        jobId: job.id,
+        projectKey: options.projectKey,
+        rfpPath: context.rfp?.path,
+        templateName: options.templateName,
+        outputPath,
+        flags: {
+          dryRun: options.dryRun === true,
+          fast: fastMode,
+          iterate,
+          json: options.json === true,
+          stream,
+          buildReady,
+          noPlaceholders,
+          resolveOpenQuestions,
+          noMaybes,
+          crossAlign,
+        },
+        warnings,
+      });
+      runContext.iteration.max = maxIterations;
+      const stateCleanupWarnings = await cleanupWorkspaceStateDirs({
+        workspaceRoot: this.workspace.workspaceRoot,
+        mcodaDir: this.workspace.mcodaDir,
+      });
+      const { statePath: iterativeOutputPath, warnings: statePathWarnings } = resolveDocgenStatePath({
+        outputPath: runContext.outputPath,
+        mcodaDir: this.workspace.mcodaDir,
+        jobId: runContext.jobId,
+        commandName: runContext.commandName,
+      });
+      const stateWarnings = [...stateCleanupWarnings, ...statePathWarnings];
+      if (stateWarnings.length > 0) {
+        runContext.stateWarnings = stateWarnings;
+        this.appendUniqueWarnings(runContext, stateWarnings);
+      }
+      runContext.artifacts.sds = { kind: "sds", path: runContext.outputPath, meta: {} };
+      await this.enforceToolDenylist({ runContext, agent });
+      await this.recordDocgenStage(runContext, {
+        stage: "generation",
+        message: "Generating SDS draft",
+        totalItems: maxIterations,
+        processedItems: 0,
+      });
       const prompts = await this.agentService.getPrompts(agent.id);
       const template = await this.loadSdsTemplate(options.templateName);
       const sdsSections = getSdsSections(template.content);
@@ -1917,9 +3825,6 @@ export class DocsService {
       let agentUsed = false;
       let agentMetadata: Record<string, unknown> | undefined;
       let adapter = agent.adapter;
-      const stream = options.agentStream ?? true;
-      const fastMode = options.fast === true || process.env.MCODA_DOCS_FAST === "1";
-      const skipValidation = process.env.MCODA_SKIP_SDS_VALIDATION === "1";
       const invoke = async (input: string) => {
         agentUsed = true;
         const { output: out, adapter: usedAdapter, metadata } = await this.invokeAgent(
@@ -2049,7 +3954,7 @@ export class DocsService {
         this.workspace.mcodaDir,
         "docs",
         "sds",
-        `${path.basename(outputPath, path.extname(outputPath))}-first-draft.md`,
+        `${path.basename(runContext.outputPath, path.extname(runContext.outputPath))}-first-draft.md`,
       );
       await ensureDir(firstDraftPath);
       await fs.writeFile(firstDraftPath, draft, "utf8");
@@ -2062,7 +3967,7 @@ export class DocsService {
             context,
             draft,
             sdsSections,
-            outputPath,
+            iterativeOutputPath,
             invoke,
           );
           draft = iterativeDraft;
@@ -2079,18 +3984,19 @@ export class DocsService {
       let docdexId: string | undefined;
       let segments: string[] | undefined;
       let mirrorStatus = "skipped";
+      let reviewReportPath: string | undefined;
       if (options.dryRun) {
         warnings.push("Dry run enabled; SDS was not written to disk or registered in docdex.");
       }
       if (!options.dryRun) {
-        await this.writeSdsFile(outputPath, draft);
+        await this.writeSdsFile(runContext.outputPath, draft);
         if (context.docdexAvailable) {
           try {
-            const registered = await this.registerSds(outputPath, draft, options.projectKey);
+            const registered = await this.registerSds(runContext.outputPath, draft, options.projectKey);
             docdexId = registered.id;
             segments = (registered.segments ?? []).map((s) => s.id);
             await fs.writeFile(
-              `${outputPath}.meta.json`,
+              `${runContext.outputPath}.meta.json`,
               JSON.stringify({ docdexId, segments, projectKey: options.projectKey }, null, 2),
               "utf8",
             );
@@ -2103,7 +4009,7 @@ export class DocsService {
         if (shouldMirror) {
           try {
             await ensureDir(path.join(publicDocsDir, "placeholder"));
-            const mirrorPath = path.join(publicDocsDir, path.basename(outputPath));
+            const mirrorPath = path.join(publicDocsDir, path.basename(runContext.outputPath));
             await ensureDir(mirrorPath);
             await fs.writeFile(mirrorPath, draft, "utf8");
             mirrorStatus = "mirrored";
@@ -2111,16 +4017,56 @@ export class DocsService {
             mirrorStatus = "failed";
           }
         }
+        try {
+          await this.recordDocgenStage(runContext, {
+            stage: "inventory",
+            message: "Building doc inventory",
+          });
+          runContext.artifacts = await buildDocInventory({
+            workspace: this.workspace,
+            preferred: { sdsPath: runContext.outputPath },
+          });
+        } catch (error) {
+          runContext.warnings.push(`Doc inventory build failed: ${(error as Error).message ?? String(error)}`);
+        }
+        await this.recordDocgenStage(runContext, {
+          stage: "blueprint",
+          message: "Generating deployment blueprint",
+        });
+        const blueprintGenerated = await this.generateDeploymentBlueprint(
+          runContext,
+          draft,
+          options.projectKey,
+        );
+        if (blueprintGenerated) {
+          try {
+            await this.recordDocgenStage(runContext, {
+              stage: "inventory",
+              message: "Rebuilding doc inventory",
+            });
+            runContext.artifacts = await buildDocInventory({
+              workspace: this.workspace,
+              preferred: { sdsPath: runContext.outputPath },
+            });
+          } catch (error) {
+            runContext.warnings.push(
+              `Doc inventory rebuild after blueprint failed: ${(error as Error).message ?? String(error)}`,
+            );
+          }
+        }
+        const iterationResult = await this.runIterationLoop(runContext);
+        reviewReportPath = iterationResult.reviewReportPath;
       }
 
       await this.jobService.updateJobStatus(job.id, "completed", {
         payload: {
-          outputPath,
+          outputPath: runContext.outputPath,
           docdexId,
           segments,
           template: template.name,
           mirrorStatus,
           agentMetadata,
+          ...(reviewReportPath ? { reviewReportPath } : {}),
         },
       });
       await this.jobService.finishCommandRun(commandRun.id, "succeeded");
@@ -2141,10 +4087,10 @@ export class DocsService {
       return {
         jobId: job.id,
         commandRunId: commandRun.id,
-        outputPath,
+        outputPath: runContext.outputPath,
         draft,
         docdexId,
-        warnings,
+        warnings: runContext.warnings,
       };
     } catch (error) {
       await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });

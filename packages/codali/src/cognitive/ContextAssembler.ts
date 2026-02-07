@@ -131,6 +131,29 @@ const truncateText = (content: string, maxChars: number): string => {
   return `${content.slice(0, maxChars - marker.length)}${marker}`;
 };
 
+const truncateSummary = (content: string, maxChars: number): string => {
+  if (maxChars <= 0 || content.length <= maxChars) return content;
+  if (maxChars <= 3) return content.slice(0, maxChars);
+  return `${content.slice(0, maxChars - 3)}...`;
+};
+
+const extractDocdexContent = (payload: unknown): string => {
+  if (typeof payload === "string") return payload;
+  if (payload && typeof payload === "object") {
+    const record = payload as {
+      content?: unknown;
+      text?: unknown;
+      snippet?: { text?: unknown };
+      data?: { content?: unknown };
+    };
+    if (typeof record.content === "string") return record.content;
+    if (typeof record.text === "string") return record.text;
+    if (record.snippet && typeof record.snippet.text === "string") return record.snippet.text;
+    if (record.data && typeof record.data.content === "string") return record.data.content;
+  }
+  return toStringPayload(payload);
+};
+
 const extractSnippetContent = (payload: unknown): string => {
   if (typeof payload === "string") {
     return truncateText(payload, SECTION_LIMITS.snippetChars);
@@ -354,6 +377,8 @@ const AST_ANALYSIS_EXTENSIONS = new Set([
   ".yml",
 ]);
 
+const CONFIG_FILE_EXTENSIONS = new Set([".yaml", ".yml"]);
+
 const FRONTEND_EXTENSIONS = new Set([
   ".html",
   ".htm",
@@ -550,6 +575,7 @@ const EXCLUDED_WALK_DIRS = new Set([
   ".hg",
   ".svn",
   ".docdex",
+  ".docdex_state",
   ".mcoda",
   ".cache",
   ".tmp",
@@ -626,8 +652,37 @@ const EXCLUDED_RG_GLOBS = Array.from(EXCLUDED_WALK_DIRS).flatMap((dir) => {
   return [`!**/${dir}/**`, `!**/${lower}/**`];
 });
 
+const REPO_TREE_EXCLUDES = [
+  ".docdex",
+  ".docdex_state",
+  ".mcoda",
+  ".git",
+  ".DS_Store",
+];
+
 const filterExcludedPaths = (paths: string[]): string[] =>
   paths.filter((entry) => !isExcludedPath(entry));
+
+const PLACEHOLDER_PATH_PATTERN = /^path\/to\/file\.[a-z0-9]+$/i;
+
+const isPlaceholderPath = (value: string): boolean => {
+  if (!value) return false;
+  const normalized = normalizePath(value).toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes("<") || normalized.includes(">")) return true;
+  if (normalized.startsWith("path/to/")) return true;
+  return PLACEHOLDER_PATH_PATTERN.test(normalized);
+};
+
+const filterPlaceholderPaths = (paths: string[], request: string): string[] => {
+  if (!paths.length) return [];
+  const requestLower = request.toLowerCase();
+  return paths.filter((entry) => {
+    if (!isPlaceholderPath(entry)) return true;
+    const normalized = normalizePath(entry).toLowerCase();
+    return requestLower.includes(normalized);
+  });
+};
 
 const isBackoffError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
@@ -719,6 +774,14 @@ const isDocPath = (value: string): boolean => {
   );
 };
 
+const isConfigPath = (value: string): boolean => {
+  const normalized = normalizePath(value).toLowerCase();
+  const base = path.posix.basename(normalized);
+  if (base.startsWith(".env")) return true;
+  const ext = path.extname(base);
+  return CONFIG_FILE_EXTENSIONS.has(ext);
+};
+
 const isSupportDoc = (value: string): boolean =>
   DOC_SUPPORT_PATTERNS.some((pattern) => pattern.test(normalizePath(value)));
 
@@ -747,6 +810,118 @@ const detectManifests = async (workspaceRoot?: string): Promise<string[]> => {
     }),
   );
   return found.sort();
+};
+
+const README_CANDIDATES = [
+  "README.md",
+  "README.mdx",
+  "README.rst",
+  "README.txt",
+  "README",
+  "readme.md",
+  "readme.mdx",
+  "readme.rst",
+  "readme.txt",
+  "readme",
+];
+
+const stripReadmeContent = (content: string): string[] => {
+  const normalized = content.replace(/^\uFEFF/, "");
+  const lines = normalized.split(/\r?\n/);
+  const cleaned: string[] = [];
+  let inFence = false;
+  let inFrontMatter = false;
+  let sawContent = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!inFrontMatter && !sawContent && line === "---") {
+      inFrontMatter = true;
+      continue;
+    }
+    if (inFrontMatter) {
+      if (line === "---") {
+        inFrontMatter = false;
+      }
+      continue;
+    }
+    if (line.startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (line.startsWith("<!--")) continue;
+    cleaned.push(line);
+    if (line.length > 0) sawContent = true;
+  }
+  return cleaned;
+};
+
+const summarizeReadme = (content: string): string => {
+  const cleaned = stripReadmeContent(content);
+  const nonEmpty = cleaned.filter((line) => line.length > 0);
+  if (nonEmpty.length === 0) return "";
+
+  let title = "";
+  let startIndex = 0;
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const line = cleaned[i];
+    if (line.startsWith("#")) {
+      title = line.replace(/^#+\s*/, "").trim();
+      startIndex = i + 1;
+      break;
+    }
+  }
+
+  let paragraph = "";
+  const bullets: string[] = [];
+  for (let i = startIndex; i < cleaned.length; i += 1) {
+    const line = cleaned[i];
+    if (!line) {
+      if (paragraph || bullets.length > 0) break;
+      continue;
+    }
+    if (line.startsWith("#")) {
+      if (paragraph || bullets.length > 0) break;
+      continue;
+    }
+    const bulletMatch = line.match(/^[-*+]\s+(.*)/);
+    if (bulletMatch) {
+      if (!paragraph) {
+        bullets.push(bulletMatch[1].trim());
+        if (bullets.length >= 3) break;
+        continue;
+      }
+    }
+    paragraph = paragraph ? `${paragraph} ${line}` : line;
+    if (paragraph.length >= 480) break;
+  }
+
+  let body = paragraph;
+  if (!body && bullets.length > 0) body = bullets.join("; ");
+  if (!body) body = nonEmpty[0] ?? "";
+
+  let summary = "";
+  if (title && body) {
+    summary = `${title}: ${body}`;
+  } else {
+    summary = title || body;
+  }
+  return truncateSummary(summary.trim(), 600);
+};
+
+const loadReadmeSummary = async (
+  workspaceRoot?: string,
+): Promise<{ path: string; summary: string } | undefined> => {
+  if (!workspaceRoot) return undefined;
+  for (const candidate of README_CANDIDATES) {
+    try {
+      const content = await readFile(path.join(workspaceRoot, candidate), "utf8");
+      return { path: candidate, summary: summarizeReadme(content) };
+    } catch {
+      // ignore missing readme
+    }
+  }
+  return undefined;
 };
 
 const reorderHits = (
@@ -1498,13 +1673,55 @@ const buildRequestDigest = (options: {
   warnings: string[];
 }): NonNullable<ContextBundle["request_digest"]> => {
   const focusFiles = options.selection?.focus ?? [];
+  const peripheryFiles = options.selection?.periphery ?? [];
+  const MARKUP_EXTENSIONS = new Set([
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".styl",
+    ".md",
+    ".mdx",
+  ]);
+  const SCRIPT_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx"]);
+  const getExtension = (value: string): string =>
+    path.extname(normalizePath(value)).toLowerCase();
+  const isMarkup = (value: string): boolean => MARKUP_EXTENSIONS.has(getExtension(value));
+  const isScript = (value: string): boolean => SCRIPT_EXTENSIONS.has(getExtension(value));
+  const markupOnlyFocus =
+    focusFiles.length > 0 && focusFiles.every((entry) => isMarkup(entry));
+  const scriptCandidates = (() => {
+    if (!markupOnlyFocus) return [];
+    const focusDirs = new Set(
+      focusFiles.map((entry) => path.posix.dirname(normalizePath(entry))),
+    );
+    const focusStems = new Set(
+      focusFiles.map((entry) => path.posix.basename(normalizePath(entry), getExtension(entry))),
+    );
+    const ranked = peripheryFiles
+      .filter((entry) => isScript(entry))
+      .map((entry) => {
+        const normalized = normalizePath(entry);
+        let score = 0;
+        const dir = path.posix.dirname(normalized);
+        if (focusDirs.has(dir)) score += 2;
+        const stem = path.posix.basename(normalized, getExtension(normalized));
+        if (focusStems.has(stem)) score += 1;
+        return { path: normalized, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map((entry) => entry.path);
+    return uniqueValues(ranked).slice(0, 2);
+  })();
   const signalTerms = uniqueValues([
     ...options.querySignals.keyword_phrases,
     ...options.querySignals.keywords,
     ...options.intent.intents,
     ...Object.values(options.intent.matches).flat(),
   ]).slice(0, 8);
-  const topFiles = focusFiles.slice(0, 4);
+  const topFiles = uniqueValues([...focusFiles, ...scriptCandidates]).slice(0, 4);
   const refinedQuery = uniqueValues([
     options.request.trim(),
     ...signalTerms.slice(0, 5),
@@ -1515,11 +1732,14 @@ const buildRequestDigest = (options: {
     .join(" ");
   const totalHits = options.searchResults.reduce((sum, result) => sum + result.hits.length, 0);
   const lowConfidence = Boolean(options.selection?.low_confidence);
-  const confidence = lowConfidence || totalHits === 0
+  let confidence: "high" | "medium" | "low" = lowConfidence || totalHits === 0
     ? "low"
     : totalHits < 4 || topFiles.length === 0
       ? "medium"
       : "high";
+  if (markupOnlyFocus && scriptCandidates.length > 0 && confidence === "high") {
+    confidence = "medium";
+  }
   const summaryParts = [
     `Intent buckets: ${options.intent.intents.join(", ") || "behavior"}.`,
     topFiles.length > 0
@@ -1528,9 +1748,12 @@ const buildRequestDigest = (options: {
     options.warnings.some((warning) => warning.startsWith("docdex_no_hits") || warning === "docdex_low_confidence")
       ? "Request interpretation relies on fuzzy matching and should be validated against selected files."
       : "Request interpretation is grounded in current repository hits and selected files.",
+    markupOnlyFocus && scriptCandidates.length > 0
+      ? `Focus is markup-only; interactive behavior may require script files (e.g., ${scriptCandidates.join(", ")}).`
+      : null,
   ];
   return {
-    summary: summaryParts.join(" "),
+    summary: summaryParts.filter((part): part is string => Boolean(part)).join(" "),
     refined_query: refinedQuery,
     confidence,
     signals: signalTerms,
@@ -1605,6 +1828,47 @@ const scoreCandidate = (candidate: string, tokens: string[], intent: IntentSigna
     }
   }
   return score;
+};
+
+const filterRecentFilesForRequest = (
+  paths: string[],
+  request: string,
+  intent: IntentSignals,
+): string[] => {
+  if (!paths.length) return [];
+  const trimmed = filterPlaceholderPaths(paths, request);
+  if (trimmed.length === 0) return [];
+  const tokens = tokenizeRequest(request);
+  if (tokens.length === 0) return trimmed;
+  const scored = trimmed.map((entry) => ({
+    entry,
+    score: scoreCandidate(entry, tokens, intent),
+  }));
+  const relevant = scored.filter((item) => item.score > 0).map((item) => item.entry);
+  return relevant.length > 0 ? relevant : trimmed;
+};
+
+const filterSelectionHits = (
+  hits: Array<{ doc_id?: string; path?: string; score?: number }>,
+  request: string,
+  intent: IntentSignals,
+  docTask: boolean,
+): Array<{ doc_id?: string; path?: string; score?: number }> => {
+  if (!hits.length) return hits;
+  const tokens = tokenizeRequest(request);
+  const requestLower = request.toLowerCase();
+  const filtered = hits.filter((hit) => {
+    if (!hit.path) return true;
+    const normalized = normalizePath(hit.path);
+    if (isPlaceholderPath(normalized) && !requestLower.includes(normalized.toLowerCase())) {
+      return false;
+    }
+    const score = tokens.length > 0 ? scoreCandidate(normalized, tokens, intent) : 0;
+    if (score > 0) return true;
+    if (!docTask && isConfigPath(normalized)) return false;
+    return true;
+  });
+  return filtered.length > 0 ? filtered : hits;
 };
 
 const collectFallbackCandidates = async (
@@ -1905,17 +2169,24 @@ export class ContextAssembler {
     const supplementalQueries = uniqueValues(options.additionalQueries ?? []);
     let queries = uniqueValues([requestQuery, ...supplementalQueries, ...baseQueries]).slice(0, maxQueries);
     const preferencesDetected = extractPreferences(request);
-    const preferredSeed = filterExcludedPaths(
-      uniqueValues([
-        ...(this.options.preferredFiles ?? []),
-        ...(options.preferredFiles ?? []),
-      ]),
+    const preferredSeed = filterPlaceholderPaths(
+      filterExcludedPaths(
+        uniqueValues([
+          ...(this.options.preferredFiles ?? []),
+          ...(options.preferredFiles ?? []),
+        ]),
+      ),
+      request,
     );
-    const recentFiles = filterExcludedPaths(
-      uniqueValues([
-        ...(this.options.recentFiles ?? []),
-        ...(options.recentFiles ?? []),
-      ]),
+    const recentFiles = filterRecentFilesForRequest(
+      filterExcludedPaths(
+        uniqueValues([
+          ...(this.options.recentFiles ?? []),
+          ...(options.recentFiles ?? []),
+        ]),
+      ),
+      request,
+      intent,
     );
     const contextManager = this.contextManager;
     const laneScope = this.laneScope;
@@ -1972,6 +2243,14 @@ export class ContextAssembler {
       const missing: string[] = ["docdex_unavailable"];
       if (contextFiles.length === 0) missing.push("no_context_files_loaded");
       if (!selection || selection.focus.length === 0) missing.push("no_focus_files_selected");
+      const readmeSummary = await loadReadmeSummary(this.options.workspaceRoot);
+      const projectInfo: ContextProjectInfo | undefined = this.options.workspaceRoot
+        ? {
+            workspace_root: this.options.workspaceRoot,
+            readme_path: readmeSummary?.path,
+            readme_summary: readmeSummary?.summary,
+          }
+        : undefined;
       const bundle: ContextBundle = {
         request,
         intent,
@@ -1986,6 +2265,7 @@ export class ContextAssembler {
         preferences_detected: preferencesDetected,
         profile: [],
         files: contextFiles.length > 0 ? contextFiles : undefined,
+        project_info: projectInfo,
         selection,
         index: { last_updated_epoch_ms: 0, num_docs: 0 },
         warnings,
@@ -2002,6 +2282,7 @@ export class ContextAssembler {
       const sanitizedBundle = sanitizeContextBundleForOutput(bundle);
       bundle.serialized = serializeContext(sanitizedBundle, {
         mode: this.options.serializationMode ?? "bundle_text",
+        audience: "librarian",
       });
       return bundle;
     }
@@ -2099,6 +2380,7 @@ export class ContextAssembler {
     let preferredFiles = filterExcludedPaths(
       uniqueValues([...preferredSeed, ...inferredPreferred, ...companionPreferred]),
     );
+    preferredFiles = filterPlaceholderPaths(preferredFiles, request);
     if (docTask && supportDocs.length > 0) {
       preferredFiles = filterExcludedPaths(
         uniqueValues([...preferredFiles, ...supportDocs]),
@@ -2298,6 +2580,8 @@ export class ContextAssembler {
     }
 
     uniqueHits = reorderHits(uniqueHits);
+    const selectionHits = filterSelectionHits(uniqueHits, request, intent, docTask);
+    const hitsForSelection = selectionHits.length > 0 ? selectionHits : uniqueHits;
 
     const selectionOptions = {
       maxFiles: this.options.maxFiles,
@@ -2306,7 +2590,7 @@ export class ContextAssembler {
     const computeSelection = (impactInput: ContextImpactSummary[]) =>
       selectContextFiles(
         {
-          hits: uniqueHits,
+          hits: hitsForSelection,
           impact: impactInput,
           intent,
           docTask,
@@ -2668,7 +2952,12 @@ export class ContextAssembler {
       const clientWithTree = this.client as unknown as { tree?: (options?: unknown) => Promise<unknown> };
       if (typeof clientWithTree.tree === "function") {
         try {
-          const treeOptions = { includeHidden: true, path: ".", maxDepth: 64 };
+          const treeOptions = {
+            includeHidden: true,
+            path: ".",
+            maxDepth: 64,
+            extraExcludes: REPO_TREE_EXCLUDES,
+          };
           emitToolCall("docdex.tree", treeOptions);
           const treeResult = await clientWithTree.tree(treeOptions);
           const treeText = extractTreeText(treeResult) ?? toStringPayload(treeResult);
@@ -2876,6 +3165,7 @@ export class ContextAssembler {
     }
 
     const manifestFiles = await detectManifests(this.options.workspaceRoot);
+    const readmeSummary = await loadReadmeSummary(this.options.workspaceRoot);
     const fileTypeInputs = uniqueValues([
       ...fileHints,
       ...(selection?.all ?? []),
@@ -2884,6 +3174,8 @@ export class ContextAssembler {
     ]);
     const projectInfo: ContextProjectInfo = {
       workspace_root: this.options.workspaceRoot,
+      readme_path: readmeSummary?.path,
+      readme_summary: readmeSummary?.summary,
       docs: supportDocs.length > 0 ? supportDocs : undefined,
       manifests: manifestFiles.length > 0 ? manifestFiles : undefined,
       file_types: fileTypeInputs.length > 0 ? extractFileTypes(fileTypeInputs) : undefined,
@@ -2937,6 +3229,7 @@ export class ContextAssembler {
     const sanitizedBundle = sanitizeContextBundleForOutput(bundle);
     bundle.serialized = serializeContext(sanitizedBundle, {
       mode: this.options.serializationMode ?? "bundle_text",
+      audience: "librarian",
     });
     emitStatus("done", "librarian: bundle ready");
     return bundle;
@@ -2957,6 +3250,49 @@ export class ContextAssembler {
           results.push({ type: "docdex.search", query: need.params.query, hits: hits as unknown[] });
           continue;
         }
+        if (need.tool === "docdex.open") {
+          const payload = await this.client.openFile(need.params.path, {
+            startLine: need.params.start_line,
+            endLine: need.params.end_line,
+            head: need.params.head,
+            clamp: need.params.clamp,
+          });
+          results.push({
+            type: "docdex.open",
+            path: need.params.path,
+            content: extractDocdexContent(payload),
+          });
+          continue;
+        }
+        if (need.tool === "docdex.snippet") {
+          const payload = await this.client.openSnippet(need.params.doc_id, {
+            window: need.params.window,
+          });
+          results.push({
+            type: "docdex.snippet",
+            doc_id: need.params.doc_id,
+            content: extractDocdexContent(payload),
+          });
+          continue;
+        }
+        if (need.tool === "docdex.symbols") {
+          const payload = await this.client.symbols(need.params.file);
+          results.push({
+            type: "docdex.symbols",
+            file: need.params.file,
+            symbols: payload as unknown,
+          });
+          continue;
+        }
+        if (need.tool === "docdex.ast") {
+          const payload = await this.client.ast(need.params.file, need.params.max_nodes);
+          results.push({
+            type: "docdex.ast",
+            file: need.params.file,
+            nodes: payload as unknown,
+          });
+          continue;
+        }
         if (need.tool === "docdex.web") {
           const payload = await this.client.webResearch(need.params.query, {
             forceWeb: need.params.force_web,
@@ -2965,6 +3301,19 @@ export class ContextAssembler {
             type: "docdex.web",
             query: need.params.query,
             results: payload as unknown[],
+          });
+          continue;
+        }
+        if (need.tool === "docdex.impact_diagnostics") {
+          const payload = await this.client.impactDiagnostics({
+            file: need.params.file,
+            limit: need.params.limit,
+            offset: need.params.offset,
+          });
+          results.push({
+            type: "docdex.impact_diagnostics",
+            file: need.params.file,
+            diagnostics: payload as unknown,
           });
           continue;
         }
@@ -2979,6 +3328,36 @@ export class ContextAssembler {
             file: need.params.file,
             inbound: Array.isArray(graphRecord.inbound) ? graphRecord.inbound : [],
             outbound: Array.isArray(graphRecord.outbound) ? graphRecord.outbound : [],
+          });
+          continue;
+        }
+        if (need.tool === "docdex.tree") {
+          const payload = await this.client.tree({
+            path: need.params.path,
+            maxDepth: need.params.max_depth,
+            dirsOnly: need.params.dirs_only,
+            includeHidden: need.params.include_hidden,
+          });
+          results.push({
+            type: "docdex.tree",
+            tree: extractTreeText(payload) ?? toStringPayload(payload),
+          });
+          continue;
+        }
+        if (need.tool === "docdex.dag_export") {
+          const sessionId = need.params.session_id ?? laneScope?.runId;
+          if (!sessionId) {
+            throw new Error("docdex.dag_export requires session_id");
+          }
+          const payload = await this.client.dagExport(sessionId, {
+            format: need.params.format,
+            maxNodes: need.params.max_nodes,
+          });
+          results.push({
+            type: "docdex.dag_export",
+            session_id: sessionId,
+            format: need.params.format,
+            content: payload as unknown,
           });
           continue;
         }

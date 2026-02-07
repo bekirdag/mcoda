@@ -79,6 +79,23 @@ export interface JobCheckpoint {
   details?: Record<string, unknown>;
 }
 
+export interface JobIterationProgress {
+  current: number;
+  max: number;
+  phase?: string;
+}
+
+export interface JobProgressUpdate {
+  stage: string;
+  message: string;
+  iteration?: JobIterationProgress;
+  details?: Record<string, unknown>;
+  totalItems?: number;
+  processedItems?: number;
+  payload?: Record<string, unknown>;
+  heartbeat?: boolean;
+}
+
 export interface JobLogRow {
   timestamp: string;
   sequence?: number | null;
@@ -302,6 +319,16 @@ export class JobService {
     }
     const jobs = await this.readJsonArray<JobRecord>(this.jobsStorePath);
     return jobs.find((j) => j.id === jobId);
+  }
+
+  async readManifest(jobId: string): Promise<Record<string, unknown> | undefined> {
+    const manifestPath = this.manifestPath(jobId);
+    try {
+      const raw = await fs.readFile(manifestPath, "utf8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
   }
 
   async readCheckpoints(jobId: string): Promise<JobCheckpoint[]> {
@@ -615,6 +642,105 @@ export class JobService {
     } else if (state === "running") {
       JobService.registerActiveJob(jobId, this, updated.commandRunId);
     }
+  }
+
+  private async computeElapsed(jobId: string): Promise<{ elapsedMs?: number; elapsedSeconds?: number }> {
+    const job = await this.getJob(jobId);
+    if (!job?.createdAt) return {};
+    const startedAt = Date.parse(job.createdAt);
+    if (Number.isNaN(startedAt)) return {};
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    return { elapsedMs, elapsedSeconds: Math.round(elapsedMs / 1000) };
+  }
+
+  async recordJobProgress(jobId: string, input: JobProgressUpdate): Promise<void> {
+    const elapsed = await this.computeElapsed(jobId);
+    const payload: Record<string, unknown> = {
+      docgen_stage: input.stage,
+      docgen_status_message: input.message,
+    };
+    if (elapsed.elapsedMs !== undefined) {
+      payload.docgen_elapsed_ms = elapsed.elapsedMs;
+      payload.docgen_elapsed_seconds = elapsed.elapsedSeconds;
+    }
+    if (input.iteration) {
+      payload.docgen_iteration_current = input.iteration.current;
+      payload.docgen_iteration_max = input.iteration.max;
+      if (input.iteration.phase) {
+        payload.docgen_iteration_phase = input.iteration.phase;
+      }
+    }
+    if (input.payload && Object.keys(input.payload).length > 0) {
+      Object.assign(payload, input.payload);
+    }
+
+    await this.updateJobStatus(jobId, "running", {
+      totalItems: input.totalItems,
+      processedItems: input.processedItems,
+      lastCheckpoint: input.stage,
+      jobStateDetail: input.message,
+      payload,
+    });
+
+    const checkpointDetails: Record<string, unknown> = { message: input.message };
+    if (elapsed.elapsedMs !== undefined) {
+      checkpointDetails.elapsedMs = elapsed.elapsedMs;
+      checkpointDetails.elapsedSeconds = elapsed.elapsedSeconds;
+    }
+    if (input.iteration) {
+      checkpointDetails.iteration = input.iteration;
+    }
+    if (input.details && Object.keys(input.details).length > 0) {
+      Object.assign(checkpointDetails, input.details);
+    }
+
+    await this.writeCheckpoint(jobId, {
+      stage: input.stage,
+      timestamp: nowIso(),
+      details: checkpointDetails,
+    });
+
+    if (input.heartbeat) {
+      const parts = [`[docgen heartbeat] ${input.message}`];
+      if (input.iteration) {
+        const phase = input.iteration.phase ? `:${input.iteration.phase}` : "";
+        parts.push(`iter=${input.iteration.current}/${input.iteration.max}${phase}`);
+      }
+      if (elapsed.elapsedSeconds !== undefined) {
+        parts.push(`elapsed=${elapsed.elapsedSeconds}s`);
+      }
+      await this.appendLog(jobId, `${parts.join(" ")}\n`);
+    }
+  }
+
+  async recordIterationProgress(
+    jobId: string,
+    input: { current: number; max: number; phase: string; details?: Record<string, unknown> },
+  ): Promise<void> {
+    const stage = `iteration_${input.current}_${input.phase}`;
+    const phaseLabel =
+      input.phase === "recheck"
+        ? "Re-check"
+        : input.phase === "review"
+          ? "Review"
+          : input.phase === "patch"
+            ? "Patch"
+            : input.phase;
+    const payload: Record<string, unknown> = {
+      iteration: { current: input.current, max: input.max, phase: input.phase },
+    };
+    if (input.details && Object.keys(input.details).length > 0) {
+      payload.iterationDetails = input.details;
+    }
+    await this.recordJobProgress(jobId, {
+      stage,
+      message: `${phaseLabel} iteration ${input.current}/${input.max}`,
+      iteration: { current: input.current, max: input.max, phase: input.phase },
+      details: input.details,
+      totalItems: input.max,
+      processedItems: input.current,
+      payload,
+    });
   }
 
   async writeCheckpoint(jobId: string, checkpoint: JobCheckpoint): Promise<void> {

@@ -106,3 +106,79 @@ test("JobService records agent attribution for jobs and command runs", async () 
     }
   });
 });
+
+test("JobService reads job manifest data", async () => {
+  await withTempHome(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-jobservice-"));
+    const previous = process.env.MCODA_DISABLE_DB;
+    process.env.MCODA_DISABLE_DB = "1";
+    try {
+      const service = new JobService(dir);
+      const commandRun = await service.startCommandRun("openapi-from-docs", "proj");
+      const job = await service.startJob("openapi_change", commandRun.id, "proj", {
+        commandName: "openapi-from-docs",
+        payload: { resumeSupported: true },
+      });
+      const manifest = await service.readManifest(job.id);
+      assert.equal((manifest as any)?.job_id ?? (manifest as any)?.id, job.id);
+      assert.equal((manifest as any)?.type ?? (manifest as any)?.job_type, "openapi_change");
+      assert.equal((manifest as any)?.payload?.resumeSupported, true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.MCODA_DISABLE_DB;
+      } else {
+        process.env.MCODA_DISABLE_DB = previous;
+      }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("JobService records iteration progress in manifest and checkpoints", async () => {
+  await withTempHome(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-jobservice-"));
+    const previous = process.env.MCODA_DISABLE_DB;
+    process.env.MCODA_DISABLE_DB = "1";
+    try {
+      const service = new JobService(dir);
+      const commandRun = await service.startCommandRun("docs-generate", "proj");
+      const job = await service.startJob("docs_generate", commandRun.id, "proj", {
+        commandName: "docs-generate",
+        totalItems: 3,
+        processedItems: 0,
+      });
+
+      await service.recordIterationProgress(job.id, {
+        current: 1,
+        max: 3,
+        phase: "review",
+        details: { note: "phase" },
+      });
+
+      const manifest = await service.readManifest(job.id);
+      assert.equal((manifest as any)?.lastCheckpoint, "iteration_1_review");
+      assert.deepEqual((manifest as any)?.payload?.iteration, {
+        current: 1,
+        max: 3,
+        phase: "review",
+      });
+      assert.equal((manifest as any)?.payload?.iterationDetails?.note, "phase");
+      assert.equal((manifest as any)?.payload?.docgen_stage, "iteration_1_review");
+      assert.equal((manifest as any)?.payload?.docgen_iteration_current, 1);
+      assert.equal((manifest as any)?.payload?.docgen_iteration_max, 3);
+      assert.equal((manifest as any)?.payload?.docgen_iteration_phase, "review");
+      assert.equal((manifest as any)?.payload?.docgen_status_message, "Review iteration 1/3");
+
+      const checkpoints = await service.readCheckpoints(job.id);
+      assert.ok(checkpoints.some((ckpt) => ckpt.stage === "iteration_1_review"));
+      await service.close();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.MCODA_DISABLE_DB;
+      } else {
+        process.env.MCODA_DISABLE_DB = previous;
+      }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});

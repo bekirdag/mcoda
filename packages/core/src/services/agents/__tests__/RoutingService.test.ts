@@ -178,6 +178,30 @@ test("falls back when workspace default lacks required capabilities", async () =
   assert.equal(resolved.source, "global_default");
 });
 
+test("honors extra required capabilities when resolving docgen agents", async () => {
+  const agents = new StubAgentService();
+  const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a-global", agent("a-global", "global"));
+  routingApi.agents.set("a-workspace", agent("a-workspace", "workspace"));
+  agents.register(agent("a-global", "global"));
+  agents.register(agent("a-workspace", "workspace"));
+  routingApi.defaults.set("__GLOBAL__", new Map([["pdr", "a-global"]]));
+  routingApi.defaults.set(workspace.workspaceId, new Map([["pdr", "a-workspace"]]));
+  agents.capabilities.set("a-global", ["doc_generation", "docdex_query"]);
+  agents.capabilities.set("a-workspace", ["docdex_query"]);
+
+  const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
+  const resolved = await service.resolveAgentForCommand({
+    workspace: workspace as any,
+    commandName: "pdr",
+    requiredCapabilities: ["doc_generation"],
+  });
+
+  assert.equal(resolved.agentId, "a-global");
+  assert.equal(resolved.source, "global_default");
+  assert.ok(resolved.requiredCapabilities.includes("doc_generation"));
+});
+
 test("skips unhealthy or incapable agents and falls back", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));

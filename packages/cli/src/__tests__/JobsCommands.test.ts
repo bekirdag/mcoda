@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { parseJobArgs, renderJobTokens } from "../commands/jobs/JobsCommands.js";
+import { formatDocgenDetail, formatOpenapiDetail, parseJobArgs, renderJobTokens } from "../commands/jobs/JobsCommands.js";
 
 const captureConsole = (fn: () => void): string => {
   const output: string[] = [];
@@ -101,5 +101,26 @@ describe("job CLI parsing", () => {
     assert.match(header, /CACHE_READ/);
     assert.match(header, /CACHE_WRITE/);
     assert.match(output, /1500/);
+  });
+
+  it("formats openapi detail with iteration and variant", () => {
+    const detail = formatOpenapiDetail({
+      openapi_stage: "draft",
+      openapi_variant: "primary",
+      openapi_iteration_current: 2,
+      openapi_iteration_max: 4,
+    });
+    assert.equal(detail, "openapi:draft variant:primary iter:2/4");
+  });
+
+  it("formats docgen detail with iteration and elapsed", () => {
+    const detail = formatDocgenDetail({
+      docgen_stage: "review",
+      docgen_iteration_current: 1,
+      docgen_iteration_max: 3,
+      docgen_elapsed_seconds: 75,
+      docgen_status_message: "Review iteration 1/3",
+    });
+    assert.equal(detail, "Review iteration 1/3 iter:1/3 elapsed:1m15s");
   });
 });

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { SystemUpdateService } from "../SystemUpdateService.js";
+import { ToolDenylist } from "../ToolDenylist.js";
 
 test("SystemUpdateService persists channel preferences and update state", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-update-"));
@@ -37,4 +38,34 @@ test("SystemUpdateService persists channel preferences and update state", async 
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("ToolDenylist loads default, config, and env entries", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-denylist-"));
+  try {
+    await fs.writeFile(
+      path.join(dir, "config.json"),
+      JSON.stringify({ tools: { denylist: ["legacy-tool"] } }, null, 2),
+      "utf8",
+    );
+    const denylist = await ToolDenylist.load({
+      mcodaDir: dir,
+      env: { MCODA_TOOL_DENYLIST: "extra-tool" } as NodeJS.ProcessEnv,
+    });
+    assert.equal(denylist.match("gpt-creator"), "gpt-creator");
+    assert.equal(denylist.match("legacy-tool"), "legacy-tool");
+    assert.equal(denylist.match("extra-tool"), "extra-tool");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ToolDenylist findMatch and formatViolation include guidance", async () => {
+  const denylist = await ToolDenylist.load({
+    env: { MCODA_TOOL_DENYLIST: "legacy-tool" } as NodeJS.ProcessEnv,
+  });
+  assert.equal(denylist.findMatch([undefined, "legacy-tool", "other"]), "legacy-tool");
+  const message = denylist.formatViolation("gpt-creator");
+  assert.ok(message.includes("gpt-creator"));
+  assert.ok(message.toLowerCase().includes("suggested"));
 });

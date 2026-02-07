@@ -1,10 +1,9 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "./JobService.js";
 import { CodeReviewService } from "../review/CodeReviewService.js";
 import { QaTasksService } from "../execution/QaTasksService.js";
 import { DocsService } from "../docs/DocsService.js";
+import { OpenApiService } from "../openapi/OpenApiService.js";
 
 export interface ResumeOptions {
   agentName?: string;
@@ -20,13 +19,7 @@ export class JobResumeService {
   }
 
   private async readManifest(jobId: string): Promise<Record<string, unknown> | undefined> {
-    const manifestPath = path.join(this.workspace.mcodaDir, "jobs", jobId, "manifest.json");
-    try {
-      const raw = await fs.readFile(manifestPath, "utf8");
-      return JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      return undefined;
-    }
+    return this.jobService.readManifest(jobId);
   }
 
   private assertResumeAllowed(job: any, manifest?: Record<string, unknown>): void {
@@ -110,6 +103,28 @@ export class JobResumeService {
         }
       } finally {
         await docs.close();
+      }
+      return;
+    }
+
+    if (command.includes("openapi") || job.type === "openapi_change") {
+      const openapi = await OpenApiService.create(this.workspace, { noTelemetry: options.noTelemetry });
+      try {
+        const cliVersion =
+          (job.payload as any)?.cliVersion ??
+          (manifest as any)?.cliVersion ??
+          (manifest as any)?.metadata?.cliVersion ??
+          "0.0.0";
+        await openapi.generateFromDocs({
+          workspace: this.workspace,
+          projectKey: (job as any).projectKey ?? (job.payload as any)?.projectKey,
+          resumeJobId: jobId,
+          agentName: options.agentName,
+          agentStream: true,
+          cliVersion,
+        });
+      } finally {
+        await openapi.close();
       }
       return;
     }

@@ -1,0 +1,15 @@
+openapi: 3.1.0
+info:
+  title: Demo API
+  version: 0.1.0
+paths:
+  /api/v1/users:
+    get:
+      responses:
+        '200':
+          description: ok
+  /api/v1/orders:
+    post:
+      responses:
+        '200':
+          description: ok

@@ -131,6 +131,7 @@ test("ContextAssembler builds a complete context bundle", { concurrency: false }
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-"));
   mkdirSync(path.join(tmpDir, "src"), { recursive: true });
   writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  writeFileSync(path.join(tmpDir, "README.md"), "# Sample Repo\nTest project.", "utf8");
   const client = new FakeDocdexClient() as unknown as DocdexClient;
   const assembler = new ContextAssembler(client, { maxQueries: 2, workspaceRoot: tmpDir, readStrategy: "fs" });
   const bundle = await assembler.assemble("Update src/index.ts formatting");
@@ -145,6 +146,8 @@ test("ContextAssembler builds a complete context bundle", { concurrency: false }
   assert.equal(bundle.impact_diagnostics.length, 1);
   assert.ok(bundle.search_results && bundle.search_results.length > 0);
   assert.equal(bundle.project_info?.workspace_root, tmpDir);
+  assert.equal(bundle.project_info?.readme_path, "README.md");
+  assert.match(bundle.project_info?.readme_summary ?? "", /Sample Repo/);
   assert.ok(bundle.selection?.focus.includes("src/index.ts"));
   assert.match(bundle.repo_map ?? "", /index\.ts/);
   assert.match(bundle.repo_map_raw ?? "", /index\.ts/);
@@ -167,7 +170,12 @@ test("ContextAssembler always includes full repo tree when repo map is enabled",
 
   const fake = client as unknown as FakeDocdexClient;
   assert.equal(fake.treeCalls.length, 1);
-  assert.deepEqual(fake.treeCalls[0], { includeHidden: true, path: ".", maxDepth: 64 });
+  assert.deepEqual(fake.treeCalls[0], {
+    includeHidden: true,
+    path: ".",
+    maxDepth: 64,
+    extraExcludes: [".docdex", ".docdex_state", ".mcoda", ".git", ".DS_Store"],
+  });
   assert.match(bundle.repo_map ?? "", /repo/);
   assert.match(bundle.repo_map_raw ?? "", /repo/);
 });
@@ -345,6 +353,97 @@ test("ContextAssembler infers HTML focus when request targets root page", { conc
   assert.ok(bundle.warnings.includes("librarian_companion_candidates"));
 });
 
+test("ContextAssembler filters placeholder recent files from selection", { concurrency: false }, async () => {
+  class RecentFileClient extends FakeDocdexClient {
+    async files(): Promise<unknown> {
+      return {
+        results: [
+          { rel_path: "src/public/index.html" },
+          { rel_path: "src/public/style.css" },
+          { rel_path: "src/public/app.js" },
+          { rel_path: "path/to/file.ts" },
+        ],
+      };
+    }
+
+    async search(): Promise<unknown> {
+      return {
+        hits: [
+          { doc_id: "doc-1", path: "src/public/index.html", score: 10 },
+          { doc_id: "doc-2", path: "src/public/style.css", score: 9 },
+        ],
+      };
+    }
+  }
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-recent-filter-"));
+  mkdirSync(path.join(tmpDir, "src/public"), { recursive: true });
+  mkdirSync(path.join(tmpDir, "path/to"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/public/index.html"), "<h1>Welcome</h1>", "utf8");
+  writeFileSync(path.join(tmpDir, "src/public/style.css"), ".app { color: black; }", "utf8");
+  writeFileSync(path.join(tmpDir, "src/public/app.js"), "console.log('app');\n", "utf8");
+  writeFileSync(path.join(tmpDir, "path/to/file.ts"), "export const placeholder = true;\n", "utf8");
+
+  const client = new RecentFileClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 2,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+  });
+  const bundle = await assembler.assemble("Add a top menu link on the header", {
+    recentFiles: ["path/to/file.ts", "src/public/app.js"],
+  });
+
+  assert.ok(bundle.selection?.all.includes("src/public/app.js"));
+  assert.ok(!bundle.selection?.all.includes("path/to/file.ts"));
+});
+
+test("ContextAssembler filters low-relevance config hits from selection", { concurrency: false }, async () => {
+  class ConfigHitClient extends FakeDocdexClient {
+    async files(): Promise<unknown> {
+      return {
+        results: [
+          { rel_path: "src/public/index.html" },
+          { rel_path: "src/public/style.css" },
+          { rel_path: "openapi/spec.yaml" },
+        ],
+      };
+    }
+
+    async search(): Promise<unknown> {
+      return {
+        hits: [
+          { doc_id: "doc-1", path: "src/public/index.html", score: 10 },
+          { doc_id: "doc-2", path: "openapi/spec.yaml", score: 9 },
+          { doc_id: "doc-3", path: "src/public/style.css", score: 8 },
+        ],
+      };
+    }
+  }
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-hit-"));
+  mkdirSync(path.join(tmpDir, "src/public"), { recursive: true });
+  mkdirSync(path.join(tmpDir, "openapi"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/public/index.html"), "<h1>Welcome</h1>", "utf8");
+  writeFileSync(path.join(tmpDir, "src/public/style.css"), ".app { color: black; }", "utf8");
+  writeFileSync(path.join(tmpDir, "openapi/spec.yaml"), "openapi: 3.1.0\n", "utf8");
+
+  const client = new ConfigHitClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 3,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+  });
+  const bundle = await assembler.assemble("Add a header to the home page");
+
+  assert.ok(
+    bundle.search_results?.some((result) =>
+      result.hits.some((hit) => hit.path === "openapi/spec.yaml"),
+    ),
+  );
+  assert.ok(!bundle.selection?.all.includes("openapi/spec.yaml"));
+});
+
 test("ContextAssembler adds script candidates for code-writing requests when doc hits dominate", { concurrency: false }, async () => {
   class ScriptFallbackClient extends FakeDocdexClient {
     async files(): Promise<unknown> {
@@ -403,6 +502,53 @@ test("ContextAssembler includes query signals and request digest", { concurrency
   assert.ok(bundle.query_signals?.keyword_phrases.some((entry) => entry.includes("heading colors")));
   assert.equal(typeof bundle.request_digest?.summary, "string");
   assert.ok((bundle.request_digest?.refined_query ?? "").length > 0);
+});
+
+test("ContextAssembler enriches digest candidates for markup-only focus", { concurrency: false }, async () => {
+  class MarkupOnlyClient extends FakeDocdexClient {
+    async files(): Promise<unknown> {
+      return {
+        results: [
+          { rel_path: "src/public/index.html" },
+          { rel_path: "src/public/style.css" },
+          { rel_path: "src/public/app.js" },
+          { rel_path: "docs/rfp.md" },
+        ],
+      };
+    }
+
+    async search(): Promise<unknown> {
+      return {
+        hits: [
+          { doc_id: "doc-1", path: "src/public/index.html", score: 10 },
+          { doc_id: "doc-2", path: "src/public/style.css", score: 9 },
+          { doc_id: "doc-3", path: "docs/rfp.md", score: 8 },
+          { doc_id: "doc-4", path: "docs/pdr/test-web-app.md", score: 7 },
+        ],
+      };
+    }
+  }
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-digest-markup-"));
+  mkdirSync(path.join(tmpDir, "src/public"), { recursive: true });
+  mkdirSync(path.join(tmpDir, "docs/pdr"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/public/index.html"), "<h1>Welcome</h1>", "utf8");
+  writeFileSync(path.join(tmpDir, "src/public/style.css"), ".app { color: black; }", "utf8");
+  writeFileSync(path.join(tmpDir, "src/public/app.js"), "export const boot = () => {};\n", "utf8");
+  writeFileSync(path.join(tmpDir, "docs/rfp.md"), "# RFP", "utf8");
+  writeFileSync(path.join(tmpDir, "docs/pdr/test-web-app.md"), "# PDR", "utf8");
+
+  const client = new MarkupOnlyClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 4,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+  });
+  const bundle = await assembler.assemble("Add a simple 2D duck shoot game page to the web app");
+
+  assert.ok(bundle.request_digest?.candidate_files?.includes("src/public/app.js"));
+  assert.equal(bundle.request_digest?.confidence, "medium");
+  assert.ok((bundle.request_digest?.summary ?? "").includes("markup-only"));
 });
 
 test("ContextAssembler adds backend candidates for endpoint intent when docs dominate hits", { concurrency: false }, async () => {
@@ -819,7 +965,14 @@ test("ContextAssembler prunes contradictory memory facts", { concurrency: false 
   }
 
   const client = new ContradictoryMemoryClient() as unknown as DocdexClient;
-  const assembler = new ContextAssembler(client, { maxQueries: 1 });
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-memory-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const x = 1;\n", "utf8");
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 1,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+  });
   const bundle = await assembler.assemble("Change the welcome header color");
 
   assert.equal(bundle.memory.length, 1);

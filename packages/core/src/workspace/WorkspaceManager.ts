@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -62,6 +63,144 @@ const dirHasEntries = async (candidate: string): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+const STATE_DIR_NAMES = [".mcoda", ".mcoda-state", ".mcoda_state"];
+
+const resolveUniqueTarget = async (base: string): Promise<string> => {
+  if (!(await fileExists(base))) return base;
+  const parent = path.dirname(base);
+  const stem = path.basename(base);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = path.join(parent, `${stem}-${randomUUID().slice(0, 8)}`);
+    if (!(await fileExists(candidate))) return candidate;
+  }
+  return path.join(parent, `${stem}-${Date.now()}`);
+};
+
+const copyLegacyConfigIfMissing = async (
+  sourceDir: string,
+  targetDir: string,
+  warnings: string[],
+): Promise<void> => {
+  const sourceConfig = path.join(sourceDir, "config.json");
+  const targetConfig = path.join(targetDir, "config.json");
+  if (!(await fileExists(sourceConfig))) return;
+  if (await fileExists(targetConfig)) return;
+  try {
+    await PathHelper.ensureDir(targetDir);
+    await fs.copyFile(sourceConfig, targetConfig);
+    warnings.push(`Copied legacy workspace config from ${sourceConfig} to ${targetConfig}.`);
+  } catch (error) {
+    warnings.push(
+      `Unable to copy legacy workspace config from ${sourceConfig}: ${(error as Error).message ?? String(error)}`,
+    );
+  }
+};
+
+export const cleanupWorkspaceStateDirs = async (input: {
+  workspaceRoot: string;
+  mcodaDir: string;
+}): Promise<string[]> => {
+  const warnings: string[] = [];
+  const workspaceRoot = path.resolve(input.workspaceRoot);
+  const mcodaDir = path.resolve(input.mcodaDir);
+
+  for (const name of STATE_DIR_NAMES) {
+    const source = path.join(workspaceRoot, name);
+    if (!(await fileExists(source))) continue;
+    if (PathHelper.normalizePathCase(source) === PathHelper.normalizePathCase(mcodaDir)) {
+      continue;
+    }
+    let stat;
+    try {
+      stat = await fs.lstat(source);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) {
+      warnings.push(`Skipped legacy state directory symlink at ${source}.`);
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      warnings.push(`Skipped legacy state path ${source} because it is not a directory.`);
+      continue;
+    }
+    if (!(await dirHasEntries(source))) {
+      try {
+        await fs.rm(source, { recursive: true, force: true });
+        warnings.push(`Removed empty legacy state directory at ${source}.`);
+      } catch (error) {
+        warnings.push(
+          `Unable to remove empty legacy state directory at ${source}: ${(error as Error).message ?? String(error)}`,
+        );
+      }
+      continue;
+    }
+
+    if (name === ".mcoda") {
+      await copyLegacyConfigIfMissing(source, mcodaDir, warnings);
+    }
+
+    const targetName = name.startsWith(".") ? name.slice(1) : name;
+    const targetBase = path.join(mcodaDir, "legacy", targetName);
+    const target = await resolveUniqueTarget(targetBase);
+    await PathHelper.ensureDir(path.dirname(target));
+    try {
+      await fs.rename(source, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EXDEV") {
+        try {
+          await fs.cp(source, target, { recursive: true });
+          await fs.rm(source, { recursive: true, force: true });
+        } catch (copyError) {
+          warnings.push(
+            `Unable to relocate legacy state directory from ${source}: ${(copyError as Error).message ?? String(copyError)}`,
+          );
+          continue;
+        }
+      } else {
+        warnings.push(
+          `Unable to relocate legacy state directory from ${source}: ${(error as Error).message ?? String(error)}`,
+        );
+        continue;
+      }
+    }
+    warnings.push(`Relocated legacy state directory from ${source} to ${target}.`);
+  }
+
+  return warnings;
+};
+
+export const resolveDocgenStatePath = (input: {
+  outputPath: string;
+  mcodaDir: string;
+  jobId: string;
+  commandName: string;
+}): { statePath: string; warnings: string[] } => {
+  const warnings: string[] = [];
+  const outputPath = path.resolve(input.outputPath);
+  const mcodaDir = path.resolve(input.mcodaDir);
+  const tempDir = path.resolve(os.tmpdir());
+  const allowedRoots = [mcodaDir, tempDir];
+  const isAllowed = allowedRoots.some((root) => PathHelper.isPathInside(root, outputPath));
+  if (isAllowed) {
+    return { statePath: outputPath, warnings };
+  }
+  const basename = path.basename(outputPath) || "docgen.md";
+  const statePath = path.join(
+    mcodaDir,
+    "state",
+    "docgen",
+    input.commandName,
+    input.jobId,
+    basename,
+  );
+  warnings.push(
+    `Intermediate state redirected from ${outputPath} to ${statePath} to keep docgen state under .mcoda or OS temp directories.`,
+  );
+  return { statePath, warnings };
 };
 
 const maybeCopyLegacyWorkspace = async (sourceDir: string, targetDir: string): Promise<void> => {

@@ -2,6 +2,7 @@ import type { ContextBundle, ContextFileEntry, SerializedContext } from "./Types
 
 export interface ContextSerializerOptions {
   mode: "bundle_text" | "json";
+  audience?: "librarian" | "builder";
 }
 
 const estimateTokens = (content: string): number => Math.max(1, Math.ceil(content.length / 4));
@@ -20,6 +21,72 @@ const SECTION_LIMITS = {
   maxProfileChars: 240,
 };
 
+const WARNING_GLOSSARY: Record<
+  string,
+  { severity: "info" | "warn" | "error"; message: string }
+> = {
+  context_budget_pruned: {
+    severity: "warn",
+    message: "Some selected files were dropped to satisfy the context budget.",
+  },
+  context_budget_trimmed: {
+    severity: "info",
+    message: "Some file content was trimmed in the internal context load.",
+  },
+  docdex_files_failed: {
+    severity: "warn",
+    message: "Docdex file listing failed; file hints may be incomplete.",
+  },
+  docdex_index_empty: {
+    severity: "warn",
+    message: "Docdex index is empty; search results may be incomplete.",
+  },
+  docdex_index_stale: {
+    severity: "warn",
+    message: "Docdex index looks stale; search results may be incomplete.",
+  },
+  docdex_low_confidence: {
+    severity: "info",
+    message: "Low-confidence selection; treat context as exploratory.",
+  },
+  docdex_no_hits: {
+    severity: "info",
+    message: "Search returned no hits; selection may rely on heuristics.",
+  },
+  docdex_stats_failed: {
+    severity: "warn",
+    message: "Docdex stats failed; index status may be unknown.",
+  },
+  docdex_tree_failed: {
+    severity: "warn",
+    message: "Repo tree could not be retrieved; repo map may be missing.",
+  },
+  docdex_symbols_not_applicable: {
+    severity: "info",
+    message: "Symbols are not applicable for this file type.",
+  },
+  docdex_ast_not_applicable: {
+    severity: "info",
+    message: "AST analysis is not applicable for this file type.",
+  },
+  impact_graph_sparse: {
+    severity: "info",
+    message: "Impact graph is sparse; dependency info may be incomplete.",
+  },
+  librarian_companion_candidates: {
+    severity: "info",
+    message: "Companion files were added based on proximity or hints.",
+  },
+  memory_conflicts_pruned: {
+    severity: "info",
+    message: "Conflicting memory entries were pruned.",
+  },
+  memory_irrelevant_filtered: {
+    severity: "info",
+    message: "Irrelevant memory entries were filtered out.",
+  },
+};
+
 const truncateText = (value: string, maxChars: number): string => {
   if (maxChars <= 0 || value.length <= maxChars) return value;
   const marker = "\n/* ...truncated... */\n";
@@ -27,14 +94,57 @@ const truncateText = (value: string, maxChars: number): string => {
   return `${value.slice(0, maxChars - marker.length)}${marker}`;
 };
 
+const splitWarning = (warning: string): { code: string; detail?: string } => {
+  const separator = warning.indexOf(":");
+  if (separator === -1) return { code: warning };
+  return { code: warning.slice(0, separator), detail: warning.slice(separator + 1) };
+};
+
 const formatFileHeader = (file: ContextFileEntry): string => {
-  const role = file.role === "focus" ? "FOCUS FILE" : "DEPENDENCY";
-  const detail = file.truncated ? "TRUNCATED" : "FULL";
-  return `=== [${role}] ${file.path} (${detail}) ===`;
+  const role = file.role === "focus" ? "FOCUS FILE" : "PERIPHERY FILE";
+  const metadata: string[] = [`slice=${file.sliceStrategy}`, `origin=${file.origin}`];
+  if (file.truncated) metadata.push("truncated");
+  if (file.warnings?.length) metadata.push(`warnings=${file.warnings.join("|")}`);
+  return `=== [${role}] ${file.path} (${metadata.join(", ")}) ===`;
 };
 
 const listOrNone = (values: string[] = []): string =>
   values.length ? values.join(", ") : "none";
+
+const uniqueValues = (values: string[]): string[] => Array.from(new Set(values));
+
+const isTestPath = (value: string): boolean => {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  return (
+    normalized.includes("/__tests__/") ||
+    normalized.includes("/tests/") ||
+    normalized.includes(".test.") ||
+    normalized.endsWith(".spec.ts") ||
+    normalized.endsWith(".spec.js")
+  );
+};
+
+const isDocPath = (value: string): boolean => {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  if (normalized.startsWith("docs/")) return true;
+  return normalized.endsWith(".md") || normalized.endsWith(".mdx") || normalized.endsWith(".rst");
+};
+
+const formatProjectSummary = (bundle: ContextBundle): string[] => {
+  const lines: string[] = [];
+  const info = bundle.project_info;
+  const summary = info?.readme_summary?.trim();
+  const readmePath = info?.readme_path;
+  lines.push("PROJECT SUMMARY (README):");
+  if (readmePath) lines.push(`- Source: ${readmePath}`);
+  if (summary) {
+    lines.push(summary);
+  } else {
+    lines.push("Summary unavailable (README not found or empty).");
+  }
+  lines.push("");
+  return lines;
+};
 
 const formatRunSummary = (bundle: ContextBundle): string[] => {
   const lines: string[] = [];
@@ -73,7 +183,41 @@ const formatDeliverables = (bundle: ContextBundle): string[] => {
   return lines;
 };
 
-const formatContextCoverage = (bundle: ContextBundle): string[] => {
+const formatAgentProtocol = (): string[] => {
+  const lines: string[] = [];
+  lines.push("AGENT PROTOCOL (REQUEST MORE CONTEXT):");
+  lines.push(
+    "- This bundle lists file paths only; request file contents, symbols, AST, impact, or DAG when needed.",
+  );
+  lines.push("- Use AGENT_REQUEST v1 with one or more needs. Supported needs:");
+  lines.push(
+    "- docdex.search, docdex.open, docdex.snippet, docdex.symbols, docdex.ast, docdex.impact, docdex.impact_diagnostics, docdex.tree, docdex.dag_export, docdex.web",
+  );
+  lines.push("- file.read, file.list, file.diff");
+  lines.push("- Protocol reference: docs/codali-agent-protocol.md (request via file.read).");
+  lines.push("- Docdex tool list: ~/.docdex/agents.md (request via file.read).");
+  lines.push("Example AGENT_REQUEST:");
+  lines.push("AGENT_REQUEST v1");
+  lines.push("role: architect");
+  lines.push("request_id: <uuid>");
+  lines.push("needs:");
+  lines.push("  - type: docdex.search");
+  lines.push('    query: "..."');
+  lines.push("    limit: 5");
+  lines.push("  - type: docdex.open");
+  lines.push('    path: "src/..."');
+  lines.push("    start_line: 1");
+  lines.push("    end_line: 200");
+  lines.push("context:");
+  lines.push('  summary: "Need file content to finalize plan"');
+  lines.push("");
+  return lines;
+};
+
+const formatContextCoverage = (
+  bundle: ContextBundle,
+  options: { includeContents: boolean },
+): string[] => {
   const lines: string[] = [];
   const files = bundle.files ?? [];
   const focusContent = files.filter((file) => file.role === "focus").map((file) => file.path);
@@ -96,8 +240,14 @@ const formatContextCoverage = (bundle: ContextBundle): string[] => {
   lines.push("CONTEXT COVERAGE:");
   lines.push(`- Focus files (selected): ${listOrNone(focusSelected)}`);
   lines.push(`- Periphery files (selected): ${listOrNone(peripherySelected)}`);
-  lines.push(`- Full content included (focus): ${listOrNone(focusContent)}`);
-  lines.push(`- Content included (periphery): ${listOrNone(peripheryContent)}`);
+  if (options.includeContents) {
+    lines.push(`- Full content included (focus): ${listOrNone(focusContent)}`);
+    lines.push(`- Content included (periphery): ${listOrNone(peripheryContent)}`);
+  } else {
+    lines.push(`- File references included (focus): ${listOrNone(focusContent)}`);
+    lines.push(`- File references included (periphery): ${listOrNone(peripheryContent)}`);
+    lines.push("- File contents are withheld by default; request via AGENT_REQUEST if needed.");
+  }
   lines.push(`- Index status: ${indexSummary}`);
   lines.push(`- Missing data: ${missing}`);
   lines.push(`- Warnings: ${warningSummary}`);
@@ -128,6 +278,9 @@ const formatProjectInfo = (bundle: ContextBundle): string[] => {
   if (info.workspace_root) lines.push(`- Workspace root: ${info.workspace_root}`);
   if (info.manifests && info.manifests.length) {
     lines.push(`- Manifests: ${info.manifests.join(", ")}`);
+  }
+  if (info.readme_path) {
+    lines.push(`- README: ${info.readme_path}`);
   }
   if (info.docs && info.docs.length) {
     lines.push(`- Docs: ${info.docs.join(", ")}`);
@@ -201,6 +354,53 @@ const formatSearchResults = (bundle: ContextBundle): string[] => {
   return lines;
 };
 
+const formatRelatedHits = (bundle: ContextBundle): string[] => {
+  if (!bundle.search_results?.length || !bundle.selection) return [];
+  const selected = new Set(bundle.selection?.all ?? []);
+  const allHits = uniqueValues(
+    bundle.search_results
+      .flatMap((result) => result.hits)
+      .map((hit) => hit.path ?? hit.doc_id ?? "")
+      .filter((value) => value.length > 0),
+  ).filter((path) => !selected.has(path));
+  if (allHits.length === 0) return [];
+
+  const testHits = allHits.filter(isTestPath).slice(0, 4);
+  const docHits = allHits.filter((path) => !isTestPath(path) && isDocPath(path)).slice(0, 3);
+  const otherHits = allHits
+    .filter((path) => !isTestPath(path) && !isDocPath(path))
+    .slice(0, 3);
+
+  const lines: string[] = [];
+  lines.push("RELATED HITS (NOT SELECTED):");
+  if (testHits.length) lines.push(`- Tests: ${testHits.join(", ")}`);
+  if (docHits.length) lines.push(`- Docs: ${docHits.join(", ")}`);
+  if (otherHits.length) lines.push(`- Other: ${otherHits.join(", ")}`);
+  lines.push("");
+  return lines;
+};
+
+const formatFileReferences = (bundle: ContextBundle): string[] => {
+  const files = bundle.files ?? [];
+  const lines: string[] = [];
+  lines.push("FILE REFERENCES (CONTENT WITHHELD):");
+  if (files.length === 0) {
+    lines.push("- none");
+    lines.push("");
+    return lines;
+  }
+  for (const file of files) {
+    const role = file.role === "focus" ? "FOCUS" : "PERIPHERY";
+    const metadata: string[] = [`slice=${file.sliceStrategy}`, `origin=${file.origin}`];
+    if (typeof file.size === "number") metadata.push(`size=${file.size}`);
+    if (file.truncated) metadata.push("truncated");
+    if (file.warnings?.length) metadata.push(`warnings=${file.warnings.join("|")}`);
+    lines.push(`- [${role}] ${file.path} (${metadata.join(", ")})`);
+  }
+  lines.push("");
+  return lines;
+};
+
 const formatSymbols = (bundle: ContextBundle): string[] => {
   if (!bundle.symbols?.length) return [];
   const lines: string[] = [];
@@ -222,9 +422,17 @@ const formatSymbols = (bundle: ContextBundle): string[] => {
 
 const formatAst = (bundle: ContextBundle): string[] => {
   if (!bundle.ast?.length) return [];
+  const focusPaths = new Set(
+    (bundle.files ?? []).filter((file) => file.role === "focus").map((file) => file.path),
+  );
+  const hasFocus = focusPaths.size > 0;
+  const astEntries = hasFocus
+    ? bundle.ast.filter((entry) => focusPaths.has(entry.path))
+    : bundle.ast;
+  if (astEntries.length === 0) return [];
   const lines: string[] = [];
   lines.push("AST:");
-  const entries = bundle.ast.slice(0, SECTION_LIMITS.maxAstEntries);
+  const entries = astEntries.slice(0, SECTION_LIMITS.maxAstEntries);
   for (const entry of entries) {
     const nodes = entry.nodes.slice(0, SECTION_LIMITS.maxAstNodes);
     const astText = truncateText(JSON.stringify(nodes, null, 2), SECTION_LIMITS.maxAstChars);
@@ -237,8 +445,8 @@ const formatAst = (bundle: ContextBundle): string[] => {
     }
     lines.push("");
   }
-  if (bundle.ast.length > SECTION_LIMITS.maxAstEntries) {
-    lines.push(`- AST entries truncated: showing ${SECTION_LIMITS.maxAstEntries} of ${bundle.ast.length}.`);
+  if (astEntries.length > SECTION_LIMITS.maxAstEntries) {
+    lines.push(`- AST entries truncated: showing ${SECTION_LIMITS.maxAstEntries} of ${astEntries.length}.`);
     lines.push("");
   }
   return lines;
@@ -261,7 +469,17 @@ const formatDagSummary = (bundle: ContextBundle): string[] => {
   if (!bundle.dag_summary) return [];
   const lines: string[] = [];
   lines.push("DAG REASONING:");
-  lines.push(bundle.dag_summary);
+  const summary = bundle.dag_summary;
+  const parts = summary.split(/\r?\n/).map((line) => line.trim());
+  const sessionLine = parts.find((line) => line.startsWith("session_id:"));
+  const nodesLine = parts.find((line) => line.startsWith("nodes:"));
+  const edgesLine = parts.find((line) => line.startsWith("edges:"));
+  if (nodesLine || edgesLine) {
+    const compact = [sessionLine, nodesLine, edgesLine].filter(Boolean).join(" ");
+    lines.push(`${compact} (full DAG omitted; see logs if needed)`);
+  } else {
+    lines.push(truncateText(summary, 800));
+  }
   lines.push("");
   return lines;
 };
@@ -330,6 +548,24 @@ const formatIndexInfo = (bundle: ContextBundle): string[] => {
   return lines;
 };
 
+const formatWarnings = (bundle: ContextBundle): string[] => {
+  if (!bundle.warnings?.length) return [];
+  const lines: string[] = [];
+  lines.push("WARNINGS:");
+  for (const warning of bundle.warnings) {
+    const { code, detail } = splitWarning(warning);
+    const entry = WARNING_GLOSSARY[code];
+    if (entry) {
+      const detailLabel = detail ? ` (${detail})` : "";
+      lines.push(`- [${entry.severity}] ${code}${detailLabel}: ${entry.message}`);
+    } else {
+      lines.push(`- ${warning}`);
+    }
+  }
+  lines.push("");
+  return lines;
+};
+
 const filterPolicyWarnings = (warnings: string[] = []): string[] =>
   warnings.filter((warning) => !warning.startsWith("write_policy_"));
 
@@ -345,6 +581,7 @@ export const serializeContext = (
   bundle: ContextBundle,
   options: ContextSerializerOptions,
 ): SerializedContext => {
+  const audience = options.audience ?? "builder";
   if (options.mode === "json") {
     const files = bundle.files ?? [];
     const focusFiles = files.filter((file) => file.role === "focus").length;
@@ -352,21 +589,27 @@ export const serializeContext = (
     const totalBytes = files.reduce((sum, file) => sum + file.content.length, 0);
     return {
       mode: "json",
+      audience,
       content: JSON.stringify(bundle, null, 2),
       token_estimate: estimateTokens(JSON.stringify(bundle)),
       stats: { focus_files: focusFiles, periphery_files: peripheryFiles, total_bytes: totalBytes },
     };
   }
 
+  const includeContents = audience === "builder";
   const lines: string[] = [];
   lines.push("CODALI LIBRARIAN CONTEXT");
   lines.push("");
+  lines.push(...formatProjectSummary(bundle));
   lines.push(...formatRunSummary(bundle));
   lines.push("USER REQUEST:");
   lines.push(bundle.request);
   lines.push("");
   lines.push(...formatDeliverables(bundle));
-  lines.push(...formatContextCoverage(bundle));
+  lines.push(...formatContextCoverage(bundle, { includeContents }));
+  if (!includeContents) {
+    lines.push(...formatAgentProtocol());
+  }
   lines.push(...formatIntent(bundle));
   lines.push(...formatProjectInfo(bundle));
   lines.push(...formatQueries(bundle));
@@ -382,56 +625,55 @@ export const serializeContext = (
     lines.push(`- Low confidence: ${bundle.selection.low_confidence ? "yes" : "no"}`);
     lines.push("");
   }
+  lines.push(...formatRelatedHits(bundle));
   if (bundle.repo_map_raw) {
-    if (bundle.repo_map && bundle.repo_map !== bundle.repo_map_raw) {
-      lines.push("REPO MAP (COMPACT VIEW):");
-      lines.push(bundle.repo_map);
-      lines.push("");
-      lines.push("REPO MAP (FULL):");
-      lines.push(bundle.repo_map_raw);
-      lines.push("");
-    } else {
-      lines.push("REPO MAP:");
-      lines.push(bundle.repo_map_raw);
-      lines.push("");
-    }
+    lines.push("REPO MAP:");
+    lines.push(bundle.repo_map_raw);
+    lines.push("");
   } else if (bundle.repo_map) {
     lines.push("REPO MAP:");
     lines.push(bundle.repo_map);
     lines.push("");
   }
   const files = bundle.files ?? [];
-  for (const file of files) {
-    lines.push(formatFileHeader(file));
-    lines.push(file.content);
-    lines.push("");
-  }
-  if (files.length === 0) {
-    lines.push("NO FILE CONTENT AVAILABLE");
-    lines.push("");
-  }
-  if (bundle.snippets.length) {
-    lines.push("SNIPPETS:");
-    for (const snippet of bundle.snippets.slice(0, SECTION_LIMITS.maxSnippetEntries)) {
-      const label = snippet.path ?? snippet.doc_id ?? "snippet";
-      lines.push(`--- ${label} ---`);
-      lines.push(truncateText(snippet.content, SECTION_LIMITS.maxSnippetChars));
+  if (includeContents) {
+    for (const file of files) {
+      lines.push(formatFileHeader(file));
+      lines.push(file.content);
       lines.push("");
     }
-    if (bundle.snippets.length > SECTION_LIMITS.maxSnippetEntries) {
-      lines.push(`- Snippet entries truncated: showing ${SECTION_LIMITS.maxSnippetEntries} of ${bundle.snippets.length}.`);
+    if (files.length === 0) {
+      lines.push("NO FILE CONTENT AVAILABLE");
       lines.push("");
     }
+    if (bundle.snippets.length) {
+      lines.push("SNIPPETS:");
+      for (const snippet of bundle.snippets.slice(0, SECTION_LIMITS.maxSnippetEntries)) {
+        const label = snippet.path ?? snippet.doc_id ?? "snippet";
+        lines.push(`--- ${label} ---`);
+        lines.push(truncateText(snippet.content, SECTION_LIMITS.maxSnippetChars));
+        lines.push("");
+      }
+      if (bundle.snippets.length > SECTION_LIMITS.maxSnippetEntries) {
+        lines.push(
+          `- Snippet entries truncated: showing ${SECTION_LIMITS.maxSnippetEntries} of ${bundle.snippets.length}.`,
+        );
+        lines.push("");
+      }
+    }
+    lines.push(...formatSymbols(bundle));
+    lines.push(...formatAst(bundle));
+    lines.push(...formatImpact(bundle));
+    lines.push(...formatDagSummary(bundle));
+  } else {
+    lines.push(...formatFileReferences(bundle));
   }
-  lines.push(...formatSymbols(bundle));
-  lines.push(...formatAst(bundle));
-  lines.push(...formatImpact(bundle));
-  lines.push(...formatDagSummary(bundle));
   lines.push(...formatMemory(bundle));
   lines.push(...formatEpisodicMemory(bundle));
   lines.push(...formatGoldenExamples(bundle));
   lines.push(...formatProfile(bundle));
   lines.push(...formatIndexInfo(bundle));
+  lines.push(...formatWarnings(bundle));
   if (bundle.missing && bundle.missing.length) {
     lines.push("MISSING DATA:");
     for (const entry of bundle.missing) {
@@ -439,10 +681,7 @@ export const serializeContext = (
     }
     lines.push("");
   }
-  if (bundle.warnings.length) {
-    lines.push(`WARNINGS: ${bundle.warnings.join(", ")}`);
-  }
-  if (bundle.impact_diagnostics.length) {
+  if (includeContents && bundle.impact_diagnostics.length) {
     lines.push("IMPACT DIAGNOSTICS:");
     for (const entry of bundle.impact_diagnostics) {
       lines.push(`- ${entry.file}: ${JSON.stringify(entry.diagnostics)}`);
@@ -456,6 +695,7 @@ export const serializeContext = (
   const totalBytes = files.reduce((sum, file) => sum + file.content.length, 0);
   return {
     mode: "bundle_text",
+    audience,
     content: lines.join("\n"),
     token_estimate: estimateTokens(lines.join("\n")),
     stats: { focus_files: focusFiles, periphery_files: peripheryFiles, total_bytes: totalBytes },
