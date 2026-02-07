@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import type { DocdexClient } from "../docdex/DocdexClient.js";
 import type { AgentEvent, AgentStatusPhase, Provider } from "../providers/ProviderTypes.js";
 import type { RunLogger } from "../runtime/RunLogger.js";
+import { createDeepInvestigationDocdexError } from "../runtime/DeepInvestigationErrors.js";
 import type {
   AgentRequest,
   CodaliResponse,
@@ -67,6 +68,7 @@ export interface ContextAssemblerOptions {
   preferredFiles?: string[];
   recentFiles?: string[];
   skipSearchWhenPreferred?: boolean;
+  deepMode?: boolean;
   queryProvider?: Provider;
   queryTemperature?: number;
   agentId?: string;
@@ -74,6 +76,31 @@ export interface ContextAssemblerOptions {
   laneScope?: Omit<LaneScope, "role" | "ephemeral">;
   onEvent?: (event: AgentEvent) => void;
   logger?: RunLogger;
+}
+
+export interface ResearchToolRun {
+  tool: string;
+  ok: boolean;
+  skipped?: boolean;
+  durationMs?: number;
+  notes?: string;
+  error?: string;
+}
+
+export interface ResearchToolExecution {
+  toolRuns: ResearchToolRun[];
+  warnings: string[];
+  outputs: {
+    searchResults: ContextSearchResult[];
+    snippets: ContextSnippet[];
+    symbols: ContextSymbolSummary[];
+    ast: ContextAstSummary[];
+    impact: ContextImpactSummary[];
+    impactDiagnostics: ContextImpactDiagnostics[];
+    repoMap?: string;
+    repoMapRaw?: string;
+    dagSummary?: string;
+  };
 }
 
 const toStringPayload = (payload: unknown): string => {
@@ -124,6 +151,51 @@ const SECTION_LIMITS = {
   astNodes: 80,
 };
 
+const CONTEXT_DEPTH_LIMITS = {
+  maxQueries: { min: 1, max: 12 },
+  maxHitsPerQuery: { min: 1, max: 20 },
+  snippetWindow: { min: 40, max: 600 },
+  impactMaxDepth: { min: 1, max: 6 },
+  impactMaxEdges: { min: 10, max: 200 },
+};
+
+const DEEP_SCAN_PRESET = {
+  maxQueries: 6,
+  maxHitsPerQuery: 6,
+  snippetWindow: 220,
+  impactMaxDepth: 4,
+  impactMaxEdges: 160,
+  maxFiles: 16,
+  maxTotalBytes: 120_000,
+  tokenBudget: 220_000,
+};
+
+const clampNumber = (value: number, min: number, max: number): number => {
+  return Math.min(max, Math.max(min, value));
+};
+
+const resolveDepthOption = (
+  value: number | undefined,
+  fallback: number,
+  limits: { min: number; max: number },
+  label: string,
+  logger?: RunLogger,
+): number => {
+  const requested = value ?? fallback;
+  const normalized = Number.isFinite(requested) ? Math.round(requested) : fallback;
+  const resolved = clampNumber(normalized, limits.min, limits.max);
+  if (value !== undefined && resolved !== normalized) {
+    void logger?.log("context_option_clamped", {
+      option: label,
+      requested: normalized,
+      resolved,
+      min: limits.min,
+      max: limits.max,
+    });
+  }
+  return resolved;
+};
+
 const truncateText = (content: string, maxChars: number): string => {
   if (maxChars <= 0 || content.length <= maxChars) return content;
   const marker = "\n/* ...truncated... */\n";
@@ -136,6 +208,9 @@ const truncateSummary = (content: string, maxChars: number): string => {
   if (maxChars <= 3) return content.slice(0, maxChars);
   return `${content.slice(0, maxChars - 3)}...`;
 };
+
+const buildDeepModeDocdexError = (missing: string[], remediation: string[]): Error =>
+  createDeepInvestigationDocdexError(missing, remediation);
 
 const extractDocdexContent = (payload: unknown): string => {
   if (typeof payload === "string") return payload;
@@ -2097,15 +2172,52 @@ export class ContextAssembler {
   private laneScope?: Omit<LaneScope, "role" | "ephemeral">;
   private onEvent?: (event: AgentEvent) => void;
   private logger?: RunLogger;
+  private deepScanPresetApplied = false;
 
   constructor(client: DocdexClient, options: ContextAssemblerOptions = {}) {
     this.client = client;
+    this.logger = options.logger;
+    const maxQueries = resolveDepthOption(
+      options.maxQueries,
+      3,
+      CONTEXT_DEPTH_LIMITS.maxQueries,
+      "maxQueries",
+      this.logger,
+    );
+    const maxHitsPerQuery = resolveDepthOption(
+      options.maxHitsPerQuery,
+      3,
+      CONTEXT_DEPTH_LIMITS.maxHitsPerQuery,
+      "maxHitsPerQuery",
+      this.logger,
+    );
+    const snippetWindow = resolveDepthOption(
+      options.snippetWindow,
+      120,
+      CONTEXT_DEPTH_LIMITS.snippetWindow,
+      "snippetWindow",
+      this.logger,
+    );
+    const impactMaxDepth = resolveDepthOption(
+      options.impactMaxDepth,
+      2,
+      CONTEXT_DEPTH_LIMITS.impactMaxDepth,
+      "impactMaxDepth",
+      this.logger,
+    );
+    const impactMaxEdges = resolveDepthOption(
+      options.impactMaxEdges,
+      80,
+      CONTEXT_DEPTH_LIMITS.impactMaxEdges,
+      "impactMaxEdges",
+      this.logger,
+    );
     this.options = {
-      maxQueries: options.maxQueries ?? 3,
-      maxHitsPerQuery: options.maxHitsPerQuery ?? 3,
-      snippetWindow: options.snippetWindow ?? 120,
-      impactMaxDepth: options.impactMaxDepth ?? 2,
-      impactMaxEdges: options.impactMaxEdges ?? 80,
+      maxQueries,
+      maxHitsPerQuery,
+      snippetWindow,
+      impactMaxDepth,
+      impactMaxEdges,
       maxFiles: options.maxFiles ?? 8,
       maxTotalBytes: options.maxTotalBytes ?? 40_000,
       tokenBudget: options.tokenBudget ?? 120_000,
@@ -2126,6 +2238,7 @@ export class ContextAssembler {
       preferredFiles: options.preferredFiles ?? [],
       recentFiles: options.recentFiles ?? [],
       skipSearchWhenPreferred: options.skipSearchWhenPreferred ?? false,
+      deepMode: options.deepMode ?? false,
     };
     this.queryProvider = options.queryProvider;
     this.queryTemperature = options.queryTemperature;
@@ -2133,7 +2246,484 @@ export class ContextAssembler {
     this.contextManager = options.contextManager;
     this.laneScope = options.laneScope;
     this.onEvent = options.onEvent;
-    this.logger = options.logger;
+  }
+
+  applyDeepScanPreset(): void {
+    if (this.deepScanPresetApplied) return;
+    const before = {
+      maxQueries: this.options.maxQueries,
+      maxHitsPerQuery: this.options.maxHitsPerQuery,
+      snippetWindow: this.options.snippetWindow,
+      impactMaxDepth: this.options.impactMaxDepth,
+      impactMaxEdges: this.options.impactMaxEdges,
+      maxFiles: this.options.maxFiles,
+      maxTotalBytes: this.options.maxTotalBytes,
+      tokenBudget: this.options.tokenBudget,
+    };
+    const maxQueries = resolveDepthOption(
+      Math.max(this.options.maxQueries, DEEP_SCAN_PRESET.maxQueries),
+      this.options.maxQueries,
+      CONTEXT_DEPTH_LIMITS.maxQueries,
+      "maxQueries",
+      this.logger,
+    );
+    const maxHitsPerQuery = resolveDepthOption(
+      Math.max(this.options.maxHitsPerQuery, DEEP_SCAN_PRESET.maxHitsPerQuery),
+      this.options.maxHitsPerQuery,
+      CONTEXT_DEPTH_LIMITS.maxHitsPerQuery,
+      "maxHitsPerQuery",
+      this.logger,
+    );
+    const snippetWindow = resolveDepthOption(
+      Math.max(this.options.snippetWindow, DEEP_SCAN_PRESET.snippetWindow),
+      this.options.snippetWindow,
+      CONTEXT_DEPTH_LIMITS.snippetWindow,
+      "snippetWindow",
+      this.logger,
+    );
+    const impactMaxDepth = resolveDepthOption(
+      Math.max(this.options.impactMaxDepth, DEEP_SCAN_PRESET.impactMaxDepth),
+      this.options.impactMaxDepth,
+      CONTEXT_DEPTH_LIMITS.impactMaxDepth,
+      "impactMaxDepth",
+      this.logger,
+    );
+    const impactMaxEdges = resolveDepthOption(
+      Math.max(this.options.impactMaxEdges, DEEP_SCAN_PRESET.impactMaxEdges),
+      this.options.impactMaxEdges,
+      CONTEXT_DEPTH_LIMITS.impactMaxEdges,
+      "impactMaxEdges",
+      this.logger,
+    );
+    this.options = {
+      ...this.options,
+      maxQueries,
+      maxHitsPerQuery,
+      snippetWindow,
+      impactMaxDepth,
+      impactMaxEdges,
+      maxFiles: Math.max(this.options.maxFiles, DEEP_SCAN_PRESET.maxFiles),
+      maxTotalBytes: Math.max(this.options.maxTotalBytes, DEEP_SCAN_PRESET.maxTotalBytes),
+      tokenBudget: Math.max(this.options.tokenBudget, DEEP_SCAN_PRESET.tokenBudget),
+    };
+    this.deepScanPresetApplied = true;
+    void this.logger?.log("context_deep_scan_preset", {
+      applied: true,
+      before,
+      after: {
+        maxQueries: this.options.maxQueries,
+        maxHitsPerQuery: this.options.maxHitsPerQuery,
+        snippetWindow: this.options.snippetWindow,
+        impactMaxDepth: this.options.impactMaxDepth,
+        impactMaxEdges: this.options.impactMaxEdges,
+        maxFiles: this.options.maxFiles,
+        maxTotalBytes: this.options.maxTotalBytes,
+        tokenBudget: this.options.tokenBudget,
+      },
+    });
+  }
+
+  async runResearchTools(request: string, context: ContextBundle): Promise<ResearchToolExecution> {
+    const warnings: string[] = [];
+    const toolRuns: ResearchToolRun[] = [];
+    const outputs: ResearchToolExecution["outputs"] = {
+      searchResults: [],
+      snippets: [],
+      symbols: [],
+      ast: [],
+      impact: [],
+      impactDiagnostics: [],
+    };
+    const pushWarning = (warning: string): void => {
+      if (!warnings.includes(warning)) warnings.push(warning);
+    };
+    const emit = this.onEvent;
+    const emitToolCall = (name: string, args?: unknown) => {
+      emit?.({ type: "tool_call", name, args: args ?? {} });
+    };
+    const emitToolResult = (name: string, output: string, ok = true) => {
+      emit?.({ type: "tool_result", name, output, ok });
+    };
+    const formatToolNotes = (args: Record<string, unknown>): string | undefined => {
+      if (typeof args.query === "string") return `query:${args.query}`;
+      if (typeof args.file === "string") return `file:${args.file}`;
+      if (typeof args.doc_id === "string") return `doc_id:${args.doc_id}`;
+      if (typeof args.path === "string") return `path:${args.path}`;
+      if (typeof args.sessionId === "string") return `session:${args.sessionId}`;
+      if (typeof args.session_id === "string") return `session:${args.session_id}`;
+      return undefined;
+    };
+    const recordToolRun = (
+      tool: string,
+      ok: boolean,
+      extra: Partial<ResearchToolRun> = {},
+    ): void => {
+      toolRuns.push({ tool, ok, ...extra });
+    };
+
+    const maxQueries = Math.max(1, this.options.maxQueries);
+    let queries = uniqueValues(context.queries ?? []);
+    if (queries.length === 0) {
+      const requestQuery = request.trim();
+      queries = uniqueValues([requestQuery, ...extractQueries(request, maxQueries)]);
+    }
+    queries = queries.filter(Boolean).slice(0, maxQueries);
+    if (queries.length === 0) {
+      pushWarning("research_no_queries");
+    }
+
+    const hitList: Array<{ doc_id?: string; path?: string; score?: number }> = [];
+    const searchResults: ContextSearchResult[] = [];
+    for (const query of queries) {
+      const args = {
+        query,
+        limit: this.options.maxHitsPerQuery,
+        dagSessionId: this.laneScope?.runId,
+      };
+      emitToolCall("docdex.search", args);
+      const startedAt = Date.now();
+      try {
+        const result = await this.client.search(query, {
+          limit: this.options.maxHitsPerQuery,
+          dagSessionId: this.laneScope?.runId,
+        });
+        const hits = collectHits(result).filter(
+          (hit) => !hit.path || !isExcludedPath(hit.path),
+        );
+        hitList.push(...hits);
+        searchResults.push({ query, hits });
+        emitToolResult("docdex.search", "ok", true);
+        recordToolRun("docdex.search", true, {
+          durationMs: Date.now() - startedAt,
+          notes: `query:${query} hits:${hits.length}`,
+        });
+      } catch (error) {
+        searchResults.push({ query, hits: [] });
+        emitToolResult(
+          "docdex.search",
+          error instanceof Error ? error.message : String(error),
+          false,
+        );
+        pushWarning("research_docdex_search_failed");
+        recordToolRun("docdex.search", false, {
+          durationMs: Date.now() - startedAt,
+          notes: formatToolNotes(args),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    outputs.searchResults = searchResults;
+
+    const uniqueHits = hitList.filter((hit, index, self) => {
+      const key = `${hit.doc_id ?? ""}:${hit.path ?? ""}`;
+      return self.findIndex((entry) => `${entry.doc_id ?? ""}:${entry.path ?? ""}` === key) === index;
+    });
+    const intent = context.intent ?? deriveIntentSignals(request);
+    const docTask = /\b(doc|docs|documentation|readme|rfp|sds|pdr)\b/i.test(request);
+    const selection = context.selection;
+    const selectionPaths = uniqueValues([
+      ...(selection?.all ?? []),
+      ...(selection?.focus ?? []),
+      ...(selection?.periphery ?? []),
+      ...(context.files ?? []).map((entry) => entry.path),
+      ...uniqueHits
+        .map((hit) => hit.path)
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+    ]);
+    const analysisPaths = selectAnalysisPaths(selectionPaths, {
+      intent,
+      docTask,
+      preferred: selection?.focus ?? [],
+      focus: selection?.focus ?? [],
+      maxPaths: Math.min(this.options.maxFiles, 6),
+    });
+    const analysisPathSet = new Set(analysisPaths.map((entry) => normalizePath(entry)));
+
+    const includeSnippets = this.options.includeSnippets || this.options.deepMode;
+    if (includeSnippets) {
+      for (const hit of uniqueHits) {
+        if (!hit.doc_id) continue;
+        if (analysisPathSet.size && hit.path && !analysisPathSet.has(normalizePath(hit.path))) {
+          continue;
+        }
+        const args = { doc_id: hit.doc_id, window: this.options.snippetWindow };
+        emitToolCall("docdex.snippet", args);
+        const startedAt = Date.now();
+        try {
+          const snippetResult = await this.client.openSnippet(hit.doc_id, {
+            window: this.options.snippetWindow,
+          });
+          outputs.snippets.push({
+            doc_id: hit.doc_id,
+            path: hit.path,
+            content: extractSnippetContent(snippetResult),
+          });
+          emitToolResult("docdex.snippet", "ok", true);
+          recordToolRun("docdex.snippet", true, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+          });
+        } catch (error) {
+          emitToolResult(
+            "docdex.snippet",
+            error instanceof Error ? error.message : String(error),
+            false,
+          );
+          pushWarning(`research_docdex_snippet_failed:${hit.doc_id}`);
+          recordToolRun("docdex.snippet", false, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      const snippetPathSet = new Set(
+        outputs.snippets
+          .map((entry) => entry.path)
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+          .map((entry) => normalizePath(entry)),
+      );
+      const clientWithOpen = this.client as unknown as {
+        openFile?: (pathValue: string, options?: unknown) => Promise<unknown>;
+      };
+      if (typeof clientWithOpen.openFile === "function") {
+        for (const focusPath of selection?.focus ?? []) {
+          const normalizedFocus = normalizePath(focusPath);
+          if (snippetPathSet.has(normalizedFocus)) continue;
+          const args = { path: focusPath, head: this.options.snippetWindow, clamp: true };
+          emitToolCall("docdex.open", args);
+          const startedAt = Date.now();
+          try {
+            const openResult = await clientWithOpen.openFile(focusPath, {
+              head: this.options.snippetWindow,
+              clamp: true,
+            });
+            outputs.snippets.push({
+              path: focusPath,
+              content: extractSnippetContent(openResult),
+            });
+            snippetPathSet.add(normalizedFocus);
+            emitToolResult("docdex.open", "ok", true);
+            recordToolRun("docdex.open", true, {
+              durationMs: Date.now() - startedAt,
+              notes: formatToolNotes(args),
+            });
+          } catch (error) {
+            emitToolResult(
+              "docdex.open",
+              error instanceof Error ? error.message : String(error),
+              false,
+            );
+            pushWarning(`research_docdex_open_failed:${focusPath}`);
+            recordToolRun("docdex.open", false, {
+              durationMs: Date.now() - startedAt,
+              notes: formatToolNotes(args),
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+    }
+
+    const includeImpact = this.options.includeImpact || this.options.deepMode;
+    for (const file of analysisPaths) {
+      if (supportsSymbolAnalysis(file)) {
+        const args = { file };
+        emitToolCall("docdex.symbols", args);
+        const startedAt = Date.now();
+        try {
+          const symbolsResult = await this.client.symbols(file);
+          outputs.symbols.push({ path: file, summary: summarizeSymbolsPayload(symbolsResult) });
+          emitToolResult("docdex.symbols", "ok", true);
+          recordToolRun("docdex.symbols", true, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+          });
+        } catch (error) {
+          emitToolResult(
+            "docdex.symbols",
+            error instanceof Error ? error.message : String(error),
+            false,
+          );
+          pushWarning(`research_docdex_symbols_failed:${file}`);
+          recordToolRun("docdex.symbols", false, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (!isDocPath(file) && !isSupportDoc(file) && supportsAstAnalysis(file)) {
+        const args = { file };
+        emitToolCall("docdex.ast", args);
+        const startedAt = Date.now();
+        try {
+          const astResult = await this.client.ast(file);
+          outputs.ast.push({ path: file, nodes: compactAstNodes(astResult) });
+          emitToolResult("docdex.ast", "ok", true);
+          recordToolRun("docdex.ast", true, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+          });
+        } catch (error) {
+          emitToolResult(
+            "docdex.ast",
+            error instanceof Error ? error.message : String(error),
+            false,
+          );
+          pushWarning(`research_docdex_ast_failed:${file}`);
+          recordToolRun("docdex.ast", false, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (includeImpact && supportsImpactGraph(file)) {
+        const args = {
+          file,
+          maxDepth: this.options.impactMaxDepth,
+          maxEdges: this.options.impactMaxEdges,
+        };
+        emitToolCall("docdex.impact", args);
+        const startedAt = Date.now();
+        try {
+          const impactResult = await this.client.impactGraph(file, {
+            maxDepth: this.options.impactMaxDepth,
+            maxEdges: this.options.impactMaxEdges,
+          });
+          const inbound = (impactResult as { inbound?: string[] } | undefined)?.inbound ?? [];
+          const outbound = (impactResult as { outbound?: string[] } | undefined)?.outbound ?? [];
+          outputs.impact.push({ file, inbound, outbound });
+          emitToolResult("docdex.impact", "ok", true);
+          recordToolRun("docdex.impact", true, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+          });
+          if (!inbound.length && !outbound.length) {
+            const diagArgs = { file, limit: 20 };
+            emitToolCall("docdex.impact_diagnostics", diagArgs);
+            const diagStarted = Date.now();
+            try {
+              const diagnostics = await this.client.impactDiagnostics({
+                file,
+                limit: 20,
+              });
+              outputs.impactDiagnostics.push({ file, diagnostics });
+              emitToolResult("docdex.impact_diagnostics", "ok", true);
+              recordToolRun("docdex.impact_diagnostics", true, {
+                durationMs: Date.now() - diagStarted,
+                notes: formatToolNotes(diagArgs),
+              });
+            } catch (error) {
+              emitToolResult(
+                "docdex.impact_diagnostics",
+                error instanceof Error ? error.message : String(error),
+                false,
+              );
+              pushWarning(`research_docdex_impact_diagnostics_failed:${file}`);
+              recordToolRun("docdex.impact_diagnostics", false, {
+                durationMs: Date.now() - diagStarted,
+                notes: formatToolNotes(diagArgs),
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        } catch (error) {
+          emitToolResult(
+            "docdex.impact",
+            error instanceof Error ? error.message : String(error),
+            false,
+          );
+          pushWarning(`research_docdex_impact_failed:${file}`);
+          recordToolRun("docdex.impact", false, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(args),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    const includeRepoMap = this.options.includeRepoMap || this.options.deepMode;
+    if (includeRepoMap) {
+      const clientWithTree = this.client as unknown as { tree?: (options?: unknown) => Promise<unknown> };
+      if (typeof clientWithTree.tree === "function") {
+        const treeOptions = {
+          includeHidden: true,
+          path: ".",
+          maxDepth: 64,
+          extraExcludes: REPO_TREE_EXCLUDES,
+        };
+        emitToolCall("docdex.tree", treeOptions);
+        const startedAt = Date.now();
+        try {
+          const treeResult = await clientWithTree.tree(treeOptions);
+          const treeText = extractTreeText(treeResult) ?? toStringPayload(treeResult);
+          outputs.repoMapRaw = treeText;
+          outputs.repoMap = compactTreeForPrompt(treeText);
+          emitToolResult("docdex.tree", "ok", true);
+          recordToolRun("docdex.tree", true, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(treeOptions),
+          });
+        } catch (error) {
+          emitToolResult(
+            "docdex.tree",
+            error instanceof Error ? error.message : String(error),
+            false,
+          );
+          pushWarning("research_docdex_tree_failed");
+          recordToolRun("docdex.tree", false, {
+            durationMs: Date.now() - startedAt,
+            notes: formatToolNotes(treeOptions),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    const clientWithDag = this.client as unknown as {
+      dagExport?: (
+        sessionId: string,
+        options?: { format?: "json" | "text" | "dot"; maxNodes?: number },
+      ) => Promise<unknown>;
+    };
+    if (this.laneScope?.runId && typeof clientWithDag.dagExport === "function") {
+      const dagOptions = { format: "text" as const, maxNodes: 160 };
+      emitToolCall("docdex.dag_export", { sessionId: this.laneScope.runId, ...dagOptions });
+      const startedAt = Date.now();
+      try {
+        const dagResult = await clientWithDag.dagExport(this.laneScope.runId, dagOptions);
+        outputs.dagSummary = typeof dagResult === "string"
+          ? dagResult
+          : truncateText(toStringPayload(dagResult), 4_000);
+        emitToolResult("docdex.dag_export", "ok", true);
+        recordToolRun("docdex.dag_export", true, {
+          durationMs: Date.now() - startedAt,
+          notes: `session:${this.laneScope.runId}`,
+        });
+      } catch (error) {
+        emitToolResult(
+          "docdex.dag_export",
+          error instanceof Error ? error.message : String(error),
+          false,
+        );
+        pushWarning("research_docdex_dag_export_failed");
+        recordToolRun("docdex.dag_export", false, {
+          durationMs: Date.now() - startedAt,
+          notes: `session:${this.laneScope.runId}`,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else {
+      recordToolRun("docdex.dag_export", false, {
+        skipped: true,
+        notes: this.laneScope?.runId ? "dag_export_unavailable" : "missing_run_id",
+      });
+    }
+
+    return { toolRuns, warnings, outputs };
   }
 
   async assemble(
@@ -2148,6 +2738,9 @@ export class ContextAssembler {
     const pushWarning = (warning: string): void => {
       if (!warnings.includes(warning)) warnings.push(warning);
     };
+    if (this.deepScanPresetApplied) {
+      pushWarning("deep_scan_preset_applied");
+    }
     let searchResults: ContextSearchResult[] = [];
     const emit = this.onEvent;
     const emitStatus = (phase: AgentStatusPhase, message?: string) => {
@@ -2191,16 +2784,32 @@ export class ContextAssembler {
     const contextManager = this.contextManager;
     const laneScope = this.laneScope;
 
+    let healthOk = false;
     emitToolCall("docdex.health", {});
     try {
       await this.client.healthCheck();
       emitToolResult("docdex.health", "ok", true);
+      healthOk = true;
     } catch (error) {
       emitToolResult(
         "docdex.health",
         error instanceof Error ? error.message : String(error),
         false,
       );
+      if (this.options.deepMode) {
+        const missing = ["docdex_health"];
+        const remediation = [
+          "Ensure docdex daemon is running",
+          "Verify CODALI_DOCDEX_BASE_URL/DOCDEX_HTTP_BASE_URL",
+          "Run docdexd index for this repo",
+        ];
+        void this.logger?.log("deep_mode_docdex_failure", {
+          missing,
+          remediation,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw buildDeepModeDocdexError(missing, remediation);
+      }
       pushWarning("docdex_unavailable");
       const maxFiles = Math.max(1, this.options.maxFiles);
       let fallbackFocus = filterExcludedPaths(preferredSeed).slice(0, maxFiles);
@@ -2328,6 +2937,30 @@ export class ContextAssembler {
       pushWarning("docdex_files_failed");
       if (filesResult.backoff) {
         pushWarning("docdex_files_backoff");
+      }
+    }
+
+    if (this.options.deepMode) {
+      const missing: string[] = [];
+      if (!healthOk) missing.push("docdex_health");
+      if (!statsSucceeded) missing.push("docdex_stats");
+      if (!filesSucceeded) missing.push("docdex_files");
+      const statsRecord = stats as { num_docs?: number; last_updated_epoch_ms?: number };
+      const numDocs = typeof statsRecord.num_docs === "number" ? statsRecord.num_docs : 0;
+      const lastUpdated = typeof statsRecord.last_updated_epoch_ms === "number"
+        ? statsRecord.last_updated_epoch_ms
+        : 0;
+      if (statsSucceeded && numDocs <= 0) missing.push("docdex_index_empty");
+      if (statsSucceeded && lastUpdated === 0) missing.push("docdex_index_stale");
+      if (filesSucceeded && fileHints.length === 0) missing.push("docdex_file_coverage");
+      if (missing.length) {
+        const remediation = [
+          "Run docdexd index for this repo",
+          "Verify docdex repo root/id configuration",
+          "Check docdex daemon health",
+        ];
+        void this.logger?.log("deep_mode_docdex_failure", { missing, remediation });
+        throw buildDeepModeDocdexError(missing, remediation);
       }
     }
 
@@ -3233,6 +3866,44 @@ export class ContextAssembler {
     });
     emitStatus("done", "librarian: bundle ready");
     return bundle;
+  }
+
+  buildContextRefreshOptions(request: AgentRequest): {
+    additionalQueries: string[];
+    preferredFiles: string[];
+  } {
+    const needs = normalizeAgentRequest(request);
+    const additionalQueries: string[] = [];
+    const preferredFiles: string[] = [];
+    for (const need of needs) {
+      if (need.tool === "docdex.search" || need.tool === "docdex.web") {
+        if (need.params.query) additionalQueries.push(need.params.query);
+        continue;
+      }
+      if (need.tool === "docdex.open") {
+        preferredFiles.push(need.params.path);
+        continue;
+      }
+      if (
+        need.tool === "docdex.symbols"
+        || need.tool === "docdex.ast"
+        || need.tool === "docdex.impact"
+      ) {
+        preferredFiles.push(need.params.file);
+        continue;
+      }
+      if (need.tool === "docdex.impact_diagnostics") {
+        if (need.params.file) preferredFiles.push(need.params.file);
+        continue;
+      }
+      if (need.tool === "file.read") {
+        preferredFiles.push(need.params.path);
+      }
+    }
+    return {
+      additionalQueries: uniqueValues(additionalQueries.filter(Boolean)),
+      preferredFiles: uniqueValues(preferredFiles.filter(Boolean)),
+    };
   }
 
   async fulfillAgentRequest(request: AgentRequest): Promise<CodaliResponse> {

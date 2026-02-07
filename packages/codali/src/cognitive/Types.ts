@@ -111,6 +111,68 @@ export interface ContextIndexInfo {
   num_docs: number;
 }
 
+export interface ContextResearchToolUsage {
+  search: number;
+  open_or_snippet: number;
+  symbols_or_ast: number;
+  impact: number;
+  tree: number;
+  dag_export: number;
+}
+
+export interface ContextResearchEvidence {
+  search_hits: number;
+  snippet_count: number;
+  symbol_files: number;
+  ast_files: number;
+  impact_files: number;
+  impact_edges: number;
+  repo_map: boolean;
+  dag_summary: boolean;
+  warnings?: string[];
+  gaps?: string[];
+}
+
+export interface ContextResearchSummary {
+  status: "skipped" | "completed";
+  started_at_ms?: number;
+  ended_at_ms?: number;
+  duration_ms?: number;
+  key_findings?: string[];
+  tool_usage?: ContextResearchToolUsage;
+  evidence?: ContextResearchEvidence;
+  warnings?: string[];
+  notes?: string[];
+}
+
+export type EvidenceGateStatus = "pass" | "fail";
+
+export type EvidenceGateSignal =
+  | "search_hits"
+  | "open_or_snippet"
+  | "symbols_or_ast"
+  | "impact"
+  | "warnings";
+
+export interface EvidenceGateMetrics {
+  search_hits: number;
+  open_or_snippet: number;
+  symbols_or_ast: number;
+  impact: number;
+  warnings: number;
+}
+
+export interface EvidenceGateAssessment {
+  status: EvidenceGateStatus;
+  score: number;
+  threshold: number;
+  missing: EvidenceGateSignal[];
+  required: EvidenceGateMetrics;
+  observed: EvidenceGateMetrics;
+  warnings?: string[];
+  gaps?: string[];
+}
+
 export interface ContextRequestDigest {
   summary: string;
   refined_query: string;
@@ -164,6 +226,7 @@ export interface ContextBundle {
   preferences_detected: ContextPreferenceDetected[];
   profile: ContextProfileEntry[];
   index: ContextIndexInfo;
+  research?: ContextResearchSummary;
   warnings: string[];
   missing?: string[];
 }

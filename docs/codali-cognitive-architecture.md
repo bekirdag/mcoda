@@ -20,6 +20,12 @@ User Request
 Fast path: trivial edits can skip Phase 2.
 Feedback loop: failures in Phase 4 route back to Phase 2 or 3 (maxRetries).
 
+Deep investigation mode (smart pipeline only) inserts a **Research phase** between
+Librarian and Architect to run Docdex tools, produce a research summary, and
+enforce tool quotas, investigation budgets, and evidence gates. Fast-path and
+plan-hint shortcuts are disabled in deep mode, and failures fail closed with
+deterministic error codes.
+
 ## 3) Phase Specifications
 ### Phase 1: Librarian (Context Aggregation)
 Role: assemble the "State of the World" only. No reasoning or code generation.
@@ -45,6 +51,10 @@ Optional Docdex actions:
 - docdexd libs discover/fetch + docdex_search(include_libs) for dependency docs.
 
 Output: context_bundle.json (structured facts only).
+
+Deep mode note:
+- If docdex health/index coverage checks fail in deep mode, the run fails closed
+  with `deep_investigation_docdex_unavailable` and remediation guidance.
 
 ### Phase 2: Architect (Reasoning + Planning)
 Role: produce a plan, risks, and verification strategy.

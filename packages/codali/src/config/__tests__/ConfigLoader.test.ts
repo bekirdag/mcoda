@@ -92,6 +92,9 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
   assert.equal(config.localContext.storageDir, "codali/context");
   assert.equal(config.localContext.maxMessages, 200);
   assert.equal(config.localContext.summarize.enabled, true);
+  assert.equal(config.deepInvestigation?.enabled, false);
+  assert.equal(config.deepInvestigation?.deepScanPreset, false);
+  assert.equal(config.deepInvestigation?.toolQuota.search, 3);
 });
 
 test("loadConfig uses DOCDEX_HTTP_BASE_URL when set", { concurrency: false }, async () => {
@@ -418,4 +421,119 @@ test("loadConfig rejects invalid localContext values", { concurrency: false }, a
       },
     });
   }, /Invalid config values/);
+});
+
+test("loadConfig applies deep investigation env overrides", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_DEEP_INVESTIGATION_ENABLED: "true",
+      CODALI_DEEP_INVESTIGATION_DEEP_SCAN_PRESET: "1",
+      CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SEARCH: "4",
+      CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_OPEN_OR_SNIPPET: "3",
+      CODALI_DEEP_INVESTIGATION_BUDGET_MIN_CYCLES: "2",
+      CODALI_DEEP_INVESTIGATION_BUDGET_MIN_SECONDS: "120",
+      CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SEARCH_HITS: "6",
+    },
+  });
+
+  assert.equal(config.deepInvestigation?.enabled, true);
+  assert.equal(config.deepInvestigation?.deepScanPreset, true);
+  assert.equal(config.deepInvestigation?.toolQuota.search, 4);
+  assert.equal(config.deepInvestigation?.toolQuota.openOrSnippet, 3);
+  assert.equal(config.deepInvestigation?.investigationBudget.minCycles, 2);
+  assert.equal(config.deepInvestigation?.investigationBudget.minSeconds, 120);
+  assert.equal(config.deepInvestigation?.evidenceGate.minSearchHits, 6);
+});
+
+test("loadConfig merges deep investigation config with precedence", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const configPath = path.join(tmpDir, "codali.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        workspaceRoot: "/file",
+        provider: "file-provider",
+        model: "file-model",
+        deepInvestigation: {
+          enabled: true,
+          deepScanPreset: true,
+          toolQuota: { search: 2 },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: "/env",
+      CODALI_PROVIDER: "env-provider",
+      CODALI_MODEL: "env-model",
+      CODALI_DEEP_INVESTIGATION_ENABLED: "false",
+      CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SEARCH: "3",
+    },
+    cli: {
+      deepInvestigation: {
+        toolQuota: { search: 4 },
+      },
+    },
+  });
+
+  assert.equal(config.deepInvestigation?.enabled, false);
+  assert.equal(config.deepInvestigation?.deepScanPreset, true);
+  assert.equal(config.deepInvestigation?.toolQuota.search, 4);
+});
+
+test("loadConfig rejects invalid deep investigation env values", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  await assert.rejects(async () => {
+    await loadConfig({
+      cwd: tmpDir,
+      env: {
+        CODALI_WORKSPACE_ROOT: tmpDir,
+        CODALI_PROVIDER: "openai",
+        CODALI_MODEL: "gpt-test",
+        CODALI_DEEP_INVESTIGATION_ENABLED: "maybe",
+      },
+    });
+  }, /Invalid CODALI_DEEP_INVESTIGATION_ENABLED/);
+});
+
+test("loadConfig rejects invalid deep investigation config values", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const configPath = path.join(tmpDir, "codali.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        workspaceRoot: tmpDir,
+        provider: "openai",
+        model: "gpt-test",
+        deepInvestigation: {
+          toolQuota: { search: "nope" },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  await assert.rejects(async () => {
+    await loadConfig({
+      cwd: tmpDir,
+      env: {
+        CODALI_WORKSPACE_ROOT: tmpDir,
+        CODALI_PROVIDER: "openai",
+        CODALI_MODEL: "gpt-test",
+      },
+    });
+  }, /Invalid config\.deepInvestigation\.toolQuota\.search/);
 });

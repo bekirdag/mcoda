@@ -82,6 +82,7 @@ const baseBundle: ContextBundle = {
 test("ContextSerializer outputs bundle_text with headers", { concurrency: false }, () => {
   const serialized = serializeContext(baseBundle, { mode: "bundle_text", audience: "librarian" });
   assert.ok(serialized.content.includes("PROJECT SUMMARY (README):"));
+  assert.ok(!serialized.content.includes("RESEARCH SUMMARY:"));
   assert.ok(serialized.content.includes("AGENT PROTOCOL (REQUEST MORE CONTEXT):"));
   assert.ok(serialized.content.includes("FILE REFERENCES (CONTENT WITHHELD):"));
   assert.ok(serialized.content.includes("INTENT:"));
@@ -94,6 +95,41 @@ test("ContextSerializer outputs bundle_text with headers", { concurrency: false 
   assert.ok(serialized.content.includes("INDEX INFO:"));
   assert.ok(serialized.content.includes("Fix login"));
   assert.ok(!serialized.content.includes("export const login"));
+});
+
+test("ContextSerializer includes research summary section when present", { concurrency: false }, () => {
+  const bundle: ContextBundle = {
+    ...baseBundle,
+    research: {
+      status: "completed",
+      duration_ms: 42,
+      key_findings: ["Reviewed auth module and user flow"],
+      tool_usage: {
+        search: 3,
+        open_or_snippet: 2,
+        symbols_or_ast: 1,
+        impact: 1,
+        tree: 1,
+        dag_export: 0,
+      },
+      evidence: {
+        search_hits: 5,
+        snippet_count: 2,
+        symbol_files: 1,
+        ast_files: 1,
+        impact_files: 1,
+        impact_edges: 0,
+        repo_map: true,
+        dag_summary: false,
+        gaps: ["missing_dag_export"],
+      },
+    },
+  };
+  const serialized = serializeContext(bundle, { mode: "bundle_text", audience: "librarian" });
+  assert.ok(serialized.content.includes("RESEARCH SUMMARY:"));
+  assert.ok(serialized.content.includes("Tool usage: search=3"));
+  assert.ok(serialized.content.includes("Key findings: Reviewed auth module"));
+  assert.ok(serialized.content.includes("Unresolved gaps: missing_dag_export"));
 });
 
 test("ContextSerializer expands known warnings and preserves unknown warnings", { concurrency: false }, () => {
@@ -141,6 +177,49 @@ test("ContextSerializer outputs json when requested", { concurrency: false }, ()
   const serialized = serializeContext(baseBundle, { mode: "json" });
   const parsed = JSON.parse(serialized.content);
   assert.equal(parsed.request, "Fix login");
+});
+
+test("ContextSerializer preserves research summary in json and sanitization", { concurrency: false }, () => {
+  const bundle: ContextBundle = {
+    ...baseBundle,
+    research: {
+      status: "completed",
+      started_at_ms: 10,
+      ended_at_ms: 25,
+      duration_ms: 15,
+      key_findings: ["Evidence shows auth.ts is primary entry"],
+      tool_usage: {
+        search: 2,
+        open_or_snippet: 1,
+        symbols_or_ast: 1,
+        impact: 1,
+        tree: 1,
+        dag_export: 0,
+      },
+      evidence: {
+        search_hits: 4,
+        snippet_count: 1,
+        symbol_files: 1,
+        ast_files: 1,
+        impact_files: 1,
+        impact_edges: 0,
+        repo_map: true,
+        dag_summary: false,
+        warnings: ["low_impact_edges"],
+        gaps: ["missing_dag_export"],
+      },
+      warnings: ["research_docdex_tree_failed"],
+      notes: ["summary note"],
+    },
+  };
+  const serialized = serializeContext(bundle, { mode: "json" });
+  const parsed = JSON.parse(serialized.content);
+  assert.equal(parsed.research.status, "completed");
+  assert.equal(parsed.research.key_findings[0], "Evidence shows auth.ts is primary entry");
+  assert.equal(parsed.research.tool_usage.search, 2);
+  const sanitized = sanitizeContextBundleForOutput(bundle);
+  assert.equal(sanitized.research?.evidence?.repo_map, true);
+  assert.ok(sanitized.research?.warnings?.includes("research_docdex_tree_failed"));
 });
 
 test("ContextSerializer includes missing data section when provided", { concurrency: false }, () => {

@@ -39,6 +39,52 @@ export interface ContextConfig {
   skipSearchWhenPreferred?: boolean;
 }
 
+/**
+ * Minimum tool usage required during deep investigation.
+ * Counts are category-based and only enforced when deep investigation is enabled.
+ */
+export interface DeepInvestigationToolQuotaConfig {
+  search: number;
+  openOrSnippet: number;
+  symbolsOrAst: number;
+  impact: number;
+  tree: number;
+  dagExport: number;
+}
+
+/**
+ * Minimum investigation budget required before planning.
+ * Values are only enforced when deep investigation is enabled.
+ */
+export interface DeepInvestigationBudgetConfig {
+  minCycles: number;
+  minSeconds: number;
+  maxCycles: number;
+}
+
+/**
+ * Evidence thresholds used to decide if investigation is sufficient.
+ * Values are only enforced when deep investigation is enabled.
+ */
+export interface DeepInvestigationEvidenceConfig {
+  minSearchHits: number;
+  minOpenOrSnippet: number;
+  minSymbolsOrAst: number;
+  minImpact: number;
+  maxWarnings: number;
+}
+
+/**
+ * Deep investigation configuration bundle.
+ */
+export interface DeepInvestigationConfig {
+  enabled: boolean;
+  deepScanPreset: boolean;
+  toolQuota: DeepInvestigationToolQuotaConfig;
+  investigationBudget: DeepInvestigationBudgetConfig;
+  evidenceGate: DeepInvestigationEvidenceConfig;
+}
+
 export interface SecurityConfig {
   redactPatterns: string[];
   readOnlyPaths: string[];
@@ -132,6 +178,11 @@ export interface CodaliConfig {
   tools: ToolConfig;
   limits: LimitsConfig;
   context: ContextConfig;
+  /** 
+   * Deep investigation controls. When unset or disabled, deep mode is inactive.
+   * Deep investigation requires the smart pipeline; builder-only runs fail closed.
+   */
+  deepInvestigation?: DeepInvestigationConfig;
   security: SecurityConfig;
   builder: BuilderConfig;
   interpreter: InterpreterConfig;
@@ -168,6 +219,38 @@ export const DEFAULT_CONTEXT: ContextConfig = {
   redactSecrets: true,
   ignoreFilesFrom: [".gitignore", ".codaliignore"],
   skipSearchWhenPreferred: false,
+};
+
+// Deep investigation defaults are only enforced when deep mode is enabled.
+export const DEFAULT_DEEP_INVESTIGATION_TOOL_QUOTA: DeepInvestigationToolQuotaConfig = {
+  search: 3,
+  openOrSnippet: 3,
+  symbolsOrAst: 2,
+  impact: 1,
+  tree: 1,
+  dagExport: 0,
+};
+
+export const DEFAULT_DEEP_INVESTIGATION_BUDGET: DeepInvestigationBudgetConfig = {
+  minCycles: 2,
+  minSeconds: 90,
+  maxCycles: 6,
+};
+
+export const DEFAULT_DEEP_INVESTIGATION_EVIDENCE: DeepInvestigationEvidenceConfig = {
+  minSearchHits: 5,
+  minOpenOrSnippet: 2,
+  minSymbolsOrAst: 1,
+  minImpact: 1,
+  maxWarnings: 2,
+};
+
+export const DEFAULT_DEEP_INVESTIGATION: DeepInvestigationConfig = {
+  enabled: false,
+  deepScanPreset: false,
+  toolQuota: DEFAULT_DEEP_INVESTIGATION_TOOL_QUOTA,
+  investigationBudget: DEFAULT_DEEP_INVESTIGATION_BUDGET,
+  evidenceGate: DEFAULT_DEEP_INVESTIGATION_EVIDENCE,
 };
 
 export const DEFAULT_SECURITY: SecurityConfig = {

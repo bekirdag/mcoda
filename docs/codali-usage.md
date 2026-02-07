@@ -19,6 +19,35 @@ Or via env:
 
 - `CODALI_SMART=1`
 
+## Deep investigation mode
+Deep investigation adds a mandatory research phase and evidence gating before planning. It **requires** the smart pipeline.
+
+```sh
+CODALI_DEEP_INVESTIGATION_ENABLED=1 codali run --smart --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
+```
+
+Key env flags:
+- `CODALI_DEEP_INVESTIGATION_ENABLED=1`
+- `CODALI_DEEP_INVESTIGATION_DEEP_SCAN_PRESET=1` (optional, increases retrieval depth)
+- `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SEARCH`
+- `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_OPEN_OR_SNIPPET`
+- `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SYMBOLS_OR_AST`
+- `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_IMPACT`
+- `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_TREE`
+- `CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_DAG_EXPORT`
+- `CODALI_DEEP_INVESTIGATION_BUDGET_MIN_CYCLES`
+- `CODALI_DEEP_INVESTIGATION_BUDGET_MIN_SECONDS`
+- `CODALI_DEEP_INVESTIGATION_BUDGET_MAX_CYCLES`
+- `CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SEARCH_HITS`
+- `CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_OPEN_OR_SNIPPET`
+- `CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SYMBOLS_OR_AST`
+- `CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_IMPACT`
+- `CODALI_DEEP_INVESTIGATION_EVIDENCE_MAX_WARNINGS`
+
+Notes:
+- Deep mode disables plan-hint/fast-path shortcuts.
+- Runs fail closed if Docdex health/index checks, quotas, budgets, or evidence gates are unmet.
+
 Stdin input:
 
 ```sh

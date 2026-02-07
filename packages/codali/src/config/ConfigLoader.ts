@@ -6,6 +6,7 @@ import {
   DEFAULT_BUILDER,
   DEFAULT_CONTEXT,
   DEFAULT_COST,
+  DEFAULT_DEEP_INVESTIGATION,
   DEFAULT_INTERPRETER,
   DEFAULT_LOCAL_CONTEXT,
   DEFAULT_LIMITS,
@@ -16,6 +17,10 @@ import {
   type BuilderConfig,
   type ContextConfig,
   type CostConfig,
+  type DeepInvestigationBudgetConfig,
+  type DeepInvestigationConfig,
+  type DeepInvestigationEvidenceConfig,
+  type DeepInvestigationToolQuotaConfig,
   type DocdexConfig,
   type LimitsConfig,
   type LocalContextConfig,
@@ -28,6 +33,14 @@ import {
   type StreamingConfig,
   type ToolConfig,
 } from "./Config.js";
+
+type DeepInvestigationConfigSource = Partial<
+  Omit<DeepInvestigationConfig, "toolQuota" | "investigationBudget" | "evidenceGate">
+> & {
+  toolQuota?: Partial<DeepInvestigationToolQuotaConfig>;
+  investigationBudget?: Partial<DeepInvestigationBudgetConfig>;
+  evidenceGate?: Partial<DeepInvestigationEvidenceConfig>;
+};
 
 export interface ConfigSource {
   workspaceRoot?: string;
@@ -50,6 +63,7 @@ export interface ConfigSource {
   tools?: Partial<ToolConfig>;
   limits?: Partial<LimitsConfig>;
   context?: Partial<ContextConfig>;
+  deepInvestigation?: DeepInvestigationConfigSource;
   security?: Partial<SecurityConfig>;
   builder?: Partial<BuilderConfig>;
   interpreter?: Partial<InterpreterConfig>;
@@ -81,6 +95,23 @@ const parseBoolean = (value: string | undefined): boolean | undefined => {
   return undefined;
 };
 
+const parseNumberStrict = (value: string | undefined, label: string): number | undefined => {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid ${label}: expected number.`);
+  }
+  return parsed;
+};
+
+const parseBooleanStrict = (value: string | undefined, label: string): boolean | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`Invalid ${label}: expected boolean.`);
+};
+
 const parseList = (value: string | undefined): string[] | undefined => {
   if (!value) return undefined;
   const items = value
@@ -97,6 +128,124 @@ const parseJson = <T>(value: string | undefined): T | undefined => {
   } catch {
     return undefined;
   }
+};
+
+const normalizeNumberField = (value: unknown, label: string): number | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Invalid ${label}: expected number.`);
+  }
+  return value;
+};
+
+const normalizeBooleanField = (value: unknown, label: string): boolean | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(`Invalid ${label}: expected boolean.`);
+  }
+  return value;
+};
+
+const normalizeToolQuota = (
+  value: unknown,
+  label: string,
+): Partial<DeepInvestigationToolQuotaConfig> | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const quota = value as Record<string, unknown>;
+  const normalized: Partial<DeepInvestigationToolQuotaConfig> = {};
+  const search = normalizeNumberField(quota.search, `${label}.search`);
+  if (search !== undefined) normalized.search = search;
+  const openOrSnippet = normalizeNumberField(quota.openOrSnippet, `${label}.openOrSnippet`);
+  if (openOrSnippet !== undefined) normalized.openOrSnippet = openOrSnippet;
+  const symbolsOrAst = normalizeNumberField(quota.symbolsOrAst, `${label}.symbolsOrAst`);
+  if (symbolsOrAst !== undefined) normalized.symbolsOrAst = symbolsOrAst;
+  const impact = normalizeNumberField(quota.impact, `${label}.impact`);
+  if (impact !== undefined) normalized.impact = impact;
+  const tree = normalizeNumberField(quota.tree, `${label}.tree`);
+  if (tree !== undefined) normalized.tree = tree;
+  const dagExport = normalizeNumberField(quota.dagExport, `${label}.dagExport`);
+  if (dagExport !== undefined) normalized.dagExport = dagExport;
+  return Object.keys(normalized).length ? normalized : undefined;
+};
+
+const normalizeBudget = (
+  value: unknown,
+  label: string,
+): Partial<DeepInvestigationBudgetConfig> | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const budget = value as Record<string, unknown>;
+  const normalized: Partial<DeepInvestigationBudgetConfig> = {};
+  const minCycles = normalizeNumberField(budget.minCycles, `${label}.minCycles`);
+  if (minCycles !== undefined) normalized.minCycles = minCycles;
+  const minSeconds = normalizeNumberField(budget.minSeconds, `${label}.minSeconds`);
+  if (minSeconds !== undefined) normalized.minSeconds = minSeconds;
+  const maxCycles = normalizeNumberField(budget.maxCycles, `${label}.maxCycles`);
+  if (maxCycles !== undefined) normalized.maxCycles = maxCycles;
+  return Object.keys(normalized).length ? normalized : undefined;
+};
+
+const normalizeEvidence = (
+  value: unknown,
+  label: string,
+): Partial<DeepInvestigationEvidenceConfig> | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const evidence = value as Record<string, unknown>;
+  const normalized: Partial<DeepInvestigationEvidenceConfig> = {};
+  const minSearchHits = normalizeNumberField(evidence.minSearchHits, `${label}.minSearchHits`);
+  if (minSearchHits !== undefined) normalized.minSearchHits = minSearchHits;
+  const minOpenOrSnippet = normalizeNumberField(
+    evidence.minOpenOrSnippet,
+    `${label}.minOpenOrSnippet`,
+  );
+  if (minOpenOrSnippet !== undefined) normalized.minOpenOrSnippet = minOpenOrSnippet;
+  const minSymbolsOrAst = normalizeNumberField(
+    evidence.minSymbolsOrAst,
+    `${label}.minSymbolsOrAst`,
+  );
+  if (minSymbolsOrAst !== undefined) normalized.minSymbolsOrAst = minSymbolsOrAst;
+  const minImpact = normalizeNumberField(evidence.minImpact, `${label}.minImpact`);
+  if (minImpact !== undefined) normalized.minImpact = minImpact;
+  const maxWarnings = normalizeNumberField(evidence.maxWarnings, `${label}.maxWarnings`);
+  if (maxWarnings !== undefined) normalized.maxWarnings = maxWarnings;
+  return Object.keys(normalized).length ? normalized : undefined;
+};
+
+const normalizeDeepInvestigationConfig = (
+  value: unknown,
+  label: string,
+): DeepInvestigationConfigSource | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const config = value as Record<string, unknown>;
+  const normalized: DeepInvestigationConfigSource = {};
+  const enabled = normalizeBooleanField(config.enabled, `${label}.enabled`);
+  if (enabled !== undefined) normalized.enabled = enabled;
+  const deepScanPreset = normalizeBooleanField(
+    config.deepScanPreset,
+    `${label}.deepScanPreset`,
+  );
+  if (deepScanPreset !== undefined) normalized.deepScanPreset = deepScanPreset;
+  const toolQuota = normalizeToolQuota(config.toolQuota, `${label}.toolQuota`);
+  if (toolQuota) normalized.toolQuota = toolQuota;
+  const investigationBudget = normalizeBudget(
+    config.investigationBudget,
+    `${label}.investigationBudget`,
+  );
+  if (investigationBudget) normalized.investigationBudget = investigationBudget;
+  const evidenceGate = normalizeEvidence(config.evidenceGate, `${label}.evidenceGate`);
+  if (evidenceGate) normalized.evidenceGate = evidenceGate;
+  return Object.keys(normalized).length ? normalized : undefined;
 };
 
 const findConfigFile = (cwd: string): string | undefined => {
@@ -227,6 +376,107 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
     context.skipSearchWhenPreferred = skipSearchWhenPreferred;
   }
 
+  const deepInvestigation: DeepInvestigationConfigSource = {};
+  const deepInvestigationEnabled = parseBooleanStrict(
+    env.CODALI_DEEP_INVESTIGATION_ENABLED,
+    "CODALI_DEEP_INVESTIGATION_ENABLED",
+  );
+  if (deepInvestigationEnabled !== undefined) {
+    deepInvestigation.enabled = deepInvestigationEnabled;
+  }
+  const deepScanPreset = parseBooleanStrict(
+    env.CODALI_DEEP_INVESTIGATION_DEEP_SCAN_PRESET,
+    "CODALI_DEEP_INVESTIGATION_DEEP_SCAN_PRESET",
+  );
+  if (deepScanPreset !== undefined) {
+    deepInvestigation.deepScanPreset = deepScanPreset;
+  }
+
+  const toolQuota: Partial<DeepInvestigationToolQuotaConfig> = {};
+  const toolQuotaSearch = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SEARCH,
+    "CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SEARCH",
+  );
+  if (toolQuotaSearch !== undefined) toolQuota.search = toolQuotaSearch;
+  const toolQuotaOpen = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_OPEN_OR_SNIPPET,
+    "CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_OPEN_OR_SNIPPET",
+  );
+  if (toolQuotaOpen !== undefined) toolQuota.openOrSnippet = toolQuotaOpen;
+  const toolQuotaSymbols = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SYMBOLS_OR_AST,
+    "CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_SYMBOLS_OR_AST",
+  );
+  if (toolQuotaSymbols !== undefined) toolQuota.symbolsOrAst = toolQuotaSymbols;
+  const toolQuotaImpact = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_IMPACT,
+    "CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_IMPACT",
+  );
+  if (toolQuotaImpact !== undefined) toolQuota.impact = toolQuotaImpact;
+  const toolQuotaTree = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_TREE,
+    "CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_TREE",
+  );
+  if (toolQuotaTree !== undefined) toolQuota.tree = toolQuotaTree;
+  const toolQuotaDag = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_DAG_EXPORT,
+    "CODALI_DEEP_INVESTIGATION_TOOL_QUOTA_DAG_EXPORT",
+  );
+  if (toolQuotaDag !== undefined) toolQuota.dagExport = toolQuotaDag;
+  if (Object.values(toolQuota).some((value) => value !== undefined)) {
+    deepInvestigation.toolQuota = toolQuota;
+  }
+
+  const investigationBudget: Partial<DeepInvestigationBudgetConfig> = {};
+  const budgetMinCycles = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_BUDGET_MIN_CYCLES,
+    "CODALI_DEEP_INVESTIGATION_BUDGET_MIN_CYCLES",
+  );
+  if (budgetMinCycles !== undefined) investigationBudget.minCycles = budgetMinCycles;
+  const budgetMinSeconds = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_BUDGET_MIN_SECONDS,
+    "CODALI_DEEP_INVESTIGATION_BUDGET_MIN_SECONDS",
+  );
+  if (budgetMinSeconds !== undefined) investigationBudget.minSeconds = budgetMinSeconds;
+  const budgetMaxCycles = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_BUDGET_MAX_CYCLES,
+    "CODALI_DEEP_INVESTIGATION_BUDGET_MAX_CYCLES",
+  );
+  if (budgetMaxCycles !== undefined) investigationBudget.maxCycles = budgetMaxCycles;
+  if (Object.values(investigationBudget).some((value) => value !== undefined)) {
+    deepInvestigation.investigationBudget = investigationBudget;
+  }
+
+  const evidenceGate: Partial<DeepInvestigationEvidenceConfig> = {};
+  const evidenceMinSearch = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SEARCH_HITS,
+    "CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SEARCH_HITS",
+  );
+  if (evidenceMinSearch !== undefined) evidenceGate.minSearchHits = evidenceMinSearch;
+  const evidenceMinOpen = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_OPEN_OR_SNIPPET,
+    "CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_OPEN_OR_SNIPPET",
+  );
+  if (evidenceMinOpen !== undefined) evidenceGate.minOpenOrSnippet = evidenceMinOpen;
+  const evidenceMinSymbols = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SYMBOLS_OR_AST,
+    "CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_SYMBOLS_OR_AST",
+  );
+  if (evidenceMinSymbols !== undefined) evidenceGate.minSymbolsOrAst = evidenceMinSymbols;
+  const evidenceMinImpact = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_IMPACT,
+    "CODALI_DEEP_INVESTIGATION_EVIDENCE_MIN_IMPACT",
+  );
+  if (evidenceMinImpact !== undefined) evidenceGate.minImpact = evidenceMinImpact;
+  const evidenceMaxWarnings = parseNumberStrict(
+    env.CODALI_DEEP_INVESTIGATION_EVIDENCE_MAX_WARNINGS,
+    "CODALI_DEEP_INVESTIGATION_EVIDENCE_MAX_WARNINGS",
+  );
+  if (evidenceMaxWarnings !== undefined) evidenceGate.maxWarnings = evidenceMaxWarnings;
+  if (Object.values(evidenceGate).some((value) => value !== undefined)) {
+    deepInvestigation.evidenceGate = evidenceGate;
+  }
+
   const security: Partial<SecurityConfig> = {};
   const redactPatterns = parseList(env.CODALI_SECURITY_REDACT_PATTERNS);
   if (redactPatterns) security.redactPatterns = redactPatterns;
@@ -311,12 +561,16 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
     localContext.summarize = summarize as LocalContextConfig["summarize"];
   }
 
+  const hasDeepInvestigation = Object.values(deepInvestigation).some(
+    (value) => value !== undefined,
+  );
   const config: ConfigSource = {
     limits,
     tools,
     docdex,
     logging,
     context,
+    deepInvestigation: hasDeepInvestigation ? deepInvestigation : undefined,
     security,
     builder,
     interpreter,
@@ -347,12 +601,46 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   return config;
 };
 
+const mergeDeepInvestigationConfigs = (
+  defaults: DeepInvestigationConfig | undefined,
+  ...sources: Array<DeepInvestigationConfigSource | undefined>
+): DeepInvestigationConfig | undefined => {
+  const hasAny = Boolean(defaults) || sources.some(Boolean);
+  if (!hasAny) return undefined;
+  const merged = Object.assign({}, defaults ?? {}, ...sources.filter(Boolean)) as DeepInvestigationConfig;
+  const toolQuotaSources = sources.map((source) => source?.toolQuota);
+  const budgetSources = sources.map((source) => source?.investigationBudget);
+  const evidenceSources = sources.map((source) => source?.evidenceGate);
+  merged.toolQuota = Object.assign(
+    {},
+    defaults?.toolQuota ?? {},
+    ...toolQuotaSources.filter(Boolean),
+  ) as DeepInvestigationToolQuotaConfig;
+  merged.investigationBudget = Object.assign(
+    {},
+    defaults?.investigationBudget ?? {},
+    ...budgetSources.filter(Boolean),
+  ) as DeepInvestigationBudgetConfig;
+  merged.evidenceGate = Object.assign(
+    {},
+    defaults?.evidenceGate ?? {},
+    ...evidenceSources.filter(Boolean),
+  ) as DeepInvestigationEvidenceConfig;
+  return merged;
+};
+
 const mergeConfigs = (
   defaults: CodaliConfig,
   fileConfig?: ConfigSource,
   envConfig?: ConfigSource,
   cliConfig?: ConfigSource,
 ): CodaliConfig => {
+  const deepInvestigation = mergeDeepInvestigationConfigs(
+    defaults.deepInvestigation,
+    normalizeDeepInvestigationConfig(fileConfig?.deepInvestigation, "config.deepInvestigation"),
+    normalizeDeepInvestigationConfig(envConfig?.deepInvestigation, "env.deepInvestigation"),
+    normalizeDeepInvestigationConfig(cliConfig?.deepInvestigation, "cli.deepInvestigation"),
+  );
   const docdex = {
     ...defaults.docdex,
     ...fileConfig?.docdex,
@@ -443,6 +731,7 @@ const mergeConfigs = (
     ...fileConfig,
     ...envConfig,
     ...cliConfig,
+    deepInvestigation,
     docdex,
     tools,
     limits,
@@ -528,6 +817,43 @@ const assertValid = (config: CodaliConfig): void => {
   for (const [key, value] of Object.entries(localContext.modelTokenLimits)) {
     if (value <= 0) errors.push(`localContext.modelTokenLimits.${key}`);
   }
+  const deepInvestigation = config.deepInvestigation;
+  if (deepInvestigation) {
+    const nonNegative = (value: number | undefined, label: string): void => {
+      if (value !== undefined && value < 0) errors.push(label);
+    };
+    const { toolQuota, investigationBudget, evidenceGate } = deepInvestigation;
+    if (toolQuota) {
+      nonNegative(toolQuota.search, "deepInvestigation.toolQuota.search");
+      nonNegative(toolQuota.openOrSnippet, "deepInvestigation.toolQuota.openOrSnippet");
+      nonNegative(toolQuota.symbolsOrAst, "deepInvestigation.toolQuota.symbolsOrAst");
+      nonNegative(toolQuota.impact, "deepInvestigation.toolQuota.impact");
+      nonNegative(toolQuota.tree, "deepInvestigation.toolQuota.tree");
+      nonNegative(toolQuota.dagExport, "deepInvestigation.toolQuota.dagExport");
+    }
+    if (investigationBudget) {
+      nonNegative(investigationBudget.minCycles, "deepInvestigation.investigationBudget.minCycles");
+      nonNegative(
+        investigationBudget.minSeconds,
+        "deepInvestigation.investigationBudget.minSeconds",
+      );
+      nonNegative(investigationBudget.maxCycles, "deepInvestigation.investigationBudget.maxCycles");
+      if (
+        investigationBudget.minCycles !== undefined
+        && investigationBudget.maxCycles !== undefined
+        && investigationBudget.maxCycles < investigationBudget.minCycles
+      ) {
+        errors.push("deepInvestigation.investigationBudget.maxCycles");
+      }
+    }
+    if (evidenceGate) {
+      nonNegative(evidenceGate.minSearchHits, "deepInvestigation.evidenceGate.minSearchHits");
+      nonNegative(evidenceGate.minOpenOrSnippet, "deepInvestigation.evidenceGate.minOpenOrSnippet");
+      nonNegative(evidenceGate.minSymbolsOrAst, "deepInvestigation.evidenceGate.minSymbolsOrAst");
+      nonNegative(evidenceGate.minImpact, "deepInvestigation.evidenceGate.minImpact");
+      nonNegative(evidenceGate.maxWarnings, "deepInvestigation.evidenceGate.maxWarnings");
+    }
+  }
   if (errors.length) {
     throw new Error(`Invalid config values: ${errors.join(", ")}`);
   }
@@ -555,6 +881,7 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Codal
     tools: DEFAULT_TOOL_CONFIG,
     limits: DEFAULT_LIMITS,
     context: DEFAULT_CONTEXT,
+    deepInvestigation: DEFAULT_DEEP_INVESTIGATION,
     security: DEFAULT_SECURITY,
     builder: DEFAULT_BUILDER,
     interpreter: DEFAULT_INTERPRETER,

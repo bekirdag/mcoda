@@ -9,6 +9,7 @@ import { ContextStore } from "../ContextStore.js";
 import type { DocdexClient } from "../../docdex/DocdexClient.js";
 import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 import type { LocalContextConfig } from "../Types.js";
+import type { RunLogger } from "../../runtime/RunLogger.js";
 
 class FakeDocdexClient {
   lastProfileAgentId?: string;
@@ -17,6 +18,9 @@ class FakeDocdexClient {
   treeCalls: unknown[] = [];
   symbolsCalls: string[] = [];
   astCalls: string[] = [];
+  searchCalls: string[] = [];
+  openSnippetCalls: string[] = [];
+  openFileCalls: string[] = [];
   constructor(private impactDiagnosticsPayload: unknown = { diagnostics: [] }) {}
   getRepoId(): string | undefined {
     return undefined;
@@ -49,15 +53,18 @@ class FakeDocdexClient {
     };
   }
 
-  async search(_query?: string): Promise<unknown> {
+  async search(query?: string): Promise<unknown> {
+    if (query) this.searchCalls.push(query);
     return { hits: [{ doc_id: "doc-1", path: "src/index.ts" }] };
   }
 
-  async openSnippet(): Promise<unknown> {
+  async openSnippet(docId?: string): Promise<unknown> {
+    if (docId) this.openSnippetCalls.push(docId);
     return "snippet-content";
   }
 
   async openFile(pathValue: string): Promise<unknown> {
+    this.openFileCalls.push(pathValue);
     return { content: `open-file:${pathValue}` };
   }
 
@@ -122,10 +129,24 @@ const makeLocalConfig = (overrides: Partial<LocalContextConfig> = {}): LocalCont
     provider: "librarian",
     model: "gemma2:2b",
     targetTokens: 1200,
-    thresholdPct: 0.9,
+  thresholdPct: 0.9,
   },
   ...overrides,
 });
+
+const makeLogger = (): { logger: RunLogger; entries: Array<{ type: string; data: Record<string, unknown> }> } => {
+  const entries: Array<{ type: string; data: Record<string, unknown> }> = [];
+  const logger = {
+    logPath: "log",
+    logDir: "log",
+    runId: "run",
+    log: async (type: string, data: Record<string, unknown>): Promise<void> => {
+      entries.push({ type, data });
+    },
+    writePhaseArtifact: async (): Promise<string> => "artifact",
+  } as RunLogger;
+  return { logger, entries };
+};
 
 test("ContextAssembler builds a complete context bundle", { concurrency: false }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-"));
@@ -154,6 +175,147 @@ test("ContextAssembler builds a complete context bundle", { concurrency: false }
   assert.equal(bundle.preferences_detected.length, 0);
   assert.equal(bundle.memory[0]?.text, "src/index.ts is the primary file for formatting changes.");
   assert.equal(bundle.profile[0]?.content, "use async/await");
+});
+
+test("ContextAssembler clamps depth options and logs warnings", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new FakeDocdexClient() as unknown as DocdexClient;
+  const { logger, entries } = makeLogger();
+
+  new ContextAssembler(client, {
+    maxQueries: 99,
+    maxHitsPerQuery: 0,
+    snippetWindow: 5,
+    impactMaxDepth: 99,
+    impactMaxEdges: 999,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    logger,
+  });
+
+  const clampedOptions = entries
+    .filter((entry) => entry.type === "context_option_clamped")
+    .map((entry) => entry.data.option);
+  assert.ok(clampedOptions.includes("maxQueries"));
+  assert.ok(clampedOptions.includes("maxHitsPerQuery"));
+  assert.ok(clampedOptions.includes("snippetWindow"));
+  assert.ok(clampedOptions.includes("impactMaxDepth"));
+  assert.ok(clampedOptions.includes("impactMaxEdges"));
+});
+
+test("ContextAssembler applies deep scan preset and flags warnings", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new FakeDocdexClient() as unknown as DocdexClient;
+  const { logger, entries } = makeLogger();
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 1,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    logger,
+  });
+
+  assembler.applyDeepScanPreset();
+  const bundle = await assembler.assemble("Update src/index.ts formatting");
+
+  assert.ok(bundle.warnings.includes("deep_scan_preset_applied"));
+  const presetEvent = entries.find((entry) => entry.type === "context_deep_scan_preset");
+  assert.ok(presetEvent);
+  assert.ok((presetEvent?.data.after as Record<string, unknown>).maxQueries);
+});
+
+test("ContextAssembler fails closed in deep mode when docdex health fails", { concurrency: false }, async () => {
+  class HealthFailClient extends FakeDocdexClient {
+    async healthCheck(): Promise<boolean> {
+      throw new Error("unhealthy");
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new HealthFailClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 1,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    deepMode: true,
+  });
+
+  await assert.rejects(async () => {
+    await assembler.assemble("Update src/index.ts formatting");
+  }, /Deep investigation requires docdex health/);
+});
+
+test("ContextAssembler fails closed in deep mode when index coverage is missing", { concurrency: false }, async () => {
+  class EmptyIndexClient extends FakeDocdexClient {
+    async stats(): Promise<unknown> {
+      return { last_updated_epoch_ms: 0, num_docs: 0 };
+    }
+    async files(): Promise<unknown> {
+      return { results: [] };
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new EmptyIndexClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 1,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    deepMode: true,
+  });
+
+  await assert.rejects(async () => {
+    await assembler.assemble("Update src/index.ts formatting");
+  }, /docdex_index_empty/);
+});
+
+test("ContextAssembler research executor runs docdex tools and captures outputs", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-research-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new FakeDocdexClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 1,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+  });
+  const context = {
+    request: "Update src/index.ts formatting",
+    queries: ["Update src/index.ts formatting"],
+    snippets: [],
+    symbols: [],
+    ast: [],
+    impact: [],
+    impact_diagnostics: [],
+    memory: [],
+    preferences_detected: [],
+    profile: [],
+    index: { last_updated_epoch_ms: 0, num_docs: 0 },
+    warnings: [],
+    selection: {
+      focus: ["src/index.ts"],
+      periphery: [],
+      all: ["src/index.ts"],
+      low_confidence: false,
+    },
+  };
+
+  const research = await assembler.runResearchTools(context.request, context);
+  assert.ok(research.toolRuns.some((run) => run.tool === "docdex.search" && run.ok));
+  assert.ok(research.toolRuns.some((run) => run.tool === "docdex.tree"));
+  assert.ok(research.outputs.searchResults.length > 0);
+  assert.ok(research.outputs.snippets.length > 0);
+  assert.ok(research.outputs.symbols.length > 0);
+  assert.ok(research.outputs.ast.length > 0);
+  assert.ok(research.outputs.impact.length > 0);
+  const fake = client as unknown as FakeDocdexClient;
+  assert.ok(fake.searchCalls.length > 0);
+  assert.ok(fake.openSnippetCalls.length > 0);
 });
 
 test("ContextAssembler always includes full repo tree when repo map is enabled", { concurrency: false }, async () => {
