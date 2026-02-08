@@ -1320,6 +1320,58 @@ test("ContextAssembler retries with adaptive queries when first search returns n
   assert.ok(bundle.selection?.all.includes("src/server/healthz.ts"));
 });
 
+test("ContextAssembler runs a UI source-biased retry when initial hits are doc-dominant", { concurrency: false }, async () => {
+  class UiSourceBiasClient extends FakeDocdexClient {
+    searchCalls: string[] = [];
+    async files(): Promise<unknown> {
+      return {
+        results: [
+          { rel_path: "src/public/index.html" },
+          { rel_path: "src/public/style.css" },
+          { rel_path: "src/taskStore.js" },
+          { rel_path: "docs/rfp.md" },
+        ],
+      };
+    }
+
+    async search(query: string): Promise<unknown> {
+      this.searchCalls.push(query);
+      const normalized = query.toLowerCase();
+      if (normalized.includes("src/public") || normalized.includes("taskstore")) {
+        return {
+          hits: [
+            { doc_id: "ui-1", path: "src/public/index.html" },
+            { doc_id: "ui-2", path: "src/public/style.css" },
+          ],
+        };
+      }
+      return {
+        hits: [
+          { doc_id: "doc-1", path: "docs/rfp.md" },
+          { doc_id: "doc-2", path: "docs/guide.md" },
+        ],
+      };
+    }
+  }
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-ui-source-bias-"));
+  mkdirSync(path.join(tmpDir, "src/public"), { recursive: true });
+  mkdirSync(path.join(tmpDir, "docs"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/public/index.html"), "<h1>Welcome</h1>", "utf8");
+  writeFileSync(path.join(tmpDir, "src/public/style.css"), ".hero { color: black; }", "utf8");
+  writeFileSync(path.join(tmpDir, "src/taskStore.js"), "export const store = {};\n", "utf8");
+  writeFileSync(path.join(tmpDir, "docs/rfp.md"), "# RFP", "utf8");
+  writeFileSync(path.join(tmpDir, "docs/guide.md"), "# Guide", "utf8");
+
+  const client = new UiSourceBiasClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, { maxQueries: 1, workspaceRoot: tmpDir, readStrategy: "fs" });
+  const bundle = await assembler.assemble("Add a task completion stats section under the welcome header on the homepage");
+
+  assert.ok((client as unknown as UiSourceBiasClient).searchCalls.length >= 2);
+  assert.ok(bundle.selection?.all.includes("src/public/index.html"));
+  assert.ok(bundle.warnings.includes("docdex_ui_source_bias_retry"));
+});
+
 test("ContextAssembler reports missing data when no files are selected", { concurrency: false }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-missing-"));
   const client = new EmptySearchDocdexClient() as unknown as DocdexClient;

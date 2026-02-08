@@ -272,6 +272,103 @@ const computeCreateTargets = (context: ContextBundle, targetFiles: string[]): st
   });
 };
 
+const collectPlannerScopePaths = (context: ContextBundle): string[] => {
+  const focus = (context.selection?.focus ?? []).map((entry) => normalizePath(entry)).filter(Boolean);
+  const periphery = (context.selection?.periphery ?? []).map((entry) => normalizePath(entry)).filter(Boolean);
+  return uniqueStrings([...focus, ...periphery]);
+};
+
+type PlanTargetScopeAssessment = {
+  scopePaths: string[];
+  createTargets: string[];
+  invalidTargets: string[];
+};
+
+const assessPlanTargetScope = (
+  context: ContextBundle,
+  plan: Plan,
+): PlanTargetScopeAssessment => {
+  const scopePaths = collectPlannerScopePaths(context);
+  const scopeSet = new Set(scopePaths.map((entry) => entry.toLowerCase()));
+  const createTargets = uniqueStrings(
+    (plan.create_files ?? [])
+      .map((entry) => normalizePath(entry))
+      .filter((entry) => entry.length > 0 && entry !== "unknown"),
+  );
+  if (scopePaths.length === 0) {
+    return {
+      scopePaths,
+      createTargets,
+      invalidTargets: [],
+    };
+  }
+  const createSet = new Set(createTargets.map((entry) => entry.toLowerCase()));
+  const invalidTargets = uniqueStrings(
+    (plan.target_files ?? [])
+      .map((entry) => normalizePath(entry))
+      .filter((entry) => entry.length > 0 && entry !== "unknown")
+      .filter((entry) => !scopeSet.has(entry.toLowerCase()) && !createSet.has(entry.toLowerCase())),
+  );
+  return {
+    scopePaths,
+    createTargets,
+    invalidTargets,
+  };
+};
+
+const applyTargetScopeGuard = (
+  context: ContextBundle,
+  plan: Plan,
+  warnings: string[],
+): { plan: Plan; warnings: string[] } => {
+  const assessment = assessPlanTargetScope(context, plan);
+  if (assessment.scopePaths.length === 0) {
+    return {
+      plan: {
+        ...plan,
+        target_files: uniqueStrings(
+          (plan.target_files ?? [])
+            .map((entry) => normalizePath(entry))
+            .filter((entry) => entry.length > 0 && entry !== "unknown"),
+        ),
+        create_files: assessment.createTargets.length > 0 ? assessment.createTargets : undefined,
+      },
+      warnings: uniqueStrings(warnings),
+    };
+  }
+  const nextWarnings = [...warnings];
+  if (assessment.invalidTargets.length > 0) {
+    nextWarnings.push(`plan_targets_outside_context:${assessment.invalidTargets.join(",")}`);
+  }
+  const invalidSet = new Set(assessment.invalidTargets.map((entry) => entry.toLowerCase()));
+  const createSet = new Set(assessment.createTargets.map((entry) => entry.toLowerCase()));
+  let nextTargets = uniqueStrings(
+    (plan.target_files ?? [])
+      .map((entry) => normalizePath(entry))
+      .filter((entry) => entry.length > 0 && entry !== "unknown")
+      .filter((entry) => !invalidSet.has(entry.toLowerCase()) || createSet.has(entry.toLowerCase())),
+  );
+  if (nextTargets.length === 0) {
+    const scopeSet = new Set(assessment.scopePaths.map((entry) => entry.toLowerCase()));
+    const fallback = deriveFallbackTargetFiles(context)
+      .map((entry) => normalizePath(entry))
+      .filter((entry) => entry.length > 0 && entry !== "unknown")
+      .filter((entry) => scopeSet.has(entry.toLowerCase()) || createSet.has(entry.toLowerCase()));
+    nextTargets = uniqueStrings(fallback);
+  }
+  if (nextTargets.length === 0) {
+    nextWarnings.push("plan_target_scope_empty_after_filter");
+  }
+  return {
+    plan: {
+      ...plan,
+      target_files: nextTargets,
+      create_files: assessment.createTargets.length > 0 ? assessment.createTargets : undefined,
+    },
+    warnings: uniqueStrings(nextWarnings),
+  };
+};
+
 const compactWhitespace = (value: string): string => value.replace(/\s+/g, " ").trim();
 
 const summarizeRequestSubject = (request?: string): string => {
@@ -480,26 +577,25 @@ const fallbackSteps = (context: ContextBundle): string[] => {
   return steps;
 };
 
-const fallbackPlan = (context: ContextBundle): Plan => ({
-  steps: fallbackSteps(context),
-  target_files: deriveFallbackTargetFiles(context),
-  risk_assessment: (() => {
-    const targets = deriveFallbackTargetFiles(context);
-    const createTargets = computeCreateTargets(context, targets);
-    if (createTargets.length > 0) {
-      return "medium: introduces new files and integration points";
-    }
-    if (ENDPOINT_INTENT_PATTERN.test(context.request ?? "")) {
-      return "medium: endpoint behavior and contract changes";
-    }
-    return "medium: fallback plan generated from context";
-  })(),
-  verification: (() => {
-    const targets = deriveFallbackTargetFiles(context);
-    const createTargets = computeCreateTargets(context, targets);
-    return fallbackVerification(context, targets, createTargets);
-  })(),
-});
+const fallbackPlan = (context: ContextBundle): Plan => {
+  const targets = deriveFallbackTargetFiles(context);
+  const createTargets = computeCreateTargets(context, targets);
+  return {
+    steps: fallbackSteps(context),
+    target_files: targets,
+    create_files: createTargets.length > 0 ? createTargets : undefined,
+    risk_assessment: (() => {
+      if (createTargets.length > 0) {
+        return "medium: introduces new files and integration points";
+      }
+      if (ENDPOINT_INTENT_PATTERN.test(context.request ?? "")) {
+        return "medium: endpoint behavior and contract changes";
+      }
+      return "medium: fallback plan generated from context";
+    })(),
+    verification: fallbackVerification(context, targets, createTargets),
+  };
+};
 
 const coercePlan = (
   parsed: unknown,
@@ -521,6 +617,10 @@ const coercePlan = (
     toFileArray(record.filesLikelyTouched) ??
     toFileArray(record.files) ??
     undefined;
+  const createFiles =
+    toFileArray(record.create_files) ??
+    toFileArray(record.createFiles) ??
+    undefined;
   const riskAssessment =
     typeof record.risk_assessment === "string"
       ? record.risk_assessment
@@ -540,6 +640,7 @@ const coercePlan = (
   const plan: Plan = {
     steps: steps && steps.length > 0 ? steps : fallbackSteps(context),
     target_files: targetFiles && targetFiles.length > 0 ? targetFiles : deriveFallbackTargetFiles(context),
+    create_files: createFiles && createFiles.length > 0 ? createFiles : undefined,
     risk_assessment: risk && risk.length > 0 ? risk : "medium: fallback plan generated from context",
     verification:
       verification && verification.length > 0
@@ -708,12 +809,14 @@ const parsePlanDsl = (
 
   const steps: string[] = [];
   const targets: string[] = [];
+  const createFiles: string[] = [];
   const verification: string[] = [];
   let risk: string | undefined;
-  let section: "steps" | "targets" | "verify" | "risk" | undefined;
+  let section: "steps" | "targets" | "create" | "verify" | "risk" | undefined;
   const headerCounts = {
     plan: 0,
     targets: 0,
+    create: 0,
     risk: 0,
     verify: 0,
   };
@@ -752,6 +855,18 @@ const parsePlanDsl = (
       if (targetsMatch[1]) commitItem(targets, targetsMatch[1]);
       continue;
     }
+    const createMatch = /^CREATE(?:_FILES?| FILES?)\s*:\s*(.*)$/i.exec(line);
+    if (createMatch) {
+      headerCounts.create += 1;
+      if (headerCounts.create > 1) {
+        duplicateSectionDetected = true;
+        section = undefined;
+        continue;
+      }
+      section = "create";
+      if (createMatch[1]) commitItem(createFiles, createMatch[1]);
+      continue;
+    }
     const riskMatch = /^RISK\s*:\s*(.*)$/i.exec(line);
     if (riskMatch) {
       headerCounts.risk += 1;
@@ -786,6 +901,10 @@ const parsePlanDsl = (
       commitItem(targets, line);
       continue;
     }
+    if (section === "create") {
+      commitItem(createFiles, line);
+      continue;
+    }
     if (section === "verify") {
       commitItem(verification, line);
       continue;
@@ -811,6 +930,7 @@ const parsePlanDsl = (
   const plan: Plan = {
     steps: steps.length > 0 ? steps : fallbackSteps(context),
     target_files: targets.length > 0 ? targets : deriveFallbackTargetFiles(context),
+    create_files: createFiles.length > 0 ? uniqueStrings(createFiles.map((entry) => normalizePath(entry))) : undefined,
     risk_assessment: risk && risk.length > 0 ? risk : "medium: fallback plan generated from context",
     verification:
       verification.length > 0
@@ -833,7 +953,12 @@ const parsePlanOutput = (
   const dslResult = parsePlanDsl(normalizedContent, context);
   if (dslResult.plan) {
     const enriched = enrichPlanWithTargetChangeDetails(context, dslResult.plan);
-    let warnings = uniqueStrings([...classifiedWarnings, ...dslResult.warnings, ...enriched.warnings]);
+    const scoped = applyTargetScopeGuard(
+      context,
+      enriched.plan,
+      uniqueStrings([...classifiedWarnings, ...dslResult.warnings, ...enriched.warnings]),
+    );
+    let warnings = scoped.warnings;
     const hasMissingFields = warnings.some((warning) => REQUIRED_MISSING_PLAN_WARNINGS.has(warning));
     const hasNonDslWarning = warnings.includes(ARCHITECT_WARNING_NON_DSL);
     const hasDuplicateSections = warnings.includes(ARCHITECT_WARNING_MULTIPLE_SECTION_BLOCKS);
@@ -856,25 +981,25 @@ const parsePlanOutput = (
       }
     }
     return {
-      plan: enriched.plan,
+      plan: scoped.plan,
       warnings,
     };
   }
   const parsedResult = parseJsonLoose(normalizedContent);
   const { plan, warnings } = coercePlan(parsedResult.parsed, context);
   const enriched = enrichPlanWithTargetChangeDetails(context, plan);
+  const scoped = applyTargetScopeGuard(context, enriched.plan, [...warnings, ...enriched.warnings]);
   const repairedWarnings = withRepairWarnings(
     [
       ...classifiedWarnings,
       ...dslResult.warnings,
-      ...warnings,
-      ...enriched.warnings,
+      ...scoped.warnings,
       ARCHITECT_WARNING_USED_JSON_FALLBACK,
     ],
     "json_fallback",
   );
   return {
-    plan: enriched.plan,
+    plan: scoped.plan,
     warnings: repairedWarnings,
     parseError: parsedResult.error,
   };
@@ -1034,18 +1159,24 @@ const parsePlanHint = (
   const dslResult = parsePlanDsl(hint, context);
   if (dslResult.plan) {
     const enriched = enrichPlanWithTargetChangeDetails(context, dslResult.plan);
+    const scoped = applyTargetScopeGuard(
+      context,
+      enriched.plan,
+      [...dslResult.warnings, ...enriched.warnings],
+    );
     return {
-      plan: enriched.plan,
-      warnings: [...dslResult.warnings, ...enriched.warnings],
+      plan: scoped.plan,
+      warnings: scoped.warnings,
     };
   }
   const parsedResult = parseJsonLoose(hint);
   if (parsedResult.parsed && typeof parsedResult.parsed === "object") {
     const { plan, warnings } = coercePlan(parsedResult.parsed, context);
     const enriched = enrichPlanWithTargetChangeDetails(context, plan);
+    const scoped = applyTargetScopeGuard(context, enriched.plan, [...warnings, ...enriched.warnings]);
     return {
-      plan: enriched.plan,
-      warnings: [...dslResult.warnings, ...warnings, ...enriched.warnings],
+      plan: scoped.plan,
+      warnings: [...dslResult.warnings, ...scoped.warnings],
       parseError: parsedResult.error,
     };
   }
@@ -1060,18 +1191,28 @@ const parsePlanHintForValidation = (
   if (parsedResult.parsed && typeof parsedResult.parsed === "object") {
     const { plan, warnings } = coercePlan(parsedResult.parsed, context);
     const enriched = enrichPlanWithTargetChangeDetails(context, plan);
+    const scopeAssessment = assessPlanTargetScope(context, enriched.plan);
+    const scopeWarnings =
+      scopeAssessment.invalidTargets.length > 0
+        ? [`plan_targets_outside_context:${scopeAssessment.invalidTargets.join(",")}`]
+        : [];
     return {
       plan: enriched.plan,
-      warnings: [...warnings, ...enriched.warnings],
+      warnings: [...warnings, ...enriched.warnings, ...scopeWarnings],
       parseError: parsedResult.error,
     };
   }
   const dslResult = parsePlanDsl(hint, context);
   if (dslResult.plan) {
     const enriched = enrichPlanWithTargetChangeDetails(context, dslResult.plan);
+    const scopeAssessment = assessPlanTargetScope(context, enriched.plan);
+    const scopeWarnings =
+      scopeAssessment.invalidTargets.length > 0
+        ? [`plan_targets_outside_context:${scopeAssessment.invalidTargets.join(",")}`]
+        : [];
     return {
       plan: enriched.plan,
-      warnings: [...dslResult.warnings, ...enriched.warnings],
+      warnings: [...dslResult.warnings, ...enriched.warnings, ...scopeWarnings],
     };
   }
   return { warnings: [...dslResult.warnings, "plan_hint_not_parseable"], parseError: parsedResult.error };
@@ -1084,6 +1225,7 @@ const PLAN_HINT_PLACEHOLDER_TARGET_PATTERNS = [/^unknown$/i, /^path\/to\//i, /^<
 const validatePlanHintPlan = (
   plan: Plan,
   warnings: string[],
+  context: ContextBundle,
 ): {
   issues: string[];
   blockingWarnings: string[];
@@ -1098,6 +1240,10 @@ const validatePlanHintPlan = (
   );
   if (invalidTargets.length > 0) {
     issues.push(`plan_hint_invalid_targets:${invalidTargets.join(",")}`);
+  }
+  const scopeAssessment = assessPlanTargetScope(context, plan);
+  if (scopeAssessment.invalidTargets.length > 0) {
+    issues.push(`plan_hint_targets_outside_context:${scopeAssessment.invalidTargets.join(",")}`);
   }
   const blockingWarnings = warnings.filter((warning) =>
     PLAN_HINT_BLOCKING_WARNING_PREFIXES.some((prefix) => warning.startsWith(prefix)),
@@ -1292,7 +1438,7 @@ export class ArchitectPlanner {
           parseError: hintParsed.parseError,
         });
       }
-      const validation = validatePlanHintPlan(hintParsed.plan, hintParsed.warnings);
+      const validation = validatePlanHintPlan(hintParsed.plan, hintParsed.warnings, context);
       if (validation.issues.length > 0) {
         throw new PlanHintValidationError({
           message: "Plan hint validation failed: required fields or targets are invalid.",

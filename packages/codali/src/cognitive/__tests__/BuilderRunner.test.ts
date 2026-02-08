@@ -6,7 +6,7 @@ import os from "node:os";
 import type { Provider, ProviderRequest, ProviderResponse, ProviderToolCall } from "../../providers/ProviderTypes.js";
 import { ToolRegistry } from "../../tools/ToolRegistry.js";
 import type { ToolContext } from "../../tools/ToolTypes.js";
-import { BuilderRunner } from "../BuilderRunner.js";
+import { BuilderRunner, PatchApplyError } from "../BuilderRunner.js";
 import type { ContextBundle, Plan } from "../Types.js";
 import { PatchApplier } from "../PatchApplier.js";
 import { parsePatchOutput, type PatchFormat } from "../BuilderOutputParser.js";
@@ -288,6 +288,29 @@ class InvalidPatchProvider implements Provider {
       message: {
         role: "assistant",
         content: "I made the changes you asked for.",
+      },
+    };
+  }
+}
+
+class MissingTargetPatchProvider implements Provider {
+  name = "missing-target-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/missing.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 2;",
+            },
+          ],
+        }),
       },
     };
   }
@@ -791,6 +814,39 @@ test("BuilderRunner returns context request without applying patches", { concurr
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.equal(updated.trim(), "const value = 1;");
   assert.ok(result.contextRequest);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner surfaces ENOENT apply failures as PatchApplyError", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-missing-target-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new MissingTargetPatchProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /(enoent|no such file|missing)/i);
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });

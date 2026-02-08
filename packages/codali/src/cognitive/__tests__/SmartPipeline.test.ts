@@ -214,13 +214,18 @@ class StubArchitectPlannerNonDslThenDsl {
     this.instructionHints.push(options?.instructionHint);
     this.responseFormats.push(options?.responseFormat?.type);
     this.contexts.push(context);
+    const scopedTarget = context.selection?.focus?.[0] ?? "file.ts";
+    const scopedPlan: Plan = {
+      ...basePlan,
+      target_files: [scopedTarget],
+    };
     if (this.calls === 1) {
       return {
-        plan: basePlan,
+        plan: scopedPlan,
         warnings: ["architect_output_not_dsl"],
       };
     }
-    return { plan: basePlan, warnings: [] };
+    return { plan: scopedPlan, warnings: [] };
   }
 }
 
@@ -424,6 +429,29 @@ class StubArchitectPlannerAlwaysWeakPlan {
         ...basePlan,
         target_files: ["path/to/file.ts"],
         verification: ["check behavior"],
+      },
+      warnings: [],
+    };
+  }
+}
+
+class StubArchitectPlannerInvalidTargetThenValid {
+  calls = 0;
+  async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        plan: {
+          ...basePlan,
+          target_files: ["src/nonexistent.ts"],
+        },
+        warnings: [],
+      };
+    }
+    return {
+      plan: {
+        ...basePlan,
+        target_files: ["src/example.ts"],
       },
       warnings: [],
     };
@@ -1618,6 +1646,104 @@ test("Regression: pre-builder quality gate degrades weak architect plans to safe
   assert.ok(degradeArtifact);
 });
 
+test("SmartPipeline requests context recovery when architect targets are invalid", { concurrency: false }, async () => {
+  const architect = new StubArchitectPlannerInvalidTargetThenValid();
+  const contextA: ContextBundle = {
+    ...baseContext,
+    selection: {
+      focus: ["src/example.ts"],
+      periphery: [],
+      all: ["src/example.ts"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/example.ts",
+        role: "focus",
+        content: "export const value = 1;\n",
+        size: 24,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+    queries: ["initial"],
+  };
+  const contextB: ContextBundle = {
+    ...contextA,
+    queries: ["initial", "refreshed"],
+  };
+  const assembler = new StubContextAssembler([contextA, contextB]);
+  const builder = new StubBuilderRunner();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("Update src/example.ts");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(architect.calls, 2);
+  assert.ok((assembler.lastRequestId ?? "").startsWith("architect-fallback-"));
+  assert.ok(result.plan.target_files.includes("src/example.ts"));
+  assert.equal(builder.calls, 1);
+});
+
+test("SmartPipeline fails closed before builder when invalid targets persist", { concurrency: false }, async () => {
+  const architect = {
+    calls: 0,
+    async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+      this.calls += 1;
+      return {
+        plan: {
+          ...basePlan,
+          target_files: ["src/nonexistent.ts"],
+        },
+        warnings: [],
+      };
+    },
+  };
+  const knownContext: ContextBundle = {
+    ...baseContext,
+    selection: {
+      focus: ["src/existing.ts"],
+      periphery: [],
+      all: ["src/existing.ts"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/existing.ts",
+        role: "focus",
+        content: "export const existing = true;\n",
+        size: 29,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+  };
+  const assembler = new StubContextAssembler(knownContext);
+  const builder = new StubBuilderRunner();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("Update src/nonexistent.ts");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(builder.calls, 1);
+  assert.ok(result.plan.target_files.includes("src/existing.ts"));
+  assert.ok(!result.plan.target_files.includes("src/nonexistent.ts"));
+});
+
 test("Regression: endpoint intent with frontend-only targets triggers backend guardrail", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerEndpointGuard();
   const contextA: ContextBundle = {
@@ -1986,6 +2112,85 @@ test("SmartPipeline retries builder after patch apply failure", { concurrency: f
   const result = await pipeline.run("do thing");
   assert.equal(result.criticResult.status, "PASS");
   assert.ok(builder.calls >= 2);
+});
+
+test("SmartPipeline performs one architect repair and no retry-budget increment on ENOENT apply failures", { concurrency: false }, async () => {
+  class EnoentApplyFailBuilder extends StubBuilderRunner {
+    async run(): Promise<BuilderRunResult> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        const failure: PatchApplyFailure = {
+          source: "interpreter_primary",
+          error: "ENOENT: no such file or directory, open 'src/missing.ts'",
+          patches: [],
+          rollback: { attempted: true, ok: true },
+          rawOutput: "patch output",
+        };
+        throw new PatchApplyError(failure);
+      }
+      return { finalMessage: { role: "assistant", content: "done" }, messages: [], toolCallsExecuted: 0 };
+    }
+  }
+  const architect = {
+    calls: 0,
+    async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+      this.calls += 1;
+      return {
+        plan: {
+          ...basePlan,
+          target_files: ["src/example.ts"],
+        },
+        warnings: [],
+      };
+    },
+    async plan(): Promise<Plan> {
+      this.calls += 1;
+      return {
+        ...basePlan,
+        target_files: ["src/example.ts"],
+      };
+    },
+  };
+  const contextA: ContextBundle = {
+    ...baseContext,
+    selection: {
+      focus: ["src/example.ts"],
+      periphery: [],
+      all: ["src/example.ts"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/example.ts",
+        role: "focus",
+        content: "export const value = 1;\n",
+        size: 24,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+  };
+  const contextB: ContextBundle = {
+    ...contextA,
+    queries: ["repair-pass"],
+  };
+  const builder = new EnoentApplyFailBuilder();
+  const assembler = new StubContextAssembler([contextA, contextB]);
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 2,
+  });
+
+  const result = await pipeline.run("Update src/example.ts");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(result.attempts, 1);
+  assert.equal(builder.calls, 2);
+  assert.equal(architect.calls, 2);
 });
 
 test("SmartPipeline fulfills critic requests before finalizing", { concurrency: false }, async () => {
