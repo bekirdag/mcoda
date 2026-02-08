@@ -349,14 +349,6 @@ const applyTargetScopeGuard = (
       .filter((entry) => !invalidSet.has(entry.toLowerCase()) || createSet.has(entry.toLowerCase())),
   );
   if (nextTargets.length === 0) {
-    const scopeSet = new Set(assessment.scopePaths.map((entry) => entry.toLowerCase()));
-    const fallback = deriveFallbackTargetFiles(context)
-      .map((entry) => normalizePath(entry))
-      .filter((entry) => entry.length > 0 && entry !== "unknown")
-      .filter((entry) => scopeSet.has(entry.toLowerCase()) || createSet.has(entry.toLowerCase()));
-    nextTargets = uniqueStrings(fallback);
-  }
-  if (nextTargets.length === 0) {
     nextWarnings.push("plan_target_scope_empty_after_filter");
   }
   return {

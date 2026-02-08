@@ -58,11 +58,11 @@ Routing config (per phase, optional) lives in `codali.config.json`:
 ```json
 {
   "routing": {
-    "librarian": { "provider": "ollama-remote", "model": "gemma2:2b", "temperature": 0.1 },
-    "architect": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.4 },
-    "builder": { "provider": "ollama-remote", "model": "deepseek-coder:6.7b", "temperature": 0.2, "format": "json" },
-    "critic": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 },
-    "interpreter": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 }
+    "librarian": { "agent": "<librarian-agent-slug>", "temperature": 0.1 },
+    "architect": { "agent": "<architect-agent-slug>", "temperature": 0.4 },
+    "builder": { "agent": "<builder-agent-slug>", "temperature": 0.2, "format": "json" },
+    "critic": { "agent": "<critic-agent-slug>", "temperature": 0.1 },
+    "interpreter": { "agent": "<interpreter-agent-slug>", "temperature": 0.1 }
   },
   "limits": {
     "maxRetries": 3

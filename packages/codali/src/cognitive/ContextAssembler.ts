@@ -1244,7 +1244,8 @@ const buildUiSourceBiasedQueries = (
     ...queries,
     ...sourcePaths,
     sourceTokens.join(" "),
-    "src/public homepage",
+    "src/public/*",
+    "src/public/index.html",
     "src/taskStore.js",
   ]).filter((entry) => entry.trim().length > 0);
   return sourceQueries.slice(0, Math.max(1, maxQueries));
@@ -3287,28 +3288,26 @@ export class ContextAssembler {
         fileHints,
         Math.max(1, this.options.maxQueries + 2),
       );
-      if (sourceBiasedQueries.join("\n") !== searchExecutionQueries.join("\n")) {
-        emitStatus("thinking", "librarian: ui source-biased refresh");
-        const sourceBiasedSearch = await runSearch(sourceBiasedQueries);
-        const sourceUniqueHits = sourceBiasedSearch.hitList.filter((hit, index, self) => {
-          const key = `${hit.doc_id ?? ""}:${hit.path ?? ""}`;
-          return self.findIndex((entry) => `${entry.doc_id ?? ""}:${entry.path ?? ""}` === key) === index;
-        });
-        const sourceHasNonDoc = sourceUniqueHits.some((hit) => {
-          const pathValue = hit.path ?? "";
-          return Boolean(pathValue) && !isDocPath(pathValue) && !isSupportDoc(pathValue);
-        });
-        if (sourceHasNonDoc) {
-          searchExecutionQueries = sourceBiasedQueries;
-          queries = uniqueValues([...sourceBiasedQueries, ...queries]).slice(0, Math.max(1, this.options.maxQueries));
-          hitList = sourceBiasedSearch.hitList;
-          searchSucceeded = sourceBiasedSearch.searchSucceeded;
-          searchResults = sourceBiasedSearch.searchResults;
-          uniqueHits = sourceUniqueHits;
-          pushWarning("docdex_ui_source_bias_retry");
-        } else if (sourceBiasedSearch.searchSucceeded) {
-          pushWarning("docdex_ui_source_bias_retry_no_source_hits");
-        }
+      emitStatus("thinking", "librarian: ui source-biased refresh");
+      const sourceBiasedSearch = await runSearch(sourceBiasedQueries);
+      const sourceUniqueHits = sourceBiasedSearch.hitList.filter((hit, index, self) => {
+        const key = `${hit.doc_id ?? ""}:${hit.path ?? ""}`;
+        return self.findIndex((entry) => `${entry.doc_id ?? ""}:${entry.path ?? ""}` === key) === index;
+      });
+      const sourceHasNonDoc = sourceUniqueHits.some((hit) => {
+        const pathValue = hit.path ?? "";
+        return Boolean(pathValue) && !isDocPath(pathValue) && !isSupportDoc(pathValue);
+      });
+      if (sourceHasNonDoc) {
+        searchExecutionQueries = sourceBiasedQueries;
+        queries = uniqueValues([...sourceBiasedQueries, ...queries]).slice(0, Math.max(1, this.options.maxQueries));
+        hitList = sourceBiasedSearch.hitList;
+        searchSucceeded = sourceBiasedSearch.searchSucceeded;
+        searchResults = sourceBiasedSearch.searchResults;
+        uniqueHits = sourceUniqueHits;
+        pushWarning("docdex_ui_source_bias_retry");
+      } else if (sourceBiasedSearch.searchSucceeded) {
+        pushWarning("docdex_ui_source_bias_retry_no_source_hits");
       }
     }
 

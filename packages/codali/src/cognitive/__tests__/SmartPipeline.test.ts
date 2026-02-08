@@ -1599,7 +1599,7 @@ test("Regression: identical pass outputs stop after a single retry when architec
   assert.equal(retryEvent, undefined);
 });
 
-test("Regression: pre-builder quality gate degrades weak architect plans to safe builder-ready plans", { concurrency: false }, async () => {
+test("Regression: pre-builder quality gate fails closed for weak plans with invalid targets", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerAlwaysWeakPlan();
   const logger = new StubLogger();
   const context: ContextBundle = {
@@ -1632,11 +1632,10 @@ test("Regression: pre-builder quality gate degrades weak architect plans to safe
     maxRetries: 1,
   });
 
-  const result = await pipeline.run("Implement durable task retry queue");
-  assert.equal(result.criticResult.status, "PASS");
-  assert.ok(result.plan.target_files.every((target) => target !== "path/to/file.ts"));
-  assert.ok(result.plan.target_files.includes("src/taskStore.js"));
-  assert.ok(result.plan.verification.length > 0);
+  await assert.rejects(
+    () => pipeline.run("Implement durable task retry queue"),
+    /Architect quality gate failed before builder: (invalid_target_paths|missing_concrete_targets)/i,
+  );
   const degradeArtifact = logger.artifacts.find(
     (artifact) =>
       artifact.phase === "architect" &&
@@ -1737,11 +1736,68 @@ test("SmartPipeline fails closed before builder when invalid targets persist", {
     maxRetries: 1,
   });
 
-  const result = await pipeline.run("Update src/nonexistent.ts");
-  assert.equal(result.criticResult.status, "PASS");
-  assert.equal(builder.calls, 1);
-  assert.ok(result.plan.target_files.includes("src/existing.ts"));
-  assert.ok(!result.plan.target_files.includes("src/nonexistent.ts"));
+  await assert.rejects(
+    () => pipeline.run("Update src/nonexistent.ts"),
+    /Architect quality gate failed before builder: invalid_target_paths/i,
+  );
+  assert.equal(builder.calls, 0);
+});
+
+test("SmartPipeline fail-closes degraded plans when unresolved targets remain invalid", { concurrency: false }, async () => {
+  const architect = {
+    calls: 0,
+    async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+      this.calls += 1;
+      return {
+        plan: {
+          ...basePlan,
+          target_files: ["src/index.ts"],
+          verification: ["check behavior"],
+        },
+        warnings: [],
+      };
+    },
+  };
+  const knownContext: ContextBundle = {
+    ...baseContext,
+    selection: {
+      focus: ["src/existing.ts"],
+      periphery: [],
+      all: ["src/existing.ts"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/existing.ts",
+        role: "focus",
+        content: "export const existing = true;\n",
+        size: 29,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+    repo_map_raw: [
+      "repo",
+      "└── src",
+      "    └── existing.ts",
+    ].join("\n"),
+  };
+  const builder = new StubBuilderRunner();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler(knownContext) as any,
+    architectPlanner: architect as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 1,
+  });
+
+  await assert.rejects(
+    () => pipeline.run("Update src/index.ts"),
+    /Architect quality gate failed before builder: (invalid_target_paths|missing_concrete_targets)/i,
+  );
+  assert.equal(builder.calls, 0);
 });
 
 test("Regression: endpoint intent with frontend-only targets triggers backend guardrail", { concurrency: false }, async () => {

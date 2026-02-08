@@ -121,7 +121,7 @@ export interface CostConfig {
 export interface LocalContextSummarizeConfig {
   enabled: boolean;
   provider: string;
-  model: string;
+  model?: string;
   targetTokens: number;
   thresholdPct: number;
 }
@@ -298,15 +298,13 @@ export const DEFAULT_LOCAL_CONTEXT: LocalContextConfig = {
   persistToolMessages: false,
   maxMessages: 200,
   maxBytesPerLane: 200_000,
-  modelTokenLimits: {
-    llama3: 8192,
-    "deepseek-coder": 128_000,
-    "mistral-nemo": 32_000,
-  },
+  // Populated dynamically from selected phase-agent context windows when available.
+  modelTokenLimits: {},
   summarize: {
     enabled: true,
     provider: "librarian",
-    model: "gemma2:2b",
+    // Intentionally unset so the summarizer uses the selected phase agent model.
+    model: undefined,
     targetTokens: 1200,
     thresholdPct: 0.9,
   },

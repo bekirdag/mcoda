@@ -1290,14 +1290,18 @@ const assessPlanTargetValidation = (
 ): {
   ok: boolean;
   knownTargets: string[];
+  existingTargets: string[];
   createTargets: string[];
   unresolvedTargets: string[];
 } => {
   const knownTargets = collectKnownContextPaths(context);
+  const repoMapTargets = parseRepoMapPaths(context.repo_map_raw ?? context.repo_map);
+  const existingTargets = repoMapTargets.length > 0 ? repoMapTargets : knownTargets;
   if (knownTargets.length === 0) {
     return {
       ok: true,
       knownTargets,
+      existingTargets,
       createTargets: uniqueStrings(
         (plan.create_files ?? [])
           .filter((target) => isConcreteTargetPath(target))
@@ -1306,7 +1310,7 @@ const assessPlanTargetValidation = (
       unresolvedTargets: [],
     };
   }
-  const knownTargetSet = new Set(knownTargets.map((entry) => entry.toLowerCase()));
+  const existingTargetSet = new Set(existingTargets.map((entry) => entry.toLowerCase()));
   const createTargets = uniqueStrings(
     (plan.create_files ?? [])
       .filter((target) => isConcreteTargetPath(target))
@@ -1319,11 +1323,12 @@ const assessPlanTargetValidation = (
       .map((target) => normalizePath(target)),
   );
   const unresolvedTargets = concreteTargets.filter((target) =>
-    !knownTargetSet.has(target.toLowerCase()) && !createTargetSet.has(target.toLowerCase())
+    !existingTargetSet.has(target.toLowerCase()) && !createTargetSet.has(target.toLowerCase())
   );
   return {
     ok: unresolvedTargets.length === 0,
     knownTargets,
+    existingTargets,
     createTargets,
     unresolvedTargets,
   };
@@ -1539,9 +1544,12 @@ const assessPlanQualityGate = (
 };
 
 const buildQualityDegradedPlan = (request: string, context: ContextBundle, priorPlan: Plan): Plan => {
-  const knownTargets = collectKnownContextPaths(context);
+  const existingTargets = parseRepoMapPaths(context.repo_map_raw ?? context.repo_map);
+  const effectiveKnownTargets = existingTargets.length > 0
+    ? existingTargets
+    : collectKnownContextPaths(context);
   const knownTargetSet = new Set(
-    knownTargets.map((entry) => normalizePath(entry).toLowerCase()),
+    effectiveKnownTargets.map((entry) => normalizePath(entry).toLowerCase()),
   );
   const hasKnownTargets = knownTargetSet.size > 0;
   const explicitCreateTargets = uniqueStrings(
@@ -1550,6 +1558,25 @@ const buildQualityDegradedPlan = (request: string, context: ContextBundle, prior
       .map((target) => normalizePath(target)),
   );
   const explicitCreateTargetSet = new Set(explicitCreateTargets.map((entry) => entry.toLowerCase()));
+  const priorConcreteTargets = uniqueStrings(
+    (priorPlan.target_files ?? [])
+      .filter((target) => isConcreteTargetPath(target))
+      .map((target) => normalizePath(target)),
+  );
+  const priorHasConcreteTargets = priorConcreteTargets.length > 0;
+  const unresolvedPriorTargets = priorConcreteTargets.filter((target) =>
+    hasKnownTargets
+      ? !knownTargetSet.has(target.toLowerCase()) && !explicitCreateTargetSet.has(target.toLowerCase())
+      : false
+  );
+  const priorHasUnresolvedTargets = unresolvedPriorTargets.length > 0;
+  const contextTargets = uniqueStrings(
+    [
+      ...((context.selection?.focus ?? []).filter((target) => isConcreteTargetPath(target))),
+      ...((context.selection?.all ?? []).filter((target) => isConcreteTargetPath(target))),
+      ...((context.files ?? []).map((entry) => entry.path).filter((target) => isConcreteTargetPath(target))),
+    ].map((target) => normalizePath(target)),
+  );
   const fallbackTargets = uniqueStrings(
     [
       ...(priorPlan.target_files ?? [])
@@ -1562,13 +1589,18 @@ const buildQualityDegradedPlan = (request: string, context: ContextBundle, prior
             || explicitCreateTargetSet.has(target.toLowerCase())
           );
         }),
-      ...((context.selection?.focus ?? []).filter((target) => isConcreteTargetPath(target))),
-      ...((context.selection?.all ?? []).filter((target) => isConcreteTargetPath(target))),
-      ...((context.files ?? []).map((entry) => entry.path).filter((target) => isConcreteTargetPath(target))),
+      ...(!priorHasUnresolvedTargets && priorHasConcreteTargets
+        ? contextTargets.filter((target) => {
+            if (!hasKnownTargets) return true;
+            return knownTargetSet.has(target.toLowerCase());
+          })
+        : []),
+      ...explicitCreateTargets,
     ].filter(Boolean),
   );
   const targets = fallbackTargets.length > 0 ? fallbackTargets.slice(0, 6) : [];
-  const createTargets = targets.filter((target) => !knownTargetSet.has(normalizePath(target).toLowerCase()));
+  const targetSet = new Set(targets.map((target) => target.toLowerCase()));
+  const createTargets = explicitCreateTargets.filter((target) => targetSet.has(target.toLowerCase()));
   const normalizedRequest = request.trim() || "the requested change";
   const verify = [
     targets.length > 0
@@ -3408,14 +3440,8 @@ export class SmartPipeline {
               warnings.push("architect_retry_skipped_no_new_context");
               warnings.push("architect_degraded_quality_gate");
               if (hasInvalidTargets) warnings.push("architect_invalid_targets");
-              const degradedPlan = buildQualityDegradedPlan(
-                request,
-                context,
-                result.plan,
-              );
               lastPlan = {
                 ...result,
-                plan: degradedPlan,
                 warnings: uniqueStrings(warnings),
               };
               if (this.options.logger) {
@@ -3444,7 +3470,9 @@ export class SmartPipeline {
           }
           warnings.push("architect_degraded_quality_gate");
           if (hasInvalidTargets) warnings.push("architect_invalid_targets");
-          const degradedPlan = buildQualityDegradedPlan(request, context, result.plan);
+          const degradedPlan = hasInvalidTargets
+            ? result.plan
+            : buildQualityDegradedPlan(request, context, result.plan);
           const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
           lastPlan = { ...result, plan: degradedPlan, warnings: uniqueStrings(warnings) };
           if (this.options.logger) {
@@ -3537,6 +3565,15 @@ export class SmartPipeline {
       plan = lastPlan.plan;
       const finalPlanQuality = assessPlanQualityGate(request, plan, context);
       if (!finalPlanQuality.ok) {
+        const hadInvalidTargetFailures = (lastPlan.warnings ?? []).includes("architect_invalid_targets");
+        const hasInvalidTargets = finalPlanQuality.reasons.includes("invalid_target_paths");
+        const unresolved = finalPlanQuality.targetValidation?.unresolvedTargets ?? [];
+        const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
+        if (hasInvalidTargets || (hadInvalidTargetFailures && finalPlanQuality.reasons.includes("missing_concrete_targets"))) {
+          throw new Error(
+            `Architect quality gate failed before builder: invalid_target_paths.${unresolvedPart}`,
+          );
+        }
         const degradedPlan = buildQualityDegradedPlan(request, context, plan);
         const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
         const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
