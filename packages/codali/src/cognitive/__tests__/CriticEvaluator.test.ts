@@ -26,7 +26,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
   summarize: {
     enabled: false,
     provider: "librarian",
-    model: "gemma2:2b",
+    model: "test-model",
     targetTokens: 1200,
     thresholdPct: 0.9,
   },

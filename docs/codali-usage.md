@@ -86,7 +86,7 @@ This keeps multi-phase runs consistent and summarizes history if the active mode
 - `CODALI_LOCAL_CONTEXT_MODEL_TOKEN_LIMITS` (JSON map, e.g. `{"llama3": 8192}`)
 - `CODALI_LOCAL_CONTEXT_SUMMARIZE_ENABLED` (default true)
 - `CODALI_LOCAL_CONTEXT_SUMMARIZE_PROVIDER` (default `librarian`, resolves via routing)
-- `CODALI_LOCAL_CONTEXT_SUMMARIZE_MODEL` (default `gemma2:2b`)
+- `CODALI_LOCAL_CONTEXT_SUMMARIZE_MODEL` (default unset; inherits selected phase agent model)
 - `CODALI_LOCAL_CONTEXT_SUMMARIZE_TARGET_TOKENS` (default 1200)
 
 Notes:
@@ -134,16 +134,16 @@ Use these when you want to pin context or avoid extra search calls.
 - `CODALI_SECURITY_READONLY_PATHS` (comma-separated read-only paths for WRITE POLICY)
 
 ## Smart routing config
-Define per-phase routing in `codali.config.json` (fields are optional; missing phases fall back to default provider/model):
+Define per-phase routing in `codali.config.json` (fields are optional; prefer `agent` so provider/model are resolved from the mcoda agent registry):
 
 ```json
 {
   "routing": {
-    "librarian": { "provider": "ollama-remote", "model": "gemma2:2b", "temperature": 0.1 },
-    "architect": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.4 },
-    "builder": { "provider": "ollama-remote", "model": "deepseek-coder:6.7b", "temperature": 0.2, "format": "json" },
-    "critic": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 },
-    "interpreter": { "provider": "ollama-remote", "model": "llama3:instruct", "temperature": 0.1 }
+    "librarian": { "agent": "<librarian-agent-slug>", "temperature": 0.1 },
+    "architect": { "agent": "<architect-agent-slug>", "temperature": 0.4 },
+    "builder": { "agent": "<builder-agent-slug>", "temperature": 0.2, "format": "json" },
+    "critic": { "agent": "<critic-agent-slug>", "temperature": 0.1 },
+    "interpreter": { "agent": "<interpreter-agent-slug>", "temperature": 0.1 }
   },
   "limits": {
     "maxRetries": 3

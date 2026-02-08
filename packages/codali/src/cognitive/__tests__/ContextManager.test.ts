@@ -44,7 +44,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
   summarize: {
     enabled: false,
     provider: "librarian",
-    model: "gemma2:2b",
+    model: "test-model",
     targetTokens: 1200,
     thresholdPct: 0.9,
   },
@@ -118,7 +118,7 @@ test("ContextManager summarizes when over budget", { concurrency: false }, async
       summarize: {
         enabled: true,
         provider: "librarian",
-        model: "gemma2:2b",
+        model: "test-model",
         targetTokens: 64,
         thresholdPct: 0.9,
       },
@@ -149,7 +149,7 @@ test("ContextManager logs lane updates and summaries", { concurrency: false }, a
       summarize: {
         enabled: true,
         provider: "librarian",
-        model: "gemma2:2b",
+        model: "test-model",
         targetTokens: 64,
         thresholdPct: 0.9,
       },

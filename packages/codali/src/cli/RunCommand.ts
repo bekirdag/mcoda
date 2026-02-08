@@ -1094,6 +1094,18 @@ export class RunCommand {
               interpreter: emptySelection("interpreter"),
             };
 
+        if (shouldSelectAgents) {
+          const unresolvedPhases = Object.values(phaseSelections)
+            .filter((selection) => !selection.resolved)
+            .map((selection) => selection.phase);
+          if (unresolvedPhases.length > 0) {
+            throw new Error(
+              `No eligible mcoda agents found for phase(s): ${unresolvedPhases.join(", ")}. ` +
+                "Add/configure agents and verify with `mcoda agent list --json`.",
+            );
+          }
+        }
+
         const fallbackResolved =
           phaseSelections.builder.resolved ??
           phaseSelections.architect.resolved ??
@@ -1136,6 +1148,22 @@ export class RunCommand {
             timeoutMs: config.limits.timeoutMs,
           },
         };
+
+        const selectedPhaseModels = new Set<string>(
+          Object.values(phaseSelections)
+            .map((selection) => selection.resolved?.model)
+            .filter((value): value is string => Boolean(value)),
+        );
+        if (
+          shouldSelectAgents &&
+          config.localContext.summarize.model &&
+          !selectedPhaseModels.has(config.localContext.summarize.model)
+        ) {
+          throw new Error(
+            `CODALI_LOCAL_CONTEXT_SUMMARIZE_MODEL (${config.localContext.summarize.model}) ` +
+              "must match a model from selected mcoda agents.",
+          );
+        }
 
         for (const selection of Object.values(phaseSelections)) {
           if (!selection.resolved) continue;

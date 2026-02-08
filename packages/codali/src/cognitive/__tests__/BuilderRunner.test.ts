@@ -356,7 +356,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
   summarize: {
     enabled: false,
     provider: "librarian",
-    model: "gemma2:2b",
+    model: "test-model",
     targetTokens: 1200,
     thresholdPct: 0.9,
   },
@@ -818,7 +818,7 @@ test("BuilderRunner returns context request without applying patches", { concurr
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
-test("BuilderRunner surfaces ENOENT apply failures as PatchApplyError", { concurrency: false }, async () => {
+test("BuilderRunner surfaces ENOENT apply failures as PatchApplyError without retrying provider calls", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-missing-target-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
   await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");

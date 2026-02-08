@@ -31,7 +31,7 @@ const makeConfig = (overrides: Partial<LocalContextConfig> = {}): LocalContextCo
   summarize: {
     enabled: false,
     provider: "librarian",
-    model: "gemma2:2b",
+    model: "test-model",
     targetTokens: 1200,
     thresholdPct: 0.9,
   },
@@ -125,7 +125,7 @@ test("ArchitectPlanner parses DSL steps/targets", { concurrency: false }, async 
   assert.ok(plan.steps.some((step) => step.includes("src/login.ts")));
 });
 
-test("ArchitectPlanner rewrites out-of-scope targets when create_files is not declared", { concurrency: false }, async () => {
+test("ArchitectPlanner fails closed on out-of-scope targets when create_files is not declared", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
       role: "assistant",
@@ -142,11 +142,11 @@ test("ArchitectPlanner rewrites out-of-scope targets when create_files is not de
   });
   const planner = new ArchitectPlanner(provider);
   const result = await planner.planWithRequest(baseContext);
-  assert.ok(!result.plan.target_files.includes("src/nonexistent.ts"));
-  assert.ok(result.plan.target_files.includes("src/login.ts"));
+  assert.equal(result.plan.target_files.length, 0);
   assert.ok(
     result.warnings.some((warning) => warning.startsWith("plan_targets_outside_context:")),
   );
+  assert.ok(result.warnings.includes("plan_target_scope_empty_after_filter"));
 });
 
 test("ArchitectPlanner allows explicit create_files targets outside focus/periphery", { concurrency: false }, async () => {

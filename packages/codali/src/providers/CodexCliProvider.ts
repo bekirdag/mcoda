@@ -103,7 +103,12 @@ export class CodexCliProvider implements Provider {
     }
 
     const prompt = formatMessages(request.messages);
-    const resolvedModel = this.config.model ?? "gpt-5.1-codex-max";
+    const resolvedModel = this.config.model?.trim();
+    if (!resolvedModel) {
+      throw new Error(
+        "AUTH_ERROR: codex-cli provider requires model from selected mcoda agent/config.",
+      );
+    }
     const sandbox = resolveSandboxArgs();
     const args = [...sandbox.args, "exec", "--model", resolvedModel, "--json"];
     if (!sandbox.bypass) {
