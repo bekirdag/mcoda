@@ -92,7 +92,7 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
   assert.equal(config.localContext.storageDir, "codali/context");
   assert.equal(config.localContext.maxMessages, 200);
   assert.equal(config.localContext.summarize.enabled, true);
-  assert.equal(config.deepInvestigation?.enabled, false);
+  assert.equal(config.deepInvestigation?.enabled, true);
   assert.equal(config.deepInvestigation?.deepScanPreset, false);
   assert.equal(config.deepInvestigation?.toolQuota.search, 3);
 });

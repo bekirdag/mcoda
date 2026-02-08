@@ -218,8 +218,9 @@ const formatResearchSummary = (bundle: ContextBundle): string[] => {
   } else {
     lines.push("- Evidence: unknown");
   }
-  const keyFindings = research.key_findings ?? research.notes;
+  const keyFindings = research.key_findings;
   lines.push(`- Key findings: ${formatSummaryList(keyFindings)}`);
+  lines.push(`- Notes: ${formatSummaryList(research.notes)}`);
   const gaps = research.evidence?.gaps;
   lines.push(`- Unresolved gaps: ${formatSummaryList(gaps)}`);
   const warnings = [

@@ -318,6 +318,61 @@ test("ContextAssembler research executor runs docdex tools and captures outputs"
   assert.ok(fake.openSnippetCalls.length > 0);
 });
 
+test("ContextAssembler skips repo map and dag export when already cached in context", { concurrency: false }, async () => {
+  class DagClient extends FakeDocdexClient {
+    dagExportCalls: string[] = [];
+    async dagExport(sessionId: string): Promise<unknown> {
+      this.dagExportCalls.push(sessionId);
+      return "dag-summary";
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-research-cache-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new DagClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    includeRepoMap: true,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    laneScope: { runId: "run-1" },
+  });
+  const context = {
+    request: "Update src/index.ts formatting",
+    queries: ["Update src/index.ts formatting"],
+    snippets: [],
+    symbols: [],
+    ast: [],
+    impact: [],
+    impact_diagnostics: [],
+    memory: [],
+    preferences_detected: [],
+    profile: [],
+    index: { last_updated_epoch_ms: 0, num_docs: 0 },
+    warnings: [],
+    selection: {
+      focus: ["src/index.ts"],
+      periphery: [],
+      all: ["src/index.ts"],
+      low_confidence: false,
+    },
+    repo_map: "repo\n└── src",
+    dag_summary: "dag-summary",
+  };
+
+  const research = await assembler.runResearchTools(context.request, context);
+  const fake = client as unknown as DagClient;
+  assert.equal(fake.treeCalls.length, 0);
+  assert.equal(fake.dagExportCalls.length, 0);
+  assert.equal(research.outputs.repoMap, context.repo_map);
+  assert.equal(research.outputs.dagSummary, context.dag_summary);
+  const treeRun = research.toolRuns.find((run) => run.tool === "docdex.tree");
+  assert.ok(treeRun?.skipped);
+  assert.equal(treeRun?.notes, "repo_map_cached");
+  const dagRun = research.toolRuns.find((run) => run.tool === "docdex.dag_export");
+  assert.ok(dagRun?.skipped);
+  assert.equal(dagRun?.notes, "dag_summary_cached");
+});
+
 test("ContextAssembler always includes full repo tree when repo map is enabled", { concurrency: false }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-tree-"));
   mkdirSync(path.join(tmpDir, "src"), { recursive: true });

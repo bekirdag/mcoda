@@ -213,11 +213,29 @@ const extraWorkspaceTests = [
   path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexClient.test.js"),
 ];
 
-const repoOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
+const normalizeRepoTestPath = (file) => {
+  const relative = path.isAbsolute(file) ? path.relative(root, file) : file;
+  if (!relative.endsWith(".ts") && !relative.endsWith(".tsx")) return relative;
+  const mapped = relative
+    .replace(/^packages\/([^/]+)\/src\//, "packages/$1/dist/")
+    .replace(/\.(ts|tsx)$/, ".js");
+  if (existsSync(path.join(root, mapped))) return mapped;
+  return relative;
+};
+
+const cliOverride = process.argv
+  .slice(2)
+  .map((file) => file.trim())
+  .filter(Boolean)
+  .map(normalizeRepoTestPath);
+
+const envOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
   .split(",")
   .map((file) => file.trim())
   .filter(Boolean)
-  .map((file) => (path.isAbsolute(file) ? path.relative(root, file) : file));
+  .map(normalizeRepoTestPath);
+
+const repoOverride = cliOverride.length ? cliOverride : envOverride;
 const testFiles = repoOverride.length
   ? []
   : collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));

@@ -94,6 +94,7 @@ export interface ResearchPhaseResult {
     cycles: number;
   };
   warnings: string[];
+  notes?: string[];
   toolRuns: ResearchToolExecution["toolRuns"];
   outputs?: ResearchToolExecution["outputs"];
   evidence?: ContextResearchEvidence;
@@ -227,7 +228,7 @@ const buildToolQuotaAssessment = (
     dagExport: 0,
   };
   for (const run of toolRuns ?? []) {
-    if (!run.ok || run.skipped) continue;
+    if (!run.ok) continue;
     const category = TOOL_QUOTA_CATEGORY_MAP[run.tool];
     if (!category) continue;
     observed[category] += 1;
@@ -273,7 +274,7 @@ const buildResearchToolUsage = (
     dag_export: 0,
   };
   for (const run of toolRuns ?? []) {
-    if (!run.ok || run.skipped) continue;
+    if (!run.ok) continue;
     const category = TOOL_USAGE_CATEGORY_MAP[run.tool];
     if (!category) continue;
     counts[category] += 1;
@@ -285,11 +286,31 @@ const buildResearchEvidence = (
   outputs: ResearchToolExecution["outputs"] | undefined,
   warnings: string[],
 ): ContextResearchEvidence => {
-  const searchHits = (outputs?.searchResults ?? []).reduce(
-    (total, result) => total + (result.hits?.length ?? 0),
-    0,
-  );
-  const snippetCount = outputs?.snippets?.length ?? 0;
+  const searchHitKeys = new Set<string>();
+  for (const result of outputs?.searchResults ?? []) {
+    for (const hit of result.hits ?? []) {
+      const key = `${hit.doc_id ?? ""}:${hit.path ?? ""}`;
+      if (key !== ":") searchHitKeys.add(key);
+    }
+  }
+  const searchHits = searchHitKeys.size;
+  const snippetKeys = new Set<string>();
+  for (const snippet of outputs?.snippets ?? []) {
+    if (snippet.doc_id) {
+      snippetKeys.add(`doc:${snippet.doc_id}`);
+      continue;
+    }
+    if (snippet.path) {
+      snippetKeys.add(`path:${snippet.path}`);
+      continue;
+    }
+    if (snippet.content) {
+      snippetKeys.add(
+        `content:${createHash("sha1").update(snippet.content).digest("hex")}`,
+      );
+    }
+  }
+  const snippetCount = snippetKeys.size;
   const symbolFiles = new Set(
     (outputs?.symbols ?? []).map((entry) => entry.path).filter(Boolean),
   ).size;
@@ -299,11 +320,17 @@ const buildResearchEvidence = (
   const impactFiles = new Set(
     (outputs?.impact ?? []).map((entry) => entry.file).filter(Boolean),
   ).size;
-  const impactEdges = (outputs?.impact ?? []).reduce(
-    (total, entry) =>
-      total + (entry.inbound?.length ?? 0) + (entry.outbound?.length ?? 0),
-    0,
-  );
+  const impactEdgeKeys = new Set<string>();
+  for (const entry of outputs?.impact ?? []) {
+    const file = entry.file ?? "";
+    for (const inbound of entry.inbound ?? []) {
+      impactEdgeKeys.add(`${file}|in|${inbound}`);
+    }
+    for (const outbound of entry.outbound ?? []) {
+      impactEdgeKeys.add(`${file}|out|${outbound}`);
+    }
+  }
+  const impactEdges = impactEdgeKeys.size;
   const repoMap = Boolean(outputs?.repoMap || outputs?.repoMapRaw);
   const dagSummary = Boolean(outputs?.dagSummary);
   const warningList = warnings.length ? Array.from(new Set(warnings)) : [];
@@ -349,9 +376,11 @@ const buildResearchSummary = (
     started_at_ms: phase.startedAt,
     ended_at_ms: phase.endedAt,
     duration_ms: phase.durationMs,
+    key_findings: buildResearchKeyFindings(phase),
     tool_usage: phase.toolUsage,
     evidence: mergeResearchEvidence(phase.evidence, phase.evidenceGate),
     warnings: phase.warnings?.length ? uniqueStrings(phase.warnings) : undefined,
+    notes: phase.notes?.length ? uniqueStrings(phase.notes) : undefined,
   };
 };
 
@@ -555,6 +584,227 @@ const normalizePath = (value: string): string =>
   value.replace(/\\/g, "/").replace(/^\.?\//, "").trim();
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values));
+
+const normalizeContextSignatureList = (
+  values?: Array<string | undefined>,
+  limit = 24,
+): string[] => {
+  if (!values) return [];
+  const cleaned = values
+    .map((value) => (value ?? "").trim())
+    .filter((value) => value.length > 0);
+  if (cleaned.length === 0) return [];
+  return uniqueStrings(cleaned).sort().slice(0, limit);
+};
+
+const buildContextSignature = (context: ContextBundle): string => {
+  const signature = {
+    queries: normalizeContextSignatureList(context.queries, 24),
+    selection: context.selection
+      ? {
+          focus: normalizeContextSignatureList(context.selection.focus, 24),
+          periphery: normalizeContextSignatureList(
+            context.selection.periphery,
+            24,
+          ),
+          all: normalizeContextSignatureList(context.selection.all, 24),
+          low_confidence: context.selection.low_confidence ?? false,
+        }
+      : null,
+    search_results: (context.search_results ?? []).map((result) => ({
+      query: result.query,
+      hits: normalizeContextSignatureList(
+        (result.hits ?? []).map((hit) => hit.path ?? hit.doc_id ?? ""),
+        12,
+      ),
+    })),
+    snippets: normalizeContextSignatureList(
+      (context.snippets ?? []).map((entry) => entry.path ?? entry.doc_id ?? ""),
+      24,
+    ),
+    symbols: normalizeContextSignatureList(
+      (context.symbols ?? []).map((entry) => entry.path),
+      24,
+    ),
+    ast: normalizeContextSignatureList(
+      (context.ast ?? []).map((entry) => entry.path),
+      24,
+    ),
+    impact: (context.impact ?? []).map((entry) => ({
+      file: entry.file,
+      inbound: normalizeContextSignatureList(entry.inbound, 12),
+      outbound: normalizeContextSignatureList(entry.outbound, 12),
+    })),
+    files: normalizeContextSignatureList(
+      (context.files ?? []).map((entry) => entry.path),
+      24,
+    ),
+    research: context.research
+      ? {
+          status: context.research.status,
+          key_findings: normalizeContextSignatureList(
+            context.research.key_findings,
+            12,
+          ),
+          tool_usage: context.research.tool_usage ?? null,
+          evidence: context.research.evidence ?? null,
+          warnings: normalizeContextSignatureList(context.research.warnings, 12),
+          notes: normalizeContextSignatureList(context.research.notes, 12),
+        }
+      : null,
+    repo_map: Boolean(context.repo_map ?? context.repo_map_raw),
+    dag_summary: Boolean(context.dag_summary),
+    request_digest: context.request_digest
+      ? {
+          summary: context.request_digest.summary,
+          refined_query: context.request_digest.refined_query,
+          confidence: context.request_digest.confidence,
+          candidate_files: normalizeContextSignatureList(
+            context.request_digest.candidate_files,
+            24,
+          ),
+        }
+      : null,
+  };
+  return createHash("sha256").update(JSON.stringify(signature)).digest("hex");
+};
+
+const truncateText = (value: string, maxChars: number): string => {
+  if (maxChars <= 0 || value.length <= maxChars) return value;
+  if (maxChars <= 3) return value.slice(0, maxChars);
+  return `${value.slice(0, maxChars - 3)}...`;
+};
+
+const buildPathHints = (paths: string[], maxHints = 3): string[] => {
+  if (maxHints <= 0) return [];
+  const hints: string[] = [];
+  for (const raw of paths) {
+    const normalized = normalizePath(raw);
+    if (!normalized) continue;
+    hints.push(normalized);
+    const base = normalized.split("/").pop();
+    if (base && base !== normalized) {
+      hints.push(base);
+      const stem = base.replace(/\.[^.]+$/, "");
+      if (stem && stem !== base) hints.push(stem);
+    }
+    if (hints.length >= maxHints * 3) break;
+  }
+  return uniqueStrings(hints).slice(0, maxHints);
+};
+
+const collectResearchPaths = (
+  outputs?: ResearchToolExecution["outputs"],
+): { search: string[]; snippets: string[]; symbols: string[]; impact: string[] } => {
+  if (!outputs) {
+    return { search: [], snippets: [], symbols: [], impact: [] };
+  }
+  const searchPaths = uniqueStrings(
+    (outputs.searchResults ?? [])
+      .flatMap((result) => result.hits ?? [])
+      .map((hit) => hit.path ?? "")
+      .filter((value) => value.length > 0),
+  );
+  const snippetPaths = uniqueStrings(
+    (outputs.snippets ?? [])
+      .map((snippet) => snippet.path ?? "")
+      .filter((value) => value.length > 0),
+  );
+  const symbolPaths = uniqueStrings(
+    [
+      ...(outputs.symbols ?? []).map((entry) => entry.path),
+      ...(outputs.ast ?? []).map((entry) => entry.path),
+    ].filter((value) => value.length > 0),
+  );
+  const impactPaths = uniqueStrings(
+    (outputs.impact ?? []).map((entry) => entry.file).filter((value) => value.length > 0),
+  );
+  return { search: searchPaths, snippets: snippetPaths, symbols: symbolPaths, impact: impactPaths };
+};
+
+const buildResearchKeyFindings = (
+  phase?: ResearchPhaseResult,
+): string[] | undefined => {
+  const outputs = phase?.outputs;
+  if (!outputs) return undefined;
+  const findings: string[] = [];
+  const paths = collectResearchPaths(outputs);
+  const topSearch = paths.search.slice(0, 5);
+  const topSnippets = paths.snippets.slice(0, 4);
+  const topSymbols = paths.symbols.slice(0, 4);
+  const topImpact = paths.impact.slice(0, 4);
+  if (topSearch.length) findings.push(`Top search hits: ${topSearch.join(", ")}`);
+  if (topSnippets.length) findings.push(`Snippets reviewed: ${topSnippets.join(", ")}`);
+  if (topSymbols.length) findings.push(`Symbols/AST reviewed: ${topSymbols.join(", ")}`);
+  if (topImpact.length) findings.push(`Impact checked: ${topImpact.join(", ")}`);
+  if (outputs.repoMap || outputs.repoMapRaw) findings.push("Repo map captured");
+  if (outputs.dagSummary) findings.push("Dependency graph snapshot captured");
+  return findings.length ? findings : undefined;
+};
+
+const buildResearchContextRefresh = (
+  context: ContextBundle,
+  outputs: ResearchToolExecution["outputs"],
+  missingSignals: string[] = [],
+): { context: ContextBundle; changed: boolean } => {
+  const missing = new Set(missingSignals);
+  const needsFiles = missing.has("open_or_snippet")
+    || missing.has("symbols_or_ast")
+    || missing.has("impact");
+  const needsSearch = missing.has("search_hits") || missingSignals.length === 0;
+  const paths = collectResearchPaths(outputs);
+  const focusCandidates = uniqueStrings([
+    ...paths.search,
+    ...paths.snippets,
+    ...paths.symbols,
+    ...paths.impact,
+  ]).slice(0, 8);
+  const currentSelection = context.selection ?? {
+    focus: [],
+    periphery: [],
+    all: [],
+    low_confidence: false,
+  };
+  const nextFocus = needsFiles
+    ? uniqueStrings([...currentSelection.focus, ...focusCandidates]).slice(0, 8)
+    : currentSelection.focus;
+  const nextAll = uniqueStrings([
+    ...currentSelection.all,
+    ...currentSelection.periphery,
+    ...nextFocus,
+  ]);
+
+  const currentQueries = context.queries ?? [];
+  const queryHints = needsSearch ? buildPathHints(focusCandidates, 4) : [];
+  const nextQueries = uniqueStrings([...currentQueries, ...queryHints]).slice(0, 8);
+
+  const focusChanged = nextFocus.join("\n") !== currentSelection.focus.join("\n");
+  const queriesChanged = nextQueries.join("\n") !== currentQueries.join("\n");
+  const repoMapChanged = Boolean(outputs.repoMap || outputs.repoMapRaw)
+    && !context.repo_map
+    && !context.repo_map_raw;
+  const dagChanged = Boolean(outputs.dagSummary) && !context.dag_summary;
+  if (!focusChanged && !queriesChanged && !repoMapChanged && !dagChanged) {
+    return { context, changed: false };
+  }
+  return {
+    context: {
+      ...context,
+      queries: nextQueries,
+      repo_map: repoMapChanged ? outputs.repoMap ?? context.repo_map : context.repo_map,
+      repo_map_raw: repoMapChanged
+        ? outputs.repoMapRaw ?? context.repo_map_raw
+        : context.repo_map_raw,
+      dag_summary: dagChanged ? outputs.dagSummary ?? context.dag_summary : context.dag_summary,
+      selection: {
+        ...currentSelection,
+        focus: nextFocus,
+        all: nextAll,
+      },
+    },
+    changed: true,
+  };
+};
 
 const extractAgentRequestContextInputs = (
   request?: AgentRequest,
@@ -1359,24 +1609,218 @@ export class SmartPipeline {
     };
     const formatCodaliResponse = (response: CodaliResponse): string =>
       ["CODALI_RESPONSE v1", JSON.stringify(response, null, 2)].join("\n");
+    const buildResearchProtocolResponse = (
+      phase: ResearchPhaseResult,
+    ): CodaliResponse | undefined => {
+      const outputs = phase.outputs;
+      if (!outputs) return undefined;
+      const results: CodaliResponse["results"] = [];
+      const searchResults = outputs.searchResults ?? [];
+      for (const entry of searchResults.slice(0, 3)) {
+        results.push({
+          type: "docdex.search",
+          query: entry.query,
+          hits: (entry.hits ?? []).slice(0, 5).map((hit) => ({
+            path: hit.path,
+            doc_id: hit.doc_id,
+            score: hit.score,
+          })),
+        });
+      }
+      const snippets = outputs.snippets ?? [];
+      for (const snippet of snippets.slice(0, 3)) {
+        if (snippet.doc_id) {
+          results.push({
+            type: "docdex.snippet",
+            doc_id: snippet.doc_id,
+            content: truncateText(snippet.content ?? "", 600),
+          });
+        } else if (snippet.path) {
+          results.push({
+            type: "docdex.open",
+            path: snippet.path,
+            content: truncateText(snippet.content ?? "", 600),
+          });
+        }
+      }
+      const symbols = outputs.symbols ?? [];
+      for (const symbol of symbols.slice(0, 3)) {
+        results.push({
+          type: "docdex.symbols",
+          file: symbol.path,
+          symbols: { summary: symbol.summary },
+        });
+      }
+      const ast = outputs.ast ?? [];
+      for (const node of ast.slice(0, 2)) {
+        results.push({
+          type: "docdex.ast",
+          file: node.path,
+          nodes: Array.isArray(node.nodes) ? node.nodes.slice(0, 6) : node.nodes,
+        });
+      }
+      const impact = outputs.impact ?? [];
+      for (const entry of impact.slice(0, 3)) {
+        results.push({
+          type: "docdex.impact",
+          file: entry.file,
+          inbound: (entry.inbound ?? []).slice(0, 6),
+          outbound: (entry.outbound ?? []).slice(0, 6),
+        });
+      }
+      if (!results.length) return undefined;
+      return {
+        version: "v1",
+        request_id: `research-${Date.now()}`,
+        results,
+        meta: {
+          warnings: uniqueStrings([
+            ...(phase.warnings ?? []),
+            ...(phase.evidenceGate?.warnings ?? []),
+          ]),
+        },
+      };
+    };
+    const formatGbfnMemory = (
+      requestText: string,
+      phase: ResearchPhaseResult,
+      quotaAssessment: ToolQuotaAssessment,
+      budgetStatus: ResearchPhaseResult["budget"],
+    ): string => {
+      const findings = buildResearchKeyFindings(phase) ?? [];
+      const blockers: string[] = [];
+      if (!quotaAssessment.ok) {
+        blockers.push(`quota_unmet:${quotaAssessment.missing.join(",")}`);
+      }
+      if (budgetStatus?.status !== "met") {
+        blockers.push(
+          `budget_unmet:cycles=${budgetStatus?.cycles ?? 0}/${budgetStatus?.minCycles ?? 0},elapsed_s=${Math.round((budgetStatus?.elapsedMs ?? 0) / 1000)}/${budgetStatus?.minSeconds ?? 0}`,
+        );
+      }
+      if (phase.evidenceGate?.status && phase.evidenceGate.status !== "pass") {
+        blockers.push(
+          `evidence_unmet:${(phase.evidenceGate.missing ?? []).join(",")}`,
+        );
+      }
+      const warningList = uniqueStrings([
+        ...(phase.warnings ?? []),
+        ...(phase.evidenceGate?.warnings ?? []),
+      ]);
+      if (warningList.length) blockers.push(`warnings:${warningList.join(",")}`);
+
+      const facts: Array<{
+        id: string;
+        type: string;
+        value: string;
+        confidence?: "high" | "medium" | "low";
+      }> = [];
+      const relations: Array<{ from: string; to: string; relation: string }> = [];
+
+      const goalId = "goal_request";
+      facts.push({ id: goalId, type: "goal", value: requestText, confidence: "high" });
+
+      if (phase.evidence) {
+        const evidenceId = "research_evidence";
+        facts.push({
+          id: evidenceId,
+          type: "evidence",
+          value: [
+            `search_hits=${phase.evidence.search_hits}`,
+            `snippet_count=${phase.evidence.snippet_count}`,
+            `symbol_files=${phase.evidence.symbol_files}`,
+            `ast_files=${phase.evidence.ast_files}`,
+            `impact_files=${phase.evidence.impact_files}`,
+            `impact_edges=${phase.evidence.impact_edges}`,
+            `repo_map=${phase.evidence.repo_map ? "yes" : "no"}`,
+            `dag_summary=${phase.evidence.dag_summary ? "yes" : "no"}`,
+          ].join(", "),
+          confidence: "medium",
+        });
+        relations.push({ from: goalId, to: evidenceId, relation: "supported_by" });
+      }
+
+      findings.slice(0, 6).forEach((finding, index) => {
+        const id = `finding_${index + 1}`;
+        facts.push({ id, type: "finding", value: finding, confidence: "medium" });
+        relations.push({ from: goalId, to: id, relation: "supported_by" });
+      });
+
+      const researchPaths = collectResearchPaths(phase.outputs);
+      const fileCandidates = researchPaths.search
+        .concat(researchPaths.snippets)
+        .concat(researchPaths.symbols)
+        .concat(researchPaths.impact)
+        .filter(Boolean);
+      const uniqueFiles = uniqueStrings(fileCandidates).slice(0, 6);
+      uniqueFiles.forEach((file, index) => {
+        const id = `file_${index + 1}`;
+        facts.push({ id, type: "file_candidate", value: file, confidence: "medium" });
+        relations.push({ from: goalId, to: id, relation: "potential_target" });
+      });
+
+      blockers.slice(0, 6).forEach((blocker, index) => {
+        const id = `blocker_${index + 1}`;
+        facts.push({ id, type: "blocker", value: blocker, confidence: "high" });
+        relations.push({ from: goalId, to: id, relation: "blocked_by" });
+      });
+
+      const memory = {
+        memory: {
+          facts,
+          relations,
+          ttl: {
+            thread: "ephemeral",
+            memory: "persistent_opt_in",
+          },
+        },
+      };
+      return ["GBFN MEMORY v1", JSON.stringify(memory, null, 2)].join("\n");
+    };
     const emitAgentRequestRecoveryStatus = (reason: string): void => {
       this.emitStatus("thinking", `architect: AGENT_REQUEST recovery (${reason})`);
     };
-    const appendArchitectHistory = async (content: string): Promise<void> => {
-      if (!this.options.contextManager || !architectLaneId) return;
+    const appendLaneHistory = async (
+      laneId: string | undefined,
+      role: "architect" | "builder" | "critic",
+      content: string,
+    ): Promise<boolean> => {
+      if (!this.options.contextManager || !laneId) return false;
       await this.options.contextManager.append(
-        architectLaneId,
+        laneId,
         { role: "system", content },
-        { role: "architect" },
+        { role },
       );
+      return true;
+    };
+    const appendArchitectHistory = async (content: string): Promise<void> => {
+      await appendLaneHistory(architectLaneId, "architect", content);
+    };
+    const appendBuilderHistory = async (content: string): Promise<void> => {
+      await appendLaneHistory(builderLaneId, "builder", content);
     };
     const appendCriticHistory = async (content: string): Promise<void> => {
-      if (!this.options.contextManager || !criticLaneId) return;
-      await this.options.contextManager.append(
-        criticLaneId,
-        { role: "system", content },
-        { role: "critic" },
-      );
+      await appendLaneHistory(criticLaneId, "critic", content);
+    };
+    const appendProtocolToLanes = async (
+      content: string,
+      label: string,
+    ): Promise<void> => {
+      const appended: string[] = [];
+      if (await appendLaneHistory(architectLaneId, "architect", content)) {
+        appended.push("architect");
+      }
+      if (await appendLaneHistory(builderLaneId, "builder", content)) {
+        appended.push("builder");
+      }
+      if (await appendLaneHistory(criticLaneId, "critic", content)) {
+        appended.push("critic");
+      }
+      if (appended.length) {
+        this.emitStatus(
+          "thinking",
+          `${label}: appended to ${appended.join(", ")}`,
+        );
+      }
     };
     const logPlanHintSuppressed = async (hint?: string): Promise<void> => {
       if (!deepMode || planHintSuppressedLogged) return;
@@ -1451,6 +1895,10 @@ export class SmartPipeline {
         Math.floor(resolvedBudget.maxCycles ?? minCycles),
       );
       const researchStartedAt = Date.now();
+      const notes: string[] = [];
+      const pushNote = (note: string): void => {
+        if (!notes.includes(note)) notes.push(note);
+      };
       const phaseResult = await this.runPhase<ResearchPhaseResult>(
         "research",
         async () => {
@@ -1510,11 +1958,15 @@ export class SmartPipeline {
             };
           }
           let cycles = 0;
+          let researchContext = bundle;
+          let lastRefreshSignature = "";
+          let lastEvidenceSignature = "";
+          let stalledEvidenceCycles = 0;
           while (true) {
             cycles += 1;
             const execution = await researchRunner.runResearchTools(
               request,
-              bundle,
+              researchContext,
             );
             toolRuns.push(...execution.toolRuns);
             warnings.push(...execution.warnings);
@@ -1537,6 +1989,38 @@ export class SmartPipeline {
               buildEvidenceGateAssessment();
             const evidenceMet = evidenceGate.status === "pass";
             const needsMore = !budgetMet || !quotaAssessment.ok || !evidenceMet;
+            if (
+              quotaAssessment.ok
+              && evidenceMet
+              && !budgetMet
+              && minSeconds > 0
+              && cycles >= minCycles
+            ) {
+              const remainingMs = minSeconds * 1000 - elapsedMs;
+              if (remainingMs > 0) {
+                await new Promise((resolve) => setTimeout(resolve, remainingMs));
+              }
+              const waitedElapsed = Date.now() - researchStartedAt;
+              return {
+                status: "completed",
+                startedAt: researchStartedAt,
+                warnings: uniqueStrings(warnings),
+                toolRuns,
+                outputs,
+                cycles,
+                budget: {
+                  status: "met",
+                  minCycles,
+                  minSeconds,
+                  maxCycles,
+                  elapsedMs: waitedElapsed,
+                  cycles,
+                },
+                evidence,
+                toolUsage,
+                evidenceGate,
+              };
+            }
             if (!needsMore || cycles >= maxCycles) {
               return {
                 status: "completed",
@@ -1558,6 +2042,92 @@ export class SmartPipeline {
                 evidenceGate,
               };
             }
+            const refresh = buildResearchContextRefresh(
+              researchContext,
+              outputs,
+              evidenceGate.missing,
+            );
+            const { warnings: _ignoredWarnings, gaps: _ignoredGaps, ...evidenceCore } =
+              evidence;
+            const evidenceSignature = createHash("sha1")
+              .update(JSON.stringify({ evidence: evidenceCore, toolUsage }))
+              .digest("hex");
+            const evidenceUnchanged = evidenceSignature === lastEvidenceSignature;
+            if (!evidenceUnchanged) {
+              lastEvidenceSignature = evidenceSignature;
+              stalledEvidenceCycles = 0;
+            }
+            if (!refresh.changed) {
+              warnings.push("research_stalled_no_new_inputs");
+              if (evidenceUnchanged) {
+                stalledEvidenceCycles += 1;
+                warnings.push("research_no_new_evidence");
+                pushNote(
+                  `Research cycle ${cycles} produced no new evidence; stopping additional tool calls.`,
+                );
+                if (cycles >= minCycles) {
+                  const remainingMs = minSeconds * 1000 - elapsedMs;
+                  if (remainingMs > 0) {
+                    await new Promise((resolve) => setTimeout(resolve, remainingMs));
+                  }
+                  const waitedElapsed = Date.now() - researchStartedAt;
+                  return {
+                    status: "completed",
+                    startedAt: researchStartedAt,
+                    warnings: uniqueStrings(warnings),
+                    toolRuns,
+                    outputs,
+                    cycles,
+                    budget: {
+                      status: waitedElapsed >= minSeconds * 1000 ? "met" : "unmet",
+                      minCycles,
+                      minSeconds,
+                      maxCycles,
+                      elapsedMs: waitedElapsed,
+                      cycles,
+                    },
+                    evidence,
+                    toolUsage,
+                    evidenceGate,
+                  };
+                }
+              }
+              if (needsMore && cycles >= minCycles && evidenceMet && quotaAssessment.ok) {
+                return {
+                  status: "completed",
+                  startedAt: researchStartedAt,
+                  warnings: uniqueStrings(warnings),
+                  toolRuns,
+                  outputs,
+                  cycles,
+                  budget: {
+                    status: budgetMet ? "met" : "unmet",
+                    minCycles,
+                    minSeconds,
+                    maxCycles,
+                    elapsedMs,
+                    cycles,
+                  },
+                  evidence,
+                  toolUsage,
+                  evidenceGate,
+                };
+              }
+            } else {
+              if (evidenceUnchanged) {
+                stalledEvidenceCycles = 0;
+              }
+              const signature = JSON.stringify({
+                queries: refresh.context.queries ?? [],
+                focus: refresh.context.selection?.focus ?? [],
+              });
+              if (signature === lastRefreshSignature) {
+                warnings.push("research_stalled_no_new_inputs");
+              } else {
+                lastRefreshSignature = signature;
+                researchContext = refresh.context;
+              }
+            }
           }
         },
       );
@@ -1575,6 +2145,7 @@ export class SmartPipeline {
           toolUsage: researchToolUsage,
           warnings: phaseResult.warnings,
         });
+      const mergedNotes = uniqueStrings([...(phaseResult.notes ?? []), ...notes]);
       const researchPhase: ResearchPhaseResult = {
         ...phaseResult,
         endedAt: researchEndedAt,
@@ -1582,6 +2153,7 @@ export class SmartPipeline {
         evidence,
         toolUsage: researchToolUsage,
         evidenceGate,
+        notes: mergedNotes.length ? mergedNotes : undefined,
       };
       await logPhaseArtifact("research", "output", researchPhase);
       const toolUsage = buildToolUsageSummary(researchPhase.toolRuns);
@@ -1597,6 +2169,17 @@ export class SmartPipeline {
         elapsedMs: researchPhase.durationMs ?? 0,
         cycles: researchPhase.cycles ?? 0,
       };
+      const researchProtocol = buildResearchProtocolResponse(researchPhase);
+      if (researchProtocol) {
+        await appendProtocolToLanes(
+          formatCodaliResponse(researchProtocol),
+          "research protocol",
+        );
+      }
+      await appendProtocolToLanes(
+        formatGbfnMemory(request, researchPhase, quotaAssessment, budgetStatus),
+        "research memory",
+      );
       if (this.options.logger) {
         const evidenceGate = researchPhase.evidenceGate ?? {
           status: "not_checked",
@@ -1741,6 +2324,26 @@ export class SmartPipeline {
         context = updated;
       }
     }
+    let contextSignature = buildContextSignature(context);
+    const updateContextSignature = async (
+      reason: string,
+      pass: number,
+      extra: Record<string, unknown> = {},
+    ): Promise<boolean> => {
+      const nextSignature = buildContextSignature(context);
+      if (nextSignature === contextSignature) {
+        if (this.options.logger) {
+          await this.options.logger.log("architect_retry_skipped_no_new_context", {
+            pass,
+            reason,
+            ...extra,
+          });
+        }
+        return false;
+      }
+      contextSignature = nextSignature;
+      return true;
+    };
     const configuredFastPath = this.options.fastPath?.(request) ?? false;
     const useFastPath = deepMode ? false : configuredFastPath;
     if (deepMode && configuredFastPath && this.options.logger) {
@@ -1854,7 +2457,9 @@ export class SmartPipeline {
     } else {
       let pass = 1;
       let lastPlan: ArchitectPlanResult | undefined;
-      const maxPasses = 3;
+      const allowAutoRetry = false;
+      const maxRequestRecovery = 1;
+      const maxPasses = 1 + maxRequestRecovery;
       const reflectionHint =
         "REFINE the previous plan. Re-check constraints and request specificity. Output the full DSL plan.";
       let strictRetryTriggered = false;
@@ -1868,11 +2473,15 @@ export class SmartPipeline {
       let driftRecoveryTriggered = false;
       let requestRecoveryCount = 0;
       let previousRequestFingerprint: string | undefined;
+      let requestRecoveryPending = false;
       while (pass <= maxPasses) {
-        const strictRetryPass = strictRetryTriggered && pass === 2;
-        const recoveryPass = pass === maxPasses;
+        if (pass > 1 && !allowAutoRetry && !requestRecoveryPending) {
+          break;
+        }
+        const strictRetryPass = allowAutoRetry && strictRetryTriggered && pass === 2;
+        const recoveryPass = allowAutoRetry && maxPasses > 1 && pass === maxPasses;
         const hintParts: string[] = [];
-        if (pass > 1) hintParts.push(reflectionHint);
+        if (allowAutoRetry && pass > 1) hintParts.push(reflectionHint);
         if (strictRetryPass) hintParts.push(ARCHITECT_STRICT_DSL_HINT);
         if (verificationRetryTriggered) hintParts.push(ARCHITECT_VERIFY_QUALITY_HINT);
         if (recoveryPass) hintParts.push(ARCHITECT_RECOVERY_HINT);
@@ -1900,7 +2509,7 @@ export class SmartPipeline {
         const targetDrift = assessTargetDrift(previousConcreteTargets, qualityGate.concreteTargets);
         const nonDsl = isArchitectNonDsl(warnings);
         if (result.request) {
-          if (nonDsl && pass === 1) {
+          if (nonDsl && pass === 1 && allowAutoRetry) {
             strictRetryTriggered = true;
           }
           requestRecoveryCount += 1;
@@ -1949,7 +2558,8 @@ export class SmartPipeline {
               responseFormat,
             }),
           );
-          if (pass < maxPasses && requestRecoveryCount < maxPasses) {
+          let contextRefreshed = false;
+          if (pass < maxPasses && requestRecoveryCount <= maxRequestRecovery) {
             let refreshInputs = extractAgentRequestContextInputs(result.request);
             if (typeof this.options.contextAssembler.buildContextRefreshOptions === "function") {
               try {
@@ -1995,8 +2605,28 @@ export class SmartPipeline {
                 context = updated;
               }
             }
+            contextRefreshed = await updateContextSignature("architect_request", pass, {
+              request_id: result.request.request_id,
+            });
           }
-          if (pass >= maxPasses || requestRecoveryCount >= maxPasses) {
+          if (
+            pass < maxPasses
+            && requestRecoveryCount <= maxRequestRecovery
+            && !contextRefreshed
+          ) {
+            warnings.push("architect_retry_skipped_no_new_context");
+            lastPlan = { ...result, warnings: uniqueStrings(warnings) };
+            if (this.options.logger) {
+              await this.options.logger.log("architect_degraded", {
+                pass,
+                reason: "request_loop_no_new_context",
+                request_recovery_count: requestRecoveryCount,
+                warnings: uniqueStrings(warnings),
+              });
+            }
+            break;
+          }
+          if (pass >= maxPasses || requestRecoveryCount > maxRequestRecovery) {
             warnings.push("architect_degraded_request_loop");
             lastPlan = { ...result, warnings: uniqueStrings(warnings) };
             if (this.options.logger) {
@@ -2009,9 +2639,11 @@ export class SmartPipeline {
             }
             break;
           }
+          requestRecoveryPending = true;
           pass += 1;
           continue;
         }
+        requestRecoveryPending = false;
         requestRecoveryCount = 0;
         previousRequestFingerprint = undefined;
         lastPlan = result;
@@ -2049,7 +2681,7 @@ export class SmartPipeline {
           }),
         );
         const repeatedOutput = previousPlanHash === planHash;
-        if (nonDsl && pass === 1) {
+        if (allowAutoRetry && nonDsl && pass === 1) {
           previousPlanHash = planHash;
           previousConcreteTargets = qualityGate.concreteTargets;
           strictRetryTriggered = true;
@@ -2064,7 +2696,7 @@ export class SmartPipeline {
           continue;
         }
         if (nonDsl && strictRetryPass) {
-          if (pass < maxPasses) {
+          if (allowAutoRetry && pass < maxPasses) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
             emitAgentRequestRecoveryStatus("non_dsl_repeated_after_strict_retry");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -2096,6 +2728,24 @@ export class SmartPipeline {
               }),
             );
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            const contextRefreshed = await updateContextSignature(
+              "non_dsl_recovery",
+              pass,
+              { request_id: recovery.requestPayload.request_id },
+            );
+            if (!contextRefreshed) {
+              warnings.push("architect_retry_skipped_no_new_context");
+              warnings.push("architect_degraded_non_dsl");
+              lastPlan = { ...result, warnings: uniqueStrings(warnings) };
+              if (this.options.logger) {
+                await this.options.logger.log("architect_degraded", {
+                  pass,
+                  reason: "non_dsl_recovery_no_new_context",
+                  warnings: uniqueStrings(warnings),
+                });
+              }
+              break;
+            }
             fallbackRecoveryTriggered = true;
             previousPlanHash = undefined;
             previousConcreteTargets = qualityGate.concreteTargets;
@@ -2136,7 +2786,7 @@ export class SmartPipeline {
               has_fallback_signals: structuralGrounding.hasFallbackSignals,
             });
           }
-          if (pass < maxPasses && !structuralRecoveryTriggered) {
+          if (allowAutoRetry && pass < maxPasses && !structuralRecoveryTriggered) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
             emitAgentRequestRecoveryStatus("weak_structural_grounding");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -2161,6 +2811,33 @@ export class SmartPipeline {
               }),
             );
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            const contextRefreshed = await updateContextSignature(
+              "structural_grounding_recovery",
+              pass,
+              { request_id: recovery.requestPayload.request_id },
+            );
+            if (!contextRefreshed) {
+              warnings.push("architect_retry_skipped_no_new_context");
+              warnings.push("architect_degraded_structural_grounding");
+              const degradedPlan = buildQualityDegradedPlan(
+                request,
+                context,
+                result.plan,
+              );
+              lastPlan = {
+                ...result,
+                plan: degradedPlan,
+                warnings: uniqueStrings(warnings),
+              };
+              if (this.options.logger) {
+                await this.options.logger.log("architect_degraded", {
+                  pass,
+                  reason: "structural_grounding_no_new_context",
+                  warnings: uniqueStrings(warnings),
+                });
+              }
+              break;
+            }
             structuralRecoveryTriggered = true;
             previousPlanHash = undefined;
             previousConcreteTargets = qualityGate.concreteTargets;
@@ -2182,7 +2859,7 @@ export class SmartPipeline {
               verification_steps: verificationQuality.steps,
             });
           }
-          if (pass < maxPasses) {
+          if (allowAutoRetry && pass < maxPasses) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
             emitAgentRequestRecoveryStatus("verification_quality");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -2207,6 +2884,35 @@ export class SmartPipeline {
               }),
             );
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            const contextRefreshed = await updateContextSignature(
+              "verification_recovery",
+              pass,
+              { request_id: recovery.requestPayload.request_id },
+            );
+            if (!contextRefreshed) {
+              warnings.push("architect_retry_skipped_no_new_context");
+              warnings.push("architect_degraded_verification_quality");
+              const degradedPlan = buildQualityDegradedPlan(
+                request,
+                context,
+                result.plan,
+              );
+              lastPlan = {
+                ...result,
+                plan: degradedPlan,
+                warnings: uniqueStrings(warnings),
+              };
+              if (this.options.logger) {
+                await this.options.logger.log("architect_degraded", {
+                  pass,
+                  reason: "verification_quality_no_new_context",
+                  verification_reason: verificationQuality.reason,
+                  verification_steps: verificationQuality.steps,
+                  warnings: uniqueStrings(warnings),
+                });
+              }
+              break;
+            }
             fallbackRecoveryTriggered = true;
             verificationRetryTriggered = true;
             previousPlanHash = planHash;
@@ -2230,7 +2936,12 @@ export class SmartPipeline {
         }
         verificationRetryTriggered = false;
         const fallbackGenericAssessment = assessFallbackOrGenericPlan(result.plan, warnings);
-        if (fallbackGenericAssessment.fallback_or_generic && !fallbackRecoveryTriggered && pass < maxPasses) {
+        if (
+          allowAutoRetry
+          && fallbackGenericAssessment.fallback_or_generic
+          && !fallbackRecoveryTriggered
+          && pass < maxPasses
+        ) {
           const recovery = buildFallbackRecoveryRequest(request, context, pass);
           emitAgentRequestRecoveryStatus("fallback_or_generic_plan");
           const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -2263,6 +2974,23 @@ export class SmartPipeline {
             }),
           );
           await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+          const contextRefreshed = await updateContextSignature(
+            "fallback_generic_recovery",
+            pass,
+            { request_id: recovery.requestPayload.request_id },
+          );
+          if (!contextRefreshed) {
+            warnings.push("architect_retry_skipped_no_new_context");
+            lastPlan = { ...result, warnings: uniqueStrings(warnings) };
+            if (this.options.logger) {
+              await this.options.logger.log("architect_degraded", {
+                pass,
+                reason: "fallback_generic_no_new_context",
+                warnings: uniqueStrings(warnings),
+              });
+            }
+            break;
+          }
           fallbackRecoveryTriggered = true;
           previousPlanHash = undefined;
           previousConcreteTargets = qualityGate.concreteTargets;
@@ -2286,80 +3014,110 @@ export class SmartPipeline {
             backend_candidates: backendCandidates.slice(0, 8),
           });
         }
-        if ((lowAlignment || endpointMissingBackend) && pass <= maxPasses) {
-          if (endpointMissingBackend) {
-            const guardRequest: AgentRequest = {
-              version: "v1",
-              role: "architect",
-              request_id: `architect-guard-${Date.now()}-${pass}`,
-              needs: [
-                {
-                  type: "docdex.search",
-                  query: `${request} backend server route handler api`,
-                  limit: 8,
+        if (lowAlignment || endpointMissingBackend) {
+          if (allowAutoRetry && pass <= maxPasses) {
+            if (endpointMissingBackend) {
+              const guardRequest: AgentRequest = {
+                version: "v1",
+                role: "architect",
+                request_id: `architect-guard-${Date.now()}-${pass}`,
+                needs: [
+                  {
+                    type: "docdex.search",
+                    query: `${request} backend server route handler api`,
+                    limit: 8,
+                  },
+                  {
+                    type: "file.list",
+                    root: "src",
+                    pattern: "*server*",
+                  },
+                ],
+                context: {
+                  summary:
+                    "Endpoint/server intent detected, but plan has no backend/server target. Need backend candidates before finalizing plan.",
                 },
-                {
-                  type: "file.list",
-                  root: "src",
-                  pattern: "*server*",
-                },
-              ],
-              context: {
-                summary:
-                  "Endpoint/server intent detected, but plan has no backend/server target. Need backend candidates before finalizing plan.",
-              },
-            };
-            emitAgentRequestRecoveryStatus("endpoint_missing_backend_target");
-            const response = await this.options.contextAssembler.fulfillAgentRequest(guardRequest);
-            await appendArchitectHistory(formatCodaliResponse(response));
-            await logPhaseArtifact("architect", "output", {
-              request_id: guardRequest.request_id,
-              response,
-              source: "relevance_guard",
-            });
-            if (this.options.logger) {
-              await this.options.logger.log("architect_guardrail_request", {
-                pass,
-                reason: "endpoint_missing_backend_target",
+              };
+              emitAgentRequestRecoveryStatus("endpoint_missing_backend_target");
+              const response = await this.options.contextAssembler.fulfillAgentRequest(guardRequest);
+              await appendArchitectHistory(formatCodaliResponse(response));
+              await logPhaseArtifact("architect", "output", {
                 request_id: guardRequest.request_id,
+                response,
+                source: "relevance_guard",
               });
+              if (this.options.logger) {
+                await this.options.logger.log("architect_guardrail_request", {
+                  pass,
+                  reason: "endpoint_missing_backend_target",
+                  request_id: guardRequest.request_id,
+                });
+              }
             }
-          }
-          if (pass < maxPasses) {
-            const additionalQueries = uniqueStrings(
-              [
-                `${request} backend server route handler`,
-                ...((context.queries ?? []).slice(0, 2)),
-              ].filter(Boolean),
-            );
-            const preferredFiles = uniqueStrings([
-              ...backendCandidates.slice(0, 8),
-              ...(context.selection?.focus ?? []),
-            ]);
-            const recentFiles = uniqueStrings([
-              ...(context.selection?.all ?? []),
-              ...preferredFiles,
-            ]);
-            await logPhaseArtifact("librarian", "input", {
-              request,
-              reason: endpointMissingBackend
-                ? "architect_relevance_endpoint_missing_backend"
-                : "architect_relevance_low_alignment",
-              additional_queries: additionalQueries,
-              preferred_files: preferredFiles,
-            });
-            context = await this.runPhase("librarian", () =>
-              this.options.contextAssembler.assemble(request, {
-                additionalQueries,
-                preferredFiles,
-                recentFiles,
-              }),
-            );
-            await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
-            previousPlanHash = undefined;
-            previousConcreteTargets = qualityGate.concreteTargets;
-            pass += 1;
-            continue;
+            if (pass < maxPasses) {
+              const additionalQueries = uniqueStrings(
+                [
+                  `${request} backend server route handler`,
+                  ...((context.queries ?? []).slice(0, 2)),
+                ].filter(Boolean),
+              );
+              const preferredFiles = uniqueStrings([
+                ...backendCandidates.slice(0, 8),
+                ...(context.selection?.focus ?? []),
+              ]);
+              const recentFiles = uniqueStrings([
+                ...(context.selection?.all ?? []),
+                ...preferredFiles,
+              ]);
+              await logPhaseArtifact("librarian", "input", {
+                request,
+                reason: endpointMissingBackend
+                  ? "architect_relevance_endpoint_missing_backend"
+                  : "architect_relevance_low_alignment",
+                additional_queries: additionalQueries,
+                preferred_files: preferredFiles,
+              });
+              context = await this.runPhase("librarian", () =>
+                this.options.contextAssembler.assemble(request, {
+                  additionalQueries,
+                  preferredFiles,
+                  recentFiles,
+                }),
+              );
+              await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+              const contextRefreshed = await updateContextSignature(
+                endpointMissingBackend
+                  ? "relevance_endpoint_missing_backend"
+                  : "relevance_low_alignment",
+                pass,
+              );
+              if (!contextRefreshed) {
+                warnings.push("architect_retry_skipped_no_new_context");
+                warnings.push(
+                  endpointMissingBackend
+                    ? "architect_degraded_relevance_endpoint_missing_backend"
+                    : "architect_degraded_relevance_low_alignment",
+                );
+                lastPlan = { ...result, warnings: uniqueStrings(warnings) };
+                if (this.options.logger) {
+                  await this.options.logger.log("architect_degraded", {
+                    pass,
+                    reason: endpointMissingBackend
+                      ? "relevance_endpoint_missing_backend_no_new_context"
+                      : "relevance_low_alignment_no_new_context",
+                    alignment_score: alignment.score,
+                    alignment_keywords: alignment.keywords,
+                    alignment_matches: alignment.matches,
+                    warnings: uniqueStrings(warnings),
+                  });
+                }
+                break;
+              }
+              previousPlanHash = undefined;
+              previousConcreteTargets = qualityGate.concreteTargets;
+              pass += 1;
+              continue;
+            }
           }
           warnings.push(
             endpointMissingBackend
@@ -2391,7 +3149,7 @@ export class SmartPipeline {
               current: targetDrift.current,
             });
           }
-          if (pass < maxPasses && !driftRecoveryTriggered) {
+          if (allowAutoRetry && pass < maxPasses && !driftRecoveryTriggered) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
             emitAgentRequestRecoveryStatus("high_target_drift");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -2417,6 +3175,33 @@ export class SmartPipeline {
               }),
             );
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            const contextRefreshed = await updateContextSignature(
+              "target_drift_recovery",
+              pass,
+              { request_id: recovery.requestPayload.request_id },
+            );
+            if (!contextRefreshed) {
+              warnings.push("architect_retry_skipped_no_new_context");
+              warnings.push("architect_degraded_target_drift");
+              const stabilizedPlan = buildDriftStabilizedPlan(
+                request,
+                result.plan,
+                targetDrift.previous,
+              );
+              lastPlan = {
+                ...result,
+                plan: stabilizedPlan,
+                warnings: uniqueStrings(warnings),
+              };
+              if (this.options.logger) {
+                await this.options.logger.log("architect_degraded", {
+                  pass,
+                  reason: "target_drift_no_new_context",
+                  warnings: uniqueStrings(warnings),
+                });
+              }
+              break;
+            }
             driftRecoveryTriggered = true;
             previousPlanHash = undefined;
             previousConcreteTargets = qualityGate.concreteTargets;
@@ -2444,7 +3229,7 @@ export class SmartPipeline {
               semantic_matches: qualityGate.semanticMatches,
             });
           }
-          if (pass < maxPasses) {
+          if (allowAutoRetry && pass < maxPasses) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
             emitAgentRequestRecoveryStatus("quality_gate");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -2469,6 +3254,37 @@ export class SmartPipeline {
               }),
             );
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            const contextRefreshed = await updateContextSignature(
+              "quality_gate_recovery",
+              pass,
+              { request_id: recovery.requestPayload.request_id },
+            );
+            if (!contextRefreshed) {
+              warnings.push("architect_retry_skipped_no_new_context");
+              warnings.push("architect_degraded_quality_gate");
+              const degradedPlan = buildQualityDegradedPlan(
+                request,
+                context,
+                result.plan,
+              );
+              lastPlan = {
+                ...result,
+                plan: degradedPlan,
+                warnings: uniqueStrings(warnings),
+              };
+              if (this.options.logger) {
+                await this.options.logger.log("architect_degraded", {
+                  pass,
+                  reason: "quality_gate_no_new_context",
+                  warnings: uniqueStrings(warnings),
+                  quality_gate: qualityGate,
+                  semantic_score: qualityGate.semanticScore,
+                  semantic_anchors: qualityGate.semanticAnchors,
+                  semantic_matches: qualityGate.semanticMatches,
+                });
+              }
+              break;
+            }
             previousPlanHash = undefined;
             previousConcreteTargets = qualityGate.concreteTargets;
             pass += 1;
@@ -2505,7 +3321,7 @@ export class SmartPipeline {
           }
           break;
         }
-        if (repeatedOutput && !alternateStrategyUsed && pass < maxPasses) {
+        if (allowAutoRetry && repeatedOutput && !alternateStrategyUsed && pass < maxPasses) {
           alternateStrategyUsed = true;
           alternateHintPending = true;
           const additionalQueries = (context.queries ?? []).slice(0, 3);
@@ -2525,6 +3341,22 @@ export class SmartPipeline {
             }),
           );
           await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+          const contextRefreshed = await updateContextSignature(
+            "identical_output_refresh",
+            pass,
+          );
+          if (!contextRefreshed) {
+            warnings.push("architect_retry_skipped_no_new_context");
+            lastPlan = { ...result, warnings: uniqueStrings(warnings) };
+            if (this.options.logger) {
+              await this.options.logger.log("architect_degraded", {
+                pass,
+                reason: "identical_output_no_new_context",
+                warnings: uniqueStrings(warnings),
+              });
+            }
+            break;
+          }
           if (this.options.logger) {
             await this.options.logger.log("architect_retry_strategy", {
               pass,
@@ -2539,6 +3371,9 @@ export class SmartPipeline {
         }
         previousPlanHash = planHash;
         previousConcreteTargets = qualityGate.concreteTargets;
+        if (!allowAutoRetry) {
+          break;
+        }
         pass += 1;
       }
       if (!lastPlan) {

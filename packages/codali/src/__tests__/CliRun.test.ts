@@ -92,6 +92,7 @@ test("codali run executes with stub provider", { concurrency: false }, () => {
   const result = runCodali(
     [
       "run",
+      "--no-deep-investigation",
       "--workspace-root",
       workspaceRoot,
       "--provider",
@@ -125,6 +126,7 @@ test("codali run emits status events", { concurrency: false }, () => {
   const result = runCodali(
     [
       "run",
+      "--no-deep-investigation",
       "--workspace-root",
       workspaceRoot,
       "--provider",
@@ -159,6 +161,7 @@ test("codali run --smart executes smart pipeline with stub provider", { concurre
     [
       "run",
       "--smart",
+      "--no-deep-investigation",
       "--workspace-root",
       workspaceRoot,
       "--provider",
@@ -193,6 +196,7 @@ test("codali run accepts inline task input", { concurrency: false }, () => {
     [
       cliPath,
       "run",
+      "--no-deep-investigation",
       "--workspace-root",
       workspaceRoot,
       "--provider",
@@ -225,6 +229,7 @@ test("codali run --smart freeform uses interpreter", { concurrency: false }, () 
     [
       "run",
       "--smart",
+      "--no-deep-investigation",
       "--workspace-root",
       workspaceRoot,
       "--provider",
@@ -264,6 +269,7 @@ test("codali run --smart persists local context when enabled", { concurrency: fa
     [
       "run",
       "--smart",
+      "--no-deep-investigation",
       "--workspace-root",
       workspaceRoot,
       "--provider",
