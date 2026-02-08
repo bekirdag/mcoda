@@ -240,6 +240,7 @@ export interface ContextRequest {
 export interface Plan {
   steps: string[];
   target_files: string[];
+  create_files?: string[];
   risk_assessment: string;
   verification: string[];
 }

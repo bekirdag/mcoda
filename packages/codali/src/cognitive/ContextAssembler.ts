@@ -1203,6 +1203,53 @@ const buildAdaptiveSearchQueries = (
   return adaptive.slice(0, Math.max(1, maxQueries));
 };
 
+const isUiSourceHintPath = (value: string): boolean => {
+  const normalized = normalizePath(value).toLowerCase();
+  if (!normalized || isDocPath(normalized) || isSupportDoc(normalized)) return false;
+  if (isFrontendPath(normalized)) return true;
+  return /(^|\/)src\/taskstore\.[^.]+$/.test(normalized);
+};
+
+const isDocDominantHits = (hits: Array<{ path?: string }>): boolean => {
+  if (!hits.length) return false;
+  let docLike = 0;
+  for (const hit of hits) {
+    const pathValue = hit.path ?? "";
+    if (!pathValue) continue;
+    if (isDocPath(pathValue) || isSupportDoc(pathValue)) {
+      docLike += 1;
+    }
+  }
+  if (docLike === 0) return false;
+  return docLike / hits.length >= 0.6;
+};
+
+const buildUiSourceBiasedQueries = (
+  request: string,
+  queries: string[],
+  preferredFiles: string[],
+  fileHints: string[],
+  maxQueries: number,
+): string[] => {
+  const sourcePaths = uniqueValues([...preferredFiles, ...fileHints])
+    .filter((entry) => isUiSourceHintPath(entry))
+    .slice(0, 6);
+  const sourceTokens = uniqueValues(
+    sourcePaths
+      .flatMap((entry) => normalizePath(entry).toLowerCase().split(/[/.\\_-]+/g))
+      .filter((entry) => entry.length >= 3),
+  ).slice(0, 6);
+  const sourceQueries = uniqueValues([
+    request,
+    ...queries,
+    ...sourcePaths,
+    sourceTokens.join(" "),
+    "src/public homepage",
+    "src/taskStore.js",
+  ]).filter((entry) => entry.trim().length > 0);
+  return sourceQueries.slice(0, Math.max(1, maxQueries));
+};
+
 const isTestPath = (value: string): boolean => {
   const normalized = normalizePath(value).toLowerCase();
   return (
@@ -3222,6 +3269,45 @@ export class ContextAssembler {
         });
         if (uniqueHits.length > 0) {
           pushWarning("docdex_adaptive_search_retry");
+        }
+      }
+    }
+
+    const shouldUiSourceBiasRetry =
+      !skipSearchWhenPreferred &&
+      searchSucceeded &&
+      intent.intents.includes("ui") &&
+      uniqueHits.length > 0 &&
+      isDocDominantHits(uniqueHits);
+    if (shouldUiSourceBiasRetry) {
+      const sourceBiasedQueries = buildUiSourceBiasedQueries(
+        request,
+        queries,
+        preferredFiles,
+        fileHints,
+        Math.max(1, this.options.maxQueries + 2),
+      );
+      if (sourceBiasedQueries.join("\n") !== searchExecutionQueries.join("\n")) {
+        emitStatus("thinking", "librarian: ui source-biased refresh");
+        const sourceBiasedSearch = await runSearch(sourceBiasedQueries);
+        const sourceUniqueHits = sourceBiasedSearch.hitList.filter((hit, index, self) => {
+          const key = `${hit.doc_id ?? ""}:${hit.path ?? ""}`;
+          return self.findIndex((entry) => `${entry.doc_id ?? ""}:${entry.path ?? ""}` === key) === index;
+        });
+        const sourceHasNonDoc = sourceUniqueHits.some((hit) => {
+          const pathValue = hit.path ?? "";
+          return Boolean(pathValue) && !isDocPath(pathValue) && !isSupportDoc(pathValue);
+        });
+        if (sourceHasNonDoc) {
+          searchExecutionQueries = sourceBiasedQueries;
+          queries = uniqueValues([...sourceBiasedQueries, ...queries]).slice(0, Math.max(1, this.options.maxQueries));
+          hitList = sourceBiasedSearch.hitList;
+          searchSucceeded = sourceBiasedSearch.searchSucceeded;
+          searchResults = sourceBiasedSearch.searchResults;
+          uniqueHits = sourceUniqueHits;
+          pushWarning("docdex_ui_source_bias_retry");
+        } else if (sourceBiasedSearch.searchSucceeded) {
+          pushWarning("docdex_ui_source_bias_retry_no_source_hits");
         }
       }
     }

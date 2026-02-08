@@ -70,6 +70,18 @@ const baseContext: ContextBundle = {
   warnings: [],
 };
 
+const scopeAgnosticContext = (overrides: Partial<ContextBundle> = {}): ContextBundle => ({
+  ...baseContext,
+  files: [],
+  snippets: [],
+  symbols: [],
+  ast: [],
+  impact: [],
+  impact_diagnostics: [],
+  selection: undefined,
+  ...overrides,
+});
+
 test("ArchitectPlanner returns a valid plan", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
@@ -113,6 +125,56 @@ test("ArchitectPlanner parses DSL steps/targets", { concurrency: false }, async 
   assert.ok(plan.steps.some((step) => step.includes("src/login.ts")));
 });
 
+test("ArchitectPlanner rewrites out-of-scope targets when create_files is not declared", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "PLAN:",
+        "- Implement behavior",
+        "TARGETS:",
+        "- src/nonexistent.ts",
+        "RISK: low",
+        "VERIFY:",
+        "- Run unit tests: pnpm test --filter codali",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const result = await planner.planWithRequest(baseContext);
+  assert.ok(!result.plan.target_files.includes("src/nonexistent.ts"));
+  assert.ok(result.plan.target_files.includes("src/login.ts"));
+  assert.ok(
+    result.warnings.some((warning) => warning.startsWith("plan_targets_outside_context:")),
+  );
+});
+
+test("ArchitectPlanner allows explicit create_files targets outside focus/periphery", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "PLAN:",
+        "- Create a new handler module",
+        "TARGETS:",
+        "- src/nonexistent.ts",
+        "CREATE_FILES:",
+        "- src/nonexistent.ts",
+        "RISK: low",
+        "VERIFY:",
+        "- Run unit tests: pnpm test --filter codali",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
+  assert.ok(result.plan.target_files.includes("src/nonexistent.ts"));
+  assert.ok(result.plan.create_files?.includes("src/nonexistent.ts"));
+  assert.ok(
+    !result.warnings.some((warning) => warning.startsWith("plan_targets_outside_context:")),
+  );
+});
+
 test("Regression: empty VERIFY is normalized to concrete fallback verification", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
@@ -129,7 +191,7 @@ test("Regression: empty VERIFY is normalized to concrete fallback verification",
   });
 
   const planner = new ArchitectPlanner(provider);
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(result.warnings.includes("plan_missing_verification"));
   assert.ok(result.plan.verification.length > 0);
 });
@@ -151,7 +213,7 @@ test("ArchitectPlanner adds per-file change details when plan steps are generic"
   });
 
   const planner = new ArchitectPlanner(provider);
-  const plan = await planner.plan(baseContext);
+  const plan = await planner.plan(scopeAgnosticContext());
   const detailedStep = plan.steps.find((step) => step.includes("src/login.ts"));
   assert.ok(detailedStep);
   assert.ok((detailedStep ?? "").toLowerCase().includes("add"));
@@ -214,7 +276,7 @@ test("ArchitectPlanner allows clearing constructor planHint with explicit undefi
     ].join("\n"),
   });
 
-  const result = await planner.plan(baseContext, { planHint: undefined });
+  const result = await planner.plan(scopeAgnosticContext(), { planHint: undefined });
   assert.equal(result.target_files[0], "src/from-provider.ts");
   assert.ok(provider.lastRequest);
 });
@@ -232,7 +294,7 @@ test("ArchitectPlanner validate-only accepts valid plan hint without provider ca
       verification: [],
     }),
   });
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.equal(provider.lastRequest, undefined);
   assert.deepEqual(result.warnings, []);
   assert.ok(result.plan.target_files.includes("src/login.ts"));
@@ -256,6 +318,30 @@ test("ArchitectPlanner validate-only throws structured error for invalid plan hi
     (error) => {
       assert.ok(error instanceof PlanHintValidationError);
       assert.ok(error.issues.some((issue) => issue.startsWith("plan_hint_invalid_targets")));
+      return true;
+    },
+  );
+  assert.equal(provider.lastRequest, undefined);
+});
+
+test("ArchitectPlanner validate-only rejects out-of-scope targets unless create_files is present", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: { role: "assistant", content: "should not be used" },
+  });
+  const planner = new ArchitectPlanner(provider, {
+    validateOnly: true,
+    planHint: JSON.stringify({
+      steps: ["Do work"],
+      target_files: ["src/nonexistent.ts"],
+      risk_assessment: "low",
+      verification: ["Run unit tests: pnpm test --filter codali"],
+    }),
+  });
+  await assert.rejects(
+    () => planner.planWithRequest(baseContext),
+    (error) => {
+      assert.ok(error instanceof PlanHintValidationError);
+      assert.ok(error.issues.some((issue) => issue.startsWith("plan_hint_targets_outside_context")));
       return true;
     },
   );
@@ -309,7 +395,7 @@ test("ArchitectPlanner treats instruction hints as prompt guidance and still cal
     ].join("\n"),
   });
 
-  const plan = await planner.plan(baseContext);
+  const plan = await planner.plan(scopeAgnosticContext());
   assert.equal(plan.target_files[0], "src/login.ts");
   assert.notEqual(plan.target_files[0], "<path>");
   assert.ok(provider.lastRequest);
@@ -327,7 +413,7 @@ test("ArchitectPlanner adapts non-DSL query JSON into AGENT_REQUEST recovery", {
     },
   });
   const planner = new ArchitectPlanner(provider);
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(result.request);
   assert.equal(result.request?.needs[0]?.type, "docdex.search");
   if (result.request?.needs[0]?.type === "docdex.search") {
@@ -346,7 +432,7 @@ test("ArchitectPlanner adapts prose non-DSL output into AGENT_REQUEST recovery",
     },
   });
   const planner = new ArchitectPlanner(provider);
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(result.request);
   assert.equal(result.request?.needs[0]?.type, "docdex.search");
   assert.ok(result.warnings.includes("architect_output_adapted_to_request"));
@@ -388,7 +474,7 @@ test("ArchitectPlanner ignores think-tag wrapper warnings while repairing non-DS
     },
   });
   const planner = new ArchitectPlanner(provider);
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(!result.warnings.includes("architect_output_contains_think"));
   assert.ok(result.warnings.includes("architect_output_not_dsl"));
   assert.ok(result.warnings.includes("architect_output_repaired"));
@@ -430,7 +516,7 @@ test("ArchitectPlanner normalizes noisy wrapped DSL output into canonical plan",
     },
   });
   const planner = new ArchitectPlanner(provider);
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.equal(result.plan.target_files[0], "src/server/routes/healthz.ts");
   assert.ok(result.plan.steps[0]?.toLowerCase().includes("route"));
   assert.ok(!result.warnings.includes("architect_output_contains_think"));
@@ -464,7 +550,7 @@ test("ArchitectPlanner keeps first DSL block when duplicate sections are emitted
     },
   });
   const planner = new ArchitectPlanner(provider);
-  const result = await planner.planWithRequest(baseContext);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(result.plan.target_files.includes("src/public/index.html"));
   assert.ok(!result.plan.target_files.includes("src/unrelated/placeholder.ts"));
   assert.ok(result.warnings.includes("architect_output_multiple_section_blocks"));
@@ -579,7 +665,7 @@ test("ArchitectPlanner falls back on invalid output", { concurrency: false }, as
     message: { role: "assistant", content: "not-json" },
   });
   const planner = new ArchitectPlanner(provider);
-  const plan = await planner.plan(baseContext);
+  const plan = await planner.plan(scopeAgnosticContext());
   assert.ok(plan.steps.length > 0);
   assert.ok(plan.target_files.length > 0);
 });
@@ -589,7 +675,7 @@ test("ArchitectPlanner falls back on missing fields", { concurrency: false }, as
     message: { role: "assistant", content: "PLAN:\nTARGETS:\nRISK:\nVERIFY:" },
   });
   const planner = new ArchitectPlanner(provider);
-  const plan = await planner.plan(baseContext);
+  const plan = await planner.plan(scopeAgnosticContext());
   assert.ok(plan.steps.length > 0);
   assert.ok(plan.target_files.length > 0);
 });
@@ -607,7 +693,7 @@ test("ArchitectPlanner coerces string fields into arrays", { concurrency: false 
     },
   });
   const planner = new ArchitectPlanner(provider);
-  const plan = await planner.plan(baseContext);
+  const plan = await planner.plan(scopeAgnosticContext());
   assert.ok(plan.steps.length >= 2);
   assert.ok(plan.steps.some((step) => step.includes("src/server.js")));
   assert.equal(plan.target_files.length, 2);
@@ -627,8 +713,8 @@ test("ArchitectPlanner fallback prefers backend targets for endpoint requests", 
     request: "Create a heathz endpoint to check the health of the system",
     selection: {
       focus: ["src/public/app.js", "tests/footer.test.js"],
-      periphery: ["docs/rfp.md"],
-      all: ["src/public/app.js", "tests/footer.test.js", "docs/rfp.md"],
+      periphery: ["docs/rfp.md", "src/server.js"],
+      all: ["src/public/app.js", "tests/footer.test.js", "docs/rfp.md", "src/server.js"],
       low_confidence: false,
     },
     files: [
@@ -645,6 +731,15 @@ test("ArchitectPlanner fallback prefers backend targets for endpoint requests", 
       {
         path: "tests/footer.test.js",
         role: "focus",
+        content: "",
+        size: 0,
+        truncated: false,
+        sliceStrategy: "test",
+        origin: "docdex",
+      },
+      {
+        path: "src/server.js",
+        role: "periphery",
         content: "",
         size: 0,
         truncated: false,

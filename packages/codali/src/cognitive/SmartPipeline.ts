@@ -910,6 +910,42 @@ const collectContextPaths = (context: ContextBundle): string[] => {
   );
 };
 
+const parseRepoMapPaths = (repoMap?: string): string[] => {
+  if (!repoMap) return [];
+  const lines = repoMap
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/g, ""))
+    .filter((line) => line.length > 0);
+  if (lines.length <= 1) return [];
+  const stack: string[] = [];
+  const paths: string[] = [];
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const branchIndex = line.indexOf("├── ");
+    const leafIndex = line.indexOf("└── ");
+    const markerIndex =
+      branchIndex >= 0 ? branchIndex : leafIndex >= 0 ? leafIndex : -1;
+    if (markerIndex < 0) continue;
+    const nameRaw = line.slice(markerIndex + 4).trim();
+    if (!nameRaw) continue;
+    const name = nameRaw.replace(/\s+\(.*\)\s*$/g, "").trim();
+    if (!name) continue;
+    const depth = Math.floor(markerIndex / 4);
+    stack[depth] = name;
+    stack.length = depth + 1;
+    paths.push(normalizePath(stack.join("/")));
+  }
+  return uniqueStrings(paths).filter(Boolean);
+};
+
+const collectKnownContextPaths = (context: ContextBundle): string[] => {
+  const repoMapPaths = parseRepoMapPaths(context.repo_map_raw ?? context.repo_map);
+  return uniqueStrings([
+    ...collectContextPaths(context),
+    ...repoMapPaths,
+  ]);
+};
+
 const backendCandidatesFromContext = (context: ContextBundle): string[] =>
   collectContextPaths(context).filter((path) => BACKEND_TARGET_PATTERN.test(path.toLowerCase()));
 
@@ -1215,16 +1251,82 @@ const isConcreteTargetPath = (target: string): boolean => {
   return !/^<[^>]+>$/.test(normalized);
 };
 
+const isDeterministicPatchApplyFailure = (failure: PatchApplyFailure): boolean => {
+  const message = `${failure.error} ${failure.source}`.toLowerCase();
+  return message.includes("enoent") || message.includes("no such file or directory");
+};
+
 type PlanQualityGate = {
   ok: boolean;
   reasons: string[];
   concreteTargets: string[];
   verification: VerificationQuality;
+  targetValidation?: {
+    ok: boolean;
+    knownTargets: string[];
+    createTargets: string[];
+    unresolvedTargets: string[];
+  };
   alignmentScore: number;
   alignmentKeywords: string[];
   semanticScore: number;
   semanticAnchors: string[];
   semanticMatches: string[];
+};
+
+const BLOCKING_PLAN_QUALITY_REASONS = new Set([
+  "missing_concrete_targets",
+  "invalid_target_paths",
+  "verification_empty",
+  "verification_non_concrete",
+]);
+
+const collectBlockingPlanQualityReasons = (quality: PlanQualityGate): string[] =>
+  quality.reasons.filter((reason) => BLOCKING_PLAN_QUALITY_REASONS.has(reason));
+
+const assessPlanTargetValidation = (
+  plan: Plan,
+  context: ContextBundle,
+): {
+  ok: boolean;
+  knownTargets: string[];
+  createTargets: string[];
+  unresolvedTargets: string[];
+} => {
+  const knownTargets = collectKnownContextPaths(context);
+  if (knownTargets.length === 0) {
+    return {
+      ok: true,
+      knownTargets,
+      createTargets: uniqueStrings(
+        (plan.create_files ?? [])
+          .filter((target) => isConcreteTargetPath(target))
+          .map((target) => normalizePath(target)),
+      ),
+      unresolvedTargets: [],
+    };
+  }
+  const knownTargetSet = new Set(knownTargets.map((entry) => entry.toLowerCase()));
+  const createTargets = uniqueStrings(
+    (plan.create_files ?? [])
+      .filter((target) => isConcreteTargetPath(target))
+      .map((target) => normalizePath(target)),
+  );
+  const createTargetSet = new Set(createTargets.map((entry) => entry.toLowerCase()));
+  const concreteTargets = uniqueStrings(
+    (plan.target_files ?? [])
+      .filter((target) => isConcreteTargetPath(target))
+      .map((target) => normalizePath(target)),
+  );
+  const unresolvedTargets = concreteTargets.filter((target) =>
+    !knownTargetSet.has(target.toLowerCase()) && !createTargetSet.has(target.toLowerCase())
+  );
+  return {
+    ok: unresolvedTargets.length === 0,
+    knownTargets,
+    createTargets,
+    unresolvedTargets,
+  };
 };
 
 type StructuralGroundingAssessment = {
@@ -1397,11 +1499,19 @@ const scoreRequestPlanSemanticCoverage = (
   };
 };
 
-const assessPlanQualityGate = (request: string, plan: Plan): PlanQualityGate => {
+const assessPlanQualityGate = (
+  request: string,
+  plan: Plan,
+  context?: ContextBundle,
+): PlanQualityGate => {
   const requestAnchors = extractRequestAnchors(request);
   const concreteTargets = uniqueStrings((plan.target_files ?? []).filter((target) => isConcreteTargetPath(target)));
   const reasons: string[] = [];
   if (concreteTargets.length === 0) reasons.push("missing_concrete_targets");
+  const targetValidation = context ? assessPlanTargetValidation(plan, context) : undefined;
+  if (targetValidation && !targetValidation.ok) {
+    reasons.push("invalid_target_paths");
+  }
   const verification = assessVerificationQuality(plan.verification);
   if (!verification.ok) reasons.push(`verification_${verification.reason}`);
   const alignment = scoreRequestTargetAlignment(request, concreteTargets);
@@ -1419,6 +1529,7 @@ const assessPlanQualityGate = (request: string, plan: Plan): PlanQualityGate => 
     reasons,
     concreteTargets,
     verification,
+    targetValidation,
     alignmentScore: alignment.score,
     alignmentKeywords: alignment.keywords,
     semanticScore: semanticCoverage.score,
@@ -1428,27 +1539,53 @@ const assessPlanQualityGate = (request: string, plan: Plan): PlanQualityGate => 
 };
 
 const buildQualityDegradedPlan = (request: string, context: ContextBundle, priorPlan: Plan): Plan => {
+  const knownTargets = collectKnownContextPaths(context);
+  const knownTargetSet = new Set(
+    knownTargets.map((entry) => normalizePath(entry).toLowerCase()),
+  );
+  const hasKnownTargets = knownTargetSet.size > 0;
+  const explicitCreateTargets = uniqueStrings(
+    (priorPlan.create_files ?? [])
+      .filter((target) => isConcreteTargetPath(target))
+      .map((target) => normalizePath(target)),
+  );
+  const explicitCreateTargetSet = new Set(explicitCreateTargets.map((entry) => entry.toLowerCase()));
   const fallbackTargets = uniqueStrings(
     [
-      ...(priorPlan.target_files ?? []).filter((target) => isConcreteTargetPath(target)),
+      ...(priorPlan.target_files ?? [])
+        .filter((target) => isConcreteTargetPath(target))
+        .map((target) => normalizePath(target))
+        .filter((target) => {
+          if (!hasKnownTargets) return true;
+          return (
+            knownTargetSet.has(target.toLowerCase())
+            || explicitCreateTargetSet.has(target.toLowerCase())
+          );
+        }),
       ...((context.selection?.focus ?? []).filter((target) => isConcreteTargetPath(target))),
       ...((context.selection?.all ?? []).filter((target) => isConcreteTargetPath(target))),
       ...((context.files ?? []).map((entry) => entry.path).filter((target) => isConcreteTargetPath(target))),
     ].filter(Boolean),
   );
-  const targets = fallbackTargets.length > 0 ? fallbackTargets.slice(0, 6) : (priorPlan.target_files ?? []);
+  const targets = fallbackTargets.length > 0 ? fallbackTargets.slice(0, 6) : [];
+  const createTargets = targets.filter((target) => !knownTargetSet.has(normalizePath(target).toLowerCase()));
   const normalizedRequest = request.trim() || "the requested change";
   const verify = [
-    `Run unit/integration tests that cover: ${targets.join(", ")}.`,
+    targets.length > 0
+      ? `Run unit/integration tests that cover: ${targets.join(", ")}.`
+      : `Run unit/integration tests that validate "${normalizedRequest}".`,
     `Perform a manual verification for "${normalizedRequest}" against ${targets[0] ?? "the affected target"}.`,
   ];
   const steps = [
     ...((priorPlan.steps ?? []).filter((step) => step.trim().length > 0)),
-    `Finalize implementation details for ${targets.join(", ")} with request-specific behavior for "${normalizedRequest}".`,
+    targets.length > 0
+      ? `Finalize implementation details for ${targets.join(", ")} with request-specific behavior for "${normalizedRequest}".`
+      : `Refine plan targets for "${normalizedRequest}" to concrete in-repo files before implementation.`,
   ];
   return {
     steps: uniqueStrings(steps),
-    target_files: targets.length > 0 ? targets : (priorPlan.target_files ?? []),
+    target_files: targets,
+    create_files: createTargets.length > 0 ? createTargets : undefined,
     risk_assessment:
       priorPlan.risk_assessment && priorPlan.risk_assessment.trim().length > 0
         ? priorPlan.risk_assessment
@@ -1785,6 +1922,7 @@ export class SmartPipeline {
       content: string,
     ): Promise<boolean> => {
       if (!this.options.contextManager || !laneId) return false;
+      if (typeof this.options.contextManager.append !== "function") return false;
       await this.options.contextManager.append(
         laneId,
         { role: "system", content },
@@ -2471,6 +2609,7 @@ export class SmartPipeline {
       let alternateHintPending = false;
       let structuralRecoveryTriggered = false;
       let driftRecoveryTriggered = false;
+      let invalidTargetRecoveryTriggered = false;
       let requestRecoveryCount = 0;
       let previousRequestFingerprint: string | undefined;
       let requestRecoveryPending = false;
@@ -2504,7 +2643,7 @@ export class SmartPipeline {
         const planHash = hashArchitectResult(result);
         const classification = classifyArchitectWarnings(warnings);
         const repairApplied = hasRepairWarnings(warnings);
-        const qualityGate = assessPlanQualityGate(request, result.plan);
+        const qualityGate = assessPlanQualityGate(request, result.plan, passContext);
         const structuralGrounding = assessStructuralGrounding(passContext, result.plan);
         const targetDrift = assessTargetDrift(previousConcreteTargets, qualityGate.concreteTargets);
         const nonDsl = isArchitectNonDsl(warnings);
@@ -3215,6 +3354,8 @@ export class SmartPipeline {
         }
         driftRecoveryTriggered = false;
         if (!qualityGate.ok) {
+          const unresolvedTargets = qualityGate.targetValidation?.unresolvedTargets ?? [];
+          const hasInvalidTargets = unresolvedTargets.length > 0;
           if (this.options.logger) {
             await this.options.logger.log("architect_quality_gate", {
               stage: "architect_pass",
@@ -3227,22 +3368,26 @@ export class SmartPipeline {
               semantic_score: qualityGate.semanticScore,
               semantic_anchors: qualityGate.semanticAnchors,
               semantic_matches: qualityGate.semanticMatches,
+              target_validation: qualityGate.targetValidation ?? null,
+              unresolved_targets: unresolvedTargets,
             });
           }
-          if (allowAutoRetry && pass < maxPasses) {
+          const canAttemptInvalidTargetRecovery =
+            hasInvalidTargets && !invalidTargetRecoveryTriggered && pass < maxPasses;
+          if ((allowAutoRetry && pass < maxPasses) || canAttemptInvalidTargetRecovery) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
-            emitAgentRequestRecoveryStatus("quality_gate");
+            emitAgentRequestRecoveryStatus(hasInvalidTargets ? "invalid_targets" : "quality_gate");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
             await appendArchitectHistory(formatCodaliResponse(response));
             await logPhaseArtifact("architect", "output", {
               request_id: recovery.requestPayload.request_id,
               response,
-              source: "quality_gate_recovery",
+              source: hasInvalidTargets ? "invalid_target_recovery" : "quality_gate_recovery",
               quality_gate: qualityGate,
             });
             await logPhaseArtifact("librarian", "input", {
               request,
-              reason: "architect_quality_gate",
+              reason: hasInvalidTargets ? "architect_invalid_targets" : "architect_quality_gate",
               additional_queries: recovery.additionalQueries,
               preferred_files: recovery.preferredFiles,
             });
@@ -3255,13 +3400,14 @@ export class SmartPipeline {
             );
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
             const contextRefreshed = await updateContextSignature(
-              "quality_gate_recovery",
+              hasInvalidTargets ? "invalid_target_recovery" : "quality_gate_recovery",
               pass,
               { request_id: recovery.requestPayload.request_id },
             );
             if (!contextRefreshed) {
               warnings.push("architect_retry_skipped_no_new_context");
               warnings.push("architect_degraded_quality_gate");
+              if (hasInvalidTargets) warnings.push("architect_invalid_targets");
               const degradedPlan = buildQualityDegradedPlan(
                 request,
                 context,
@@ -3275,7 +3421,9 @@ export class SmartPipeline {
               if (this.options.logger) {
                 await this.options.logger.log("architect_degraded", {
                   pass,
-                  reason: "quality_gate_no_new_context",
+                  reason: hasInvalidTargets
+                    ? "invalid_targets_no_new_context"
+                    : "quality_gate_no_new_context",
                   warnings: uniqueStrings(warnings),
                   quality_gate: qualityGate,
                   semantic_score: qualityGate.semanticScore,
@@ -3287,11 +3435,17 @@ export class SmartPipeline {
             }
             previousPlanHash = undefined;
             previousConcreteTargets = qualityGate.concreteTargets;
+            if (hasInvalidTargets) {
+              invalidTargetRecoveryTriggered = true;
+            }
+            requestRecoveryPending = true;
             pass += 1;
             continue;
           }
           warnings.push("architect_degraded_quality_gate");
+          if (hasInvalidTargets) warnings.push("architect_invalid_targets");
           const degradedPlan = buildQualityDegradedPlan(request, context, result.plan);
+          const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
           lastPlan = { ...result, plan: degradedPlan, warnings: uniqueStrings(warnings) };
           if (this.options.logger) {
             await this.options.logger.log("architect_degraded", {
@@ -3299,6 +3453,7 @@ export class SmartPipeline {
               reason: "quality_gate_failed_after_retries",
               warnings: uniqueStrings(warnings),
               quality_gate: qualityGate,
+              degraded_quality: degradedQuality,
               semantic_score: qualityGate.semanticScore,
               semantic_anchors: qualityGate.semanticAnchors,
               semantic_matches: qualityGate.semanticMatches,
@@ -3380,10 +3535,11 @@ export class SmartPipeline {
         throw new Error("Architect failed to produce a plan");
       }
       plan = lastPlan.plan;
-      const finalPlanQuality = assessPlanQualityGate(request, plan);
+      const finalPlanQuality = assessPlanQualityGate(request, plan, context);
       if (!finalPlanQuality.ok) {
         const degradedPlan = buildQualityDegradedPlan(request, context, plan);
-        const degradedQuality = assessPlanQualityGate(request, degradedPlan);
+        const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
+        const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
         if (this.options.logger) {
           await this.options.logger.log("architect_quality_gate", {
             stage: "pre_builder",
@@ -3396,7 +3552,9 @@ export class SmartPipeline {
             semantic_score: finalPlanQuality.semanticScore,
             semantic_anchors: finalPlanQuality.semanticAnchors,
             semantic_matches: finalPlanQuality.semanticMatches,
+            target_validation: finalPlanQuality.targetValidation ?? null,
             degraded_ok: degradedQuality.ok,
+            degraded_target_validation: degradedQuality.targetValidation ?? null,
           });
         }
         await logPhaseArtifact("architect", "output", {
@@ -3405,7 +3563,15 @@ export class SmartPipeline {
           quality_before: finalPlanQuality,
           plan_after: degradedPlan,
           quality_after: degradedQuality,
+          blocking_reasons_after: degradedBlockingReasons,
         });
+        if (degradedBlockingReasons.length > 0) {
+          const unresolved = degradedQuality.targetValidation?.unresolvedTargets ?? [];
+          const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
+          throw new Error(
+            `Architect quality gate failed before builder: ${degradedBlockingReasons.join(", ")}.${unresolvedPart}`,
+          );
+        }
         plan = degradedPlan;
       }
       if (this.options.logger) {
@@ -3421,6 +3587,7 @@ export class SmartPipeline {
     let refreshes = 0;
     const maxContextRefreshes = this.options.maxContextRefreshes ?? 0;
     let builderNote: string | undefined;
+    let deterministicApplyRepairUsed = false;
 
     while (attempts <= this.options.maxRetries) {
       attempts += 1;
@@ -3451,6 +3618,7 @@ export class SmartPipeline {
       } catch (error) {
         if (error instanceof PatchApplyError) {
           const failure = error.details;
+          const deterministicApplyFailure = isDeterministicPatchApplyFailure(failure);
           builderResult = {
             finalMessage: { role: "assistant", content: failure.rawOutput },
             messages: [],
@@ -3466,7 +3634,74 @@ export class SmartPipeline {
             });
           }
           await appendArchitectHistory(formatCodaliResponse(buildApplyFailureResponse(failure)));
-          if (attempts <= this.options.maxRetries) {
+          if (deterministicApplyFailure && !deterministicApplyRepairUsed) {
+            deterministicApplyRepairUsed = true;
+            if (this.options.logger) {
+              await this.options.logger.log("builder_apply_failed_deterministic", {
+                error: failure.error,
+                source: failure.source,
+                action: "architect_repair_once",
+              });
+            }
+            const recoveryQueries = uniqueStrings(
+              [
+                `${request} fix missing target paths`,
+                ...((context.queries ?? []).slice(0, 2)),
+              ].filter(Boolean),
+            );
+            const recoveryFiles = uniqueStrings(plan.target_files ?? []);
+            const recoveryRecentFiles = uniqueStrings([
+              ...(context.selection?.all ?? []),
+              ...recoveryFiles,
+            ]).slice(0, 24);
+            await logPhaseArtifact("librarian", "input", {
+              request,
+              reason: "builder_apply_failed_deterministic",
+              additional_queries: recoveryQueries,
+              preferred_files: recoveryFiles,
+            });
+            context = await this.runPhase("librarian", () =>
+              this.options.contextAssembler.assemble(request, {
+                additionalQueries: recoveryQueries,
+                preferredFiles: recoveryFiles,
+                recentFiles: recoveryRecentFiles,
+              }),
+            );
+            await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
+            await logPhaseArtifact("architect", "input", {
+              request,
+              reason: "builder_apply_failed_deterministic",
+              context: buildSerializedContext(context),
+            });
+            plan = useFastPath
+              ? buildFastPlan(context)
+              : await this.runPhase("architect", () =>
+                  this.options.architectPlanner.plan(context, {
+                    contextManager: this.options.contextManager,
+                    laneId: architectLaneId,
+                  }),
+                );
+            const repairedPlanQuality = assessPlanQualityGate(request, plan, context);
+            if (!repairedPlanQuality.ok) {
+              throw new Error(
+                `Architect repair failed after deterministic apply error: ${repairedPlanQuality.reasons.join(", ")}`,
+              );
+            }
+            if (this.options.logger) {
+              const planPath = await this.options.logger.writePhaseArtifact("architect", "plan", plan);
+              await this.options.logger.log("plan_json", { phase: "architect", path: planPath });
+              await this.options.logger.log("architect_repair_after_builder_apply_failure", {
+                deterministic: true,
+                reasons: repairedPlanQuality.reasons,
+              });
+            }
+            attempts -= 1;
+            builderNote =
+              `Patch apply failed with deterministic error (${failure.error}). ` +
+              `Use existing repository targets only (${plan.target_files.join(", ") || "none"}).`;
+            continue;
+          }
+          if (!deterministicApplyFailure && attempts <= this.options.maxRetries) {
             builderNote = `Patch apply failed: ${failure.error}. Rollback ok=${failure.rollback.ok}. Fix the patch output and avoid disallowed paths.`;
             continue;
           }
