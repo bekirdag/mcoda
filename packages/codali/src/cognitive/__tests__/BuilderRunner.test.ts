@@ -158,6 +158,35 @@ class RetryFileWriteProvider implements Provider {
   }
 }
 
+class RetrySearchReplaceProvider implements Provider {
+  name = "retry-search-replace";
+  calls = 0;
+  lastRequest?: ProviderRequest;
+
+  async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    this.lastRequest = request;
+    this.calls += 1;
+    if (this.calls === 1) {
+      return { message: { role: "assistant", content: JSON.stringify({ foo: "bar" }) } };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/example.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 8;",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
 class ToolUnsupportedProvider implements Provider {
   name = "tool-unsupported";
   calls = 0;
@@ -558,6 +587,34 @@ test("BuilderRunner retries file_writes on invalid payload", { concurrency: fals
   await builder.run(plan, contextBundle);
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.match(updated, /const value = 9;/);
+  assert.equal(provider.calls, 2);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner retries search_replace on invalid payload", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new RetrySearchReplaceProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.match(updated, /const value = 8;/);
   assert.equal(provider.calls, 2);
 
   await rm(workspaceRoot, { recursive: true, force: true });

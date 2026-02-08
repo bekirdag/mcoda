@@ -71,6 +71,7 @@ interface ParsedArgs {
   agentCritic?: string;
   agentInterpreter?: string;
   smart?: boolean;
+  deepInvestigationEnabled?: boolean;
   planHint?: string;
   provider?: string;
   model?: string;
@@ -225,6 +226,10 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg === "--smart") {
       parsed.smart = true;
+      continue;
+    }
+    if (arg === "--no-deep-investigation") {
+      parsed.deepInvestigationEnabled = false;
       continue;
     }
     if (arg === "--provider" && next) {
@@ -834,6 +839,9 @@ export class RunCommand {
     if (agentId) cliConfig.agentId = agentId;
     if (agentSlug) cliConfig.agentSlug = agentSlug;
     if (parsed.smart !== undefined) cliConfig.smart = parsed.smart;
+    if (parsed.deepInvestigationEnabled !== undefined) {
+      cliConfig.deepInvestigation = { enabled: parsed.deepInvestigationEnabled };
+    }
     if (parsed.planHint) cliConfig.planHint = parsed.planHint;
     if (provider) cliConfig.provider = provider;
     if (model) cliConfig.model = model;
@@ -1237,65 +1245,61 @@ export class RunCommand {
           phaseSelections.builder.resolved?.agent.id ??
           phaseSelections.interpreter.resolved?.agent.id ??
           "codali";
-        let contextManager: ContextManager | undefined;
-        let laneScope: Omit<LaneScope, "role" | "ephemeral"> | undefined;
-        if (config.localContext.enabled) {
-          const store = new ContextStore({
-            workspaceRoot: storageRoot,
-            storageDir: config.localContext.storageDir,
-          });
-          const redactor = config.context.redactSecrets
-            ? new ContextRedactor({
-                workspaceRoot: config.workspaceRoot,
-                ignoreFilesFrom: config.context.ignoreFilesFrom,
-                redactPatterns: config.security.redactPatterns,
-              })
-            : undefined;
-          if (redactor) {
-            await redactor.loadIgnoreMatchers();
-          }
-
-          let summarizer: ContextSummarizer | undefined;
-          if (config.localContext.summarize.enabled) {
-            const providerKey = config.localContext.summarize.provider;
-            let summarizerProviderName = providerKey;
-            let summarizerConfig: ProviderConfig = { ...defaults.config };
-            let summarizerTemperature: number | undefined;
-            if (isPhaseProvider(providerKey)) {
-              const route = phaseRoutes[providerKey];
-              summarizerProviderName = route.provider;
-              summarizerConfig = { ...route.config };
-              summarizerTemperature = route.temperature;
-            }
-            if (config.localContext.summarize.model) {
-              summarizerConfig = {
-                ...summarizerConfig,
-                model: config.localContext.summarize.model,
-              };
-            }
-            const summarizerProvider = createProvider(summarizerProviderName, summarizerConfig);
-            summarizer = new ContextSummarizer(summarizerProvider, {
-              maxTokens: config.localContext.summarize.targetTokens,
-              temperature: summarizerTemperature,
-              logger,
-            });
-          }
-
-          contextManager = new ContextManager({
-            config: config.localContext,
-            store,
-            redactor,
-            summarizer,
-            logger,
-            charPerToken: config.cost.charPerToken,
-          });
-          laneScope = {
-            jobId: config.jobId ?? config.commandRunId,
-            runId,
-            taskId: config.taskId,
-            taskKey: config.taskKey,
-          };
+        const store = new ContextStore({
+          workspaceRoot: storageRoot,
+          storageDir: config.localContext.storageDir,
+        });
+        const redactor = config.context.redactSecrets
+          ? new ContextRedactor({
+              workspaceRoot: config.workspaceRoot,
+              ignoreFilesFrom: config.context.ignoreFilesFrom,
+              redactPatterns: config.security.redactPatterns,
+            })
+          : undefined;
+        if (redactor) {
+          await redactor.loadIgnoreMatchers();
         }
+
+        let summarizer: ContextSummarizer | undefined;
+        if (config.localContext.enabled && config.localContext.summarize.enabled) {
+          const providerKey = config.localContext.summarize.provider;
+          let summarizerProviderName = providerKey;
+          let summarizerConfig: ProviderConfig = { ...defaults.config };
+          let summarizerTemperature: number | undefined;
+          if (isPhaseProvider(providerKey)) {
+            const route = phaseRoutes[providerKey];
+            summarizerProviderName = route.provider;
+            summarizerConfig = { ...route.config };
+            summarizerTemperature = route.temperature;
+          }
+          if (config.localContext.summarize.model) {
+            summarizerConfig = {
+              ...summarizerConfig,
+              model: config.localContext.summarize.model,
+            };
+          }
+          const summarizerProvider = createProvider(summarizerProviderName, summarizerConfig);
+          summarizer = new ContextSummarizer(summarizerProvider, {
+            maxTokens: config.localContext.summarize.targetTokens,
+            temperature: summarizerTemperature,
+            logger,
+          });
+        }
+
+        const contextManager = new ContextManager({
+          config: config.localContext,
+          store,
+          redactor,
+          summarizer,
+          logger,
+          charPerToken: config.cost.charPerToken,
+        });
+        const laneScope: Omit<LaneScope, "role" | "ephemeral"> = {
+          jobId: config.jobId ?? config.commandRunId,
+          runId,
+          taskId: config.taskId,
+          taskKey: config.taskKey,
+        };
         const deepMode = Boolean(config.deepInvestigation?.enabled);
         const contextAssembler = new ContextAssembler(docdexClient, {
           workspaceRoot: config.workspaceRoot,

@@ -2646,7 +2646,15 @@ export class ContextAssembler {
     }
 
     const includeRepoMap = this.options.includeRepoMap || this.options.deepMode;
-    if (includeRepoMap) {
+    const cachedRepoMapRaw = context.repo_map_raw ?? context.repo_map;
+    if (includeRepoMap && cachedRepoMapRaw) {
+      outputs.repoMapRaw = cachedRepoMapRaw;
+      outputs.repoMap = context.repo_map ?? compactTreeForPrompt(cachedRepoMapRaw);
+      recordToolRun("docdex.tree", true, {
+        skipped: true,
+        notes: "repo_map_cached",
+      });
+    } else if (includeRepoMap) {
       const clientWithTree = this.client as unknown as { tree?: (options?: unknown) => Promise<unknown> };
       if (typeof clientWithTree.tree === "function") {
         const treeOptions = {
@@ -2689,7 +2697,13 @@ export class ContextAssembler {
         options?: { format?: "json" | "text" | "dot"; maxNodes?: number },
       ) => Promise<unknown>;
     };
-    if (this.laneScope?.runId && typeof clientWithDag.dagExport === "function") {
+    if (context.dag_summary) {
+      outputs.dagSummary = context.dag_summary;
+      recordToolRun("docdex.dag_export", true, {
+        skipped: true,
+        notes: "dag_summary_cached",
+      });
+    } else if (this.laneScope?.runId && typeof clientWithDag.dagExport === "function") {
       const dagOptions = { format: "text" as const, maxNodes: 160 };
       emitToolCall("docdex.dag_export", { sessionId: this.laneScope.runId, ...dagOptions });
       const startedAt = Date.now();

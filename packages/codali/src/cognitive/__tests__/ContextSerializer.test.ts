@@ -104,6 +104,7 @@ test("ContextSerializer includes research summary section when present", { concu
       status: "completed",
       duration_ms: 42,
       key_findings: ["Reviewed auth module and user flow"],
+      notes: ["summary note"],
       tool_usage: {
         search: 3,
         open_or_snippet: 2,
@@ -129,6 +130,7 @@ test("ContextSerializer includes research summary section when present", { concu
   assert.ok(serialized.content.includes("RESEARCH SUMMARY:"));
   assert.ok(serialized.content.includes("Tool usage: search=3"));
   assert.ok(serialized.content.includes("Key findings: Reviewed auth module"));
+  assert.ok(serialized.content.includes("Notes: summary note"));
   assert.ok(serialized.content.includes("Unresolved gaps: missing_dag_export"));
 });
 

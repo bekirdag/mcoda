@@ -438,6 +438,14 @@ export class BuilderRunner {
         processingError = error instanceof Error ? error : new Error(String(error));
       }
 
+      if (processingError && this.options.logger) {
+        await this.options.logger.log("patch_parse_failed", {
+          format: patchFormat,
+          error: processingError.message,
+          preview: result.finalMessage.content.slice(0, 200),
+        });
+      }
+
       if (processingError && patchFormat === "file_writes") {
         const retryNote = isDisallowedError(processingError.message)
           ? buildDisallowedNote(processingError.message)
@@ -546,6 +554,54 @@ export class BuilderRunner {
               );
             }
           }
+        }
+      }
+
+      if (processingError && patchFormat === "search_replace") {
+        const initialMessage = processingError.message;
+        const retryNote = isDisallowedError(initialMessage)
+          ? buildDisallowedNote(initialMessage)
+          : 'Your output did not match schema. Respond ONLY with JSON and include a top-level "patches" array.';
+        const retrySystem: ProviderMessage = {
+          role: "system",
+          content: buildBuilderPrompt(mode, "search_replace"),
+        };
+        const retryUser: ProviderMessage = {
+          role: "user",
+          content: buildSchemaOnlyContent(retryNote, result.finalMessage.content),
+        };
+        if (this.options.logger) {
+          await this.options.logger.log("patch_retry", {
+            format: "search_replace",
+            error: initialMessage,
+          });
+        }
+        const retryResult = await buildRunner(
+          mode,
+          {
+            type: "gbnf",
+            grammar: BUILDER_PATCH_GBNF_SEARCH_REPLACE,
+          },
+        ).run([retrySystem, ...messageState.history, retryUser]);
+        result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
+        try {
+          await interpretAndApply(result.finalMessage.content, "search_replace", "interpreter_retry");
+          return result;
+        } catch (retryError) {
+          if (retryError instanceof PatchApplyError) {
+            throw retryError;
+          }
+          const retryMessage =
+            retryError instanceof Error ? retryError.message : String(retryError);
+          if (this.options.logger) {
+            await this.options.logger.log("patch_retry_failed", {
+              format: "search_replace",
+              error: retryMessage,
+            });
+          }
+          processingError = new Error(
+            `Patch parsing failed. initial=${initialMessage}; retry=${retryMessage}`,
+          );
         }
       }
 

@@ -46,6 +46,7 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
     "agent-interp",
     "--plan-hint",
     "{\"steps\":[\"Do it\"],\"target_files\":[\"src/index.ts\"]}",
+    "--no-deep-investigation",
     "--context-mode",
     "bundle_text",
     "--context-max-files",
@@ -85,6 +86,7 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
   assert.equal(parsed.agentCritic, "agent-crit");
   assert.equal(parsed.agentInterpreter, "agent-interp");
   assert.equal(parsed.planHint, "{\"steps\":[\"Do it\"],\"target_files\":[\"src/index.ts\"]}");
+  assert.equal(parsed.deepInvestigationEnabled, false);
   assert.equal(parsed.contextMode, "bundle_text");
   assert.equal(parsed.contextMaxFiles, 12);
   assert.equal(parsed.builderMode, "freeform");

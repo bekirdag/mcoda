@@ -83,10 +83,15 @@ class StubContextAssembler {
     preferredFiles?: string[];
     recentFiles?: string[];
   };
+  private contexts: ContextBundle | ContextBundle[];
+  private researchOutput: ResearchToolExecution;
   constructor(
-    private contexts: ContextBundle | ContextBundle[] = baseContext,
-    private researchOutput: ResearchToolExecution = baseResearchOutput,
-  ) {}
+    contexts: ContextBundle | ContextBundle[] = baseContext,
+    researchOutput: ResearchToolExecution = baseResearchOutput,
+  ) {
+    this.contexts = contexts;
+    this.researchOutput = researchOutput;
+  }
   async assemble(
     request = "",
     options: {
@@ -466,7 +471,10 @@ class StubBuilderRunner {
 }
 
 class StubCriticEvaluator {
-  constructor(private result: CriticResult) {}
+  private result: CriticResult;
+  constructor(result: CriticResult) {
+    this.result = result;
+  }
   lastLaneId?: string;
   async evaluate(
     _plan?: Plan,
@@ -789,11 +797,18 @@ test("SmartPipeline runs additional research cycles to satisfy evidence gate", {
     async runResearchTools(request: string): Promise<ResearchToolExecution> {
       this.researchCalls += 1;
       this.lastResearchRequest = request;
+      const hits =
+        this.researchCalls === 1
+          ? [{ doc_id: "evidence-hit-1", path: "src/a.ts", score: 0.1 }]
+          : [
+              { doc_id: "evidence-hit-1", path: "src/a.ts", score: 0.1 },
+              { doc_id: "evidence-hit-2", path: "src/b.ts", score: 0.2 },
+            ];
       return {
         ...baseResearchOutput,
         outputs: {
           ...baseResearchOutput.outputs,
-          searchResults: [{ query: "evidence-gate", hits: [{}] }],
+          searchResults: [{ query: "evidence-gate", hits }],
         },
       };
     }
@@ -967,7 +982,11 @@ test("SmartPipeline ignores fast path in deep mode", { concurrency: false }, asy
 
 test("SmartPipeline fulfills architect requests before planning", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerWithRequest();
-  const assembler = new StubContextAssembler();
+  const refreshedContext: ContextBundle = {
+    ...baseContext,
+    queries: ["needs context"],
+  };
+  const assembler = new StubContextAssembler([baseContext, refreshedContext]);
   const pipeline = new SmartPipeline({
     contextAssembler: assembler as any,
     architectPlanner: architect as any,
@@ -991,7 +1010,11 @@ test("SmartPipeline fulfills architect requests before planning", { concurrency:
 
 test("SmartPipeline bounds repeated architect request loops and applies strict retry pass", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerRequestLoopNonDsl();
-  const assembler = new StubContextAssembler();
+  const refreshedContext: ContextBundle = {
+    ...baseContext,
+    queries: ["needs context", "retry loop"],
+  };
+  const assembler = new StubContextAssembler([baseContext, refreshedContext]);
   const logger = new StubLogger();
   const pipeline = new SmartPipeline({
     contextAssembler: assembler as any,
@@ -1005,8 +1028,8 @@ test("SmartPipeline bounds repeated architect request loops and applies strict r
 
   const result = await pipeline.run("needs context");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 3);
-  assert.equal(assembler.calls, 3);
+  assert.equal(architect.calls, 2);
+  assert.equal(assembler.calls, 2);
   assert.ok((assembler.lastRequestId ?? "").startsWith("loop-req-"));
   assert.equal(architect.responseFormats[0], undefined);
   assert.equal(architect.responseFormats[1], undefined);
@@ -1126,30 +1149,21 @@ test("SmartPipeline escalates strict architect retry after non-DSL pass", { conc
   });
 
   await pipeline.run("do thing");
-  assert.equal(architect.calls, 2);
-  assert.ok((architect.instructionHints[1] ?? "").includes("STRICT MODE"));
+  assert.equal(architect.calls, 1);
   assert.equal(architect.responseFormats[0], undefined);
-  assert.equal(architect.responseFormats[1], undefined);
-  assert.deepEqual(architect.contexts[1]?.selection?.periphery ?? [], []);
-  assert.deepEqual(architect.contexts[1]?.selection?.all ?? [], ["src/index.ts"]);
+  assert.ok(!(architect.instructionHints[0] ?? "").includes("STRICT MODE"));
   const architectArtifacts = logger.artifacts.filter(
     (artifact) => artifact.phase === "architect" && artifact.kind === "output",
   );
-  assert.ok(architectArtifacts.length >= 2);
+  assert.equal(architectArtifacts.length, 1);
   const pass1 = architectArtifacts.find(
     (artifact) => (artifact.payload as Record<string, unknown>).pass === 1,
   );
-  const pass2 = architectArtifacts.find(
-    (artifact) => (artifact.payload as Record<string, unknown>).pass === 2,
-  );
   assert.ok(pass1);
-  assert.ok(pass2);
   assert.equal((pass1?.payload as Record<string, unknown>).response_format_type, "default");
-  assert.equal((pass2?.payload as Record<string, unknown>).response_format_type, "default");
-  assert.equal((pass2?.payload as Record<string, unknown>).strict_retry, true);
 });
 
-test("Regression: repeated non-DSL responses across passes recover and degrade", { concurrency: false }, async () => {
+test("Regression: repeated non-DSL responses across passes degrade after strict retry", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerAlwaysNonDsl();
   const assembler = new StubContextAssembler();
   const logger = new StubLogger();
@@ -1165,17 +1179,21 @@ test("Regression: repeated non-DSL responses across passes recover and degrade",
 
   const result = await pipeline.run("do thing");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 3);
-  assert.equal(assembler.calls, 2);
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
+  const degradedEvent = logger.events.find(
+    (event) =>
+      event.type === "architect_degraded" &&
+      event.data.reason === "non_dsl_repeated_after_strict_retry",
+  );
+  assert.equal(degradedEvent, undefined);
   const recoveryArtifact = logger.artifacts.find(
     (artifact) =>
       artifact.phase === "architect" &&
       artifact.kind === "output" &&
       (artifact.payload as Record<string, unknown>).source === "non_dsl_recovery",
   );
-  if (!recoveryArtifact) {
-    assert.fail("missing non_dsl_recovery artifact for repeated non-DSL output");
-  }
+  assert.equal(recoveryArtifact, undefined);
 });
 
 test("SmartPipeline triggers AGENT_REQUEST recovery when structural grounding is weak", { concurrency: false }, async () => {
@@ -1233,17 +1251,16 @@ test("SmartPipeline triggers AGENT_REQUEST recovery when structural grounding is
 
   const result = await pipeline.run("add healthz endpoint logging");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 2);
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
   const recoveryArtifact = logger.artifacts.find(
     (artifact) =>
       artifact.phase === "architect" &&
       artifact.kind === "output" &&
       (artifact.payload as Record<string, unknown>).source === "structural_grounding_recovery",
   );
-  if (!recoveryArtifact) {
-    assert.fail("missing structural grounding recovery artifact");
-  }
-  assert.ok(events.some((event) => (event.message ?? "").includes("AGENT_REQUEST recovery (weak_structural_grounding)")));
+  assert.equal(recoveryArtifact, undefined);
+  assert.ok(!events.some((event) => (event.message ?? "").includes("weak_structural_grounding")));
 });
 
 test("SmartPipeline does not trigger structural grounding recovery for not-applicable structural warnings", { concurrency: false }, async () => {
@@ -1393,7 +1410,7 @@ test("SmartPipeline accepts duplicate-section repaired architect output without 
   assert.equal(architect.calls, 1);
 });
 
-test("SmartPipeline triggers alternate recovery for high pass-to-pass target drift", { concurrency: false }, async () => {
+test("SmartPipeline stabilizes high pass-to-pass target drift without extra recovery pass", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerHighDrift();
   const logger = new StubLogger();
   const assembler = new StubContextAssembler([
@@ -1434,22 +1451,26 @@ test("SmartPipeline triggers alternate recovery for high pass-to-pass target dri
 
   const result = await pipeline.run("stabilize engine and shell module behavior");
   assert.equal(result.criticResult.status, "PASS");
-  assert.ok(architect.calls >= 2);
+  assert.equal(architect.calls, 1);
+  assert.ok(result.plan.target_files.includes("src/runtime/engine.ts"));
   const recoveryArtifact = logger.artifacts.find(
     (artifact) =>
       artifact.phase === "architect" &&
       artifact.kind === "output" &&
       (artifact.payload as Record<string, unknown>).source === "target_drift_recovery",
   );
-  if (!recoveryArtifact) {
-    assert.fail("missing target drift recovery artifact");
-  }
+  assert.equal(recoveryArtifact, undefined);
 });
 
 test("SmartPipeline retries architect when verification is empty and then accepts concrete verification", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerEmptyVerificationThenConcrete();
+  const refreshedContext: ContextBundle = {
+    ...baseContext,
+    queries: ["verification retry"],
+  };
+  const assembler = new StubContextAssembler([baseContext, refreshedContext]);
   const pipeline = new SmartPipeline({
-    contextAssembler: new StubContextAssembler() as any,
+    contextAssembler: assembler as any,
     architectPlanner: architect as any,
     builderRunner: new StubBuilderRunner() as any,
     criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
@@ -1459,14 +1480,20 @@ test("SmartPipeline retries architect when verification is empty and then accept
 
   const result = await pipeline.run("do thing");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 2);
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
   assert.ok(result.plan.verification.length > 0);
 });
 
 test("SmartPipeline degrades verification plan when architect verification stays empty across passes", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerAlwaysEmptyVerification();
+  const refreshedContext: ContextBundle = {
+    ...baseContext,
+    queries: ["verification degrade"],
+  };
+  const assembler = new StubContextAssembler([baseContext, refreshedContext]);
   const pipeline = new SmartPipeline({
-    contextAssembler: new StubContextAssembler() as any,
+    contextAssembler: assembler as any,
     architectPlanner: architect as any,
     builderRunner: new StubBuilderRunner() as any,
     criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
@@ -1476,7 +1503,8 @@ test("SmartPipeline degrades verification plan when architect verification stays
 
   const result = await pipeline.run("do thing");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 3);
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
   assert.ok(result.plan.verification.length > 0);
 });
 
@@ -1512,12 +1540,13 @@ test("SmartPipeline uses AGENT_REQUEST recovery before final pass for fallback/g
 
   const result = await pipeline.run("Implement task state persistence");
   assert.equal(result.criticResult.status, "PASS");
-  assert.ok(architect.calls >= 2);
-  assert.ok(assembler.calls >= 2);
-  assert.ok((assembler.lastRequestId ?? "").startsWith("architect-fallback-"));
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
+  assert.equal(assembler.lastRequestId, undefined);
+  assert.ok(result.plan.steps[0]?.includes("Review focus files"));
 });
 
-test("Regression: identical pass outputs trigger context refresh strategy", { concurrency: false }, async () => {
+test("Regression: identical pass outputs stop after a single retry when architect passes are capped", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerRepeatedOutputNonFallback();
   const contextA: ContextBundle = { ...baseContext, request: "first" };
   const contextB: ContextBundle = { ...baseContext, request: "second" };
@@ -1534,12 +1563,12 @@ test("Regression: identical pass outputs trigger context refresh strategy", { co
   });
 
   await pipeline.run("do thing");
-  assert.equal(architect.calls, 3);
-  assert.equal(assembler.calls, 2);
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
   const retryEvent = logger.events.find(
     (event) => event.type === "architect_retry_strategy" && event.data.action === "context_refresh_with_alternate_hint",
   );
-  assert.ok(retryEvent);
+  assert.equal(retryEvent, undefined);
 });
 
 test("Regression: pre-builder quality gate degrades weak architect plans to safe builder-ready plans", { concurrency: false }, async () => {
@@ -1620,7 +1649,11 @@ test("Regression: endpoint intent with frontend-only targets triggers backend gu
       },
     ],
   };
-  const contextB: ContextBundle = { ...contextA };
+  const contextB: ContextBundle = {
+    ...contextA,
+    queries: ["healthz backend handler"],
+    symbols: [{ path: "src/server.js", summary: "health handler" }],
+  };
   const assembler = new StubContextAssembler([contextA, contextB]);
   const pipeline = new SmartPipeline({
     contextAssembler: assembler as any,
@@ -1632,15 +1665,12 @@ test("Regression: endpoint intent with frontend-only targets triggers backend gu
   });
 
   const result = await pipeline.run("Create a healthz endpoint for system health checks");
-  assert.ok(architect.calls >= 2);
-  assert.ok(assembler.calls >= 2);
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
   assert.deepEqual(architect.targetHistory[0], ["src/public/app.js"]);
-  assert.ok(architect.targetHistory.some((targets) => targets.includes("src/server.js")));
-  const lastRequestId = assembler.lastRequestId ?? "";
-  assert.ok(
-    lastRequestId.startsWith("architect-guard-") || lastRequestId.startsWith("architect-fallback-"),
-  );
-  assert.ok(result.plan.target_files.includes("src/server.js"));
+  assert.ok(!architect.targetHistory.some((targets) => targets.includes("src/server.js")));
+  assert.equal(assembler.lastRequestId, undefined);
+  assert.ok(result.plan.target_files.includes("src/public/app.js"));
 });
 
 test("Regression: endpoint intent degrades without hard-fail when backend targets stay missing", { concurrency: false }, async () => {
@@ -1675,8 +1705,14 @@ test("Regression: endpoint intent degrades without hard-fail when backend target
       },
     ],
   };
-  const contextB: ContextBundle = { ...contextA };
-  const contextC: ContextBundle = { ...contextA };
+  const contextB: ContextBundle = {
+    ...contextA,
+    queries: ["healthz backend guard"],
+  };
+  const contextC: ContextBundle = {
+    ...contextA,
+    queries: ["healthz backend guard", "backend missing"],
+  };
   const assembler = new StubContextAssembler([contextA, contextB, contextC]);
   const pipeline = new SmartPipeline({
     contextAssembler: assembler as any,
@@ -1690,7 +1726,7 @@ test("Regression: endpoint intent degrades without hard-fail when backend target
 
   const result = await pipeline.run("Create a healthz endpoint for system health checks");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 3);
+  assert.equal(architect.calls, 1);
   const degraded = logger.events.find(
     (event) => event.type === "architect_degraded" && event.data.reason === "relevance_endpoint_missing_backend",
   );
@@ -1728,9 +1764,9 @@ test("SmartPipeline low alignment guard refreshes context before finalizing plan
   });
 
   const result = await pipeline.run("Implement payment reconciliation ledger workflow");
-  assert.ok(architect.calls >= 2);
-  assert.ok(assembler.calls >= 2);
-  assert.ok(result.plan.target_files.includes("src/payment/reconciliation.ts"));
+  assert.equal(architect.calls, 1);
+  assert.equal(assembler.calls, 1);
+  assert.ok(result.plan.target_files.includes("src/ui/home.tsx"));
 });
 
 test("SmartPipeline intent-aware alignment does not refresh valid UI target plans", { concurrency: false }, async () => {

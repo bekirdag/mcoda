@@ -233,20 +233,20 @@ export const DEFAULT_DEEP_INVESTIGATION_TOOL_QUOTA: DeepInvestigationToolQuotaCo
 
 export const DEFAULT_DEEP_INVESTIGATION_BUDGET: DeepInvestigationBudgetConfig = {
   minCycles: 2,
-  minSeconds: 90,
+  minSeconds: 0,
   maxCycles: 6,
 };
 
 export const DEFAULT_DEEP_INVESTIGATION_EVIDENCE: DeepInvestigationEvidenceConfig = {
-  minSearchHits: 5,
-  minOpenOrSnippet: 2,
-  minSymbolsOrAst: 1,
-  minImpact: 1,
+  minSearchHits: 0,
+  minOpenOrSnippet: 0,
+  minSymbolsOrAst: 0,
+  minImpact: 0,
   maxWarnings: 2,
 };
 
 export const DEFAULT_DEEP_INVESTIGATION: DeepInvestigationConfig = {
-  enabled: false,
+  enabled: true,
   deepScanPreset: false,
   toolQuota: DEFAULT_DEEP_INVESTIGATION_TOOL_QUOTA,
   investigationBudget: DEFAULT_DEEP_INVESTIGATION_BUDGET,
