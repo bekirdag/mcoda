@@ -675,6 +675,76 @@ export const isToolEnabled = (name: string, tools: ToolConfig): boolean => {
   return enabled.has(name);
 };
 
+const PATCH_JSON_STRUCTURED_CAPABILITIES = [
+  "strict_instruction_following",
+  "json_formatting",
+  "schema_adherence",
+  "structured_output",
+];
+
+const PATCH_JSON_CODE_CAPABILITIES = [
+  "code_write",
+  "iterative_coding",
+  "simple_refactor",
+  "minimal_diff_generation",
+  "migration_scripts",
+  "debugging",
+  "refactor_support",
+];
+
+const countCapabilityMatches = (capabilities: string[], required: string[]): number =>
+  required.filter((capability) => capabilities.includes(capability)).length;
+
+export const assessPhaseFallbackSuitability = (
+  phase: PipelinePhase,
+  builderMode: "tool_calls" | "patch_json" | "freeform",
+  selection: Pick<PhaseAgentSelection, "capabilities"> & { supportsTools?: boolean },
+): {
+  ok: boolean;
+  reason: string;
+  details?: Record<string, number | string>;
+  builderMode?: "tool_calls" | "patch_json" | "freeform";
+} => {
+  if (phase !== "builder") {
+    return { ok: true, reason: "not_builder_phase", builderMode };
+  }
+  if (builderMode !== "patch_json") {
+    return { ok: true, reason: "builder_mode_not_patch_json", builderMode };
+  }
+  const capabilities = selection.capabilities ?? [];
+  const structuredHits = countCapabilityMatches(capabilities, PATCH_JSON_STRUCTURED_CAPABILITIES);
+  const codeHits = countCapabilityMatches(capabilities, PATCH_JSON_CODE_CAPABILITIES);
+  if (codeHits <= 0) {
+    return {
+      ok: false,
+      reason: "missing_patch_code_capability",
+      details: { codeHits },
+    };
+  }
+  if (structuredHits > 0) {
+    return {
+      ok: true,
+      reason: "capability_requirements_met",
+      details: { structuredHits, codeHits },
+      builderMode: "patch_json",
+    };
+  }
+  const hasToolRunner = capabilities.includes("tool_runner");
+  if (selection.supportsTools || hasToolRunner) {
+    return {
+      ok: true,
+      reason: "fallback_tool_calls_only",
+      details: { structuredHits, codeHits, hasToolRunner: hasToolRunner ? 1 : 0 },
+      builderMode: "tool_calls",
+    };
+  }
+  return {
+    ok: false,
+    reason: "missing_structured_output_capability",
+    details: { structuredHits, codeHits },
+  };
+};
+
 const readStdin = async (): Promise<string> => {
   const chunks: Buffer[] = [];
   return new Promise((resolve, reject) => {
@@ -1548,21 +1618,79 @@ export class RunCommand {
             new Set([...(phaseExclusions[phase] ?? []), currentAgentId]),
           );
           phaseExclusions[phase] = excluded;
-          const reselection = await selectPhaseAgents({
-            overrides: phaseOverrides,
-            builderMode: config.builder.mode,
-            fallbackAgent: resolvedAgent,
-            allowCloudModels: config.security.allowCloudModels,
-            excludeAgentIds: phaseExclusions,
-          });
-          const nextSelection = reselection[phase];
-          const nextResolved = nextSelection.resolved;
-          if (!nextResolved || nextResolved.agent.id === currentAgentId) {
+          let currentExcluded = excluded;
+          const evaluatedAgentIds = new Set<string>();
+          let reselection: Record<PipelinePhase, PhaseAgentSelection> | undefined;
+          let nextSelection: PhaseAgentSelection | undefined;
+          let nextResolved = undefined as typeof currentResolved | undefined;
+          let selectedBuilderMode = config.builder.mode;
+          while (true) {
+            reselection = await selectPhaseAgents({
+              overrides: phaseOverrides,
+              builderMode: config.builder.mode,
+              fallbackAgent: resolvedAgent,
+              allowCloudModels: config.security.allowCloudModels,
+              excludeAgentIds: {
+                ...phaseExclusions,
+                [phase]: currentExcluded,
+              },
+            });
+            nextSelection = reselection[phase];
+            nextResolved = nextSelection.resolved;
+            if (!nextResolved || nextResolved.agent.id === currentAgentId) {
+              await logger.log("phase_agent_fallback_skipped", {
+                phase,
+                reason: "no_alternate_agent",
+                currentAgentId,
+                excluded: currentExcluded,
+                error: input.error.message,
+              });
+              return { switched: false };
+            }
+            const nextAgentId = nextResolved.agent.id;
+            if (evaluatedAgentIds.has(nextAgentId)) {
+              await logger.log("phase_agent_fallback_skipped", {
+                phase,
+                reason: "no_eligible_alternate_agent",
+                currentAgentId,
+                excluded: currentExcluded,
+                error: input.error.message,
+              });
+              return { switched: false };
+            }
+            evaluatedAgentIds.add(nextAgentId);
+            const suitability = assessPhaseFallbackSuitability(
+              phase,
+              config.builder.mode,
+              {
+                capabilities: nextSelection.capabilities,
+                supportsTools: nextResolved.agent.supportsTools ?? false,
+              },
+            );
+            if (suitability.ok) {
+              selectedBuilderMode = suitability.builderMode ?? config.builder.mode;
+              break;
+            }
+            currentExcluded = Array.from(new Set([...currentExcluded, nextAgentId]));
+            phaseExclusions[phase] = currentExcluded;
+            await logger.log("phase_agent_fallback_rejected", {
+              phase,
+              reason: suitability.reason,
+              agentId: nextAgentId,
+              agentSlug: nextResolved.agent.slug,
+              currentAgentId,
+              excluded: currentExcluded,
+              details: suitability.details ?? null,
+              error: input.error.message,
+            });
+          }
+          phaseExclusions[phase] = currentExcluded;
+          if (!reselection || !nextSelection || !nextResolved) {
             await logger.log("phase_agent_fallback_skipped", {
               phase,
-              reason: "no_alternate_agent",
+              reason: "reselection_failed",
               currentAgentId,
-              excluded,
+              excluded: currentExcluded,
               error: input.error.message,
             });
             return { switched: false };
@@ -1585,6 +1713,16 @@ export class RunCommand {
             true,
           );
           if (phase === "builder") {
+            const priorBuilderMode = config.builder.mode;
+            if (selectedBuilderMode !== priorBuilderMode) {
+              config.builder.mode = selectedBuilderMode;
+              await logger.log("phase_agent_fallback_mode_change", {
+                phase,
+                fromMode: priorBuilderMode,
+                toMode: selectedBuilderMode,
+                reason: "fallback_suitability",
+              });
+            }
             const nextProvider = createProvider(nextRoute.provider, nextRoute.config);
             const nextResponseFormat =
               nextRoute.responseFormat
@@ -1593,6 +1731,7 @@ export class RunCommand {
               model: nextRoute.config.model,
               temperature: nextRoute.temperature,
               responseFormat: nextResponseFormat,
+              mode: config.builder.mode,
             });
           }
           await logger.log("phase_agent_selected", {

@@ -484,6 +484,7 @@ const isNonBlockingArchitectWarning = (warning: string): boolean => {
   if (warning === ARCHITECT_WARNING_MULTIPLE_SECTION_BLOCKS) return true;
   if (warning === ARCHITECT_WARNING_REPAIRED) return true;
   if (warning === ARCHITECT_WARNING_USED_JSON_FALLBACK) return true;
+  if (warning === "architect_output_prose_request_suppressed") return true;
   if (warning === "architect_output_repair_reason:wrapper_noise") return true;
   if (warning === "architect_output_repair_reason:duplicate_sections") return true;
   if (warning.startsWith("plan_missing_target_change_details:")) return true;
@@ -523,6 +524,7 @@ const REPAIRED_FALLBACK_WARNING_PATTERNS = [
 const NON_FATAL_REPAIRED_FALLBACK_WARNING_PATTERNS = [
   /^architect_output_not_object$/i,
   /^architect_output_adapted_to_request$/i,
+  /^architect_output_prose_request_suppressed$/i,
   /^plan_missing_/i,
   /^architect_output_repair_reason:/i,
   new RegExp(`^${ARCHITECT_WARNING_NON_DSL}$`, "i"),
@@ -1362,6 +1364,7 @@ const classifyDeterministicPatchApplyFailure = (
   if (message.includes("placeholder replace blocks")) return "placeholder_payload";
   if (message.includes("placeholder create content")) return "placeholder_payload";
   if (message.includes("delete action without delete intent")) return "placeholder_payload";
+  if (message.includes("disallowed files")) return "disallowed_files";
   if (message.includes("patch parsing failed")) return "patch_parse";
   if (message.includes("patch payload includes empty patches array")) return "patch_parse";
   if (message.includes("patch payload includes empty files array")) return "patch_parse";
@@ -1374,7 +1377,6 @@ const classifyDeterministicPatchApplyFailure = (
   if (message.includes("patch output is empty")) return "patch_parse";
   if (message.includes("patch field")) return "patch_parse";
   if (message.includes("placeholder file paths")) return "placeholder_payload";
-  if (message.includes("disallowed files")) return "disallowed_files";
   return null;
 };
 

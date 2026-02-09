@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseArgs, isToolEnabled, resolveWorkspaceRoot, RunCommand } from "../RunCommand.js";
+import {
+  parseArgs,
+  isToolEnabled,
+  resolveWorkspaceRoot,
+  RunCommand,
+  assessPhaseFallbackSuitability,
+} from "../RunCommand.js";
 import type { ToolConfig } from "../../config/Config.js";
 
 test("parseArgs captures cli flags", { concurrency: false }, () => {
@@ -163,4 +169,40 @@ test("RunCommand rejects deep investigation without smart mode", { concurrency: 
       process.env.CODALI_SMART = priorSmart;
     }
   }
+});
+
+test("assessPhaseFallbackSuitability rejects patch_json builder fallback without structured capabilities", () => {
+  const suitability = assessPhaseFallbackSuitability("builder", "patch_json", {
+    capabilities: ["code_write", "simple_refactor"],
+    supportsTools: false,
+  });
+  assert.equal(suitability.ok, false);
+  assert.equal(suitability.reason, "missing_structured_output_capability");
+});
+
+test("assessPhaseFallbackSuitability rejects patch_json builder fallback without code capabilities", () => {
+  const suitability = assessPhaseFallbackSuitability("builder", "patch_json", {
+    capabilities: ["strict_instruction_following", "json_formatting", "schema_adherence"],
+  });
+  assert.equal(suitability.ok, false);
+  assert.equal(suitability.reason, "missing_patch_code_capability");
+});
+
+test("assessPhaseFallbackSuitability accepts patch_json builder fallback when capabilities are sufficient", () => {
+  const suitability = assessPhaseFallbackSuitability("builder", "patch_json", {
+    capabilities: ["code_write", "iterative_coding", "strict_instruction_following"],
+  });
+  assert.equal(suitability.ok, true);
+  assert.equal(suitability.reason, "capability_requirements_met");
+  assert.equal(suitability.builderMode, "patch_json");
+});
+
+test("assessPhaseFallbackSuitability downgrades to tool_calls when patch_json structured output is unavailable", () => {
+  const suitability = assessPhaseFallbackSuitability("builder", "patch_json", {
+    capabilities: ["code_write", "simple_refactor", "tool_runner"],
+    supportsTools: true,
+  });
+  assert.equal(suitability.ok, true);
+  assert.equal(suitability.reason, "fallback_tool_calls_only");
+  assert.equal(suitability.builderMode, "tool_calls");
 });
