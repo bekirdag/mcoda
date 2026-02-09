@@ -49,11 +49,33 @@ const normalizePath = (value: string): string =>
   value.replace(/\\/g, "/").replace(/^\.?\//, "").trim();
 
 const REQUEST_FILE_PATTERN = /(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9]+/g;
-const CREATE_INTENT_PATTERN = /\b(create|add|introduce|scaffold|bootstrap|build|develop|implement|setup|set up)\b/i;
 const ENDPOINT_INTENT_PATTERN = /\b(endpoint|route|router|handler|api|health|healthz|status|ping)\b/i;
 const DOC_PATH_PATTERN = /(^|\/)(docs?|openapi|specs?)\//i;
 const TEST_PATH_PATTERN = /(^|\/)(__tests__|tests?|test)\//i;
 const FRONTEND_PATH_PATTERN = /(^|\/)(public|frontend|client)\//i;
+const IMPLEMENTATION_FILE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "py",
+  "rs",
+  "go",
+  "java",
+  "cs",
+  "php",
+  "rb",
+  "kt",
+  "swift",
+  "html",
+  "htm",
+  "css",
+  "scss",
+  "sass",
+  "less",
+  "vue",
+  "svelte",
+]);
 
 const REQUEST_TOKEN_STOPWORDS = new Set([
   "a",
@@ -163,7 +185,7 @@ const isSourceCodePath = (value: string): boolean => {
   if (!normalized) return false;
   if (isDocPath(normalized) || isTestPath(normalized)) return false;
   const ext = normalized.slice(normalized.lastIndexOf(".") + 1).toLowerCase();
-  return ["ts", "tsx", "js", "jsx", "py", "rs", "go", "java", "cs", "php", "rb", "kt", "swift"].includes(ext);
+  return IMPLEMENTATION_FILE_EXTENSIONS.has(ext);
 };
 
 const extractRequestTokens = (request: string): string[] =>
@@ -183,37 +205,6 @@ const toPascalCase = (value: string): string =>
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}`)
     .join("");
 
-const chooseCodeExtension = (context: ContextBundle, paths: string[]): string => {
-  const extCounts = new Map<string, number>();
-  const fileTypes = context.project_info?.file_types ?? [];
-  for (const value of [...paths, ...fileTypes]) {
-    const normalized = normalizePath(value);
-    const dot = normalized.lastIndexOf(".");
-    if (dot < 0) continue;
-    const ext = normalized.slice(dot);
-    if (![".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"].includes(ext)) continue;
-    extCounts.set(ext, (extCounts.get(ext) ?? 0) + 1);
-  }
-  const ranked = Array.from(extCounts.entries()).sort((a, b) => b[1] - a[1]);
-  return ranked[0]?.[0] ?? ".js";
-};
-
-const inferCreationPath = (context: ContextBundle, paths: string[]): string => {
-  const request = context.request ?? "";
-  const tokens = extractRequestTokens(request);
-  const featureToken = tokens.find((token) => !["health", "endpoint", "route", "handler", "api"].includes(token));
-  const featureStem = featureToken ?? tokens[0] ?? "feature";
-  const ext = chooseCodeExtension(context, paths);
-  const repoMap = context.repo_map_raw ?? context.repo_map ?? "";
-  if (ENDPOINT_INTENT_PATTERN.test(request)) {
-    if (/\bsrc\/api\b/i.test(repoMap)) {
-      return normalizePath(`src/api/${featureStem}${ext}`);
-    }
-    return normalizePath(`src/${featureStem}${ext}`);
-  }
-  return normalizePath(`src/${featureStem}${ext}`);
-};
-
 const scoreEndpointTarget = (value: string): number => {
   const normalized = normalizePath(value).toLowerCase();
   let score = 0;
@@ -232,7 +223,6 @@ const deriveFallbackTargetFiles = (context: ContextBundle): string[] => {
   if (requestPaths.length > 0) return requestPaths;
 
   const discoveredPaths = collectContextPaths(context);
-  const existingPathSet = new Set(discoveredPaths.map((entry) => normalizePath(entry)));
   const baseTargets = targetFilesFromContext(context).map((entry) => normalizePath(entry));
   const nonPlaceholderTargets = baseTargets.filter((entry) => entry !== "unknown");
 
@@ -252,15 +242,15 @@ const deriveFallbackTargetFiles = (context: ContextBundle): string[] => {
     return uniqueStrings(baseCodeTargets);
   }
 
-  const shouldCreateTarget = CREATE_INTENT_PATTERN.test(request) || nonPlaceholderTargets.length === 0;
-  if (shouldCreateTarget) {
-    const inferred = inferCreationPath(context, discoveredPaths);
-    if (!existingPathSet.has(inferred)) {
-      return uniqueStrings([inferred, ...baseCodeTargets]);
-    }
+  const discoveredCodeTargets = discoveredPaths.filter((entry) => isSourceCodePath(entry));
+  if (discoveredCodeTargets.length > 0) {
+    return uniqueStrings(discoveredCodeTargets).slice(0, 6);
   }
 
-  if (nonPlaceholderTargets.length > 0) return uniqueStrings(nonPlaceholderTargets);
+  const nonDocTargets = nonPlaceholderTargets.filter(
+    (entry) => !isDocPath(entry) && !isTestPath(entry),
+  );
+  if (nonDocTargets.length > 0) return uniqueStrings(nonDocTargets);
   return ["unknown"];
 };
 

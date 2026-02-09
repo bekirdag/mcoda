@@ -2980,7 +2980,13 @@ export class ContextAssembler {
       statsSucceeded = true;
       emitToolResult("docdex.stats", "ok", true);
     } else {
-      emitToolResult("docdex.stats", "failed", false);
+      emitToolResult(
+        "docdex.stats",
+        statsResult.error instanceof Error
+          ? statsResult.error.message
+          : String(statsResult.error),
+        false,
+      );
       pushWarning("docdex_stats_failed");
       if (statsResult.backoff) {
         pushWarning("docdex_stats_backoff");
@@ -2995,7 +3001,13 @@ export class ContextAssembler {
       filesSucceeded = true;
       emitToolResult("docdex.files", "ok", true);
     } else {
-      emitToolResult("docdex.files", "failed", false);
+      emitToolResult(
+        "docdex.files",
+        filesResult.error instanceof Error
+          ? filesResult.error.message
+          : String(filesResult.error),
+        false,
+      );
       pushWarning("docdex_files_failed");
       if (filesResult.backoff) {
         pushWarning("docdex_files_backoff");

@@ -15,7 +15,7 @@ import {
   BUILDER_PATCH_GBNF_SEARCH_REPLACE,
 } from "./Prompts.js";
 import { serializeContext } from "./ContextSerializer.js";
-import type { PatchAction, PatchFormat, PatchPayload } from "./BuilderOutputParser.js";
+import { parsePatchOutput, type PatchAction, type PatchFormat, type PatchPayload } from "./BuilderOutputParser.js";
 import { PatchApplier } from "./PatchApplier.js";
 import type { ContextManager } from "./ContextManager.js";
 import type { PatchInterpreterClient } from "./PatchInterpreter.js";
@@ -68,30 +68,76 @@ export interface BuilderRunnerOptions {
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values));
 
-const parseContextRequest = (content: string): ContextRequest | undefined => {
+const looksLikeJsonPatchCandidate = (content: string): boolean => {
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return true;
+  if (/```(?:json)?/i.test(trimmed)) return true;
+  return /"patches"\s*:|"files"\s*:/.test(trimmed);
+};
+
+const parseEmbeddedJsonObject = (content: string): Record<string, unknown> | undefined => {
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}");
+  if (start < 0 || end <= start) return undefined;
+  const candidate = content.slice(start, end + 1).trim();
+  if (!candidate) return undefined;
+  try {
+    const parsed = JSON.parse(candidate) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch {
+    // ignore invalid embedded JSON
+  }
+  return undefined;
+};
+
+const parseContextRequestRecord = (
+  parsed: Record<string, unknown>,
+): ContextRequest | undefined => {
+  const needsContext =
+    parsed.needs_context === true ||
+    parsed.request_context === true ||
+    parsed.context_request === true ||
+    parsed.type === "needs_context";
+  if (!needsContext) return undefined;
+  const queries = Array.isArray(parsed.queries)
+    ? parsed.queries.map((entry) => String(entry)).filter(Boolean)
+    : undefined;
+  const files = Array.isArray(parsed.files)
+    ? parsed.files.map((entry) => String(entry)).filter(Boolean)
+    : undefined;
+  const reason = typeof parsed.reason === "string" ? parsed.reason : undefined;
+  return { reason, queries, files };
+};
+
+const parseContextRequest = (
+  content: string,
+  mode: "tool_calls" | "patch_json" | "freeform",
+): ContextRequest | undefined => {
   const trimmed = content.trim();
   if (!trimmed) return undefined;
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    const needsContext =
-      parsed.needs_context === true ||
-      parsed.request_context === true ||
-      parsed.context_request === true ||
-      parsed.type === "needs_context";
-    if (needsContext) {
-      const queries = Array.isArray(parsed.queries)
-        ? parsed.queries.map((entry) => String(entry)).filter(Boolean)
-        : undefined;
-      const files = Array.isArray(parsed.files)
-        ? parsed.files.map((entry) => String(entry)).filter(Boolean)
-        : undefined;
-      const reason = typeof parsed.reason === "string" ? parsed.reason : undefined;
-      return { reason, queries, files };
-    }
+    return parseContextRequestRecord(parsed);
   } catch {
     // ignore invalid JSON
   }
-  if (/needs_context/i.test(trimmed)) {
+
+  // In strict patch-json mode, only pure JSON context requests are accepted.
+  // Mixed prose + JSON should fail patch parsing and trigger deterministic recovery.
+  if (mode === "patch_json") {
+    if (!trimmed.startsWith("```")) return undefined;
+    const embedded = parseEmbeddedJsonObject(trimmed);
+    if (!embedded) return undefined;
+    return parseContextRequestRecord(embedded);
+  }
+
+  const embedded = parseEmbeddedJsonObject(trimmed);
+  if (embedded) {
+    const fromEmbedded = parseContextRequestRecord(embedded);
+    if (fromEmbedded) return fromEmbedded;
+  }
+  if (/^needs_context$/i.test(trimmed)) {
     return { reason: "needs_context" };
   }
   return undefined;
@@ -134,6 +180,7 @@ export class BuilderRunner {
       content: buildBuilderPrompt(modeOverride, patchFormat),
     });
     const planTargets = Array.isArray(plan.target_files) ? plan.target_files.filter(Boolean) : [];
+    const planCreateTargets = Array.isArray(plan.create_files) ? plan.create_files.filter(Boolean) : [];
     const bundlePaths = (contextBundle.files ?? []).map((entry) => entry.path).filter(Boolean);
     const normalizePath = (value: string) =>
       value.replace(/\\/g, "/").replace(/^\.?\//, "");
@@ -150,18 +197,35 @@ export class BuilderRunner {
       .filter(Boolean)
       .filter((path) => path !== "unknown")
       .filter((path) => !isReadOnlyPath(path));
-    const fallbackAllow = [...planTargets, ...bundlePaths]
+    const normalizedPlanTargets = uniqueStrings(
+      [...planTargets, ...planCreateTargets]
+        .map(normalizePath)
+        .filter(Boolean)
+        .filter((path) => path !== "unknown")
+        .filter((path) => !isReadOnlyPath(path))
+        .filter((path) => !looksLikePlaceholderPath(path)),
+    );
+    const fallbackAllow = [...normalizedPlanTargets, ...bundlePaths]
       .map(normalizePath)
       .filter(Boolean)
       .filter((path) => path !== "unknown")
       .filter((path) => !isReadOnlyPath(path));
-    // Only enforce a positive allow-list when the librarian explicitly provides one.
-    // Otherwise, treat writes as unrestricted except read-only/placeholder guards.
-    const allowedPaths = new Set(
-      bundleAllow.length
-        ? uniqueStrings([...bundleAllow, ...fallbackAllow])
-        : [],
+    const preferredPaths = uniqueStrings(
+      [...normalizedPlanTargets, ...bundlePaths]
+        .map(normalizePath)
+        .filter(Boolean)
+        .filter((path) => path !== "unknown")
+        .filter((path) => !isReadOnlyPath(path))
+        .filter((path) => !looksLikePlaceholderPath(path)),
     );
+    // Prefer architect-declared targets (including explicit create targets).
+    // Fall back to librarian-provided allow list only when plan targets are absent.
+    const allowedPathValues = normalizedPlanTargets.length > 0
+      ? normalizedPlanTargets
+      : bundleAllow.length > 0
+        ? uniqueStrings([...bundleAllow, ...fallbackAllow])
+        : [];
+    const allowedPaths = new Set(allowedPathValues);
     const validatePatchTargets = (paths: string[]) => {
       const invalid = paths.filter((path) => {
         if (!path.trim()) return true;
@@ -249,6 +313,7 @@ export class BuilderRunner {
           ? Array.from(allowedPaths).join(", ")
           : "all (except read-only)";
       const readOnlyList = readOnlyPaths.length ? readOnlyPaths.join(", ") : "none";
+      const preferredList = preferredPaths.length ? preferredPaths.join(", ") : "none";
       return [
         note,
         "Return ONLY the JSON payload that matches the schema in the system prompt.",
@@ -257,6 +322,10 @@ export class BuilderRunner {
         "Never include changes for read-only paths.",
         `Allowed paths: ${allowList}`,
         `Read-only paths: ${readOnlyList}`,
+        `Preferred concrete paths: ${preferredList}`,
+        preferredPaths.length > 0
+          ? "Use these repo-relative paths instead of placeholders like path/to/file.ts."
+          : null,
         "",
         "PREVIOUS_OUTPUT:",
         previousOutput,
@@ -269,7 +338,8 @@ export class BuilderRunner {
     const isDisallowedError = (message: string): boolean => /disallowed files/i.test(message);
     const buildDisallowedNote = (message: string) => {
       const disallowed = parseDisallowed(message) ?? "unknown";
-      return `Your patch included disallowed files: ${disallowed}. Remove any changes to read-only paths and return JSON for allowed paths only.`;
+      const preferred = preferredPaths.length > 0 ? ` Preferred concrete paths: ${preferredPaths.join(", ")}.` : "";
+      return `Your patch included disallowed files: ${disallowed}. Remove any changes to read-only paths and return JSON for allowed paths only.${preferred}`;
     };
     const buildUserMessage = (): ProviderMessage => ({
       role: "user",
@@ -289,7 +359,16 @@ export class BuilderRunner {
               model,
             })
           : [];
-      return { systemMessage, userMessage, history, messages: [systemMessage, ...history, userMessage] };
+      const historyForMode =
+        modeOverride === "patch_json"
+          ? history.filter((message) => message.role !== "system")
+          : history;
+      return {
+        systemMessage,
+        userMessage,
+        history: historyForMode,
+        messages: [systemMessage, ...historyForMode, userMessage],
+      };
     };
     let messageState = await buildMessages(mode);
 
@@ -374,7 +453,7 @@ export class BuilderRunner {
       });
     }
 
-    const contextRequest = parseContextRequest(result.finalMessage.content);
+    const contextRequest = parseContextRequest(result.finalMessage.content, mode);
     if (contextRequest) {
       if (this.options.logger) {
         await this.options.logger.log("context_request", {
@@ -408,28 +487,62 @@ export class BuilderRunner {
 
     if (mode === "patch_json") {
       const interpreter = this.options.interpreter;
-      if (!interpreter) {
-        throw new Error("PatchInterpreter is required for patch_json mode");
-      }
-      const interpretAndApply = async (
+      const fallbackToInterpreter = this.options.fallbackToInterpreter === true;
+      const parseAndApply = async (
         content: string,
         format: PatchFormat,
         source: string,
       ) => {
-        if (this.options.logger) {
-          await this.options.logger.log("patch_interpreter_precheck", {
-            length: content.length,
-            format,
+        const normalized = content.toLowerCase();
+        if (
+          normalized.includes("path/to/file.")
+          || normalized.includes("path/to/new.")
+          || normalized.includes("path/to/old.")
+        ) {
+          throw new PatchApplyError({
+            source,
+            error: "Patch output used placeholder file paths",
+            patches: [],
+            rollback: { attempted: false, ok: true },
+            rawOutput: content,
           });
         }
-        const payload = await interpreter.interpret(content, format);
-        await logPatchPayload(payload, source);
-        await applyPayload(payload, source, content);
+        try {
+          const payload = parsePatchOutput(content, format);
+          if (this.options.logger) {
+            await this.options.logger.log("patch_direct_parse", {
+              length: content.length,
+              format,
+              source,
+            });
+          }
+          await logPatchPayload(payload, source);
+          await applyPayload(payload, source, content);
+          return;
+        } catch (parseError) {
+          const canUseInterpreter =
+            fallbackToInterpreter
+            && Boolean(interpreter)
+            && looksLikeJsonPatchCandidate(content);
+          if (!canUseInterpreter) {
+            throw parseError;
+          }
+          if (this.options.logger) {
+            await this.options.logger.log("patch_interpreter_precheck", {
+              length: content.length,
+              format,
+              source,
+            });
+          }
+          const payload = await interpreter!.interpret(content, format);
+          await logPatchPayload(payload, source);
+          await applyPayload(payload, source, content);
+        }
       };
 
       let processingError: Error | undefined;
       try {
-        await interpretAndApply(result.finalMessage.content, patchFormat, "interpreter_primary");
+        await parseAndApply(result.finalMessage.content, patchFormat, "interpreter_primary");
         return result;
       } catch (error) {
         if (error instanceof PatchApplyError) {
@@ -473,7 +586,7 @@ export class BuilderRunner {
         ).run([retrySystem, ...messageState.history, retryUser]);
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
-          await interpretAndApply(result.finalMessage.content, "file_writes", "interpreter_retry");
+          await parseAndApply(result.finalMessage.content, "file_writes", "interpreter_retry");
           return result;
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
@@ -510,7 +623,7 @@ export class BuilderRunner {
           ).run([fallbackSystem, ...messageState.history, fallbackUser]);
           result = { ...fallbackResult, usage: mergeUsage(result.usage, fallbackResult.usage) };
           try {
-            await interpretAndApply(result.finalMessage.content, "search_replace", "interpreter_fallback");
+            await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_fallback");
             return result;
           } catch (fallbackError) {
             if (fallbackError instanceof PatchApplyError) {
@@ -536,7 +649,7 @@ export class BuilderRunner {
               ).run([guardSystem, ...messageState.history, guardUser]);
               result = { ...guardResult, usage: mergeUsage(result.usage, guardResult.usage) };
               try {
-                await interpretAndApply(result.finalMessage.content, "search_replace", "interpreter_guard");
+                await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_guard");
                 return result;
               } catch (guardError) {
                 if (guardError instanceof PatchApplyError) {
@@ -585,7 +698,7 @@ export class BuilderRunner {
         ).run([retrySystem, ...messageState.history, retryUser]);
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
-          await interpretAndApply(result.finalMessage.content, "search_replace", "interpreter_retry");
+          await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_retry");
           return result;
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
@@ -606,7 +719,13 @@ export class BuilderRunner {
       }
 
       if (processingError) {
-        throw processingError;
+        throw new PatchApplyError({
+          source: "builder_patch_processing",
+          error: processingError.message,
+          patches: [],
+          rollback: { attempted: false, ok: true },
+          rawOutput: result.finalMessage.content,
+        });
       }
     }
     return result;

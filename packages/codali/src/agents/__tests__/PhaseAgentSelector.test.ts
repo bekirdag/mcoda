@@ -151,3 +151,121 @@ test("selectPhaseAgents honors critic override", { concurrency: false }, async (
     assert.equal(selections.critic.source, "override");
   });
 });
+
+test("selectPhaseAgents prefers structured-output capable builders in patch_json mode", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const unsupportedBuilder = await repo.createAgent({
+        slug: "unsupported-builder",
+        adapter: "ollama-remote",
+        defaultModel: "codellama:34b",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 7,
+        reasoningRating: 7,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: false,
+      });
+      await repo.setAgentCapabilities(unsupportedBuilder.id, [
+        "code_write",
+        "migration_assist",
+      ]);
+
+      const genericBuilder = await repo.createAgent({
+        slug: "generic-builder",
+        adapter: "ollama-remote",
+        defaultModel: "qwen3-coder:latest",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 6,
+        reasoningRating: 6,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(genericBuilder.id, [
+        "code_write",
+        "iterative_coding",
+      ]);
+
+      const structuredBuilder = await repo.createAgent({
+        slug: "structured-builder",
+        adapter: "ollama-remote",
+        defaultModel: "glm-4.7-flash",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 5,
+        reasoningRating: 5,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(structuredBuilder.id, [
+        "code_write",
+        "strict_instruction_following",
+      ]);
+    } finally {
+      await repo.close();
+    }
+
+    const selections = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+    });
+
+    assert.equal(selections.builder.agent?.slug, "structured-builder");
+  });
+});
+
+test("selectPhaseAgents still prefers structured patch builders when unstructured options are cheaper", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const cheapUnstructured = await repo.createAgent({
+        slug: "cheap-unstructured-builder",
+        adapter: "ollama-remote",
+        defaultModel: "qwen3-coder:latest",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 6,
+        reasoningRating: 6,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(cheapUnstructured.id, [
+        "code_write",
+        "iterative_coding",
+      ]);
+
+      const expensiveStructured = await repo.createAgent({
+        slug: "expensive-structured-builder",
+        adapter: "openai-api",
+        defaultModel: "gpt-4o",
+        rating: 8,
+        reasoningRating: 8,
+        costPerMillion: 10,
+        maxComplexity: 3,
+        bestUsage: "code_write",
+        openaiCompatible: true,
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(expensiveStructured.id, [
+        "code_write",
+        "strict_instruction_following",
+      ]);
+      await repo.setAgentAuth(expensiveStructured.id, await CryptoHelper.encryptSecret("key-builder"));
+    } finally {
+      await repo.close();
+    }
+
+    const selections = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+    });
+
+    assert.equal(selections.builder.agent?.slug, "expensive-structured-builder");
+  });
+});

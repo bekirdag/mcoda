@@ -268,7 +268,7 @@ export const DEFAULT_SECURITY: SecurityConfig = {
 };
 
 export const DEFAULT_BUILDER: BuilderConfig = {
-  mode: "freeform",
+  mode: "patch_json",
   patchFormat: "search_replace",
   fallbackToInterpreter: true,
 };

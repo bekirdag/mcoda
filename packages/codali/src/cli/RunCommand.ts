@@ -711,6 +711,7 @@ class StubProvider implements Provider {
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
     const last = request.messages[request.messages.length - 1];
     const promptText = request.messages.map((message) => message.content ?? "").join("\n");
+    const lowerPrompt = promptText.toLowerCase();
     const isArchitectPrompt = /ROLE:\s*Technical Architect/i.test(promptText);
     if (isArchitectPrompt && /REVIEW:/i.test(promptText) && /STATUS:/i.test(promptText)) {
       return {
@@ -733,6 +734,34 @@ class StubProvider implements Provider {
             "VERIFY:",
             "- Run unit tests: pnpm test --filter codali",
           ].join("\n"),
+        },
+      };
+    }
+    if (lowerPrompt.includes("\"patches\"") || lowerPrompt.includes("search_replace")) {
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            patches: [
+              {
+                action: "replace",
+                file: "src/index.ts",
+                search_block: "const value = 1;",
+                replace_block: "const value = 2;",
+              },
+            ],
+          }),
+        },
+      };
+    }
+    if (lowerPrompt.includes("\"files\"") || lowerPrompt.includes("file_writes")) {
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            files: [{ path: "src/index.ts", content: "const value = 2;\n" }],
+            delete: [],
+          }),
         },
       };
     }
@@ -968,7 +997,7 @@ export class RunCommand {
         config.limits.maxTokens = maxOutputTokens;
       }
       if (supportsTools === false && config.builder.mode === "tool_calls") {
-        config.builder.mode = "freeform";
+        config.builder.mode = "patch_json";
       }
     }
 
@@ -1183,7 +1212,7 @@ export class RunCommand {
           builderSelection.resolved?.agent.supportsTools === false &&
           config.builder.mode === "tool_calls"
         ) {
-          config.builder.mode = "freeform";
+          config.builder.mode = "patch_json";
         }
 
         for (const selection of Object.values(phaseSelections)) {
@@ -1433,7 +1462,13 @@ export class RunCommand {
           ? resolveInterpreterRoute(config, phaseRoutes)
           : undefined;
         const interpreterProvider = interpreterRoute
-          ? createProvider(interpreterRoute.provider, interpreterRoute.config)
+          ? createProvider(interpreterRoute.provider, {
+              ...interpreterRoute.config,
+              timeoutMs:
+                config.interpreter.timeoutMs ??
+                interpreterRoute.config.timeoutMs ??
+                config.limits.timeoutMs,
+            })
           : undefined;
         const interpreterResponseFormat: ProviderResponseFormat = config.interpreter.format
           ? {

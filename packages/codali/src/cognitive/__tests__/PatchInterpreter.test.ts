@@ -48,6 +48,21 @@ test("PatchInterpreter returns parsed patch payload", async () => {
   assert.equal(result.patches[0].action, "delete");
 });
 
+test("PatchInterpreter parses raw builder payload without provider call when already valid", async () => {
+  const provider = new StubProvider([
+    { message: { role: "assistant", content: '{"patches":[{"action":"delete","file":"ignored.txt"}]}' } },
+  ]);
+  const interpreter = new PatchInterpreter({
+    provider,
+    patchFormat: "search_replace",
+  });
+
+  const result = await interpreter.interpret('{"patches":[{"action":"delete","file":"a.txt"}]}');
+  assert.equal(result.patches.length, 1);
+  assert.equal(result.patches[0].action, "delete");
+  assert.equal(provider.requests.length, 0);
+});
+
 test("PatchInterpreter retries once on invalid JSON", async () => {
   const provider = new StubProvider([
     { message: { role: "assistant", content: "not json" } },
