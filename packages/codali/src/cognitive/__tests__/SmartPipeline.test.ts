@@ -191,6 +191,18 @@ class StubArchitectPlannerRequestLoopNonDsl {
   }
 }
 
+class StubArchitectPlannerRequestLoopNoWarning {
+  calls = 0;
+  async planWithRequest(): Promise<{ plan: Plan; request?: { request_id: string }; warnings: string[] }> {
+    this.calls += 1;
+    return {
+      plan: basePlan,
+      request: { request_id: `loop-nowarn-req-${this.calls}` },
+      warnings: [],
+    };
+  }
+}
+
 class StubArchitectPlannerWithRawOutput {
   async planWithRequest(): Promise<{ plan: Plan; raw: string; warnings: string[] }> {
     return {
@@ -264,7 +276,7 @@ class StubArchitectPlannerAlwaysEmptyVerification {
     return {
       plan: {
         ...basePlan,
-        verification: [],
+        verification: ["Verify changes."],
       },
       warnings: [],
     };
@@ -428,7 +440,7 @@ class StubArchitectPlannerAlwaysWeakPlan {
       plan: {
         ...basePlan,
         target_files: ["path/to/file.ts"],
-        verification: ["check behavior"],
+        verification: ["Run unit tests: pnpm test --filter codali"],
       },
       warnings: [],
     };
@@ -1180,7 +1192,7 @@ test("SmartPipeline bounds repeated architect request loops and fail-closes non-
 
   await assert.rejects(
     () => pipeline.run("needs context"),
-    /Architect quality gate failed before builder: blocking_architect_warnings/i,
+    /Architect quality gate failed before builder: (blocking_architect_warnings|unresolved_architect_request)/i,
   );
   assert.equal(architect.calls, 2);
   assert.equal(assembler.calls, 2);
@@ -1190,6 +1202,41 @@ test("SmartPipeline bounds repeated architect request loops and fail-closes non-
   assert.equal(architect.responseFormats[1], undefined);
   const qualityGateEvent = logger.events.find(
     (event) => event.type === "architect_quality_gate" && event.data.stage === "pre_builder",
+  );
+  assert.ok(qualityGateEvent);
+});
+
+test("SmartPipeline fail-closes unresolved architect request loops even without non-DSL warnings", { concurrency: false }, async () => {
+  const architect = new StubArchitectPlannerRequestLoopNoWarning();
+  const refreshedContext: ContextBundle = {
+    ...baseContext,
+    queries: ["needs context", "retry loop"],
+  };
+  const assembler = new StubContextAssembler([baseContext, refreshedContext]);
+  const builder = new StubBuilderRunner();
+  const logger = new StubLogger();
+  const pipeline = new SmartPipeline({
+    contextAssembler: assembler as any,
+    architectPlanner: architect as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  await assert.rejects(
+    () => pipeline.run("needs context"),
+    /Architect quality gate failed before builder: unresolved_architect_request/i,
+  );
+  assert.equal(architect.calls, 2);
+  assert.equal(assembler.calls, 2);
+  assert.equal(builder.calls, 0);
+  const qualityGateEvent = logger.events.find(
+    (event) => event.type === "architect_quality_gate"
+      && event.data.stage === "pre_builder"
+      && Array.isArray(event.data.reasons)
+      && event.data.reasons.includes("unresolved_architect_request"),
   );
   assert.ok(qualityGateEvent);
 });
@@ -1626,7 +1673,7 @@ test("SmartPipeline stabilizes high pass-to-pass target drift without extra reco
   assert.equal(recoveryArtifact, undefined);
 });
 
-test("SmartPipeline retries architect when verification is empty and then accepts concrete verification", { concurrency: false }, async () => {
+test("SmartPipeline degrades empty architect verification into concrete checks", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerEmptyVerificationThenConcrete();
   const refreshedContext: ContextBundle = {
     ...baseContext,
@@ -1644,12 +1691,14 @@ test("SmartPipeline retries architect when verification is empty and then accept
 
   const result = await pipeline.run("do thing");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 1);
-  assert.equal(assembler.calls, 1);
   assert.ok(result.plan.verification.length > 0);
+  assert.ok(
+    result.plan.verification.some((step) => /unit\/integration tests|manual browser check|manual api check/i.test(step)),
+  );
+  assert.equal(architect.calls, 1);
 });
 
-test("SmartPipeline degrades verification plan when architect verification stays empty across passes", { concurrency: false }, async () => {
+test("SmartPipeline degrades non-concrete architect verification when recovery has no new context", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerAlwaysEmptyVerification();
   const refreshedContext: ContextBundle = {
     ...baseContext,
@@ -1667,9 +1716,12 @@ test("SmartPipeline degrades verification plan when architect verification stays
 
   const result = await pipeline.run("do thing");
   assert.equal(result.criticResult.status, "PASS");
+  assert.ok(result.plan.verification.length > 0);
+  assert.ok(
+    result.plan.verification.some((step) => /unit\/integration tests|manual browser check|manual api check/i.test(step)),
+  );
   assert.equal(architect.calls, 1);
   assert.equal(assembler.calls, 1);
-  assert.ok(result.plan.verification.length > 0);
 });
 
 test("SmartPipeline uses AGENT_REQUEST recovery before final pass for fallback/generic plans", { concurrency: false }, async () => {
@@ -2402,6 +2454,41 @@ test("SmartPipeline retries builder after patch apply failure", { concurrency: f
   assert.ok(builder.calls >= 2);
 });
 
+test("SmartPipeline retries builder after provider auth/rate-limit fallback", { concurrency: false }, async () => {
+  class ProviderFailBuilder extends StubBuilderRunner {
+    async run(): Promise<BuilderRunResult> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        throw new Error(
+          "AUTH_ERROR: codex CLI failed (exit 1): Error 429 Too Many Requests usage_limit_reached",
+        );
+      }
+      return { finalMessage: { role: "assistant", content: "done" }, messages: [], toolCallsExecuted: 0 };
+    }
+  }
+  const builder = new ProviderFailBuilder();
+  let fallbackCalls = 0;
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 2,
+    onPhaseProviderFailure: async (input) => {
+      fallbackCalls += 1;
+      assert.equal(input.phase, "builder");
+      assert.ok(/429/i.test(input.error.message));
+      return { switched: true, note: "Switched builder agent after provider limit." };
+    },
+  });
+
+  const result = await pipeline.run("do thing");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(fallbackCalls, 1);
+  assert.equal(builder.calls, 2);
+});
+
 test("SmartPipeline performs one architect repair and no retry-budget increment on ENOENT apply failures", { concurrency: false }, async () => {
   class EnoentApplyFailBuilder extends StubBuilderRunner {
     async run(): Promise<BuilderRunResult> {
@@ -2653,6 +2740,110 @@ test(
         && event.data.action === "fail_closed",
     );
     assert.ok(failClosedEvent);
+  },
+);
+
+test(
+  "SmartPipeline switches builder phase agent after repeated deterministic patch parsing failures",
+  { concurrency: false },
+  async () => {
+    class RepeatedDeterministicParseFailThenPassBuilder extends StubBuilderRunner {
+      async run(): Promise<BuilderRunResult> {
+        this.calls += 1;
+        if (this.calls <= 2) {
+          const failure: PatchApplyFailure = {
+            source: "builder_patch_processing",
+            error:
+              "Patch parsing failed. initial=Patch output is not valid JSON; retry=Patch payload includes empty patches array",
+            patches: [],
+            rollback: { attempted: false, ok: true },
+            rawOutput: "invalid patch output",
+          };
+          throw new PatchApplyError(failure);
+        }
+        return { finalMessage: { role: "assistant", content: "done" }, messages: [], toolCallsExecuted: 0 };
+      }
+    }
+
+    const architect = {
+      calls: 0,
+      async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+        this.calls += 1;
+        return {
+          plan: {
+            ...basePlan,
+            target_files: ["src/example.ts"],
+          },
+          warnings: [],
+        };
+      },
+      async plan(): Promise<Plan> {
+        this.calls += 1;
+        return {
+          ...basePlan,
+          target_files: ["src/example.ts"],
+        };
+      },
+    };
+
+    const contextA: ContextBundle = {
+      ...baseContext,
+      selection: {
+        focus: ["src/example.ts"],
+        periphery: [],
+        all: ["src/example.ts"],
+        low_confidence: false,
+      },
+      files: [
+        {
+          path: "src/example.ts",
+          role: "focus",
+          content: "export const value = 1;\n",
+          size: 24,
+          truncated: false,
+          sliceStrategy: "full",
+          origin: "docdex",
+        },
+      ],
+    };
+    const contextB: ContextBundle = {
+      ...contextA,
+      queries: ["repair-pass"],
+    };
+
+    const logger = new StubLogger();
+    const builder = new RepeatedDeterministicParseFailThenPassBuilder();
+    const assembler = new StubContextAssembler([contextA, contextB]);
+    let fallbackCalls = 0;
+    const pipeline = new SmartPipeline({
+      contextAssembler: assembler as any,
+      architectPlanner: architect as any,
+      builderRunner: builder as any,
+      criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+      memoryWriteback: new StubMemoryWriteback() as any,
+      logger: logger as any,
+      maxRetries: 3,
+      onPhaseProviderFailure: async ({ phase, error }) => {
+        if (phase !== "builder") return { switched: false };
+        fallbackCalls += 1;
+        if (fallbackCalls > 1) return { switched: false };
+        assert.match(error.message, /patch parsing failure/i);
+        return { switched: true, note: "fallback switched for deterministic patch parse failure" };
+      },
+    });
+
+    const result = await pipeline.run("Update src/example.ts");
+    assert.equal(result.criticResult.status, "PASS");
+    assert.equal(builder.calls, 3);
+    assert.equal(architect.calls, 2);
+    assert.equal(fallbackCalls, 1);
+    const fallbackEvent = logger.events.find(
+      (event) =>
+        event.type === "phase_provider_fallback"
+        && event.data.phase === "builder"
+        && event.data.reason === "deterministic_patch_parse",
+    );
+    assert.ok(fallbackEvent);
   },
 );
 

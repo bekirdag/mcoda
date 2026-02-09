@@ -184,6 +184,43 @@ test("codali run --smart executes smart pipeline with stub provider", { concurre
   assert.match(result.stderr ?? "", /Preflight/);
 });
 
+test("codali run --smart exits non-zero when smart pipeline fails", { concurrency: false }, () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-run-smart-fail-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));
+  const taskFile = path.join(workspaceRoot, "task.txt");
+  const srcDir = path.join(workspaceRoot, "src");
+  writeFileSync(taskFile, "update the homepage", "utf8");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(path.join(srcDir, "main.ts"), "const value = 1;\n", "utf8");
+
+  const result = runCodali(
+    [
+      "run",
+      "--smart",
+      "--no-deep-investigation",
+      "--workspace-root",
+      workspaceRoot,
+      "--provider",
+      "stub",
+      "--model",
+      "stub-model",
+      "--interpreter-provider",
+      "stub",
+      "--interpreter-model",
+      "stub-model",
+      "--task",
+      taskFile,
+    ],
+    buildSmartEnv(homeDir),
+  );
+
+  assert.notEqual(result.status, 0, "smart pipeline failure should return non-zero exit status");
+  assert.match(
+    result.stderr ?? "",
+    /(Smart pipeline failed|Architect quality gate failed|patch_apply_failed|ENOENT: no such file or directory)/i,
+  );
+});
+
 test("codali run accepts inline task input", { concurrency: false }, () => {
   const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-run-inline-"));
   const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));

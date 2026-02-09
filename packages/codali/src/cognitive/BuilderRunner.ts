@@ -253,6 +253,23 @@ export class BuilderRunner {
     this.options = options;
   }
 
+  setProvider(
+    provider: Provider,
+    options: {
+      model?: string;
+      temperature?: number;
+      responseFormat?: ProviderResponseFormat;
+    } = {},
+  ): void {
+    this.options = {
+      ...this.options,
+      provider,
+      model: options.model ?? this.options.model,
+      temperature: options.temperature ?? this.options.temperature,
+      responseFormat: options.responseFormat ?? this.options.responseFormat,
+    };
+  }
+
   private isToolSupportError(message: string): boolean {
     const normalized = message.toLowerCase();
     return (

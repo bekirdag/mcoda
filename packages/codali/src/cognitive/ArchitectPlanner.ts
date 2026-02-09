@@ -525,17 +525,62 @@ const targetFilesFromContext = (context: ContextBundle): string[] => {
   return combined.length > 0 ? combined : ["unknown"];
 };
 
+const VERIFICATION_COMMAND_PATTERN =
+  /\b(pnpm|npm|yarn|bun|node|jest|vitest|mocha|ava|pytest|cargo|go|dotnet|mvn|gradle)\b.*\b(test|tests?|spec|check)\b/i;
+const VERIFICATION_ACTION_PATTERN =
+  /\b(run|execute|verify|check|assert|validate|curl|open|visit|navigate|request|hit|test|perform)\b/i;
+const VERIFICATION_TYPE_PATTERN =
+  /\b(unit|integration|component|e2e|end[- ]to[- ]end|api|curl|httpie|wget|browser|manual)\b/i;
+const VERIFICATION_HTTP_URL_PATTERN = /\bhttps?:\/\/\S+/i;
+
+const isConcreteVerificationStep = (step: string): boolean => {
+  const value = step.trim();
+  if (!value) return false;
+  if (VERIFICATION_COMMAND_PATTERN.test(value)) return true;
+  if (/\bcurl\b/i.test(value) && VERIFICATION_HTTP_URL_PATTERN.test(value)) return true;
+  if (/\b(open|visit|navigate)\b/i.test(value) && /\b(browser|localhost|https?:\/\/)\b/i.test(value)) {
+    return true;
+  }
+  return VERIFICATION_ACTION_PATTERN.test(value) && VERIFICATION_TYPE_PATTERN.test(value);
+};
+
 const fallbackVerification = (context: ContextBundle, targetFiles: string[], createTargets: string[]): string[] => {
+  const normalizedRequest = compactWhitespace(context.request ?? "");
+  const requestTarget = normalizedRequest.length > 0 ? normalizedRequest : "the requested behavior";
+  const targetList = targetFiles.length > 0 ? targetFiles.join(", ") : requestTarget;
   const checks: string[] = [];
   if (createTargets.length > 0) {
-    checks.push(`Confirm new file wiring and imports for: ${createTargets.join(", ")}.`);
+    checks.push(`Run unit/integration tests that cover new file wiring for: ${createTargets.join(", ")}.`);
   }
   if (ENDPOINT_INTENT_PATTERN.test(context.request ?? "")) {
-    checks.push("Add/update endpoint tests for status code and response payload contract.");
-    checks.push("Run a manual endpoint check to confirm healthy response semantics.");
+    checks.push(`Run unit/integration tests for API behavior covering: ${targetList}.`);
+    checks.push("Run manual API check: curl -sf http://localhost:3000 and verify endpoint response semantics.");
+  } else {
+    checks.push(`Run unit/integration tests that cover: ${targetList}.`);
+    checks.push(
+      `Run manual browser check: open http://localhost:3000 and verify "${requestTarget}" in the affected UI.`,
+    );
   }
-  checks.push("Run the repository tests that cover all target files.");
   return uniqueStrings(checks);
+};
+
+const normalizeVerificationSteps = (
+  context: ContextBundle,
+  targetFiles: string[],
+  createTargets: string[],
+  verification: string[] | undefined,
+): string[] => {
+  const normalized = normalizeStrings((verification ?? []).map((entry) => entry.trim()).filter(Boolean));
+  if (normalized.length === 0) {
+    return fallbackVerification(context, targetFiles, createTargets);
+  }
+  if (normalized.some((step) => isConcreteVerificationStep(step))) {
+    return normalized;
+  }
+  return uniqueStrings([
+    ...fallbackVerification(context, targetFiles, createTargets),
+    ...normalized,
+  ]);
 };
 
 const fallbackSteps = (context: ContextBundle): string[] => {
@@ -618,22 +663,27 @@ const coercePlan = (
     toStringArray(record.tests) ??
     toStringArray(record.validate) ??
     undefined;
+  const resolvedTargets =
+    targetFiles && targetFiles.length > 0 ? targetFiles : deriveFallbackTargetFiles(context);
+  const explicitCreateTargets =
+    createFiles && createFiles.length > 0
+      ? uniqueStrings(createFiles.map((entry) => normalizePath(entry)))
+      : [];
+  const verificationCreateTargets = explicitCreateTargets.length > 0
+    ? explicitCreateTargets
+    : computeCreateTargets(context, resolvedTargets);
 
   const plan: Plan = {
     steps: steps && steps.length > 0 ? steps : fallbackSteps(context),
-    target_files: targetFiles && targetFiles.length > 0 ? targetFiles : deriveFallbackTargetFiles(context),
-    create_files: createFiles && createFiles.length > 0 ? createFiles : undefined,
+    target_files: resolvedTargets,
+    create_files: explicitCreateTargets.length > 0 ? explicitCreateTargets : undefined,
     risk_assessment: risk && risk.length > 0 ? risk : "medium: fallback plan generated from context",
-    verification:
-      verification && verification.length > 0
-        ? verification
-        : (() => {
-            const targets = targetFiles && targetFiles.length > 0
-              ? targetFiles
-              : deriveFallbackTargetFiles(context);
-            const createTargets = computeCreateTargets(context, targets);
-            return fallbackVerification(context, targets, createTargets);
-          })(),
+    verification: normalizeVerificationSteps(
+      context,
+      resolvedTargets,
+      verificationCreateTargets,
+      verification,
+    ),
   };
 
   if (!steps || steps.length === 0) warnings.push("plan_missing_steps");
@@ -914,14 +964,21 @@ const parsePlanDsl = (
     target_files: targets.length > 0 ? targets : deriveFallbackTargetFiles(context),
     create_files: createFiles.length > 0 ? uniqueStrings(createFiles.map((entry) => normalizePath(entry))) : undefined,
     risk_assessment: risk && risk.length > 0 ? risk : "medium: fallback plan generated from context",
-    verification:
-      verification.length > 0
-        ? verification
-        : (() => {
-            const resolvedTargets = targets.length > 0 ? targets : deriveFallbackTargetFiles(context);
-            const createTargets = computeCreateTargets(context, resolvedTargets);
-            return fallbackVerification(context, resolvedTargets, createTargets);
-          })(),
+    verification: (() => {
+      const resolvedTargets = targets.length > 0 ? targets : deriveFallbackTargetFiles(context);
+      const explicitCreateTargets = createFiles.length > 0
+        ? uniqueStrings(createFiles.map((entry) => normalizePath(entry)))
+        : [];
+      const verificationCreateTargets = explicitCreateTargets.length > 0
+        ? explicitCreateTargets
+        : computeCreateTargets(context, resolvedTargets);
+      return normalizeVerificationSteps(
+        context,
+        resolvedTargets,
+        verificationCreateTargets,
+        verification,
+      );
+    })(),
   };
   return { plan, warnings };
 };
