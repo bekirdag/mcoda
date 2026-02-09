@@ -108,6 +108,22 @@ class EmptySearchDocdexClient extends FakeDocdexClient {
   }
 }
 
+class PatchMemoryBiasDocdexClient extends FakeDocdexClient {
+  async memoryRecall(): Promise<unknown> {
+    return {
+      results: [
+        {
+          content:
+            "When prompted as Patch Interpreter, output must be JSON only with a top-level patches array.",
+        },
+        {
+          content: "src/index.ts is the primary file for formatting changes.",
+        },
+      ],
+    };
+  }
+}
+
 class StubProvider implements Provider {
   name = "stub";
   constructor(private response: ProviderResponse) {}
@@ -175,6 +191,19 @@ test("ContextAssembler builds a complete context bundle", { concurrency: false }
   assert.equal(bundle.preferences_detected.length, 0);
   assert.equal(bundle.memory[0]?.text, "src/index.ts is the primary file for formatting changes.");
   assert.equal(bundle.profile[0]?.content, "use async/await");
+});
+
+test("ContextAssembler filters patch-interpreter memory for non-patch requests", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-memory-filter-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  const client = new PatchMemoryBiasDocdexClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, { maxQueries: 2, workspaceRoot: tmpDir, readStrategy: "fs" });
+  const bundle = await assembler.assemble("Update src/index.ts formatting");
+
+  assert.equal(bundle.memory.length, 1);
+  assert.match(bundle.memory[0]?.text ?? "", /src\/index\.ts/);
+  assert.ok(!bundle.memory.some((entry) => /patch interpreter/i.test(entry.text)));
 });
 
 test("ContextAssembler clamps depth options and logs warnings", { concurrency: false }, async () => {

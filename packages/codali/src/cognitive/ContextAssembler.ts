@@ -1545,6 +1545,10 @@ const MEMORY_STALE_MARKER_PATTERN = /\b(superseded|obsolete|deprecated|outdated|
 const MEMORY_POLICY_MARKER_PATTERN =
   /\b(write policy|allow_write_paths|read_only_paths|allowed write paths|read-only paths)\b/i;
 const MEMORY_TASK_MARKER_PATTERN = /\btask[-_\s]*[a-z0-9-]{4,}\b/i;
+const MEMORY_PATCH_INTERPRETER_PATTERN =
+  /\b(patch interpreter|patch payload|top-level "patches"|top-level "files"|respond with json only|schema[- ]only|file_writes|search_replace)\b/i;
+const REQUEST_PATCH_WORKFLOW_PATTERN =
+  /\b(patch|interpreter|schema|json|builder output|search_replace|file_writes)\b/i;
 const MEMORY_TOKEN_PATTERN = /[a-z0-9_./-]{3,}/gi;
 const MEMORY_STOP_WORDS = new Set([
   "the",
@@ -1681,6 +1685,7 @@ const filterRelevantMemoryFacts = (
   );
   const requestTokens = extractMemoryTokens(request);
   const focusTokens = extractPathTokens(focusPaths);
+  const requestPatchWorkflow = REQUEST_PATCH_WORKFLOW_PATTERN.test(request.toLowerCase());
   const scored = entries.map((entry) => {
     const text = entry.text.toLowerCase();
     const memoryTokens = extractMemoryTokens(entry.text);
@@ -1695,6 +1700,9 @@ const filterRelevantMemoryFacts = (
     }
     if (MEMORY_TASK_MARKER_PATTERN.test(text) && overlapRequest === 0 && overlapFocus === 0) {
       score -= 2;
+    }
+    if (MEMORY_PATCH_INTERPRETER_PATTERN.test(text) && !requestPatchWorkflow) {
+      score -= 8;
     }
     const pathHint = extractPathHint(entry.text);
     if (pathHint && normalizedFocusPaths.has(pathHint)) {
@@ -1713,6 +1721,13 @@ const filterRelevantMemoryFacts = (
   const kept = scored
     .filter((candidate) => {
       if (normalizedFocusPaths.size === 0 && requestTokens.size === 0) return true;
+      const loweredText = candidate.entry.text.toLowerCase();
+      if (MEMORY_PATCH_INTERPRETER_PATTERN.test(loweredText) && !requestPatchWorkflow) {
+        const hint = extractPathHint(candidate.entry.text);
+        if (!(hint && normalizedFocusPaths.has(hint))) {
+          return false;
+        }
+      }
       const minScore = normalizedFocusPaths.size > 0 ? 2 : 3;
       if (candidate.score >= minScore) return true;
       if (normalizedFocusPaths.size > 0) {

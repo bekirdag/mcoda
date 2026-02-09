@@ -57,6 +57,11 @@ const STRUCTURED_OUTPUT_CAPABILITIES = [
   "structured_output",
 ];
 
+const PATCH_JSON_EXECUTION_CAPABILITIES = [
+  "iterative_coding",
+  "simple_refactor",
+];
+
 type AgentReadiness = {
   authConfigured?: boolean;
   healthStatus?: "healthy" | "degraded" | "unreachable";
@@ -109,7 +114,9 @@ const scoreAgent = (
   const capHits = countMatches(capabilities, PHASE_CAPABILITIES[phase]);
   const requiredHits = countMatches(capabilities, PHASE_REQUIRED_CAPS[phase]);
   const structuredHits = countMatches(capabilities, STRUCTURED_OUTPUT_CAPABILITIES);
+  const patchExecutionHits = countMatches(capabilities, PATCH_JSON_EXECUTION_CAPABILITIES);
   const usageBoost = agent.bestUsage && PHASE_BEST_USAGE[phase].includes(agent.bestUsage) ? 2 : 0;
+  const patchJsonBuilder = phase === "builder" && builderMode === "patch_json";
 
   let score = 0;
   if (phase === "architect" || phase === "critic" || phase === "interpreter") {
@@ -123,18 +130,23 @@ const scoreAgent = (
   score += capHits * 4;
   if (capHits === 0) score -= 3;
   score += requiredHits * 2;
+  if (patchJsonBuilder) score += requiredHits * 3;
   score += usageBoost;
-  if (phase === "builder" && builderMode === "patch_json") {
-    score += structuredHits * 8;
-    if (structuredHits === 0) score -= 12;
-    if (agent.supportsTools === false) score -= 12;
+  if (patchJsonBuilder) {
+    score += structuredHits * 14;
+    score += patchExecutionHits * 4;
+    if (structuredHits === 0) score -= 24;
+    if (patchExecutionHits === 0) score -= 8;
+    if (requiredHits === 0) score -= 12;
+    if (agent.supportsTools === false) score -= 14;
+    else score += 3;
   }
 
   const prefersStructuredBuilder =
-    phase === "builder" && builderMode === "patch_json" && structuredHits > 0;
+    patchJsonBuilder && structuredHits > 0;
   const costPenalty =
     phase === "builder"
-      ? prefersStructuredBuilder ? 1.5 : 5
+      ? prefersStructuredBuilder ? 1.5 : patchJsonBuilder ? 2 : 5
       : phase === "librarian" ? 4 : phase === "architect" ? 1.5 : 1;
   if (phase === "builder") {
     score -= cost * costPenalty;

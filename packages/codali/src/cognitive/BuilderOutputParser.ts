@@ -21,6 +21,13 @@ export interface PatchPayload {
   patches: PatchAction[];
 }
 
+export const PATCHES_ARRAY_MISSING_ERROR = "Patch payload is missing required 'patches' array";
+export const PATCHES_ARRAY_TYPE_ERROR = "Patch payload field 'patches' must be an array";
+export const PATCHES_ARRAY_EMPTY_ERROR = "Patch payload includes empty patches array";
+export const FILES_ARRAY_MISSING_ERROR = "Patch payload is missing required 'files' array";
+export const FILES_ARRAY_TYPE_ERROR = "Patch payload field 'files' must be an array";
+export const FILES_ARRAY_EMPTY_ERROR = "Patch payload includes empty files array";
+
 const extractJsonCandidate = (raw: string): string | undefined => {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
@@ -100,11 +107,17 @@ const parseSearchReplacePayload = (payload: unknown): PatchPayload => {
   if (!payload || typeof payload !== "object") {
     throw new Error("Patch payload must be an object");
   }
-  const patches = (payload as { patches?: unknown }).patches;
-  if (!Array.isArray(patches) || patches.length === 0) {
-    throw new Error("Patch payload must include patches array");
+  const patchesRaw = (payload as { patches?: unknown }).patches;
+  if (patchesRaw === undefined) {
+    throw new Error(PATCHES_ARRAY_MISSING_ERROR);
   }
-  const parsed = patches.map((entry) => {
+  if (!Array.isArray(patchesRaw)) {
+    throw new Error(PATCHES_ARRAY_TYPE_ERROR);
+  }
+  if (patchesRaw.length === 0) {
+    throw new Error(PATCHES_ARRAY_EMPTY_ERROR);
+  }
+  const parsed = patchesRaw.map((entry) => {
     if (!entry || typeof entry !== "object") {
       throw new Error("Patch entry must be an object");
     }
@@ -121,11 +134,20 @@ const parseFileWritesPayload = (payload: unknown): PatchPayload => {
   if (Array.isArray(record.patches) && record.patches.length > 0) {
     return parseSearchReplacePayload(payload);
   }
-  const files = record.files;
-  if (!Array.isArray(files) || files.length === 0) {
-    throw new Error("Patch payload must include files array");
+  if (Array.isArray(record.patches) && record.patches.length === 0 && record.files === undefined) {
+    throw new Error(PATCHES_ARRAY_EMPTY_ERROR);
   }
-  const patches: PatchAction[] = files.map((entry) => {
+  const filesRaw = record.files;
+  if (filesRaw === undefined) {
+    throw new Error(FILES_ARRAY_MISSING_ERROR);
+  }
+  if (!Array.isArray(filesRaw)) {
+    throw new Error(FILES_ARRAY_TYPE_ERROR);
+  }
+  if (filesRaw.length === 0) {
+    throw new Error(FILES_ARRAY_EMPTY_ERROR);
+  }
+  const patches: PatchAction[] = filesRaw.map((entry) => {
     if (!entry || typeof entry !== "object") {
       throw new Error("Patch file entry must be an object");
     }
