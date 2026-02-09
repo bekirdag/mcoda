@@ -263,6 +263,26 @@ class NeedsContextProvider implements Provider {
   }
 }
 
+class ProseNeedsContextProvider implements Provider {
+  name = "prose-needs-context";
+
+  async generate(_request: ProviderRequest): Promise<ProviderResponse> {
+    return {
+      message: {
+        role: "assistant",
+        content:
+          "I need more context before patching.\n" +
+          JSON.stringify({
+            needs_context: true,
+            queries: ["auth flow"],
+            files: ["src/auth.ts"],
+            reason: "missing auth handler",
+          }),
+      },
+    };
+  }
+}
+
 class FreeformProvider implements Provider {
   name = "freeform";
   lastRequest?: ProviderRequest;
@@ -293,6 +313,37 @@ class InvalidPatchProvider implements Provider {
   }
 }
 
+class RetryProsePatchProvider implements Provider {
+  name = "retry-prose-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        message: {
+          role: "assistant",
+          content: "I reviewed the files and prepared a summary.",
+        },
+      };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/example.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 6;",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
 class MissingTargetPatchProvider implements Provider {
   name = "missing-target-patch";
   calls = 0;
@@ -306,6 +357,29 @@ class MissingTargetPatchProvider implements Provider {
             {
               action: "replace",
               file: "src/missing.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 2;",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
+class PlaceholderPatchProvider implements Provider {
+  name = "placeholder-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "path/to/file.ts",
               search_block: "const value = 1;",
               replace_block: "const value = 2;",
             },
@@ -417,6 +491,11 @@ test("BuilderRunner prepends context history when configured", { concurrency: fa
   const contextManager = new ContextManager({ config: makeConfig(), store });
   const lane = await contextManager.getLane({ jobId: "job-builder", taskId: "task-builder", role: "builder" });
   await contextManager.append(lane.id, { role: "assistant", content: "prior context" }, { role: "builder" });
+  await contextManager.append(
+    lane.id,
+    { role: "system", content: "system context that should be filtered in patch_json mode" },
+    { role: "builder" },
+  );
 
   const registry = new ToolRegistry();
   const toolContext: ToolContext = { workspaceRoot };
@@ -438,6 +517,9 @@ test("BuilderRunner prepends context history when configured", { concurrency: fa
   await builder.run(plan, contextBundle);
   const messages = provider.lastRequest?.messages ?? [];
   assert.ok(messages.some((msg) => msg.content.includes("prior context")));
+  assert.ok(
+    !messages.some((msg) => msg.content.includes("system context that should be filtered in patch_json mode")),
+  );
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -470,7 +552,7 @@ test("BuilderRunner applies patch_json output without tool calls", { concurrency
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
-test("BuilderRunner runs interpreter precheck for patch_json when configured", { concurrency: false }, async () => {
+test("BuilderRunner parses valid patch_json output directly without interpreter conversion", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
   await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
@@ -493,7 +575,7 @@ test("BuilderRunner runs interpreter precheck for patch_json when configured", {
   await builder.run(plan, contextBundle);
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.match(updated, /const value = 2;/);
-  assert.equal(interpreter.calls, 1);
+  assert.equal(interpreter.calls, 0);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -643,6 +725,37 @@ test("BuilderRunner retries search_replace on invalid payload", { concurrency: f
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
+test("BuilderRunner skips interpreter conversion for prose patch_json output and retries builder", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new RetryProsePatchProvider();
+  const interpreter = new PassThroughInterpreter();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter,
+    fallbackToInterpreter: true,
+  });
+
+  await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.match(updated, /const value = 6;/);
+  assert.equal(provider.calls, 2);
+  assert.equal(interpreter.calls, 0);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
 test("BuilderRunner falls back to search_replace when file_writes retry fails", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
@@ -726,7 +839,7 @@ test("BuilderRunner rejects patches that target read-only paths", { concurrency:
   await assert.rejects(() => builder.run(plan, bundle), /disallowed files/i);
 });
 
-test("BuilderRunner allows non-read-only edits when allow list is empty", { concurrency: false }, async () => {
+test("BuilderRunner rejects edits outside architect plan targets when allow list is empty", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-allowall-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
 
@@ -750,7 +863,40 @@ test("BuilderRunner allows non-read-only edits when allow list is empty", { conc
     read_only_paths: ["docs/sds"],
   };
 
-  await builder.run(plan, bundle);
+  await assert.rejects(() => builder.run(plan, bundle), /disallowed files/i);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner allows non-read-only edits when plan has no concrete targets and allow list is empty", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-allowall-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const patchApplier = new PatchApplier({ workspaceRoot });
+  const builder = new BuilderRunner({
+    provider: new AnyFileWriteProvider(),
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "file_writes",
+    patchApplier,
+    interpreter: new PassThroughInterpreter(),
+  });
+  const bundle: ContextBundle = {
+    ...contextBundle,
+    allow_write_paths: [],
+    read_only_paths: ["docs/sds"],
+  };
+  const planWithoutConcreteTargets: Plan = {
+    ...plan,
+    target_files: ["unknown"],
+  };
+
+  await builder.run(planWithoutConcreteTargets, bundle);
   const updated = await readFile(path.join(workspaceRoot, "src/other.ts"), "utf8");
   assert.match(updated, /export const other/);
 
@@ -818,6 +964,37 @@ test("BuilderRunner returns context request without applying patches", { concurr
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
+test("BuilderRunner patch_json ignores prose+JSON context requests and fails patch parsing", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-prose-needs-context-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const builder = new BuilderRunner({
+    provider: new ProseNeedsContextProvider(),
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /patch payload must include patches array|patch parsing failed/i);
+      return true;
+    },
+  );
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.equal(updated.trim(), "const value = 1;");
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
 test("BuilderRunner surfaces ENOENT apply failures as PatchApplyError without retrying provider calls", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-missing-target-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
@@ -837,12 +1014,49 @@ test("BuilderRunner surfaces ENOENT apply failures as PatchApplyError without re
     patchApplier: new PatchApplier({ workspaceRoot }),
     interpreter: new PassThroughInterpreter(),
   });
+  const planMissingTarget: Plan = {
+    ...plan,
+    target_files: ["src/missing.ts"],
+  };
+
+  await assert.rejects(
+    () => builder.run(planMissingTarget, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /(enoent|no such file|missing)/i);
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner surfaces placeholder patch outputs as PatchApplyError", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-placeholder-target-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new PlaceholderPatchProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
 
   await assert.rejects(
     () => builder.run(plan, contextBundle),
     (error) => {
       assert.ok(error instanceof PatchApplyError);
-      assert.match(error.details.error, /(enoent|no such file|missing)/i);
+      assert.match(error.details.error, /placeholder file paths/i);
       return true;
     },
   );

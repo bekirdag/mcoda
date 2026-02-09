@@ -194,6 +194,37 @@ const TOOL_QUOTA_CATEGORY_MAP: Record<string, keyof DeepInvestigationToolQuotaCo
   "docdex.dag_export": "dagExport",
 };
 
+const QUOTA_MISSING_WARNING_PREFIXES: Record<
+  keyof DeepInvestigationToolQuotaConfig,
+  string[]
+> = {
+  search: ["research_docdex_search_failed"],
+  openOrSnippet: ["research_docdex_open_failed", "research_docdex_snippet_failed"],
+  symbolsOrAst: ["research_docdex_symbols_failed", "research_docdex_ast_failed"],
+  impact: ["research_docdex_impact_failed", "research_docdex_impact_diagnostics_failed"],
+  tree: ["research_docdex_tree_failed"],
+  dagExport: ["research_docdex_dag_export_failed"],
+};
+
+const warningMatchesPrefix = (warning: string, prefix: string): boolean =>
+  warning === prefix || warning.startsWith(`${prefix}:`);
+
+const isRecoverableQuotaFailure = (
+  quotaAssessment: ToolQuotaAssessment,
+  warnings: string[],
+): boolean => {
+  if (quotaAssessment.ok) return false;
+  const warningList = uniqueStrings(warnings);
+  if (warningList.length === 0) return false;
+  return quotaAssessment.missing.every((category) => {
+    const prefixes = QUOTA_MISSING_WARNING_PREFIXES[category] ?? [];
+    if (prefixes.length === 0) return false;
+    return warningList.some((warning) =>
+      prefixes.some((prefix) => warningMatchesPrefix(warning, prefix)),
+    );
+  });
+};
+
 const resolveToolQuota = (
   override?: Partial<DeepInvestigationToolQuotaConfig>,
 ): DeepInvestigationToolQuotaConfig => ({
@@ -367,6 +398,16 @@ const mergeResearchEvidence = (
   };
 };
 
+const isWarningsOnlyEvidenceGateFailure = (
+  evidenceGate: EvidenceGateAssessment | undefined,
+): boolean => {
+  if (!evidenceGate || evidenceGate.status === "pass") return false;
+  const missing = evidenceGate.missing ?? [];
+  if (missing.length === 0) return false;
+  if (missing.some((signal) => signal !== "warnings")) return false;
+  return (evidenceGate.gaps?.length ?? 0) === 0;
+};
+
 const buildResearchSummary = (
   phase?: ResearchPhaseResult,
 ): ContextResearchSummary | undefined => {
@@ -446,6 +487,45 @@ const isBlockingArchitectWarning = (warning: string): boolean => {
   if (warning.startsWith("architect_output_repair_reason:")) return true;
   if (warning.startsWith("plan_missing_")) return true;
   return true;
+};
+
+const NON_FATAL_PRE_BUILDER_WARNING_PATTERNS = [
+  /^architect_degraded_/i,
+  /^architect_retry_skipped_no_new_context$/i,
+  /^architect_invalid_targets$/i,
+  /^architect_plan_quality_warning$/i,
+];
+
+const isFatalArchitectWarningBeforeBuilder = (warning: string): boolean => {
+  if (NON_FATAL_PRE_BUILDER_WARNING_PATTERNS.some((pattern) => pattern.test(warning))) return false;
+  return isBlockingArchitectWarning(warning);
+};
+
+const REPAIRED_FALLBACK_WARNING_PATTERNS = [
+  /^architect_output_used_json_fallback$/i,
+  /^architect_output_repaired$/i,
+  /^architect_output_repair_reason:(json_fallback|dsl_missing_fields|classifier)$/i,
+];
+
+const NON_FATAL_REPAIRED_FALLBACK_WARNING_PATTERNS = [
+  /^architect_output_not_object$/i,
+  /^architect_output_adapted_to_request$/i,
+  /^plan_missing_/i,
+  /^architect_output_repair_reason:/i,
+  new RegExp(`^${ARCHITECT_WARNING_NON_DSL}$`, "i"),
+  new RegExp(`^${ARCHITECT_WARNING_MISSING_REQUIRED_SECTIONS}$`, "i"),
+];
+
+const collectPreBuilderBlockingWarnings = (warnings: string[]): string[] => {
+  const repairedFallback = warnings.some((warning) =>
+    REPAIRED_FALLBACK_WARNING_PATTERNS.some((pattern) => pattern.test(warning))
+  );
+  return warnings.filter((warning) => {
+    if (!isFatalArchitectWarningBeforeBuilder(warning)) return false;
+    if (!repairedFallback) return true;
+    if (NON_FATAL_REPAIRED_FALLBACK_WARNING_PATTERNS.some((pattern) => pattern.test(warning))) return false;
+    return true;
+  });
 };
 
 const hashArchitectResult = (result: ArchitectPlanResult): string => {
@@ -1253,7 +1333,17 @@ const isConcreteTargetPath = (target: string): boolean => {
 
 const isDeterministicPatchApplyFailure = (failure: PatchApplyFailure): boolean => {
   const message = `${failure.error} ${failure.source}`.toLowerCase();
-  return message.includes("enoent") || message.includes("no such file or directory");
+  if (message.includes("enoent") || message.includes("no such file or directory")) return true;
+  if (message.includes("search block not found")) return true;
+  if (message.includes("replace block not found")) return true;
+  if (message.includes("patch parsing failed")) return true;
+  if (message.includes("patch payload must include patches array")) return true;
+  if (message.includes("patch output is not valid json")) return true;
+  if (message.includes("patch output is empty")) return true;
+  if (message.includes("patch field")) return true;
+  if (message.includes("placeholder file paths")) return true;
+  if (message.includes("disallowed files")) return true;
+  return false;
 };
 
 type PlanQualityGate = {
@@ -1570,13 +1660,35 @@ const buildQualityDegradedPlan = (request: string, context: ContextBundle, prior
       : false
   );
   const priorHasUnresolvedTargets = unresolvedPriorTargets.length > 0;
+  const focusTargets = uniqueStrings(
+    (context.selection?.focus ?? [])
+      .filter((target) => isConcreteTargetPath(target))
+      .map((target) => normalizePath(target)),
+  );
+  const requestKeywords = extractRequestAnchors(request).keywords;
+  const docPathPattern = /(^|\/)(docs?|openapi|specs?)\//i;
+  const testPathPattern = /(^|\/)(__tests__|tests?|test)\//i;
+  const scoreContextTarget = (target: string): number => {
+    const normalized = normalizePath(target).toLowerCase();
+    let score = 0;
+    if (focusTargets.includes(target)) score += 4;
+    for (const keyword of requestKeywords) {
+      if (normalized.includes(keyword)) score += 2;
+    }
+    if (normalized.includes("/src/") || normalized.startsWith("src/")) score += 1;
+    if (docPathPattern.test(normalized) || /\.(md|mdx|txt|rst|ya?ml)$/i.test(normalized)) score -= 3;
+    if (testPathPattern.test(normalized) || /\.(test|spec)\.[^.]+$/i.test(normalized)) score -= 1;
+    return score;
+  };
   const contextTargets = uniqueStrings(
     [
-      ...((context.selection?.focus ?? []).filter((target) => isConcreteTargetPath(target))),
+      ...focusTargets,
       ...((context.selection?.all ?? []).filter((target) => isConcreteTargetPath(target))),
       ...((context.files ?? []).map((entry) => entry.path).filter((target) => isConcreteTargetPath(target))),
     ].map((target) => normalizePath(target)),
-  );
+  )
+    .sort((left, right) => scoreContextTarget(right) - scoreContextTarget(left))
+    .slice(0, 4);
   const fallbackTargets = uniqueStrings(
     [
       ...(priorPlan.target_files ?? [])
@@ -1598,7 +1710,7 @@ const buildQualityDegradedPlan = (request: string, context: ContextBundle, prior
       ...explicitCreateTargets,
     ].filter(Boolean),
   );
-  const targets = fallbackTargets.length > 0 ? fallbackTargets.slice(0, 6) : [];
+  const targets = fallbackTargets.length > 0 ? fallbackTargets.slice(0, 4) : [];
   const targetSet = new Set(targets.map((target) => target.toLowerCase()));
   const createTargets = explicitCreateTargets.filter((target) => targetSet.has(target.toLowerCase()));
   const normalizedRequest = request.trim() || "the requested change";
@@ -1866,10 +1978,16 @@ export class SmartPipeline {
           `budget_unmet:cycles=${budgetStatus?.cycles ?? 0}/${budgetStatus?.minCycles ?? 0},elapsed_s=${Math.round((budgetStatus?.elapsedMs ?? 0) / 1000)}/${budgetStatus?.minSeconds ?? 0}`,
         );
       }
-      if (phase.evidenceGate?.status && phase.evidenceGate.status !== "pass") {
+      if (
+        phase.evidenceGate?.status
+        && phase.evidenceGate.status !== "pass"
+        && !isWarningsOnlyEvidenceGateFailure(phase.evidenceGate)
+      ) {
         blockers.push(
           `evidence_unmet:${(phase.evidenceGate.missing ?? []).join(",")}`,
         );
+      } else if (isWarningsOnlyEvidenceGateFailure(phase.evidenceGate)) {
+        blockers.push("evidence_warning_threshold_exceeded");
       }
       const warningList = uniqueStrings([
         ...(phase.warnings ?? []),
@@ -2154,13 +2272,20 @@ export class SmartPipeline {
               toolRuns,
               resolvedQuota,
             );
+            const quotaRecoverable = isRecoverableQuotaFailure(
+              quotaAssessment,
+              warnings,
+            );
+            const quotaMet = quotaAssessment.ok || quotaRecoverable;
             const budgetMet = cycles >= minCycles && elapsedMs >= minSeconds * 1000;
             const { evidence, toolUsage, evidenceGate } =
               buildEvidenceGateAssessment();
-            const evidenceMet = evidenceGate.status === "pass";
-            const needsMore = !budgetMet || !quotaAssessment.ok || !evidenceMet;
+            const evidenceMet =
+              evidenceGate.status === "pass"
+              || isWarningsOnlyEvidenceGateFailure(evidenceGate);
+            const needsMore = !budgetMet || !quotaMet || !evidenceMet;
             if (
-              quotaAssessment.ok
+              quotaMet
               && evidenceMet
               && !budgetMet
               && minSeconds > 0
@@ -2262,7 +2387,7 @@ export class SmartPipeline {
                   };
                 }
               }
-              if (needsMore && cycles >= minCycles && evidenceMet && quotaAssessment.ok) {
+              if (needsMore && cycles >= minCycles && evidenceMet && quotaMet) {
                 return {
                   status: "completed",
                   startedAt: researchStartedAt,
@@ -2331,6 +2456,14 @@ export class SmartPipeline {
         researchPhase.toolRuns,
         resolvedQuota,
       );
+      const quotaRecoverable = isRecoverableQuotaFailure(
+        quotaAssessment,
+        uniqueStrings([
+          ...(researchPhase.warnings ?? []),
+          ...(researchPhase.evidenceGate?.warnings ?? []),
+        ]),
+      );
+      const quotaMet = quotaAssessment.ok || quotaRecoverable;
       const budgetStatus = researchPhase.budget ?? {
         status: "unmet",
         minCycles,
@@ -2356,7 +2489,7 @@ export class SmartPipeline {
           reason: "evidence_gate_not_enforced",
         };
         const quota = {
-          status: quotaAssessment.ok ? "met" : "unmet",
+          status: quotaMet ? "met" : "unmet",
           missing: quotaAssessment.missing,
           required: quotaAssessment.required,
           observed: quotaAssessment.observed,
@@ -2390,19 +2523,30 @@ export class SmartPipeline {
         });
       }
       if (!quotaAssessment.ok) {
-        if (this.options.logger) {
-          await this.options.logger.log("investigation_quota_failed", {
-            status: "unmet",
+        if (quotaRecoverable) {
+          if (this.options.logger) {
+            await this.options.logger.log("investigation_quota_warning_tolerated", {
+              status: "degraded",
+              missing: quotaAssessment.missing,
+              required: quotaAssessment.required,
+              observed: quotaAssessment.observed,
+            });
+          }
+        } else {
+          if (this.options.logger) {
+            await this.options.logger.log("investigation_quota_failed", {
+              status: "unmet",
+              missing: quotaAssessment.missing,
+              required: quotaAssessment.required,
+              observed: quotaAssessment.observed,
+            });
+          }
+          throw createDeepInvestigationQuotaError({
             missing: quotaAssessment.missing,
             required: quotaAssessment.required,
             observed: quotaAssessment.observed,
           });
         }
-        throw createDeepInvestigationQuotaError({
-          missing: quotaAssessment.missing,
-          required: quotaAssessment.required,
-          observed: quotaAssessment.observed,
-        });
       }
       if (budgetStatus.status !== "met") {
         if (this.options.logger) {
@@ -2423,30 +2567,51 @@ export class SmartPipeline {
         });
       }
       if (researchPhase.evidenceGate?.status !== "pass") {
-        if (this.options.logger) {
-          await this.options.logger.log("investigation_evidence_failed", {
-            status: "unmet",
+        const warningsOnlyFailure = isWarningsOnlyEvidenceGateFailure(
+          researchPhase.evidenceGate,
+        );
+        if (warningsOnlyFailure) {
+          if (this.options.logger) {
+            await this.options.logger.log(
+              "investigation_evidence_warning_tolerated",
+              {
+                status: "degraded",
+                missing: researchPhase.evidenceGate?.missing ?? [],
+                required: researchPhase.evidenceGate?.required ?? {},
+                observed: researchPhase.evidenceGate?.observed ?? {},
+                warnings: researchPhase.evidenceGate?.warnings ?? [],
+                gaps: researchPhase.evidenceGate?.gaps ?? [],
+              },
+            );
+          }
+        } else {
+          if (this.options.logger) {
+            await this.options.logger.log("investigation_evidence_failed", {
+              status: "unmet",
+              missing: researchPhase.evidenceGate?.missing ?? [],
+              required: researchPhase.evidenceGate?.required ?? {},
+              observed: researchPhase.evidenceGate?.observed ?? {},
+              warnings: researchPhase.evidenceGate?.warnings ?? [],
+              gaps: researchPhase.evidenceGate?.gaps ?? [],
+            });
+          }
+          const emptyEvidenceMetrics = {
+            search_hits: 0,
+            open_or_snippet: 0,
+            symbols_or_ast: 0,
+            impact: 0,
+            warnings: 0,
+          };
+          throw createDeepInvestigationEvidenceError({
             missing: researchPhase.evidenceGate?.missing ?? [],
-            required: researchPhase.evidenceGate?.required ?? {},
-            observed: researchPhase.evidenceGate?.observed ?? {},
+            required:
+              researchPhase.evidenceGate?.required ?? emptyEvidenceMetrics,
+            observed:
+              researchPhase.evidenceGate?.observed ?? emptyEvidenceMetrics,
             warnings: researchPhase.evidenceGate?.warnings ?? [],
             gaps: researchPhase.evidenceGate?.gaps ?? [],
           });
         }
-        const emptyEvidenceMetrics = {
-          search_hits: 0,
-          open_or_snippet: 0,
-          symbols_or_ast: 0,
-          impact: 0,
-          warnings: 0,
-        };
-        throw createDeepInvestigationEvidenceError({
-          missing: researchPhase.evidenceGate?.missing ?? [],
-          required: researchPhase.evidenceGate?.required ?? emptyEvidenceMetrics,
-          observed: researchPhase.evidenceGate?.observed ?? emptyEvidenceMetrics,
-          warnings: researchPhase.evidenceGate?.warnings ?? [],
-          gaps: researchPhase.evidenceGate?.gaps ?? [],
-        });
       }
       return researchPhase;
     };
@@ -3563,6 +3728,21 @@ export class SmartPipeline {
         throw new Error("Architect failed to produce a plan");
       }
       plan = lastPlan.plan;
+      const finalBlockingWarnings = collectPreBuilderBlockingWarnings(lastPlan.warnings ?? []);
+      if (finalBlockingWarnings.length > 0) {
+        if (this.options.logger) {
+          await this.options.logger.log("architect_quality_gate", {
+            stage: "pre_builder",
+            pass: "final",
+            ok: false,
+            reasons: ["blocking_architect_warnings"],
+            blocking_warnings: finalBlockingWarnings,
+          });
+        }
+        throw new Error(
+          `Architect quality gate failed before builder: blocking_architect_warnings (${finalBlockingWarnings.join(",")}).`,
+        );
+      }
       const finalPlanQuality = assessPlanQualityGate(request, plan, context);
       if (!finalPlanQuality.ok) {
         const hadInvalidTargetFailures = (lastPlan.warnings ?? []).includes("architect_invalid_targets");
@@ -3710,7 +3890,8 @@ export class SmartPipeline {
               reason: "builder_apply_failed_deterministic",
               context: buildSerializedContext(context),
             });
-            plan = useFastPath
+            const planBeforeRepair = plan;
+            const repairedPlan = useFastPath
               ? buildFastPlan(context)
               : await this.runPhase("architect", () =>
                   this.options.architectPlanner.plan(context, {
@@ -3718,12 +3899,61 @@ export class SmartPipeline {
                     laneId: architectLaneId,
                   }),
                 );
-            const repairedPlanQuality = assessPlanQualityGate(request, plan, context);
+            let repairedPlanCandidate = repairedPlan;
+            let repairedPlanQuality = assessPlanQualityGate(request, repairedPlanCandidate, context);
             if (!repairedPlanQuality.ok) {
-              throw new Error(
-                `Architect repair failed after deterministic apply error: ${repairedPlanQuality.reasons.join(", ")}`,
+              const degradedRepairPlan = buildQualityDegradedPlan(
+                request,
+                context,
+                repairedPlanCandidate,
               );
+              const degradedRepairQuality = assessPlanQualityGate(request, degradedRepairPlan, context);
+              const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedRepairQuality);
+              if (this.options.logger) {
+                await this.options.logger.log("architect_quality_gate", {
+                  stage: "post_builder_apply_failure_repair",
+                  ok: false,
+                  reasons: repairedPlanQuality.reasons,
+                  concrete_targets: repairedPlanQuality.concreteTargets,
+                  alignment_score: repairedPlanQuality.alignmentScore,
+                  alignment_keywords: repairedPlanQuality.alignmentKeywords,
+                  semantic_score: repairedPlanQuality.semanticScore,
+                  semantic_anchors: repairedPlanQuality.semanticAnchors,
+                  semantic_matches: repairedPlanQuality.semanticMatches,
+                  target_validation: repairedPlanQuality.targetValidation ?? null,
+                  degraded_ok: degradedRepairQuality.ok,
+                  degraded_reasons: degradedRepairQuality.reasons,
+                  degraded_target_validation: degradedRepairQuality.targetValidation ?? null,
+                  degraded_blocking_reasons: degradedBlockingReasons,
+                });
+              }
+              if (degradedBlockingReasons.length === 0) {
+                repairedPlanCandidate = degradedRepairPlan;
+                repairedPlanQuality = degradedRepairQuality;
+              } else {
+                const unresolved =
+                  degradedRepairQuality.targetValidation?.unresolvedTargets
+                  ?? repairedPlanQuality.targetValidation?.unresolvedTargets
+                  ?? [];
+                const unresolvedSuffix =
+                  unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
+                if (this.options.logger) {
+                  await this.options.logger.log("architect_repair_after_builder_apply_failure_failed", {
+                    deterministic: true,
+                    reasons: degradedBlockingReasons,
+                    unresolved_targets: unresolved,
+                  });
+                }
+                plan = planBeforeRepair;
+                attempts -= 1;
+                builderNote =
+                  `Patch apply failed with deterministic error (${failure.error}). ` +
+                  `Architect repair plan was non-actionable (${degradedBlockingReasons.join(",")}${unresolvedSuffix}). ` +
+                  `Use existing repository targets only (${plan.target_files.join(", ") || "none"}) and include concrete verification.`;
+                continue;
+              }
             }
+            plan = repairedPlanCandidate;
             if (this.options.logger) {
               const planPath = await this.options.logger.writePhaseArtifact("architect", "plan", plan);
               await this.options.logger.log("plan_json", { phase: "architect", path: planPath });

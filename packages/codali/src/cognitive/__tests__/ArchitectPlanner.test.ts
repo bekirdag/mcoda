@@ -175,6 +175,61 @@ test("ArchitectPlanner allows explicit create_files targets outside focus/periph
   );
 });
 
+test("ArchitectPlanner fallback does not invent new source targets for UI-focused requests", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: "{}",
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const uiContext: ContextBundle = {
+    ...baseContext,
+    request: "Add a task completion stats section under the welcome header on the homepage",
+    selection: {
+      focus: ["src/public/index.html", "src/public/style.css"],
+      periphery: ["src/public/app.js", "src/taskStore.js"],
+      all: ["src/public/index.html", "src/public/style.css", "src/public/app.js", "src/taskStore.js"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/public/index.html",
+        role: "focus",
+        content: "<h1>Welcome</h1>\n",
+        size: 17,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+      {
+        path: "src/public/style.css",
+        role: "focus",
+        content: ".hero { color: black; }\n",
+        size: 23,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+      {
+        path: "src/public/app.js",
+        role: "periphery",
+        content: "console.log('app');\n",
+        size: 20,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+  };
+
+  const result = await planner.planWithRequest(uiContext);
+  assert.ok(result.plan.target_files.includes("src/public/index.html"));
+  assert.ok(result.plan.target_files.includes("src/public/style.css"));
+  assert.ok(!result.plan.target_files.includes("src/task.js"));
+  assert.equal(result.plan.create_files, undefined);
+});
+
 test("Regression: empty VERIFY is normalized to concrete fallback verification", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
@@ -667,7 +722,7 @@ test("ArchitectPlanner falls back on invalid output", { concurrency: false }, as
   const planner = new ArchitectPlanner(provider);
   const plan = await planner.plan(scopeAgnosticContext());
   assert.ok(plan.steps.length > 0);
-  assert.ok(plan.target_files.length > 0);
+  assert.equal(plan.target_files.length, 0);
 });
 
 test("ArchitectPlanner falls back on missing fields", { concurrency: false }, async () => {
@@ -677,7 +732,7 @@ test("ArchitectPlanner falls back on missing fields", { concurrency: false }, as
   const planner = new ArchitectPlanner(provider);
   const plan = await planner.plan(scopeAgnosticContext());
   assert.ok(plan.steps.length > 0);
-  assert.ok(plan.target_files.length > 0);
+  assert.equal(plan.target_files.length, 0);
 });
 
 test("ArchitectPlanner coerces string fields into arrays", { concurrency: false }, async () => {
@@ -763,7 +818,7 @@ test("ArchitectPlanner fallback prefers backend targets for endpoint requests", 
   assert.ok(plan.verification.length > 0);
 });
 
-test("ArchitectPlanner fallback plans new file creation when target script is missing", { concurrency: false }, async () => {
+test("ArchitectPlanner fallback does not invent new file creation when only docs context is available", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
       role: "assistant",
@@ -794,8 +849,8 @@ test("ArchitectPlanner fallback plans new file creation when target script is mi
     },
   };
   const plan = await planner.plan(context);
-  assert.ok(plan.target_files.some((file) => file.startsWith("src/") && file.includes("payment")));
-  assert.ok(plan.steps.some((step) => step.includes("Create missing implementation files")));
+  assert.equal(plan.target_files.length, 0);
+  assert.equal(plan.create_files, undefined);
   assert.ok(plan.verification.length > 0);
 });
 

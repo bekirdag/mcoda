@@ -50,12 +50,47 @@ const PHASE_BEST_USAGE: Record<PipelinePhase, string[]> = {
   interpreter: ["code_review", "code_review_secondary", "production_verification"],
 };
 
+const STRUCTURED_OUTPUT_CAPABILITIES = [
+  "strict_instruction_following",
+  "json_formatting",
+  "schema_adherence",
+  "structured_output",
+];
+
+type AgentReadiness = {
+  authConfigured?: boolean;
+  healthStatus?: "healthy" | "degraded" | "unreachable";
+};
+
+const ADAPTERS_REQUIRING_AUTH = new Set([
+  "openai-api",
+  "zhipu-api",
+  "gemini-cli",
+  "codex-cli",
+]);
+
 const countMatches = (capabilities: string[], required: string[]): number =>
   required.filter((cap) => capabilities.includes(cap)).length;
 
 const isCloudModel = (model?: string): boolean => {
   if (!model) return false;
   return model.toLowerCase().includes(":cloud");
+};
+
+const normalizeAdapter = (adapter?: string): string => (adapter ?? "").trim().toLowerCase();
+
+const requiresConfiguredAuth = (agent: Agent): boolean =>
+  ADAPTERS_REQUIRING_AUTH.has(normalizeAdapter(agent.adapter));
+
+const adjustScoreForReadiness = (
+  score: number,
+  agent: Agent,
+  readiness: AgentReadiness,
+): number => {
+  let adjusted = score;
+  if (readiness.healthStatus === "degraded") adjusted -= 25;
+  if (requiresConfiguredAuth(agent) && readiness.authConfigured === false) adjusted -= 80;
+  return adjusted;
 };
 
 const scoreAgent = (
@@ -73,6 +108,7 @@ const scoreAgent = (
   const maxComplexity = agent.maxComplexity ?? 0;
   const capHits = countMatches(capabilities, PHASE_CAPABILITIES[phase]);
   const requiredHits = countMatches(capabilities, PHASE_REQUIRED_CAPS[phase]);
+  const structuredHits = countMatches(capabilities, STRUCTURED_OUTPUT_CAPABILITIES);
   const usageBoost = agent.bestUsage && PHASE_BEST_USAGE[phase].includes(agent.bestUsage) ? 2 : 0;
 
   let score = 0;
@@ -88,9 +124,18 @@ const scoreAgent = (
   if (capHits === 0) score -= 3;
   score += requiredHits * 2;
   score += usageBoost;
+  if (phase === "builder" && builderMode === "patch_json") {
+    score += structuredHits * 8;
+    if (structuredHits === 0) score -= 12;
+    if (agent.supportsTools === false) score -= 12;
+  }
 
+  const prefersStructuredBuilder =
+    phase === "builder" && builderMode === "patch_json" && structuredHits > 0;
   const costPenalty =
-    phase === "builder" ? 5 : phase === "librarian" ? 4 : phase === "architect" ? 1.5 : 1;
+    phase === "builder"
+      ? prefersStructuredBuilder ? 1.5 : 5
+      : phase === "librarian" ? 4 : phase === "architect" ? 1.5 : 1;
   if (phase === "builder") {
     score -= cost * costPenalty;
     score -= maxComplexity * 0.5;
@@ -125,12 +170,27 @@ export const selectPhaseAgents = async (
   try {
     const agents = await repo.listAgents();
     const capCache = new Map<string, string[]>();
+    const readinessCache = new Map<string, AgentReadiness>();
     const getCaps = async (agent: Agent): Promise<string[]> => {
       const cached = capCache.get(agent.id);
       if (cached) return cached;
       const caps = await repo.getAgentCapabilities(agent.id);
       capCache.set(agent.id, caps);
       return caps;
+    };
+    const getReadiness = async (agent: Agent): Promise<AgentReadiness> => {
+      const cached = readinessCache.get(agent.id);
+      if (cached) return cached;
+      const [auth, health] = await Promise.all([
+        repo.getAgentAuthMetadata(agent.id),
+        repo.getAgentHealth(agent.id),
+      ]);
+      const readiness: AgentReadiness = {
+        authConfigured: auth.configured,
+        healthStatus: health?.status,
+      };
+      readinessCache.set(agent.id, readiness);
+      return readiness;
     };
 
     const buildSelection = async (phase: PipelinePhase): Promise<PhaseAgentSelection> => {
@@ -156,9 +216,15 @@ export const selectPhaseAgents = async (
       for (const agent of agents) {
         if (!agent.defaultModel) continue;
         if (!options.allowCloudModels && isCloudModel(agent.defaultModel)) continue;
+        const readiness = await getReadiness(agent);
+        if (readiness.healthStatus === "unreachable") continue;
         const caps = await getCaps(agent);
         const requiredHits = countMatches(caps, PHASE_REQUIRED_CAPS[phase]);
-        const score = scoreAgent(phase, agent, caps, options.builderMode);
+        const score = adjustScoreForReadiness(
+          scoreAgent(phase, agent, caps, options.builderMode),
+          agent,
+          readiness,
+        );
         if (!Number.isFinite(score)) continue;
         scored.push({ agent, caps, score, requiredHits });
       }

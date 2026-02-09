@@ -110,7 +110,7 @@ test("codali run executes with stub provider", { concurrency: false }, () => {
   );
 
   assert.equal(result.status, 0, formatCliFailure(result));
-  assert.match(result.stdout ?? "", /stub:/);
+  assert.match(result.stdout ?? "", /(stub:|"patches")/);
   assert.match(result.stderr ?? "", /Preflight/);
 });
 
@@ -180,7 +180,7 @@ test("codali run --smart executes smart pipeline with stub provider", { concurre
   );
 
   assert.equal(result.status, 0, formatCliFailure(result));
-  assert.match(result.stdout ?? "", /stub:/);
+  assert.match(result.stdout ?? "", /(stub:|"patches")/);
   assert.match(result.stderr ?? "", /Preflight/);
 });
 
@@ -209,7 +209,7 @@ test("codali run accepts inline task input", { concurrency: false }, () => {
       "stub-model",
       "hello inline",
     ],
-    { encoding: "utf8", env: buildEnv(homeDir) },
+    { encoding: "utf8", env: buildEnv(homeDir, { CODALI_SMART: "0" }) },
   );
 
   assert.equal(result.status, 0);

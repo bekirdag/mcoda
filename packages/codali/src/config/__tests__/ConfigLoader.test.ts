@@ -78,7 +78,7 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
   assert.equal(config.security.redactPatterns.length > 0, true);
   assert.equal(config.security.allowDocEdits, false);
   assert.ok(config.security.readOnlyPaths.includes("docs/sds"));
-  assert.equal(config.builder.mode, "freeform");
+  assert.equal(config.builder.mode, "patch_json");
   assert.equal(config.builder.fallbackToInterpreter, true);
   assert.equal(config.interpreter.provider, "auto");
   assert.equal(config.interpreter.model, "auto");

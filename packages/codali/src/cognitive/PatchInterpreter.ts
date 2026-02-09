@@ -102,6 +102,19 @@ export class PatchInterpreter implements PatchInterpreterClient {
 
   async interpret(raw: string, patchFormatOverride?: PatchFormat): Promise<PatchPayload> {
     const patchFormat = patchFormatOverride ?? this.patchFormat;
+    // Fast-path: in patch_json mode the builder may already emit a usable payload.
+    try {
+      const parsed = this.parse(raw, patchFormat);
+      if (this.logger) {
+        await this.logger.log("interpreter_direct_parse", {
+          patchFormat,
+          length: raw.length,
+        });
+      }
+      return parsed;
+    } catch {
+      // Fall back to provider-assisted interpretation below.
+    }
     const prompt = buildInterpreterPrompt(patchFormat);
     const content = await this.requestPatch(prompt, raw, {
       retry: false,
