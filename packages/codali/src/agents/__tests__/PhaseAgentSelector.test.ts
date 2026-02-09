@@ -371,3 +371,115 @@ test("selectPhaseAgents patch_json avoids no-tools builders when viable tool-cap
     assert.equal(selections.builder.agent?.slug, "tool-capable-builder");
   });
 });
+
+test("selectPhaseAgents patch_json prefers iterative-capable builders when structured options are unavailable", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const simpleRefactorBuilder = await repo.createAgent({
+        slug: "simple-refactor-builder",
+        adapter: "ollama-remote",
+        defaultModel: "devstral-small-2",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 8,
+        reasoningRating: 8,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(simpleRefactorBuilder.id, [
+        "code_write",
+        "simple_refactor",
+      ]);
+
+      const iterativeBuilder = await repo.createAgent({
+        slug: "iterative-builder",
+        adapter: "ollama-remote",
+        defaultModel: "glm-4.7-flash",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 6,
+        reasoningRating: 6,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(iterativeBuilder.id, [
+        "code_write",
+        "iterative_coding",
+      ]);
+    } finally {
+      await repo.close();
+    }
+
+    const selections = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+    });
+
+    assert.equal(selections.builder.agent?.slug, "iterative-builder");
+  });
+});
+
+test("selectPhaseAgents can exclude failed phase agents and pick the next eligible candidate", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    let preferredBuilderId = "";
+    try {
+      const preferredBuilder = await repo.createAgent({
+        slug: "preferred-builder",
+        adapter: "openai-api",
+        defaultModel: "gpt-4o-mini",
+        rating: 8,
+        reasoningRating: 8,
+        costPerMillion: 2,
+        maxComplexity: 3,
+        bestUsage: "code_write",
+        openaiCompatible: true,
+        supportsTools: true,
+      });
+      preferredBuilderId = preferredBuilder.id;
+      await repo.setAgentCapabilities(preferredBuilder.id, [
+        "code_write",
+        "iterative_coding",
+        "strict_instruction_following",
+      ]);
+      await repo.setAgentAuth(preferredBuilder.id, await CryptoHelper.encryptSecret("key-preferred"));
+
+      const secondaryBuilder = await repo.createAgent({
+        slug: "secondary-builder",
+        adapter: "openai-api",
+        defaultModel: "gpt-4o",
+        rating: 7,
+        reasoningRating: 7,
+        costPerMillion: 3,
+        maxComplexity: 3,
+        bestUsage: "code_write",
+        openaiCompatible: true,
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(secondaryBuilder.id, [
+        "code_write",
+        "iterative_coding",
+        "strict_instruction_following",
+      ]);
+      await repo.setAgentAuth(secondaryBuilder.id, await CryptoHelper.encryptSecret("key-secondary"));
+    } finally {
+      await repo.close();
+    }
+
+    const initial = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+    });
+    assert.equal(initial.builder.agent?.slug, "preferred-builder");
+
+    const fallback = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+      excludeAgentIds: { builder: [preferredBuilderId] },
+    });
+    assert.equal(fallback.builder.agent?.slug, "secondary-builder");
+  });
+});

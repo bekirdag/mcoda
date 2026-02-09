@@ -1102,18 +1102,21 @@ export class RunCommand {
           capabilities: [],
           source: "none" as const,
         });
-        const phaseSelections = shouldSelectAgents
+        const phaseOverrides: Partial<Record<PipelinePhase, string>> = {
+          librarian: config.routing?.librarian?.agent,
+          architect: config.routing?.architect?.agent,
+          builder: config.routing?.builder?.agent,
+          critic: config.routing?.critic?.agent,
+          interpreter: config.routing?.interpreter?.agent,
+        };
+        const phaseExclusions: Partial<Record<PipelinePhase, string[]>> = {};
+        let phaseSelections = shouldSelectAgents
           ? await selectPhaseAgents({
-              overrides: {
-                librarian: config.routing?.librarian?.agent,
-                architect: config.routing?.architect?.agent,
-                builder: config.routing?.builder?.agent,
-                critic: config.routing?.critic?.agent,
-                interpreter: config.routing?.interpreter?.agent,
-              },
+              overrides: phaseOverrides,
               builderMode: config.builder.mode,
               fallbackAgent: resolvedAgent,
               allowCloudModels: config.security.allowCloudModels,
+              excludeAgentIds: phaseExclusions,
             })
           : {
               librarian: emptySelection("librarian"),
@@ -1519,6 +1522,103 @@ export class RunCommand {
         });
         const criticEvaluator = new CriticEvaluator(validator, { model: criticRoute.config.model });
         const memoryWriteback = new MemoryWriteback(docdexClient, { agentId: profileAgentId });
+        const phaseFallbackCounts: Partial<Record<PipelinePhase, number>> = {};
+        const maxPhaseFallbacks = 3;
+        const recoverPhaseProvider = async (
+          input: { phase: PipelinePhase; attempt: number; error: Error },
+        ): Promise<{ switched: boolean; note?: string }> => {
+          if (!shouldSelectAgents) return { switched: false };
+          const phase = input.phase;
+          const currentSelection = phaseSelections[phase];
+          const currentResolved = currentSelection.resolved;
+          if (!currentResolved) return { switched: false };
+          const currentAgentId = currentResolved.agent.id;
+          if (!currentAgentId) return { switched: false };
+          const fallbackCount = phaseFallbackCounts[phase] ?? 0;
+          if (fallbackCount >= maxPhaseFallbacks) {
+            await logger.log("phase_agent_fallback_skipped", {
+              phase,
+              reason: "fallback_limit_reached",
+              limit: maxPhaseFallbacks,
+              error: input.error.message,
+            });
+            return { switched: false };
+          }
+          const excluded = Array.from(
+            new Set([...(phaseExclusions[phase] ?? []), currentAgentId]),
+          );
+          phaseExclusions[phase] = excluded;
+          const reselection = await selectPhaseAgents({
+            overrides: phaseOverrides,
+            builderMode: config.builder.mode,
+            fallbackAgent: resolvedAgent,
+            allowCloudModels: config.security.allowCloudModels,
+            excludeAgentIds: phaseExclusions,
+          });
+          const nextSelection = reselection[phase];
+          const nextResolved = nextSelection.resolved;
+          if (!nextResolved || nextResolved.agent.id === currentAgentId) {
+            await logger.log("phase_agent_fallback_skipped", {
+              phase,
+              reason: "no_alternate_agent",
+              currentAgentId,
+              excluded,
+              error: input.error.message,
+            });
+            return { switched: false };
+          }
+          phaseSelections = reselection;
+          phaseFallbackCounts[phase] = fallbackCount + 1;
+          const phaseDefaults = {
+            provider: nextResolved.provider,
+            config: {
+              model: nextResolved.model,
+              apiKey: nextResolved.apiKey,
+              baseUrl: nextResolved.baseUrl,
+              timeoutMs: config.limits.timeoutMs,
+            },
+          };
+          const nextRoute = buildRoutedProvider(
+            phase,
+            phaseDefaults,
+            config.routing,
+            true,
+          );
+          if (phase === "builder") {
+            const nextProvider = createProvider(nextRoute.provider, nextRoute.config);
+            const nextResponseFormat =
+              nextRoute.responseFormat
+              ?? (config.builder.mode === "patch_json" ? { type: "json" } : undefined);
+            builderRunner.setProvider(nextProvider, {
+              model: nextRoute.config.model,
+              temperature: nextRoute.temperature,
+              responseFormat: nextResponseFormat,
+            });
+          }
+          await logger.log("phase_agent_selected", {
+            phase,
+            agentId: nextResolved.agent.id,
+            agentSlug: nextResolved.agent.slug,
+            provider: nextResolved.provider,
+            model: nextResolved.model,
+            source: "fallback",
+            reason: `provider_failure_recovery:${input.error.message}`,
+          });
+          await logger.log("phase_agent_fallback", {
+            phase,
+            fromAgentId: currentAgentId,
+            toAgentId: nextResolved.agent.id,
+            attempt: input.attempt,
+            fallback_count: phaseFallbackCounts[phase],
+            error: input.error.message,
+          });
+          return {
+            switched: true,
+            note:
+              `Provider failure (${input.error.message}). ` +
+              `Switched ${phase} agent to ${nextResolved.agent.slug ?? nextResolved.agent.id}; continue with current plan.`,
+          };
+        };
         const pipeline = new SmartPipeline({
           contextAssembler,
           initialContext: preflightContext,
@@ -1537,9 +1637,22 @@ export class RunCommand {
           contextManager,
           laneScope,
           onEvent: streamState.onEvent,
+          onPhaseProviderFailure: recoverPhaseProvider,
         });
 
         const result = await pipeline.run(taskInput);
+        if (result.criticResult.status !== "PASS") {
+          const failureReasons = result.criticResult.reasons?.length
+            ? result.criticResult.reasons
+            : ["smart_pipeline_failed"];
+          await logger.log("run_failed", {
+            stage: "smart_pipeline",
+            reasons: failureReasons,
+            retryable: result.criticResult.retryable ?? null,
+            report: result.criticResult.report ?? null,
+          });
+          throw new Error(`Smart pipeline failed: ${failureReasons.join("; ")}`);
+        }
         finalMessageContent = result.builderResult.finalMessage.content;
         usage = result.builderResult.usage;
         toolCallsExecuted = result.builderResult.toolCallsExecuted;

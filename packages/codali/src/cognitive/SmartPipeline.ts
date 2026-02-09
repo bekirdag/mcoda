@@ -55,6 +55,14 @@ import { buildLaneId } from "./ContextManager.js";
 import { sanitizeContextBundleForOutput, serializeContext } from "./ContextSerializer.js";
 import type { AgentRequest, CodaliResponse } from "../agents/AgentProtocol.js";
 
+export interface PhaseProviderFailureContext {
+  phase: "librarian" | "architect" | "builder" | "critic" | "interpreter";
+  attempt: number;
+  error: Error;
+}
+
+export type PhaseProviderFailureResult = boolean | { switched: boolean; note?: string };
+
 export interface SmartPipelineOptions {
   contextAssembler: ContextAssembler;
   architectPlanner: ArchitectPlanner;
@@ -77,6 +85,9 @@ export interface SmartPipelineOptions {
   contextManager?: ContextManager;
   laneScope?: Omit<LaneScope, "role" | "ephemeral">;
   onEvent?: (event: AgentEvent) => void;
+  onPhaseProviderFailure?: (
+    context: PhaseProviderFailureContext,
+  ) => Promise<PhaseProviderFailureResult> | PhaseProviderFailureResult;
 }
 
 export interface ResearchPhaseResult {
@@ -1869,6 +1880,26 @@ const hasRepairWarnings = (warnings: string[]): boolean =>
       warning === ARCHITECT_WARNING_REPAIRED || warning.startsWith("architect_output_repair_reason:"),
   );
 
+const PROVIDER_FAILURE_PATTERNS = [
+  /\bauth_error\b/i,
+  /\busage_limit_reached\b/i,
+  /\binsufficient_quota\b/i,
+  /\btoo many requests\b/i,
+  /\brate[\s_-]?limit\b/i,
+  /\b429\b/i,
+];
+
+const isProviderAuthOrRateLimitError = (error: unknown): boolean => {
+  const message =
+    error instanceof Error
+      ? `${error.name} ${error.message}`
+      : typeof error === "string"
+        ? error
+        : "";
+  if (!message) return false;
+  return PROVIDER_FAILURE_PATTERNS.some((pattern) => pattern.test(message));
+};
+
 const buildFastPlan = (context: ContextBundle): Plan => {
   const targetFiles = context.snippets
     .map((snippet) => snippet.path)
@@ -3283,21 +3314,17 @@ export class SmartPipeline {
             );
             if (!contextRefreshed) {
               warnings.push("architect_retry_skipped_no_new_context");
-              warnings.push("architect_degraded_verification_quality");
-              const degradedPlan = buildQualityDegradedPlan(
-                request,
-                context,
-                result.plan,
-              );
               lastPlan = {
                 ...result,
-                plan: degradedPlan,
                 warnings: uniqueStrings(warnings),
               };
               if (this.options.logger) {
-                await this.options.logger.log("architect_degraded", {
+                await this.options.logger.log("architect_quality_gate", {
+                  stage: "architect_pass",
                   pass,
-                  reason: "verification_quality_no_new_context",
+                  ok: false,
+                  reasons: [`verification_${verificationQuality.reason}`],
+                  action: "fail_closed_non_concrete_verification",
                   verification_reason: verificationQuality.reason,
                   verification_steps: verificationQuality.steps,
                   warnings: uniqueStrings(warnings),
@@ -3312,13 +3339,14 @@ export class SmartPipeline {
             pass += 1;
             continue;
           }
-          const degradedPlan = buildQualityDegradedPlan(request, context, result.plan);
-          warnings.push("architect_degraded_verification_quality");
-          lastPlan = { ...result, plan: degradedPlan, warnings: uniqueStrings(warnings) };
+          lastPlan = { ...result, warnings: uniqueStrings(warnings) };
           if (this.options.logger) {
-            await this.options.logger.log("architect_degraded", {
+            await this.options.logger.log("architect_quality_gate", {
+              stage: "architect_pass",
               pass,
-              reason: "verification_quality_insufficient_after_retries",
+              ok: false,
+              reasons: [`verification_${verificationQuality.reason}`],
+              action: "fail_closed_non_concrete_verification",
               verification_reason: verificationQuality.reason,
               verification_steps: verificationQuality.steps,
               warnings: uniqueStrings(warnings),
@@ -3658,11 +3686,22 @@ export class SmartPipeline {
               { request_id: recovery.requestPayload.request_id },
             );
             if (!contextRefreshed) {
+              const hasNonConcreteVerification =
+                qualityGate.reasons.includes("verification_non_concrete")
+                || qualityGate.reasons.includes("verification_empty");
+              let degradedPlan = result.plan;
+              let degradedQuality: PlanQualityGate | undefined;
               warnings.push("architect_retry_skipped_no_new_context");
               warnings.push("architect_degraded_quality_gate");
               if (hasInvalidTargets) warnings.push("architect_invalid_targets");
+              if (hasNonConcreteVerification && !hasInvalidTargets) {
+                degradedPlan = buildQualityDegradedPlan(request, context, result.plan);
+                degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
+                warnings.push("architect_degraded_verification");
+              }
               lastPlan = {
                 ...result,
+                plan: degradedPlan,
                 warnings: uniqueStrings(warnings),
               };
               if (this.options.logger) {
@@ -3673,6 +3712,7 @@ export class SmartPipeline {
                     : "quality_gate_no_new_context",
                   warnings: uniqueStrings(warnings),
                   quality_gate: qualityGate,
+                  degraded_quality: degradedQuality ?? null,
                   semantic_score: qualityGate.semanticScore,
                   semantic_anchors: qualityGate.semanticAnchors,
                   semantic_matches: qualityGate.semanticMatches,
@@ -3688,6 +3728,26 @@ export class SmartPipeline {
             requestRecoveryPending = true;
             pass += 1;
             continue;
+          }
+          const hasNonConcreteVerification =
+            qualityGate.reasons.includes("verification_non_concrete")
+            || qualityGate.reasons.includes("verification_empty");
+          if (hasNonConcreteVerification) {
+            warnings.push("architect_verification_non_concrete");
+            lastPlan = {
+              ...result,
+              warnings: uniqueStrings(warnings),
+            };
+            if (this.options.logger) {
+              await this.options.logger.log("architect_quality_gate", {
+                stage: "architect_pass",
+                pass,
+                ok: false,
+                reasons: qualityGate.reasons,
+                action: "fail_closed_non_concrete_verification",
+              });
+            }
+            break;
           }
           warnings.push("architect_degraded_quality_gate");
           if (hasInvalidTargets) warnings.push("architect_invalid_targets");
@@ -3783,6 +3843,25 @@ export class SmartPipeline {
       if (!lastPlan) {
         throw new Error("Architect failed to produce a plan");
       }
+      const hasUnresolvedArchitectRequest = Boolean(lastPlan.request);
+      const hasRequestLoopDegradeWarning = (lastPlan.warnings ?? []).includes(
+        "architect_degraded_request_loop",
+      );
+      if (hasUnresolvedArchitectRequest || hasRequestLoopDegradeWarning) {
+        if (this.options.logger) {
+          await this.options.logger.log("architect_quality_gate", {
+            stage: "pre_builder",
+            pass: "final",
+            ok: false,
+            reasons: ["unresolved_architect_request"],
+            request_present: hasUnresolvedArchitectRequest,
+            warnings: lastPlan.warnings ?? [],
+          });
+        }
+        throw new Error(
+          "Architect quality gate failed before builder: unresolved_architect_request.",
+        );
+      }
       plan = lastPlan.plan;
       const finalBlockingWarnings = collectPreBuilderBlockingWarnings(lastPlan.warnings ?? []);
       if (finalBlockingWarnings.length > 0) {
@@ -3803,6 +3882,9 @@ export class SmartPipeline {
       if (!finalPlanQuality.ok) {
         const hadInvalidTargetFailures = (lastPlan.warnings ?? []).includes("architect_invalid_targets");
         const hasInvalidTargets = finalPlanQuality.reasons.includes("invalid_target_paths");
+        const hasNonConcreteVerification =
+          finalPlanQuality.reasons.includes("verification_non_concrete")
+          || finalPlanQuality.reasons.includes("verification_empty");
         const unresolved = finalPlanQuality.targetValidation?.unresolvedTargets ?? [];
         const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
         if (hasInvalidTargets || (hadInvalidTargetFailures && finalPlanQuality.reasons.includes("missing_concrete_targets"))) {
@@ -3810,42 +3892,88 @@ export class SmartPipeline {
             `Architect quality gate failed before builder: invalid_target_paths.${unresolvedPart}`,
           );
         }
-        const degradedPlan = buildQualityDegradedPlan(request, context, plan);
-        const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
-        const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
-        if (this.options.logger) {
-          await this.options.logger.log("architect_quality_gate", {
-            stage: "pre_builder",
-            pass: "final",
-            ok: false,
-            reasons: finalPlanQuality.reasons,
-            concrete_targets: finalPlanQuality.concreteTargets,
-            alignment_score: finalPlanQuality.alignmentScore,
-            alignment_keywords: finalPlanQuality.alignmentKeywords,
-            semantic_score: finalPlanQuality.semanticScore,
-            semantic_anchors: finalPlanQuality.semanticAnchors,
-            semantic_matches: finalPlanQuality.semanticMatches,
-            target_validation: finalPlanQuality.targetValidation ?? null,
-            degraded_ok: degradedQuality.ok,
-            degraded_target_validation: degradedQuality.targetValidation ?? null,
+        if (hasNonConcreteVerification) {
+          const degradedPlan = buildQualityDegradedPlan(request, context, plan);
+          const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
+          const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
+          if (this.options.logger) {
+            await this.options.logger.log("architect_quality_gate", {
+              stage: "pre_builder",
+              pass: "final",
+              ok: false,
+              reasons: finalPlanQuality.reasons,
+              action: "degrade_non_concrete_verification",
+              degraded_ok: degradedQuality.ok,
+              degraded_target_validation: degradedQuality.targetValidation ?? null,
+            });
+          }
+          await logPhaseArtifact("architect", "output", {
+            source: "verification_degrade",
+            plan_before: plan,
+            quality_before: finalPlanQuality,
+            plan_after: degradedPlan,
+            quality_after: degradedQuality,
+            blocking_reasons_after: degradedBlockingReasons,
           });
+          if (degradedBlockingReasons.length > 0) {
+            throw new Error(
+              "Architect quality gate failed before builder: verification_non_concrete.",
+            );
+          }
+          plan = degradedPlan;
+          if (this.options.logger) {
+            await this.options.logger.log("architect_degraded", {
+              pass: "final",
+              reason: "verification_non_concrete",
+              warnings: uniqueStrings([...(lastPlan.warnings ?? []), "architect_degraded_verification"]),
+              quality_gate: finalPlanQuality,
+              degraded_quality: degradedQuality,
+            });
+          }
+          if (!degradedQuality.ok) {
+            throw new Error(
+              "Architect quality gate failed before builder: verification_non_concrete.",
+            );
+          }
+          // Continue with degraded plan; no further blocking reasons remain.
+        } else {
+          const degradedPlan = buildQualityDegradedPlan(request, context, plan);
+          const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
+          const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
+          if (this.options.logger) {
+            await this.options.logger.log("architect_quality_gate", {
+              stage: "pre_builder",
+              pass: "final",
+              ok: false,
+              reasons: finalPlanQuality.reasons,
+              concrete_targets: finalPlanQuality.concreteTargets,
+              alignment_score: finalPlanQuality.alignmentScore,
+              alignment_keywords: finalPlanQuality.alignmentKeywords,
+              semantic_score: finalPlanQuality.semanticScore,
+              semantic_anchors: finalPlanQuality.semanticAnchors,
+              semantic_matches: finalPlanQuality.semanticMatches,
+              target_validation: finalPlanQuality.targetValidation ?? null,
+              degraded_ok: degradedQuality.ok,
+              degraded_target_validation: degradedQuality.targetValidation ?? null,
+            });
+          }
+          await logPhaseArtifact("architect", "output", {
+            source: "quality_gate_degrade",
+            plan_before: plan,
+            quality_before: finalPlanQuality,
+            plan_after: degradedPlan,
+            quality_after: degradedQuality,
+            blocking_reasons_after: degradedBlockingReasons,
+          });
+          if (degradedBlockingReasons.length > 0) {
+            const unresolved = degradedQuality.targetValidation?.unresolvedTargets ?? [];
+            const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
+            throw new Error(
+              `Architect quality gate failed before builder: ${degradedBlockingReasons.join(", ")}.${unresolvedPart}`,
+            );
+          }
+          plan = degradedPlan;
         }
-        await logPhaseArtifact("architect", "output", {
-          source: "quality_gate_degrade",
-          plan_before: plan,
-          quality_before: finalPlanQuality,
-          plan_after: degradedPlan,
-          quality_after: degradedQuality,
-          blocking_reasons_after: degradedBlockingReasons,
-        });
-        if (degradedBlockingReasons.length > 0) {
-          const unresolved = degradedQuality.targetValidation?.unresolvedTargets ?? [];
-          const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
-          throw new Error(
-            `Architect quality gate failed before builder: ${degradedBlockingReasons.join(", ")}.${unresolvedPart}`,
-          );
-        }
-        plan = degradedPlan;
       }
       if (this.options.logger) {
         const planPath = await this.options.logger.writePhaseArtifact("architect", "plan", plan);
@@ -4040,6 +4168,36 @@ export class SmartPipeline {
             continue;
           }
           if (deterministicApplyFailure) {
+            if (deterministicFailureKind === "patch_parse" && this.options.onPhaseProviderFailure) {
+              const fallbackError = new Error(
+                `Deterministic patch parsing failure: ${failure.error}`,
+              );
+              const recovery = await this.options.onPhaseProviderFailure({
+                phase: "builder",
+                attempt: builderAttemptOrdinal,
+                error: fallbackError,
+              });
+              const switched = typeof recovery === "boolean" ? recovery : recovery.switched;
+              const noteFromRecovery = typeof recovery === "boolean" ? undefined : recovery.note;
+              if (switched) {
+                if (this.options.logger) {
+                  await this.options.logger.log("phase_provider_fallback", {
+                    phase: "builder",
+                    attempt: builderAttemptOrdinal,
+                    error: fallbackError.message,
+                    reason: "deterministic_patch_parse",
+                    note: noteFromRecovery ?? null,
+                  });
+                }
+                this.emitStatus("thinking", "builder: deterministic patch parse failed, switching phase agent");
+                attempts -= 1;
+                builderNote =
+                  noteFromRecovery && noteFromRecovery.trim().length > 0
+                    ? noteFromRecovery
+                    : `Deterministic patch parsing failure (${failure.error}). Continue with replacement builder agent and return schema-valid patch output.`;
+                continue;
+              }
+            }
             if (this.options.logger) {
               await this.options.logger.log("builder_apply_failed_deterministic_no_repair", {
                 error: failure.error,
@@ -4078,6 +4236,36 @@ export class SmartPipeline {
             },
           };
           break;
+        }
+        const providerFailureError = error instanceof Error ? error : new Error(String(error));
+        if (
+          isProviderAuthOrRateLimitError(providerFailureError)
+          && this.options.onPhaseProviderFailure
+        ) {
+          const recovery = await this.options.onPhaseProviderFailure({
+            phase: "builder",
+            attempt: builderAttemptOrdinal,
+            error: providerFailureError,
+          });
+          const switched = typeof recovery === "boolean" ? recovery : recovery.switched;
+          const noteFromRecovery = typeof recovery === "boolean" ? undefined : recovery.note;
+          if (switched) {
+            if (this.options.logger) {
+              await this.options.logger.log("phase_provider_fallback", {
+                phase: "builder",
+                attempt: builderAttemptOrdinal,
+                error: providerFailureError.message,
+                note: noteFromRecovery ?? null,
+              });
+            }
+            this.emitStatus("thinking", "builder: provider failed, switching phase agent");
+            attempts -= 1;
+            builderNote =
+              noteFromRecovery && noteFromRecovery.trim().length > 0
+                ? noteFromRecovery
+                : `Provider failure encountered (${providerFailureError.message}). Continue with replacement builder agent and keep patch output schema-compliant.`;
+            continue;
+          }
         }
         throw error;
       }

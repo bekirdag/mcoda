@@ -249,6 +249,33 @@ test("Regression: empty VERIFY is normalized to concrete fallback verification",
   const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(result.warnings.includes("plan_missing_verification"));
   assert.ok(result.plan.verification.length > 0);
+  assert.ok(
+    result.plan.verification.some((step) => /unit\/integration tests|manual browser check|manual api check/i.test(step)),
+  );
+});
+
+test("ArchitectPlanner upgrades non-concrete VERIFY lines to concrete verification", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "PLAN:",
+        "- Update login flow in src/login.ts",
+        "TARGETS:",
+        "- src/login.ts",
+        "RISK: low small behavior change",
+        "VERIFY:",
+        "- Verify changes.",
+      ].join("\n"),
+    },
+  });
+
+  const planner = new ArchitectPlanner(provider);
+  const result = await planner.planWithRequest(baseContext);
+  assert.ok(result.plan.verification.length > 0);
+  assert.ok(
+    result.plan.verification.some((step) => /unit\/integration tests|manual browser check|manual api check/i.test(step)),
+  );
 });
 
 test("ArchitectPlanner adds per-file change details when plan steps are generic", { concurrency: false }, async () => {

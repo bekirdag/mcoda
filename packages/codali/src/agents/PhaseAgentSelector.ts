@@ -24,6 +24,7 @@ export interface PhaseAgentSelectionOptions {
   builderMode: BuilderConfig["mode"];
   fallbackAgent?: ResolvedAgentConfig;
   allowCloudModels?: boolean;
+  excludeAgentIds?: Partial<Record<PipelinePhase, string[]>>;
 }
 
 const PHASE_CAPABILITIES: Record<PipelinePhase, string[]> = {
@@ -60,6 +61,15 @@ const STRUCTURED_OUTPUT_CAPABILITIES = [
 const PATCH_JSON_EXECUTION_CAPABILITIES = [
   "iterative_coding",
   "simple_refactor",
+];
+
+const PATCH_JSON_RELIABILITY_CAPABILITIES = [
+  "iterative_coding",
+  "strict_instruction_following",
+  "json_formatting",
+  "schema_adherence",
+  "structured_output",
+  "test_fixing",
 ];
 
 type AgentReadiness = {
@@ -115,6 +125,9 @@ const scoreAgent = (
   const requiredHits = countMatches(capabilities, PHASE_REQUIRED_CAPS[phase]);
   const structuredHits = countMatches(capabilities, STRUCTURED_OUTPUT_CAPABILITIES);
   const patchExecutionHits = countMatches(capabilities, PATCH_JSON_EXECUTION_CAPABILITIES);
+  const patchReliabilityHits = countMatches(capabilities, PATCH_JSON_RELIABILITY_CAPABILITIES);
+  const hasIterativeCoding = capabilities.includes("iterative_coding");
+  const hasToolRunner = capabilities.includes("tool_runner");
   const usageBoost = agent.bestUsage && PHASE_BEST_USAGE[phase].includes(agent.bestUsage) ? 2 : 0;
   const patchJsonBuilder = phase === "builder" && builderMode === "patch_json";
 
@@ -135,11 +148,15 @@ const scoreAgent = (
   if (patchJsonBuilder) {
     score += structuredHits * 14;
     score += patchExecutionHits * 4;
+    score += patchReliabilityHits * 3;
     if (structuredHits === 0) score -= 24;
     if (patchExecutionHits === 0) score -= 8;
+    if (!hasIterativeCoding) score -= 8;
+    else score += 8;
     if (requiredHits === 0) score -= 12;
     if (agent.supportsTools === false) score -= 14;
     else score += 3;
+    if (hasToolRunner) score += 2;
   }
 
   const prefersStructuredBuilder =
@@ -206,6 +223,7 @@ export const selectPhaseAgents = async (
     };
 
     const buildSelection = async (phase: PipelinePhase): Promise<PhaseAgentSelection> => {
+      const excludedIds = new Set(options.excludeAgentIds?.[phase] ?? []);
       const overrideRef = options.overrides[phase];
       if (overrideRef) {
         const resolvedOverride = await resolveOverrideAgent(repo, overrideRef);
@@ -224,26 +242,54 @@ export const selectPhaseAgents = async (
         caps: string[];
         score: number;
         requiredHits: number;
+        structuredHits: number;
+        patchExecutionHits: number;
       }> = [];
+      const patchJsonBuilder = phase === "builder" && options.builderMode === "patch_json";
       for (const agent of agents) {
+        if (excludedIds.has(agent.id)) continue;
         if (!agent.defaultModel) continue;
         if (!options.allowCloudModels && isCloudModel(agent.defaultModel)) continue;
         const readiness = await getReadiness(agent);
         if (readiness.healthStatus === "unreachable") continue;
         const caps = await getCaps(agent);
         const requiredHits = countMatches(caps, PHASE_REQUIRED_CAPS[phase]);
+        const structuredHits = countMatches(caps, STRUCTURED_OUTPUT_CAPABILITIES);
+        const patchExecutionHits = countMatches(caps, PATCH_JSON_EXECUTION_CAPABILITIES);
         const score = adjustScoreForReadiness(
           scoreAgent(phase, agent, caps, options.builderMode),
           agent,
           readiness,
         );
         if (!Number.isFinite(score)) continue;
-        scored.push({ agent, caps, score, requiredHits });
+        scored.push({
+          agent,
+          caps,
+          score,
+          requiredHits,
+          structuredHits,
+          patchExecutionHits,
+        });
       }
       const hasRequired = scored.some((candidate) => candidate.requiredHits > 0);
-      const candidates = hasRequired
+      let candidates = hasRequired
         ? scored.filter((candidate) => candidate.requiredHits > 0)
         : scored;
+      if (patchJsonBuilder) {
+        const structuredCandidates = candidates.filter(
+          (candidate) => candidate.structuredHits > 0,
+        );
+        if (structuredCandidates.length > 0) {
+          candidates = structuredCandidates;
+        } else {
+          const patchExecutionCandidates = candidates.filter(
+            (candidate) => candidate.patchExecutionHits > 0,
+          );
+          if (patchExecutionCandidates.length > 0) {
+            candidates = patchExecutionCandidates;
+          }
+        }
+      }
       candidates.sort((a, b) => b.score - a.score);
 
       for (const candidate of candidates) {
