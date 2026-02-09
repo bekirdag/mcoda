@@ -205,6 +205,37 @@ class EmptyPatchesProvider implements Provider {
   }
 }
 
+class EmptyPatchesThenValidProvider implements Provider {
+  name = "empty-patches-then-valid";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({ patches: [] }),
+        },
+      };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/example.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 11;",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
 class ToolUnsupportedProvider implements Provider {
   name = "tool-unsupported";
   calls = 0;
@@ -226,6 +257,43 @@ class ToolUnsupportedProvider implements Provider {
               file: "src/example.ts",
               search_block: "const value = 1;",
               replace_block: "const value = 5;",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
+class ToolCallsNoActionThenPatchProvider implements Provider {
+  name = "tool-no-action-then-patch";
+  calls = 0;
+  requests: ProviderRequest[] = [];
+
+  async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    this.calls += 1;
+    this.requests.push(request);
+    if (request.tools && request.tools.length > 0) {
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            action: "complete",
+            summary: "No edits applied.",
+          }),
+        },
+      };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/example.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 6;",
             },
           ],
         }),
@@ -362,6 +430,21 @@ class RetryProsePatchProvider implements Provider {
   }
 }
 
+class TargetedProsePatchProvider implements Provider {
+  name = "targeted-prose-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content:
+          "Update src/example.ts and replace `const value = 1;` with `const value = 4;`.",
+      },
+    };
+  }
+}
+
 class MissingTargetPatchProvider implements Provider {
   name = "missing-target-patch";
   calls = 0;
@@ -423,6 +506,46 @@ class PlaceholderBlockPatchProvider implements Provider {
               file: "src/example.ts",
               search_block: "...",
               replace_block: "...",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
+class PlaceholderBlockThenValidPatchProvider implements Provider {
+  name = "placeholder-block-then-valid";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            patches: [
+              {
+                action: "replace",
+                file: "src/example.ts",
+                search_block: "...",
+                replace_block: "...",
+              },
+            ],
+          }),
+        },
+      };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/example.ts",
+              search_block: "const value = 1;",
+              replace_block: "const value = 12;",
             },
           ],
         }),
@@ -707,6 +830,41 @@ test("BuilderRunner falls back to patch_json when tools are unsupported", { conc
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
+test("BuilderRunner retries with patch_json when tool_calls returns no actions", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-tool-no-action-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "noop",
+    description: "no-op tool",
+    inputSchema: { type: "object", properties: {} },
+    handler: async () => ({ output: "ok" }),
+  });
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new ToolCallsNoActionThenPatchProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "tool_calls",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.match(updated, /const value = 6;/);
+  assert.equal(provider.calls, 2);
+  assert.equal(provider.requests[0]?.tools?.length, 1);
+  assert.equal(provider.requests[1]?.tools, undefined);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
 test("BuilderRunner applies freeform output via interpreter", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
@@ -825,7 +983,7 @@ test("BuilderRunner retries search_replace on invalid payload", { concurrency: f
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
-test("BuilderRunner fails closed on empty patches array without retrying provider", { concurrency: false }, async () => {
+test("BuilderRunner fails closed on empty patches array after one schema retry", { concurrency: false }, async () => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-empty-patches-"));
   await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
   await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
@@ -853,7 +1011,35 @@ test("BuilderRunner fails closed on empty patches array without retrying provide
       return true;
     },
   );
-  assert.equal(provider.calls, 1);
+  assert.equal(provider.calls, 2);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner recovers from empty patches array when schema retry payload is valid", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-empty-patches-recover-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new EmptyPatchesThenValidProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.match(updated, /const value = 11;/);
+  assert.equal(provider.calls, 2);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -885,6 +1071,37 @@ test("BuilderRunner skips interpreter conversion for prose patch_json output and
   assert.match(updated, /const value = 6;/);
   assert.equal(provider.calls, 2);
   assert.equal(interpreter.calls, 0);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner uses interpreter conversion for targeted prose patch_json output", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new TargetedProsePatchProvider();
+  const interpreter = new StubInterpreter();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter,
+    fallbackToInterpreter: true,
+  });
+
+  await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.match(updated, /const value = 4;/);
+  assert.equal(provider.calls, 1);
+  assert.equal(interpreter.calls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -1196,7 +1413,7 @@ test("BuilderRunner surfaces placeholder patch outputs as PatchApplyError", { co
       return true;
     },
   );
-  assert.equal(provider.calls, 1);
+  assert.equal(provider.calls, 2);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -1231,7 +1448,38 @@ test("BuilderRunner rejects placeholder patch blocks without interpreter fallbac
       return true;
     },
   );
-  assert.equal(provider.calls, 1);
+  assert.equal(provider.calls, 2);
+  assert.equal(interpreter.calls, 0);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner recovers from placeholder patch blocks when retry payload is valid", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-placeholder-block-recover-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new PlaceholderBlockThenValidPatchProvider();
+  const interpreter = new PassThroughInterpreter();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter,
+    fallbackToInterpreter: true,
+  });
+
+  await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.match(updated, /const value = 12;/);
+  assert.equal(provider.calls, 2);
   assert.equal(interpreter.calls, 0);
 
   await rm(workspaceRoot, { recursive: true, force: true });
@@ -1267,7 +1515,7 @@ test("BuilderRunner rejects fenced schema-echo placeholder payloads without inte
       return true;
     },
   );
-  assert.equal(provider.calls, 1);
+  assert.equal(provider.calls, 2);
   assert.equal(interpreter.calls, 0);
 
   await rm(workspaceRoot, { recursive: true, force: true });

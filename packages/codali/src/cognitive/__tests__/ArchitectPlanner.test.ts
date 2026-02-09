@@ -520,6 +520,60 @@ test("ArchitectPlanner adapts prose non-DSL output into AGENT_REQUEST recovery",
   assert.ok(result.warnings.includes("architect_output_adapted_to_request"));
 });
 
+test("ArchitectPlanner suppresses prose AGENT_REQUEST recovery when fallback targets are concrete", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content:
+        "I will update the homepage to show task completion stats below the welcome header and add the related styling and render updates.",
+    },
+  });
+  const context: ContextBundle = {
+    ...baseContext,
+    request: "Add a task completion stats section under the welcome header on the homepage",
+    files: [
+      {
+        path: "src/public/app.js",
+        role: "focus",
+        content: "",
+        size: 0,
+        truncated: false,
+        sliceStrategy: "test",
+        origin: "docdex",
+      },
+      {
+        path: "src/public/style.css",
+        role: "focus",
+        content: "",
+        size: 0,
+        truncated: false,
+        sliceStrategy: "test",
+        origin: "docdex",
+      },
+      {
+        path: "src/public/index.html",
+        role: "periphery",
+        content: "",
+        size: 0,
+        truncated: false,
+        sliceStrategy: "test",
+        origin: "docdex",
+      },
+    ],
+    selection: {
+      focus: ["src/public/app.js", "src/public/style.css"],
+      periphery: ["src/public/index.html"],
+      all: ["src/public/app.js", "src/public/style.css", "src/public/index.html"],
+      low_confidence: false,
+    },
+  };
+  const planner = new ArchitectPlanner(provider);
+  const result = await planner.planWithRequest(context);
+  assert.equal(result.request, undefined);
+  assert.ok(result.warnings.includes("architect_output_prose_request_suppressed"));
+  assert.ok(result.plan.target_files.some((target) => target === "src/public/app.js"));
+});
+
 test("ArchitectPlanner prose recovery query filters prompt-noise tokens", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
@@ -530,7 +584,7 @@ test("ArchitectPlanner prose recovery query filters prompt-noise tokens", { conc
     },
   });
   const context: ContextBundle = {
-    ...baseContext,
+    ...scopeAgnosticContext(),
     request: "Add uptime logging to healthz endpoint",
   };
   const planner = new ArchitectPlanner(provider);

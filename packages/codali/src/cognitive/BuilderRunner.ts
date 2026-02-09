@@ -79,6 +79,23 @@ export interface BuilderRunnerOptions {
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values));
 
+const PROSE_PATCH_INTENT_PATTERN = /\b(add|update|modify|replace|insert|create|remove|delete|change|refactor|rename)\b/i;
+
+const looksLikeTargetedProsePatchIntent = (content: string, plan: Plan): boolean => {
+  const trimmed = content.trim();
+  if (!trimmed || trimmed.length < 40) return false;
+  if (looksLikeJsonPatchCandidate(trimmed)) return false;
+  if (!PROSE_PATCH_INTENT_PATTERN.test(trimmed)) return false;
+  const normalized = trimmed.replace(/\s+/g, " ").toLowerCase();
+  const targetPaths = uniqueStrings(
+    [...(plan.target_files ?? []), ...(plan.create_files ?? [])]
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length >= 3),
+  );
+  if (targetPaths.length === 0) return false;
+  return targetPaths.some((target) => normalized.includes(target));
+};
+
 const looksLikeJsonPatchCandidate = (content: string): boolean => {
   const trimmed = content.trim();
   if (!trimmed) return false;
@@ -95,10 +112,8 @@ const looksLikeJsonPatchCandidate = (content: string): boolean => {
   return true;
 };
 
-const NON_RECOVERABLE_PATCH_PARSE_PATTERNS = [
-  PATCHES_ARRAY_EMPTY_ERROR.toLowerCase(),
-  FILES_ARRAY_EMPTY_ERROR.toLowerCase(),
-];
+// Keep parse non-recoverable list explicit. Empty arrays are now retryable once via schema repair.
+const NON_RECOVERABLE_PATCH_PARSE_PATTERNS: string[] = [];
 
 const isNonRecoverablePatchParseError = (message: string): boolean => {
   const normalized = message.toLowerCase();
@@ -134,6 +149,32 @@ const isInterpreterParseRetryCandidate = (message: string): boolean => {
 const shouldRetrySchemaRepair = (message: string): boolean => {
   if (isNonRecoverablePatchParseError(message)) return false;
   return true;
+};
+
+const RETRYABLE_PATCH_APPLY_PATTERNS = [
+  "patch output used placeholder file paths",
+  "patch contains placeholder replace blocks",
+  "patch contains placeholder create content",
+  PATCHES_ARRAY_EMPTY_ERROR.toLowerCase(),
+  FILES_ARRAY_EMPTY_ERROR.toLowerCase(),
+];
+
+const NON_RETRYABLE_PATCH_APPLY_PATTERNS = [
+  "enoent",
+  "no such file or directory",
+  "disallowed files",
+  "delete action without delete intent",
+  "read-only",
+  "outside architect plan targets",
+  "search block not found",
+];
+
+const shouldRetrySchemaRepairFromPatchApplyError = (error: PatchApplyError): boolean => {
+  const message = (error.details.error ?? error.message ?? "").toLowerCase();
+  if (!message) return false;
+  if (NON_RETRYABLE_PATCH_APPLY_PATTERNS.some((pattern) => message.includes(pattern))) return false;
+  if (isSchemaDefinitionError(message)) return true;
+  return RETRYABLE_PATCH_APPLY_PATTERNS.some((pattern) => message.includes(pattern));
 };
 
 const PATCH_PLACEHOLDER_PATTERN = /^(?:\.\.\.|<[^>]+>|todo|tbd|fixme|placeholder)$/i;
@@ -259,6 +300,7 @@ export class BuilderRunner {
       model?: string;
       temperature?: number;
       responseFormat?: ProviderResponseFormat;
+      mode?: "tool_calls" | "patch_json" | "freeform";
     } = {},
   ): void {
     this.options = {
@@ -267,6 +309,7 @@ export class BuilderRunner {
       model: options.model ?? this.options.model,
       temperature: options.temperature ?? this.options.temperature,
       responseFormat: options.responseFormat ?? this.options.responseFormat,
+      mode: options.mode ?? this.options.mode,
     };
   }
 
@@ -346,6 +389,12 @@ export class BuilderRunner {
         ? uniqueStrings([...bundleAllow, ...fallbackAllow])
         : [];
     const allowedPaths = new Set(allowedPathValues);
+    const preferredRetryPaths = preferredPaths.filter(
+      (path) => allowedPaths.size === 0 || allowedPaths.has(path),
+    );
+    const concreteRetryPaths = preferredRetryPaths.length > 0
+      ? preferredRetryPaths
+      : (allowedPaths.size > 0 ? Array.from(allowedPaths) : preferredPaths);
     const validatePatchTargets = (paths: string[]) => {
       const invalid = paths.filter((path) => {
         if (!path.trim()) return true;
@@ -446,7 +495,7 @@ export class BuilderRunner {
           ? Array.from(allowedPaths).join(", ")
           : "all (except read-only)";
       const readOnlyList = readOnlyPaths.length ? readOnlyPaths.join(", ") : "none";
-      const preferredList = preferredPaths.length ? preferredPaths.join(", ") : "none";
+      const preferredList = concreteRetryPaths.length ? concreteRetryPaths.join(", ") : "none";
       return [
         note,
         "Return ONLY the JSON payload that matches the schema in the system prompt.",
@@ -457,7 +506,7 @@ export class BuilderRunner {
         `Allowed paths: ${allowList}`,
         `Read-only paths: ${readOnlyList}`,
         `Preferred concrete paths: ${preferredList}`,
-        preferredPaths.length > 0
+        concreteRetryPaths.length > 0
           ? "Use these repo-relative paths instead of placeholders like path/to/file.ts."
           : null,
       ].join("\n");
@@ -469,7 +518,9 @@ export class BuilderRunner {
     const isDisallowedError = (message: string): boolean => /disallowed files/i.test(message);
     const buildDisallowedNote = (message: string) => {
       const disallowed = parseDisallowed(message) ?? "unknown";
-      const preferred = preferredPaths.length > 0 ? ` Preferred concrete paths: ${preferredPaths.join(", ")}.` : "";
+      const preferred = concreteRetryPaths.length > 0
+        ? ` Preferred concrete paths: ${concreteRetryPaths.join(", ")}.`
+        : "";
       return `Your patch included disallowed files: ${disallowed}. Remove any changes to read-only paths and return JSON for allowed paths only.${preferred}`;
     };
     const buildUserMessage = (): ProviderMessage => ({
@@ -595,6 +646,62 @@ export class BuilderRunner {
       }
       return { ...result, contextRequest };
     }
+    if (mode === "tool_calls" && result.toolCallsExecuted === 0) {
+      const tryApplyDirectPatch = async (): Promise<boolean> => {
+        const formats: PatchFormat[] =
+          patchFormat === "file_writes"
+            ? ["file_writes", "search_replace"]
+            : ["search_replace", "file_writes"];
+        for (const format of formats) {
+          try {
+            const payload = parsePatchOutput(result.finalMessage.content, format);
+            if (this.options.logger) {
+              await this.options.logger.log("patch_direct_parse", {
+                length: result.finalMessage.content.length,
+                format,
+                source: "tool_calls_direct",
+              });
+            }
+            await logPatchPayload(payload, `tool_calls_direct_${format}`);
+            await applyPayload(payload, `tool_calls_direct_${format}`, result.finalMessage.content);
+            return true;
+          } catch {
+            // try next format
+          }
+        }
+        return false;
+      };
+      const applied = await tryApplyDirectPatch();
+      if (applied) {
+        return result;
+      }
+      if (this.options.logger) {
+        await this.options.logger.log("builder_tool_calls_no_actions", {
+          length: result.finalMessage.content.length,
+          preview: result.finalMessage.content.slice(0, 200),
+          action: "retry_patch_json",
+        });
+      }
+      this.options.onEvent?.({
+        type: "status",
+        phase: "executing",
+        message: "builder: no tool actions produced, retrying with patch_json",
+      });
+      mode = "patch_json";
+      messageState = await buildMessages(mode);
+      result = await buildRunner(mode).run(messageState.messages);
+      const retryContextRequest = parseContextRequest(result.finalMessage.content, mode);
+      if (retryContextRequest) {
+        if (this.options.logger) {
+          await this.options.logger.log("context_request", {
+            reason: retryContextRequest.reason,
+            queries: retryContextRequest.queries,
+            files: retryContextRequest.files,
+          });
+        }
+        return { ...result, contextRequest: retryContextRequest };
+      }
+    }
     if (mode === "freeform") {
       const patchApplier = this.options.patchApplier;
       const interpreter = this.options.interpreter;
@@ -656,10 +763,12 @@ export class BuilderRunner {
           }
           const parseErrorMessage =
             parseError instanceof Error ? parseError.message : String(parseError);
+          const hasJsonCandidate = looksLikeJsonPatchCandidate(content);
+          const hasTargetedProseIntent = looksLikeTargetedProsePatchIntent(content, plan);
           const canUseInterpreter =
             fallbackToInterpreter
             && Boolean(interpreter)
-            && looksLikeJsonPatchCandidate(content)
+            && (hasJsonCandidate || hasTargetedProseIntent)
             && isInterpreterParseRetryCandidate(parseErrorMessage);
           if (!canUseInterpreter) {
             throw parseError;
@@ -669,6 +778,7 @@ export class BuilderRunner {
               length: content.length,
               format,
               source,
+              reason: hasJsonCandidate ? "json_candidate" : "prose_targeted_intent",
             });
           }
           const payload = await interpreter!.interpret(content, format);
@@ -683,9 +793,13 @@ export class BuilderRunner {
         return result;
       } catch (error) {
         if (error instanceof PatchApplyError) {
-          throw error;
+          if (!shouldRetrySchemaRepairFromPatchApplyError(error)) {
+            throw error;
+          }
+          processingError = new Error(error.details.error);
+        } else {
+          processingError = error instanceof Error ? error : new Error(String(error));
         }
-        processingError = error instanceof Error ? error : new Error(String(error));
       }
 
       if (processingError && this.options.logger) {

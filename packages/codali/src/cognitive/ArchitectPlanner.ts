@@ -1028,10 +1028,13 @@ const parsePlanOutput = (
   const { plan, warnings } = coercePlan(parsedResult.parsed, context);
   const enriched = enrichPlanWithTargetChangeDetails(context, plan);
   const scoped = applyTargetScopeGuard(context, enriched.plan, [...warnings, ...enriched.warnings]);
+  const fallbackDslWarnings = dslResult.warnings.filter(
+    (warning) => !REQUIRED_MISSING_PLAN_WARNINGS.has(warning),
+  );
   const repairedWarnings = withRepairWarnings(
     [
       ...classifiedWarnings,
-      ...dslResult.warnings,
+      ...fallbackDslWarnings,
       ...scoped.warnings,
       ARCHITECT_WARNING_USED_JSON_FALLBACK,
     ],
@@ -1108,10 +1111,17 @@ const shouldAdaptProseNonDslOutput = (content: string): boolean => {
   return sentenceSignals;
 };
 
+type AdaptedArchitectRequestSource = "query_json" | "file_json" | "symbol_json" | "prose";
+
+type AdaptedArchitectRequest = {
+  request: AgentRequest;
+  source: AdaptedArchitectRequestSource;
+};
+
 const adaptNonDslPayloadToRequest = (
   content: string,
   context: ContextBundle,
-): AgentRequest | undefined => {
+): AdaptedArchitectRequest | undefined => {
   const parsed = parseJsonLoose(content);
   const record = asRecord(parsed.parsed);
   if (record && isPlanLikeObject(record)) return undefined;
@@ -1120,13 +1130,16 @@ const adaptNonDslPayloadToRequest = (
     const query = extractStringField(record, ["query", "search_query", "question", "prompt"]);
     if (query) {
       return {
-        version: "v1",
-        role: "architect",
-        request_id: buildRequestId("architect-adapt-query"),
-        needs: [{ type: "docdex.search", query, limit: 8 }],
-        context: {
-          summary:
-            "Architect returned a query payload instead of DSL. Fetch focused retrieval context and retry planning.",
+        source: "query_json",
+        request: {
+          version: "v1",
+          role: "architect",
+          request_id: buildRequestId("architect-adapt-query"),
+          needs: [{ type: "docdex.search", query, limit: 8 }],
+          context: {
+            summary:
+              "Architect returned a query payload instead of DSL. Fetch focused retrieval context and retry planning.",
+          },
         },
       };
     }
@@ -1144,13 +1157,16 @@ const adaptNonDslPayloadToRequest = (
         });
       }
       return {
-        version: "v1",
-        role: "architect",
-        request_id: buildRequestId("architect-adapt-file"),
-        needs,
-        context: {
-          summary:
-            "Architect returned file/symbol metadata instead of DSL. Load file context and related symbol evidence before retrying.",
+        source: "file_json",
+        request: {
+          version: "v1",
+          role: "architect",
+          request_id: buildRequestId("architect-adapt-file"),
+          needs,
+          context: {
+            summary:
+              "Architect returned file/symbol metadata instead of DSL. Load file context and related symbol evidence before retrying.",
+          },
         },
       };
     }
@@ -1158,13 +1174,16 @@ const adaptNonDslPayloadToRequest = (
     const symbolOnly = extractStringField(record, ["symbol", "symbol_id", "symbol_name"]);
     if (symbolOnly) {
       return {
-        version: "v1",
-        role: "architect",
-        request_id: buildRequestId("architect-adapt-symbol"),
-        needs: [{ type: "docdex.search", query: `${context.request} ${symbolOnly}`, limit: 8 }],
-        context: {
-          summary:
-            "Architect returned symbol metadata without a DSL plan. Retrieve symbol-related context and retry planning.",
+        source: "symbol_json",
+        request: {
+          version: "v1",
+          role: "architect",
+          request_id: buildRequestId("architect-adapt-symbol"),
+          needs: [{ type: "docdex.search", query: `${context.request} ${symbolOnly}`, limit: 8 }],
+          context: {
+            summary:
+              "Architect returned symbol metadata without a DSL plan. Retrieve symbol-related context and retry planning.",
+          },
         },
       };
     }
@@ -1173,22 +1192,37 @@ const adaptNonDslPayloadToRequest = (
   if (shouldAdaptProseNonDslOutput(content)) {
     const query = buildProseRecoveryQuery(content, context.request ?? "");
     return {
-      version: "v1",
-      role: "architect",
-      request_id: buildRequestId("architect-adapt-prose"),
-      needs: [
-        { type: "docdex.search", query, limit: 8 },
-        { type: "file.list", root: "src", pattern: "*" },
-        { type: "file.list", root: "docs", pattern: "*" },
-      ],
-      context: {
-        summary:
-          "Architect returned prose/non-DSL output. Retrieve focused implementation context and retry with strict structured output.",
+      source: "prose",
+      request: {
+        version: "v1",
+        role: "architect",
+        request_id: buildRequestId("architect-adapt-prose"),
+        needs: [
+          { type: "docdex.search", query, limit: 8 },
+          { type: "file.list", root: "src", pattern: "*" },
+          { type: "file.list", root: "docs", pattern: "*" },
+        ],
+        context: {
+          summary:
+            "Architect returned prose/non-DSL output. Retrieve focused implementation context and retry with strict structured output.",
+        },
       },
     };
   }
 
   return undefined;
+};
+
+const hasConcretePlanTargets = (plan: Plan): boolean =>
+  uniqueStrings(
+    plan.target_files
+      .map((entry) => normalizePath(entry))
+      .filter((entry) => entry.length > 0 && entry !== "unknown"),
+  ).length > 0;
+
+const shouldKeepProseRecoveryRequest = (plan: Plan, warnings: string[]): boolean => {
+  if (!hasConcretePlanTargets(plan)) return true;
+  return warnings.some((warning) => REQUIRED_MISSING_PLAN_WARNINGS.has(warning));
 };
 
 const parsePlanHint = (
@@ -1616,9 +1650,16 @@ export class ArchitectPlanner {
       request = undefined;
     }
     if (!request) {
-      request = adaptNonDslPayloadToRequest(content, context);
-      if (request) {
+      const adaptedRequest = adaptNonDslPayloadToRequest(content, context);
+      const useAdaptedRequest = adaptedRequest
+        ? adaptedRequest.source !== "prose"
+          || shouldKeepProseRecoveryRequest(plan, warnings)
+        : false;
+      if (adaptedRequest && useAdaptedRequest) {
+        request = adaptedRequest.request;
         warnings.push("architect_output_adapted_to_request");
+      } else if (adaptedRequest && adaptedRequest.source === "prose") {
+        warnings.push("architect_output_prose_request_suppressed");
       }
     }
     if (request && this.logger) {

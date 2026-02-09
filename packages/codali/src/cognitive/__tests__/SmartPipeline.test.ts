@@ -1578,6 +1578,45 @@ test("SmartPipeline accepts wrapper-noise repaired architect output without stri
   assert.equal(architect.calls, 1);
 });
 
+test("SmartPipeline treats prose-request suppression warning as non-blocking", { concurrency: false }, async () => {
+  const architect = {
+    calls: 0,
+    async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+      this.calls += 1;
+      return {
+        plan: {
+          ...basePlan,
+          target_files: ["src/public/index.html"],
+          verification: ["Manual browser check: open http://localhost:3000 and verify task stats render under the header."],
+        },
+        warnings: ["architect_output_prose_request_suppressed"],
+      };
+    },
+  };
+  const context: ContextBundle = {
+    ...baseContext,
+    request: "Add task stats section under welcome header",
+    selection: {
+      focus: ["src/public/index.html"],
+      periphery: [],
+      all: ["src/public/index.html"],
+      low_confidence: false,
+    },
+  };
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler(context) as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("Add task stats section under welcome header");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(architect.calls, 1);
+});
+
 test("SmartPipeline accepts duplicate-section repaired architect output without strict retry", { concurrency: false }, async () => {
   const architect = {
     calls: 0,
@@ -2647,6 +2686,109 @@ test("SmartPipeline performs one architect repair for deterministic patch parsin
   assert.equal(builder.calls, 2);
   assert.equal(architect.calls, 2);
 });
+
+test(
+  "SmartPipeline treats mixed disallowed/parse failures as disallowed kind for deterministic repair",
+  { concurrency: false },
+  async () => {
+    class MixedDeterministicFailBuilder extends StubBuilderRunner {
+      async run(): Promise<BuilderRunResult> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          const failure: PatchApplyFailure = {
+            source: "builder_patch_processing",
+            error:
+              "Patch parsing failed. initial=Patch output is not valid JSON; retry=Patch payload includes empty patches array",
+            patches: [],
+            rollback: { attempted: false, ok: true },
+            rawOutput: "invalid patch output",
+          };
+          throw new PatchApplyError(failure);
+        }
+        if (this.calls === 2) {
+          const failure: PatchApplyFailure = {
+            source: "builder_patch_processing",
+            error:
+              "Patch parsing failed. initial=Patch references disallowed files: src/server.js; retry=Patch payload includes empty patches array",
+            patches: [],
+            rollback: { attempted: false, ok: true },
+            rawOutput: "invalid patch output",
+          };
+          throw new PatchApplyError(failure);
+        }
+        return { finalMessage: { role: "assistant", content: "done" }, messages: [], toolCallsExecuted: 0 };
+      }
+    }
+
+    const architect = {
+      calls: 0,
+      async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+        this.calls += 1;
+        return {
+          plan: {
+            ...basePlan,
+            target_files: ["src/example.ts"],
+          },
+          warnings: [],
+        };
+      },
+      async plan(): Promise<Plan> {
+        this.calls += 1;
+        return {
+          ...basePlan,
+          target_files: ["src/example.ts"],
+        };
+      },
+    };
+
+    const contextA: ContextBundle = {
+      ...baseContext,
+      selection: {
+        focus: ["src/example.ts"],
+        periphery: [],
+        all: ["src/example.ts"],
+        low_confidence: false,
+      },
+      files: [
+        {
+          path: "src/example.ts",
+          role: "focus",
+          content: "export const value = 1;\n",
+          size: 24,
+          truncated: false,
+          sliceStrategy: "full",
+          origin: "docdex",
+        },
+      ],
+    };
+    const contextB: ContextBundle = { ...contextA, queries: ["repair-pass-1"] };
+    const contextC: ContextBundle = { ...contextA, queries: ["repair-pass-2"] };
+
+    const logger = new StubLogger();
+    const builder = new MixedDeterministicFailBuilder();
+    const assembler = new StubContextAssembler([contextA, contextB, contextC]);
+    const pipeline = new SmartPipeline({
+      contextAssembler: assembler as any,
+      architectPlanner: architect as any,
+      builderRunner: builder as any,
+      criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+      memoryWriteback: new StubMemoryWriteback() as any,
+      logger: logger as any,
+      maxRetries: 3,
+    });
+
+    const result = await pipeline.run("Update src/example.ts");
+    assert.equal(result.criticResult.status, "PASS");
+    assert.equal(result.attempts, 1);
+    assert.equal(builder.calls, 3);
+    assert.equal(architect.calls, 3);
+    const deterministicKinds = logger.events
+      .filter((event) => event.type === "builder_apply_failed_deterministic")
+      .map((event) => String(event.data.kind));
+    assert.ok(deterministicKinds.includes("patch_parse"));
+    assert.ok(deterministicKinds.includes("disallowed_files"));
+  },
+);
 
 test(
   "SmartPipeline fail-closes repeated deterministic patch parsing failures after one architect repair",
