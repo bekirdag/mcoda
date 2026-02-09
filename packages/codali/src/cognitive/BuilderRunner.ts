@@ -15,7 +15,18 @@ import {
   BUILDER_PATCH_GBNF_SEARCH_REPLACE,
 } from "./Prompts.js";
 import { serializeContext } from "./ContextSerializer.js";
-import { parsePatchOutput, type PatchAction, type PatchFormat, type PatchPayload } from "./BuilderOutputParser.js";
+import {
+  parsePatchOutput,
+  FILES_ARRAY_EMPTY_ERROR,
+  FILES_ARRAY_MISSING_ERROR,
+  FILES_ARRAY_TYPE_ERROR,
+  PATCHES_ARRAY_EMPTY_ERROR,
+  PATCHES_ARRAY_MISSING_ERROR,
+  PATCHES_ARRAY_TYPE_ERROR,
+  type PatchAction,
+  type PatchFormat,
+  type PatchPayload,
+} from "./BuilderOutputParser.js";
 import { PatchApplier } from "./PatchApplier.js";
 import type { ContextManager } from "./ContextManager.js";
 import type { PatchInterpreterClient } from "./PatchInterpreter.js";
@@ -72,8 +83,100 @@ const looksLikeJsonPatchCandidate = (content: string): boolean => {
   const trimmed = content.trim();
   if (!trimmed) return false;
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) return true;
-  if (/```(?:json)?/i.test(trimmed)) return true;
-  return /"patches"\s*:|"files"\s*:/.test(trimmed);
+  if (!/"patches"\s*:|"files"\s*:/.test(trimmed)) return false;
+  if (/```/i.test(trimmed)) {
+    const embedded = parseEmbeddedJsonObject(trimmed);
+    if (!embedded) return false;
+    return (
+      Object.prototype.hasOwnProperty.call(embedded, "patches")
+      || Object.prototype.hasOwnProperty.call(embedded, "files")
+    );
+  }
+  return true;
+};
+
+const NON_RECOVERABLE_PATCH_PARSE_PATTERNS = [
+  PATCHES_ARRAY_EMPTY_ERROR.toLowerCase(),
+  FILES_ARRAY_EMPTY_ERROR.toLowerCase(),
+];
+
+const isNonRecoverablePatchParseError = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return NON_RECOVERABLE_PATCH_PARSE_PATTERNS.some((pattern) => normalized.includes(pattern));
+};
+
+const isSchemaDefinitionError = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes(PATCHES_ARRAY_MISSING_ERROR.toLowerCase()) ||
+    normalized.includes(PATCHES_ARRAY_TYPE_ERROR.toLowerCase()) ||
+    normalized.includes(FILES_ARRAY_MISSING_ERROR.toLowerCase()) ||
+    normalized.includes(FILES_ARRAY_TYPE_ERROR.toLowerCase()) ||
+    normalized.includes("patch payload must include patches array") ||
+    normalized.includes("patch payload must include files array")
+  );
+};
+
+const isInterpreterParseRetryCandidate = (message: string): boolean => {
+  if (isNonRecoverablePatchParseError(message)) return false;
+  const normalized = message.toLowerCase();
+  if (isSchemaDefinitionError(message)) return false;
+  if (normalized.includes("patch entry must be an object")) return false;
+  if (normalized.includes("patch file entry must be an object")) return false;
+  if (normalized.includes("patch action must be")) return false;
+  if (normalized.includes("patch field")) return false;
+  if (normalized.includes("patch output is empty")) return false;
+  if (normalized.includes("placeholder")) return false;
+  if (normalized.includes("delete action without delete intent")) return false;
+  return true;
+};
+
+const shouldRetrySchemaRepair = (message: string): boolean => {
+  if (isNonRecoverablePatchParseError(message)) return false;
+  return true;
+};
+
+const PATCH_PLACEHOLDER_PATTERN = /^(?:\.\.\.|<[^>]+>|todo|tbd|fixme|placeholder)$/i;
+
+const hasMeaningfulPatchText = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (PATCH_PLACEHOLDER_PATTERN.test(trimmed)) return false;
+  if (trimmed.length < 3) return false;
+  return true;
+};
+
+const planAllowsDeleteAction = (plan: Plan): boolean => {
+  const corpus = [
+    ...(plan.steps ?? []),
+    plan.risk_assessment ?? "",
+    ...(plan.verification ?? []),
+  ].join(" ");
+  return /\b(delete|remove|drop|cleanup|clean up|retire|deprecat|prune)\b/i.test(corpus);
+};
+
+const validatePatchPayloadQuality = (
+  patches: PatchAction[],
+  options: { allowDelete: boolean },
+): string | undefined => {
+  for (const patch of patches) {
+    if (patch.action === "replace") {
+      if (!hasMeaningfulPatchText(patch.search_block) || !hasMeaningfulPatchText(patch.replace_block)) {
+        return "Patch contains placeholder replace blocks";
+      }
+      continue;
+    }
+    if (patch.action === "create") {
+      if (!hasMeaningfulPatchText(patch.content)) {
+        return "Patch contains placeholder create content";
+      }
+      continue;
+    }
+    if (patch.action === "delete" && !options.allowDelete) {
+      return "Patch contains delete action without delete intent in plan";
+    }
+  }
+  return undefined;
 };
 
 const parseEmbeddedJsonObject = (content: string): Record<string, unknown> | undefined => {
@@ -239,6 +342,7 @@ export class BuilderRunner {
         throw new Error(`Patch references disallowed files: ${invalid.join(", ")}`);
       }
     };
+    const allowDeleteActions = planAllowsDeleteAction(plan);
     const logPatchPayload = async (payload: { patches: Array<{ file: string }> }, source: string) => {
       if (!this.options.logger) return;
       const path = await this.options.logger.writePhaseArtifact("builder", "patch", payload);
@@ -256,6 +360,18 @@ export class BuilderRunner {
       const patchApplier = this.options.patchApplier;
       if (!patchApplier) {
         throw new Error("PatchApplier is required to apply patches");
+      }
+      const patchQualityError = validatePatchPayloadQuality(payload.patches, {
+        allowDelete: allowDeleteActions,
+      });
+      if (patchQualityError) {
+        throw new PatchApplyError({
+          source,
+          error: patchQualityError,
+          patches: payload.patches,
+          rollback: { attempted: false, ok: true },
+          rawOutput,
+        });
       }
       validatePatchTargets(payload.patches.map((patch) => patch.file));
       emitPatchStatus("applying patches");
@@ -307,7 +423,7 @@ export class BuilderRunner {
       ]
         .filter(Boolean)
         .join("\n");
-    const buildSchemaOnlyContent = (note: string, previousOutput: string) => {
+    const buildSchemaOnlyContent = (note: string) => {
       const allowList =
         allowedPaths.size > 0
           ? Array.from(allowedPaths).join(", ")
@@ -320,15 +436,13 @@ export class BuilderRunner {
         "Do not include any prose, markdown, or extra keys.",
         "Do NOT include plan or context.",
         "Never include changes for read-only paths.",
+        "Do NOT repeat prior rejected payloads or schema examples.",
         `Allowed paths: ${allowList}`,
         `Read-only paths: ${readOnlyList}`,
         `Preferred concrete paths: ${preferredList}`,
         preferredPaths.length > 0
           ? "Use these repo-relative paths instead of placeholders like path/to/file.ts."
           : null,
-        "",
-        "PREVIOUS_OUTPUT:",
-        previousOutput,
       ].join("\n");
     };
     const parseDisallowed = (message: string): string | undefined => {
@@ -520,10 +634,16 @@ export class BuilderRunner {
           await applyPayload(payload, source, content);
           return;
         } catch (parseError) {
+          if (parseError instanceof PatchApplyError) {
+            throw parseError;
+          }
+          const parseErrorMessage =
+            parseError instanceof Error ? parseError.message : String(parseError);
           const canUseInterpreter =
             fallbackToInterpreter
             && Boolean(interpreter)
-            && looksLikeJsonPatchCandidate(content);
+            && looksLikeJsonPatchCandidate(content)
+            && isInterpreterParseRetryCandidate(parseErrorMessage);
           if (!canUseInterpreter) {
             throw parseError;
           }
@@ -558,8 +678,17 @@ export class BuilderRunner {
           preview: result.finalMessage.content.slice(0, 200),
         });
       }
+      const schemaRetryAllowed =
+        processingError !== undefined ? shouldRetrySchemaRepair(processingError.message) : false;
+      if (processingError && !schemaRetryAllowed && this.options.logger) {
+        await this.options.logger.log("patch_retry_skipped", {
+          format: patchFormat,
+          reason: "non_recoverable_schema_error",
+          error: processingError.message,
+        });
+      }
 
-      if (processingError && patchFormat === "file_writes") {
+      if (processingError && schemaRetryAllowed && patchFormat === "file_writes") {
         const retryNote = isDisallowedError(processingError.message)
           ? buildDisallowedNote(processingError.message)
           : 'Your output did not match schema. Respond ONLY with JSON and include a top-level "files" array.';
@@ -569,10 +698,7 @@ export class BuilderRunner {
         };
         const retryUser: ProviderMessage = {
           role: "user",
-          content: buildSchemaOnlyContent(
-            retryNote,
-            result.finalMessage.content,
-          ),
+          content: buildSchemaOnlyContent(retryNote),
         };
         if (this.options.logger) {
           await this.options.logger.log("patch_retry", { format: "file_writes", error: processingError.message });
@@ -583,7 +709,7 @@ export class BuilderRunner {
             type: "gbnf",
             grammar: BUILDER_PATCH_GBNF_FILE_WRITES,
           },
-        ).run([retrySystem, ...messageState.history, retryUser]);
+        ).run([retrySystem, ...messageState.history, messageState.userMessage, retryUser]);
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
           await parseAndApply(result.finalMessage.content, "file_writes", "interpreter_retry");
@@ -606,10 +732,7 @@ export class BuilderRunner {
           };
           const fallbackUser: ProviderMessage = {
             role: "user",
-            content: buildSchemaOnlyContent(
-              fallbackNote,
-              result.finalMessage.content,
-            ),
+            content: buildSchemaOnlyContent(fallbackNote),
           };
           if (this.options.logger) {
             await this.options.logger.log("patch_fallback", { format: "search_replace" });
@@ -620,7 +743,7 @@ export class BuilderRunner {
               type: "gbnf",
               grammar: BUILDER_PATCH_GBNF_SEARCH_REPLACE,
             },
-          ).run([fallbackSystem, ...messageState.history, fallbackUser]);
+          ).run([fallbackSystem, ...messageState.history, messageState.userMessage, fallbackUser]);
           result = { ...fallbackResult, usage: mergeUsage(result.usage, fallbackResult.usage) };
           try {
             await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_fallback");
@@ -638,7 +761,7 @@ export class BuilderRunner {
               };
               const guardUser: ProviderMessage = {
                 role: "user",
-                content: buildSchemaOnlyContent(buildDisallowedNote(fallbackMessage), result.finalMessage.content),
+                content: buildSchemaOnlyContent(buildDisallowedNote(fallbackMessage)),
               };
               const guardResult = await buildRunner(
                 mode,
@@ -646,7 +769,7 @@ export class BuilderRunner {
                   type: "gbnf",
                   grammar: BUILDER_PATCH_GBNF_SEARCH_REPLACE,
                 },
-              ).run([guardSystem, ...messageState.history, guardUser]);
+              ).run([guardSystem, ...messageState.history, messageState.userMessage, guardUser]);
               result = { ...guardResult, usage: mergeUsage(result.usage, guardResult.usage) };
               try {
                 await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_guard");
@@ -670,7 +793,7 @@ export class BuilderRunner {
         }
       }
 
-      if (processingError && patchFormat === "search_replace") {
+      if (processingError && schemaRetryAllowed && patchFormat === "search_replace") {
         const initialMessage = processingError.message;
         const retryNote = isDisallowedError(initialMessage)
           ? buildDisallowedNote(initialMessage)
@@ -681,7 +804,7 @@ export class BuilderRunner {
         };
         const retryUser: ProviderMessage = {
           role: "user",
-          content: buildSchemaOnlyContent(retryNote, result.finalMessage.content),
+          content: buildSchemaOnlyContent(retryNote),
         };
         if (this.options.logger) {
           await this.options.logger.log("patch_retry", {
@@ -695,7 +818,7 @@ export class BuilderRunner {
             type: "gbnf",
             grammar: BUILDER_PATCH_GBNF_SEARCH_REPLACE,
           },
-        ).run([retrySystem, ...messageState.history, retryUser]);
+        ).run([retrySystem, ...messageState.history, messageState.userMessage, retryUser]);
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
           await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_retry");

@@ -494,6 +494,8 @@ const NON_FATAL_PRE_BUILDER_WARNING_PATTERNS = [
   /^architect_retry_skipped_no_new_context$/i,
   /^architect_invalid_targets$/i,
   /^architect_plan_quality_warning$/i,
+  /^plan_targets_outside_context:/i,
+  /^plan_target_scope_empty_after_filter$/i,
 ];
 
 const isFatalArchitectWarningBeforeBuilder = (warning: string): boolean => {
@@ -1331,19 +1333,70 @@ const isConcreteTargetPath = (target: string): boolean => {
   return !/^<[^>]+>$/.test(normalized);
 };
 
-const isDeterministicPatchApplyFailure = (failure: PatchApplyFailure): boolean => {
+type DeterministicPatchApplyFailureKind =
+  | "missing_path"
+  | "search_block"
+  | "replace_block"
+  | "placeholder_payload"
+  | "patch_parse"
+  | "disallowed_files";
+
+const classifyDeterministicPatchApplyFailure = (
+  failure: PatchApplyFailure,
+): DeterministicPatchApplyFailureKind | null => {
   const message = `${failure.error} ${failure.source}`.toLowerCase();
-  if (message.includes("enoent") || message.includes("no such file or directory")) return true;
-  if (message.includes("search block not found")) return true;
-  if (message.includes("replace block not found")) return true;
-  if (message.includes("patch parsing failed")) return true;
-  if (message.includes("patch payload must include patches array")) return true;
-  if (message.includes("patch output is not valid json")) return true;
-  if (message.includes("patch output is empty")) return true;
-  if (message.includes("patch field")) return true;
-  if (message.includes("placeholder file paths")) return true;
-  if (message.includes("disallowed files")) return true;
-  return false;
+  if (message.includes("enoent") || message.includes("no such file or directory")) return "missing_path";
+  if (message.includes("search block not found")) return "search_block";
+  if (message.includes("replace block not found")) return "replace_block";
+  if (message.includes("placeholder replace blocks")) return "placeholder_payload";
+  if (message.includes("placeholder create content")) return "placeholder_payload";
+  if (message.includes("delete action without delete intent")) return "placeholder_payload";
+  if (message.includes("patch parsing failed")) return "patch_parse";
+  if (message.includes("patch payload includes empty patches array")) return "patch_parse";
+  if (message.includes("patch payload includes empty files array")) return "patch_parse";
+  if (message.includes("patch payload is missing required 'patches' array")) return "patch_parse";
+  if (message.includes("patch payload is missing required 'files' array")) return "patch_parse";
+  if (message.includes("patch payload field 'patches' must be an array")) return "patch_parse";
+  if (message.includes("patch payload field 'files' must be an array")) return "patch_parse";
+  if (message.includes("patch payload must include patches array")) return "patch_parse";
+  if (message.includes("patch output is not valid json")) return "patch_parse";
+  if (message.includes("patch output is empty")) return "patch_parse";
+  if (message.includes("patch field")) return "patch_parse";
+  if (message.includes("placeholder file paths")) return "placeholder_payload";
+  if (message.includes("disallowed files")) return "disallowed_files";
+  return null;
+};
+
+const isDeterministicPatchApplyFailure = (failure: PatchApplyFailure): boolean =>
+  classifyDeterministicPatchApplyFailure(failure) !== null;
+
+const MAX_DETERMINISTIC_ARCHITECT_REPAIRS = 2;
+
+const isArchitectRepairEligibleDeterministicFailure = (
+  kind: DeterministicPatchApplyFailureKind | null,
+  usedKinds: Set<DeterministicPatchApplyFailureKind>,
+): kind is DeterministicPatchApplyFailureKind =>
+  kind !== null && !usedKinds.has(kind) && usedKinds.size < MAX_DETERMINISTIC_ARCHITECT_REPAIRS;
+
+const buildDeterministicRecoveryQuery = (
+  request: string,
+  kind: DeterministicPatchApplyFailureKind,
+): string => {
+  switch (kind) {
+    case "missing_path":
+      return `${request} use existing repository target paths or explicit create-file targets`;
+    case "search_block":
+    case "replace_block":
+      return `${request} use exact current file content for search and replace blocks`;
+    case "patch_parse":
+      return `${request} produce valid JSON patch output with non-empty patches and concrete paths`;
+    case "placeholder_payload":
+      return `${request} remove placeholders and emit concrete patch blocks only`;
+    case "disallowed_files":
+      return `${request} confine changes to allowed target files only`;
+    default:
+      return `${request} repair patch apply failure`;
+  }
 };
 
 type PlanQualityGate = {
@@ -1369,6 +1422,7 @@ const BLOCKING_PLAN_QUALITY_REASONS = new Set([
   "invalid_target_paths",
   "verification_empty",
   "verification_non_concrete",
+  "low_request_target_alignment_critical",
 ]);
 
 const collectBlockingPlanQualityReasons = (quality: PlanQualityGate): string[] =>
@@ -1611,7 +1665,9 @@ const assessPlanQualityGate = (
   if (!verification.ok) reasons.push(`verification_${verification.reason}`);
   const alignment = scoreRequestTargetAlignment(request, concreteTargets);
   const needsAlignment = alignment.keywords.length >= 3;
-  if (needsAlignment && alignment.score < 0.2) {
+  if (needsAlignment && alignment.score < 0.1) {
+    reasons.push("low_request_target_alignment_critical");
+  } else if (needsAlignment && alignment.score < 0.2) {
     reasons.push("low_request_target_alignment");
   }
   const semanticCoverage = scoreRequestPlanSemanticCoverage(request, plan);
@@ -3804,12 +3860,18 @@ export class SmartPipeline {
     let refreshes = 0;
     const maxContextRefreshes = this.options.maxContextRefreshes ?? 0;
     let builderNote: string | undefined;
-    let deterministicApplyRepairUsed = false;
+    const deterministicApplyRepairKinds = new Set<DeterministicPatchApplyFailureKind>();
+    let builderAttemptOrdinal = 0;
 
     while (attempts <= this.options.maxRetries) {
       attempts += 1;
+      builderAttemptOrdinal += 1;
       const note = builderNote;
       builderNote = undefined;
+      const builderAttemptLaneId =
+        builderAttemptOrdinal === 1
+          ? builderLaneId
+          : `${builderLaneId}:attempt-${builderAttemptOrdinal}`;
       const touchedBefore = this.options.getTouchedFiles?.() ?? [];
       const builderContext = buildSerializedContext(context, "builder");
       const builderInputPath = await logPhaseArtifact("builder", "input", {
@@ -3828,14 +3890,19 @@ export class SmartPipeline {
         built = await this.runPhase("builder", () =>
           this.options.builderRunner.run(plan, context, {
             contextManager: this.options.contextManager,
-            laneId: builderLaneId,
+            laneId: builderAttemptLaneId,
             note,
           }),
         );
       } catch (error) {
         if (error instanceof PatchApplyError) {
           const failure = error.details;
+          const deterministicFailureKind = classifyDeterministicPatchApplyFailure(failure);
           const deterministicApplyFailure = isDeterministicPatchApplyFailure(failure);
+          const deterministicRepairEligible = isArchitectRepairEligibleDeterministicFailure(
+            deterministicFailureKind,
+            deterministicApplyRepairKinds,
+          );
           builderResult = {
             finalMessage: { role: "assistant", content: failure.rawOutput },
             messages: [],
@@ -3851,18 +3918,20 @@ export class SmartPipeline {
             });
           }
           await appendArchitectHistory(formatCodaliResponse(buildApplyFailureResponse(failure)));
-          if (deterministicApplyFailure && !deterministicApplyRepairUsed) {
-            deterministicApplyRepairUsed = true;
+          if (deterministicApplyFailure && deterministicRepairEligible) {
+            deterministicApplyRepairKinds.add(deterministicFailureKind);
             if (this.options.logger) {
               await this.options.logger.log("builder_apply_failed_deterministic", {
                 error: failure.error,
                 source: failure.source,
-                action: "architect_repair_once",
+                kind: deterministicFailureKind,
+                action: "architect_repair_once_per_kind",
+                repair_count: deterministicApplyRepairKinds.size,
               });
             }
             const recoveryQueries = uniqueStrings(
               [
-                `${request} fix missing target paths`,
+                buildDeterministicRecoveryQuery(request, deterministicFailureKind),
                 ...((context.queries ?? []).slice(0, 2)),
               ].filter(Boolean),
             );
@@ -3873,7 +3942,7 @@ export class SmartPipeline {
             ]).slice(0, 24);
             await logPhaseArtifact("librarian", "input", {
               request,
-              reason: "builder_apply_failed_deterministic",
+              reason: `builder_apply_failed_deterministic:${deterministicFailureKind}`,
               additional_queries: recoveryQueries,
               preferred_files: recoveryFiles,
             });
@@ -3887,7 +3956,7 @@ export class SmartPipeline {
             await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
             await logPhaseArtifact("architect", "input", {
               request,
-              reason: "builder_apply_failed_deterministic",
+              reason: `builder_apply_failed_deterministic:${deterministicFailureKind}`,
               context: buildSerializedContext(context),
             });
             const planBeforeRepair = plan;
@@ -3940,6 +4009,7 @@ export class SmartPipeline {
                 if (this.options.logger) {
                   await this.options.logger.log("architect_repair_after_builder_apply_failure_failed", {
                     deterministic: true,
+                    kind: deterministicFailureKind,
                     reasons: degradedBlockingReasons,
                     unresolved_targets: unresolved,
                   });
@@ -3959,6 +4029,7 @@ export class SmartPipeline {
               await this.options.logger.log("plan_json", { phase: "architect", path: planPath });
               await this.options.logger.log("architect_repair_after_builder_apply_failure", {
                 deterministic: true,
+                kind: deterministicFailureKind,
                 reasons: repairedPlanQuality.reasons,
               });
             }
@@ -3967,6 +4038,30 @@ export class SmartPipeline {
               `Patch apply failed with deterministic error (${failure.error}). ` +
               `Use existing repository targets only (${plan.target_files.join(", ") || "none"}).`;
             continue;
+          }
+          if (deterministicApplyFailure) {
+            if (this.options.logger) {
+              await this.options.logger.log("builder_apply_failed_deterministic_no_repair", {
+                error: failure.error,
+                source: failure.source,
+                kind: deterministicFailureKind,
+                repair_count: deterministicApplyRepairKinds.size,
+                action: "fail_closed",
+              });
+            }
+            criticResult = {
+              status: "FAIL",
+              reasons: [`patch_apply_failed_deterministic_no_repair: ${failure.error}`],
+              retryable: false,
+              report: {
+                status: "FAIL",
+                reasons: [`patch_apply_failed_deterministic_no_repair: ${failure.error}`],
+                suggested_fixes: [
+                  "Architect repair was already attempted for this deterministic failure kind. Stop retry loop and request fresh plan/context before another builder attempt.",
+                ],
+              },
+            };
+            break;
           }
           if (!deterministicApplyFailure && attempts <= this.options.maxRetries) {
             builderNote = `Patch apply failed: ${failure.error}. Rollback ok=${failure.rollback.ok}. Fix the patch output and avoid disallowed paths.`;
@@ -3998,7 +4093,7 @@ export class SmartPipeline {
           context_request: Boolean(built.contextRequest),
         });
       }
-      await logLaneSummary("builder", builderLaneId);
+      await logLaneSummary("builder", builderAttemptLaneId);
       if (built.contextRequest) {
         const contextRequest = built.contextRequest;
         if (refreshes < maxContextRefreshes) {

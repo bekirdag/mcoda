@@ -135,8 +135,10 @@ class RetryFileWriteProvider implements Provider {
   name = "retry-files";
   calls = 0;
   lastRequest?: ProviderRequest;
+  requests: ProviderRequest[] = [];
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    this.requests.push(request);
     this.lastRequest = request;
     this.calls += 1;
     if (this.calls === 1) {
@@ -162,8 +164,10 @@ class RetrySearchReplaceProvider implements Provider {
   name = "retry-search-replace";
   calls = 0;
   lastRequest?: ProviderRequest;
+  requests: ProviderRequest[] = [];
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    this.requests.push(request);
     this.lastRequest = request;
     this.calls += 1;
     if (this.calls === 1) {
@@ -182,6 +186,20 @@ class RetrySearchReplaceProvider implements Provider {
             },
           ],
         }),
+      },
+    };
+  }
+}
+
+class EmptyPatchesProvider implements Provider {
+  name = "empty-patches";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({ patches: [] }),
       },
     };
   }
@@ -382,6 +400,82 @@ class PlaceholderPatchProvider implements Provider {
               file: "path/to/file.ts",
               search_block: "const value = 1;",
               replace_block: "const value = 2;",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
+class PlaceholderBlockPatchProvider implements Provider {
+  name = "placeholder-block-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "replace",
+              file: "src/example.ts",
+              search_block: "...",
+              replace_block: "...",
+            },
+          ],
+        }),
+      },
+    };
+  }
+}
+
+class FencedSchemaEchoPatchProvider implements Provider {
+  name = "fenced-schema-echo-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content: [
+          "Here is the JSON payload that matches the schema in the system prompt:",
+          "```json",
+          JSON.stringify(
+            {
+              patches: [
+                {
+                  action: "replace",
+                  file: "src/example.ts",
+                  search_block: "...",
+                  replace_block: "...",
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+          "```",
+        ].join("\n"),
+      },
+    };
+  }
+}
+
+class DeletePatchProvider implements Provider {
+  name = "delete-patch";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          patches: [
+            {
+              action: "delete",
+              file: "src/example.ts",
             },
           ],
         }),
@@ -693,6 +787,9 @@ test("BuilderRunner retries file_writes on invalid payload", { concurrency: fals
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.match(updated, /const value = 9;/);
   assert.equal(provider.calls, 2);
+  const retryMessages = provider.requests[1]?.messages ?? [];
+  assert.ok(retryMessages.some((message) => message.content.includes("PLAN (read-only):")));
+  assert.ok(retryMessages.some((message) => message.content.includes("CONTEXT BUNDLE (read-only; do not output):")));
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -721,6 +818,42 @@ test("BuilderRunner retries search_replace on invalid payload", { concurrency: f
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.match(updated, /const value = 8;/);
   assert.equal(provider.calls, 2);
+  const retryMessages = provider.requests[1]?.messages ?? [];
+  assert.ok(retryMessages.some((message) => message.content.includes("PLAN (read-only):")));
+  assert.ok(retryMessages.some((message) => message.content.includes("CONTEXT BUNDLE (read-only; do not output):")));
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner fails closed on empty patches array without retrying provider", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-empty-patches-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new EmptyPatchesProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /empty patches array/i);
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -985,7 +1118,10 @@ test("BuilderRunner patch_json ignores prose+JSON context requests and fails pat
     () => builder.run(plan, contextBundle),
     (error) => {
       assert.ok(error instanceof PatchApplyError);
-      assert.match(error.details.error, /patch payload must include patches array|patch parsing failed/i);
+      assert.match(
+        error.details.error,
+        /patch payload (must include patches array|is missing required 'patches' array)|patch parsing failed/i,
+      );
       return true;
     },
   );
@@ -1057,6 +1193,111 @@ test("BuilderRunner surfaces placeholder patch outputs as PatchApplyError", { co
     (error) => {
       assert.ok(error instanceof PatchApplyError);
       assert.match(error.details.error, /placeholder file paths/i);
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner rejects placeholder patch blocks without interpreter fallback", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-placeholder-block-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new PlaceholderBlockPatchProvider();
+  const interpreter = new PassThroughInterpreter();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter,
+    fallbackToInterpreter: true,
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /placeholder replace blocks/i);
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
+  assert.equal(interpreter.calls, 0);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner rejects fenced schema-echo placeholder payloads without interpreter fallback", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-fenced-schema-echo-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new FencedSchemaEchoPatchProvider();
+  const interpreter = new PassThroughInterpreter();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter,
+    fallbackToInterpreter: true,
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /placeholder replace blocks/i);
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
+  assert.equal(interpreter.calls, 0);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner rejects delete actions when plan has no delete intent", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-delete-without-intent-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new DeletePatchProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.match(error.details.error, /delete action without delete intent/i);
       return true;
     },
   );

@@ -269,3 +269,105 @@ test("selectPhaseAgents still prefers structured patch builders when unstructure
     assert.equal(selections.builder.agent?.slug, "expensive-structured-builder");
   });
 });
+
+test("selectPhaseAgents patch_json builder scoring prioritizes required capability coverage over zero-cost bias", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const cheapLowCoverage = await repo.createAgent({
+        slug: "cheap-low-coverage-builder",
+        adapter: "ollama-remote",
+        defaultModel: "qwen3-coder:latest",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 6,
+        reasoningRating: 6,
+        costPerMillion: 0,
+        maxComplexity: 3,
+        bestUsage: "code_write",
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(cheapLowCoverage.id, [
+        "code_write",
+      ]);
+
+      const richerCoverage = await repo.createAgent({
+        slug: "richer-coverage-builder",
+        adapter: "openai-api",
+        defaultModel: "gpt-4o-mini",
+        rating: 6,
+        reasoningRating: 6,
+        costPerMillion: 2,
+        maxComplexity: 3,
+        bestUsage: "code_write",
+        openaiCompatible: true,
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(richerCoverage.id, [
+        "code_write",
+        "iterative_coding",
+        "migration_assist",
+      ]);
+      await repo.setAgentAuth(richerCoverage.id, await CryptoHelper.encryptSecret("key-rich-builder"));
+    } finally {
+      await repo.close();
+    }
+
+    const selections = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+    });
+
+    assert.equal(selections.builder.agent?.slug, "richer-coverage-builder");
+  });
+});
+
+test("selectPhaseAgents patch_json avoids no-tools builders when viable tool-capable coding agents exist", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const noToolsBuilder = await repo.createAgent({
+        slug: "no-tools-builder",
+        adapter: "ollama-remote",
+        defaultModel: "codellama:34b",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 8,
+        reasoningRating: 8,
+        costPerMillion: 0,
+        maxComplexity: 2,
+        bestUsage: "code_write",
+        supportsTools: false,
+      });
+      await repo.setAgentCapabilities(noToolsBuilder.id, [
+        "code_write",
+        "migration_assist",
+      ]);
+
+      const toolCapableBuilder = await repo.createAgent({
+        slug: "tool-capable-builder",
+        adapter: "openai-api",
+        defaultModel: "gpt-4o-mini",
+        rating: 6,
+        reasoningRating: 6,
+        costPerMillion: 2,
+        maxComplexity: 3,
+        bestUsage: "code_write",
+        openaiCompatible: true,
+        supportsTools: true,
+      });
+      await repo.setAgentCapabilities(toolCapableBuilder.id, [
+        "code_write",
+        "iterative_coding",
+      ]);
+      await repo.setAgentAuth(toolCapableBuilder.id, await CryptoHelper.encryptSecret("key-tool-builder"));
+    } finally {
+      await repo.close();
+    }
+
+    const selections = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "patch_json",
+    });
+
+    assert.equal(selections.builder.agent?.slug, "tool-capable-builder");
+  });
+});
