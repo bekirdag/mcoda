@@ -95,7 +95,9 @@ class ReadOnlyFileWriteProvider implements Provider {
 
 class AnyFileWriteProvider implements Provider {
   name = "patch-any";
+  calls = 0;
   async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
     return {
       message: {
         role: "assistant",
@@ -1196,8 +1198,9 @@ test("BuilderRunner rejects edits outside architect plan targets when allow list
   const registry = new ToolRegistry();
   const toolContext: ToolContext = { workspaceRoot };
   const patchApplier = new PatchApplier({ workspaceRoot });
+  const provider = new AnyFileWriteProvider();
   const builder = new BuilderRunner({
-    provider: new AnyFileWriteProvider(),
+    provider,
     tools: registry,
     context: toolContext,
     maxSteps: 1,
@@ -1214,6 +1217,7 @@ test("BuilderRunner rejects edits outside architect plan targets when allow list
   };
 
   await assert.rejects(() => builder.run(plan, bundle), /disallowed files/i);
+  assert.equal(provider.calls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });

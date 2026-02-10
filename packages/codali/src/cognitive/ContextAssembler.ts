@@ -39,6 +39,7 @@ import type {
   ContextAstSummary,
   ContextProjectInfo,
   ContextSearchResult,
+  ContextSelection,
   LaneScope,
 } from "./Types.js";
 
@@ -757,6 +758,49 @@ const filterPlaceholderPaths = (paths: string[], request: string): string[] => {
     const normalized = normalizePath(entry).toLowerCase();
     return requestLower.includes(normalized);
   });
+};
+
+const applyForcedFocusSelection = (
+  selection: ContextSelection,
+  forcedFocusFiles: string[],
+  maxFiles: number,
+): ContextSelection => {
+  if (!forcedFocusFiles.length) return selection;
+  const limit = Math.max(1, maxFiles);
+  const combined = uniqueValues([
+    ...forcedFocusFiles.map((entry) => normalizePath(entry)),
+    ...selection.focus.map((entry) => normalizePath(entry)),
+    ...selection.periphery.map((entry) => normalizePath(entry)),
+    ...selection.all.map((entry) => normalizePath(entry)),
+  ]).slice(0, limit);
+  const focusTargetSize = Math.min(
+    limit,
+    Math.max(selection.focus.length, forcedFocusFiles.length, 1),
+  );
+  const focusSeed = uniqueValues([
+    ...forcedFocusFiles.map((entry) => normalizePath(entry)),
+    ...selection.focus.map((entry) => normalizePath(entry)),
+  ]);
+  const focus: string[] = [];
+  for (const candidate of focusSeed) {
+    if (!combined.includes(candidate)) continue;
+    focus.push(candidate);
+    if (focus.length >= focusTargetSize) break;
+  }
+  if (focus.length < focusTargetSize) {
+    for (const candidate of combined) {
+      if (focus.includes(candidate)) continue;
+      focus.push(candidate);
+      if (focus.length >= focusTargetSize) break;
+    }
+  }
+  const periphery = combined.filter((entry) => !focus.includes(entry));
+  return {
+    ...selection,
+    focus,
+    periphery,
+    all: combined,
+  };
 };
 
 const isBackoffError = (error: unknown): boolean => {
@@ -2809,6 +2853,7 @@ export class ContextAssembler {
       additionalQueries?: string[];
       preferredFiles?: string[];
       recentFiles?: string[];
+      forceFocusFiles?: string[];
     } = {},
   ): Promise<ContextBundle> {
     const warnings: string[] = [];
@@ -2858,6 +2903,10 @@ export class ContextAssembler {
       request,
       intent,
     );
+    const forceFocusFiles = filterPlaceholderPaths(
+      filterExcludedPaths(uniqueValues(options.forceFocusFiles ?? [])),
+      request,
+    );
     const contextManager = this.contextManager;
     const laneScope = this.laneScope;
 
@@ -2889,7 +2938,9 @@ export class ContextAssembler {
       }
       pushWarning("docdex_unavailable");
       const maxFiles = Math.max(1, this.options.maxFiles);
-      let fallbackFocus = filterExcludedPaths(preferredSeed).slice(0, maxFiles);
+      let fallbackFocus = filterExcludedPaths(
+        uniqueValues([...forceFocusFiles, ...preferredSeed]),
+      ).slice(0, maxFiles);
       if (fallbackFocus.length === 0 && this.options.workspaceRoot) {
         try {
           fallbackFocus = filterExcludedPaths(
@@ -2910,6 +2961,11 @@ export class ContextAssembler {
             skeletonizeLargeFiles: this.options.skeletonizeLargeFiles,
           });
           contextFiles = await loader.loadFocus(fallbackFocus);
+          if (loader.loadErrors.length > 0) {
+            for (const entry of loader.loadErrors) {
+              pushWarning(`context_file_load_failed:${entry.path}`);
+            }
+          }
           if (contextFiles.length > 0) {
             pushWarning("context_fs_fallback");
           }
@@ -3346,8 +3402,8 @@ export class ContextAssembler {
       maxFiles: this.options.maxFiles,
       minHitCount: Math.min(2, this.options.maxHitsPerQuery),
     };
-    const computeSelection = (impactInput: ContextImpactSummary[]) =>
-      selectContextFiles(
+    const computeSelection = (impactInput: ContextImpactSummary[]) => {
+      const selected = selectContextFiles(
         {
           hits: hitsForSelection,
           impact: impactInput,
@@ -3358,6 +3414,12 @@ export class ContextAssembler {
         },
         selectionOptions,
       );
+      return applyForcedFocusSelection(
+        selected,
+        forceFocusFiles,
+        selectionOptions.maxFiles,
+      );
+    };
     let selection = computeSelection([]);
 
     const needsUiFallback =
@@ -3753,6 +3815,11 @@ export class ContextAssembler {
       });
       const focusEntries = await loader.loadFocus(selection.focus);
       const peripheryEntries = await loader.loadPeriphery(selection.periphery);
+      if (loader.loadErrors.length > 0) {
+        for (const entry of loader.loadErrors) {
+          pushWarning(`context_file_load_failed:${entry.path}`);
+        }
+      }
       contextFiles = [...focusEntries, ...peripheryEntries];
       const budgetResult = applyContextBudget(
         contextFiles,

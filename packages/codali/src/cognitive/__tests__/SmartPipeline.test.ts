@@ -82,6 +82,7 @@ class StubContextAssembler {
     additionalQueries?: string[];
     preferredFiles?: string[];
     recentFiles?: string[];
+    forceFocusFiles?: string[];
   };
   private contexts: ContextBundle | ContextBundle[];
   private researchOutput: ResearchToolExecution;
@@ -98,6 +99,7 @@ class StubContextAssembler {
       additionalQueries?: string[];
       preferredFiles?: string[];
       recentFiles?: string[];
+      forceFocusFiles?: string[];
     } = {},
   ): Promise<ContextBundle> {
     this.calls += 1;
@@ -154,8 +156,13 @@ class StubArchitectPlannerPlanHintProbe {
 
 class StubArchitectPlannerWithRequest {
   calls = 0;
-  async planWithRequest(): Promise<{ plan: Plan; request?: any }> {
+  instructionHints: Array<string | undefined> = [];
+  async planWithRequest(
+    _context?: ContextBundle,
+    options?: { instructionHint?: string },
+  ): Promise<{ plan: Plan; request?: any }> {
     this.calls += 1;
+    this.instructionHints.push(options?.instructionHint);
     if (this.calls === 1) {
       return {
         plan: basePlan,
@@ -449,8 +456,13 @@ class StubArchitectPlannerAlwaysWeakPlan {
 
 class StubArchitectPlannerInvalidTargetThenValid {
   calls = 0;
-  async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+  instructionHints: Array<string | undefined> = [];
+  async planWithRequest(
+    _context?: ContextBundle,
+    options?: { instructionHint?: string },
+  ): Promise<{ plan: Plan; warnings: string[] }> {
     this.calls += 1;
+    this.instructionHints.push(options?.instructionHint);
     if (this.calls === 1) {
       return {
         plan: {
@@ -1169,6 +1181,9 @@ test("SmartPipeline fulfills architect requests before planning", { concurrency:
     assembler.lastAssembleOptions?.preferredFiles?.includes("src/index.ts"),
   );
   assert.ok(architect.calls >= 2);
+  assert.ok((architect.instructionHints[1] ?? "").includes("REVISION REQUIRED"));
+  assert.ok((architect.instructionHints[1] ?? "").includes("architect_request_recovery"));
+  assert.ok((architect.instructionHints[1] ?? "").includes("Do not restart from scratch."));
 });
 
 test("SmartPipeline bounds repeated architect request loops and fail-closes non-DSL architect output", { concurrency: false }, async () => {
@@ -1194,12 +1209,17 @@ test("SmartPipeline bounds repeated architect request loops and fail-closes non-
     () => pipeline.run("needs context"),
     /Architect quality gate failed before builder: (blocking_architect_warnings|unresolved_architect_request)/i,
   );
-  assert.equal(architect.calls, 2);
+  assert.equal(architect.calls, 3);
   assert.equal(assembler.calls, 2);
   assert.equal(builder.calls, 0);
   assert.ok((assembler.lastRequestId ?? "").startsWith("loop-req-"));
   assert.equal(architect.responseFormats[0], undefined);
   assert.equal(architect.responseFormats[1], undefined);
+  assert.equal(architect.responseFormats[2], undefined);
+  const revisionRequested = logger.events.find(
+    (event) => event.type === "architect_revision_requested",
+  );
+  assert.ok(revisionRequested);
   const qualityGateEvent = logger.events.find(
     (event) => event.type === "architect_quality_gate" && event.data.stage === "pre_builder",
   );
@@ -1229,9 +1249,13 @@ test("SmartPipeline fail-closes unresolved architect request loops even without 
     () => pipeline.run("needs context"),
     /Architect quality gate failed before builder: unresolved_architect_request/i,
   );
-  assert.equal(architect.calls, 2);
+  assert.equal(architect.calls, 3);
   assert.equal(assembler.calls, 2);
   assert.equal(builder.calls, 0);
+  const revisionRequested = logger.events.find(
+    (event) => event.type === "architect_revision_requested",
+  );
+  assert.ok(revisionRequested);
   const qualityGateEvent = logger.events.find(
     (event) => event.type === "architect_quality_gate"
       && event.data.stage === "pre_builder"
@@ -1301,7 +1325,7 @@ test("SmartPipeline stores normalized architect output in fast path artifact pay
   assert.ok(Array.isArray(normalized.verification));
 });
 
-test("SmartPipeline fail-closes non-DSL architect output without strict retry", { concurrency: false }, async () => {
+test("SmartPipeline revises non-DSL architect output in-place and proceeds when revision is valid", { concurrency: false }, async () => {
   const architect = new StubArchitectPlannerNonDslThenDsl();
   const builder = new StubBuilderRunner();
   const logger = new StubLogger();
@@ -1351,23 +1375,25 @@ test("SmartPipeline fail-closes non-DSL architect output without strict retry", 
     maxRetries: 1,
   });
 
-  await assert.rejects(
-    () => pipeline.run("do thing"),
-    /Architect quality gate failed before builder: blocking_architect_warnings/i,
-  );
-  assert.equal(architect.calls, 1);
-  assert.equal(builder.calls, 0);
+  const result = await pipeline.run("do thing");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(architect.calls, 2);
+  assert.equal(builder.calls, 1);
   assert.equal(architect.responseFormats[0], undefined);
-  assert.ok(!(architect.instructionHints[0] ?? "").includes("STRICT MODE"));
+  assert.ok((architect.instructionHints[1] ?? "").includes("REVISION REQUIRED"));
   const architectArtifacts = logger.artifacts.filter(
     (artifact) => artifact.phase === "architect" && artifact.kind === "output",
   );
-  assert.equal(architectArtifacts.length, 1);
+  assert.equal(architectArtifacts.length, 2);
   const pass1 = architectArtifacts.find(
     (artifact) => (artifact.payload as Record<string, unknown>).pass === 1,
   );
   assert.ok(pass1);
   assert.equal((pass1?.payload as Record<string, unknown>).response_format_type, "default");
+  const revisionArtifact = architectArtifacts.find(
+    (artifact) => (artifact.payload as Record<string, unknown>).source === "revision_retry",
+  );
+  assert.ok(revisionArtifact);
 });
 
 test("Regression: repeated non-DSL architect output fails closed before builder", { concurrency: false }, async () => {
@@ -1389,7 +1415,7 @@ test("Regression: repeated non-DSL architect output fails closed before builder"
     () => pipeline.run("do thing"),
     /Architect quality gate failed before builder: blocking_architect_warnings/i,
   );
-  assert.equal(architect.calls, 1);
+  assert.equal(architect.calls, 2);
   assert.equal(assembler.calls, 1);
   assert.equal(builder.calls, 0);
   const degradedEvent = logger.events.find(
@@ -1732,9 +1758,9 @@ test("SmartPipeline degrades empty architect verification into concrete checks",
   assert.equal(result.criticResult.status, "PASS");
   assert.ok(result.plan.verification.length > 0);
   assert.ok(
-    result.plan.verification.some((step) => /unit\/integration tests|manual browser check|manual api check/i.test(step)),
+    result.plan.verification.some((step) => /unit tests|unit\/integration tests|manual browser check|manual api check/i.test(step)),
   );
-  assert.equal(architect.calls, 1);
+  assert.equal(architect.calls, 2);
 });
 
 test("SmartPipeline degrades non-concrete architect verification when recovery has no new context", { concurrency: false }, async () => {
@@ -1757,9 +1783,9 @@ test("SmartPipeline degrades non-concrete architect verification when recovery h
   assert.equal(result.criticResult.status, "PASS");
   assert.ok(result.plan.verification.length > 0);
   assert.ok(
-    result.plan.verification.some((step) => /unit\/integration tests|manual browser check|manual api check/i.test(step)),
+    result.plan.verification.some((step) => /unit tests|unit\/integration tests|manual browser check|manual api check/i.test(step)),
   );
-  assert.equal(architect.calls, 1);
+  assert.equal(architect.calls, 2);
   assert.equal(assembler.calls, 1);
 });
 
@@ -1913,7 +1939,10 @@ test("SmartPipeline requests context recovery when architect targets are invalid
   const result = await pipeline.run("Update src/example.ts");
   assert.equal(result.criticResult.status, "PASS");
   assert.equal(architect.calls, 2);
-  assert.ok((assembler.lastRequestId ?? "").startsWith("architect-fallback-"));
+  assert.equal(assembler.lastRequestId, undefined);
+  assert.equal(assembler.calls, 1);
+  assert.ok((architect.instructionHints[1] ?? "").includes("invalid_target_paths"));
+  assert.ok((architect.instructionHints[1] ?? "").includes("Do not restart from scratch."));
   assert.ok(result.plan.target_files.includes("src/example.ts"));
   assert.equal(builder.calls, 1);
 });
@@ -2119,12 +2148,12 @@ test("Regression: endpoint intent with frontend-only targets triggers backend gu
   });
 
   const result = await pipeline.run("Create a healthz endpoint for system health checks");
-  assert.equal(architect.calls, 1);
+  assert.equal(architect.calls, 2);
   assert.equal(assembler.calls, 1);
   assert.deepEqual(architect.targetHistory[0], ["src/public/app.js"]);
-  assert.ok(!architect.targetHistory.some((targets) => targets.includes("src/server.js")));
+  assert.deepEqual(architect.targetHistory[1], ["src/server.js"]);
   assert.equal(assembler.lastRequestId, undefined);
-  assert.ok(result.plan.target_files.includes("src/public/app.js"));
+  assert.ok(result.plan.target_files.includes("src/server.js"));
 });
 
 test("Regression: endpoint intent degrades without hard-fail when backend targets stay missing", { concurrency: false }, async () => {
@@ -2180,7 +2209,7 @@ test("Regression: endpoint intent degrades without hard-fail when backend target
 
   const result = await pipeline.run("Create a healthz endpoint for system health checks");
   assert.equal(result.criticResult.status, "PASS");
-  assert.equal(architect.calls, 1);
+  assert.equal(architect.calls, 2);
   const degraded = logger.events.find(
     (event) => event.type === "architect_degraded" && event.data.reason === "relevance_endpoint_missing_backend",
   );
@@ -2317,6 +2346,100 @@ test("SmartPipeline retries builder when architect review requests changes", { c
   await pipeline.run("review me");
   assert.ok(architect.reviewCalls >= 2);
   assert.ok(builder.calls >= 2);
+});
+
+test("SmartPipeline skips architect replan loop for non-actionable architect review retry", { concurrency: false }, async () => {
+  class StableBuilderRunner extends StubBuilderRunner {
+    async run(): Promise<BuilderRunResult> {
+      this.calls += 1;
+      return {
+        finalMessage: {
+          role: "assistant",
+          content: JSON.stringify({
+            patches: [
+              {
+                action: "replace",
+                file: "src/server/healthz.ts",
+                search_block: "return { ok: true };",
+                replace_block: "appendUptimeLog(); return { ok: true };",
+              },
+            ],
+          }),
+        },
+        messages: [],
+        toolCallsExecuted: 0,
+      };
+    }
+  }
+  const logger = new StubLogger();
+  const architect = {
+    planCalls: 0,
+    reviewCalls: 0,
+    async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+      this.planCalls += 1;
+      return {
+        plan: {
+          steps: ["Update src/server/healthz.ts to add uptime logging."],
+          target_files: ["src/server/healthz.ts"],
+          risk_assessment: "low",
+          verification: ["Run integration tests for /healthz and validate uptime log output."],
+        },
+        warnings: [],
+      };
+    },
+    async reviewBuilderOutput(): Promise<{
+      status: "PASS" | "RETRY";
+      reasons: string[];
+      feedback: string[];
+      warnings: string[];
+    }> {
+      this.reviewCalls += 1;
+      return {
+        status: "RETRY",
+        reasons: [],
+        feedback: [],
+        warnings: ["architect_review_missing_status", "architect_review_missing_reasons"],
+      };
+    },
+  };
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler({
+      ...baseContext,
+      request: "Update src/server/healthz.ts",
+      selection: {
+        focus: ["src/server/healthz.ts"],
+        periphery: [],
+        all: ["src/server/healthz.ts"],
+        low_confidence: false,
+      },
+      files: [
+        {
+          path: "src/server/healthz.ts",
+          role: "focus",
+          content: "export const healthz = () => ({ ok: true });\n",
+          size: 44,
+          truncated: false,
+          sliceStrategy: "full",
+          origin: "docdex",
+        },
+      ],
+    }) as any,
+    architectPlanner: architect as any,
+    builderRunner: new StableBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 2,
+  });
+
+  const result = await pipeline.run("Update src/server/healthz.ts");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(architect.planCalls, 1);
+  assert.equal(architect.reviewCalls, 1);
+  const nonActionableEvent = logger.events.find(
+    (event) => event.type === "architect_review_retry_non_actionable",
+  );
+  assert.ok(nonActionableEvent);
 });
 
 test("SmartPipeline logs low semantic plan coverage in architect quality gate", { concurrency: false }, async () => {
@@ -3257,8 +3380,8 @@ test(
     assert.equal(result.criticResult.status, "PASS");
     assert.equal(result.attempts, 1);
     assert.equal(builder.calls, 2);
-    assert.equal(architect.planWithRequestCalls, 1);
-    assert.equal(architect.planCalls, 1);
+    assert.equal(architect.planWithRequestCalls, 2);
+    assert.equal(architect.planCalls, 0);
   },
 );
 
@@ -3468,13 +3591,27 @@ test("SmartPipeline refreshes context when builder requests it", { concurrency: 
     }
   }
 
+  class ContextRefreshArchitect {
+    calls = 0;
+    instructionHints: string[] = [];
+    async planWithRequest(
+      _context?: ContextBundle,
+      options?: { instructionHint?: string },
+    ): Promise<{ plan: Plan; warnings: string[] }> {
+      this.calls += 1;
+      this.instructionHints.push(options?.instructionHint ?? "");
+      return { plan: basePlan, warnings: [] };
+    }
+  }
+
   const contextA: ContextBundle = { ...baseContext, request: "first" };
   const contextB: ContextBundle = { ...baseContext, request: "second" };
   const assembler = new StubContextAssembler([contextA, contextB]);
   const builder = new NeedsContextBuilder();
+  const architect = new ContextRefreshArchitect();
   const pipeline = new SmartPipeline({
     contextAssembler: assembler as any,
-    architectPlanner: new StubArchitectPlanner() as any,
+    architectPlanner: architect as any,
     builderRunner: builder as any,
     criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
     memoryWriteback: new StubMemoryWriteback() as any,
@@ -3485,4 +3622,12 @@ test("SmartPipeline refreshes context when builder requests it", { concurrency: 
   await pipeline.run("needs more");
   assert.equal(assembler.calls, 2);
   assert.equal(builder.calls, 2);
+  assert.equal(architect.calls, 2);
+  assert.ok(
+    architect.instructionHints.some((hint) => hint.includes("Do not restart from scratch.")),
+  );
+  assert.ok(
+    architect.instructionHints.some((hint) => hint.includes("builder_needs_context")),
+  );
+  assert.deepEqual(assembler.lastAssembleOptions?.forceFocusFiles, ["src/auth.ts"]);
 });

@@ -438,14 +438,20 @@ const buildResearchSummary = (
 
 const ARCHITECT_STRICT_DSL_HINT = [
   "STRICT MODE: Your previous response was low-quality or hard to normalize.",
-  "Output a concise plain-text plan using the PLAN/TARGETS/RISK/VERIFY sections.",
+  "Output a concise plain-text plan using these sections: WHAT IS REQUIRED, CURRENT CONTEXT, FOLDER STRUCTURE, FILES TO TOUCH, IMPLEMENTATION PLAN, RISK, VERIFY.",
   "Avoid JSON blobs, markdown fences, and long prose paragraphs.",
   "If context is insufficient, output an AGENT_REQUEST v1 block instead of freeform text.",
   "Preferred section skeleton:",
-  "PLAN:",
-  "- <step>",
-  "TARGETS:",
+  "WHAT IS REQUIRED:",
+  "- <request requirement>",
+  "CURRENT CONTEXT:",
+  "- <context fact>",
+  "FOLDER STRUCTURE:",
+  "- <relevant folder/file>",
+  "FILES TO TOUCH:",
   "- <path>",
+  "IMPLEMENTATION PLAN:",
+  "- <step>",
   "RISK: <low|medium|high> <reason>",
   "VERIFY:",
   "- <verification step>",
@@ -463,14 +469,14 @@ const ARCHITECT_VERIFY_QUALITY_HINT = [
 const ARCHITECT_RECOVERY_HINT = [
   "RECOVERY MODE: Prior architect passes were low-quality or non-DSL.",
   "Respond with request-specific, implementation-ready plain-text sections only.",
-  "Every PLAN/TARGET/VERIFY line must include concrete target nouns tied to the current request.",
+  "Every IMPLEMENTATION PLAN/FILES TO TOUCH/VERIFY line must include concrete target nouns tied to the current request.",
   "If context is still insufficient, emit AGENT_REQUEST v1 with concrete retrieval needs.",
 ].join("\n");
 
 const ARCHITECT_ALTERNATE_RETRY_HINT = [
   "ALTERNATE RETRY MODE: Prior architect outputs repeated without quality improvement.",
-  "Keep output in plain-text PLAN/TARGETS/RISK/VERIFY sections and avoid repeating prior text.",
-  "Use request-specific nouns and concrete target file paths in every PLAN/TARGETS/VERIFY line.",
+  "Keep output in plain-text required sections and avoid repeating prior text.",
+  "Use request-specific nouns and concrete target file paths in every IMPLEMENTATION PLAN/FILES TO TOUCH/VERIFY line.",
 ].join("\n");
 
 const isArchitectNonDsl = (warnings: string[] | undefined): boolean =>
@@ -536,12 +542,25 @@ const collectPreBuilderBlockingWarnings = (warnings: string[]): string[] => {
     REPAIRED_FALLBACK_WARNING_PATTERNS.some((pattern) => pattern.test(warning))
   );
   return warnings.filter((warning) => {
+    if (warning.startsWith("plan_missing_target_change_details:")) return true;
     if (!isFatalArchitectWarningBeforeBuilder(warning)) return false;
     if (!repairedFallback) return true;
     if (NON_FATAL_REPAIRED_FALLBACK_WARNING_PATTERNS.some((pattern) => pattern.test(warning))) return false;
     return true;
   });
 };
+
+const ARCHITECT_REVIEW_RETRY_BLOCKING_WARNINGS = new Set([
+  "architect_review_missing_status",
+  "architect_review_missing_reasons",
+  "architect_review_retry_missing_feedback",
+]);
+
+const collectArchitectReviewRetryBlockingWarnings = (
+  warnings: string[] | undefined,
+): string[] => uniqueStrings(
+  (warnings ?? []).filter((warning) => ARCHITECT_REVIEW_RETRY_BLOCKING_WARNINGS.has(warning)),
+);
 
 const hashArchitectResult = (result: ArchitectPlanResult): string => {
   const raw = (result.raw ?? "").trim();
@@ -1882,6 +1901,97 @@ const hasRepairWarnings = (warnings: string[]): boolean =>
       warning === ARCHITECT_WARNING_REPAIRED || warning.startsWith("architect_output_repair_reason:"),
   );
 
+const formatPlanForArchitectRevision = (plan: Plan): string => [
+  "FILES TO TOUCH:",
+  ...(plan.target_files.length > 0 ? plan.target_files.map((entry) => `- ${entry}`) : ["- <none>"]),
+  ...(plan.create_files && plan.create_files.length > 0
+    ? ["CREATE FILES:", ...plan.create_files.map((entry) => `- ${entry}`)]
+    : []),
+  "IMPLEMENTATION PLAN:",
+  ...(plan.steps.length > 0 ? plan.steps.map((entry) => `- ${entry}`) : ["- <none>"]),
+  `RISK: ${plan.risk_assessment}`,
+  "VERIFY:",
+  ...(plan.verification.length > 0 ? plan.verification.map((entry) => `- ${entry}`) : ["- <none>"]),
+].join("\n");
+
+const buildArchitectRevisionHint = (input: {
+  reason: string;
+  details: string[];
+  plan: Plan;
+}): string => {
+  const detailLines = input.details.length > 0
+    ? input.details.slice(0, 8).map((entry) => `- ${entry}`)
+    : ["- <unspecified>"];
+  return [
+    "REVISION REQUIRED:",
+    `- Previous architect output was rejected: ${input.reason}.`,
+    ...detailLines,
+    "Do not restart from scratch. Revise the previous plan in the same context and preserve valid parts.",
+    "Use the SAME context bundle and lane history; only change the parts called out above.",
+    "Do not emit AGENT_REQUEST in this revision unless there is a hard blocker that cannot be resolved from current context.",
+    "Return plain text with sections: WHAT IS REQUIRED, CURRENT CONTEXT, FOLDER STRUCTURE, FILES TO TOUCH, CREATE FILES (optional), IMPLEMENTATION PLAN, RISK, VERIFY.",
+    "PREVIOUS PLAN SNAPSHOT:",
+    formatPlanForArchitectRevision(input.plan),
+  ].join("\n");
+};
+
+const formatArchitectRevisionFeedback = (input: {
+  reason: string;
+  details: string[];
+  plan: Plan;
+}): string => {
+  const detailLines = input.details.length > 0
+    ? input.details.slice(0, 8).map((entry) => `- ${entry}`)
+    : ["- <unspecified>"];
+  return [
+    "ARCHITECT_REVISION_FEEDBACK v1",
+    `reason: ${input.reason}`,
+    "details:",
+    ...detailLines,
+    "instruction: Revise the previous plan in-place using the same context and lane history. Keep valid parts and only fix rejected parts.",
+    "previous_plan_snapshot:",
+    formatPlanForArchitectRevision(input.plan),
+  ].join("\n");
+};
+
+const formatArchitectNeedForRevision = (need: AgentRequest["needs"][number]): string => {
+  const type = typeof need.type === "string" ? need.type : "unknown";
+  const detailParts: string[] = [];
+  if ("query" in need && typeof need.query === "string" && need.query.trim().length > 0) {
+    detailParts.push(`query=${need.query.trim()}`);
+  }
+  if ("path" in need && typeof need.path === "string" && need.path.trim().length > 0) {
+    detailParts.push(`path=${need.path.trim()}`);
+  }
+  if ("file" in need && typeof need.file === "string" && need.file.trim().length > 0) {
+    detailParts.push(`file=${need.file.trim()}`);
+  }
+  if ("root" in need && typeof need.root === "string" && need.root.trim().length > 0) {
+    detailParts.push(`root=${need.root.trim()}`);
+  }
+  return detailParts.length > 0
+    ? `Requested ${type}: ${detailParts.join(", ")}`
+    : `Requested ${type}`;
+};
+
+const buildArchitectRequestRevisionDetails = (
+  request: AgentRequest,
+  warnings: string[],
+): string[] => {
+  const details: string[] = [];
+  const summary = request.context?.summary;
+  if (typeof summary === "string" && summary.trim().length > 0) {
+    details.push(summary.trim());
+  }
+  for (const need of (request.needs ?? []).slice(0, 6)) {
+    details.push(formatArchitectNeedForRevision(need));
+  }
+  for (const warning of warnings.slice(0, 4)) {
+    details.push(`warning:${warning}`);
+  }
+  return uniqueStrings(details).slice(0, 8);
+};
+
 const PROVIDER_FAILURE_PATTERNS = [
   /\bauth_error\b/i,
   /\busage_limit_reached\b/i,
@@ -2885,7 +2995,7 @@ export class SmartPipeline {
       const maxRequestRecovery = 1;
       const maxPasses = 1 + maxRequestRecovery;
       const reflectionHint =
-        "REFINE the previous plan. Re-check constraints and request specificity. Output the full DSL plan.";
+        "REFINE the previous plan. Re-check constraints and request specificity. Output full plain-text sections (WHAT IS REQUIRED, CURRENT CONTEXT, FOLDER STRUCTURE, FILES TO TOUCH, IMPLEMENTATION PLAN, RISK, VERIFY).";
       let strictRetryTriggered = false;
       let verificationRetryTriggered = false;
       let fallbackRecoveryTriggered = false;
@@ -2899,6 +3009,7 @@ export class SmartPipeline {
       let requestRecoveryCount = 0;
       let previousRequestFingerprint: string | undefined;
       let requestRecoveryPending = false;
+      let pendingRevisionHint: string | undefined;
       while (pass <= maxPasses) {
         if (pass > 1 && !allowAutoRetry && !requestRecoveryPending) {
           break;
@@ -2906,6 +3017,10 @@ export class SmartPipeline {
         const strictRetryPass = allowAutoRetry && strictRetryTriggered && pass === 2;
         const recoveryPass = allowAutoRetry && maxPasses > 1 && pass === maxPasses;
         const hintParts: string[] = [];
+        if (pendingRevisionHint?.trim()) {
+          hintParts.push(pendingRevisionHint.trim());
+          pendingRevisionHint = undefined;
+        }
         if (allowAutoRetry && pass > 1) hintParts.push(reflectionHint);
         if (strictRetryPass) hintParts.push(ARCHITECT_STRICT_DSL_HINT);
         if (verificationRetryTriggered) hintParts.push(ARCHITECT_VERIFY_QUALITY_HINT);
@@ -3064,6 +3179,14 @@ export class SmartPipeline {
             }
             break;
           }
+          const requestRecoveryDetails = buildArchitectRequestRevisionDetails(result.request, warnings);
+          pendingRevisionHint = buildArchitectRevisionHint({
+            reason: "architect_request_recovery",
+            details: requestRecoveryDetails.length > 0
+              ? requestRecoveryDetails
+              : ["Architect requested extra context; revise the prior plan with the new context."],
+            plan: result.plan,
+          });
           requestRecoveryPending = true;
           pass += 1;
           continue;
@@ -3657,7 +3780,40 @@ export class SmartPipeline {
           }
           const canAttemptInvalidTargetRecovery =
             hasInvalidTargets && !invalidTargetRecoveryTriggered && pass < maxPasses;
-          if ((allowAutoRetry && pass < maxPasses) || canAttemptInvalidTargetRecovery) {
+          if (canAttemptInvalidTargetRecovery) {
+            const revisionReason = "invalid_target_paths";
+            const revisionDetails = uniqueStrings([
+              ...qualityGate.reasons,
+              ...unresolvedTargets.map((target) => `unresolved_target:${target}`),
+            ]);
+            pendingRevisionHint = buildArchitectRevisionHint({
+              reason: revisionReason,
+              details: revisionDetails.length > 0 ? revisionDetails : ["Refine plan quality."],
+              plan: result.plan,
+            });
+            await appendArchitectHistory(
+              formatArchitectRevisionFeedback({
+                reason: revisionReason,
+                details: revisionDetails,
+                plan: result.plan,
+              }),
+            );
+            if (this.options.logger) {
+              await this.options.logger.log("architect_retry_strategy", {
+                pass,
+                action: "revision_retry_same_context_invalid_targets",
+                reasons: qualityGate.reasons,
+                unresolved_targets: unresolvedTargets,
+              });
+            }
+            invalidTargetRecoveryTriggered = true;
+            requestRecoveryPending = true;
+            previousPlanHash = undefined;
+            previousConcreteTargets = qualityGate.concreteTargets;
+            pass += 1;
+            continue;
+          }
+          if (allowAutoRetry && pass < maxPasses) {
             const recovery = buildFallbackRecoveryRequest(request, context, pass);
             emitAgentRequestRecoveryStatus(hasInvalidTargets ? "invalid_targets" : "quality_gate");
             const response = await this.options.contextAssembler.fulfillAgentRequest(recovery.requestPayload);
@@ -3727,6 +3883,18 @@ export class SmartPipeline {
             if (hasInvalidTargets) {
               invalidTargetRecoveryTriggered = true;
             }
+            const revisionReason = hasInvalidTargets
+              ? "invalid_target_paths"
+              : "quality_gate_recovery";
+            const revisionDetails = uniqueStrings([
+              ...qualityGate.reasons,
+              ...unresolvedTargets.map((target) => `unresolved_target:${target}`),
+            ]);
+            pendingRevisionHint = buildArchitectRevisionHint({
+              reason: revisionReason,
+              details: revisionDetails.length > 0 ? revisionDetails : ["Refine plan quality."],
+              plan: result.plan,
+            });
             requestRecoveryPending = true;
             pass += 1;
             continue;
@@ -3845,100 +4013,194 @@ export class SmartPipeline {
       if (!lastPlan) {
         throw new Error("Architect failed to produce a plan");
       }
-      const hasUnresolvedArchitectRequest = Boolean(lastPlan.request);
-      const hasRequestLoopDegradeWarning = (lastPlan.warnings ?? []).includes(
-        "architect_degraded_request_loop",
-      );
-      if (hasUnresolvedArchitectRequest || hasRequestLoopDegradeWarning) {
+      let revisionAttempted = false;
+      let revisionPass = pass;
+      const attemptArchitectRevision = async (
+        reason: string,
+        details: string[],
+      ): Promise<boolean> => {
+        if (revisionAttempted) return false;
+        revisionAttempted = true;
+        revisionPass += 1;
+        const revisionDetails = uniqueStrings(details).filter((entry) => entry.trim().length > 0);
+        const currentPlan = lastPlan?.plan ?? plan;
+        const hint = buildArchitectRevisionHint({
+          reason,
+          details: revisionDetails,
+          plan: currentPlan,
+        });
+        await appendArchitectHistory(
+          formatArchitectRevisionFeedback({
+            reason,
+            details: revisionDetails,
+            plan: currentPlan,
+          }),
+        );
         if (this.options.logger) {
-          await this.options.logger.log("architect_quality_gate", {
-            stage: "pre_builder",
-            pass: "final",
-            ok: false,
-            reasons: ["unresolved_architect_request"],
-            request_present: hasUnresolvedArchitectRequest,
-            warnings: lastPlan.warnings ?? [],
+          await this.options.logger.log("architect_revision_requested", {
+            pass: revisionPass,
+            reason,
+            details: revisionDetails,
           });
         }
-        throw new Error(
-          "Architect quality gate failed before builder: unresolved_architect_request.",
+        const revised = await runArchitectPass(revisionPass, {
+          // Keep prior plan in instruction hint, but disable plan-hint short-circuit.
+          planHint: "",
+          instructionHint: hint,
+          contextOverride: context,
+          validateOnly: false,
+          responseFormat: undefined,
+        });
+        const revisedWarnings = uniqueStrings([...(revised.warnings ?? [])]);
+        const revisedQuality = assessPlanQualityGate(request, revised.plan, context);
+        await logPhaseArtifact(
+          "architect",
+          "output",
+          buildArchitectOutputArtifactPayload({
+            pass: revisionPass,
+            strictRetry: false,
+            planHint: lastPlanHintUsed,
+            instructionHint: hint,
+            result: { ...revised, warnings: revisedWarnings },
+            source: "revision_retry",
+            planHash: hashArchitectResult(revised),
+            classification: classifyArchitectWarnings(revisedWarnings),
+            repairApplied: hasRepairWarnings(revisedWarnings),
+            qualityGate: revisedQuality,
+          }),
         );
-      }
-      plan = lastPlan.plan;
-      const finalBlockingWarnings = collectPreBuilderBlockingWarnings(lastPlan.warnings ?? []);
-      if (finalBlockingWarnings.length > 0) {
         if (this.options.logger) {
-          await this.options.logger.log("architect_quality_gate", {
-            stage: "pre_builder",
-            pass: "final",
-            ok: false,
-            reasons: ["blocking_architect_warnings"],
-            blocking_warnings: finalBlockingWarnings,
+          await this.options.logger.log("architect_revision_result", {
+            pass: revisionPass,
+            reason,
+            warnings: revisedWarnings,
+            quality_ok: revisedQuality.ok,
+            quality_reasons: revisedQuality.reasons,
           });
         }
-        throw new Error(
-          `Architect quality gate failed before builder: blocking_architect_warnings (${finalBlockingWarnings.join(",")}).`,
+        lastPlan = { ...revised, warnings: revisedWarnings };
+        return true;
+      };
+      while (true) {
+        const hasUnresolvedArchitectRequest = Boolean(lastPlan.request);
+        const hasRequestLoopDegradeWarning = (lastPlan.warnings ?? []).includes(
+          "architect_degraded_request_loop",
         );
-      }
-      const finalPlanQuality = assessPlanQualityGate(request, plan, context);
-      if (!finalPlanQuality.ok) {
-        const hadInvalidTargetFailures = (lastPlan.warnings ?? []).includes("architect_invalid_targets");
-        const hasInvalidTargets = finalPlanQuality.reasons.includes("invalid_target_paths");
-        const hasNonConcreteVerification =
-          finalPlanQuality.reasons.includes("verification_non_concrete")
-          || finalPlanQuality.reasons.includes("verification_empty");
-        const unresolved = finalPlanQuality.targetValidation?.unresolvedTargets ?? [];
-        const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
-        if (hasInvalidTargets || (hadInvalidTargetFailures && finalPlanQuality.reasons.includes("missing_concrete_targets"))) {
-          throw new Error(
-            `Architect quality gate failed before builder: invalid_target_paths.${unresolvedPart}`,
-          );
-        }
-        if (hasNonConcreteVerification) {
-          const degradedPlan = buildQualityDegradedPlan(request, context, plan);
-          const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
-          const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
+        if (hasUnresolvedArchitectRequest || hasRequestLoopDegradeWarning) {
           if (this.options.logger) {
             await this.options.logger.log("architect_quality_gate", {
               stage: "pre_builder",
               pass: "final",
               ok: false,
-              reasons: finalPlanQuality.reasons,
-              action: "degrade_non_concrete_verification",
-              degraded_ok: degradedQuality.ok,
-              degraded_target_validation: degradedQuality.targetValidation ?? null,
+              reasons: ["unresolved_architect_request"],
+              request_present: hasUnresolvedArchitectRequest,
+              warnings: lastPlan.warnings ?? [],
             });
           }
-          await logPhaseArtifact("architect", "output", {
-            source: "verification_degrade",
-            plan_before: plan,
-            quality_before: finalPlanQuality,
-            plan_after: degradedPlan,
-            quality_after: degradedQuality,
-            blocking_reasons_after: degradedBlockingReasons,
-          });
-          if (degradedBlockingReasons.length > 0) {
-            throw new Error(
-              "Architect quality gate failed before builder: verification_non_concrete.",
-            );
-          }
-          plan = degradedPlan;
+          const revised = await attemptArchitectRevision("unresolved_architect_request", [
+            ...(lastPlan.warnings ?? []),
+            "Return a complete plan instead of AGENT_REQUEST for this pass.",
+          ]);
+          if (revised) continue;
+          throw new Error(
+            "Architect quality gate failed before builder: unresolved_architect_request.",
+          );
+        }
+        plan = lastPlan.plan;
+        const finalBlockingWarnings = collectPreBuilderBlockingWarnings(lastPlan.warnings ?? []);
+        if (finalBlockingWarnings.length > 0) {
           if (this.options.logger) {
-            await this.options.logger.log("architect_degraded", {
+            await this.options.logger.log("architect_quality_gate", {
+              stage: "pre_builder",
               pass: "final",
-              reason: "verification_non_concrete",
-              warnings: uniqueStrings([...(lastPlan.warnings ?? []), "architect_degraded_verification"]),
-              quality_gate: finalPlanQuality,
-              degraded_quality: degradedQuality,
+              ok: false,
+              reasons: ["blocking_architect_warnings"],
+              blocking_warnings: finalBlockingWarnings,
             });
           }
-          if (!degradedQuality.ok) {
+          const revised = await attemptArchitectRevision(
+            "blocking_architect_warnings",
+            finalBlockingWarnings,
+          );
+          if (revised) continue;
+          throw new Error(
+            `Architect quality gate failed before builder: blocking_architect_warnings (${finalBlockingWarnings.join(",")}).`,
+          );
+        }
+        const finalPlanQuality = assessPlanQualityGate(request, plan, context);
+        if (!finalPlanQuality.ok) {
+          const hadInvalidTargetFailures = (lastPlan.warnings ?? []).includes("architect_invalid_targets");
+          const hasInvalidTargets = finalPlanQuality.reasons.includes("invalid_target_paths");
+          const hasNonConcreteVerification =
+            finalPlanQuality.reasons.includes("verification_non_concrete")
+            || finalPlanQuality.reasons.includes("verification_empty");
+          const unresolved = finalPlanQuality.targetValidation?.unresolvedTargets ?? [];
+          const unresolvedPart = unresolved.length > 0 ? ` unresolved_targets=${unresolved.join(",")}` : "";
+          if (hasInvalidTargets || (hadInvalidTargetFailures && finalPlanQuality.reasons.includes("missing_concrete_targets"))) {
+            const revised = await attemptArchitectRevision("invalid_target_paths", [
+              ...finalPlanQuality.reasons,
+              ...unresolved.map((entry) => `unresolved_target:${entry}`),
+            ]);
+            if (revised) continue;
             throw new Error(
-              "Architect quality gate failed before builder: verification_non_concrete.",
+              `Architect quality gate failed before builder: invalid_target_paths.${unresolvedPart}`,
             );
           }
-          // Continue with degraded plan; no further blocking reasons remain.
-        } else {
+          if (hasNonConcreteVerification) {
+            const revised = await attemptArchitectRevision(
+              "verification_non_concrete",
+              finalPlanQuality.reasons,
+            );
+            if (revised) continue;
+            const degradedPlan = buildQualityDegradedPlan(request, context, plan);
+            const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
+            const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
+            if (this.options.logger) {
+              await this.options.logger.log("architect_quality_gate", {
+                stage: "pre_builder",
+                pass: "final",
+                ok: false,
+                reasons: finalPlanQuality.reasons,
+                action: "degrade_non_concrete_verification",
+                degraded_ok: degradedQuality.ok,
+                degraded_target_validation: degradedQuality.targetValidation ?? null,
+              });
+            }
+            await logPhaseArtifact("architect", "output", {
+              source: "verification_degrade",
+              plan_before: plan,
+              quality_before: finalPlanQuality,
+              plan_after: degradedPlan,
+              quality_after: degradedQuality,
+              blocking_reasons_after: degradedBlockingReasons,
+            });
+            if (degradedBlockingReasons.length > 0) {
+              throw new Error(
+                "Architect quality gate failed before builder: verification_non_concrete.",
+              );
+            }
+            plan = degradedPlan;
+            if (this.options.logger) {
+              await this.options.logger.log("architect_degraded", {
+                pass: "final",
+                reason: "verification_non_concrete",
+                warnings: uniqueStrings([...(lastPlan.warnings ?? []), "architect_degraded_verification"]),
+                quality_gate: finalPlanQuality,
+                degraded_quality: degradedQuality,
+              });
+            }
+            if (!degradedQuality.ok) {
+              throw new Error(
+                "Architect quality gate failed before builder: verification_non_concrete.",
+              );
+            }
+            break;
+          }
+          const revised = await attemptArchitectRevision(
+            "pre_builder_quality_gate",
+            finalPlanQuality.reasons,
+          );
+          if (revised) continue;
           const degradedPlan = buildQualityDegradedPlan(request, context, plan);
           const degradedQuality = assessPlanQualityGate(request, degradedPlan, context);
           const degradedBlockingReasons = collectBlockingPlanQualityReasons(degradedQuality);
@@ -3976,6 +4238,7 @@ export class SmartPipeline {
           }
           plan = degradedPlan;
         }
+        break;
       }
       if (this.options.logger) {
         const planPath = await this.options.logger.writePhaseArtifact("architect", "plan", plan);
@@ -3990,6 +4253,8 @@ export class SmartPipeline {
     let refreshes = 0;
     const maxContextRefreshes = this.options.maxContextRefreshes ?? 0;
     let builderNote: string | undefined;
+    let lastContextRequestFingerprint: string | undefined;
+    let forcedNoContextAttemptUsed = false;
     const deterministicApplyRepairKinds = new Set<DeterministicPatchApplyFailureKind>();
     let builderAttemptOrdinal = 0;
 
@@ -4090,15 +4355,66 @@ export class SmartPipeline {
               context: buildSerializedContext(context),
             });
             const planBeforeRepair = plan;
-            const repairedPlan = useFastPath
-              ? buildFastPlan(context)
-              : await this.runPhase("architect", () =>
-                  this.options.architectPlanner.plan(context, {
-                    contextManager: this.options.contextManager,
-                    laneId: architectLaneId,
-                  }),
-                );
-            let repairedPlanCandidate = repairedPlan;
+            const repairDetails = uniqueStrings([
+              `deterministic_failure_kind:${deterministicFailureKind}`,
+              `patch_apply_error:${failure.error}`,
+              ...(planBeforeRepair.target_files ?? []).map((file) => `target:${file}`),
+            ]);
+            const repairInstructionHint = buildArchitectRevisionHint({
+              reason: `builder_apply_failed_deterministic:${deterministicFailureKind}`,
+              details: repairDetails,
+              plan: planBeforeRepair,
+            });
+            const planner = this.options.architectPlanner as unknown as {
+              planWithRequest?: (
+                context: ContextBundle,
+                opts: Record<string, unknown>,
+              ) => Promise<ArchitectPlanResult>;
+              plan: (context: ContextBundle, opts: Record<string, unknown>) => Promise<Plan>;
+            };
+            const repairedPlanResult: ArchitectPlanResult = useFastPath
+              ? { plan: buildFastPlan(context), raw: "", warnings: [] }
+              : planner.planWithRequest
+                ? await this.runPhase("architect", () =>
+                    planner.planWithRequest!(context, {
+                      contextManager: this.options.contextManager,
+                      laneId: architectLaneId,
+                      instructionHint: repairInstructionHint,
+                      // Keep prior plan in instruction hint, but disable plan-hint short-circuit.
+                      planHint: "",
+                      validateOnly: false,
+                      responseFormat: undefined,
+                    }),
+                  )
+                : {
+                    plan: await this.runPhase("architect", () =>
+                      planner.plan(context, {
+                        contextManager: this.options.contextManager,
+                        laneId: architectLaneId,
+                        instructionHint: repairInstructionHint,
+                        responseFormat: undefined,
+                      }),
+                    ),
+                    raw: "",
+                    warnings: [],
+                  };
+            if (repairedPlanResult.request) {
+              if (this.options.logger) {
+                await this.options.logger.log("architect_repair_after_builder_apply_failure_failed", {
+                  deterministic: true,
+                  kind: deterministicFailureKind,
+                  reasons: ["unresolved_architect_request"],
+                  request_id: repairedPlanResult.request.request_id,
+                });
+              }
+              plan = planBeforeRepair;
+              attempts -= 1;
+              builderNote =
+                `Patch apply failed with deterministic error (${failure.error}). ` +
+                "Architect repair requested extra context; keep current plan and produce a schema-valid patch only for listed targets.";
+              continue;
+            }
+            let repairedPlanCandidate = repairedPlanResult.plan;
             let repairedPlanQuality = assessPlanQualityGate(request, repairedPlanCandidate, context);
             if (!repairedPlanQuality.ok) {
               const degradedRepairPlan = buildQualityDegradedPlan(
@@ -4182,6 +4498,7 @@ export class SmartPipeline {
               const switched = typeof recovery === "boolean" ? recovery : recovery.switched;
               const noteFromRecovery = typeof recovery === "boolean" ? undefined : recovery.note;
               if (switched) {
+                deterministicApplyRepairKinds.clear();
                 if (this.options.logger) {
                   await this.options.logger.log("phase_provider_fallback", {
                     phase: "builder",
@@ -4189,6 +4506,7 @@ export class SmartPipeline {
                     error: fallbackError.message,
                     reason: "deterministic_patch_parse",
                     note: noteFromRecovery ?? null,
+                    reset_deterministic_repair_kinds: true,
                   });
                 }
                 this.emitStatus("thinking", "builder: deterministic patch parse failed, switching phase agent");
@@ -4252,12 +4570,14 @@ export class SmartPipeline {
           const switched = typeof recovery === "boolean" ? recovery : recovery.switched;
           const noteFromRecovery = typeof recovery === "boolean" ? undefined : recovery.note;
           if (switched) {
+            deterministicApplyRepairKinds.clear();
             if (this.options.logger) {
               await this.options.logger.log("phase_provider_fallback", {
                 phase: "builder",
                 attempt: builderAttemptOrdinal,
                 error: providerFailureError.message,
                 note: noteFromRecovery ?? null,
+                reset_deterministic_repair_kinds: true,
               });
             }
             this.emitStatus("thinking", "builder: provider failed, switching phase agent");
@@ -4286,7 +4606,15 @@ export class SmartPipeline {
       await logLaneSummary("builder", builderAttemptLaneId);
       if (built.contextRequest) {
         const contextRequest = built.contextRequest;
-        if (refreshes < maxContextRefreshes) {
+        const contextRequestFingerprint = JSON.stringify({
+          reason: contextRequest.reason ?? "",
+          queries: uniqueStrings((contextRequest.queries ?? []).map((entry) => entry.trim()).filter(Boolean)),
+          files: uniqueStrings((contextRequest.files ?? []).map((entry) => entry.trim()).filter(Boolean)),
+        });
+        const repeatedContextRequest = contextRequestFingerprint === lastContextRequestFingerprint;
+        if (refreshes < maxContextRefreshes && !repeatedContextRequest) {
+          lastContextRequestFingerprint = contextRequestFingerprint;
+          forcedNoContextAttemptUsed = false;
           refreshes += 1;
           attempts -= 1;
           if (this.options.logger) {
@@ -4306,21 +4634,113 @@ export class SmartPipeline {
               additionalQueries: contextRequest.queries,
               preferredFiles: contextRequest.files,
               recentFiles: contextRequest.files,
+              forceFocusFiles: contextRequest.files,
             }),
           );
           await logPhaseArtifact("librarian", "output", context);
+          const revisionDetails = uniqueStrings(
+            [
+              contextRequest.reason ? `Builder reason: ${contextRequest.reason}` : "",
+              contextRequest.queries && contextRequest.queries.length > 0
+                ? `Requested queries: ${contextRequest.queries.join(", ")}`
+                : "",
+              contextRequest.files && contextRequest.files.length > 0
+                ? `Requested files: ${contextRequest.files.join(", ")}`
+                : "",
+            ].filter((entry) => entry.trim().length > 0),
+          );
+          const architectRevisionHint = buildArchitectRevisionHint({
+            reason: "builder_needs_context",
+            details: revisionDetails.length > 0
+              ? revisionDetails
+              : ["Builder requested additional context to continue implementation."],
+            plan,
+          });
           await logPhaseArtifact("architect", "input", {
             request,
+            reason: "builder_needs_context",
             context: buildSerializedContext(context),
+            instruction_hint: architectRevisionHint,
+            context_request: contextRequest,
           });
-          plan = useFastPath
-            ? buildFastPlan(context)
-            : await this.runPhase("architect", () =>
-                this.options.architectPlanner.plan(context, {
+          if (useFastPath) {
+            plan = buildFastPlan(context);
+          } else {
+            const planner = this.options.architectPlanner as unknown as {
+              planWithRequest?: (
+                ctx: ContextBundle,
+                opts: Record<string, unknown>,
+              ) => Promise<ArchitectPlanResult>;
+              plan: (ctx: ContextBundle, opts: Record<string, unknown>) => Promise<Plan>;
+            };
+            const revisedPlanResult: ArchitectPlanResult = planner.planWithRequest
+              ? await this.runPhase("architect", () =>
+                planner.planWithRequest!(context, {
                   contextManager: this.options.contextManager,
                   laneId: architectLaneId,
+                  instructionHint: architectRevisionHint,
+                  // Keep prior plan in instruction hint, but disable plan-hint short-circuit.
+                  planHint: "",
+                  responseFormat: undefined,
+                  validateOnly: false,
                 }),
-              );
+              )
+              : {
+                  plan: await this.runPhase("architect", () =>
+                    planner.plan(context, {
+                      contextManager: this.options.contextManager,
+                      laneId: architectLaneId,
+                      instructionHint: architectRevisionHint,
+                      planHint: "",
+                      responseFormat: undefined,
+                    }),
+                  ),
+                  raw: "",
+                  warnings: [],
+                };
+            const revisedWarnings = uniqueStrings([...(revisedPlanResult.warnings ?? [])]);
+            const revisedQuality = assessPlanQualityGate(request, revisedPlanResult.plan, context);
+            const blockingReasons = collectBlockingPlanQualityReasons(revisedQuality);
+            await logPhaseArtifact("architect", "output", {
+              source: "builder_context_refresh_revision",
+              warnings: revisedWarnings,
+              raw_output: revisedPlanResult.raw ?? "",
+              normalized_output: revisedPlanResult.plan,
+              quality_gate: revisedQuality,
+            });
+            if (this.options.logger) {
+              await this.options.logger.log("architect_output", {
+                source: "builder_context_refresh_revision",
+                steps: revisedPlanResult.plan.steps.length,
+                target_files: revisedPlanResult.plan.target_files.length,
+                warnings: revisedWarnings,
+                quality_ok: revisedQuality.ok,
+                quality_reasons: revisedQuality.reasons,
+                target_validation: revisedQuality.targetValidation ?? null,
+              });
+            }
+            if (blockingReasons.length > 0) {
+              const unresolved = revisedQuality.targetValidation?.unresolvedTargets ?? [];
+              if (this.options.logger) {
+                await this.options.logger.log("architect_quality_gate", {
+                  stage: "builder_context_refresh_replan",
+                  ok: false,
+                  reasons: blockingReasons,
+                  unresolved_targets: unresolved,
+                });
+              }
+              criticResult = {
+                status: "FAIL",
+                reasons: [
+                  `architect_replan_failed:${blockingReasons.join(",")}`,
+                  ...unresolved.map((target) => `unresolved_target:${target}`),
+                ],
+                retryable: false,
+              };
+              break;
+            }
+            plan = revisedPlanResult.plan;
+          }
           if (this.options.logger) {
             const planPath = await this.options.logger.writePhaseArtifact("architect", "plan", plan);
             await this.options.logger.log("architect_output", {
@@ -4330,6 +4750,25 @@ export class SmartPipeline {
             await this.options.logger.log("plan_json", { phase: "architect", path: planPath });
           }
           await logPhaseArtifact("architect", "output", plan);
+          continue;
+        }
+        if (!forcedNoContextAttemptUsed) {
+          forcedNoContextAttemptUsed = true;
+          lastContextRequestFingerprint = contextRequestFingerprint;
+          attempts -= 1;
+          if (this.options.logger) {
+            await this.options.logger.log("context_request_repeated_forced_builder_attempt", {
+              reason: contextRequest.reason ?? null,
+              queries: contextRequest.queries ?? [],
+              files: contextRequest.files ?? [],
+              repeated: repeatedContextRequest,
+              refreshes,
+              max_refreshes: maxContextRefreshes,
+            });
+          }
+          builderNote =
+            "Context was already refreshed for this request. Do not emit needs_context again. " +
+            "Proceed with a best-effort patch using current context, plan targets, and focus files only.";
           continue;
         }
         criticResult = {
@@ -4372,19 +4811,142 @@ export class SmartPipeline {
           });
         }
         if (review.status === "RETRY") {
-          if (attempts <= this.options.maxRetries) {
-            builderNote =
-              review.feedback.length > 0
-                ? `Architect review requested fixes: ${review.feedback.join("; ")}`
+          const reviewBlockingWarnings = collectArchitectReviewRetryBlockingWarnings(
+            review.warnings ?? [],
+          );
+          const reviewFixes = uniqueStrings([
+            ...(review.feedback ?? []),
+            ...((review.reasons ?? []).map((reason) => `Address: ${reason}`)),
+            ...(
+              reviewBlockingWarnings.length === 0
+                ? ((review.warnings ?? []).map((warning) => `review_warning:${warning}`))
+                : []
+            ),
+          ])
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0)
+            .slice(0, 8);
+          const reviewRetryActionable =
+            reviewBlockingWarnings.length === 0 && reviewFixes.length > 0;
+          if (!reviewRetryActionable) {
+            if (this.options.logger) {
+              await this.options.logger.log("architect_review_retry_non_actionable", {
+                status: review.status,
+                reasons: review.reasons ?? [],
+                feedback: review.feedback ?? [],
+                warnings: review.warnings ?? [],
+                blocking_warnings: reviewBlockingWarnings,
+              });
+            }
+            await logPhaseArtifact("architect_review", "non_actionable", {
+              status: review.status,
+              reasons: review.reasons ?? [],
+              feedback: review.feedback ?? [],
+              warnings: review.warnings ?? [],
+              blocking_warnings: reviewBlockingWarnings,
+            });
+          }
+          if (reviewRetryActionable && attempts <= this.options.maxRetries) {
+            const revisionHint = buildArchitectRevisionHint({
+              reason: "architect_review_retry",
+              details: reviewFixes.length > 0
+                ? reviewFixes
+                : ["Architect review returned RETRY without concrete reasons. Repair the weakest plan sections."],
+              plan,
+            });
+            await appendArchitectHistory(
+              formatArchitectRevisionFeedback({
+                reason: "architect_review_retry",
+                details: reviewFixes.length > 0
+                  ? reviewFixes
+                  : ["Architect review returned RETRY without concrete reasons. Repair the weakest plan sections."],
+                plan,
+              }),
+            );
+            const planner = this.options.architectPlanner as unknown as {
+              planWithRequest?: (
+                context: ContextBundle,
+                opts: Record<string, unknown>,
+              ) => Promise<ArchitectPlanResult>;
+              plan: (context: ContextBundle, opts: Record<string, unknown>) => Promise<Plan>;
+            };
+            const revisedPlanResult: ArchitectPlanResult = planner.planWithRequest
+              ? await this.runPhase("architect", () =>
+                  planner.planWithRequest!(context, {
+                    contextManager: this.options.contextManager,
+                    laneId: architectLaneId,
+                    instructionHint: revisionHint,
+                    // Keep prior plan in instruction hint, but disable plan-hint short-circuit.
+                    planHint: "",
+                    validateOnly: false,
+                    responseFormat: undefined,
+                  }),
+                )
+              : {
+                  plan: await this.runPhase("architect", () =>
+                    planner.plan(context, {
+                      contextManager: this.options.contextManager,
+                      laneId: architectLaneId,
+                      instructionHint: revisionHint,
+                      responseFormat: undefined,
+                    }),
+                  ),
+                  raw: "",
+                  warnings: [],
+                };
+            const revisedWarnings = uniqueStrings([...(revisedPlanResult.warnings ?? [])]);
+            const revisedPlanQuality = assessPlanQualityGate(request, revisedPlanResult.plan, context);
+            const revisedBlocking = collectBlockingPlanQualityReasons(revisedPlanQuality);
+            await logPhaseArtifact("architect", "output", {
+              source: "architect_review_retry_revision",
+              review,
+              instruction_hint: revisionHint,
+              plan_hint: null,
+              raw_output: revisedPlanResult.raw ?? "",
+              normalized_output: revisedPlanResult.plan,
+              warnings: revisedWarnings,
+              quality_gate: revisedPlanQuality,
+            });
+            if (this.options.logger) {
+              await this.options.logger.log("architect_revision_result", {
+                source: "architect_review_retry",
+                reason: "architect_review_retry",
+                warnings: revisedWarnings,
+                quality_ok: revisedPlanQuality.ok,
+                quality_reasons: revisedPlanQuality.reasons,
+              });
+            }
+            if (revisedPlanResult.request) {
+              builderNote = reviewFixes.length > 0
+                ? `Architect review requested fixes: ${reviewFixes.join("; ")}`
                 : "Architect review requested changes. Provide a corrected output.";
+              continue;
+            }
+            if (revisedBlocking.length > 0) {
+              criticResult = {
+                status: "FAIL",
+                reasons: [
+                  "architect_review_retry_revision_failed",
+                  ...revisedBlocking,
+                ],
+                retryable: false,
+              };
+              break;
+            }
+            plan = revisedPlanResult.plan;
+            builderNote = reviewFixes.length > 0
+              ? `Architect review requested fixes: ${reviewFixes.join("; ")}`
+              : "Architect review requested changes. Provide a corrected output.";
             continue;
           }
-          criticResult = {
-            status: "FAIL",
-            reasons: ["architect_review_failed", ...review.feedback],
-            retryable: false,
-          };
-          break;
+          if (reviewRetryActionable) {
+            criticResult = {
+              status: "FAIL",
+              reasons: ["architect_review_failed", ...review.feedback],
+              retryable: false,
+            };
+            break;
+          }
         }
         const builderSemantic = assessBuilderSemanticAlignment(request, plan, built.finalMessage.content);
         await logPhaseArtifact("architect_review", "semantic_guard", {

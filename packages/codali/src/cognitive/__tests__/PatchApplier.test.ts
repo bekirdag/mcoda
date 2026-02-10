@@ -75,3 +75,34 @@ test("PatchApplier rejects ambiguous matches", { concurrency: false }, async () 
     /Ambiguous/,
   );
 });
+
+test("PatchApplier replaces multiline blocks with whitespace fallback exactly once", { concurrency: false }, async () => {
+  const tmpDir = setupDir();
+  const filePath = path.join(tmpDir, "complex.js");
+  writeFileSync(
+    filePath,
+    [
+      "function sample() {",
+      "  const a = 1;",
+      "  const b = 2;",
+      "  return a + b;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const applier = new PatchApplier({ workspaceRoot: tmpDir });
+  await applier.apply([
+    {
+      action: "replace",
+      file: "complex.js",
+      search_block: "function sample(){ const a=1; const b=2; return a+b; }",
+      replace_block: "function sample() { const a = 1; const b = 2; return a + b + 1; }",
+    },
+  ]);
+
+  const updated = readFileSync(filePath, "utf8");
+  assert.ok(updated.includes("return a + b + 1;"));
+  assert.equal((updated.match(/return a \+ b \+ 1;/g) ?? []).length, 1);
+});
