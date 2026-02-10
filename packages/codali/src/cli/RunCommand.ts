@@ -733,9 +733,10 @@ export const assessPhaseFallbackSuitability = (
   if (selection.supportsTools || hasToolRunner) {
     return {
       ok: true,
-      reason: "fallback_tool_calls_only",
+      reason: "fallback_patch_json_without_structured_capability",
       details: { structuredHits, codeHits, hasToolRunner: hasToolRunner ? 1 : 0 },
-      builderMode: "tool_calls",
+      // Keep patch_json mode so fallback builders stay in the same patch contract path.
+      builderMode: "patch_json",
     };
   }
   return {
@@ -783,26 +784,49 @@ class StubProvider implements Provider {
     const promptText = request.messages.map((message) => message.content ?? "").join("\n");
     const lowerPrompt = promptText.toLowerCase();
     const isArchitectPrompt = /ROLE:\s*Technical Architect/i.test(promptText);
-    if (isArchitectPrompt && /REVIEW:/i.test(promptText) && /STATUS:/i.test(promptText)) {
-      return {
-        message: {
-          role: "assistant",
-          content: ["REVIEW:", "STATUS: PASS", "REASONS:", "- Request intent and plan targets are covered.", "FEEDBACK:"].join("\n"),
-        },
-      };
-    }
-    if (isArchitectPrompt && /PLAN:/i.test(promptText) && /TARGETS:/i.test(promptText)) {
+    const isArchitectReviewPrompt =
+      isArchitectPrompt
+      && (
+        /TASK:\s*Review the builder output/i.test(promptText)
+        || (/OUTPUT FORMAT \(PLAIN TEXT\):/i.test(promptText) && /STATUS:\s*PASS\|RETRY/i.test(promptText))
+      );
+    if (isArchitectReviewPrompt) {
       return {
         message: {
           role: "assistant",
           content: [
-            "PLAN:",
-            "- Update src/index.ts to implement the requested change.",
-            "TARGETS:",
+            "STATUS: PASS",
+            "REASONS:",
+            "- Request intent and plan targets are covered.",
+            "FEEDBACK:",
+          ].join("\n"),
+        },
+      };
+    }
+    const isArchitectPlanPrompt =
+      isArchitectPrompt
+      && (
+        /TASK:\s*Produce an implementation plan/i.test(promptText)
+        || /PREFERRED OUTPUT SHAPE \(PLAIN TEXT\)/i.test(promptText)
+      );
+    if (isArchitectPlanPrompt) {
+      return {
+        message: {
+          role: "assistant",
+          content: [
+            "WHAT IS REQUIRED:",
+            "- Apply the requested behavior update for the current task.",
+            "CURRENT CONTEXT:",
+            "- Existing implementation lives in src/index.ts.",
+            "FOLDER STRUCTURE:",
             "- src/index.ts",
-            "RISK: low",
+            "FILES TO TOUCH:",
+            "- src/index.ts",
+            "IMPLEMENTATION PLAN:",
+            "- Update src/index.ts to implement the requested behavior change.",
+            "RISK: low scoped single-file update.",
             "VERIFY:",
-            "- Run unit tests: pnpm test --filter codali",
+            "- Run unit/integration tests that cover src/index.ts behavior.",
           ].join("\n"),
         },
       };
@@ -1512,7 +1536,8 @@ export class RunCommand {
           temperature: architectRoute.temperature,
           logger,
           model: architectRoute.config.model,
-          responseFormat: architectRoute.responseFormat,
+          // Architect is intentionally plain-text first; avoid hard response-format constraints.
+          responseFormat: undefined,
           planHint: config.planHint,
           stream: config.streaming.enabled,
           onEvent: streamState.onEvent,
@@ -1780,6 +1805,9 @@ export class RunCommand {
         });
 
         const result = await pipeline.run(taskInput);
+        for (const file of result.builderResult.touchedFiles ?? []) {
+          runContext.recordTouchedFile(file);
+        }
         if (result.criticResult.status !== "PASS") {
           const failureReasons = result.criticResult.reasons?.length
             ? result.criticResult.reasons

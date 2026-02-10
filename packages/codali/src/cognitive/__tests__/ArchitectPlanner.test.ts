@@ -125,6 +125,35 @@ test("ArchitectPlanner parses DSL steps/targets", { concurrency: false }, async 
   assert.ok(plan.steps.some((step) => step.includes("src/login.ts")));
 });
 
+test("ArchitectPlanner parses plain-text IMPLEMENTATION PLAN and FILES TO TOUCH sections", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "WHAT IS REQUIRED:",
+        "- Update login flow behavior.",
+        "CURRENT CONTEXT:",
+        "- Login handler is in src/login.ts.",
+        "FOLDER STRUCTURE:",
+        "- src/login.ts",
+        "FILES TO TOUCH:",
+        "- src/login.ts",
+        "IMPLEMENTATION PLAN:",
+        "- Update login validation in src/login.ts.",
+        "RISK: low",
+        "VERIFY:",
+        "- Run unit tests: pnpm test --filter codali",
+      ].join("\n"),
+    },
+  });
+
+  const planner = new ArchitectPlanner(provider);
+  const plan = await planner.plan(baseContext);
+  assert.equal(plan.steps[0], "Update login validation in src/login.ts.");
+  assert.equal(plan.target_files[0], "src/login.ts");
+  assert.ok(plan.verification[0]?.includes("pnpm test"));
+});
+
 test("ArchitectPlanner fails closed on out-of-scope targets when create_files is not declared", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
@@ -228,6 +257,55 @@ test("ArchitectPlanner fallback does not invent new source targets for UI-focuse
   assert.ok(result.plan.target_files.includes("src/public/style.css"));
   assert.ok(!result.plan.target_files.includes("src/task.js"));
   assert.equal(result.plan.create_files, undefined);
+});
+
+test("ArchitectPlanner fallback adds markup target for UI layout requests when focus misses markup file", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: "{}",
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const uiContext: ContextBundle = {
+    ...baseContext,
+    request: "Add a task completion stats section under the welcome header on the homepage",
+    selection: {
+      focus: ["src/public/app.js", "src/public/style.css"],
+      periphery: ["src/public/index.html", "src/taskStore.js"],
+      all: ["src/public/app.js", "src/public/style.css", "src/public/index.html", "src/taskStore.js"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/public/app.js",
+        role: "focus",
+        content: "console.log('app');\n",
+        size: 20,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+      {
+        path: "src/public/style.css",
+        role: "focus",
+        content: ".hero { color: black; }\n",
+        size: 23,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+    snippets: [
+      {
+        path: "src/public/index.html",
+        content: "<h1>Welcome</h1>\n<div id='task-list'></div>\n",
+      },
+    ],
+  };
+
+  const result = await planner.planWithRequest(uiContext);
+  assert.ok(result.plan.target_files.includes("src/public/index.html"));
 });
 
 test("Regression: empty VERIFY is normalized to concrete fallback verification", { concurrency: false }, async () => {
@@ -992,4 +1070,91 @@ test("ArchitectPlanner review parser flags RETRY without actionable feedback", {
   );
   assert.equal(review.status, "RETRY");
   assert.ok(review.warnings.includes("architect_review_retry_missing_feedback"));
+  assert.ok(review.feedback.some((entry) => entry.startsWith("Address:")));
+});
+
+test("ArchitectPlanner review parser flags missing status and reasons warnings", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "REVIEW:",
+        "FEEDBACK:",
+        "- Update src/server/healthz.ts to include uptime log writes.",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const review = await planner.reviewBuilderOutput(
+    {
+      steps: ["Update src/server/healthz.ts to log uptime data"],
+      target_files: ["src/server/healthz.ts"],
+      risk_assessment: "low",
+      verification: ["Run integration tests for /healthz and check logs/healthz.log output."],
+    },
+    "builder output",
+    baseContext,
+  );
+  assert.equal(review.status, "RETRY");
+  assert.ok(review.warnings.includes("architect_review_missing_status"));
+  assert.ok(review.warnings.includes("architect_review_missing_reasons"));
+});
+
+test("ArchitectPlanner parses sectioned plain-text plan output", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "WHAT IS REQUIRED:",
+        "- Add task completion stats under welcome header.",
+        "CURRENT CONTEXT:",
+        "- Homepage exists in src/public/index.html.",
+        "FOLDER STRUCTURE:",
+        "- src/public/index.html",
+        "- src/public/style.css",
+        "FILES TO TOUCH:",
+        "- src/public/index.html",
+        "- src/public/style.css",
+        "IMPLEMENTATION PLAN:",
+        "- Update src/public/index.html to insert a stats container under the welcome header.",
+        "- Update src/public/style.css to style the new stats section.",
+        "RISK: low layout drift in homepage header spacing.",
+        "VERIFY:",
+        "- Run unit/integration tests for homepage rendering and manually verify stats section appears under header.",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
+  assert.ok(result.plan.target_files.includes("src/public/index.html"));
+  assert.ok(result.plan.target_files.includes("src/public/style.css"));
+  assert.ok(result.plan.steps.some((step) => step.includes("src/public/index.html")));
+  assert.ok(!result.warnings.includes("architect_output_not_dsl"));
+});
+
+test("ArchitectPlanner infers target files from folder structure when files section is omitted", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "WHAT IS REQUIRED:",
+        "- Add endpoint health logging.",
+        "CURRENT CONTEXT:",
+        "- Existing health endpoint is in src/server/healthz.ts.",
+        "FOLDER STRUCTURE:",
+        "- src/server/healthz.ts",
+        "- src/server/logger.ts",
+        "IMPLEMENTATION PLAN:",
+        "- Update src/server/healthz.ts to append structured health checks into logs.",
+        "- Reuse src/server/logger.ts write helper for consistent formatting.",
+        "RISK: medium endpoint latency if logging is synchronous.",
+        "VERIFY:",
+        "- Run integration tests for /healthz and verify log output format.",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const result = await planner.planWithRequest(scopeAgnosticContext());
+  assert.ok(result.plan.target_files.includes("src/server/healthz.ts"));
+  assert.ok(result.warnings.includes("plan_targets_inferred_from_folder_structure"));
 });

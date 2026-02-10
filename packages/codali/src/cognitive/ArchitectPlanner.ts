@@ -8,11 +8,8 @@ import type { RunLogger } from "../runtime/RunLogger.js";
 import type { ContextBundle, Plan } from "./Types.js";
 import { serializeContext } from "./ContextSerializer.js";
 import {
-  ARCHITECT_GBNF,
   ARCHITECT_PROMPT,
-  ARCHITECT_REVIEW_GBNF,
   ARCHITECT_REVIEW_PROMPT,
-  ARCHITECT_VALIDATE_GBNF,
   ARCHITECT_VALIDATE_PROMPT,
 } from "./Prompts.js";
 import type { ContextManager } from "./ContextManager.js";
@@ -50,6 +47,8 @@ const normalizePath = (value: string): string =>
 
 const REQUEST_FILE_PATTERN = /(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+\.[A-Za-z0-9]+/g;
 const ENDPOINT_INTENT_PATTERN = /\b(endpoint|route|router|handler|api|health|healthz|status|ping)\b/i;
+const UI_LAYOUT_REQUEST_PATTERN =
+  /\b(ui|screen|page|homepage|header|footer|section|layout|render|styling|style)\b/i;
 const DOC_PATH_PATTERN = /(^|\/)(docs?|openapi|specs?)\//i;
 const TEST_PATH_PATTERN = /(^|\/)(__tests__|tests?|test)\//i;
 const FRONTEND_PATH_PATTERN = /(^|\/)(public|frontend|client)\//i;
@@ -217,12 +216,42 @@ const scoreEndpointTarget = (value: string): number => {
   return score;
 };
 
+const isMarkupLikePath = (value: string): boolean => {
+  const normalized = normalizePath(value);
+  if (!normalized || isDocPath(normalized) || isTestPath(normalized)) return false;
+  if (/(^|\/)(views?|templates?)\//i.test(normalized)) return true;
+  return /\.(html?|jsx|tsx|vue|svelte)$/i.test(normalized);
+};
+
+const scoreMarkupTarget = (value: string): number => {
+  const normalized = normalizePath(value).toLowerCase();
+  let score = 0;
+  if (!isMarkupLikePath(normalized)) return -100;
+  if (FRONTEND_PATH_PATTERN.test(normalized)) score += 30;
+  if (/\/index\.[a-z0-9]+$/.test(normalized)) score += 24;
+  if (/\.html?$/.test(normalized)) score += 18;
+  if (/\/(views?|templates?)\//.test(normalized)) score += 12;
+  return score;
+};
+
 const deriveFallbackTargetFiles = (context: ContextBundle): string[] => {
   const request = context.request ?? "";
   const requestPaths = extractRequestedPaths(request);
   if (requestPaths.length > 0) return requestPaths;
 
   const discoveredPaths = collectContextPaths(context);
+  const includeUiMarkupTarget = (targets: string[]): string[] => {
+    const dedupedTargets = uniqueStrings(targets.map((entry) => normalizePath(entry)).filter(Boolean));
+    if (!UI_LAYOUT_REQUEST_PATTERN.test(request)) return dedupedTargets;
+    if (dedupedTargets.some((entry) => isMarkupLikePath(entry))) return dedupedTargets;
+    const markupCandidate = discoveredPaths
+      .map((entry) => ({ path: normalizePath(entry), score: scoreMarkupTarget(entry) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((entry) => entry.path)[0];
+    if (!markupCandidate) return dedupedTargets;
+    return uniqueStrings([...dedupedTargets, markupCandidate]);
+  };
   const baseTargets = targetFilesFromContext(context).map((entry) => normalizePath(entry));
   const nonPlaceholderTargets = baseTargets.filter((entry) => entry !== "unknown");
 
@@ -239,18 +268,18 @@ const deriveFallbackTargetFiles = (context: ContextBundle): string[] => {
 
   const baseCodeTargets = nonPlaceholderTargets.filter((entry) => isSourceCodePath(entry));
   if (baseCodeTargets.length > 0 && !baseCodeTargets.every((entry) => isDocPath(entry) || isTestPath(entry))) {
-    return uniqueStrings(baseCodeTargets);
+    return includeUiMarkupTarget(baseCodeTargets);
   }
 
   const discoveredCodeTargets = discoveredPaths.filter((entry) => isSourceCodePath(entry));
   if (discoveredCodeTargets.length > 0) {
-    return uniqueStrings(discoveredCodeTargets).slice(0, 6);
+    return includeUiMarkupTarget(uniqueStrings(discoveredCodeTargets).slice(0, 6));
   }
 
   const nonDocTargets = nonPlaceholderTargets.filter(
     (entry) => !isDocPath(entry) && !isTestPath(entry),
   );
-  if (nonDocTargets.length > 0) return uniqueStrings(nonDocTargets);
+  if (nonDocTargets.length > 0) return includeUiMarkupTarget(nonDocTargets);
   return ["unknown"];
 };
 
@@ -724,10 +753,13 @@ const ARCHITECT_THINK_PATTERN = /<\/?think\b[^>]*>/i;
 const ARCHITECT_FENCE_PATTERN = /```/;
 const ARCHITECT_THINK_BLOCK_PATTERN = /<think\b[^>]*>[\s\S]*?<\/think>/gi;
 const ARCHITECT_FENCE_BLOCK_PATTERN = /```[^\n]*\n?([\s\S]*?)```/g;
-const ARCHITECT_PLAN_HEADER_PATTERN = /^\s*PLAN\s*:/im;
-const ARCHITECT_TARGETS_HEADER_PATTERN = /^\s*TARGETS\s*:/im;
-const ARCHITECT_RISK_HEADER_PATTERN = /^\s*RISK\s*:/im;
-const ARCHITECT_VERIFY_HEADER_PATTERN = /^\s*(VERIFY|VERIFICATION)\s*:/im;
+const ARCHITECT_PLAN_HEADER_PATTERN = /^\s*(PLAN|IMPLEMENTATION PLAN)\s*:?\s*/im;
+const ARCHITECT_TARGETS_HEADER_PATTERN = /^\s*(TARGETS|FILES TO TOUCH)\s*:?\s*/im;
+const ARCHITECT_RISK_HEADER_PATTERN = /^\s*RISK\s*:?\s*/im;
+const ARCHITECT_VERIFY_HEADER_PATTERN = /^\s*(VERIFY|VERIFICATION|VALIDATE|VALIDATION)\s*:?\s*/im;
+const ARCHITECT_REQUIRED_HEADER_PATTERN = /^\s*WHAT\s+IS\s+REQUIRED\s*:?\s*/im;
+const ARCHITECT_CONTEXT_HEADER_PATTERN = /^\s*CURRENT\s+CONTEXT\s*:?\s*/im;
+const ARCHITECT_FOLDER_HEADER_PATTERN = /^\s*FOLDER\s+STRUCTURE\s*:?\s*/im;
 
 const countHeaderMatches = (pattern: RegExp, content: string): number => {
   const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
@@ -742,11 +774,17 @@ const detectDslHeaders = (content: string): {
   targets: boolean;
   risk: boolean;
   verify: boolean;
+  required: boolean;
+  context: boolean;
+  folder: boolean;
 } => ({
   plan: ARCHITECT_PLAN_HEADER_PATTERN.test(content),
   targets: ARCHITECT_TARGETS_HEADER_PATTERN.test(content),
   risk: ARCHITECT_RISK_HEADER_PATTERN.test(content),
   verify: ARCHITECT_VERIFY_HEADER_PATTERN.test(content),
+  required: ARCHITECT_REQUIRED_HEADER_PATTERN.test(content),
+  context: ARCHITECT_CONTEXT_HEADER_PATTERN.test(content),
+  folder: ARCHITECT_FOLDER_HEADER_PATTERN.test(content),
 });
 
 const detectDslHeaderCounts = (content: string): {
@@ -754,11 +792,17 @@ const detectDslHeaderCounts = (content: string): {
   targets: number;
   risk: number;
   verify: number;
+  required: number;
+  context: number;
+  folder: number;
 } => ({
   plan: countHeaderMatches(ARCHITECT_PLAN_HEADER_PATTERN, content),
   targets: countHeaderMatches(ARCHITECT_TARGETS_HEADER_PATTERN, content),
   risk: countHeaderMatches(ARCHITECT_RISK_HEADER_PATTERN, content),
   verify: countHeaderMatches(ARCHITECT_VERIFY_HEADER_PATTERN, content),
+  required: countHeaderMatches(ARCHITECT_REQUIRED_HEADER_PATTERN, content),
+  context: countHeaderMatches(ARCHITECT_CONTEXT_HEADER_PATTERN, content),
+  folder: countHeaderMatches(ARCHITECT_FOLDER_HEADER_PATTERN, content),
 });
 
 const normalizeArchitectDslCandidate = (content: string): string => {
@@ -785,10 +829,14 @@ const classifyArchitectOutput = (content: string): string[] => {
   if (duplicateSections) {
     warnings.push(ARCHITECT_WARNING_MULTIPLE_SECTION_BLOCKS, ARCHITECT_WARNING_NON_DSL);
   }
-  const headerCount = [headers.plan, headers.targets, headers.risk, headers.verify].filter(Boolean).length;
-  if (headerCount > 0 && headerCount < 4) {
+  const hasStructuredSignal =
+    headers.plan || headers.targets || headers.risk || headers.verify
+    || headers.required || headers.context || headers.folder;
+  const hasCoreSections = headers.plan && headers.risk && headers.verify;
+  const hasTargetSignal = headers.targets || headers.folder;
+  if (hasStructuredSignal && !(hasCoreSections && hasTargetSignal)) {
     warnings.push(ARCHITECT_WARNING_MISSING_REQUIRED_SECTIONS, ARCHITECT_WARNING_NON_DSL);
-  } else if (headerCount === 0) {
+  } else if (!hasStructuredSignal) {
     const parsed = parseJsonLoose(trimmed);
     const record =
       parsed.parsed && typeof parsed.parsed === "object" && !Array.isArray(parsed.parsed)
@@ -831,6 +879,29 @@ const REQUIRED_MISSING_PLAN_WARNINGS = new Set([
   "plan_missing_verification",
 ]);
 
+const PATH_CANDIDATE_INLINE_PATTERN = /^(?:[`'"])?([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+)(?:[`'"])?$/;
+
+const extractPathCandidatesFromLines = (lines: string[]): string[] => {
+  const candidates: string[] = [];
+  for (const line of lines) {
+    const fromPattern = line.match(REQUEST_FILE_PATTERN) ?? [];
+    if (fromPattern.length > 0) {
+      candidates.push(...fromPattern.map((entry) => normalizePath(entry)));
+      continue;
+    }
+    const compact = line
+      .replace(/\s+\(.*\)\s*$/g, "")
+      .replace(/^[`'"]+|[`'"]+$/g, "")
+      .trim();
+    if (!compact) continue;
+    const inlineMatch = PATH_CANDIDATE_INLINE_PATTERN.exec(compact);
+    if (!inlineMatch) continue;
+    const candidate = normalizePath(inlineMatch[1] ?? "");
+    if (candidate) candidates.push(candidate);
+  }
+  return uniqueStrings(candidates);
+};
+
 const parsePlanDsl = (
   content: string,
   context: ContextBundle,
@@ -840,12 +911,27 @@ const parsePlanDsl = (
   if (!trimmed) return { warnings: ["architect_output_empty"] };
 
   const steps: string[] = [];
+  const requiredNotes: string[] = [];
+  const contextNotes: string[] = [];
+  const folderStructure: string[] = [];
   const targets: string[] = [];
   const createFiles: string[] = [];
   const verification: string[] = [];
   let risk: string | undefined;
-  let section: "steps" | "targets" | "create" | "verify" | "risk" | undefined;
+  let section:
+    | "required"
+    | "context"
+    | "folder"
+    | "steps"
+    | "targets"
+    | "create"
+    | "verify"
+    | "risk"
+    | undefined;
   const headerCounts = {
+    required: 0,
+    context: 0,
+    folder: 0,
     plan: 0,
     targets: 0,
     create: 0,
@@ -863,7 +949,43 @@ const parsePlanDsl = (
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    const planMatch = /^PLAN\s*:\s*(.*)$/i.exec(line);
+    const requiredMatch = /^WHAT\s+IS\s+REQUIRED\s*:?\s*(.*)$/i.exec(line);
+    if (requiredMatch) {
+      headerCounts.required += 1;
+      if (headerCounts.required > 1) {
+        duplicateSectionDetected = true;
+        section = undefined;
+        continue;
+      }
+      section = "required";
+      if (requiredMatch[1]) commitItem(requiredNotes, requiredMatch[1]);
+      continue;
+    }
+    const contextMatch = /^CURRENT\s+CONTEXT\s*:?\s*(.*)$/i.exec(line);
+    if (contextMatch) {
+      headerCounts.context += 1;
+      if (headerCounts.context > 1) {
+        duplicateSectionDetected = true;
+        section = undefined;
+        continue;
+      }
+      section = "context";
+      if (contextMatch[1]) commitItem(contextNotes, contextMatch[1]);
+      continue;
+    }
+    const folderMatch = /^FOLDER\s+STRUCTURE\s*:?\s*(.*)$/i.exec(line);
+    if (folderMatch) {
+      headerCounts.folder += 1;
+      if (headerCounts.folder > 1) {
+        duplicateSectionDetected = true;
+        section = undefined;
+        continue;
+      }
+      section = "folder";
+      if (folderMatch[1]) commitItem(folderStructure, folderMatch[1]);
+      continue;
+    }
+    const planMatch = /^(PLAN|IMPLEMENTATION PLAN)\s*:?\s*(.*)$/i.exec(line);
     if (planMatch) {
       headerCounts.plan += 1;
       if (headerCounts.plan > 1) {
@@ -872,10 +994,10 @@ const parsePlanDsl = (
         continue;
       }
       section = "steps";
-      if (planMatch[1]) commitItem(steps, planMatch[1]);
+      if (planMatch[2]) commitItem(steps, planMatch[2]);
       continue;
     }
-    const targetsMatch = /^TARGETS\s*:\s*(.*)$/i.exec(line);
+    const targetsMatch = /^(TARGETS|FILES TO TOUCH)\s*:?\s*(.*)$/i.exec(line);
     if (targetsMatch) {
       headerCounts.targets += 1;
       if (headerCounts.targets > 1) {
@@ -884,10 +1006,10 @@ const parsePlanDsl = (
         continue;
       }
       section = "targets";
-      if (targetsMatch[1]) commitItem(targets, targetsMatch[1]);
+      if (targetsMatch[2]) commitItem(targets, targetsMatch[2]);
       continue;
     }
-    const createMatch = /^CREATE(?:_FILES?| FILES?)\s*:\s*(.*)$/i.exec(line);
+    const createMatch = /^CREATE(?:_FILES?| FILES?)\s*:?\s*(.*)$/i.exec(line);
     if (createMatch) {
       headerCounts.create += 1;
       if (headerCounts.create > 1) {
@@ -899,7 +1021,7 @@ const parsePlanDsl = (
       if (createMatch[1]) commitItem(createFiles, createMatch[1]);
       continue;
     }
-    const riskMatch = /^RISK\s*:\s*(.*)$/i.exec(line);
+    const riskMatch = /^RISK\s*:?\s*(.*)$/i.exec(line);
     if (riskMatch) {
       headerCounts.risk += 1;
       if (headerCounts.risk > 1) {
@@ -912,7 +1034,7 @@ const parsePlanDsl = (
       if (!risk) section = "risk";
       continue;
     }
-    const verifyMatch = /^(VERIFY|VERIFICATION)\s*:\s*(.*)$/i.exec(line);
+    const verifyMatch = /^(VERIFY|VERIFICATION|VALIDATE|VALIDATION)\s*:?\s*(.*)$/i.exec(line);
     if (verifyMatch) {
       headerCounts.verify += 1;
       if (headerCounts.verify > 1) {
@@ -925,6 +1047,18 @@ const parsePlanDsl = (
       continue;
     }
 
+    if (section === "required") {
+      commitItem(requiredNotes, line);
+      continue;
+    }
+    if (section === "context") {
+      commitItem(contextNotes, line);
+      continue;
+    }
+    if (section === "folder") {
+      commitItem(folderStructure, line);
+      continue;
+    }
     if (section === "steps") {
       commitItem(steps, line);
       continue;
@@ -959,13 +1093,30 @@ const parsePlanDsl = (
     return { warnings };
   }
 
+  const inferredTargets = targets.length > 0
+    ? targets
+    : extractPathCandidatesFromLines(folderStructure);
+  if (targets.length === 0 && inferredTargets.length > 0) {
+    warnings.push("plan_targets_inferred_from_folder_structure");
+  }
+  const resolvedSteps = steps.length > 0
+    ? steps
+    : (requiredNotes.length > 0 ? requiredNotes : contextNotes);
+  if (steps.length === 0 && requiredNotes.length > 0) {
+    warnings.push("plan_steps_inferred_from_requirements");
+  } else if (steps.length === 0 && requiredNotes.length === 0 && contextNotes.length > 0) {
+    warnings.push("plan_steps_inferred_from_current_context");
+  }
+
   const plan: Plan = {
-    steps: steps.length > 0 ? steps : fallbackSteps(context),
-    target_files: targets.length > 0 ? targets : deriveFallbackTargetFiles(context),
+    steps: resolvedSteps.length > 0 ? resolvedSteps : fallbackSteps(context),
+    target_files: inferredTargets.length > 0 ? inferredTargets : deriveFallbackTargetFiles(context),
     create_files: createFiles.length > 0 ? uniqueStrings(createFiles.map((entry) => normalizePath(entry))) : undefined,
     risk_assessment: risk && risk.length > 0 ? risk : "medium: fallback plan generated from context",
     verification: (() => {
-      const resolvedTargets = targets.length > 0 ? targets : deriveFallbackTargetFiles(context);
+      const resolvedTargets = inferredTargets.length > 0
+        ? inferredTargets
+        : deriveFallbackTargetFiles(context);
       const explicitCreateTargets = createFiles.length > 0
         ? uniqueStrings(createFiles.map((entry) => normalizePath(entry)))
         : [];
@@ -1353,20 +1504,36 @@ const parseReviewDsl = (
   const feedback: string[] = [];
   const reasons: string[] = [];
   let section: "feedback" | "reasons" | undefined;
+  let hasExplicitFeedback = false;
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    const statusMatch = /^STATUS:\s*(PASS|RETRY)/i.exec(line);
+    const statusMatch =
+      /^STATUS\s*:\s*(PASS|RETRY)\b/i.exec(line)
+      ?? /^RESULT\s*:\s*(PASS|RETRY)\b/i.exec(line)
+      ?? /^(PASS|RETRY)\b/i.exec(line);
     if (statusMatch) {
       status = statusMatch[1].toUpperCase() as "PASS" | "RETRY";
       continue;
     }
-    if (/^REASONS\s*:/i.test(line)) {
-      section = "reasons";
+    if (/^REVIEW\s*:?\s*$/i.test(line)) {
       continue;
     }
-    if (/^FEEDBACK\s*:/i.test(line)) {
+    const reasonHeaderMatch = /^(REASONS?|ISSUES?|WHY)\s*:?\s*(.*)$/i.exec(line);
+    if (reasonHeaderMatch) {
+      section = "reasons";
+      if (reasonHeaderMatch[2]) {
+        reasons.push(reasonHeaderMatch[2].trim());
+      }
+      continue;
+    }
+    const feedbackHeaderMatch = /^(FEEDBACK|FIXES?|ACTIONS?|NEXT STEPS?)\s*:?\s*(.*)$/i.exec(line);
+    if (feedbackHeaderMatch) {
       section = "feedback";
+      if (feedbackHeaderMatch[2]) {
+        feedback.push(feedbackHeaderMatch[2].trim());
+        hasExplicitFeedback = true;
+      }
       continue;
     }
     const cleaned = line.replace(/^\s*[-*•]\s*/, "").trim();
@@ -1377,11 +1544,29 @@ const parseReviewDsl = (
     }
     if (section === "feedback") {
       feedback.push(cleaned);
+      hasExplicitFeedback = true;
+      continue;
+    }
+    if (!section && status === "RETRY") {
+      if (/\b(fix|update|change|add|remove|ensure|align|address)\b/i.test(cleaned)) {
+        feedback.push(cleaned);
+        hasExplicitFeedback = true;
+      } else {
+        reasons.push(cleaned);
+      }
     }
   }
   if (!status) warnings.push("architect_review_missing_status");
-  if (status === "RETRY" && feedback.length === 0) {
+  if (status === "PASS" && reasons.length === 0) {
+    reasons.push("Builder output satisfies the request and plan constraints.");
+  }
+  if (status === "RETRY" && !hasExplicitFeedback) {
     warnings.push("architect_review_retry_missing_feedback");
+  }
+  if (status === "RETRY" && feedback.length === 0 && reasons.length > 0) {
+    for (const reason of reasons.slice(0, 6)) {
+      feedback.push(`Address: ${reason}`);
+    }
   }
   if (reasons.length === 0) {
     warnings.push("architect_review_missing_reasons");
@@ -1499,7 +1684,7 @@ export class ArchitectPlanner {
     const requestedFormat = options.responseFormat ?? this.responseFormat;
     const responseFormat: ProviderResponseFormat | undefined =
       requestedFormat?.type === "gbnf" && !requestedFormat.grammar
-        ? { type: "gbnf", grammar: ARCHITECT_GBNF }
+        ? undefined
         : requestedFormat;
     if (validateOnly && planHint) {
       const hintParsed = parsePlanHintForValidation(planHint, context);
@@ -1693,7 +1878,7 @@ export class ArchitectPlanner {
     const requestedFormat = options.responseFormat ?? this.responseFormat;
     const responseFormat: ProviderResponseFormat | undefined =
       requestedFormat?.type === "gbnf" && !requestedFormat.grammar
-        ? { type: "gbnf", grammar: ARCHITECT_REVIEW_GBNF }
+        ? undefined
         : requestedFormat;
 
     const systemMessage: ProviderMessage = { role: "system", content: ARCHITECT_REVIEW_PROMPT };
@@ -1785,6 +1970,11 @@ export class ArchitectPlanner {
     const model = options.model ?? this.model;
     const stream = options.stream;
     const onEvent = options.onEvent;
+    const requestedFormat = this.responseFormat;
+    const responseFormat: ProviderResponseFormat | undefined =
+      requestedFormat?.type === "gbnf" && !requestedFormat.grammar
+        ? undefined
+        : requestedFormat;
 
     const systemMessage: ProviderMessage = { role: "system", content: ARCHITECT_VALIDATE_PROMPT };
     const contextContent = buildContextNarrative(context);
@@ -1814,14 +2004,14 @@ export class ArchitectPlanner {
         provider: this.provider.name,
         model,
         messages: [systemMessage, ...history, userMessage],
-        responseFormat: { type: "gbnf", grammar: ARCHITECT_VALIDATE_GBNF },
+        responseFormat,
         temperature: this.temperature,
         stream: stream ?? false,
       });
     }
     const response = await this.provider.generate({
       messages: [systemMessage, ...history, userMessage],
-      responseFormat: { type: "gbnf", grammar: ARCHITECT_VALIDATE_GBNF },
+      responseFormat,
       temperature: this.temperature,
       stream,
       onEvent,

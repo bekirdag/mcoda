@@ -197,12 +197,12 @@ test("assessPhaseFallbackSuitability accepts patch_json builder fallback when ca
   assert.equal(suitability.builderMode, "patch_json");
 });
 
-test("assessPhaseFallbackSuitability downgrades to tool_calls when patch_json structured output is unavailable", () => {
+test("assessPhaseFallbackSuitability keeps patch_json when structured output capability is unavailable", () => {
   const suitability = assessPhaseFallbackSuitability("builder", "patch_json", {
     capabilities: ["code_write", "simple_refactor", "tool_runner"],
     supportsTools: true,
   });
   assert.equal(suitability.ok, true);
-  assert.equal(suitability.reason, "fallback_tool_calls_only");
-  assert.equal(suitability.builderMode, "tool_calls");
+  assert.equal(suitability.reason, "fallback_patch_json_without_structured_capability");
+  assert.equal(suitability.builderMode, "patch_json");
 });

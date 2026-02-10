@@ -15,15 +15,17 @@ test("Architect prompt references focus/periphery context", () => {
   assert.match(ARCHITECT_PROMPT, /Do NOT use generic filler lines/i);
   assert.match(ARCHITECT_PROMPT, /RESEARCH SUMMARY/i);
   assert.match(ARCHITECT_PROMPT, /missing evidence|gaps/i);
-  assert.match(ARCHITECT_PROMPT, /Every PLAN line must include request-specific nouns/i);
+  assert.match(ARCHITECT_PROMPT, /Every IMPLEMENTATION PLAN line must include request-specific nouns/i);
   assert.match(ARCHITECT_PROMPT, /Every VERIFY line must include request-specific nouns/i);
-  assert.match(ARCHITECT_PROMPT, /TARGETS must be concrete repo-relative paths/i);
+  assert.match(ARCHITECT_PROMPT, /FILES TO TOUCH must be concrete repo-relative paths/i);
   assert.match(ARCHITECT_PROMPT, /RISK must reference concrete impacted behavior\/components/i);
   assert.match(ARCHITECT_PROMPT, /VALID OUTPUT EXAMPLE/i);
   assert.match(ARCHITECT_PROMPT, /INVALID OUTPUT EXAMPLE/i);
   assert.match(ARCHITECT_PROMPT, /Output plain text only/i);
   assert.match(ARCHITECT_PROMPT, /PREFERRED OUTPUT SHAPE \(PLAIN TEXT\)/i);
-  assert.match(ARCHITECT_PROMPT, /^PLAN:/m);
+  assert.match(ARCHITECT_PROMPT, /^WHAT IS REQUIRED:/m);
+  assert.match(ARCHITECT_PROMPT, /^FILES TO TOUCH:/m);
+  assert.match(ARCHITECT_PROMPT, /^IMPLEMENTATION PLAN:/m);
 });
 
 test("Builder prompt switches for patch_json mode", () => {
@@ -52,8 +54,11 @@ test("Builder prompt switches for patch_json mode", () => {
 
 test("Architect validate prompt enforces anti-generic plan quality", () => {
   assert.match(ARCHITECT_VALIDATE_PROMPT, /Reject generic\/filler plan lines/i);
-  assert.match(ARCHITECT_VALIDATE_PROMPT, /Ensure every PLAN and VERIFY line includes request-specific nouns/i);
+  assert.match(ARCHITECT_VALIDATE_PROMPT, /Ensure every IMPLEMENTATION PLAN and VERIFY line includes request-specific nouns/i);
   assert.match(ARCHITECT_VALIDATE_PROMPT, /no placeholders or "unknown"/i);
+  assert.match(ARCHITECT_VALIDATE_PROMPT, /^WHAT IS REQUIRED:/m);
+  assert.match(ARCHITECT_VALIDATE_PROMPT, /^FILES TO TOUCH:/m);
+  assert.match(ARCHITECT_VALIDATE_PROMPT, /^IMPLEMENTATION PLAN:/m);
 });
 
 test("Architect review prompt enforces semantic correctness checks", () => {

@@ -31,18 +31,18 @@ const resolvePath = (workspaceRoot: string, targetPath: string): string => {
   return resolved;
 };
 
-const escapeRegex = (input: string): string => input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const buildWhitespaceRegex = (search: string): RegExp => {
-  let pattern = "";
-  for (const char of search) {
+const buildWhitespaceCollapsed = (input: string): { compact: string; map: number[] } => {
+  let compact = "";
+  const map: number[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
     if (/\s/.test(char)) {
-      pattern += "\\s*";
-    } else {
-      pattern += `${escapeRegex(char)}\\s*`;
+      continue;
     }
+    compact += char;
+    map.push(index);
   }
-  return new RegExp(pattern, "g");
+  return { compact, map };
 };
 
 const replaceOnce = (content: string, search: string, replace: string): string => {
@@ -54,15 +54,23 @@ const replaceOnce = (content: string, search: string, replace: string): string =
     throw new Error("Ambiguous search block. Provide more context.");
   }
 
-  const regex = buildWhitespaceRegex(search);
-  const matches = [...content.matchAll(regex)];
-  if (matches.length === 0) {
+  const compactSearch = search.replace(/\s+/g, "");
+  if (!compactSearch) {
     throw new Error("Search block not found in file.");
   }
-  if (matches.length > 1) {
+
+  const collapsed = buildWhitespaceCollapsed(content);
+  const firstIndex = collapsed.compact.indexOf(compactSearch);
+  if (firstIndex < 0) {
+    throw new Error("Search block not found in file.");
+  }
+  if (collapsed.compact.indexOf(compactSearch, firstIndex + 1) >= 0) {
     throw new Error("Ambiguous search block. Provide more context.");
   }
-  return content.replace(regex, replace);
+
+  const start = collapsed.map[firstIndex];
+  const end = collapsed.map[firstIndex + compactSearch.length - 1] + 1;
+  return `${content.slice(0, start)}${replace}${content.slice(end)}`;
 };
 
 export class PatchApplier {

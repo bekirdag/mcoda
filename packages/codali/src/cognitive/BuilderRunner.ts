@@ -33,6 +33,7 @@ import type { PatchInterpreterClient } from "./PatchInterpreter.js";
 
 export interface BuilderRunResult extends RunnerResult {
   contextRequest?: ContextRequest;
+  touchedFiles?: string[];
 }
 
 export interface PatchApplyFailure {
@@ -148,6 +149,17 @@ const isInterpreterParseRetryCandidate = (message: string): boolean => {
 
 const shouldRetrySchemaRepair = (message: string): boolean => {
   if (isNonRecoverablePatchParseError(message)) return false;
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("enoent")
+    || normalized.includes("no such file or directory")
+    || normalized.includes("disallowed files")
+    || normalized.includes("outside architect plan targets")
+    || normalized.includes("search block not found")
+    || normalized.includes("read-only")
+  ) {
+    return false;
+  }
   return true;
 };
 
@@ -176,6 +188,9 @@ const shouldRetrySchemaRepairFromPatchApplyError = (error: PatchApplyError): boo
   if (isSchemaDefinitionError(message)) return true;
   return RETRYABLE_PATCH_APPLY_PATTERNS.some((pattern) => message.includes(pattern));
 };
+
+const isSearchBlockNotFoundError = (message: string): boolean =>
+  message.toLowerCase().includes("search block not found");
 
 const PATCH_PLACEHOLDER_PATTERN = /^(?:\.\.\.|<[^>]+>|todo|tbd|fixme|placeholder)$/i;
 
@@ -409,6 +424,7 @@ export class BuilderRunner {
       }
     };
     const allowDeleteActions = planAllowsDeleteAction(plan);
+    const touchedFiles = new Set<string>();
     const logPatchPayload = async (payload: { patches: Array<{ file: string }> }, source: string) => {
       if (!this.options.logger) return;
       const path = await this.options.logger.writePhaseArtifact("builder", "patch", payload);
@@ -451,6 +467,7 @@ export class BuilderRunner {
             source,
           });
         }
+        for (const file of applyResult.touched) touchedFiles.add(file);
       } catch (error) {
         let rollbackOk = false;
         let rollbackError: string | undefined;
@@ -526,6 +543,16 @@ export class BuilderRunner {
     const buildUserMessage = (): ProviderMessage => ({
       role: "user",
       content: buildUserContent(options.note),
+    });
+    const finalizeResult = (
+      base: RunnerResult,
+      overrides: Partial<BuilderRunResult> = {},
+    ): BuilderRunResult => ({
+      ...base,
+      ...overrides,
+      ...(touchedFiles.size > 0
+        ? { touchedFiles: Array.from(touchedFiles).sort() }
+        : {}),
     });
     const contextManager = options.contextManager ?? this.options.contextManager;
     const laneId = options.laneId ?? this.options.laneId;
@@ -644,7 +671,7 @@ export class BuilderRunner {
           files: contextRequest.files,
         });
       }
-      return { ...result, contextRequest };
+      return finalizeResult(result, { contextRequest });
     }
     if (mode === "tool_calls" && result.toolCallsExecuted === 0) {
       const tryApplyDirectPatch = async (): Promise<boolean> => {
@@ -673,7 +700,7 @@ export class BuilderRunner {
       };
       const applied = await tryApplyDirectPatch();
       if (applied) {
-        return result;
+        return finalizeResult(result);
       }
       if (this.options.logger) {
         await this.options.logger.log("builder_tool_calls_no_actions", {
@@ -699,7 +726,7 @@ export class BuilderRunner {
             files: retryContextRequest.files,
           });
         }
-        return { ...result, contextRequest: retryContextRequest };
+        return finalizeResult(result, { contextRequest: retryContextRequest });
       }
     }
     if (mode === "freeform") {
@@ -720,7 +747,7 @@ export class BuilderRunner {
       const payload = await interpreter.interpret(result.finalMessage.content);
       await logPatchPayload(payload, "interpreter_freeform");
       await applyPayload(payload, "interpreter_freeform", result.finalMessage.content);
-      return result;
+      return finalizeResult(result);
     }
 
     if (mode === "patch_json") {
@@ -788,12 +815,54 @@ export class BuilderRunner {
       };
 
       let processingError: Error | undefined;
+      const attemptFileWritesRecovery = async (
+        reason: string,
+        source: string,
+      ): Promise<BuilderRunResult> => {
+        const recoverySystem: ProviderMessage = {
+          role: "system",
+          content: buildBuilderPrompt(mode, "file_writes"),
+        };
+        const recoveryUser: ProviderMessage = {
+          role: "user",
+          content: buildSchemaOnlyContent(
+            `${reason} Return JSON with a top-level "files" array and full updated content for each changed file.`,
+          ),
+        };
+        if (this.options.logger) {
+          await this.options.logger.log("patch_search_block_recovery", {
+            format: "file_writes",
+            reason,
+            source,
+          });
+        }
+        const recoveryResult = await buildRunner(
+          mode,
+          {
+            type: "gbnf",
+            grammar: BUILDER_PATCH_GBNF_FILE_WRITES,
+          },
+        ).run([recoverySystem, ...messageState.history, messageState.userMessage, recoveryUser]);
+        const merged = {
+          ...recoveryResult,
+          usage: mergeUsage(result.usage, recoveryResult.usage),
+        };
+        result = merged;
+        await parseAndApply(merged.finalMessage.content, "file_writes", source);
+        return finalizeResult(merged);
+      };
       try {
         await parseAndApply(result.finalMessage.content, patchFormat, "interpreter_primary");
-        return result;
+        return finalizeResult(result);
       } catch (error) {
         if (error instanceof PatchApplyError) {
           if (!shouldRetrySchemaRepairFromPatchApplyError(error)) {
+            if (patchFormat === "search_replace" && isSearchBlockNotFoundError(error.details.error)) {
+              return attemptFileWritesRecovery(
+                `Search-replace patch failed: ${error.details.error}`,
+                "interpreter_search_block_recovery",
+              );
+            }
             throw error;
           }
           processingError = new Error(error.details.error);
@@ -844,7 +913,7 @@ export class BuilderRunner {
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
           await parseAndApply(result.finalMessage.content, "file_writes", "interpreter_retry");
-          return result;
+          return finalizeResult(result);
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
             throw retryError;
@@ -878,7 +947,7 @@ export class BuilderRunner {
           result = { ...fallbackResult, usage: mergeUsage(result.usage, fallbackResult.usage) };
           try {
             await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_fallback");
-            return result;
+            return finalizeResult(result);
           } catch (fallbackError) {
             if (fallbackError instanceof PatchApplyError) {
               throw fallbackError;
@@ -904,7 +973,7 @@ export class BuilderRunner {
               result = { ...guardResult, usage: mergeUsage(result.usage, guardResult.usage) };
               try {
                 await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_guard");
-                return result;
+                return finalizeResult(result);
               } catch (guardError) {
                 if (guardError instanceof PatchApplyError) {
                   throw guardError;
@@ -953,9 +1022,15 @@ export class BuilderRunner {
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
           await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_retry");
-          return result;
+          return finalizeResult(result);
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
+            if (isSearchBlockNotFoundError(retryError.details.error)) {
+              return attemptFileWritesRecovery(
+                `Search-replace retry failed: ${retryError.details.error}`,
+                "interpreter_search_block_retry_recovery",
+              );
+            }
             throw retryError;
           }
           const retryMessage =
@@ -982,6 +1057,6 @@ export class BuilderRunner {
         });
       }
     }
-    return result;
+    return finalizeResult(result);
   }
 }

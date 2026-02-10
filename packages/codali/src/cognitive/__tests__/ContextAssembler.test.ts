@@ -193,6 +193,23 @@ test("ContextAssembler builds a complete context bundle", { concurrency: false }
   assert.equal(bundle.profile[0]?.content, "use async/await");
 });
 
+test("ContextAssembler force-focuses requested files into focus selection", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-force-focus-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const foo = 1;", "utf8");
+  writeFileSync(path.join(tmpDir, "src/server.js"), "export const handler = () => {};\n", "utf8");
+  const client = new FakeDocdexClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, { maxQueries: 2, workspaceRoot: tmpDir, readStrategy: "fs" });
+  const bundle = await assembler.assemble("Add an API endpoint", {
+    forceFocusFiles: ["src/server.js"],
+  });
+
+  assert.ok(bundle.selection?.focus.includes("src/server.js"));
+  assert.ok(bundle.selection?.all.includes("src/server.js"));
+  const forcedEntry = bundle.files?.find((entry) => entry.path === "src/server.js");
+  assert.equal(forcedEntry?.role, "focus");
+});
+
 test("ContextAssembler filters patch-interpreter memory for non-patch requests", { concurrency: false }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-context-memory-filter-"));
   mkdirSync(path.join(tmpDir, "src"), { recursive: true });

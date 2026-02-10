@@ -38,7 +38,7 @@ test("ContextFileLoader loads focus files and skeletonizes large content", { con
   assert.equal(focus.length, 1);
   assert.equal(focus[0]?.truncated, true);
   assert.ok(focus[0]?.content.includes("...truncated..."));
-  assert.ok(focus[0]?.content.includes("ast_slice"));
+  assert.ok(focus[0]?.sliceStrategy?.startsWith("head_middle_tail"));
   assert.ok(focus[0]?.content.includes("symbols"));
 });
 
@@ -97,4 +97,89 @@ test("ContextFileLoader truncates periphery when over limit", { concurrency: fal
   assert.equal(periphery.length, 1);
   assert.equal(periphery[0]?.truncated, true);
   assert.ok(periphery[0]?.content.length <= 40);
+});
+
+test("ContextFileLoader extracts text content from docdex open payload", { concurrency: false }, async () => {
+  class OpenLinesClient extends StubDocdexClient {
+    openCalls: unknown[] = [];
+    async openFile(_filePath: string, options?: unknown): Promise<unknown> {
+      this.openCalls.push(options);
+      return {
+        lines: [{ text: "line one" }, { text: "line two" }],
+      };
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-loader-"));
+  const filePath = path.join(tmpDir, "src", "file.ts");
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, "fallback-from-fs", "utf8");
+  const client = new OpenLinesClient();
+  const loader = new ContextFileLoader(client as unknown as DocdexClient, {
+    workspaceRoot: tmpDir,
+    readStrategy: "docdex",
+    focusMaxFileBytes: 500,
+    peripheryMaxBytes: 100,
+    skeletonizeLargeFiles: true,
+  });
+
+  const focus = await loader.loadFocus(["src/file.ts"]);
+  assert.equal(focus.length, 1);
+  assert.equal(focus[0]?.content, "line one\nline two");
+  assert.deepEqual(client.openCalls[0], { clamp: true });
+});
+
+test("ContextFileLoader falls back to fs when docdex open payload has no text", { concurrency: false }, async () => {
+  class EmptyPayloadClient extends StubDocdexClient {
+    async openFile(_filePath: string): Promise<unknown> {
+      return { path: "src/file.ts", total_lines: 12 };
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-loader-"));
+  const filePath = path.join(tmpDir, "src", "file.ts");
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, "fallback-from-fs", "utf8");
+  const loader = new ContextFileLoader(new EmptyPayloadClient() as unknown as DocdexClient, {
+    workspaceRoot: tmpDir,
+    readStrategy: "docdex",
+    focusMaxFileBytes: 500,
+    peripheryMaxBytes: 100,
+    skeletonizeLargeFiles: true,
+  });
+
+  const focus = await loader.loadFocus(["src/file.ts"]);
+  assert.equal(focus.length, 1);
+  assert.ok(focus[0]?.content.includes("fallback-from-fs"));
+});
+
+test("ContextFileLoader records load errors per file and continues loading", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-loader-errors-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  mkdirSync(path.join(tmpDir, "docs"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/existing.ts"), "export const ok = true;", "utf8");
+  writeFileSync(path.join(tmpDir, "docs/readme.md"), "Doc content", "utf8");
+  const loader = new ContextFileLoader(new StubDocdexClient() as unknown as DocdexClient, {
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+    focusMaxFileBytes: 200,
+    peripheryMaxBytes: 200,
+    skeletonizeLargeFiles: true,
+  });
+
+  const focus = await loader.loadFocus(["src/missing.ts", "src/existing.ts"]);
+  const periphery = await loader.loadPeriphery(["docs/missing.md", "docs/readme.md"]);
+
+  assert.equal(focus.length, 1);
+  assert.equal(focus[0]?.path, "src/existing.ts");
+  assert.equal(periphery.length, 1);
+  assert.equal(periphery[0]?.path, "docs/readme.md");
+  assert.ok(
+    loader.loadErrors.some(
+      (entry) => entry.path === "src/missing.ts" && entry.role === "focus",
+    ),
+  );
+  assert.ok(
+    loader.loadErrors.some(
+      (entry) => entry.path === "docs/missing.md" && entry.role === "periphery",
+    ),
+  );
 });

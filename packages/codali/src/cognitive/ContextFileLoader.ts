@@ -81,40 +81,17 @@ const buildSkeleton = (
 ): string => {
   const needsSlice = content.length > maxBytes;
   if (!needsSlice && !forceTruncate) return content;
-  const sliceSize = Math.max(1, Math.floor(maxBytes / 2));
+  const sliceSize = Math.max(1, Math.floor(maxBytes / 3));
   const head = needsSlice ? content.slice(0, sliceSize) : content;
+  const middleStart = Math.max(0, Math.floor(content.length / 2) - Math.floor(sliceSize / 2));
+  const middle = needsSlice ? content.slice(middleStart, middleStart + sliceSize) : "";
   const tail = needsSlice ? content.slice(-sliceSize) : "";
   const separator = "\n/* ...truncated... */\n";
   const symbolBlock = symbols ? `\n/* symbols */\n${symbols}` : "";
   if (!needsSlice) {
     return `${content}${separator}${symbolBlock}`;
   }
-  return `${head}${separator}${tail}${symbolBlock}`;
-};
-
-const buildAstSlice = (
-  content: string,
-  range: { start: number; end: number },
-  maxBytes: number,
-  symbols?: string,
-): { content: string; truncated: boolean } => {
-  const lines = content.split(/\r?\n/);
-  const startIndex = Math.max(0, Math.min(lines.length - 1, range.start - 1));
-  const endIndex = Math.max(startIndex, Math.min(lines.length - 1, range.end - 1));
-  const slice = lines.slice(startIndex, endIndex + 1).join("\n");
-  const separator = "\n/* ...truncated... */\n";
-  const symbolBlock = symbols ? `\n/* symbols */\n${symbols}` : "";
-  const header = `/* ast_slice lines ${range.start}-${range.end} */\n`;
-  const candidate = `${header}${slice}${separator}${symbolBlock}`;
-  if (candidate.length > maxBytes) {
-    const available = maxBytes - header.length;
-    if (available <= 0) {
-      return { content: "", truncated: false };
-    }
-    const skeleton = buildSkeleton(slice, available, symbols, true);
-    return { content: `${header}${skeleton}`, truncated: true };
-  }
-  return { content: candidate, truncated: true };
+  return `${head}${separator}${middle}${separator}${tail}${symbolBlock}`;
 };
 
 const truncateWithMarker = (content: string, maxBytes: number): string => {
@@ -135,8 +112,43 @@ const toStringPayload = (payload: unknown): string => {
   }
 };
 
+const extractDocdexOpenContent = (payload: unknown): string | undefined => {
+  if (typeof payload === "string") return payload;
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as {
+    content?: unknown;
+    text?: unknown;
+    snippet?: { text?: unknown };
+    data?: { content?: unknown; text?: unknown };
+    file?: { content?: unknown; text?: unknown };
+    lines?: unknown;
+  };
+  if (typeof record.content === "string") return record.content;
+  if (typeof record.text === "string") return record.text;
+  if (record.snippet && typeof record.snippet.text === "string") return record.snippet.text;
+  if (record.data && typeof record.data.content === "string") return record.data.content;
+  if (record.data && typeof record.data.text === "string") return record.data.text;
+  if (record.file && typeof record.file.content === "string") return record.file.content;
+  if (record.file && typeof record.file.text === "string") return record.file.text;
+  if (Array.isArray(record.lines)) {
+    const lines = record.lines
+      .map((line) => {
+        if (typeof line === "string") return line;
+        if (!line || typeof line !== "object") return "";
+        const row = line as { text?: unknown; content?: unknown };
+        if (typeof row.text === "string") return row.text;
+        if (typeof row.content === "string") return row.content;
+        return "";
+      })
+      .filter((line) => line.length > 0);
+    if (lines.length > 0) return lines.join("\n");
+  }
+  return undefined;
+};
+
 export class ContextFileLoader {
   readonly ignoredPaths: string[] = [];
+  readonly loadErrors: Array<{ path: string; role: "focus" | "periphery"; error: string }> = [];
   redactionCount = 0;
 
   constructor(private client: DocdexClient, private options: ContextFileLoaderOptions) {}
@@ -148,59 +160,58 @@ export class ContextFileLoader {
         this.ignoredPaths.push(filePath);
         continue;
       }
-      const resolved = normalizePath(this.options.workspaceRoot, filePath);
-      const stats = await fs.stat(resolved);
-      const size = stats.size;
-      const content = await this.readContent(filePath, this.options.focusMaxFileBytes);
-      let truncated = false;
-      let sliceStrategy = "full";
-      let finalContent = content;
-      let redactions = 0;
-      const warnings: string[] = [];
-      if (size > this.options.focusMaxFileBytes) {
-        truncated = true;
-        const symbols = await this.safeSymbols(filePath);
-        const astRange = await this.safeAstRange(filePath);
-        if (this.options.skeletonizeLargeFiles) {
-          if (astRange) {
-            const astSlice = buildAstSlice(content, astRange, this.options.focusMaxFileBytes, symbols);
-            if (astSlice.content) {
-              sliceStrategy = "ast_slice";
-              finalContent = astSlice.content;
-            } else {
-              sliceStrategy = "head_tail";
-              finalContent = buildSkeleton(content, this.options.focusMaxFileBytes, symbols, true);
-            }
+      try {
+        const resolved = normalizePath(this.options.workspaceRoot, filePath);
+        const stats = await fs.stat(resolved);
+        const size = stats.size;
+        const content = await this.readContent(filePath, this.options.focusMaxFileBytes);
+        let truncated = false;
+        let sliceStrategy = "full";
+        let finalContent = content;
+        let redactions = 0;
+        const warnings: string[] = [];
+        if (size > this.options.focusMaxFileBytes) {
+          truncated = true;
+          const symbols = await this.safeSymbols(filePath);
+          const astRange = await this.safeAstRange(filePath);
+          if (this.options.skeletonizeLargeFiles) {
+            const astHint = astRange
+              ? `/* ast_focus lines ${astRange.start}-${astRange.end} */\n`
+              : "";
+            sliceStrategy = astRange ? "head_middle_tail_ast_hint" : "head_middle_tail";
+            finalContent =
+              `${astHint}${buildSkeleton(content, this.options.focusMaxFileBytes, symbols, true)}`;
           } else {
-            sliceStrategy = "head_tail";
-            finalContent = buildSkeleton(content, this.options.focusMaxFileBytes, symbols, true);
+            sliceStrategy = "head";
+            finalContent = truncateWithMarker(content, this.options.focusMaxFileBytes);
+          }
+        }
+        if (this.options.redactor) {
+          const redacted = this.options.redactor.redact(finalContent);
+          finalContent = redacted.content;
+          redactions = redacted.redactions;
+          if (redactions > 0) {
+            warnings.push("redacted");
+            this.redactionCount += redactions;
           }
         } else {
-          sliceStrategy = "head";
-          finalContent = truncateWithMarker(content, this.options.focusMaxFileBytes);
+          // no-op: keep readable branch for clarity
         }
+        results.push({
+          path: filePath,
+          role: "focus",
+          content: finalContent,
+          size,
+          truncated,
+          sliceStrategy,
+          origin: this.options.readStrategy === "docdex" ? "docdex" : "fs",
+          token_estimate: estimateTokens(finalContent),
+          warnings: warnings.length ? warnings : undefined,
+          redactions: redactions || undefined,
+        });
+      } catch (error) {
+        this.recordLoadError(filePath, "focus", error);
       }
-      if (this.options.redactor) {
-        const redacted = this.options.redactor.redact(finalContent);
-        finalContent = redacted.content;
-        redactions = redacted.redactions;
-        if (redactions > 0) {
-          warnings.push("redacted");
-          this.redactionCount += redactions;
-        }
-      }
-      results.push({
-        path: filePath,
-        role: "focus",
-        content: finalContent,
-        size,
-        truncated,
-        sliceStrategy,
-        origin: this.options.readStrategy === "docdex" ? "docdex" : "fs",
-        token_estimate: estimateTokens(finalContent),
-        warnings: warnings.length ? warnings : undefined,
-        redactions: redactions || undefined,
-      });
     }
     return results;
   }
@@ -212,51 +223,64 @@ export class ContextFileLoader {
         this.ignoredPaths.push(filePath);
         continue;
       }
-      const docFile = isDocPath(filePath);
-      const symbols = docFile ? "" : await this.safeSymbols(filePath);
-      let content = docFile
-        ? await this.readContent(filePath, this.options.peripheryMaxBytes)
-        : symbols ?? "";
-      const warnings: string[] = [];
-      let redactions = 0;
-      let truncated = false;
-      if (this.options.redactor) {
-        const redacted = this.options.redactor.redact(content);
-        content = redacted.content;
-        redactions = redacted.redactions;
-        if (redactions > 0) {
-          warnings.push("redacted");
-          this.redactionCount += redactions;
+      try {
+        const docFile = isDocPath(filePath);
+        const symbols = docFile ? "" : await this.safeSymbols(filePath);
+        let content = docFile
+          ? await this.readContent(filePath, this.options.peripheryMaxBytes)
+          : symbols ?? "";
+        const warnings: string[] = [];
+        let redactions = 0;
+        let truncated = false;
+        if (this.options.redactor) {
+          const redacted = this.options.redactor.redact(content);
+          content = redacted.content;
+          redactions = redacted.redactions;
+          if (redactions > 0) {
+            warnings.push("redacted");
+            this.redactionCount += redactions;
+          }
         }
+        if (content.length > this.options.peripheryMaxBytes) {
+          truncated = true;
+          content = truncateWithMarker(content, this.options.peripheryMaxBytes);
+        }
+        results.push({
+          path: filePath,
+          role: "periphery",
+          content,
+          size: content.length,
+          truncated,
+          sliceStrategy: docFile
+            ? truncated
+              ? "doc_truncated"
+              : "doc_full"
+            : truncated
+              ? "symbols_truncated"
+              : "symbols",
+          origin: docFile
+            ? this.options.readStrategy === "docdex"
+              ? "docdex"
+              : "fs"
+            : "docdex",
+          token_estimate: estimateTokens(content),
+          warnings: warnings.length ? warnings : undefined,
+          redactions: redactions || undefined,
+        });
+      } catch (error) {
+        this.recordLoadError(filePath, "periphery", error);
       }
-      if (content.length > this.options.peripheryMaxBytes) {
-        truncated = true;
-        content = truncateWithMarker(content, this.options.peripheryMaxBytes);
-      }
-      results.push({
-        path: filePath,
-        role: "periphery",
-        content,
-        size: content.length,
-        truncated,
-        sliceStrategy: docFile
-          ? truncated
-            ? "doc_truncated"
-            : "doc_full"
-          : truncated
-            ? "symbols_truncated"
-            : "symbols",
-        origin: docFile
-          ? this.options.readStrategy === "docdex"
-            ? "docdex"
-            : "fs"
-          : "docdex",
-        token_estimate: estimateTokens(content),
-        warnings: warnings.length ? warnings : undefined,
-        redactions: redactions || undefined,
-      });
     }
     return results;
+  }
+
+  private recordLoadError(
+    filePath: string,
+    role: "focus" | "periphery",
+    error: unknown,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.loadErrors.push({ path: filePath, role, error: message });
   }
 
   private async safeSymbols(filePath: string): Promise<string> {
@@ -277,11 +301,14 @@ export class ContextFileLoader {
     }
   }
 
-  private async readContent(filePath: string, maxBytes: number): Promise<string> {
+  private async readContent(filePath: string, _maxBytes: number): Promise<string> {
     if (this.options.readStrategy === "docdex") {
       try {
-        const result = await this.client.openFile(filePath, { clamp: true, head: maxBytes });
-        return toStringPayload(result);
+        const result = await this.client.openFile(filePath, { clamp: true });
+        const extracted = extractDocdexOpenContent(result);
+        if (typeof extracted === "string" && extracted.trim().length > 0) {
+          return extracted;
+        }
       } catch {
         // fallback to fs
       }
