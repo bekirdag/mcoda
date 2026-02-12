@@ -371,6 +371,42 @@ class ProseNeedsContextProvider implements Provider {
   }
 }
 
+class SearchBlockRecoveryNeedsContextProvider implements Provider {
+  name = "search-block-recovery-needs-context";
+  calls = 0;
+  async generate(): Promise<ProviderResponse> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            patches: [
+              {
+                action: "replace",
+                file: "src/example.ts",
+                search_block: "const value = 404;",
+                replace_block: "const value = 2;",
+              },
+            ],
+          }),
+        },
+      };
+    }
+    return {
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          needs_context: true,
+          queries: ["task list data source"],
+          files: ["src/public/index.html", "src/public/style.css"],
+          reason: "need full file contents to emit safe full-file writes",
+        }),
+      },
+    };
+  }
+}
+
 class FreeformProvider implements Provider {
   name = "freeform";
   lastRequest?: ProviderRequest;
@@ -765,6 +801,7 @@ test("BuilderRunner applies patch_json output without tool calls", { concurrency
   const result = await builder.run(plan, contextBundle);
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.match(updated, /const value = 2;/);
+  assert.deepEqual(result.touchedFiles, ["src/example.ts"]);
   assert.equal(result.toolCallsExecuted, 0);
   assert.equal(provider.lastRequest?.toolChoice, undefined);
 
@@ -1348,6 +1385,36 @@ test("BuilderRunner patch_json ignores prose+JSON context requests and fails pat
   );
   const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
   assert.equal(updated.trim(), "const value = 1;");
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner returns context request during search-block file-writes recovery", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-search-recovery-needs-context-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new SearchBlockRecoveryNeedsContextProvider();
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  const result = await builder.run(plan, contextBundle);
+  const updated = await readFile(path.join(workspaceRoot, "src/example.ts"), "utf8");
+  assert.equal(updated.trim(), "const value = 1;");
+  assert.equal(provider.calls, 2);
+  assert.ok(result.contextRequest);
+  assert.match(result.contextRequest?.reason ?? "", /full file contents/i);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });

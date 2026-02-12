@@ -193,7 +193,7 @@ class StubArchitectPlannerRequestLoopNonDsl {
     return {
       plan: basePlan,
       request: { request_id: `loop-req-${this.calls}` },
-      warnings: ["architect_output_not_dsl"],
+      warnings: ["architect_output_unstructured_plaintext"],
     };
   }
 }
@@ -241,7 +241,7 @@ class StubArchitectPlannerNonDslThenDsl {
     if (this.calls === 1) {
       return {
         plan: scopedPlan,
-        warnings: ["architect_output_not_dsl"],
+        warnings: ["architect_output_unstructured_plaintext"],
       };
     }
     return { plan: scopedPlan, warnings: [] };
@@ -254,7 +254,7 @@ class StubArchitectPlannerAlwaysNonDsl {
     this.calls += 1;
     return {
       plan: basePlan,
-      warnings: ["architect_output_not_dsl"],
+      warnings: ["architect_output_unstructured_plaintext"],
     };
   }
 }
@@ -2099,6 +2099,57 @@ test("SmartPipeline fail-closes degraded plans when unresolved targets remain in
     /Architect quality gate failed before builder: (invalid_target_paths|missing_concrete_targets)/i,
   );
   assert.equal(builder.calls, 0);
+});
+
+test("SmartPipeline allows repaired fallback plans when target change details are auto-enriched", { concurrency: false }, async () => {
+  const architect = {
+    async planWithRequest(): Promise<{ plan: Plan; warnings: string[] }> {
+      return {
+        plan: {
+          ...basePlan,
+          target_files: ["src/public/index.html"],
+          steps: ["Update UI."],
+        },
+        warnings: [
+          "architect_output_used_json_fallback",
+          "plan_missing_target_change_details:1",
+        ],
+      };
+    },
+  };
+  const context: ContextBundle = {
+    ...baseContext,
+    selection: {
+      focus: ["src/public/index.html"],
+      periphery: [],
+      all: ["src/public/index.html"],
+      low_confidence: false,
+    },
+    files: [
+      {
+        path: "src/public/index.html",
+        role: "focus",
+        content: "<main></main>\n",
+        size: 14,
+        truncated: false,
+        sliceStrategy: "full",
+        origin: "docdex",
+      },
+    ],
+  };
+  const builder = new StubBuilderRunner();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler(context) as any,
+    architectPlanner: architect as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("Add task completion stats section under the welcome header");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(builder.calls, 1);
 });
 
 test("Regression: endpoint intent with frontend-only targets triggers backend guardrail", { concurrency: false }, async () => {

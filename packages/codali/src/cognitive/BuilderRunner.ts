@@ -662,15 +662,18 @@ export class BuilderRunner {
       });
     }
 
+    const logContextRequest = async (contextRequest: ContextRequest): Promise<void> => {
+      if (!this.options.logger) return;
+      await this.options.logger.log("context_request", {
+        reason: contextRequest.reason,
+        queries: contextRequest.queries,
+        files: contextRequest.files,
+      });
+    };
+
     const contextRequest = parseContextRequest(result.finalMessage.content, mode);
     if (contextRequest) {
-      if (this.options.logger) {
-        await this.options.logger.log("context_request", {
-          reason: contextRequest.reason,
-          queries: contextRequest.queries,
-          files: contextRequest.files,
-        });
-      }
+      await logContextRequest(contextRequest);
       return finalizeResult(result, { contextRequest });
     }
     if (mode === "tool_calls" && result.toolCallsExecuted === 0) {
@@ -719,13 +722,7 @@ export class BuilderRunner {
       result = await buildRunner(mode).run(messageState.messages);
       const retryContextRequest = parseContextRequest(result.finalMessage.content, mode);
       if (retryContextRequest) {
-        if (this.options.logger) {
-          await this.options.logger.log("context_request", {
-            reason: retryContextRequest.reason,
-            queries: retryContextRequest.queries,
-            files: retryContextRequest.files,
-          });
-        }
+        await logContextRequest(retryContextRequest);
         return finalizeResult(result, { contextRequest: retryContextRequest });
       }
     }
@@ -757,7 +754,9 @@ export class BuilderRunner {
         content: string,
         format: PatchFormat,
         source: string,
-      ) => {
+      ): Promise<ContextRequest | undefined> => {
+        const contextRequest = parseContextRequest(content, mode);
+        if (contextRequest) return contextRequest;
         const normalized = content.toLowerCase();
         if (
           normalized.includes("path/to/file.")
@@ -783,7 +782,7 @@ export class BuilderRunner {
           }
           await logPatchPayload(payload, source);
           await applyPayload(payload, source, content);
-          return;
+          return undefined;
         } catch (parseError) {
           if (parseError instanceof PatchApplyError) {
             throw parseError;
@@ -811,6 +810,7 @@ export class BuilderRunner {
           const payload = await interpreter!.interpret(content, format);
           await logPatchPayload(payload, source);
           await applyPayload(payload, source, content);
+          return undefined;
         }
       };
 
@@ -848,11 +848,27 @@ export class BuilderRunner {
           usage: mergeUsage(result.usage, recoveryResult.usage),
         };
         result = merged;
-        await parseAndApply(merged.finalMessage.content, "file_writes", source);
+        const contextRequestFromRecovery = await parseAndApply(
+          merged.finalMessage.content,
+          "file_writes",
+          source,
+        );
+        if (contextRequestFromRecovery) {
+          await logContextRequest(contextRequestFromRecovery);
+          return finalizeResult(merged, { contextRequest: contextRequestFromRecovery });
+        }
         return finalizeResult(merged);
       };
       try {
-        await parseAndApply(result.finalMessage.content, patchFormat, "interpreter_primary");
+        const contextRequestFromPrimary = await parseAndApply(
+          result.finalMessage.content,
+          patchFormat,
+          "interpreter_primary",
+        );
+        if (contextRequestFromPrimary) {
+          await logContextRequest(contextRequestFromPrimary);
+          return finalizeResult(result, { contextRequest: contextRequestFromPrimary });
+        }
         return finalizeResult(result);
       } catch (error) {
         if (error instanceof PatchApplyError) {
@@ -912,7 +928,15 @@ export class BuilderRunner {
         ).run([retrySystem, ...messageState.history, messageState.userMessage, retryUser]);
         result = { ...retryResult, usage: mergeUsage(result.usage, retryResult.usage) };
         try {
-          await parseAndApply(result.finalMessage.content, "file_writes", "interpreter_retry");
+          const contextRequestFromRetry = await parseAndApply(
+            result.finalMessage.content,
+            "file_writes",
+            "interpreter_retry",
+          );
+          if (contextRequestFromRetry) {
+            await logContextRequest(contextRequestFromRetry);
+            return finalizeResult(result, { contextRequest: contextRequestFromRetry });
+          }
           return finalizeResult(result);
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
@@ -946,7 +970,15 @@ export class BuilderRunner {
           ).run([fallbackSystem, ...messageState.history, messageState.userMessage, fallbackUser]);
           result = { ...fallbackResult, usage: mergeUsage(result.usage, fallbackResult.usage) };
           try {
-            await parseAndApply(result.finalMessage.content, "search_replace", "interpreter_fallback");
+            const contextRequestFromFallback = await parseAndApply(
+              result.finalMessage.content,
+              "search_replace",
+              "interpreter_fallback",
+            );
+            if (contextRequestFromFallback) {
+              await logContextRequest(contextRequestFromFallback);
+              return finalizeResult(result, { contextRequest: contextRequestFromFallback });
+            }
             return finalizeResult(result);
           } catch (fallbackError) {
             if (fallbackError instanceof PatchApplyError) {
