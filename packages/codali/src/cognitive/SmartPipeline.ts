@@ -32,6 +32,7 @@ import {
   ARCHITECT_WARNING_MULTIPLE_SECTION_BLOCKS,
   ARCHITECT_WARNING_NON_DSL,
   ARCHITECT_WARNING_REPAIRED,
+  ARCHITECT_WARNING_USED_PLAINTEXT_FALLBACK,
   ARCHITECT_WARNING_USED_JSON_FALLBACK,
   PlanHintValidationError,
   type ArchitectPlanResult,
@@ -467,7 +468,7 @@ const ARCHITECT_VERIFY_QUALITY_HINT = [
 ].join("\n");
 
 const ARCHITECT_RECOVERY_HINT = [
-  "RECOVERY MODE: Prior architect passes were low-quality or non-DSL.",
+  "RECOVERY MODE: Prior architect passes were low-quality or unstructured.",
   "Respond with request-specific, implementation-ready plain-text sections only.",
   "Every IMPLEMENTATION PLAN/FILES TO TOUCH/VERIFY line must include concrete target nouns tied to the current request.",
   "If context is still insufficient, emit AGENT_REQUEST v1 with concrete retrieval needs.",
@@ -482,7 +483,11 @@ const ARCHITECT_ALTERNATE_RETRY_HINT = [
 const isArchitectNonDsl = (warnings: string[] | undefined): boolean =>
   Array.isArray(warnings)
   && warnings.some((warning) => warning === ARCHITECT_NON_DSL_WARNING)
-  && !warnings.some((warning) => warning === ARCHITECT_WARNING_USED_JSON_FALLBACK);
+  && !warnings.some(
+    (warning) =>
+      warning === ARCHITECT_WARNING_USED_JSON_FALLBACK
+      || warning === ARCHITECT_WARNING_USED_PLAINTEXT_FALLBACK,
+  );
 
 const isNonBlockingArchitectWarning = (warning: string): boolean => {
   if (warning === ARCHITECT_WARNING_CONTAINS_THINK) return true;
@@ -490,6 +495,7 @@ const isNonBlockingArchitectWarning = (warning: string): boolean => {
   if (warning === ARCHITECT_WARNING_MULTIPLE_SECTION_BLOCKS) return true;
   if (warning === ARCHITECT_WARNING_REPAIRED) return true;
   if (warning === ARCHITECT_WARNING_USED_JSON_FALLBACK) return true;
+  if (warning === ARCHITECT_WARNING_USED_PLAINTEXT_FALLBACK) return true;
   if (warning === "architect_output_prose_request_suppressed") return true;
   if (warning === "architect_output_repair_reason:wrapper_noise") return true;
   if (warning === "architect_output_repair_reason:duplicate_sections") return true;
@@ -523,8 +529,9 @@ const isFatalArchitectWarningBeforeBuilder = (warning: string): boolean => {
 
 const REPAIRED_FALLBACK_WARNING_PATTERNS = [
   /^architect_output_used_json_fallback$/i,
+  /^architect_output_used_plaintext_fallback$/i,
   /^architect_output_repaired$/i,
-  /^architect_output_repair_reason:(json_fallback|dsl_missing_fields|classifier)$/i,
+  /^architect_output_repair_reason:(json_fallback|plaintext_fallback|dsl_missing_fields|classifier)$/i,
 ];
 
 const NON_FATAL_REPAIRED_FALLBACK_WARNING_PATTERNS = [
@@ -542,7 +549,7 @@ const collectPreBuilderBlockingWarnings = (warnings: string[]): string[] => {
     REPAIRED_FALLBACK_WARNING_PATTERNS.some((pattern) => pattern.test(warning))
   );
   return warnings.filter((warning) => {
-    if (warning.startsWith("plan_missing_target_change_details:")) return true;
+    if (warning.startsWith("plan_missing_target_change_details:")) return false;
     if (!isFatalArchitectWarningBeforeBuilder(warning)) return false;
     if (!repairedFallback) return true;
     if (NON_FATAL_REPAIRED_FALLBACK_WARNING_PATTERNS.some((pattern) => pattern.test(warning))) return false;
@@ -1097,8 +1104,9 @@ const scoreRequestTargetAlignment = (request: string, targetFiles: string[]): {
 const FALLBACK_WARNING_PATTERNS = [
   /^plan_missing_/i,
   new RegExp(`^${ARCHITECT_WARNING_USED_JSON_FALLBACK}$`, "i"),
+  new RegExp(`^${ARCHITECT_WARNING_USED_PLAINTEXT_FALLBACK}$`, "i"),
   /^architect_output_not_object$/i,
-  /^architect_output_repair_reason:(dsl_missing_fields|json_fallback|classifier)$/i,
+  /^architect_output_repair_reason:(dsl_missing_fields|json_fallback|plaintext_fallback|classifier)$/i,
 ];
 const GENERIC_PLAN_STEP_PATTERNS = [
   /^review focus files/i,
@@ -1890,9 +1898,11 @@ const buildArchitectOutputArtifactPayload = (input: {
 });
 
 const classifyArchitectWarnings = (warnings: string[]): string => {
-  if (warnings.some((warning) => warning === ARCHITECT_NON_DSL_WARNING)) return "non_dsl";
+  if (warnings.some((warning) => warning === ARCHITECT_NON_DSL_WARNING)) {
+    return "unstructured_plaintext";
+  }
   if (warnings.some((warning) => warning === ARCHITECT_WARNING_REPAIRED)) return "repaired";
-  return "dsl";
+  return "sectioned_plaintext";
 };
 
 const hasRepairWarnings = (warnings: string[]): boolean =>

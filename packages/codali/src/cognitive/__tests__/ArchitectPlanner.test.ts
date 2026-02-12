@@ -690,7 +690,7 @@ test("ArchitectPlanner ignores think-tag wrapper warnings while repairing non-DS
   const planner = new ArchitectPlanner(provider);
   const result = await planner.planWithRequest(scopeAgnosticContext());
   assert.ok(!result.warnings.includes("architect_output_contains_think"));
-  assert.ok(result.warnings.includes("architect_output_not_dsl"));
+  assert.ok(result.warnings.includes("architect_output_unstructured_plaintext"));
   assert.ok(result.warnings.includes("architect_output_repaired"));
   assert.ok(result.warnings.some((warning) => warning.startsWith("architect_output_repair_reason:")));
 });
@@ -705,7 +705,7 @@ test("ArchitectPlanner classifies fenced output as non-DSL and repaired", { conc
   const planner = new ArchitectPlanner(provider);
   const result = await planner.planWithRequest(baseContext);
   assert.ok(result.warnings.includes("architect_output_contains_fence"));
-  assert.ok(result.warnings.includes("architect_output_not_dsl"));
+  assert.ok(result.warnings.includes("architect_output_unstructured_plaintext"));
   assert.ok(result.warnings.includes("architect_output_repaired"));
   assert.ok(result.request);
 });
@@ -735,7 +735,7 @@ test("ArchitectPlanner normalizes noisy wrapped DSL output into canonical plan",
   assert.ok(result.plan.steps[0]?.toLowerCase().includes("route"));
   assert.ok(!result.warnings.includes("architect_output_contains_think"));
   assert.ok(result.warnings.includes("architect_output_contains_fence"));
-  assert.ok(!result.warnings.includes("architect_output_not_dsl"));
+  assert.ok(!result.warnings.includes("architect_output_unstructured_plaintext"));
   assert.ok(result.warnings.includes("architect_output_repaired"));
   assert.ok(result.warnings.includes("architect_output_repair_reason:wrapper_noise"));
 });
@@ -768,7 +768,7 @@ test("ArchitectPlanner keeps first DSL block when duplicate sections are emitted
   assert.ok(result.plan.target_files.includes("src/public/index.html"));
   assert.ok(!result.plan.target_files.includes("src/unrelated/placeholder.ts"));
   assert.ok(result.warnings.includes("architect_output_multiple_section_blocks"));
-  assert.ok(!result.warnings.includes("architect_output_not_dsl"));
+  assert.ok(!result.warnings.includes("architect_output_unstructured_plaintext"));
   assert.ok(result.warnings.includes("architect_output_repaired"));
   assert.ok(result.warnings.includes("architect_output_repair_reason:duplicate_sections"));
 });
@@ -1100,6 +1100,33 @@ test("ArchitectPlanner review parser flags missing status and reasons warnings",
   assert.ok(review.warnings.includes("architect_review_missing_reasons"));
 });
 
+test("ArchitectPlanner review parser defaults to PASS when status is missing and no actionable guidance is present", { concurrency: false }, async () => {
+  const provider = new StubProvider({
+    message: {
+      role: "assistant",
+      content: [
+        "REVIEW:",
+        "Looks reasonable overall.",
+      ].join("\n"),
+    },
+  });
+  const planner = new ArchitectPlanner(provider);
+  const review = await planner.reviewBuilderOutput(
+    {
+      steps: ["Update src/server/healthz.ts to log uptime data"],
+      target_files: ["src/server/healthz.ts"],
+      risk_assessment: "low",
+      verification: ["Run integration tests for /healthz and check logs/healthz.log output."],
+    },
+    "builder output",
+    baseContext,
+  );
+  assert.equal(review.status, "PASS");
+  assert.ok(review.warnings.includes("architect_review_missing_status"));
+  assert.ok(review.warnings.includes("architect_review_missing_reasons"));
+  assert.ok(review.reasons.length >= 1);
+});
+
 test("ArchitectPlanner parses sectioned plain-text plan output", { concurrency: false }, async () => {
   const provider = new StubProvider({
     message: {
@@ -1129,7 +1156,7 @@ test("ArchitectPlanner parses sectioned plain-text plan output", { concurrency: 
   assert.ok(result.plan.target_files.includes("src/public/index.html"));
   assert.ok(result.plan.target_files.includes("src/public/style.css"));
   assert.ok(result.plan.steps.some((step) => step.includes("src/public/index.html")));
-  assert.ok(!result.warnings.includes("architect_output_not_dsl"));
+  assert.ok(!result.warnings.includes("architect_output_unstructured_plaintext"));
 });
 
 test("ArchitectPlanner infers target files from folder structure when files section is omitted", { concurrency: false }, async () => {

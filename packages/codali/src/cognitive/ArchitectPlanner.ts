@@ -15,7 +15,7 @@ import {
 import type { ContextManager } from "./ContextManager.js";
 import { parseAgentRequest, type AgentRequest } from "../agents/AgentProtocol.js";
 
-export const ARCHITECT_WARNING_NON_DSL = "architect_output_not_dsl";
+export const ARCHITECT_WARNING_NON_DSL = "architect_output_unstructured_plaintext";
 export const ARCHITECT_WARNING_CONTAINS_THINK = "architect_output_contains_think";
 export const ARCHITECT_WARNING_CONTAINS_FENCE = "architect_output_contains_fence";
 export const ARCHITECT_WARNING_MISSING_REQUIRED_SECTIONS =
@@ -23,6 +23,8 @@ export const ARCHITECT_WARNING_MISSING_REQUIRED_SECTIONS =
 export const ARCHITECT_WARNING_MULTIPLE_SECTION_BLOCKS =
   "architect_output_multiple_section_blocks";
 export const ARCHITECT_WARNING_USED_JSON_FALLBACK = "architect_output_used_json_fallback";
+export const ARCHITECT_WARNING_USED_PLAINTEXT_FALLBACK =
+  "architect_output_used_plaintext_fallback";
 export const ARCHITECT_WARNING_REPAIRED = "architect_output_repaired";
 
 const buildContextNarrative = (context: ContextBundle): string => {
@@ -860,6 +862,7 @@ const withRepairWarnings = (
   reason:
     | "dsl_missing_fields"
     | "json_fallback"
+    | "plaintext_fallback"
     | "classifier"
     | "wrapper_noise"
     | "duplicate_sections",
@@ -1182,14 +1185,17 @@ const parsePlanOutput = (
   const fallbackDslWarnings = dslResult.warnings.filter(
     (warning) => !REQUIRED_MISSING_PLAN_WARNINGS.has(warning),
   );
+  const usedJsonFallback = parsedResult.parsed !== undefined;
   const repairedWarnings = withRepairWarnings(
     [
       ...classifiedWarnings,
       ...fallbackDslWarnings,
       ...scoped.warnings,
-      ARCHITECT_WARNING_USED_JSON_FALLBACK,
+      usedJsonFallback
+        ? ARCHITECT_WARNING_USED_JSON_FALLBACK
+        : ARCHITECT_WARNING_USED_PLAINTEXT_FALLBACK,
     ],
-    "json_fallback",
+    usedJsonFallback ? "json_fallback" : "plaintext_fallback",
   );
   return {
     plan: scoped.plan,
@@ -1289,7 +1295,7 @@ const adaptNonDslPayloadToRequest = (
           needs: [{ type: "docdex.search", query, limit: 8 }],
           context: {
             summary:
-              "Architect returned a query payload instead of DSL. Fetch focused retrieval context and retry planning.",
+              "Architect returned a query payload instead of a plain-text plan. Fetch focused retrieval context and retry planning.",
           },
         },
       };
@@ -1316,7 +1322,7 @@ const adaptNonDslPayloadToRequest = (
           needs,
           context: {
             summary:
-              "Architect returned file/symbol metadata instead of DSL. Load file context and related symbol evidence before retrying.",
+              "Architect returned file/symbol metadata instead of a plain-text plan. Load file context and related symbol evidence before retrying.",
           },
         },
       };
@@ -1333,7 +1339,7 @@ const adaptNonDslPayloadToRequest = (
           needs: [{ type: "docdex.search", query: `${context.request} ${symbolOnly}`, limit: 8 }],
           context: {
             summary:
-              "Architect returned symbol metadata without a DSL plan. Retrieve symbol-related context and retry planning.",
+              "Architect returned symbol metadata without a plain-text plan. Retrieve symbol-related context and retry planning.",
           },
         },
       };
@@ -1355,7 +1361,7 @@ const adaptNonDslPayloadToRequest = (
         ],
         context: {
           summary:
-            "Architect returned prose/non-DSL output. Retrieve focused implementation context and retry with strict structured output.",
+            "Architect returned unstructured prose output. Retrieve focused implementation context and retry with strict plain-text sections.",
         },
       },
     };
@@ -1572,6 +1578,16 @@ const parseReviewDsl = (
     warnings.push("architect_review_missing_reasons");
   }
   return { status, feedback, reasons, warnings };
+};
+
+const REVIEW_ACTIONABLE_PATTERN = /\b(fix|update|change|add|remove|ensure|align|address|correct)\b/i;
+
+const isActionableReviewFeedback = (parsed: {
+  feedback: string[];
+  reasons: string[];
+}): boolean => {
+  if (parsed.feedback.length > 0) return true;
+  return parsed.reasons.some((entry) => REVIEW_ACTIONABLE_PATTERN.test(entry));
 };
 
 export interface ArchitectPlannerOptions {
@@ -1932,8 +1948,13 @@ export class ArchitectPlanner {
 
     const raw = response.message.content?.trim() ?? "";
     const parsed = parseReviewDsl(raw);
-    const status = parsed.status ?? "RETRY";
+    const status = parsed.status ?? (isActionableReviewFeedback(parsed) ? "RETRY" : "PASS");
     const warnings = parsed.warnings;
+    const reasons = parsed.reasons.length > 0
+      ? parsed.reasons
+      : status === "PASS"
+        ? ["Builder output satisfies the request and plan constraints."]
+        : [];
 
     if (warnings.length && this.logger) {
       await this.logger.log("architect_review_normalized", {
@@ -1951,7 +1972,7 @@ export class ArchitectPlanner {
       });
     }
 
-    return { status, feedback: parsed.feedback, reasons: parsed.reasons, raw, warnings };
+    return { status, feedback: parsed.feedback, reasons, raw, warnings };
   }
 
   async validatePlanWithProvider(
