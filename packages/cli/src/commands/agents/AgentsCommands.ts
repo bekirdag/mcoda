@@ -44,15 +44,21 @@ const readSecret = async (promptText: string): Promise<string> =>
   });
 
 const USAGE = `
-Usage: mcoda agent <list|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
+Usage: mcoda agent <list|details|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
 
 Subcommands:
   list                       List agents (supports --json)
+  details <NAME>             Show agent details (supports --json)
   add <NAME>                 Create a global agent
     --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
     --rating <N>             Relative capability rating (higher is stronger)
     --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
+    --max-complexity <N>     Max task complexity the agent should handle (1-10)
+    --openai-compatible <B> OpenAI-compatible API support (true/false)
+    --context-window <N>     Context window size (tokens)
+    --max-output-tokens <N>  Max output tokens per response
+    --supports-tools <B>     Tool-calling support (true/false)
     --best-usage <TEXT>      Primary usage area (e.g., code_write, ui_ux_docs)
     --cost-per-million <N>   Cost per 1M tokens (0 for local models)
     --capability <CAP>       Repeatable capabilities to attach
@@ -62,6 +68,11 @@ Subcommands:
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
+    --max-complexity <N>     Max task complexity the agent should handle (1-10)
+    --openai-compatible <B> OpenAI-compatible API support (true/false)
+    --context-window <N>     Context window size (tokens)
+    --max-output-tokens <N>  Max output tokens per response
+    --supports-tools <B>     Tool-calling support (true/false)
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
     --force                  Force deletion even if referenced
   auth set <NAME>            Store credentials (use --api-key or interactive prompt)
@@ -109,6 +120,43 @@ const parseReasoningRating = (value: string | string[] | boolean | undefined): n
     throw new Error("Invalid --reasoning-rating; expected a number");
   }
   return parsed;
+};
+
+const parseMaxComplexity = (value: string | string[] | boolean | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") return undefined;
+  const parsed = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 10) {
+    throw new Error("Invalid --max-complexity; expected an integer 1-10");
+  }
+  return parsed;
+};
+
+const parsePositiveInt = (value: string | string[] | boolean | undefined, label: string): number | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") {
+    throw new Error(`Invalid ${label}; expected a number`);
+  }
+  const parsed = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${label}; expected a positive integer`);
+  }
+  return parsed;
+};
+
+const parseBooleanFlag = (
+  value: string | string[] | boolean | undefined,
+  label: string,
+): boolean | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") return raw;
+  const normalized = String(raw).trim().toLowerCase();
+  if (["true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["false", "0", "no", "n"].includes(normalized)) return false;
+  throw new Error(`Invalid ${label}; expected true/false`);
 };
 
 const parseCostPerMillion = (value: string | string[] | boolean | undefined): number | undefined => {
@@ -179,6 +227,27 @@ const formatNumber = (value?: number | null): string => {
   return `${value}`;
 };
 
+const formatCompactNumber = (value?: number | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  const abs = Math.abs(value);
+  const format = (num: number, suffix: string, digits: number) => {
+    const raw = num.toFixed(digits);
+    const trimmed = raw.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+    return `${trimmed}${suffix}`;
+  };
+  if (abs < 1_000) return `${value}`;
+  if (abs < 1_000_000) {
+    const digits = abs >= 10_000 ? 0 : 1;
+    return format(value / 1_000, "k", digits);
+  }
+  if (abs < 1_000_000_000) {
+    const digits = abs >= 10_000_000 ? 0 : 2;
+    return format(value / 1_000_000, "M", digits);
+  }
+  const digits = abs >= 10_000_000_000 ? 0 : 2;
+  return format(value / 1_000_000_000, "B", digits);
+};
+
 const formatDuration = (value?: number | null): string => {
   if (value === undefined || value === null || Number.isNaN(value)) return "-";
   return `${Number(value).toFixed(1)}s`;
@@ -192,7 +261,11 @@ const formatCapabilities = (caps: string[] | undefined): string => {
   return `${shown.join(", ")}${suffix}`;
 };
 
-const formatBoxTable = (headers: string[], rows: string[][], maxWidths: number[]): string => {
+const formatBoxTable = (
+  headers: string[],
+  rows: string[][],
+  maxWidths: Array<number | undefined>,
+): string => {
   if (rows.length === 0) return headers.join(" | ");
   const rawWidths = headers.map((header, idx) =>
     Math.max(header.length, ...rows.map((row) => (row[idx] ?? "").length)),
@@ -207,13 +280,54 @@ const formatBoxTable = (headers: string[], rows: string[][], maxWidths: number[]
   return [top, headerLine, mid, body, bottom].join("\n");
 };
 
+const formatCapabilitiesFull = (caps: string[] | undefined): string => {
+  const list = (caps ?? []).slice().sort();
+  return list.length === 0 ? "none" : list.join(", ");
+};
+
+const formatModels = (models: AgentResponse["models"]): string => {
+  if (!models || models.length === 0) return "-";
+  const names = models
+    .map((model) => (model.isDefault ? `${model.modelName}*` : model.modelName))
+    .sort();
+  return names.join(", ");
+};
+
+const formatCommandPrompts = (prompts?: Record<string, string>): string => {
+  if (!prompts || Object.keys(prompts).length === 0) return "-";
+  return Object.entries(prompts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("; ");
+};
+
+const formatLatency = (value?: number | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  return `${Math.round(value)}ms`;
+};
+
+const renderKeyValues = (entries: Array<[string, string]>): void => {
+  const width = entries.reduce((max, [label]) => Math.max(max, label.length), 0);
+  const lines = entries.map(([label, value]) => `${pad(label, width)} : ${value}`);
+  // eslint-disable-next-line no-console
+  console.log(lines.join("\n"));
+};
+
 export class AgentsCommands {
   static async run(argv: string[]): Promise<void> {
     const [rawSubcommand, ...rest] = argv;
     const subcommand =
-      rawSubcommand === "use" ? "set-default" : rawSubcommand === "remove" ? "delete" : rawSubcommand;
-    if (!subcommand || rest.includes("--help")) {
-      throw new Error(USAGE);
+      rawSubcommand === "use"
+        ? "set-default"
+        : rawSubcommand === "remove"
+          ? "delete"
+          : rawSubcommand === "detail" || rawSubcommand === "show"
+            ? "details"
+            : rawSubcommand;
+    if (!subcommand || argv.includes("--help") || argv.includes("-h")) {
+      // eslint-disable-next-line no-console
+      console.log(USAGE);
+      return;
     }
 
     const api = await AgentsApi.create();
@@ -223,8 +337,11 @@ export class AgentsCommands {
         case "list": {
           const agents = await api.listAgents();
           if (parsed.flags.json) {
+            const detailed = await Promise.all(
+              agents.map((agent) => api.getAgent(agent.id ?? agent.slug)),
+            );
             // eslint-disable-next-line no-console
-            console.log(JSON.stringify(agents, null, 2));
+            console.log(JSON.stringify(detailed, null, 2));
           } else {
             if (agents.length === 0) {
               // eslint-disable-next-line no-console
@@ -236,19 +353,45 @@ export class AgentsCommands {
                 "MODEL",
                 "RATING",
                 "REASON",
+                "MAX CPLX",
+                "OAI",
+                "CTX",
+                "OUT",
+                "TOOLS",
                 "USAGE",
                 "COST/1M",
                 "HEALTH",
                 "LAST CHECK",
                 "CAPABILITIES",
               ];
-              const maxWidths = [14, 14, 24, 6, 9, 10, 12, 10, 16, 36];
+              const maxWidths: Array<number | undefined> = [
+                undefined,
+                14,
+                24,
+                6,
+                9,
+                8,
+                4,
+                7,
+                7,
+                6,
+                10,
+                12,
+                10,
+                16,
+                36,
+              ];
               const rows = agents.map((agent) => [
                 agent.slug,
                 agent.adapter,
                 agent.defaultModel ?? "-",
                 agent.rating !== undefined ? String(agent.rating) : "-",
                 agent.reasoningRating !== undefined ? String(agent.reasoningRating) : "-",
+                formatNumber(agent.maxComplexity),
+                agent.openaiCompatible === undefined ? "-" : agent.openaiCompatible ? "yes" : "no",
+                formatCompactNumber(agent.contextWindow),
+                formatCompactNumber(agent.maxOutputTokens),
+                agent.supportsTools === undefined ? "-" : agent.supportsTools ? "yes" : "no",
                 agent.bestUsage ?? "-",
                 formatCost(agent.costPerMillion),
                 agent.health?.status ?? "unknown",
@@ -258,6 +401,50 @@ export class AgentsCommands {
               // eslint-disable-next-line no-console
               console.log(formatBoxTable(headers, rows, maxWidths));
             }
+          }
+          break;
+        }
+        case "details": {
+          const name = parsed.positionals[0];
+          if (!name) throw new Error("Usage: mcoda agent details <NAME> [--json]");
+          const agent = await api.getAgent(name);
+          if (parsed.flags.json) {
+            // eslint-disable-next-line no-console
+            console.log(JSON.stringify(agent, null, 2));
+          } else {
+            renderKeyValues([
+              ["Slug", agent.slug],
+              ["Adapter", agent.adapter],
+              ["Default model", agent.defaultModel ?? "-"],
+              ["Rating", formatNumber(agent.rating)],
+              ["Reasoning rating", formatNumber(agent.reasoningRating)],
+              ["Max complexity", formatNumber(agent.maxComplexity)],
+              ["OpenAI compatible", agent.openaiCompatible === undefined ? "-" : agent.openaiCompatible ? "yes" : "no"],
+              ["Context window", formatNumber(agent.contextWindow)],
+              ["Max output tokens", formatNumber(agent.maxOutputTokens)],
+              ["Supports tools", agent.supportsTools === undefined ? "-" : agent.supportsTools ? "yes" : "no"],
+              ["Best usage", agent.bestUsage ?? "-"],
+              ["Cost per 1M", formatCost(agent.costPerMillion)],
+              ["Rating samples", formatNumber(agent.ratingSamples)],
+              ["Rating last score", formatNumber(agent.ratingLastScore)],
+              ["Rating updated", formatDate(agent.ratingUpdatedAt)],
+              ["Complexity samples", formatNumber(agent.complexitySamples)],
+              ["Complexity updated", formatDate(agent.complexityUpdatedAt)],
+              ["Capabilities", formatCapabilitiesFull(agent.capabilities)],
+              ["Models", formatModels(agent.models)],
+              ["Health status", agent.health?.status ?? "unknown"],
+              ["Health last checked", formatDate(agent.health?.lastCheckedAt)],
+              ["Health latency", formatLatency(agent.health?.latencyMs)],
+              ["Auth configured", agent.auth?.configured ? "yes" : "no"],
+              ["Auth last updated", formatDate(agent.auth?.lastUpdatedAt)],
+              ["Auth last verified", formatDate(agent.auth?.lastVerifiedAt)],
+              ["Command prompts", formatCommandPrompts(agent.prompts?.commandPrompts)],
+              ["Job prompt path", agent.prompts?.jobPath ?? "-"],
+              ["Character prompt path", agent.prompts?.characterPath ?? "-"],
+              ["Config", agent.config ? JSON.stringify(agent.config) : "-"],
+              ["Created", formatDate(agent.createdAt)],
+              ["Updated", formatDate(agent.updatedAt)],
+            ]);
           }
           break;
         }
@@ -271,6 +458,11 @@ export class AgentsCommands {
           const config = parseConfig(parsed.flags);
           const rating = parseRating(parsed.flags.rating);
           const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
+          const maxComplexity = parseMaxComplexity(parsed.flags["max-complexity"]);
+          const openaiCompatible = parseBooleanFlag(parsed.flags["openai-compatible"], "--openai-compatible");
+          const contextWindow = parsePositiveInt(parsed.flags["context-window"], "--context-window");
+          const maxOutputTokens = parsePositiveInt(parsed.flags["max-output-tokens"], "--max-output-tokens");
+          const supportsTools = parseBooleanFlag(parsed.flags["supports-tools"], "--supports-tools");
           const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
           const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
           const agent = await api.createAgent({
@@ -279,6 +471,11 @@ export class AgentsCommands {
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             rating,
             reasoningRating,
+            maxComplexity,
+            openaiCompatible,
+            contextWindow,
+            maxOutputTokens,
+            supportsTools,
             bestUsage,
             costPerMillion,
             capabilities,
@@ -297,6 +494,11 @@ export class AgentsCommands {
           const config = parseConfig(parsed.flags);
           const rating = parseRating(parsed.flags.rating);
           const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
+          const maxComplexity = parseMaxComplexity(parsed.flags["max-complexity"]);
+          const openaiCompatible = parseBooleanFlag(parsed.flags["openai-compatible"], "--openai-compatible");
+          const contextWindow = parsePositiveInt(parsed.flags["context-window"], "--context-window");
+          const maxOutputTokens = parsePositiveInt(parsed.flags["max-output-tokens"], "--max-output-tokens");
+          const supportsTools = parseBooleanFlag(parsed.flags["supports-tools"], "--supports-tools");
           const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
           const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
           const agent = await api.updateAgent(name, {
@@ -304,6 +506,11 @@ export class AgentsCommands {
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             rating,
             reasoningRating,
+            maxComplexity,
+            openaiCompatible,
+            contextWindow,
+            maxOutputTokens,
+            supportsTools,
             bestUsage,
             costPerMillion,
             capabilities,

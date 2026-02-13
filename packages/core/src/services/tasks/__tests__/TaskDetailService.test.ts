@@ -11,7 +11,7 @@ import type { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js
 const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
   workspaceRoot,
   workspaceId: workspaceRoot,
-  mcodaDir: path.join(workspaceRoot, ".mcoda"),
+  mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
   id: workspaceRoot,
   legacyWorkspaceIds: [],
   workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
@@ -20,10 +20,18 @@ const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
 
 describe("TaskDetailService", () => {
   let workspaceRoot: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-task-detail-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-task-detail-"));
-    await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
+    await fs.mkdir(PathHelper.getWorkspaceDir(workspaceRoot), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
     const connection = await Connection.open(dbPath);
     await WorkspaceMigrations.run(connection.db);
@@ -90,7 +98,7 @@ describe("TaskDetailService", () => {
           key: "web-01-us-01-t02",
           title: "Wire analytics",
           description: "Add tracking",
-          status: "blocked",
+          status: "not_started",
           storyPoints: 3,
           priority: 3,
         },
@@ -151,6 +159,19 @@ describe("TaskDetailService", () => {
 
   afterEach(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
   });
 
   it("aggregates task detail with dependencies, comments, logs, and history", async () => {

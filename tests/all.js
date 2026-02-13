@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(__dirname, "..");
 
 const run = (label, cmd, args, options = {}) => {
   const start = Date.now();
@@ -38,23 +39,61 @@ const resolvePnpm = () => {
   return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 };
 
+const resolveNode = () => {
+  if (process.env.NODE_BIN) return process.env.NODE_BIN;
+  return process.platform === "win32" ? "node.exe" : "node";
+};
+
 const pnpm = resolvePnpm();
+const nodeBin = resolveNode();
+console.log(`[tests] using node: ${nodeBin}`);
 let failed = false;
-let winTestHome;
+let markerPrinted = false;
+let testHomeDir;
 
 if (process.env.DOCDEX_UPDATE_CHECK == null) {
   process.env.DOCDEX_UPDATE_CHECK = "0";
 }
 
+const printMarker = () => {
+  if (markerPrinted) return;
+  markerPrinted = true;
+  console.log(`MCODA_RUN_ALL_TESTS_COMPLETE status=${failed ? "failed" : "passed"}`);
+};
+
+process.on("exit", () => {
+  printMarker();
+});
+
+process.on("uncaughtException", (error) => {
+  failed = true;
+  console.error(error);
+  printMarker();
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (error) => {
+  failed = true;
+  console.error(error);
+  printMarker();
+  process.exit(1);
+});
+
 if (process.platform === "win32") {
-  winTestHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
-  const parsed = path.parse(winTestHome);
-  process.env.HOME = winTestHome;
-  process.env.USERPROFILE = winTestHome;
+  testHomeDir = mkdtempSync(path.join(os.tmpdir(), "mcoda-win-home-"));
+  const parsed = path.parse(testHomeDir);
+  process.env.HOME = testHomeDir;
+  process.env.USERPROFILE = testHomeDir;
   process.env.HOMEDRIVE = parsed.root.replace(/[\\/]+$/, "");
-  process.env.HOMEPATH = winTestHome.slice(parsed.root.length - 1);
+  process.env.HOMEPATH = testHomeDir.slice(parsed.root.length - 1);
   process.env.MCODA_SKIP_DOCDEX_CHECKS = "1";
   process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS = "1";
+  if (!process.env.MCODA_FS_RM_RETRIES) {
+    process.env.MCODA_FS_RM_RETRIES = "20";
+  }
+  if (!process.env.MCODA_FS_RM_DELAY_MS) {
+    process.env.MCODA_FS_RM_DELAY_MS = "100";
+  }
   const patchPath = path.join(root, "tests", "helpers", "win32-fs-patch.cjs");
   const existingNodeOptions = process.env.NODE_OPTIONS ?? "";
   const requireFlag = `--require=${patchPath}`;
@@ -64,9 +103,12 @@ if (process.platform === "win32") {
   if (!process.env.NODE_TEST_CONCURRENCY) {
     process.env.NODE_TEST_CONCURRENCY = "1";
   }
+}
+
+if (testHomeDir) {
   process.on("exit", () => {
     try {
-      rmSync(winTestHome, { recursive: true, force: true });
+      rmSync(testHomeDir, { recursive: true, force: true });
     } catch {
       // ignore cleanup errors
     }
@@ -100,6 +142,7 @@ if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
       "@mcoda/agents",
       "@mcoda/core",
       "mcoda",
+      "@mcoda/codali",
       "@mcoda/testing",
     ];
     for (const pkg of workspacePackages) {
@@ -140,29 +183,102 @@ const extraTests = [
 ];
 // NOTE: Add dist test files here when a package test is not covered by the workspace runner or needs explicit inclusion.
 const extraWorkspaceTests = [
+  path.join("packages", "db", "dist", "__tests__", "WorkspaceMigrations.test.js"),
+  path.join("packages", "db", "dist", "__tests__", "GlobalRepository.test.js"),
   path.join("packages", "db", "dist", "__tests__", "WorkspaceRepository.test.js"),
   path.join("packages", "core", "dist", "services", "agents", "__tests__", "GatewayHandoff.test.js"),
+  path.join("packages", "core", "dist", "services", "agents", "__tests__", "GatewayAgentService.test.js"),
   path.join("packages", "core", "dist", "api", "__tests__", "AgentsApi.test.js"),
   path.join("packages", "core", "dist", "services", "docs", "__tests__", "DocsService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "WorkOnTasksService.test.js"),
+  path.join("packages", "core", "dist", "services", "execution", "__tests__", "TaskStateService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "QaTasksService.test.js"),
+  path.join("packages", "core", "dist", "services", "estimate", "__tests__", "VelocityAndEstimate.test.js"),
   path.join("packages", "core", "dist", "services", "review", "__tests__", "CodeReviewService.test.js"),
+  path.join("packages", "core", "dist", "services", "telemetry", "__tests__", "TelemetryService.test.js"),
   path.join("packages", "core", "dist", "services", "shared", "__tests__", "ProjectGuidance.test.js"),
+  path.join("packages", "core", "dist", "services", "backlog", "__tests__", "TaskOrderingHeuristics.test.js"),
+  path.join("packages", "core", "dist", "services", "backlog", "__tests__", "TaskOrderingService.test.js"),
   path.join("packages", "core", "dist", "services", "execution", "__tests__", "GatewayTrioService.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "GatewayTrioCommand.test.js"),
   path.join("packages", "cli", "dist", "__tests__", "AgentRunCommand.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "TestAgentCommand.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "AgentsCommands.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "RoutingCommands.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "TelemetryCommands.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "JobsCommands.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "BacklogCommands.test.js"),
+  path.join("packages", "cli", "dist", "__tests__", "EstimateCommands.test.js"),
   path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexRuntime.test.js"),
+  path.join("packages", "integrations", "dist", "docdex", "__tests__", "DocdexClient.test.js"),
 ];
 
-const testFiles = collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
-const resolvedExtras = [...extraTests, ...extraWorkspaceTests].filter((file) => existsSync(path.join(root, file)));
-const allTests = Array.from(new Set([...testFiles, ...resolvedExtras]));
-const repoTests = run("repo-tests", process.execPath, ["--test", ...allTests]);
-results.push(repoTests);
-if (repoTests.error) {
-  console.error(`[${repoTests.label}] ${repoTests.error}`);
+const normalizeRepoTestPath = (file) => {
+  const relative = path.isAbsolute(file) ? path.relative(root, file) : file;
+  if (!relative.endsWith(".ts") && !relative.endsWith(".tsx")) return relative;
+  const mapped = relative
+    .replace(/^packages\/([^/]+)\/src\//, "packages/$1/dist/")
+    .replace(/\.(ts|tsx)$/, ".js");
+  if (existsSync(path.join(root, mapped))) return mapped;
+  return relative;
+};
+
+const cliOverride = process.argv
+  .slice(2)
+  .map((file) => file.trim())
+  .filter(Boolean)
+  .map(normalizeRepoTestPath);
+
+const envOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
+  .split(",")
+  .map((file) => file.trim())
+  .filter(Boolean)
+  .map(normalizeRepoTestPath);
+
+const repoOverride = cliOverride.length ? cliOverride : envOverride;
+const testFiles = repoOverride.length
+  ? []
+  : collectTests(path.join(root, "tests")).map((file) => path.relative(root, file));
+const resolvedExtras = repoOverride.length
+  ? []
+  : [...extraTests, ...extraWorkspaceTests].filter((file) => existsSync(path.join(root, file)));
+const allTests = repoOverride.length ? Array.from(new Set(repoOverride)) : Array.from(new Set([...testFiles, ...resolvedExtras]));
+if (process.env.MCODA_SKIP_REPO_TESTS !== "1") {
+  let repoTestsHome;
+  let repoTestsEnv = process.env;
+  const configuredHome = process.env.HOME ?? process.env.USERPROFILE;
+  let homeWritable = false;
+  if (configuredHome && configuredHome.trim().length > 0) {
+    try {
+      accessSync(configuredHome, constants.W_OK);
+      homeWritable = true;
+    } catch {
+      homeWritable = false;
+    }
+  }
+  if (!homeWritable) {
+    repoTestsHome = mkdtempSync(path.join(os.tmpdir(), "mcoda-test-home-"));
+    repoTestsEnv = {
+      ...process.env,
+      HOME: repoTestsHome,
+      USERPROFILE: repoTestsHome,
+    };
+  }
+
+  const repoTests = run("repo-tests", nodeBin, ["--test", ...allTests], { env: repoTestsEnv });
+  results.push(repoTests);
+  if (repoTests.error) {
+    console.error(`[${repoTests.label}] ${repoTests.error}`);
+  }
+  if (repoTests.status !== 0) failed = true;
+  if (repoTestsHome) {
+    try {
+      rmSync(repoTestsHome, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  }
 }
-if (repoTests.status !== 0) failed = true;
 
 const artifactsDir = path.join(root, "tests", "results");
 mkdirSync(artifactsDir, { recursive: true });
@@ -179,5 +295,5 @@ writeFileSync(
     "\n",
 );
 
-console.log(`MCODA_RUN_ALL_TESTS_COMPLETE status=${failed ? "failed" : "passed"}`);
+printMarker();
 process.exit(failed ? 1 : 0);

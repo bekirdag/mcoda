@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
@@ -36,14 +36,26 @@
   ],
   "scripts": {
     "build": "pnpm -r run build",
+    "build:all": "pnpm -r run build && npm -g install ./packages/cli ./packages/codali",
     "lint": "pnpm -r run lint",
     "test": "node tests/all.js",
+    "test:repo": "node --input-type=module -e \"process.env.MCODA_SKIP_WORKSPACE_TESTS='1'; import('./tests/all.js');\"",
     "test:workspaces": "pnpm -r run test"
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "@types/supertest": "^6.0.3",
+    "ava": "^6.4.1",
+    "axios-mock-adapter": "^2.1.0",
+    "chai": "^6.2.2",
+    "cypress": "^15.9.0",
     "eslint": "^8.57.0",
+    "jest": "^30.2.0",
+    "mocha": "^11.7.5",
+    "nock": "^14.0.10",
     "prettier": "^3.2.5",
+    "puppeteer": "^24.36.0",
+    "supertest": "^7.2.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.0"
   }

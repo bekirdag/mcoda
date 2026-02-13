@@ -5,6 +5,10 @@ export interface Agent {
   slug: string;
   adapter: string;
   defaultModel?: string;
+  openaiCompatible?: boolean;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsTools?: boolean;
   rating?: number;
   reasoningRating?: number;
   bestUsage?: string;
@@ -29,6 +33,10 @@ export interface CreateAgentInput {
   slug: string;
   adapter: string;
   defaultModel?: string;
+  openaiCompatible?: boolean;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsTools?: boolean;
   rating?: number;
   reasoningRating?: number;
   bestUsage?: string;
@@ -48,6 +56,10 @@ export interface CreateAgentInput {
 export interface UpdateAgentInput {
   adapter?: string;
   defaultModel?: string;
+  openaiCompatible?: boolean;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsTools?: boolean;
   rating?: number;
   reasoningRating?: number;
   bestUsage?: string;
@@ -196,6 +208,7 @@ export interface EffectiveVelocity {
   reviewSpPerHour: number;
   qaSpPerHour: number;
   source: VelocitySource;
+  requestedMode?: VelocitySource;
   windowTasks?: 10 | 20 | 50;
   samples?: {
     implementation?: number;
@@ -229,6 +242,29 @@ export interface EstimateResult {
   effectiveVelocity: EffectiveVelocity;
   durationsHours: EstimateDurations;
   etas: EstimateEtas;
+}
+
+export interface TokenUsage {
+  timestamp: string;
+  workspaceId: string;
+  commandName: string;
+  action: string;
+  promptTokens: number;
+  completionTokens: number;
+  jobId?: string;
+  taskId?: string;
+  costUsd?: number;
+  modelName?: string;
+  agentId?: string;
+  invocationKind?: string;
+  provider?: string;
+  currency?: string;
+  tokensCached?: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export type RefineStrategy = "split" | "merge" | "enrich" | "estimate" | "auto";

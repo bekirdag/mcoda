@@ -17,6 +17,7 @@ interface ParsedArgs {
   noColor: boolean;
   noTelemetry: boolean;
   spPerHour?: number;
+  spPerHourImplementation?: number;
   spPerHourReview?: number;
   spPerHourQa?: number;
   velocityMode?: VelocitySource;
@@ -32,6 +33,7 @@ const usage = `mcoda estimate \\
   [--story <STORY_KEY>] \\
   [--assignee <USER>] \\
   [--sp-per-hour <FLOAT>] \\
+  [--sp-per-hour-implementation <FLOAT>] \\
   [--sp-per-hour-review <FLOAT>] \\
   [--sp-per-hour-qa <FLOAT>] \\
   [--velocity-mode config|empirical|mixed] \\
@@ -97,6 +99,10 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
         parsed.spPerHour = parseNumber(argv[i + 1]);
         i += 1;
         break;
+      case "--sp-per-hour-implementation":
+        parsed.spPerHourImplementation = parseNumber(argv[i + 1]);
+        i += 1;
+        break;
       case "--sp-per-hour-review":
         parsed.spPerHourReview = parseNumber(argv[i + 1]);
         i += 1;
@@ -150,6 +156,8 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
           }
         } else if (arg.startsWith("--sp-per-hour=")) {
           parsed.spPerHour = parseNumber(arg.split("=")[1]);
+        } else if (arg.startsWith("--sp-per-hour-implementation=")) {
+          parsed.spPerHourImplementation = parseNumber(arg.split("=")[1]);
         } else if (arg.startsWith("--sp-per-hour-review=")) {
           parsed.spPerHourReview = parseNumber(arg.split("=")[1]);
         } else if (arg.startsWith("--sp-per-hour-qa=")) {
@@ -177,9 +185,58 @@ const fmt = (value: number | null | undefined): string => {
   return value.toFixed(2);
 };
 
+const pad2 = (value: number): string => `${value}`.padStart(2, "0");
+
+const formatLocalDateTime = (date: Date): string =>
+  `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(
+    date.getMinutes(),
+  )}`;
+
+const formatRelativeDuration = (targetMs: number, nowMs: number): string => {
+  const diffMs = targetMs - nowMs;
+  const sign = diffMs < 0 ? "-" : "+";
+  let remaining = Math.abs(diffMs);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const hourMs = 60 * 60 * 1000;
+  const minuteMs = 60 * 1000;
+  const days = Math.floor(remaining / dayMs);
+  remaining -= days * dayMs;
+  const hours = Math.floor(remaining / hourMs);
+  remaining -= hours * hourMs;
+  const minutes = Math.floor(remaining / minuteMs);
+  const parts: string[] = [];
+
+  if (days > 0) {
+    parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+  } else if (hours > 0) {
+    parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+  } else {
+    parts.push(`${minutes}m`);
+  }
+
+  return `${sign}${parts.join(" ")}`;
+};
+
+const formatEtaCell = (eta?: string): string => {
+  if (!eta) return "N/A";
+  const date = new Date(eta);
+  if (Number.isNaN(date.getTime())) return eta;
+  const local = formatLocalDateTime(date);
+  const relative = formatRelativeDuration(date.getTime(), Date.now());
+  return `${eta} (local ${local}, ${relative})`;
+};
+
 const renderResult = (result: EstimateResult): void => {
-  const source = result.effectiveVelocity.source;
+  const velocity = result.effectiveVelocity;
+  const source = velocity.source;
   const spHeader = `SP/H (${source})`;
+  const totalSp =
+    result.backlogTotals.implementation.story_points +
+    result.backlogTotals.review.story_points +
+    result.backlogTotals.qa.story_points +
+    result.backlogTotals.done.story_points;
   const rows = [
     [
       "Implementation",
@@ -199,6 +256,18 @@ const renderResult = (result: EstimateResult): void => {
       fmt(result.effectiveVelocity.qaSpPerHour),
       fmt(result.durationsHours.qaHours),
     ],
+    [
+      "Done",
+      fmt(result.backlogTotals.done.story_points),
+      fmt(null),
+      fmt(0),
+    ],
+    [
+      "Total",
+      fmt(totalSp),
+      fmt(null),
+      fmt(result.durationsHours.totalHours),
+    ],
   ];
   // eslint-disable-next-line no-console
   console.log(
@@ -207,17 +276,35 @@ const renderResult = (result: EstimateResult): void => {
       rows,
     ),
   );
+  const samples = velocity.samples ?? { implementation: 0, review: 0, qa: 0 };
+  const windowLabel = velocity.windowTasks ? ` (window ${velocity.windowTasks})` : "";
+  const fallbackNote =
+    velocity.requestedMode && velocity.requestedMode !== velocity.source
+      ? ` (requested ${velocity.requestedMode}; no empirical samples, using config)`
+      : "";
   // eslint-disable-next-line no-console
-  console.log(`\nVelocity source: ${result.effectiveVelocity.source}${result.effectiveVelocity.windowTasks ? ` (window ${result.effectiveVelocity.windowTasks})` : ""}`);
+  console.log(`\nVelocity source: ${velocity.source}${fallbackNote}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `Velocity samples${windowLabel}: impl=${samples.implementation ?? 0}, review=${samples.review ?? 0}, qa=${samples.qa ?? 0}`,
+  );
   // eslint-disable-next-line no-console
   console.log("ETAs:");
   // eslint-disable-next-line no-console
   console.log(
     formatTable(
       ["READY_TO_REVIEW", "READY_TO_QA", "COMPLETE"],
-      [[result.etas.readyToReviewEta ?? "N/A", result.etas.readyToQaEta ?? "N/A", result.etas.completeEta ?? "N/A"]],
+      [
+        [
+          formatEtaCell(result.etas.readyToReviewEta),
+          formatEtaCell(result.etas.readyToQaEta),
+          formatEtaCell(result.etas.completeEta),
+        ],
+      ],
     ),
   );
+  // eslint-disable-next-line no-console
+  console.log("\nAssumptions: lane work runs in parallel; total hours uses the longest lane.");
 };
 
 export class EstimateCommands {
@@ -241,6 +328,7 @@ export class EstimateCommands {
         mode: parsed.velocityMode,
         windowTasks: parsed.velocityWindow,
         spPerHourAll: parsed.spPerHour,
+        spPerHourImplementation: parsed.spPerHourImplementation,
         spPerHourReview: parsed.spPerHourReview,
         spPerHourQa: parsed.spPerHourQa,
       });
@@ -273,10 +361,6 @@ export class EstimateCommands {
           console.log("No tasks found in the selected scope. Showing zeroed estimate.");
         }
         renderResult(result);
-        if (parsed.debug && result.effectiveVelocity.samples) {
-          // eslint-disable-next-line no-console
-          console.error(`Samples: impl=${result.effectiveVelocity.samples.implementation ?? 0}, review=${result.effectiveVelocity.samples.review ?? 0}, qa=${result.effectiveVelocity.samples.qa ?? 0}`);
-        }
       }
     } catch (error) {
       await jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);

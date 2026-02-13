@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient, VcsClient } from "@mcoda/integrations";
 import {
@@ -11,7 +12,14 @@ import {
   type TaskInsert,
   type TaskRow,
 } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import {
+  PathHelper,
+  READY_TO_CODE_REVIEW,
+  REVIEW_ALLOWED_STATUSES,
+  filterTaskStatuses,
+  normalizeReviewStatuses,
+  type Agent,
+} from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { TaskSelectionFilters, TaskSelectionService } from "../execution/TaskSelectionService.js";
@@ -19,14 +27,17 @@ import { TaskStateService } from "../execution/TaskStateService.js";
 import { BacklogService } from "../backlog/BacklogService.js";
 import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
-import { RoutingService } from "../agents/RoutingService.js";
+import { RoutingService, type ResolvedAgent } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
-import { loadProjectGuidance } from "../shared/ProjectGuidance.js";
+import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
+import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
+import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
+import { normalizeReviewOutput } from "./ReviewNormalizer.js";
 
 const DEFAULT_BASE_BRANCH = "mcoda-dev";
-const REVIEW_DIR = (workspaceRoot: string, jobId: string) => path.join(workspaceRoot, ".mcoda", "jobs", jobId, "review");
-const STATE_PATH = (workspaceRoot: string, jobId: string) => path.join(REVIEW_DIR(workspaceRoot, jobId), "state.json");
+const REVIEW_DIR = (mcodaDir: string, jobId: string) => path.join(mcodaDir, "jobs", jobId, "review");
+const STATE_PATH = (mcodaDir: string, jobId: string) => path.join(REVIEW_DIR(mcodaDir, jobId), "state.json");
 const REVIEW_PROMPT_LIMITS = {
   diff: 12000,
   history: 3000,
@@ -36,12 +47,68 @@ const REVIEW_PROMPT_LIMITS = {
 };
 const DOCDEX_TIMEOUT_MS = 8000;
 const DEFAULT_CODE_REVIEW_PROMPT = [
-  "You are the code-review agent. Before reviewing, query docdex with the task key and feature keywords (MCP `docdex_search` limit 4–8 or CLI `docdexd query --repo <repo> --query \"<term>\" --limit 6 --snippets=false`). If results look stale, reindex (`docdex_index` or `docdexd index --repo <repo>`) then re-run. Fetch snippets via `docdex_open` or `/snippet/:doc_id?text_only=true` only for specific hits.",
+  "You are the code-review agent.",
+  buildDocdexUsageGuidance({ contextLabel: "the review", includeHeading: false, includeFallback: true }),
   "Use docdex snippets to verify contracts (data shapes, offline scope, accessibility/perf guardrails, acceptance criteria). Call out mismatches, missing tests, and undocumented changes.",
+  "When recommending tests, prefer the repo's existing runner (tests/all.js or package manager scripts). Avoid suggesting new Jest configs unless the repo explicitly documents them.",
+  "Do not require docs/qa/<task>.md reports unless the task explicitly asks for one. QA artifacts typically live in mcoda workspace outputs.",
+  "Do not hardcode ports; if a port matters, call out that it must be discovered or configured dynamically.",
 ].join("\n");
+const REPO_PROMPTS_DIR = fileURLToPath(new URL("../../../../../prompts/", import.meta.url));
+const resolveRepoPromptPath = (filename: string): string => path.join(REPO_PROMPTS_DIR, filename);
 const DEFAULT_JOB_PROMPT = "You are an mcoda agent that follows workspace runbooks and responds with actionable, concise output.";
 const DEFAULT_CHARACTER_PROMPT =
   "Write clearly, avoid hallucinations, cite assumptions, and prioritize risk mitigation for the user.";
+const GATEWAY_PROMPT_MARKERS = [
+  "you are the gateway agent",
+  "return json only",
+  "output json only",
+  "docdexnotes",
+  "fileslikelytouched",
+  "filestocreate",
+  "do not include fields outside the schema",
+];
+
+const sanitizeNonGatewayPrompt = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (GATEWAY_PROMPT_MARKERS.some((marker) => lower.includes(marker))) return undefined;
+  return trimmed;
+};
+
+const readPromptFile = async (promptPath: string, fallback: string): Promise<string> => {
+  try {
+    const content = await fs.readFile(promptPath, "utf8");
+    const trimmed = content.trim();
+    if (trimmed) return trimmed;
+  } catch {
+    // fall through to fallback
+  }
+  return fallback;
+};
+
+const filterOpenApiContext = (entries: string[], hasOpenApiSnippet: boolean): string[] => {
+  let openApiIncluded = false;
+  const filtered: string[] = [];
+  for (const entry of entries) {
+    const isOpenApi = /\[linked:openapi\]|\[openapi\]/i.test(entry);
+    if (!isOpenApi) {
+      filtered.push(entry);
+      continue;
+    }
+    if (hasOpenApiSnippet) {
+      continue;
+    }
+    if (openApiIncluded) {
+      continue;
+    }
+    openApiIncluded = true;
+    filtered.push(entry);
+  }
+  return filtered;
+};
 
 export interface CodeReviewRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
@@ -50,6 +117,7 @@ export interface CodeReviewRequest extends TaskSelectionFilters {
   agentName?: string;
   agentStream?: boolean;
   rateAgents?: boolean;
+  createFollowupTasks?: boolean;
   resumeJobId?: string;
   abortSignal?: AbortSignal;
 }
@@ -101,57 +169,6 @@ interface ReviewJobState {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
 
-const extractJsonSlice = (candidate: string): string | undefined => {
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return undefined;
-  return candidate.slice(start, end + 1);
-};
-
-const sanitizeJsonCandidate = (value: string): string => {
-  const cleanedLines = value
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return true;
-      if (
-        trimmed.startsWith("{") ||
-        trimmed.startsWith("}") ||
-        trimmed.startsWith("[") ||
-        trimmed.startsWith("]") ||
-        trimmed.startsWith("\"")
-      ) {
-        return true;
-      }
-      return false;
-    })
-    .join("\n");
-  return cleanedLines.replace(/,\s*([}\]])/g, "$1");
-};
-
-const parseJsonOutput = (raw: string): ReviewAgentResult | undefined => {
-  const trimmed = raw.trim();
-  const fenced = trimmed.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  const candidates = [trimmed, fenced];
-  for (const candidate of candidates) {
-    const slice = extractJsonSlice(candidate);
-    if (!slice) continue;
-    try {
-      const parsed = JSON.parse(slice) as ReviewAgentResult;
-      return { ...parsed, raw: raw };
-    } catch {
-      const sanitized = sanitizeJsonCandidate(slice);
-      try {
-        const parsed = JSON.parse(sanitized) as ReviewAgentResult;
-        return { ...parsed, raw: raw };
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  return undefined;
-};
-
 const summarizeComments = (comments: { category?: string; body: string; file?: string; line?: number }[]): string => {
   if (!comments.length) return "No prior comments.";
   return comments
@@ -168,6 +185,17 @@ const truncateSection = (label: string, text: string, limit: number): string => 
   const trimmed = text.slice(0, limit);
   const remaining = text.length - limit;
   return `${trimmed}\n...[truncated ${remaining} chars from ${label}]`;
+};
+
+const isNonBlockingFinding = (finding: ReviewFinding): boolean => {
+  const severity = (finding.severity ?? "").toLowerCase();
+  if (["info", "low"].includes(severity)) return true;
+  return false;
+};
+
+const isNonBlockingOnly = (findings: ReviewFinding[] = []): boolean => {
+  if (!findings.length) return false;
+  return findings.every((finding) => isNonBlockingFinding(finding));
 };
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
@@ -202,6 +230,17 @@ const JSON_CONTRACT = `{
   "unresolvedSlugs": ["Optional list of comment slugs still open or reintroduced"]
 }`;
 
+const JSON_RETRY_RULES = [
+  "Return ONLY valid JSON. No markdown, no prose, no code fences.",
+  "The response must start with '{' and end with '}'.",
+  "Match the schema exactly; use empty arrays when no items apply.",
+].join("\n");
+
+const isRetryableAgentError = (message: string): boolean =>
+  /unexpected eof|econnreset|etimedout|socket hang up|fetch failed|connection closed/i.test(
+    message.toLowerCase(),
+  );
+
 const normalizeSingleLine = (value: string | undefined, fallback: string): string => {
   const trimmed = (value ?? "").replace(/\s+/g, " ").trim();
   return trimmed || fallback;
@@ -223,6 +262,60 @@ const normalizePath = (value: string): string =>
     .replace(/\\/g, "/")
     .replace(/^\.\//, "")
     .replace(/^\/+/, "");
+
+const normalizeLineNumber = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(1, Math.round(value));
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return Math.max(1, parsed);
+  }
+  return undefined;
+};
+
+const summaryIndicatesNoChanges = (summary: string | undefined): boolean => {
+  const normalized = (summary ?? "").toLowerCase();
+  if (!normalized) return false;
+  const patterns = [
+    "no changes required",
+    "no changes needed",
+    "no change required",
+    "no change needed",
+    "no code changes",
+    "already complete",
+    "already completed",
+    "already satisfied",
+  ];
+  return patterns.some((pattern) => normalized.includes(pattern));
+};
+
+const validateReviewOutput = (
+  result: ReviewAgentResult,
+  options: { requireCommentSlugs?: boolean } = {},
+): string | undefined => {
+  if (!result.decision || !["approve", "changes_requested", "block", "info_only"].includes(result.decision)) {
+    return "Review decision is required.";
+  }
+  if (!result.summary || !result.summary.trim()) {
+    return "Review summary is required.";
+  }
+  if (options.requireCommentSlugs && result.resolvedSlugs === undefined && result.unresolvedSlugs === undefined) {
+    return "resolvedSlugs/unresolvedSlugs required when comment backlog exists.";
+  }
+  for (const finding of result.findings ?? []) {
+    const message = (finding.message ?? "").trim();
+    const file = typeof finding.file === "string" ? finding.file.trim() : "";
+    const line = normalizeLineNumber(finding.line);
+    if (!message || !file || !line) {
+      return "Each review finding must include file, line, and message.";
+    }
+    finding.file = normalizePath(file);
+    finding.line = line;
+    finding.message = message;
+  }
+  return undefined;
+};
 
 const parseCommentBody = (body: string): { message: string; suggestedFix?: string } => {
   const trimmed = (body ?? "").trim();
@@ -257,8 +350,16 @@ const buildCommentBacklog = (comments: TaskCommentRow[]): string => {
   const lines: string[] = [];
   const toSingleLine = (value: string) => value.replace(/\s+/g, " ").trim();
   for (const comment of comments) {
-    const slug = comment.slug?.trim() || undefined;
     const details = parseCommentBody(comment.body);
+    const slug =
+      comment.slug?.trim() ||
+      createTaskCommentSlug({
+        source: comment.sourceCommand ?? "comment",
+        message: details.message || comment.body,
+        file: comment.file,
+        line: comment.line,
+        category: comment.category ?? null,
+      });
     const key =
       slug ??
       `${comment.sourceCommand}:${comment.file ?? ""}:${comment.line ?? ""}:${details.message || comment.body}`;
@@ -359,9 +460,12 @@ export class CodeReviewService {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
     const jobService = new JobService(workspace, workspaceRepo);
@@ -399,6 +503,14 @@ export class CodeReviewService {
     await maybeClose(this.deps.docdex);
   }
 
+  setDocdexAvailability(available: boolean, reason?: string): void {
+    if (available) return;
+    const docdex = this.deps.docdex as any;
+    if (docdex && typeof docdex.disable === "function") {
+      docdex.disable(reason);
+    }
+  }
+
   private async readPromptFiles(paths: string[]): Promise<string[]> {
     const contents: string[] = [];
     const seen = new Set<string>();
@@ -419,21 +531,12 @@ export class CodeReviewService {
 
   private async ensureMcoda(): Promise<void> {
     await PathHelper.ensureDir(this.workspace.mcodaDir);
-    const gitignorePath = path.join(this.workspace.workspaceRoot, ".gitignore");
-    const entry = ".mcoda/\n";
-    try {
-      const content = await fs.readFile(gitignorePath, "utf8");
-      if (!content.includes(".mcoda/")) {
-        await fs.writeFile(gitignorePath, `${content.trimEnd()}\n${entry}`, "utf8");
-      }
-    } catch {
-      await fs.writeFile(gitignorePath, entry, "utf8");
-    }
   }
 
   private async loadPrompts(agentId: string): Promise<{ jobPrompt?: string; characterPrompt?: string; commandPrompt?: string }> {
-    const mcodaPromptPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "code-reviewer.md");
+    const mcodaPromptPath = path.join(this.workspace.mcodaDir, "prompts", "code-reviewer.md");
     const workspacePromptPath = path.join(this.workspace.workspaceRoot, "prompts", "code-reviewer.md");
+    const repoPromptPath = resolveRepoPromptPath("code-reviewer.md");
     try {
       await fs.mkdir(path.dirname(mcodaPromptPath), { recursive: true });
       await fs.access(mcodaPromptPath);
@@ -444,38 +547,39 @@ export class CodeReviewService {
         await fs.copyFile(workspacePromptPath, mcodaPromptPath);
         console.info(`[code-review] copied code-reviewer prompt to ${mcodaPromptPath}`);
       } catch {
-        console.info(`[code-review] no code-reviewer prompt found at ${workspacePromptPath}; writing default prompt to ${mcodaPromptPath}`);
-        await fs.writeFile(mcodaPromptPath, DEFAULT_CODE_REVIEW_PROMPT, 'utf8');
+        try {
+          await fs.access(repoPromptPath);
+          await fs.copyFile(repoPromptPath, mcodaPromptPath);
+          console.info(`[code-review] copied repo code-reviewer prompt to ${mcodaPromptPath}`);
+        } catch {
+          console.info(
+            `[code-review] no code-reviewer prompt found at ${workspacePromptPath} or repo prompts; writing default prompt to ${mcodaPromptPath}`,
+          );
+          await fs.writeFile(mcodaPromptPath, DEFAULT_CODE_REVIEW_PROMPT, "utf8");
+        }
       }
     }
-    const filePrompts = await this.readPromptFiles([mcodaPromptPath, workspacePromptPath]);
     const agentPrompts =
       "getPrompts" in this.deps.agentService ? await (this.deps.agentService as any).getPrompts(agentId) : undefined;
-    const mergedCommandPrompt = (() => {
-      const parts = [...filePrompts];
-      if (agentPrompts?.commandPrompts?.["code-review"]) {
-        parts.push(agentPrompts.commandPrompts["code-review"]);
-      }
-      if (!parts.length) parts.push(DEFAULT_CODE_REVIEW_PROMPT);
-      return parts.filter(Boolean).join("\n\n");
-    })();
+    const filePrompt = await readPromptFile(mcodaPromptPath, DEFAULT_CODE_REVIEW_PROMPT);
+    const commandPrompt = agentPrompts?.commandPrompts?.["code-review"]?.trim() || filePrompt;
     return {
-      jobPrompt: agentPrompts?.jobPrompt ?? DEFAULT_JOB_PROMPT,
-      characterPrompt: agentPrompts?.characterPrompt ?? DEFAULT_CHARACTER_PROMPT,
-      commandPrompt: mergedCommandPrompt || undefined,
+      jobPrompt: sanitizeNonGatewayPrompt(agentPrompts?.jobPrompt) ?? DEFAULT_JOB_PROMPT,
+      characterPrompt: sanitizeNonGatewayPrompt(agentPrompts?.characterPrompt) ?? DEFAULT_CHARACTER_PROMPT,
+      commandPrompt: commandPrompt || undefined,
     };
   }
 
   private async loadRunbookAndChecklists(): Promise<string[]> {
     const extras: string[] = [];
-    const runbookPath = path.join(this.workspace.workspaceRoot, ".mcoda", "prompts", "commands", "code-review.md");
+    const runbookPath = path.join(this.workspace.mcodaDir, "prompts", "commands", "code-review.md");
     try {
       const content = await fs.readFile(runbookPath, "utf8");
       extras.push(content);
     } catch {
       /* optional */
     }
-    const checklistDir = path.join(this.workspace.workspaceRoot, ".mcoda", "checklists");
+    const checklistDir = path.join(this.workspace.mcodaDir, "checklists");
     try {
       const entries = await fs.readdir(checklistDir);
       for (const entry of entries) {
@@ -489,13 +593,21 @@ export class CodeReviewService {
     return extras;
   }
 
-  private async resolveAgent(agentName?: string) {
+  private async resolveAgent(agentName?: string): Promise<ResolvedAgent> {
     const resolved = await this.routingService.resolveAgentForCommand({
       workspace: this.workspace,
       commandName: "code-review",
       overrideAgentSlug: agentName,
     });
-    return resolved.agent;
+    if (agentName) {
+      const matches = agentName === resolved.agent.id || agentName === resolved.agent.slug;
+      if (!matches) {
+        throw new Error(
+          `Review agent override "${agentName}" resolved to "${resolved.agent.slug}" (source: ${resolved.source}).`,
+        );
+      }
+    }
+    return resolved;
   }
 
   private ensureRatingService(): AgentRatingService {
@@ -525,7 +637,7 @@ export class CodeReviewService {
     epicKey?: string;
     storyKey?: string;
     taskKeys?: string[];
-    statusFilter: string[];
+    statusFilter?: string[];
     limit?: number;
   }): Promise<(TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] })[]> {
     // Prefer the backlog/task OpenAPI surface (via BacklogService) to mirror API filtering semantics.
@@ -535,7 +647,7 @@ export class CodeReviewService {
         projectKey: filters.projectKey,
         epicKey: filters.epicKey,
         storyKey: filters.storyKey,
-        statuses: filters.statusFilter,
+        statuses: filters.statusFilter && filters.statusFilter.length ? filters.statusFilter : undefined,
         verbose: true,
       });
       let tasks = result.summary.tasks;
@@ -557,10 +669,10 @@ export class CodeReviewService {
   }
 
   private async persistState(jobId: string, state: ReviewJobState): Promise<void> {
-    const dir = REVIEW_DIR(this.workspace.workspaceRoot, jobId);
+    const dir = REVIEW_DIR(this.workspace.mcodaDir, jobId);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
-      STATE_PATH(this.workspace.workspaceRoot, jobId),
+      STATE_PATH(this.workspace.mcodaDir, jobId),
       JSON.stringify({ schema_version: 1, job_id: jobId, updated_at: new Date().toISOString(), ...state }, null, 2),
       "utf8",
     );
@@ -568,7 +680,7 @@ export class CodeReviewService {
 
   private async loadState(jobId: string): Promise<ReviewJobState | undefined> {
     try {
-      const raw = await fs.readFile(STATE_PATH(this.workspace.workspaceRoot, jobId), "utf8");
+      const raw = await fs.readFile(STATE_PATH(this.workspace.mcodaDir, jobId), "utf8");
       return JSON.parse(raw) as ReviewJobState;
     } catch {
       return undefined;
@@ -596,11 +708,42 @@ export class CodeReviewService {
     return Array.from(hints).slice(0, 8);
   }
 
-  private async gatherDocContext(taskTitle: string, paths: string[], acceptance?: string[]): Promise<{ snippets: string[]; warnings: string[] }> {
+  private async gatherDocContext(
+    taskTitle: string,
+    paths: string[],
+    acceptance?: string[],
+    docLinks: string[] = [],
+  ): Promise<{ snippets: string[]; warnings: string[] }> {
     const snippets: string[] = [];
     const warnings: string[] = [];
+    if (typeof (this.deps.docdex as any)?.ensureRepoScope === "function") {
+      try {
+        await (this.deps.docdex as any).ensureRepoScope();
+      } catch (error) {
+        warnings.push(`docdex scope missing: ${(error as Error).message}`);
+        return { snippets, warnings };
+      }
+    }
     const queries = [...new Set([...(paths.length ? this.componentHintsFromPaths(paths) : []), taskTitle, ...(acceptance ?? [])])].slice(0, 8);
     let reindexed = false;
+    const resolveDocType = (
+      doc: { docType?: string; path?: string; title?: string; content?: string; segments?: Array<{ content?: string }> },
+      pathOverride?: string,
+    ) => {
+      const content = doc.segments?.[0]?.content ?? doc.content ?? "";
+      const normalized = normalizeDocType({
+        docType: doc.docType,
+        path: doc.path ?? pathOverride,
+        title: doc.title,
+        content,
+      });
+      if (normalized.downgraded) {
+        warnings.push(
+          `Docdex docType downgraded from SDS to DOC for ${doc.path ?? doc.title ?? doc.docType ?? "unknown"}: ${normalized.reason ?? "not_sds"}`,
+        );
+      }
+      return normalized.docType;
+    };
     for (const query of queries) {
       try {
         const docs = await withTimeout(
@@ -611,11 +754,12 @@ export class CodeReviewService {
           DOCDEX_TIMEOUT_MS,
           `docdex search for "${query}"`,
         );
+        const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false));
         snippets.push(
-          ...docs.slice(0, 2).map((doc) => {
+          ...filteredDocs.slice(0, 2).map((doc) => {
             const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
             const ref = doc.path ?? doc.id ?? doc.title ?? query;
-            return `- [${doc.docType ?? "doc"}] ${ref}: ${content}`;
+            return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
           }),
         );
       } catch (error) {
@@ -631,11 +775,12 @@ export class CodeReviewService {
               DOCDEX_TIMEOUT_MS,
               `docdex search for "${query}" after reindex`,
             );
+            const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false));
             snippets.push(
-              ...docs.slice(0, 2).map((doc) => {
+              ...filteredDocs.slice(0, 2).map((doc) => {
                 const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
                 const ref = doc.path ?? doc.id ?? doc.title ?? query;
-                return `- [${doc.docType ?? "doc"}] ${ref}: ${content}`;
+                return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
               }),
             );
             continue;
@@ -647,6 +792,44 @@ export class CodeReviewService {
         warnings.push(`docdex search failed for ${query}: ${(error as Error).message}`);
       }
     }
+    const normalizeDocLink = (value: string): { type: "id" | "path"; ref: string } => {
+      const trimmed = value.trim();
+      const stripped = trimmed.replace(/^docdex:/i, "").replace(/^doc:/i, "");
+      const candidate = stripped || trimmed;
+      const looksLikePath =
+        candidate.includes("/") ||
+        candidate.includes("\\") ||
+        /\.(md|markdown|txt|rst|yaml|yml|json)$/i.test(candidate);
+      return { type: looksLikePath ? "path" : "id", ref: candidate };
+    };
+    for (const link of docLinks) {
+      try {
+        const { type, ref } = normalizeDocLink(link);
+        if (type === "path" && isDocContextExcluded(ref, false)) {
+          snippets.push(`- [linked:filtered] ${link} — excluded from non-QA context`);
+          continue;
+        }
+        let doc = undefined;
+        if (type === "path" && "findDocumentByPath" in this.deps.docdex) {
+          doc = await (this.deps.docdex as DocdexClient).findDocumentByPath(ref);
+        }
+        if (!doc) {
+          doc = await this.deps.docdex.fetchDocumentById(ref);
+        }
+        if (!doc) {
+          warnings.push(`docdex fetch returned no document for ${link}`);
+          snippets.push(`- [linked:missing] ${link} — no docdex entry found`);
+          continue;
+        }
+        const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
+        const refLabel = doc.path ?? doc.id ?? doc.title ?? link;
+        snippets.push(`- [linked:${resolveDocType(doc, type === "path" ? ref : undefined)}] ${refLabel}: ${content}`);
+      } catch (error) {
+        const message = (error as Error).message;
+        warnings.push(`docdex fetch failed for ${link}: ${message}`);
+        snippets.push(`- [linked:missing] ${link} — ${message}`);
+      }
+    }
     return { snippets: Array.from(new Set(snippets)), warnings };
   }
 
@@ -654,6 +837,7 @@ export class CodeReviewService {
     systemPrompts: string[];
     task: TaskRow & { epicKey?: string; storyKey?: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] };
     diff: string;
+    diffEmpty: boolean;
     docContext: string[];
     openapiSnippet?: string;
     checklists?: string[];
@@ -671,14 +855,25 @@ export class CodeReviewService {
     const commentBacklog = params.commentBacklog
       ? truncateSection("comment backlog", params.commentBacklog, REVIEW_PROMPT_LIMITS.history)
       : "";
-    const docContextText = params.docContext.length ? truncateSection("doc context", params.docContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext) : "";
+    const filteredDocContext = filterOpenApiContext(params.docContext, Boolean(params.openapiSnippet));
+    const docContextText = filteredDocContext.length
+      ? truncateSection("doc context", filteredDocContext.join("\n"), REVIEW_PROMPT_LIMITS.docContext)
+      : "";
     const openapiSnippet = params.openapiSnippet ? truncateSection("openapi", params.openapiSnippet, REVIEW_PROMPT_LIMITS.openapi) : undefined;
     const checklistsText = params.checklists?.length
       ? truncateSection("checklists", params.checklists.join("\n\n"), REVIEW_PROMPT_LIMITS.checklist)
       : "";
     const diffText = truncateSection("diff", params.diff || "(no diff)", REVIEW_PROMPT_LIMITS.diff);
+    const reviewFocus = [
+      "Review focus:",
+      "- First validate the task requirements and the work-on-tasks actions (history/comments) rather than the diff.",
+      "- If the diff is empty, decide whether no code changes are required to satisfy the task.",
+      "- If no changes are required, use decision=approve or info_only and explicitly say no code changes are needed.",
+      "- If changes are required, use decision=changes_requested and explain exactly what is missing and why.",
+    ].join("\n");
     parts.push(
       [
+        reviewFocus,
         `Task ${params.task.key}: ${params.task.title}`,
         `Epic: ${params.task.epicKey ?? ""} ${params.task.epicTitle ?? ""}`.trim(),
         `Epic description: ${params.task.epicDescription ? params.task.epicDescription : "none"}`,
@@ -687,16 +882,18 @@ export class CodeReviewService {
         `Status: ${params.task.status}, Branch: ${params.branch ?? params.task.vcsBranch ?? "n/a"} (base ${params.baseRef})`,
         `Task description: ${params.task.description ? params.task.description : "none"}`,
         `History:\n${historySummary}`,
-        commentBacklog ? `Comment backlog (unresolved slugs):\n${commentBacklog}` : "Comment backlog: none",
-        `Acceptance criteria: ${acceptance}`,
+        commentBacklog
+          ? `Code-review comment backlog (unresolved slugs):\n${commentBacklog}`
+          : "Code-review comment backlog: none",
+        `Task DoD / acceptance criteria: ${acceptance}`,
         docContextText ? `Doc context (docdex excerpts):\n${docContextText}` : "Doc context: none",
         openapiSnippet
           ? `OpenAPI (authoritative contract; do not invent endpoints outside this):\n${openapiSnippet}`
           : "OpenAPI: not provided; avoid inventing endpoints.",
         checklistsText ? `Review checklists/runbook:\n${checklistsText}` : "Checklists: none",
-        "Diff:\n" + diffText,
+        params.diffEmpty ? "Diff: (empty — no changes between base and branch)" : "Diff:\n" + diffText,
         "Respond with STRICT JSON only, matching:\n" + JSON_CONTRACT,
-        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for comment backlog items; do not add prose outside JSON.",
+        "Rules: honor OpenAPI contracts; cite doc context where relevant; include resolvedSlugs/unresolvedSlugs for code-review comment backlog items only; do not require docs/qa/* reports; avoid hardcoded ports; do not add prose or markdown fences outside JSON.",
       ].join("\n"),
     );
     return parts.join("\n\n");
@@ -704,7 +901,7 @@ export class CodeReviewService {
 
   private async buildHistorySummary(taskId: string): Promise<string> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
-      sourceCommands: ["work-on-tasks", "code-review", "qa-tasks"],
+      sourceCommands: ["work-on-tasks", "code-review"],
       limit: 10,
     });
     const lastReview = await this.deps.workspaceRepo.getLatestTaskReview(taskId);
@@ -729,13 +926,13 @@ export class CodeReviewService {
         parts.push(`Unresolved items: ${unresolved.length}`);
       }
     }
-    if (!parts.length) return "No prior review or QA history.";
+    if (!parts.length) return "No prior review history.";
     return parts.join("\n");
   }
 
   private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
-      sourceCommands: ["code-review", "qa-tasks"],
+      sourceCommands: ["code-review"],
       limit: 50,
     });
     const unresolved = comments.filter((comment) => !comment.resolvedAt);
@@ -804,9 +1001,12 @@ export class CodeReviewService {
     const reviewSlugIndex = this.buildCommentSlugIndex(
       params.existingComments.filter((comment) => comment.sourceCommand === "code-review"),
     );
-    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined);
+    const allowedSlugs = new Set(existingBySlug.keys());
+    const resolvedSlugs = normalizeSlugList(params.resolvedSlugs ?? undefined).filter((slug) => allowedSlugs.has(slug));
     const resolvedSet = new Set(resolvedSlugs);
-    const unresolvedSet = new Set(normalizeSlugList(params.unresolvedSlugs ?? undefined));
+    const unresolvedSet = new Set(
+      normalizeSlugList(params.unresolvedSlugs ?? undefined).filter((slug) => allowedSlugs.has(slug)),
+    );
 
     const findingSlugs: string[] = [];
     for (const finding of params.findings ?? []) {
@@ -1065,7 +1265,7 @@ export class CodeReviewService {
   }
 
   private async persistContext(jobId: string, taskId: string, context: Record<string, unknown>): Promise<void> {
-    const dir = path.join(REVIEW_DIR(this.workspace.workspaceRoot, jobId), "context");
+    const dir = path.join(REVIEW_DIR(this.workspace.mcodaDir, jobId), "context");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
       path.join(dir, `${taskId}.json`),
@@ -1075,7 +1275,7 @@ export class CodeReviewService {
   }
 
   private async persistDiff(jobId: string, taskId: string, diff: string): Promise<void> {
-    const dir = path.join(REVIEW_DIR(this.workspace.workspaceRoot, jobId), "diffs");
+    const dir = path.join(REVIEW_DIR(this.workspace.mcodaDir, jobId), "diffs");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${taskId}.diff`), diff, "utf8");
     // structured review diff snapshot
@@ -1105,11 +1305,26 @@ export class CodeReviewService {
     await fs.writeFile(path.join(dir, `${taskId}.json`), JSON.stringify({ schema_version: 1, task_id: taskId, files }, null, 2), "utf8");
   }
 
+  private async persistReviewOutput(jobId: string, taskId: string, payload: Record<string, unknown>): Promise<string> {
+    const dir = path.join(REVIEW_DIR(this.workspace.mcodaDir, jobId), "outputs");
+    await fs.mkdir(dir, { recursive: true });
+    const target = path.join(dir, `${taskId}.json`);
+    await fs.writeFile(target, JSON.stringify(payload, null, 2), "utf8");
+    return path.relative(this.workspace.mcodaDir, target);
+  }
+
   private severityToPriority(severity?: string): number | null {
     if (!severity) return null;
     const normalized = severity.toLowerCase();
     const order: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4, info: 5 };
     return order[normalized] ?? null;
+  }
+
+  private severityToStoryPoints(severity?: string): number | null {
+    if (!severity) return null;
+    const normalized = severity.toLowerCase();
+    const points: Record<string, number> = { critical: 8, high: 5, medium: 3, low: 2, info: 1 };
+    return points[normalized] ?? null;
   }
 
   private shouldCreateFollowupTask(decision: ReviewAgentResult["decision"] | undefined, finding: ReviewFinding): boolean {
@@ -1235,6 +1450,9 @@ export class CodeReviewService {
       const storyId = genericTarget ? genericContainers.story.id : params.task.userStoryId;
       const storyKey = genericTarget ? genericContainers!.story.key : params.task.storyKey ?? genericContainers?.story.key ?? "US-AUTO";
       const epicId = genericTarget ? genericContainers!.epic.id : params.task.epicId;
+      const fallbackPoints = this.resolveTaskComplexity(params.task) ?? params.task.storyPoints ?? 1;
+      const storyPoints = this.severityToStoryPoints(finding.severity) ?? fallbackPoints;
+      const boundedPoints = Number.isFinite(storyPoints) ? Math.min(10, Math.max(1, Math.round(storyPoints))) : 1;
       const taskKey = await ensureKey(storyId, storyKey);
       inserts.push({
         projectId: params.task.projectId,
@@ -1245,7 +1463,7 @@ export class CodeReviewService {
         description: this.buildFollowupDescription(params.task, finding, params.decision),
         type: finding.type ?? (params.decision === "changes_requested" || params.decision === "block" ? "bug" : "issue"),
         status: "not_started",
-        storyPoints: null,
+        storyPoints: boundedPoints,
         priority: this.severityToPriority(finding.severity),
         metadata: {
           source: "code-review",
@@ -1261,6 +1479,7 @@ export class CodeReviewService {
           suggestedFix: finding.suggestedFix,
           generic: genericTarget ? true : false,
           decision: params.decision,
+          complexity: boundedPoints,
         },
       });
     }
@@ -1286,7 +1505,18 @@ export class CodeReviewService {
     await this.ensureMcoda();
     const agentStream = request.agentStream !== false;
     const baseRef = request.baseRef ?? this.workspace.config?.branch ?? DEFAULT_BASE_BRANCH;
-    const statusFilter = request.statusFilter && request.statusFilter.length ? request.statusFilter : ["ready_to_review"];
+    const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
+    const rawStatusFilter = ignoreStatusFilter
+      ? []
+      : request.statusFilter && request.statusFilter.length
+        ? request.statusFilter
+        : [READY_TO_CODE_REVIEW];
+    const { filtered: allowedStatusFilter, rejected } = filterTaskStatuses(
+      rawStatusFilter,
+      REVIEW_ALLOWED_STATUSES,
+      REVIEW_ALLOWED_STATUSES,
+    );
+    const statusFilter = normalizeReviewStatuses(allowedStatusFilter);
     let state: ReviewJobState | undefined;
 
     const commandRun = await this.deps.jobService.startCommandRun("code-review", request.projectKey, {
@@ -1298,6 +1528,14 @@ export class CodeReviewService {
     let jobId = request.resumeJobId;
     let selectedTaskIds: string[] = [];
     let warnings: string[] = [];
+    if (rejected.length > 0 && !ignoreStatusFilter) {
+      warnings.push(
+        `code-review ignores unsupported statuses: ${rejected.join(", ")}. Allowed: ${REVIEW_ALLOWED_STATUSES.join(
+          ", ",
+        )}.`,
+      );
+    }
+    let allowFollowups = request.createFollowupTasks === true;
     let selectedTasks: Array<TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] }> =
       [];
 
@@ -1306,6 +1544,9 @@ export class CodeReviewService {
       if (!job) throw new Error(`Job not found: ${request.resumeJobId}`);
       if ((job.commandName ?? job.type) !== "code-review" && job.type !== "review") {
         throw new Error(`Job ${request.resumeJobId} is not a code-review job`);
+      }
+      if (request.createFollowupTasks === undefined) {
+        allowFollowups = Boolean((job.payload as any)?.createFollowupTasks);
       }
       state = await this.loadState(request.resumeJobId);
       selectedTaskIds = state?.selectedTaskIds ?? (Array.isArray((job.payload as any)?.selection) ? ((job.payload as any).selection as string[]) : []);
@@ -1342,7 +1583,7 @@ export class CodeReviewService {
           epicKey: request.epicKey,
           storyKey: request.storyKey,
           taskKeys: request.taskKeys,
-          statusFilter,
+          statusFilter: ignoreStatusFilter ? undefined : statusFilter,
           limit: request.limit,
         });
       } catch {
@@ -1351,10 +1592,11 @@ export class CodeReviewService {
           epicKey: request.epicKey,
           storyKey: request.storyKey,
           taskKeys: request.taskKeys,
-          statusFilter,
+          statusFilter: ignoreStatusFilter ? undefined : statusFilter,
           limit: request.limit,
+          ignoreStatusFilter,
         });
-        warnings = [...selection.warnings];
+        warnings = [...warnings, ...selection.warnings];
         selectedTasks = selection.ordered.map((t) => t.task);
       }
 
@@ -1366,12 +1608,13 @@ export class CodeReviewService {
           epicKey: request.epicKey,
           storyKey: request.storyKey,
           tasks: request.taskKeys,
-          statusFilter,
+          statusFilter: ignoreStatusFilter ? [] : statusFilter,
           baseRef,
           selection: selectedTaskIds,
           dryRun: request.dryRun ?? false,
           agent: request.agentName,
           agentStream,
+          createFollowupTasks: allowFollowups,
         },
         totalItems: selectedTaskIds.length,
         processedItems: 0,
@@ -1413,10 +1656,39 @@ export class CodeReviewService {
       selectedTasks.length && selectedTaskIds.length === selectedTasks.length
         ? selectedTasks
         : await this.deps.workspaceRepo.getTasksWithRelations(selectedTaskIds);
-    const agent = await this.resolveAgent(request.agentName);
+    let resolvedAgent: ResolvedAgent;
+    try {
+      resolvedAgent = await this.resolveAgent(request.agentName);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (request.agentName) {
+        const warning = `Review agent override (${request.agentName}) failed: ${message}`;
+        warnings.push(warning);
+        console.warn(`[code-review] ${warning}`);
+      }
+      throw error;
+    }
+    const agent = resolvedAgent.agent;
+    const reviewJsonAgentOverride =
+      this.workspace.config?.reviewJsonAgent ??
+      process.env.MCODA_REVIEW_JSON_AGENT ??
+      process.env.MCODA_REVIEW_JSON_AGENT_NAME;
+    let reviewJsonAgent: Agent | undefined;
+    if (
+      reviewJsonAgentOverride &&
+      reviewJsonAgentOverride !== agent.id &&
+      reviewJsonAgentOverride !== agent.slug
+    ) {
+      try {
+        reviewJsonAgent = (await this.resolveAgent(reviewJsonAgentOverride)).agent;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(`Review JSON agent override (${reviewJsonAgentOverride}) failed: ${message}`);
+      }
+    }
     const prompts = await this.loadPrompts(agent.id);
     const extras = await this.loadRunbookAndChecklists();
-    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot);
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
     if (projectGuidance) {
       console.info(`[code-review] loaded project guidance from ${projectGuidance.source}`);
     }
@@ -1449,6 +1721,95 @@ export class CodeReviewService {
     };
 
     const results: TaskReviewResult[] = [];
+    const formatSessionId = (iso: string): string => {
+      const date = new Date(iso);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(
+        date.getMinutes(),
+      )}${pad(date.getSeconds())}`;
+    };
+    const formatDuration = (ms: number): string => {
+      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+      const seconds = totalSeconds % 60;
+      const minutesTotal = Math.floor(totalSeconds / 60);
+      const minutes = minutesTotal % 60;
+      const hours = Math.floor(minutesTotal / 60);
+      if (hours > 0) return `${hours}H ${minutes}M ${seconds}S`;
+      return `${minutes}M ${seconds}S`;
+    };
+    const resolveProvider = (adapter?: string): string => {
+      if (!adapter) return "n/a";
+      const trimmed = adapter.trim();
+      if (!trimmed) return "n/a";
+      if (trimmed.includes("-")) return trimmed.split("-")[0];
+      return trimmed;
+    };
+    const resolveReasoning = (config?: Record<string, unknown>): string => {
+      if (!config) return "n/a";
+      const raw = (config as Record<string, unknown>).reasoning ?? (config as Record<string, unknown>).thinking;
+      if (typeof raw === "string") return raw;
+      if (typeof raw === "boolean") return raw ? "enabled" : "disabled";
+      return "n/a";
+    };
+    const emitLine = (line: string): void => {
+      console.info(line);
+    };
+    const emitBlank = (): void => emitLine("");
+    const emitReviewStart = (details: {
+      taskKey: string;
+      alias: string;
+      summary: string;
+      model: string;
+      provider: string;
+      step: string;
+      reasoning: string;
+      workdir: string;
+      sessionId: string;
+      startedAt: string;
+    }): void => {
+      emitLine("╭──────────────────────────────────────────────────────────╮");
+      emitLine("│              START OF CODE REVIEW TASK                   │");
+      emitLine("╰──────────────────────────────────────────────────────────╯");
+      emitLine(`  [🪪] Code Review Task ID: ${details.taskKey}`);
+      emitLine(`  [👹] Alias:          ${details.alias}`);
+      emitLine(`  [ℹ️] Summary:        ${details.summary}`);
+      emitLine(`  [🤖] Model:          ${details.model}`);
+      emitLine(`  [🕹️] Provider:       ${details.provider}`);
+      emitLine(`  [🧩] Step:           ${details.step}`);
+      emitLine(`  [🧠] Reasoning:      ${details.reasoning}`);
+      emitLine(`  [📁] Workdir:        ${details.workdir}`);
+      emitLine(`  [🔑] Session:        ${details.sessionId}`);
+      emitLine(`  [🕒] Started:        ${details.startedAt}`);
+      emitBlank();
+      emitLine("    ░░░░░ START OF CODE REVIEW TASK ░░░░░");
+      emitBlank();
+      emitLine(`    [STEP ${details.step}]  [MODEL ${details.model}]`);
+      emitBlank();
+      emitBlank();
+    };
+    const emitReviewEnd = (details: {
+      taskKey: string;
+      statusLabel: string;
+      decision?: string;
+      findingsCount: number;
+      elapsedMs: number;
+      tokensTotal: number;
+      startedAt: string;
+      endedAt: string;
+    }): void => {
+      emitLine("╭──────────────────────────────────────────────────────────╮");
+      emitLine("│                END OF CODE REVIEW TASK                   │");
+      emitLine("╰──────────────────────────────────────────────────────────╯");
+      emitLine(
+        `  👀 CODE REVIEW TASK ${details.taskKey} | 📜 STATUS ${details.statusLabel} | ✅ DECISION ${details.decision ?? "n/a"} | 🔎 FINDINGS ${details.findingsCount} | ⌛ TIME ${formatDuration(details.elapsedMs)}`,
+      );
+      emitLine(`  [🕒] Started:        ${details.startedAt}`);
+      emitLine(`  [🕒] Ended:          ${details.endedAt}`);
+      emitLine(`  Tokens used:  ${details.tokensTotal.toLocaleString("en-US")}`);
+      emitBlank();
+      emitLine("    ░░░░░ END OF CODE REVIEW TASK ░░░░░");
+      emitBlank();
+    };
     const maybeRateTask = async (task: TaskRow, taskRunId: string, tokensTotal: number): Promise<void> => {
       if (!request.rateAgents || tokensTotal <= 0) return;
       try {
@@ -1461,7 +1822,7 @@ export class CodeReviewService {
           commandRunId: commandRun.id,
           taskId: task.id,
           taskKey: task.key,
-          discipline: task.type ?? undefined,
+          discipline: task.type ?? "review",
           complexity: this.resolveTaskComplexity(task),
         });
       } catch (error) {
@@ -1481,8 +1842,39 @@ export class CodeReviewService {
       }
     };
 
+    let abortRemainingReason: string | null = null;
     for (const task of tasks) {
+      if (abortRemainingReason) break;
       abortIfSignaled();
+      const startedAt = new Date().toISOString();
+      const taskStartMs = Date.now();
+      const sessionId = formatSessionId(startedAt);
+      const taskAlias = `Reviewing task ${task.key}`;
+      const taskSummary = task.title ?? task.description ?? "(none)";
+      const modelLabel = agent.defaultModel ?? "(default)";
+      const providerLabel = resolveProvider(agent.adapter);
+      const reasoningLabel = resolveReasoning(agent.config as Record<string, unknown> | undefined);
+      const stepLabel = "review";
+      let endEmitted = false;
+      const emitReviewEndOnce = (details: {
+        statusLabel: string;
+        decision?: string;
+        findingsCount: number;
+        tokensTotal: number;
+      }): void => {
+        if (endEmitted) return;
+        endEmitted = true;
+        emitReviewEnd({
+          taskKey: task.key,
+          statusLabel: details.statusLabel,
+          decision: details.decision,
+          findingsCount: details.findingsCount,
+          elapsedMs: Date.now() - taskStartMs,
+          tokensTotal: details.tokensTotal,
+          startedAt,
+          endedAt: new Date().toISOString(),
+        });
+      };
       const statusBefore = task.status;
       const taskRun = await this.deps.workspaceRepo.createTaskRun({
         taskId: task.id,
@@ -1491,24 +1883,46 @@ export class CodeReviewService {
         commandRunId: commandRun.id,
         agentId: agent.id,
         status: "running",
-        startedAt: new Date().toISOString(),
+        startedAt,
         storyPointsAtRun: task.storyPoints ?? null,
         gitBranch: task.vcsBranch ?? null,
         gitBaseBranch: task.vcsBaseBranch ?? null,
         gitCommitSha: task.vcsLastCommitSha ?? null,
       });
 
+      const statusContext = {
+        commandName: "code-review",
+        jobId,
+        taskRunId: taskRun.id,
+        agentId: agent.id,
+        metadata: { lane: "review" },
+      };
+
       const findings: ReviewFinding[] = [];
       let decision: ReviewAgentResult["decision"] | undefined;
       let statusAfter: string | undefined;
+      let reviewErrorCode: string | undefined;
       const followupCreated: { taskId: string; taskKey: string; epicId: string; userStoryId: string; generic?: boolean }[] = [];
       let commentResolution: { resolved: string[]; reopened: string[]; open: string[] } | undefined;
 
       // Debug visibility: show prompts/task details for this run
       const systemPrompt = systemPrompts.join("\n\n");
       let tokensTotal = 0;
+      let agentOutput = "";
 
       try {
+        emitReviewStart({
+          taskKey: task.key,
+          alias: taskAlias,
+          summary: taskSummary,
+          model: modelLabel,
+          provider: providerLabel,
+          step: stepLabel,
+          reasoning: reasoningLabel,
+          workdir: this.workspace.workspaceRoot,
+          sessionId,
+          startedAt,
+        });
         const metadata = (task.metadata as any) ?? {};
         const allowedFiles: string[] = Array.isArray(metadata.files) ? metadata.files : [];
         const diffResult = await this.buildDiff(task, state?.baseRef ?? baseRef, allowedFiles);
@@ -1529,10 +1943,10 @@ export class CodeReviewService {
             allowedFiles,
           },
         });
-
-        if (!diff.trim()) {
-          const message = "Review diff is empty; blocking review until changes are produced.";
-          warnings.push(`Empty diff for ${task.key}; blocking review.`);
+        const diffEmpty = !diff.trim();
+        if (diffEmpty) {
+          const message = `Empty diff for ${task.key}; reviewing task requirements to confirm whether no changes are acceptable.`;
+          warnings.push(message);
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
@@ -1540,43 +1954,6 @@ export class CodeReviewService {
             source: "review_warning",
             message,
           });
-          if (!request.dryRun) {
-            await this.stateService.markBlocked(task, "review_empty_diff");
-            statusAfter = "blocked";
-          }
-          await this.writeReviewSummaryComment({
-            task,
-            taskRunId: taskRun.id,
-            jobId,
-            agentId: agent.id,
-            statusBefore,
-            statusAfter: statusAfter ?? statusBefore,
-            decision: "block",
-            summary: message,
-            findingsCount: 0,
-          });
-          await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-            status: "failed",
-            finishedAt: new Date().toISOString(),
-            runContext: { decision: "block", reason: "empty_diff" },
-          });
-          state?.reviewed.push({ taskId: task.id, decision: "block" });
-          await this.persistState(jobId, state!);
-          await this.writeCheckpoint(jobId, "review_applied", { reviewed: state?.reviewed ?? [], schema_version: 1 });
-          results.push({
-            taskId: task.id,
-            taskKey: task.key,
-            statusBefore,
-            statusAfter: statusAfter ?? statusBefore,
-            decision: "block",
-            findings,
-            followupTasks: followupCreated,
-          });
-          await this.deps.jobService.updateJobStatus(jobId, "running", {
-            processedItems: state?.reviewed.length ?? 0,
-          });
-          await maybeRateTask(task, taskRun.id, tokensTotal);
-          continue;
         }
 
         const historySummary = await this.buildHistorySummary(task.id);
@@ -1591,7 +1968,13 @@ export class CodeReviewService {
         });
 
         const changedPaths = this.extractPathsFromDiff(diff);
-        const docLinks = await this.gatherDocContext(task.title, changedPaths.length ? changedPaths : allowedFiles, task.acceptanceCriteria);
+        const diffMeta = { diffEmpty, changedPaths };
+        const docLinks = await this.gatherDocContext(
+          task.title,
+          changedPaths.length ? changedPaths : allowedFiles,
+          task.acceptanceCriteria,
+          Array.isArray((task.metadata as any)?.doc_links) ? (task.metadata as any).doc_links : [],
+        );
         if (docLinks.warnings.length) warnings.push(...docLinks.warnings);
         await this.deps.workspaceRepo.insertTaskLog({
           taskRunId: taskRun.id,
@@ -1618,6 +2001,7 @@ export class CodeReviewService {
           systemPrompts,
           task,
           diff,
+          diffEmpty,
           docContext: docLinks.snippets,
           openapiSnippet,
           historySummary,
@@ -1625,6 +2009,7 @@ export class CodeReviewService {
           baseRef: state?.baseRef ?? baseRef,
           branch: task.vcsBranch ?? undefined,
         });
+        const requireCommentSlugs = Boolean(commentBacklog.trim());
 
         const separator = "============================================================";
         const deps =
@@ -1634,7 +2019,6 @@ export class CodeReviewService {
               ? ((task.metadata as any).depends_on as string[])
               : [];
         console.info(separator);
-        console.info("[code-review] START OF TASK");
         console.info(`[code-review] Task key: ${task.key}`);
         console.info(`[code-review] Title: ${task.title ?? "(none)"}`);
         console.info(`[code-review] Description: ${task.description ?? "(none)"}`);
@@ -1655,6 +2039,7 @@ export class CodeReviewService {
           docdex: docLinks.snippets,
           openapiSnippet,
           changedPaths,
+          diffEmpty,
         });
         state?.contextBuilt.push(task.id);
         await this.persistState(jobId, state!);
@@ -1666,6 +2051,8 @@ export class CodeReviewService {
           outputText: string,
           durationSeconds: number,
           tokenMeta?: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number; model?: string | null },
+          agentUsed: Agent = agent,
+          attempt = 1,
         ) => {
           const tokensPrompt = tokenMeta?.tokensPrompt ?? estimateTokens(promptText);
           const tokensCompletion = tokenMeta?.tokensCompletion ?? estimateTokens(outputText);
@@ -1673,8 +2060,8 @@ export class CodeReviewService {
           tokensTotal += entryTotal;
           await this.deps.jobService.recordTokenUsage({
             workspaceId: this.workspace.workspaceId,
-            agentId: agent.id,
-            modelName: tokenMeta?.model ?? (agent as any).defaultModel ?? undefined,
+            agentId: agentUsed.id,
+            modelName: tokenMeta?.model ?? (agentUsed as any).defaultModel ?? undefined,
             jobId,
             commandRunId: commandRun.id,
             taskRunId: taskRun.id,
@@ -1685,49 +2072,95 @@ export class CodeReviewService {
             tokensTotal: entryTotal,
             durationSeconds,
             timestamp: new Date().toISOString(),
-            metadata: { commandName: "code-review", phase, action: phase },
+            metadata: { commandName: "code-review", phase, action: phase, attempt },
           });
         };
 
-        let agentOutput = "";
+        agentOutput = "";
         let durationSeconds = 0;
-        const started = Date.now();
         let lastStreamMeta: any;
-        if (agentStream && this.deps.agentService.invokeStream) {
-          const stream = await withAbort(
-            this.deps.agentService.invokeStream(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
-          );
-          while (true) {
-            abortIfSignaled();
-            const { value, done } = await withAbort(stream.next());
-            if (done) break;
-            const chunk = value;
-            agentOutput += chunk.output ?? "";
-            lastStreamMeta = chunk.metadata ?? lastStreamMeta;
+        let agentUsedForOutput: Agent = agent;
+        let outputAttempt = 1;
+        const invokeReviewAgent = async (
+          agentToUse: Agent,
+          useStream: boolean,
+          logSource: "agent" | "agent_retry",
+        ): Promise<{ output: string; durationSeconds: number; metadata?: any }> => {
+          let output = "";
+          let metadata: any;
+          const started = Date.now();
+          if (useStream && this.deps.agentService.invokeStream) {
+            const stream = await withAbort(
+              this.deps.agentService.invokeStream(agentToUse.id, {
+                input: prompt,
+                metadata: { taskKey: task.key, retry: logSource === "agent_retry" },
+              }),
+            );
+            while (true) {
+              abortIfSignaled();
+              const { value, done } = await withAbort(stream.next());
+              if (done) break;
+              const chunk = value;
+              output += chunk.output ?? "";
+              metadata = chunk.metadata ?? metadata;
+              await this.deps.workspaceRepo.insertTaskLog({
+                taskRunId: taskRun.id,
+                sequence: this.sequenceForTask(taskRun.id),
+                timestamp: new Date().toISOString(),
+                source: logSource,
+                message: chunk.output ?? "",
+              });
+            }
+          } else {
+            const response = await withAbort(
+              this.deps.agentService.invoke(agentToUse.id, {
+                input: prompt,
+                metadata: { taskKey: task.key, retry: logSource === "agent_retry" },
+              }),
+            );
+            output = response.output ?? "";
+            metadata = response.metadata;
             await this.deps.workspaceRepo.insertTaskLog({
               taskRunId: taskRun.id,
               sequence: this.sequenceForTask(taskRun.id),
               timestamp: new Date().toISOString(),
-              source: "agent",
-              message: chunk.output ?? "",
+              source: logSource,
+              message: output,
             });
           }
-          durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
-        } else {
-          const response = await withAbort(
-            this.deps.agentService.invoke(agent.id, { input: prompt, metadata: { taskKey: task.key } }),
+          const durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
+          return { output, durationSeconds, metadata };
+        };
+
+        try {
+          const invocation = await invokeReviewAgent(
+            agent,
+            Boolean(agentStream && this.deps.agentService.invokeStream),
+            "agent",
           );
-          agentOutput = response.output ?? "";
-          durationSeconds = Math.round(((Date.now() - started) / 1000) * 1000) / 1000;
+          agentOutput = invocation.output;
+          durationSeconds = invocation.durationSeconds;
+          lastStreamMeta = invocation.metadata;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!isRetryableAgentError(message)) {
+            throw error;
+          }
+          outputAttempt = 2;
+          agentUsedForOutput = reviewJsonAgent ?? agent;
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
             timestamp: new Date().toISOString(),
-            source: "agent",
-            message: agentOutput,
+            source: "agent_retry",
+            message: `Transient agent error (${message}); retrying once with ${agentUsedForOutput.slug ?? agentUsedForOutput.id}.`,
           });
-          lastStreamMeta = response.metadata;
+          const invocation = await invokeReviewAgent(agentUsedForOutput, false, "agent_retry");
+          agentOutput = invocation.output;
+          durationSeconds = invocation.durationSeconds;
+          lastStreamMeta = invocation.metadata;
         }
+
         const tokenMetaMain = lastStreamMeta
           ? {
               tokensPrompt: typeof lastStreamMeta.tokensPrompt === "number" ? lastStreamMeta.tokensPrompt : (lastStreamMeta.tokens_prompt as number | undefined),
@@ -1739,24 +2172,65 @@ export class CodeReviewService {
               model: (lastStreamMeta.model ?? lastStreamMeta.model_name ?? null) as string | null,
             }
           : undefined;
-        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain);
+        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain, agentUsedForOutput, outputAttempt);
 
-        let parsed = parseJsonOutput(agentOutput);
-        let invalidJson = false;
-        if (!parsed) {
+        const primaryOutput = agentOutput;
+        let retryOutput: string | undefined;
+        let retryAgentUsed: Agent | undefined;
+        let normalization = normalizeReviewOutput(agentOutput);
+        let parsed = normalization.result;
+        let validationError = validateReviewOutput(parsed, { requireCommentSlugs });
+        if (validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists.") {
+          const warning = `Review output missing comment slugs for ${task.key}; assuming no backlog items resolved.`;
+          warnings.push(warning);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message: warning,
+          });
+          validationError = undefined;
+        }
+
+        const needsRetry = Boolean(validationError) || normalization.usedFallback;
+        if (needsRetry) {
+          const retryReason = validationError
+            ? `Invalid review schema (${validationError}); retrying once with stricter instructions.`
+            : "Unstructured review output; retrying once with stricter instructions.";
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
             timestamp: new Date().toISOString(),
             source: "agent",
-            message: "Invalid JSON from agent; retrying once with stricter instructions.",
+            message: retryReason,
           });
-          const retryPrompt = `${prompt}\n\nRespond ONLY with valid JSON matching the schema above. Do not include prose or fences.`;
+          const buildRetryPrompt = (raw: string): string =>
+            [
+              "Your previous response was invalid JSON. Reformat it to match the schema below.",
+              JSON_RETRY_RULES,
+              JSON_CONTRACT,
+              "RESPONSE_TO_CONVERT:",
+              raw,
+            ].join("\n");
+          const retryPrompt = agentOutput.trim()
+            ? buildRetryPrompt(agentOutput)
+            : `${prompt}\n\n${JSON_RETRY_RULES}\n${JSON_CONTRACT}`;
           const retryStarted = Date.now();
+          retryAgentUsed = reviewJsonAgent ?? agent;
+          if (retryAgentUsed.id !== agent.id) {
+            await this.deps.workspaceRepo.insertTaskLog({
+              taskRunId: taskRun.id,
+              sequence: this.sequenceForTask(taskRun.id),
+              timestamp: new Date().toISOString(),
+              source: "agent_retry",
+              message: `Retrying with JSON-only agent override: ${retryAgentUsed.slug ?? retryAgentUsed.id}`,
+            });
+          }
           const retryResp = await withAbort(
-            this.deps.agentService.invoke(agent.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
+            this.deps.agentService.invoke(retryAgentUsed.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
           );
-          const retryOutput = retryResp.output ?? "";
+          retryOutput = retryResp.output ?? "";
           const retryDuration = Math.round(((Date.now() - retryStarted) / 1000) * 1000) / 1000;
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
@@ -1782,15 +2256,28 @@ export class CodeReviewService {
                 model: (retryResp.metadata.model ?? retryResp.metadata.model_name ?? null) as string | null,
               }
             : undefined;
-          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta);
-          parsed = parseJsonOutput(retryOutput);
+          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed, 2);
+          normalization = normalizeReviewOutput(retryOutput);
+          parsed = normalization.result;
+          validationError = validateReviewOutput(parsed, { requireCommentSlugs });
+          if (validationError === "resolvedSlugs/unresolvedSlugs required when comment backlog exists.") {
+            const warning = `Review output missing comment slugs for ${task.key} after retry; assuming no backlog items resolved.`;
+            warnings.push(warning);
+            await this.deps.workspaceRepo.insertTaskLog({
+              taskRunId: taskRun.id,
+              sequence: this.sequenceForTask(taskRun.id),
+              timestamp: new Date().toISOString(),
+              source: "review_warning",
+              message: warning,
+            });
+            validationError = undefined;
+          }
           agentOutput = retryOutput;
         }
-        if (!parsed) {
-          invalidJson = true;
-          const fallbackSummary =
-            "Review agent returned non-JSON output after retry; block review and re-run with a stricter JSON-only model.";
-          warnings.push(`Review agent returned non-JSON output for ${task.key}; blocking review.`);
+
+        if (validationError) {
+          const fallbackSummary = `Review output missing required fields (${validationError}); treated as informational.`;
+          warnings.push(`Review output missing required fields for ${task.key}; proceeding with info_only.`);
           await this.deps.workspaceRepo.insertTaskLog({
             taskRunId: taskRun.id,
             sequence: this.sequenceForTask(taskRun.id),
@@ -1799,17 +2286,66 @@ export class CodeReviewService {
             message: fallbackSummary,
           });
           parsed = {
-            decision: "block",
+            decision: "info_only",
             summary: fallbackSummary,
             findings: [],
             testRecommendations: [],
-            raw: agentOutput,
+            raw: retryOutput ?? agentOutput,
           };
+          normalization = { parsedFromJson: false, usedFallback: true, issues: ["validation_error"], result: parsed };
         }
-        parsed.raw = agentOutput;
+
+        if (normalization.usedFallback) {
+          const fallbackMessage = `Review output was not valid JSON for ${task.key}; treated as informational.`;
+          warnings.push(fallbackMessage);
+          await this.deps.workspaceRepo.insertTaskLog({
+            taskRunId: taskRun.id,
+            sequence: this.sequenceForTask(taskRun.id),
+            timestamp: new Date().toISOString(),
+            source: "review_warning",
+            message: fallbackMessage,
+          });
+          try {
+            const artifactPath = await this.persistReviewOutput(jobId, task.id, {
+              schema_version: 1,
+              task_key: task.key,
+              created_at: new Date().toISOString(),
+              agent_id: agent.id,
+              retry_agent_id: retryAgentUsed?.id ?? agent.id,
+              primary_output: primaryOutput,
+              retry_output: retryOutput ?? agentOutput,
+              validation_error: validationError ?? null,
+            });
+            warnings.push(`Review output saved to ${artifactPath} for ${task.key}.`);
+          } catch (persistError) {
+            warnings.push(
+              `Failed to persist review output for ${task.key}: ${persistError instanceof Error ? persistError.message : String(persistError)}`,
+            );
+          }
+        }
+        parsed.raw = parsed.raw ?? agentOutput;
         const originalDecision = parsed.decision;
         decision = parsed.decision;
         findings.push(...(parsed.findings ?? []));
+
+        const historySupportsNoChanges =
+          (task.metadata as any)?.completed_reason === "no_changes" ||
+          historySummary.toLowerCase().includes("no_changes") ||
+          historySummary.toLowerCase().includes("no changes");
+        const summarySupportsNoChanges = summaryIndicatesNoChanges(parsed.summary);
+        const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
+        let finalDecision = parsed.decision;
+        let emptyDiffOverride = false;
+        if (diffEmpty && approveDecision && !(summarySupportsNoChanges && historySupportsNoChanges)) {
+          finalDecision = "changes_requested";
+          emptyDiffOverride = true;
+        }
+        if (finalDecision === "changes_requested" && isNonBlockingOnly(parsed.findings ?? []) && !emptyDiffOverride) {
+          finalDecision = "info_only";
+          warnings.push(
+            `Review for ${task.key} requested changes but only low/info findings were reported; downgrading to info_only.`,
+          );
+        }
 
         commentResolution = await this.applyCommentResolutions({
           task,
@@ -1819,11 +2355,9 @@ export class CodeReviewService {
           findings: parsed.findings ?? [],
           resolvedSlugs: parsed.resolvedSlugs ?? undefined,
           unresolvedSlugs: parsed.unresolvedSlugs ?? undefined,
-          decision: parsed.decision,
+          decision: finalDecision,
           existingComments: commentContext.comments,
         });
-
-        let finalDecision = parsed.decision;
         if (
           commentResolution?.open?.length &&
           (finalDecision === "approve" || finalDecision === "info_only")
@@ -1858,47 +2392,112 @@ export class CodeReviewService {
             createdAt: new Date().toISOString(),
           });
         }
+        if (emptyDiffOverride) {
+          const message = [
+            "Empty diff detected; approval requires an explicit no-changes justification",
+            "and task history indicating no changes were needed.",
+          ].join(" ");
+          const slug = createTaskCommentSlug({
+            source: "code-review",
+            message,
+            category: "review_empty_diff",
+          });
+          const body = formatTaskCommentBody({
+            slug,
+            source: "code-review",
+            message,
+            status: "open",
+            category: "review_empty_diff",
+          });
+          await this.deps.workspaceRepo.createTaskComment({
+            taskId: task.id,
+            taskRunId: taskRun.id,
+            jobId,
+            sourceCommand: "code-review",
+            authorType: "agent",
+            authorAgentId: agent.id,
+            category: "review_empty_diff",
+            slug,
+            status: "open",
+            body,
+            createdAt: new Date().toISOString(),
+          });
+          warnings.push(`Empty diff approval rejected for ${task.key}; requesting explicit no-changes justification.`);
+        }
+        const appendSyntheticFinding = (message: string, suggestedFix?: string) => {
+          const finding: ReviewFinding = {
+            type: "process",
+            severity: "info",
+            message,
+            suggestedFix,
+          };
+          if (!parsed.findings) {
+            parsed.findings = [];
+          }
+          parsed.findings.push(finding);
+          findings.push(finding);
+        };
+        if (finalDecision === "changes_requested" && (parsed.findings?.length ?? 0) === 0) {
+          if (emptyDiffOverride) {
+            appendSyntheticFinding(
+              "Empty diff lacks explicit no-changes justification; changes requested to confirm no code updates were required.",
+              "Update the review summary to state no changes were required and confirm task history reflects no_changes.",
+            );
+          } else if (commentResolution?.open?.length) {
+            appendSyntheticFinding(
+              `Unresolved comment backlog remains (${formatSlugList(commentResolution.open)}); approval requires resolving these items.`,
+              "Resolve or explicitly reopen the listed comment slugs before approving.",
+            );
+          } else {
+            finalDecision = "info_only";
+            warnings.push(
+              `Review requested changes for ${task.key} but provided no findings; downgrading to info_only.`,
+            );
+          }
+        }
         parsed.decision = finalDecision;
         decision = finalDecision;
 
-        const followups = await this.createFollowupTasksForFindings({
-          task,
-          findings: parsed.findings ?? [],
-          decision: originalDecision,
-          jobId,
-          commandRunId: commandRun.id,
-          taskRunId: taskRun.id,
-        });
-        if (followups.length) {
-          followupCreated.push(
-            ...followups.map((t) => ({
-              taskId: t.id,
-              taskKey: t.key,
-              epicId: t.epicId,
-              userStoryId: t.userStoryId,
-              generic: (t as any)?.metadata?.generic ? true : undefined,
-            })),
-          );
-          warnings.push(`Created follow-up tasks for ${task.key}: ${followups.map((t) => t.key).join(", ")}`);
+        if (allowFollowups) {
+          const followups = await this.createFollowupTasksForFindings({
+            task,
+            findings: parsed.findings ?? [],
+            decision: originalDecision,
+            jobId,
+            commandRunId: commandRun.id,
+            taskRunId: taskRun.id,
+          });
+          if (followups.length) {
+            followupCreated.push(
+              ...followups.map((t) => ({
+                taskId: t.id,
+                taskKey: t.key,
+                epicId: t.epicId,
+                userStoryId: t.userStoryId,
+                generic: (t as any)?.metadata?.generic ? true : undefined,
+              })),
+            );
+            warnings.push(`Created follow-up tasks for ${task.key}: ${followups.map((t) => t.key).join(", ")}`);
+          }
         }
 
         let taskStatusUpdate = statusBefore;
         if (!request.dryRun) {
-          if (invalidJson) {
-            await this.stateService.markBlocked(task, "review_invalid_output");
-            taskStatusUpdate = "blocked";
-          } else {
-            const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
-            if (approveDecision) {
-              await this.stateService.markReadyToQa(task);
+          const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
+          if (approveDecision) {
+            if (diffEmpty) {
+              await this.stateService.markCompleted(task, { review_no_changes: true }, statusContext);
+              taskStatusUpdate = "completed";
+            } else {
+              await this.stateService.markReadyToQa(task, undefined, statusContext);
               taskStatusUpdate = "ready_to_qa";
-            } else if (parsed.decision === "changes_requested") {
-              await this.stateService.returnToInProgress(task);
-              taskStatusUpdate = "in_progress";
-            } else if (parsed.decision === "block") {
-              await this.stateService.markBlocked(task, "review_blocked");
-              taskStatusUpdate = "blocked";
             }
+          } else if (parsed.decision === "changes_requested") {
+            await this.stateService.markChangesRequested(task, undefined, statusContext);
+            taskStatusUpdate = "changes_requested";
+          } else if (parsed.decision === "block") {
+            await this.stateService.markFailed(task, "review_blocked", statusContext);
+            taskStatusUpdate = "failed";
           }
         } else {
           await this.deps.workspaceRepo.insertTaskLog({
@@ -1928,7 +2527,7 @@ export class CodeReviewService {
           openCount: commentResolution?.open.length,
         });
 
-        await this.deps.workspaceRepo.createTaskReview({
+        const review = await this.deps.workspaceRepo.createTaskReview({
           taskId: task.id,
           jobId,
           agentId: agent.id,
@@ -1937,6 +2536,7 @@ export class CodeReviewService {
           summary: parsed.summary ?? undefined,
           findingsJson: parsed.findings ?? [],
           testRecommendationsJson: parsed.testRecommendations ?? [],
+          metadata: diffMeta,
           createdAt: new Date().toISOString(),
         });
         await this.stateService.recordReviewMetadata(task, {
@@ -1944,6 +2544,9 @@ export class CodeReviewService {
           agentId: agent.id,
           modelName: (agent as any).defaultModel ?? null,
           jobId,
+          reviewId: review.id,
+          diffEmpty,
+          changedPaths,
         });
 
         await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
@@ -1995,7 +2598,18 @@ export class CodeReviewService {
         await this.deps.jobService.updateJobStatus(jobId, "running", {
           processedItems: state?.reviewed.length ?? 0,
         });
+        emitReviewEndOnce({
+          statusLabel: "FAILED",
+          decision: "error",
+          findingsCount: findings.length,
+          tokensTotal,
+        });
         await maybeRateTask(task, taskRun.id, tokensTotal);
+        if (isAuthErrorMessage(message)) {
+          abortRemainingReason = message;
+          warnings.push(`Auth/rate limit error detected; stopping after ${task.key}. ${message}`);
+          break;
+        }
         continue;
       }
 
@@ -2006,13 +2620,39 @@ export class CodeReviewService {
         statusAfter,
         decision,
         findings,
+        error: reviewErrorCode,
         followupTasks: followupCreated,
+      });
+      const statusLabel = reviewErrorCode
+        ? "FAILED"
+        : decision === "approve" || decision === "info_only"
+          ? "APPROVED"
+          : decision === "block"
+            ? "FAILED"
+            : decision === "changes_requested"
+              ? "CHANGES_REQUESTED"
+              : "FAILED";
+      emitReviewEndOnce({
+        statusLabel,
+        decision,
+        findingsCount: findings.length,
+        tokensTotal,
       });
 
       await this.deps.jobService.updateJobStatus(jobId, "running", {
         processedItems: state?.reviewed.length ?? 0,
       });
       await maybeRateTask(task, taskRun.id, tokensTotal);
+    }
+
+    if (abortRemainingReason) {
+      await this.deps.jobService.updateJobStatus(jobId, "failed", {
+        processedItems: state?.reviewed.length ?? 0,
+        totalItems: selectedTaskIds.length,
+        errorSummary: AUTH_ERROR_REASON,
+      });
+      await this.deps.jobService.finishCommandRun(commandRun.id, "failed", abortRemainingReason);
+      return { jobId, commandRunId: commandRun.id, tasks: results, warnings };
     }
 
     await this.deps.jobService.updateJobStatus(jobId, "completed", {

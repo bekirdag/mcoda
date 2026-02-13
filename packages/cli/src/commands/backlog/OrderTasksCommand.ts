@@ -1,15 +1,17 @@
 import path from "node:path";
-import { TaskOrderingService, WorkspaceResolver } from "@mcoda/core";
+import { TaskOrderingService, WorkspaceResolver, type TaskOrderingRequest } from "@mcoda/core";
 
 interface ParsedArgs {
   workspaceRoot?: string;
   project?: string;
   epic?: string;
   status?: string[];
-  includeBlocked: boolean;
   agentName?: string;
   agentStream?: boolean;
   rateAgents: boolean;
+  inferDeps: boolean;
+  apply: boolean;
+  stageOrder?: string[];
   json: boolean;
 }
 
@@ -18,9 +20,11 @@ const usage = `mcoda order-tasks \\
   --project <PROJECT_KEY> \\
   [--epic <EPIC_KEY>] \\
   [--status <STATUS_FILTER>] \\
-  [--include-blocked] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--infer-deps] \\
+  [--apply] \\
+  [--stage-order <foundation,backend,frontend,other>] \\
   [--rate-agents] \\
   [--json]`;
 
@@ -38,13 +42,25 @@ const parseStatuses = (value?: string): string[] | undefined => {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const filtered = parts.map((s) => s.toLowerCase()).filter((s) => s !== "blocked");
+  return filtered.length ? filtered : undefined;
+};
+
+const parseStageOrder = (value?: string): string[] | undefined => {
+  if (!value) return undefined;
+  const parts = value
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
   return parts.length ? parts : undefined;
 };
 
 export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
   const parsed: ParsedArgs = {
-    includeBlocked: false,
+    agentStream: false,
     rateAgents: false,
+    inferDeps: false,
+    apply: false,
     json: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -59,6 +75,18 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg.startsWith("--rate-agents=")) {
       parsed.rateAgents = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--infer-deps=")) {
+      parsed.inferDeps = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--apply=")) {
+      parsed.apply = parseBooleanFlag(arg.split("=")[1], true);
+      continue;
+    }
+    if (arg.startsWith("--stage-order=")) {
+      parsed.stageOrder = parseStageOrder(arg.split("=")[1]);
       continue;
     }
     switch (arg) {
@@ -78,9 +106,6 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
         parsed.status = parseStatuses(argv[i + 1]);
         i += 1;
         break;
-      case "--include-blocked":
-        parsed.includeBlocked = true;
-        break;
       case "--agent":
         parsed.agentName = argv[i + 1];
         i += 1;
@@ -95,6 +120,30 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--infer-deps": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          parsed.inferDeps = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          parsed.inferDeps = true;
+        }
+        break;
+      }
+      case "--apply": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("-")) {
+          parsed.apply = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          parsed.apply = true;
+        }
+        break;
+      }
+      case "--stage-order":
+        parsed.stageOrder = parseStageOrder(argv[i + 1]);
+        i += 1;
+        break;
       case "--rate-agents": {
         const next = argv[i + 1];
         if (next && !next.startsWith("-")) {
@@ -119,8 +168,6 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
           parsed.project = arg.split("=")[1];
         } else if (arg.startsWith("--epic=")) {
           parsed.epic = arg.split("=")[1];
-        } else if (arg === "--include-blocked=true") {
-          parsed.includeBlocked = true;
         } else if (arg === "--json=true") {
           parsed.json = true;
         }
@@ -147,8 +194,6 @@ const formatImpact = (value?: { direct: number; total: number }): string => {
 
 const renderOrder = (
   ordered: Awaited<ReturnType<TaskOrderingService["orderTasks"]>>["ordered"],
-  blocked: Awaited<ReturnType<TaskOrderingService["orderTasks"]>>["blocked"],
-  includeBlocked: boolean,
   warnings: string[],
 ): void => {
   const rows = ordered.map((task) => [
@@ -159,40 +204,16 @@ const renderOrder = (
     task.epicKey,
     task.storyKey,
     formatImpact(task.dependencyImpact),
-    task.blocked ? "yes" : "",
     task.title.length > 60 ? `${task.title.slice(0, 57)}...` : task.title,
   ]);
 
   // eslint-disable-next-line no-console
   console.log(
     formatTable(
-      ["PRIORITY", "TASK", "STATUS", "SP", "EPIC", "STORY", "DEP_IMPACT", "BLOCKED", "TITLE"],
+      ["PRIORITY", "TASK", "STATUS", "SP", "EPIC", "STORY", "DEP_IMPACT", "TITLE"],
       rows,
     ),
   );
-
-  if (!includeBlocked && blocked.length > 0) {
-    // eslint-disable-next-line no-console
-    console.log("\nBlocked tasks (excluded from ordering):");
-    const blockedRows = blocked.map((task) => [
-      `${task.priority}`,
-      task.taskKey,
-      task.status,
-      task.storyPoints === null || task.storyPoints === undefined ? "-" : `${task.storyPoints}`,
-      task.epicKey,
-      task.storyKey,
-      formatImpact(task.dependencyImpact),
-      (task.blockedBy ?? []).join(", "),
-      task.title.length > 60 ? `${task.title.slice(0, 57)}...` : task.title,
-    ]);
-    // eslint-disable-next-line no-console
-    console.log(
-      formatTable(
-        ["PRIORITY", "TASK", "STATUS", "SP", "EPIC", "STORY", "DEP_IMPACT", "BLOCKED_BY", "TITLE"],
-        blockedRows,
-      ),
-    );
-  }
 
   if (warnings.length > 0) {
     // eslint-disable-next-line no-console
@@ -217,20 +238,33 @@ export class OrderTasksCommand {
       process.exitCode = 1;
       return;
     }
+    if (parsed.inferDeps && !parsed.apply) {
+      // eslint-disable-next-line no-console
+      console.error("order-tasks requires --apply when --infer-deps is set");
+      process.exitCode = 1;
+      return;
+    }
+    const validStages = new Set(["foundation", "backend", "frontend", "other"]);
+    const stageOrder = parsed.stageOrder?.filter((stage) => validStages.has(stage));
+    const resolvedStageOrder =
+      stageOrder && stageOrder.length > 0
+        ? (stageOrder as TaskOrderingRequest["stageOrder"])
+        : undefined;
     const service = await TaskOrderingService.create(workspace);
     try {
       const result = await service.orderTasks({
         projectKey: parsed.project,
         epicKey: parsed.epic,
         statusFilter: parsed.status,
-        includeBlocked: parsed.includeBlocked,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
+        inferDependencies: parsed.inferDeps,
+        stageOrder: resolvedStageOrder,
       });
       if (parsed.json) {
         const payload: Record<string, unknown> = {
-          order: parsed.includeBlocked ? result.ordered : result.ordered.filter((t) => !t.blocked),
+          order: result.ordered,
         };
         if (result.warnings.length > 0) {
           payload.warnings = result.warnings;
@@ -239,7 +273,7 @@ export class OrderTasksCommand {
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
-      renderOrder(result.ordered, result.blocked, parsed.includeBlocked, result.warnings);
+      renderOrder(result.ordered, result.warnings);
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error(`order-tasks failed: ${(error as Error).message}`);

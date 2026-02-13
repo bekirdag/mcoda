@@ -1,15 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { JobsApiClient } from "../JobsApiClient.js";
+import { PathHelper } from "@mcoda/shared";
 
 const workspace = {
   workspaceRoot: "/tmp",
   workspaceId: "ws-1",
   id: "ws-1",
   legacyWorkspaceIds: [],
-  mcodaDir: "/tmp/.mcoda",
-  workspaceDbPath: "/tmp/.mcoda/mcoda.db",
-  globalDbPath: "/tmp/.mcoda/global.db",
+  mcodaDir: PathHelper.getWorkspaceDir("/tmp"),
+  workspaceDbPath: PathHelper.getWorkspaceDbPath("/tmp"),
+  globalDbPath: PathHelper.getGlobalDbPath(),
 };
 
 test("JobsApiClient listJobs builds query parameters", { concurrency: false }, async () => {

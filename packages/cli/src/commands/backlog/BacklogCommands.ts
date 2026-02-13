@@ -1,5 +1,6 @@
 import path from "node:path";
 import { BacklogService, BacklogSummary, WorkspaceResolver } from "@mcoda/core";
+import { READY_TO_CODE_REVIEW, normalizeReviewStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -8,7 +9,12 @@ interface ParsedArgs {
   story?: string;
   assignee?: string;
   statuses?: string[];
+  statusAll?: boolean;
+  includeDone: boolean;
+  includeCancelled: boolean;
   orderDependencies: boolean;
+  view?: "summary" | "epics" | "stories" | "tasks";
+  limit?: number;
   json: boolean;
   verbose: boolean;
 }
@@ -20,21 +26,30 @@ const usage = `mcoda backlog \\
   [--story <STORY_KEY>] \\
   [--assignee <USER>] \\
   [--status <STATUS_FILTER>] \\
+  [--status all] \\
+  [--include-done] \\
+  [--include-cancelled] \\
   [--order dependencies]   # dependency-aware ordering (topological, most depended-on first) \\
+  [--view summary|epics|stories|tasks] \\
+  [--limit <N> | --top <N>] \\
   [--json] \\
   [--verbose]`;
 
 const parseStatuses = (value: string | undefined): string[] | undefined => {
   if (!value) return undefined;
-  return value
+  const parsed = value
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((s) => s.toLowerCase());
+    .map((s) => s.toLowerCase())
+    .filter((s) => s !== "blocked");
+  return normalizeReviewStatuses(parsed);
 };
 
 export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
   const args: ParsedArgs = {
+    includeDone: false,
+    includeCancelled: false,
     orderDependencies: false,
     json: false,
     verbose: false,
@@ -67,11 +82,23 @@ export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
       case "--status": {
         const value = argv[i + 1];
         if (value && !value.startsWith("-")) {
-          args.statuses = parseStatuses(value);
+          const parsedStatuses = parseStatuses(value);
+          if (parsedStatuses?.includes("all")) {
+            args.statusAll = true;
+            args.statuses = undefined;
+          } else {
+            args.statuses = parsedStatuses;
+          }
           i += 1;
         }
         break;
       }
+      case "--include-done":
+        args.includeDone = true;
+        break;
+      case "--include-cancelled":
+        args.includeCancelled = true;
+        break;
       default:
         if (arg.startsWith("--project=")) {
           args.project = arg.split("=")[1];
@@ -82,7 +109,13 @@ export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
         } else if (arg.startsWith("--assignee=")) {
           args.assignee = arg.split("=")[1];
         } else if (arg.startsWith("--status=")) {
-          args.statuses = parseStatuses(arg.split("=")[1]);
+          const parsedStatuses = parseStatuses(arg.split("=")[1]);
+          if (parsedStatuses?.includes("all")) {
+            args.statusAll = true;
+            args.statuses = undefined;
+          } else {
+            args.statuses = parsedStatuses;
+          }
         } else if (arg === "--order") {
           const value = argv[i + 1];
           if (value === "dependencies") {
@@ -91,6 +124,32 @@ export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
           }
         } else if (arg === "--order=dependencies") {
           args.orderDependencies = true;
+        } else if (arg === "--include-done") {
+          args.includeDone = true;
+        } else if (arg === "--include-cancelled") {
+          args.includeCancelled = true;
+        } else if (arg === "--view") {
+          const value = argv[i + 1];
+          if (value === "summary" || value === "epics" || value === "stories" || value === "tasks") {
+            args.view = value;
+            i += 1;
+          }
+        } else if (arg.startsWith("--view=")) {
+          const value = arg.split("=")[1];
+          if (value === "summary" || value === "epics" || value === "stories" || value === "tasks") {
+            args.view = value;
+          }
+        } else if (arg === "--limit" || arg === "--top") {
+          const value = Number(argv[i + 1]);
+          if (Number.isFinite(value) && value > 0) {
+            args.limit = Math.floor(value);
+            i += 1;
+          }
+        } else if (arg.startsWith("--limit=") || arg.startsWith("--top=")) {
+          const value = Number(arg.split("=")[1]);
+          if (Number.isFinite(value) && value > 0) {
+            args.limit = Math.floor(value);
+          }
         } else if (arg === "--json") {
           args.json = true;
         } else if (arg === "--verbose") {
@@ -105,6 +164,15 @@ export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
   }
 
   return args;
+};
+
+const resolveStatuses = (parsed: ParsedArgs): string[] | undefined => {
+  if (parsed.statusAll) return undefined;
+  if (parsed.statuses && parsed.statuses.length > 0) return parsed.statuses;
+  const active = normalizeReviewStatuses(["not_started", "in_progress", READY_TO_CODE_REVIEW, "ready_to_qa"]);
+  if (parsed.includeDone) active.push("completed");
+  if (parsed.includeCancelled) active.push("cancelled");
+  return active;
 };
 
 const pad = (value: string, width: number): string => value.padEnd(width, " ");
@@ -131,6 +199,15 @@ const formatNumber = (value: number | null | undefined): string => {
   return value.toFixed(2);
 };
 
+const renderScope = (parts: { label: string; value?: string | number }[]): void => {
+  const entries = parts
+    .filter((part) => part.value !== undefined && part.value !== "")
+    .map((part) => `${part.label}=${part.value}`);
+  if (entries.length === 0) return;
+  // eslint-disable-next-line no-console
+  console.log(`Scope: ${entries.join(", ")}`);
+};
+
 const renderSummary = (summary: BacklogSummary): void => {
   const rows = [
     ["Implementation", `${summary.totals.implementation.tasks}`, formatNumber(summary.totals.implementation.story_points)],
@@ -144,13 +221,14 @@ const renderSummary = (summary: BacklogSummary): void => {
   console.log(formatTable(["LANE", "TASKS", "SP"], rows));
 };
 
-const renderEpics = (summary: BacklogSummary): void => {
-  if (summary.epics.length === 0) {
+const renderEpics = (summary: BacklogSummary, limit?: number): void => {
+  const epics = limit ? summary.epics.slice(0, limit) : summary.epics;
+  if (epics.length === 0) {
     // eslint-disable-next-line no-console
     console.log("\nEpics: none");
     return;
   }
-  const rows = summary.epics.map((epic) => [
+  const rows = epics.map((epic) => [
     epic.epic_key,
     truncate(epic.title, 40),
     formatNumber(epic.priority),
@@ -172,14 +250,15 @@ const renderEpics = (summary: BacklogSummary): void => {
   );
 };
 
-const renderStories = (summary: BacklogSummary): void => {
+const renderStories = (summary: BacklogSummary, limit?: number): void => {
   const stories = summary.epics.flatMap((epic) => epic.stories);
-  if (stories.length === 0) {
+  const limited = limit ? stories.slice(0, limit) : stories;
+  if (limited.length === 0) {
     // eslint-disable-next-line no-console
     console.log("\nStories: none");
     return;
   }
-  const rows = stories.map((story) => [
+  const rows = limited.map((story) => [
     story.user_story_key,
     story.epic_key,
     truncate(story.title, 40),
@@ -203,39 +282,62 @@ const renderStories = (summary: BacklogSummary): void => {
   );
 };
 
-const renderTasks = (summary: BacklogSummary): void => {
-  if (summary.tasks.length === 0) {
+const renderTasks = (summary: BacklogSummary, options: { limit?: number; verbose?: boolean }): void => {
+  const tasks = options.limit ? summary.tasks.slice(0, options.limit) : summary.tasks;
+  if (tasks.length === 0) {
     // eslint-disable-next-line no-console
     console.log("\nTasks: none");
     return;
   }
-  const rows = summary.tasks.map((task) => [
-    task.task_key,
-    task.epic_key,
-    task.user_story_key,
-    task.status,
-    formatNumber(task.story_points),
-    formatNumber(task.priority),
-    task.assignee ?? "-",
-    truncate(task.dependency_keys.join(", "), 80),
-    truncate(task.description, 100),
-  ]);
+  const rows = tasks.map((task) => {
+    const base = [
+      task.task_key,
+      task.epic_key,
+      task.user_story_key,
+      truncate(task.title, 40),
+      task.status,
+      formatNumber(task.story_points),
+      formatNumber(task.priority),
+      task.assignee ?? "-",
+      truncate(task.dependency_keys.join(", "), 80),
+    ];
+    if (options.verbose) {
+      base.push(truncate(task.description, 100));
+    }
+    return base;
+  });
+  const columns = ["TASK_KEY", "EPIC_KEY", "STORY_KEY", "TITLE", "STATUS", "SP", "PRIORITY", "ASSIGNEE", "DEPENDS_ON"];
+  if (options.verbose) {
+    columns.push("DESC");
+  }
   // eslint-disable-next-line no-console
   console.log("\nTasks:");
   // eslint-disable-next-line no-console
   console.log(
     formatTable(
-      ["TASK_KEY", "EPIC_KEY", "STORY_KEY", "STATUS", "SP", "PRIORITY", "ASSIGNEE", "DEPENDS_ON", "DESC"],
-      rows,
+      columns,
+      rows as string[][],
     ),
   );
 };
 
-const renderBacklog = (summary: BacklogSummary): void => {
-  renderSummary(summary);
-  renderEpics(summary);
-  renderStories(summary);
-  renderTasks(summary);
+const renderBacklog = (
+  summary: BacklogSummary,
+  options: { view?: ParsedArgs["view"]; limit?: number; verbose?: boolean },
+): void => {
+  const shouldRender = (section: ParsedArgs["view"]) => !options.view || options.view === section;
+  if (shouldRender("summary")) {
+    renderSummary(summary);
+  }
+  if (shouldRender("epics")) {
+    renderEpics(summary, options.limit);
+  }
+  if (shouldRender("stories")) {
+    renderStories(summary, options.limit);
+  }
+  if (shouldRender("tasks")) {
+    renderTasks(summary, { limit: options.limit, verbose: options.verbose });
+  }
 };
 
 export class BacklogCommands {
@@ -249,22 +351,38 @@ export class BacklogCommands {
     let service: BacklogService | undefined;
     try {
       service = await BacklogService.create(workspace);
-      const { summary, warnings } = await service.getBacklog({
+      const statuses = resolveStatuses(parsed);
+      const { summary, warnings, meta } = await service.getBacklog({
         projectKey: parsed.project,
         epicKey: parsed.epic,
         storyKey: parsed.story,
         assignee: parsed.assignee,
-        statuses: parsed.statuses,
+        statuses,
         orderByDependencies: parsed.orderDependencies,
         verbose: parsed.verbose,
       });
 
       if (parsed.json) {
         // eslint-disable-next-line no-console
-        console.log(JSON.stringify(summary, null, 2));
+        console.log(JSON.stringify({ summary, warnings, meta }, null, 2));
       } else {
-        renderBacklog(summary);
-        if (parsed.verbose && warnings.length > 0) {
+        const statusLabel = parsed.statusAll
+          ? "all"
+          : statuses?.length
+            ? statuses.join(",")
+            : "all";
+        renderScope([
+          { label: "project", value: parsed.project ?? "all" },
+          { label: "epic", value: parsed.epic },
+          { label: "story", value: parsed.story },
+          { label: "assignee", value: parsed.assignee },
+          { label: "status", value: statusLabel },
+          { label: "order", value: parsed.orderDependencies ? "dependencies" : "default" },
+          { label: "view", value: parsed.view ?? "all" },
+          { label: "limit", value: parsed.limit },
+        ]);
+        renderBacklog(summary, { view: parsed.view, limit: parsed.limit, verbose: parsed.verbose });
+        if (warnings.length > 0) {
           // eslint-disable-next-line no-console
           console.error("\nWarnings:");
           for (const warning of warnings) {

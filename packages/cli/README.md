@@ -15,14 +15,14 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 
 ## Docdex & QA
 - mcoda depends on the `docdex` CLI for doc search and context stitching.
-- Run `docdex setup` to install Playwright and at least one browser for `qa-tasks`.
+- Run `docdex setup` (or `docdexd browser install`) to install the headless Chromium browser used for web enrichment.
 - Docdex stores state under `~/.docdex`; mcoda does not create repo-local `.docdex` folders.
 - If `~/.docdex/agents.md` exists, it is prepended to every agent run.
 
 ## Workspace layout
-- `.mcoda/config.json` for defaults (docdex URL, branch metadata, telemetry preferences).
-- `.mcoda/mcoda.db` for backlog, jobs, and telemetry.
-- `.mcoda/docs/` for generated artifacts.
+- `~/.mcoda/workspaces/<fingerprint>/config.json` for defaults (docdex URL, branch metadata, telemetry preferences).
+- `~/.mcoda/workspaces/<fingerprint>/mcoda.db` for backlog, jobs, and telemetry.
+- `~/.mcoda/workspaces/<fingerprint>/docs/` for generated artifacts.
 
 ## Common commands
 - Docs: `mcoda docs pdr generate`, `mcoda docs sds generate`

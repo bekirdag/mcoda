@@ -1,0 +1,3 @@
+# SDS
+## Architecture
+Core design.

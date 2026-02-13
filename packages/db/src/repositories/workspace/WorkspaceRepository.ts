@@ -5,7 +5,7 @@ import { Connection } from "../../sqlite/connection.js";
 import { WorkspaceMigrations } from "../../migrations/workspace/WorkspaceMigrations.js";
 
 export type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "partial";
-export type CommandStatus = "running" | "succeeded" | "failed";
+export type CommandStatus = "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface ProjectRow {
@@ -78,6 +78,63 @@ export interface TaskRow extends TaskInsert {
   updatedAt: string;
 }
 
+const DOD_HEADER = /(definition of done|dod)\b/i;
+const SECTION_HEADER = /^(?:\*+\s*)?(?:\*\*)?\s*(objective|context|inputs|implementation plan|testing|dependencies|risks|references|related documentation|acceptance criteria)\b/i;
+
+const extractTaskDodCriteria = (description?: string | null): string[] => {
+  if (!description) return [];
+  const lines = description.split(/\r?\n/);
+  let startIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (DOD_HEADER.test(line)) {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex === -1) return [];
+  const results: string[] = [];
+  const addInline = (line: string) => {
+    const parts = line.split(":");
+    if (parts.length < 2) return;
+    const tail = parts.slice(1).join(":").trim();
+    if (!tail) return;
+    tail
+      .split(/\s*;\s*/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => results.push(item));
+  };
+  const isBullet = (line: string) => /^[-*]\s+/.test(line);
+  const isHeading = (line: string) =>
+    SECTION_HEADER.test(line) ||
+    (/^\*+\s*\*\*.+\*\*\s*:?\s*$/.test(line) && !DOD_HEADER.test(line)) ||
+    (/^[A-Z][A-Za-z0-9 &/]{2,}:\s*$/.test(line) && !DOD_HEADER.test(line));
+
+  const headerLine = lines[startIndex].trim();
+  addInline(headerLine);
+  for (let i = startIndex + 1; i < lines.length; i += 1) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    if (!line) {
+      if (results.length) break;
+      continue;
+    }
+    if (!isBullet(line) && isHeading(line)) break;
+    if (isBullet(line)) {
+      results.push(line.replace(/^[-*]\s+/, "").trim());
+      continue;
+    }
+    if (results.length) {
+      results[results.length - 1] = `${results[results.length - 1]} ${line}`.trim();
+    } else {
+      results.push(line);
+    }
+  }
+  return Array.from(new Set(results.filter(Boolean)));
+};
+
 export interface TaskDependencyInsert {
   taskId: string;
   dependsOnTaskId: string;
@@ -99,6 +156,8 @@ export interface JobInsert {
   totalItems?: number | null;
   processedItems?: number | null;
   lastCheckpoint?: string | null;
+  agentId?: string | null;
+  agentIds?: string[] | null;
 }
 
 export interface JobRow extends JobInsert {
@@ -113,6 +172,7 @@ export interface CommandRunInsert {
   workspaceId: string;
   commandName: string;
   jobId?: string | null;
+  agentId?: string | null;
   taskIds?: string[];
   gitBranch?: string | null;
   gitBaseBranch?: string | null;
@@ -147,6 +207,18 @@ export interface TaskRunInsert {
 
 export interface TaskRunRow extends TaskRunInsert {
   id: string;
+}
+
+export interface TaskStatusEventInsert {
+  taskId: string;
+  fromStatus?: string | null;
+  toStatus: string;
+  timestamp: string;
+  commandName?: string | null;
+  jobId?: string | null;
+  taskRunId?: string | null;
+  agentId?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface TaskLockRow {
@@ -194,11 +266,22 @@ export interface TokenUsageInsert {
   projectId?: string | null;
   epicId?: string | null;
   userStoryId?: string | null;
+  commandName?: string | null;
+  action?: string | null;
+  invocationKind?: string | null;
+  provider?: string | null;
+  currency?: string | null;
   tokensPrompt?: number | null;
   tokensCompletion?: number | null;
   tokensTotal?: number | null;
+  tokensCached?: number | null;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
   costEstimate?: number | null;
   durationSeconds?: number | null;
+  durationMs?: number | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
   timestamp: string;
   metadata?: Record<string, unknown>;
 }
@@ -659,6 +742,24 @@ export class WorkspaceRepository {
     await this.db.run(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`, ...params);
   }
 
+  async recordTaskStatusEvent(entry: TaskStatusEventInsert): Promise<void> {
+    const id = randomUUID();
+    await this.db.run(
+      `INSERT INTO task_status_events (id, task_id, from_status, to_status, timestamp, command_name, job_id, task_run_id, agent_id, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      entry.taskId,
+      entry.fromStatus ?? null,
+      entry.toStatus,
+      entry.timestamp,
+      entry.commandName ?? null,
+      entry.jobId ?? null,
+      entry.taskRunId ?? null,
+      entry.agentId ?? null,
+      entry.metadata ? JSON.stringify(entry.metadata) : null,
+    );
+  }
+
   async getTaskById(taskId: string): Promise<TaskRow | undefined> {
     const row = await this.db.get(
       `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority, assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json, openapi_version_at_creation, created_at, updated_at
@@ -804,8 +905,8 @@ export class WorkspaceRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO jobs (id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.workspaceId,
       record.type,
@@ -815,6 +916,8 @@ export class WorkspaceRepository {
       record.totalItems ?? null,
       record.processedItems ?? null,
       record.lastCheckpoint ?? null,
+      record.agentId ?? null,
+      record.agentIds ? JSON.stringify(record.agentIds) : null,
       now,
       now,
     );
@@ -830,7 +933,7 @@ export class WorkspaceRepository {
 
   async listJobs(): Promise<JobRow[]> {
     const rows = await this.db.all(
-      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at, completed_at, error_summary
        FROM jobs ORDER BY updated_at DESC`,
     );
     return rows.map((row: any) => ({
@@ -843,6 +946,8 @@ export class WorkspaceRepository {
       totalItems: row.total_items ?? undefined,
       processedItems: row.processed_items ?? undefined,
       lastCheckpoint: row.last_checkpoint ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      agentIds: row.agent_ids_json ? JSON.parse(row.agent_ids_json) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at ?? undefined,
@@ -852,7 +957,7 @@ export class WorkspaceRepository {
 
   async getJob(id: string): Promise<JobRow | undefined> {
     const row = await this.db.get(
-      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, created_at, updated_at, completed_at, error_summary
+      `SELECT id, workspace_id, type, state, command_name, payload_json, total_items, processed_items, last_checkpoint, agent_id, agent_ids_json, created_at, updated_at, completed_at, error_summary
        FROM jobs WHERE id = ?`,
       id,
     );
@@ -867,6 +972,8 @@ export class WorkspaceRepository {
       totalItems: row.total_items ?? undefined,
       processedItems: row.processed_items ?? undefined,
       lastCheckpoint: row.last_checkpoint ?? undefined,
+      agentId: row.agent_id ?? undefined,
+      agentIds: row.agent_ids_json ? JSON.parse(row.agent_ids_json) : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at ?? undefined,
@@ -901,6 +1008,14 @@ export class WorkspaceRepository {
       fields.push("last_checkpoint = ?");
       params.push(update.lastCheckpoint ?? null);
     }
+    if (update.agentId !== undefined) {
+      fields.push("agent_id = ?");
+      params.push(update.agentId ?? null);
+    }
+    if (update.agentIds !== undefined) {
+      fields.push("agent_ids_json = ?");
+      params.push(update.agentIds ? JSON.stringify(update.agentIds) : null);
+    }
     if (update.errorSummary !== undefined) {
       fields.push("error_summary = ?");
       params.push(update.errorSummary ?? null);
@@ -922,12 +1037,13 @@ export class WorkspaceRepository {
   async createCommandRun(record: CommandRunInsert): Promise<CommandRunRow> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO command_runs (id, workspace_id, command_name, job_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO command_runs (id, workspace_id, command_name, job_id, agent_id, task_ids_json, git_branch, git_base_branch, started_at, status, sp_processed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       record.workspaceId,
       record.commandName,
       record.jobId ?? null,
+      record.agentId ?? null,
       record.taskIds ? JSON.stringify(record.taskIds) : null,
       record.gitBranch ?? null,
       record.gitBaseBranch ?? null,
@@ -940,6 +1056,27 @@ export class WorkspaceRepository {
 
   async setCommandRunJobId(id: string, jobId: string): Promise<void> {
     await this.db.run(`UPDATE command_runs SET job_id = ? WHERE id = ?`, jobId, id);
+  }
+
+  async setCommandRunAgentId(id: string, agentId: string): Promise<void> {
+    await this.db.run(`UPDATE command_runs SET agent_id = COALESCE(agent_id, ?) WHERE id = ?`, agentId, id);
+  }
+
+  async setJobAgentIds(id: string, agentId: string): Promise<void> {
+    const row = await this.db.get(`SELECT agent_id, agent_ids_json FROM jobs WHERE id = ?`, id);
+    if (!row) return;
+    let existing: string[] = [];
+    if (row.agent_ids_json) {
+      try {
+        const parsed = JSON.parse(row.agent_ids_json);
+        if (Array.isArray(parsed)) existing = parsed;
+      } catch {
+        existing = [];
+      }
+    }
+    const merged = Array.from(new Set([...existing, agentId]));
+    const primary = row.agent_id ?? merged[0] ?? agentId;
+    await this.db.run(`UPDATE jobs SET agent_id = ?, agent_ids_json = ? WHERE id = ?`, primary, JSON.stringify(merged), id);
   }
 
   async completeCommandRun(
@@ -1017,40 +1154,44 @@ export class WorkspaceRepository {
       ...taskIds,
     );
 
-    return rows.map((row) => ({
-      id: row.task_id,
-      projectId: row.project_id,
-      epicId: row.epic_id,
-      userStoryId: row.story_id,
-      key: row.task_key,
-      title: row.task_title,
-      description: row.task_description ?? "",
-      type: row.task_type ?? undefined,
-      status: row.task_status,
-      storyPoints: row.task_story_points ?? undefined,
-      priority: row.task_priority ?? undefined,
-      assignedAgentId: row.task_assigned_agent_id ?? undefined,
-      assigneeHuman: row.task_assignee_human ?? undefined,
-      vcsBranch: row.task_vcs_branch ?? undefined,
-      vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
-      vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
-      metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
-      openapiVersionAtCreation: undefined,
-      createdAt: row.task_created_at,
-      updatedAt: row.task_updated_at,
-      epicKey: row.epic_key,
-      storyKey: row.story_key,
-      epicTitle: row.epic_title ?? undefined,
-      epicDescription: row.epic_description ?? undefined,
-      storyTitle: row.story_title ?? undefined,
-      storyDescription: row.story_description ?? undefined,
-      acceptanceCriteria: row.story_acceptance
+    return rows.map((row) => {
+      const taskDod = extractTaskDodCriteria(row.task_description ?? "");
+      const storyAcceptance = row.story_acceptance
         ? (row.story_acceptance as string)
             .split(/\r?\n/)
             .map((s) => s.trim())
             .filter(Boolean)
-        : undefined,
-    }));
+        : undefined;
+      return {
+        id: row.task_id,
+        projectId: row.project_id,
+        epicId: row.epic_id,
+        userStoryId: row.story_id,
+        key: row.task_key,
+        title: row.task_title,
+        description: row.task_description ?? "",
+        type: row.task_type ?? undefined,
+        status: row.task_status,
+        storyPoints: row.task_story_points ?? undefined,
+        priority: row.task_priority ?? undefined,
+        assignedAgentId: row.task_assigned_agent_id ?? undefined,
+        assigneeHuman: row.task_assignee_human ?? undefined,
+        vcsBranch: row.task_vcs_branch ?? undefined,
+        vcsBaseBranch: row.task_vcs_base_branch ?? undefined,
+        vcsLastCommitSha: row.task_vcs_last_commit_sha ?? undefined,
+        metadata: row.task_metadata ? JSON.parse(row.task_metadata) : undefined,
+        openapiVersionAtCreation: undefined,
+        createdAt: row.task_created_at,
+        updatedAt: row.task_updated_at,
+        epicKey: row.epic_key,
+        storyKey: row.story_key,
+        epicTitle: row.epic_title ?? undefined,
+        epicDescription: row.epic_description ?? undefined,
+        storyTitle: row.story_title ?? undefined,
+        storyDescription: row.story_description ?? undefined,
+        acceptanceCriteria: taskDod.length ? taskDod : storyAcceptance,
+      };
+    });
   }
 
   async createTaskRun(record: TaskRunInsert): Promise<TaskRunRow> {
@@ -1103,6 +1244,21 @@ export class WorkspaceRepository {
       );
       if (!rows.length) return [];
       await this.db.run(`DELETE FROM task_locks WHERE expires_at < ?`, nowIso);
+      return rows.map((row) => row.task_key ?? row.task_id);
+    });
+  }
+
+  async releaseTaskLocksByJob(jobId: string): Promise<string[]> {
+    return this.withTransaction(async () => {
+      const rows = await this.db.all<{ task_key?: string | null; task_id: string }[]>(
+        `SELECT t.key as task_key, l.task_id as task_id
+         FROM task_locks l
+         LEFT JOIN tasks t ON t.id = l.task_id
+         WHERE l.job_id = ?`,
+        jobId,
+      );
+      if (!rows.length) return [];
+      await this.db.run(`DELETE FROM task_locks WHERE job_id = ?`, jobId);
       return rows.map((row) => row.task_key ?? row.task_id);
     });
   }
@@ -1518,8 +1674,37 @@ export class WorkspaceRepository {
   async recordTokenUsage(entry: TokenUsageInsert): Promise<void> {
     const id = randomUUID();
     await this.db.run(
-      `INSERT INTO token_usage (id, workspace_id, agent_id, model_name, job_id, command_run_id, task_run_id, task_id, project_id, epic_id, user_story_id, tokens_prompt, tokens_completion, tokens_total, cost_estimate, duration_seconds, timestamp, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO token_usage (
+        id,
+        workspace_id,
+        agent_id,
+        model_name,
+        job_id,
+        command_run_id,
+        task_run_id,
+        task_id,
+        project_id,
+        epic_id,
+        user_story_id,
+        command_name,
+        action,
+        invocation_kind,
+        provider,
+        currency,
+        tokens_prompt,
+        tokens_completion,
+        tokens_total,
+        tokens_cached,
+        tokens_cache_read,
+        tokens_cache_write,
+        cost_estimate,
+        duration_seconds,
+        duration_ms,
+        started_at,
+        finished_at,
+        timestamp,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       entry.workspaceId,
       entry.agentId ?? null,
@@ -1531,11 +1716,22 @@ export class WorkspaceRepository {
       entry.projectId ?? null,
       entry.epicId ?? null,
       entry.userStoryId ?? null,
+      entry.commandName ?? null,
+      entry.action ?? null,
+      entry.invocationKind ?? null,
+      entry.provider ?? null,
+      entry.currency ?? null,
       entry.tokensPrompt ?? null,
       entry.tokensCompletion ?? null,
       entry.tokensTotal ?? null,
+      entry.tokensCached ?? null,
+      entry.tokensCacheRead ?? null,
+      entry.tokensCacheWrite ?? null,
       entry.costEstimate ?? null,
       entry.durationSeconds ?? null,
+      entry.durationMs ?? null,
+      entry.startedAt ?? null,
+      entry.finishedAt ?? null,
       entry.timestamp,
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     );

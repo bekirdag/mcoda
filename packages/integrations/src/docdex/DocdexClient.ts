@@ -83,6 +83,7 @@ export class DocdexClient {
   private resolvedBaseUrl?: string;
   private repoId?: string;
   private initializing = false;
+  private disabledReason?: string;
 
   constructor(
     private options: {
@@ -93,6 +94,14 @@ export class DocdexClient {
     } = {},
   ) {
     this.repoId = options.repoId;
+  }
+
+  disable(reason?: string): void {
+    this.disabledReason = reason?.trim() || "docdex unavailable";
+  }
+
+  isAvailable(): boolean {
+    return !this.disabledReason;
   }
 
   private normalizePath(inputPath?: string): string | undefined {
@@ -107,7 +116,29 @@ export class DocdexClient {
     return absolute;
   }
 
+  private resolveLocalDocPath(docPath: string): { absolute: string; relative?: string } | undefined {
+    if (!this.options.workspaceRoot) return undefined;
+    const root = path.resolve(this.options.workspaceRoot);
+    const absolute = path.resolve(path.isAbsolute(docPath) ? docPath : path.join(root, docPath));
+    if (!absolute.startsWith(root)) return undefined;
+    const relative = path.relative(root, absolute);
+    return { absolute, relative: relative || undefined };
+  }
+
+  private async loadLocalDoc(docPath: string, docType?: string): Promise<DocdexDocument | undefined> {
+    const resolved = this.resolveLocalDocPath(docPath);
+    if (!resolved) return undefined;
+    try {
+      const content = await fs.readFile(resolved.absolute, "utf8");
+      const inferred = docType || inferDocType(resolved.relative ?? docPath);
+      return this.buildLocalDoc(inferred, resolved.relative ?? docPath, content);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async resolveBaseUrl(): Promise<string | undefined> {
+    if (this.disabledReason) return undefined;
     if (this.options.baseUrl !== undefined) {
       const trimmed = this.options.baseUrl.trim();
       return trimmed ? normalizeBaseUrl(trimmed) : undefined;
@@ -116,6 +147,22 @@ export class DocdexClient {
     const resolved = await resolveDocdexBaseUrl({ cwd: this.options.workspaceRoot });
     this.resolvedBaseUrl = resolved ? normalizeBaseUrl(resolved) : undefined;
     return this.resolvedBaseUrl;
+  }
+
+  private buildMissingRepoMessage(): string {
+    const root = this.options.workspaceRoot ? path.resolve(this.options.workspaceRoot) : "unknown workspace";
+    return `Docdex repo scope missing for ${root}. Ensure docdexd is running and initialized for this repo, or set MCODA_DOCDEX_URL and MCODA_DOCDEX_REPO_ID.`;
+  }
+
+  async ensureRepoScope(): Promise<void> {
+    const baseUrl = await this.resolveBaseUrl();
+    if (!baseUrl) return;
+    if (!this.repoId) {
+      await this.ensureRepoInitialized(baseUrl, true);
+    }
+    if (!this.repoId) {
+      throw new Error(this.buildMissingRepoMessage());
+    }
   }
 
   private async ensureRepoInitialized(baseUrl: string, force = false): Promise<void> {
@@ -145,16 +192,26 @@ export class DocdexClient {
   }
 
   private async fetchRemote(pathname: string, init?: RequestInit): Promise<Response> {
+    if (this.disabledReason) {
+      throw new Error(`Docdex unavailable: ${this.disabledReason}`);
+    }
     const baseUrl = await this.resolveBaseUrl();
     if (!baseUrl) {
       throw new Error("Docdex baseUrl not configured. Run docdex setup or set MCODA_DOCDEX_URL.");
     }
-    await this.ensureRepoInitialized(baseUrl);
+    await this.ensureRepoScope();
     const url = new URL(pathname, baseUrl);
+    if (this.repoId && !url.searchParams.has("repo_id")) {
+      url.searchParams.set("repo_id", this.repoId);
+    }
+    if (this.options.workspaceRoot && !url.searchParams.has("repo_root")) {
+      url.searchParams.set("repo_root", path.resolve(this.options.workspaceRoot));
+    }
     const buildHeaders = () => {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;
       if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
+      if (this.options.workspaceRoot) headers["x-docdex-repo-root"] = path.resolve(this.options.workspaceRoot);
       return { ...headers, ...(init?.headers as any) };
     };
     const response = await fetch(url, { ...init, headers: buildHeaders() });
@@ -272,8 +329,17 @@ export class DocdexClient {
   async findDocumentByPath(docPath: string, docType?: string): Promise<DocdexDocument | undefined> {
     const normalized = this.normalizePath(docPath);
     const query = normalized ?? docPath;
-    const docs = await this.search({ query, docType });
-    if (!docs.length) return undefined;
+    let docs: DocdexDocument[] = [];
+    try {
+      docs = await this.search({ query, docType });
+    } catch (error) {
+      const local = await this.loadLocalDoc(docPath, docType);
+      if (local) return local;
+      throw error;
+    }
+    if (!docs.length) {
+      return await this.loadLocalDoc(docPath, docType);
+    }
     if (!normalized) return docs[0];
     return docs.find((doc) => doc.path === normalized) ?? docs[0];
   }
@@ -359,5 +425,47 @@ export class DocdexClient {
     } catch {
       return this.buildLocalDoc(inferredType, normalizedPath, content, metadata);
     }
+  }
+
+  private async callMcp(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+    const payload = {
+      jsonrpc: "2.0",
+      id: randomUUID(),
+      method: "tools/call",
+      params: {
+        name: toolName,
+        arguments: args,
+      },
+    };
+    const response = await this.fetchRemote("/v1/mcp", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const raw = (await response.json()) as { result?: any; error?: { message?: string } };
+    if (raw.error) {
+      throw new Error(raw.error.message ?? "Docdex MCP call failed");
+    }
+    const result = raw.result;
+    if (result && typeof result === "object" && result.structuredContent !== undefined) {
+      return result.structuredContent;
+    }
+    return result;
+  }
+
+  async memorySave(text: string): Promise<void> {
+    if (!text.trim()) return;
+    await this.callMcp("docdex_memory_save", {
+      project_root: this.options.workspaceRoot,
+      text,
+    });
+  }
+
+  async savePreference(agentId: string, category: string, content: string): Promise<void> {
+    if (!agentId.trim() || !category.trim() || !content.trim()) return;
+    await this.callMcp("docdex_save_preference", {
+      agent_id: agentId,
+      category,
+      content,
+    });
   }
 }

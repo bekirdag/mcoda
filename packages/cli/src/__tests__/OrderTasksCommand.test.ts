@@ -5,11 +5,35 @@ import path from "node:path";
 import test from "node:test";
 import { Connection, WorkspaceMigrations, WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
+import { TaskOrderingService } from "@mcoda/core";
 import { parseOrderTasksArgs, OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
+
+const withTempHome = async <T>(fn: () => Promise<T>) => {
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-test-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  try {
+    return await fn();
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
+    await fs.rm(tempHome, { recursive: true, force: true });
+  }
+};
 
 const setupWorkspace = async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-order-"));
-  const mcodaDir = path.join(dir, ".mcoda");
+  const mcodaDir = PathHelper.getWorkspaceDir(dir);
   await fs.mkdir(mcodaDir, { recursive: true });
   const dbPath = PathHelper.getWorkspaceDbPath(dir);
   const connection = await Connection.open(dbPath);
@@ -102,11 +126,14 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
     "E1",
     "--status",
     "not_started,in_progress",
-    "--include-blocked",
     "--agent",
     "codex",
     "--agent-stream",
     "false",
+    "--infer-deps",
+    "--apply",
+    "--stage-order",
+    "foundation,backend,frontend,other",
     "--rate-agents",
     "--json",
   ]);
@@ -114,39 +141,110 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
   assert.equal(parsed.project, "CLI");
   assert.equal(parsed.epic, "E1");
   assert.deepEqual(parsed.status, ["not_started", "in_progress"]);
-  assert.equal(parsed.includeBlocked, true);
   assert.equal(parsed.agentName, "codex");
   assert.equal(parsed.agentStream, false);
   assert.equal(parsed.rateAgents, true);
+  assert.equal(parsed.inferDeps, true);
+  assert.equal(parsed.apply, true);
+  assert.deepEqual(parsed.stageOrder, ["foundation", "backend", "frontend", "other"]);
   assert.equal(parsed.json, true);
 });
 
-test("order-tasks command prints ordering and records telemetry", async () => {
-  const ctx = await setupWorkspace();
-  const logs: string[] = [];
-  const origLog = console.log;
-  console.log = (...args: unknown[]) => logs.push(args.join(" "));
-  try {
-    await OrderTasksCommand.run([
-      "--workspace-root",
-      ctx.dir,
-      "--project",
-      ctx.project.key,
-      "--status",
-      "not_started,completed",
-    ]);
-  } finally {
-    console.log = origLog;
-  }
+test("order-tasks requires --apply when infer-deps is set", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    const errors: string[] = [];
+    const origError = console.error;
+    const originalExitCode = process.exitCode;
+    console.error = (...args: unknown[]) => errors.push(args.join(" "));
+    process.exitCode = undefined;
+    try {
+      await OrderTasksCommand.run([
+        "--workspace-root",
+        ctx.dir,
+        "--project",
+        ctx.project.key,
+        "--infer-deps",
+      ]);
+      assert.equal(process.exitCode, 1);
+      assert.ok(errors.some((line) => line.includes("--apply")));
+    } finally {
+      console.error = origError;
+      process.exitCode = originalExitCode;
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
 
-  const output = logs.join("\n");
-  assert.ok(output.includes("CLI-01-T01"));
-  assert.ok(output.includes("CLI-01-T02"));
+test("order-tasks passes inference flags to core service", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    const logs: string[] = [];
+    const origLog = console.log;
+    const originalCreate = TaskOrderingService.create;
+    let captured: any;
+    console.log = (...args: unknown[]) => logs.push(args.join(" "));
+    (TaskOrderingService as any).create = async () => ({
+      orderTasks: async (request: unknown) => {
+        captured = request;
+        return {
+          project: { id: "proj", key: "CLI" },
+          ordered: [],
+          warnings: [],
+        };
+      },
+      close: async () => {},
+    });
+    try {
+      await OrderTasksCommand.run([
+        "--workspace-root",
+        ctx.dir,
+        "--project",
+        ctx.project.key,
+        "--infer-deps",
+        "--apply",
+        "--stage-order",
+        "foundation,backend",
+        "--json",
+      ]);
+      assert.equal(captured?.inferDependencies, true);
+      assert.deepEqual(captured?.stageOrder, ["foundation", "backend"]);
+    } finally {
+      console.log = origLog;
+      (TaskOrderingService as any).create = originalCreate;
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
 
-  const commandRuns = await ctx.repo
-    .getDb()
-    .all<{ command_name: string }[]>("SELECT command_name FROM command_runs WHERE command_name = 'order-tasks'");
-  assert.ok(commandRuns.length >= 1);
+test("order-tasks command prints ordering and records telemetry", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.join(" "));
+    try {
+      await OrderTasksCommand.run([
+        "--workspace-root",
+        ctx.dir,
+        "--project",
+        ctx.project.key,
+        "--status",
+        "not_started,completed",
+      ]);
+    } finally {
+      console.log = origLog;
+    }
 
-  await cleanupWorkspace(ctx.dir, ctx.repo);
+    const output = logs.join("\n");
+    assert.ok(output.includes("CLI-01-T01"));
+    assert.ok(output.includes("CLI-01-T02"));
+
+    const commandRuns = await ctx.repo
+      .getDb()
+      .all<{ command_name: string }[]>("SELECT command_name FROM command_runs WHERE command_name = 'order-tasks'");
+    assert.ok(commandRuns.length >= 1);
+
+    await cleanupWorkspace(ctx.dir, ctx.repo);
+  });
 });

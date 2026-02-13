@@ -25,8 +25,16 @@ describe("RefineTasksService", () => {
   let service: RefineTasksService;
   let storyId: string;
   let epicId: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-refine-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-refine-"));
     workspace = await WorkspaceResolver.resolveWorkspace({ cwd: workspaceDir, explicitWorkspace: workspaceDir });
     service = await RefineTasksService.create(workspace);
@@ -67,9 +75,14 @@ describe("RefineTasksService", () => {
   afterEach(async () => {
     await service?.close();
     await fs.rm(workspaceDir, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalProfile;
   });
 
-  it("applies plan-in operations without invoking an agent", async () => {
+  it("applies plan-in operations without invoking an agent", { concurrency: false }, async () => {
     const result = await service.refineTasks({
       workspace,
       projectKey: "demo",
@@ -84,11 +97,77 @@ describe("RefineTasksService", () => {
     assert.equal(result.applied, true);
     assert.ok(result.updatedTasks?.includes(taskKey));
 
-    const row = await repo.getDb().get<{ story_points: number }>(`SELECT story_points FROM tasks WHERE key = ?`, taskKey);
+    const row = await repo.getDb().get<{ story_points: number; priority: number | null }>(
+      `SELECT story_points, priority FROM tasks WHERE key = ?`,
+      taskKey,
+    );
     assert.equal(row?.story_points, 5);
+    assert.equal(row?.priority, 1);
   });
 
-  it("updates rollups on estimate changes", async () => {
+  it("recomputes stage metadata when title changes", { concurrency: false }, async () => {
+    const taskRow = await repo.getTaskByKey(taskKey);
+    assert.ok(taskRow);
+    await repo.updateTask(taskRow!.id, { metadata: { stage: "frontend", foundation: false } });
+
+    const plan: RefineTasksPlan = {
+      strategy: "auto",
+      operations: [
+        {
+          op: "update_task",
+          taskKey,
+          updates: { title: "Implement API endpoint" },
+        },
+      ],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-stage.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+    await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "auto",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    const row = await repo.getDb().get<{ metadata_json: string }>(`SELECT metadata_json FROM tasks WHERE key = ?`, taskKey);
+    const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+    assert.equal(metadata.stage, "backend");
+    assert.equal(metadata.foundation, false);
+  });
+
+  it("keeps stage metadata when only estimates change", { concurrency: false }, async () => {
+    const taskRow = await repo.getTaskByKey(taskKey);
+    assert.ok(taskRow);
+    await repo.updateTask(taskRow!.id, { metadata: { stage: "frontend", foundation: false } });
+
+    const plan: RefineTasksPlan = {
+      strategy: "estimate",
+      operations: [{ op: "update_estimate", taskKey, storyPoints: 8 }],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-estimate.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+    await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "estimate",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    const row = await repo.getDb().get<{ metadata_json: string }>(`SELECT metadata_json FROM tasks WHERE key = ?`, taskKey);
+    const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+    assert.equal(metadata.stage, "frontend");
+    assert.equal(metadata.foundation, false);
+  });
+
+  it("updates rollups on estimate changes", { concurrency: false }, async () => {
     const plan: RefineTasksPlan = {
       strategy: "estimate",
       operations: [{ op: "update_estimate", taskKey, storyPoints: 3 }],
@@ -117,9 +196,9 @@ describe("RefineTasksService", () => {
     assert.equal(epicRow?.total, 3);
   });
 
-  it("skips operations outside status filter", async () => {
-    // Mark original task as blocked and create another eligible task to keep selection non-empty.
-    await repo.getDb().run(`UPDATE tasks SET status = 'blocked' WHERE key = ?`, taskKey);
+  it("skips operations outside status filter", { concurrency: false }, async () => {
+    // Mark original task as failed and create another eligible task to keep selection non-empty.
+    await repo.getDb().run(`UPDATE tasks SET status = 'failed' WHERE key = ?`, taskKey);
     const [eligible] = await repo.insertTasks([
       {
         projectId: (await repo.getProjectByKey("demo"))!.id,
@@ -159,7 +238,49 @@ describe("RefineTasksService", () => {
     assert.equal(okRow?.key, eligible.key);
   });
 
-  it("rejects plan-in operations targeting unknown tasks", async () => {
+  it("falls back to an available agent when routing defaults are missing", { concurrency: false }, async () => {
+    const fallbackAgent = {
+      id: "agent-fallback",
+      slug: "agent-fallback",
+      adapter: "local-model",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => {
+        throw new Error("No routing defaults found for command refine-tasks");
+      },
+    };
+    (service as any).repo = {
+      listAgents: async () => [fallbackAgent],
+      listAgentHealthSummary: async () => [{ agentId: fallbackAgent.id, status: "healthy" }],
+      getAgentCapabilities: async () => ["plan"],
+    };
+    (service as any).agentService = {
+      invoke: async () => ({
+        output: JSON.stringify({
+          operations: [{ op: "update_estimate", taskKey, storyPoints: 3 }],
+        }),
+      }),
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "estimate",
+      agentStream: false,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.ok(result.plan.operations.length >= 1);
+  });
+
+  it("rejects plan-in operations targeting unknown tasks", { concurrency: false }, async () => {
     const plan: RefineTasksPlan = {
       strategy: "estimate",
       operations: [{ op: "update_estimate", taskKey: "does-not-exist", storyPoints: 2 }],
@@ -178,7 +299,7 @@ describe("RefineTasksService", () => {
     assert.ok(result.plan.warnings?.some((w) => w.includes("not in selection")));
   });
 
-  it("invokes agent rating when enabled", async () => {
+  it("invokes agent rating when enabled", { concurrency: false }, async () => {
     await service.close();
     repo = await WorkspaceRepository.create(workspaceDir);
     const ratingService = new StubRatingService();

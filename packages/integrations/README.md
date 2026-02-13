@@ -27,7 +27,7 @@ const docs = await client.search({ docType: "rfp", query: "payments" });
 
 ## Notes
 - Docdex state lives under `~/.docdex` (managed by the `docdex` CLI); mcoda does not create repo-local `.docdex`.
-- Chromium QA expects Playwright browsers provisioned via `docdex setup`.
+- Chromium QA expects Docdex-installed Chromium (`docdex setup` or `MCODA_QA_CHROMIUM_PATH`).
 - Some integrations call external services; configure base URLs and tokens as needed.
 - Primarily used by the mcoda CLI; APIs may evolve.
 

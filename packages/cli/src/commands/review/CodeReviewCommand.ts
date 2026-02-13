@@ -1,5 +1,6 @@
 import path from "node:path";
 import { CodeReviewService, WorkspaceResolver } from "@mcoda/core";
+import { REVIEW_ALLOWED_STATUSES, filterTaskStatuses, normalizeReviewStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -15,6 +16,7 @@ interface ParsedArgs {
   agentName?: string;
   agentStream?: boolean;
   rateAgents: boolean;
+  createFollowupTasks: boolean;
   json: boolean;
 }
 
@@ -22,17 +24,18 @@ const usage = `mcoda code-review \\
   [--workspace-root <PATH>] \\
   [--project <PROJECT_KEY>] \\
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
-  [--status ready_to_review] \\
+  [--status ready_to_code_review] \\
   [--base <BRANCH>] \\
   [--dry-run] \\
   [--resume <JOB_ID>] \\
   [--limit N] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--create-followup-tasks <true|false>] \\
   [--rate-agents] \\
   [--json]
 
-Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks for critical findings, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under .mcoda/jobs/<job_id>/review/. Default status filter: ready_to_review. JSON output: { job, tasks, errors, warnings }.`;
+Runs AI code review on task branches. Side effects: writes task_comments/task_reviews, may spawn follow-up tasks when --create-followup-tasks=true, updates task state (unless --dry-run), records jobs/command_runs/task_runs/token_usage, saves diffs/context under ~/.mcoda/workspaces/<fingerprint>/jobs/<job_id>/review/. Default status filter: ready_to_code_review. JSON output: { job, tasks, errors, warnings }.`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -64,6 +67,7 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
   let rateAgents = false;
+  let createFollowupTasks = false;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -86,6 +90,11 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--rate-agents=")) {
       const [, raw] = arg.split("=", 2);
       rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--create-followup-tasks=")) {
+      const [, raw] = arg.split("=", 2);
+      createFollowupTasks = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -156,6 +165,16 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--create-followup-tasks": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          createFollowupTasks = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          createFollowupTasks = true;
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -170,9 +189,13 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     }
   }
 
-  if (statusFilter.length === 0) {
-    statusFilter.push("ready_to_review");
-  }
+  const { filtered } = filterTaskStatuses(
+    statusFilter.length ? statusFilter : undefined,
+    REVIEW_ALLOWED_STATUSES,
+    REVIEW_ALLOWED_STATUSES,
+  );
+  const normalized = normalizeReviewStatuses(filtered);
+  statusFilter.splice(0, statusFilter.length, ...normalized);
 
   return {
     workspaceRoot,
@@ -186,8 +209,9 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     resumeJobId,
     limit: Number.isFinite(limit) ? limit : undefined,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
+    createFollowupTasks,
     json,
   };
 };
@@ -198,6 +222,7 @@ export class CodeReviewCommand {
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
+      noRepoWrites: true,
     });
     const service = await CodeReviewService.create(workspace);
     try {
@@ -208,6 +233,7 @@ export class CodeReviewCommand {
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
         statusFilter: parsed.statusFilter,
+        ignoreStatusFilter: parsed.taskKeys.length > 0 ? true : undefined,
         baseRef: parsed.baseRef,
         dryRun: parsed.dryRun,
         resumeJobId: parsed.resumeJobId,
@@ -215,6 +241,7 @@ export class CodeReviewCommand {
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
+        createFollowupTasks: parsed.createFollowupTasks,
       });
 
       if (parsed.json) {

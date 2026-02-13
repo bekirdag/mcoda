@@ -7,6 +7,7 @@
 ## Unit tests
 - tests/unit/path_helper.test.js
 - tests/unit/crypto_helper.test.js
+- tests/unit/node_resolution.test.js
 
 ## Component tests
 - tests/component/cli_version.test.js

@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient } from "@mcoda/integrations";
+import { READY_TO_CODE_REVIEW } from "@mcoda/shared";
 import { GlobalRepository, TaskDependencyInsert, TaskInsert, TaskRow, WorkspaceRepository } from "@mcoda/db";
 import {
   RefineOperation,
@@ -11,11 +12,15 @@ import {
   RefineTasksResult,
   SplitTaskOp,
   UpdateTaskOp,
+  getCommandRequiredCapabilities,
+  type Agent,
 } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
+import { classifyTask } from "../backlog/TaskOrderingHeuristics.js";
+import { TaskOrderingService } from "../backlog/TaskOrderingService.js";
 import { createTaskKeyGenerator } from "./KeyHelpers.js";
 
 interface RefineTasksOptions extends RefineTasksRequest {
@@ -60,7 +65,11 @@ interface StoryGroup {
 }
 
 const DEFAULT_STRATEGY: RefineStrategy = "auto";
-const FORBIDDEN_TARGET_STATUSES = new Set(["ready_to_review", "ready_to_qa", "completed"]);
+const FORBIDDEN_TARGET_STATUSES = new Set([READY_TO_CODE_REVIEW, "ready_to_qa", "completed"]);
+const normalizeCreateStatus = (status?: string): string => {
+  if (!status) return "not_started";
+  return status.toLowerCase();
+};
 const DEFAULT_MAX_TASKS = 250;
 const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
 
@@ -247,9 +256,12 @@ export class RefineTasksService {
     const repo = await GlobalRepository.create();
     const agentService = new AgentService(repo);
     const routingService = await RoutingService.create();
+    const docdexRepoId =
+      workspace.config?.docdexRepoId ?? process.env.MCODA_DOCDEX_REPO_ID ?? process.env.DOCDEX_REPO_ID;
     const docdex = new DocdexClient({
       workspaceRoot: workspace.workspaceRoot,
       baseUrl: workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL,
+      repoId: docdexRepoId,
     });
     const workspaceRepo = await WorkspaceRepository.create(workspace.workspaceRoot);
     const jobService = new JobService(workspace, workspaceRepo);
@@ -281,13 +293,83 @@ export class RefineTasksService {
     await tryClose(this.docdex);
   }
 
-  private async resolveAgent(agentName?: string) {
-    const resolved = await this.routingService.resolveAgentForCommand({
-      workspace: this.workspace,
-      commandName: "refine-tasks",
-      overrideAgentSlug: agentName,
+  private async seedPriorities(projectKey: string): Promise<void> {
+    const ordering = await TaskOrderingService.create(this.workspace, { recordTelemetry: false });
+    try {
+      await ordering.orderTasks({
+        projectKey,
+      });
+    } finally {
+      await ordering.close();
+    }
+  }
+
+  private async resolveAgent(agentName?: string): Promise<Agent> {
+    try {
+      const resolved = await this.routingService.resolveAgentForCommand({
+        workspace: this.workspace,
+        commandName: "refine-tasks",
+        overrideAgentSlug: agentName,
+      });
+      return resolved.agent;
+    } catch (error) {
+      const message = (error as Error).message ?? "";
+      if (!/No routing defaults/i.test(message)) {
+        throw error;
+      }
+      const requiredCaps = getCommandRequiredCapabilities("refine-tasks");
+      const fallback = await this.selectFallbackAgent(requiredCaps);
+      if (fallback) return fallback;
+      throw new Error(
+        `No routing defaults found for command refine-tasks. ` +
+          `Set a default agent (mcoda agent set-default <NAME> --workspace <PATH>) ` +
+          `or pass --agent <NAME> with ${requiredCaps.length ? `capabilities: ${requiredCaps.join(", ")}` : "required capabilities"}.`,
+      );
+    }
+  }
+
+  private async selectFallbackAgent(requiredCaps: string[]): Promise<Agent | undefined> {
+    const agents = await this.repo.listAgents();
+    if (!agents.length) return undefined;
+    let healthRows: { agentId: string; status?: string }[] = [];
+    try {
+      healthRows = await this.repo.listAgentHealthSummary();
+    } catch {
+      healthRows = [];
+    }
+    const healthById = new Map(healthRows.map((row) => [row.agentId, row]));
+    const candidates: Array<{
+      agent: Agent;
+      rating: number;
+      reasoning: number;
+      cost: number;
+      hasCaps: boolean;
+      slug: string;
+    }> = [];
+    for (const agent of agents) {
+      const health = healthById.get(agent.id);
+      if (health?.status === "unreachable") continue;
+      const caps = await this.repo.getAgentCapabilities(agent.id);
+      const hasCaps = requiredCaps.every((cap) => caps.includes(cap));
+      candidates.push({
+        agent,
+        rating: Number(agent.rating ?? 0),
+        reasoning: Number(agent.reasoningRating ?? 0),
+        cost: Number(agent.costPerMillion ?? 0),
+        hasCaps,
+        slug: agent.slug ?? agent.id,
+      });
+    }
+    if (!candidates.length) return undefined;
+    const eligible = candidates.filter((c) => c.hasCaps);
+    const pool = eligible.length ? eligible : candidates;
+    pool.sort((a, b) => {
+      if (b.rating !== a.rating) return b.rating - a.rating;
+      if (b.reasoning !== a.reasoning) return b.reasoning - a.reasoning;
+      if (a.cost !== b.cost) return a.cost - b.cost;
+      return a.slug.localeCompare(b.slug);
     });
-    return resolved.agent;
+    return pool[0]?.agent;
   }
 
   private ensureRatingService(): AgentRatingService {
@@ -613,6 +695,7 @@ export class RefineTasksService {
     const updates = (seed?.updates as Record<string, unknown>) ?? (seed?.fields as Record<string, unknown>) ?? {};
     const epic = await ensureEpic();
     const story = await ensureStory(epic.id);
+    const status = normalizeCreateStatus(updates.status as string | undefined);
 
     const [task] = await this.workspaceRepo.insertTasks(
       [
@@ -624,7 +707,7 @@ export class RefineTasksService {
           title: (updates.title as string | undefined) ?? `Task ${taskKey}`,
           description: (updates.description as string | undefined) ?? "",
           type: (updates.type as string | undefined) ?? "feature",
-          status: (updates.status as string | undefined) ?? "not_started",
+          status,
           storyPoints: (updates.storyPoints as number | undefined) ?? null,
           priority: (updates.priority as number | undefined) ?? null,
           metadata: (updates.metadata as Record<string, unknown> | undefined) ?? undefined,
@@ -649,7 +732,7 @@ export class RefineTasksService {
     const taskList = group.tasks.map((t) => formatTaskSummary(t)).join("\n");
     const constraints = [
       "- Immutable: project_id, epic_id, user_story_id, task keys.",
-      "- Allowed edits: title, description, acceptanceCriteria, metadata/labels, type, priority, storyPoints, status (but NOT ready_to_review/qa/completed).",
+      "- Allowed edits: title, description, acceptanceCriteria, metadata/labels, type, priority, storyPoints, status (but NOT ready_to_code_review/qa/completed).",
       "- Splits: children stay under same story; keep parent unless keepParent=false; child dependsOn must reference existing tasks or siblings.",
       "- Merges: target and sources must be in same story; prefer cancelling redundant sources (status=cancelled) and preserve useful details in target updates.",
       "- Dependencies: maintain DAG; do not introduce cycles or cross-story edges.",
@@ -797,6 +880,24 @@ export class RefineTasksService {
     return { ...(existing ?? {}), ...updates };
   }
 
+  private applyStageMetadata(
+    metadata: Record<string, unknown> | undefined,
+    content: { title: string; description?: string | null; type?: string | null },
+    shouldUpdate: boolean,
+  ): Record<string, unknown> | undefined {
+    if (!shouldUpdate) return metadata;
+    const classification = classifyTask({
+      title: content.title,
+      description: content.description ?? undefined,
+      type: content.type ?? undefined,
+    });
+    return {
+      ...(metadata ?? {}),
+      stage: classification.stage,
+      foundation: classification.foundation,
+    };
+  }
+
   private validateOperation(group: StoryGroup, op: RefineOperation): { valid: boolean; reason?: string } {
     const allowedOps = new Set(["update_task", "split_task", "merge_tasks", "update_estimate"]);
     if (!op || typeof (op as any).op !== "string" || !allowedOps.has((op as any).op)) {
@@ -901,6 +1002,24 @@ export class RefineTasksService {
     return false;
   }
 
+  private hasDependencyPath(graph: Map<string, Set<string>>, fromKey: string, toKey: string): boolean {
+    if (fromKey === toKey) return true;
+    const visited = new Set<string>();
+    const stack = [fromKey];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      if (current === toKey) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const neighbors = graph.get(current);
+      if (!neighbors) continue;
+      for (const next of neighbors) {
+        if (!visited.has(next)) stack.push(next);
+      }
+    }
+    return false;
+  }
+
   private async applyOperations(
     projectId: string,
     jobId: string,
@@ -918,8 +1037,7 @@ export class RefineTasksService {
     await this.workspaceRepo.withTransaction(async () => {
       let stage = "start";
       const newTasks: TaskInsert[] = [];
-      const pendingDeps: { childKey: string; dependsOnId: string; relationType: string }[] = [];
-      const dependencyEdges: Array<{ from: string; to: string }> = [];
+      const pendingDeps: { childKey: string; dependsOnId: string; dependsOnKey: string; relationType: string }[] = [];
 
       try {
         stage = "load:storyKeys";
@@ -936,7 +1054,18 @@ export class RefineTasksService {
             const target = taskByKey.get(op.taskKey);
             if (!target) continue;
             const before = { ...target };
-            const metadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+            const mergedMetadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+            const contentUpdated =
+              op.updates.title !== undefined || op.updates.description !== undefined || op.updates.type !== undefined;
+            const metadata = this.applyStageMetadata(
+              mergedMetadata,
+              {
+                title: op.updates.title ?? target.title,
+                description: op.updates.description ?? target.description ?? null,
+                type: op.updates.type ?? target.type ?? null,
+              },
+              contentUpdated,
+            );
             const beforeSp = target.storyPoints ?? 0;
             const afterSp = op.updates.storyPoints ?? target.storyPoints ?? null;
             storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
@@ -963,13 +1092,27 @@ export class RefineTasksService {
             if (!target) continue;
             if (op.parentUpdates) {
               const before = { ...target };
+              const mergedMetadata = this.mergeMetadata(target.metadata, op.parentUpdates.metadata);
+              const contentUpdated =
+                op.parentUpdates.title !== undefined ||
+                op.parentUpdates.description !== undefined ||
+                op.parentUpdates.type !== undefined;
+              const metadata = this.applyStageMetadata(
+                mergedMetadata,
+                {
+                  title: op.parentUpdates.title ?? target.title,
+                  description: op.parentUpdates.description ?? target.description ?? null,
+                  type: op.parentUpdates.type ?? target.type ?? null,
+                },
+                contentUpdated,
+              );
               await this.workspaceRepo.updateTask(target.id, {
                 title: op.parentUpdates.title ?? target.title,
                 description: op.parentUpdates.description ?? target.description ?? null,
                 type: op.parentUpdates.type ?? target.type ?? null,
                 storyPoints: op.parentUpdates.storyPoints ?? target.storyPoints ?? null,
                 priority: op.parentUpdates.priority ?? target.priority ?? null,
-                metadata: this.mergeMetadata(target.metadata, op.parentUpdates.metadata),
+                metadata,
               });
               updated.push(target.key);
               await this.workspaceRepo.insertTaskRevision({
@@ -981,7 +1124,7 @@ export class RefineTasksService {
                   ...before,
                   ...op.parentUpdates,
                   storyPoints: op.parentUpdates.storyPoints ?? before.storyPoints,
-                  metadata: this.mergeMetadata(before.metadata, op.parentUpdates.metadata),
+                  metadata,
                 },
                 createdAt: new Date().toISOString(),
               });
@@ -992,6 +1135,13 @@ export class RefineTasksService {
               if (childSp) {
                 storyPointsDelta += childSp;
               }
+              const childMetadata = this.mergeMetadata({}, child.metadata);
+              const childContent = {
+                title: child.title,
+                description: child.description ?? target.description ?? "",
+                type: child.type ?? target.type ?? "feature",
+              };
+              const resolvedChildMetadata = this.applyStageMetadata(childMetadata, childContent, true);
               const childInsert: TaskInsert = {
                 projectId,
                 epicId: target.epicId,
@@ -1003,7 +1153,7 @@ export class RefineTasksService {
                 status: "not_started",
                 storyPoints: childSp,
                 priority: child.priority ?? target.priority ?? null,
-                metadata: this.mergeMetadata({}, child.metadata),
+                metadata: resolvedChildMetadata,
                 assignedAgentId: target.assignedAgentId ?? null,
                 assigneeHuman: target.assigneeHuman ?? null,
                 vcsBranch: null,
@@ -1015,11 +1165,15 @@ export class RefineTasksService {
               const dependsOn = child.dependsOn ?? [];
               for (const depKey of dependsOn) {
                 const depTask = taskByKey.get(depKey);
-              if (depTask) {
-                pendingDeps.push({ childKey, dependsOnId: depTask.id, relationType: "blocks" });
-                dependencyEdges.push({ from: childKey, to: depTask.key });
+                if (depTask) {
+                  pendingDeps.push({
+                    childKey,
+                    dependsOnId: depTask.id,
+                    dependsOnKey: depTask.key,
+                    relationType: "blocks",
+                  });
+                }
               }
-            }
               taskByKey.set(childKey, {
                 ...childInsert,
                 id: "",
@@ -1036,13 +1190,25 @@ export class RefineTasksService {
             if (!target) continue;
             if (op.updates) {
               const before = { ...target };
+              const mergedMetadata = this.mergeMetadata(target.metadata, op.updates.metadata);
+              const contentUpdated =
+                op.updates.title !== undefined || op.updates.description !== undefined || op.updates.type !== undefined;
+              const metadata = this.applyStageMetadata(
+                mergedMetadata,
+                {
+                  title: op.updates.title ?? target.title,
+                  description: op.updates.description ?? target.description ?? null,
+                  type: op.updates.type ?? target.type ?? null,
+                },
+                contentUpdated,
+              );
               await this.workspaceRepo.updateTask(target.id, {
                 title: op.updates.title ?? target.title,
                 description: op.updates.description ?? target.description ?? null,
                 type: op.updates.type ?? target.type ?? null,
                 storyPoints: op.updates.storyPoints ?? target.storyPoints ?? null,
                 priority: op.updates.priority ?? target.priority ?? null,
-                metadata: this.mergeMetadata(target.metadata, op.updates.metadata),
+                metadata,
               });
               updated.push(target.key);
               await this.workspaceRepo.insertTaskRevision({
@@ -1054,7 +1220,7 @@ export class RefineTasksService {
                   ...before,
                   ...op.updates,
                   storyPoints: op.updates.storyPoints ?? before.storyPoints,
-                  metadata: this.mergeMetadata(before.metadata, op.updates.metadata),
+                  metadata,
                 },
                 createdAt: new Date().toISOString(),
               });
@@ -1084,10 +1250,21 @@ export class RefineTasksService {
             const beforeSp = target.storyPoints ?? 0;
             const afterSp = op.storyPoints ?? target.storyPoints ?? null;
             storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
+            const contentUpdated = op.type !== undefined;
+            const metadata = this.applyStageMetadata(
+              target.metadata,
+              {
+                title: target.title,
+                description: target.description ?? null,
+                type: op.type ?? target.type ?? null,
+              },
+              contentUpdated,
+            );
             await this.workspaceRepo.updateTask(target.id, {
               storyPoints: afterSp,
               type: op.type ?? target.type ?? null,
               priority: op.priority ?? target.priority ?? null,
+              metadata: contentUpdated ? metadata : undefined,
             });
             updated.push(target.key);
             await this.workspaceRepo.insertTaskRevision({
@@ -1095,9 +1272,28 @@ export class RefineTasksService {
               jobId,
               commandRunId,
               snapshotBefore: { ...target },
-              snapshotAfter: { ...target, storyPoints: afterSp, type: op.type ?? target.type ?? null, priority: op.priority ?? target.priority ?? null },
+              snapshotAfter: {
+                ...target,
+                storyPoints: afterSp,
+                type: op.type ?? target.type ?? null,
+                priority: op.priority ?? target.priority ?? null,
+                metadata: contentUpdated ? metadata : target.metadata,
+              },
               createdAt: new Date().toISOString(),
             });
+          }
+        }
+
+        const dependencyGraph = new Map<string, Set<string>>();
+        const addEdge = (from: string, to: string) => {
+          if (!from || !to) return;
+          const edges = dependencyGraph.get(from) ?? new Set<string>();
+          edges.add(to);
+          dependencyGraph.set(from, edges);
+        };
+        for (const task of group.tasks) {
+          for (const dep of task.dependencies) {
+            addEdge(task.key, dep);
           }
         }
 
@@ -1114,7 +1310,28 @@ export class RefineTasksService {
             }
           }
           const deps: TaskDependencyInsert[] = [];
+          const allowedDeps: typeof pendingDeps = [];
+          const skippedDeps: Array<{ childKey: string; dependsOnKey: string }> = [];
           for (const dep of pendingDeps) {
+            if (!dep.dependsOnKey) continue;
+            if (this.hasDependencyPath(dependencyGraph, dep.dependsOnKey, dep.childKey)) {
+              skippedDeps.push({ childKey: dep.childKey, dependsOnKey: dep.dependsOnKey });
+              continue;
+            }
+            addEdge(dep.childKey, dep.dependsOnKey);
+            allowedDeps.push(dep);
+          }
+          if (skippedDeps.length > 0) {
+            const sample = skippedDeps
+              .slice(0, 5)
+              .map((dep) => `${dep.childKey}->${dep.dependsOnKey}`)
+              .join(", ");
+            warnings.push(
+              `Skipped ${skippedDeps.length} refine dependencies that would create cycles.` +
+                (sample ? ` Sample: ${sample}` : ""),
+            );
+          }
+          for (const dep of allowedDeps) {
             const childId = idByKey.get(dep.childKey);
             if (childId) {
               deps.push({ taskId: childId, dependsOnTaskId: dep.dependsOnId, relationType: dep.relationType });
@@ -1128,12 +1345,11 @@ export class RefineTasksService {
 
         // cycle detection on current + new dependencies (by key)
         const edgeSet: Array<{ from: string; to: string }> = [];
-        for (const task of group.tasks) {
-          for (const dep of task.dependencies) {
-            edgeSet.push({ from: task.key, to: dep });
+        for (const [from, deps] of dependencyGraph.entries()) {
+          for (const dep of deps) {
+            edgeSet.push({ from, to: dep });
           }
         }
-        edgeSet.push(...dependencyEdges);
         const hasCycle = this.detectCycle(edgeSet);
         if (hasCycle) {
           throw new Error("Dependency cycle detected after refinement; aborting apply.");
@@ -1281,7 +1497,13 @@ export class RefineTasksService {
       tokensTotal: promptTokens + completionTokens,
       durationSeconds,
       timestamp: new Date().toISOString(),
-      metadata: { command: "refine-tasks", action: "agent_refine", ...(metadata ?? {}) },
+      metadata: {
+        command: "refine-tasks",
+        action: "agent_refine",
+        phase: "agent_refine",
+        attempt: 1,
+        ...(metadata ?? {}),
+      },
     });
     return { raw: output, promptTokens, completionTokens, agentId: agent.id };
   }
@@ -1559,8 +1781,7 @@ export class RefineTasksService {
       };
 
       const defaultPlanPath = path.join(
-        this.workspace.workspaceRoot,
-        ".mcoda",
+        this.workspace.mcodaDir,
         "tasks",
         options.projectKey,
         "refinements",
@@ -1668,6 +1889,8 @@ export class RefineTasksService {
         cancelled.push(...x);
         storyPointsDelta += delta;
       }
+
+      await this.seedPriorities(options.projectKey);
 
       await this.jobService.updateJobStatus(job.id, "completed", {
         payload: {

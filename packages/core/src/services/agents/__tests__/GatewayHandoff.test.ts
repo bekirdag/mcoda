@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   GATEWAY_HANDOFF_ENV_PATH,
+  buildGatewayHandoffDocdexUsage,
   buildGatewayHandoffContent,
   withGatewayHandoff,
   writeGatewayHandoffFile,
@@ -26,7 +27,7 @@ const sampleResult = {
     complexity: 3,
     discipline: "backend",
     filesLikelyTouched: ["src/file.ts"],
-    filesToCreate: [],
+    filesToCreate: ["src/new.ts"],
     assumptions: ["Assume"],
     risks: ["Risk"],
     docdexNotes: ["Docdex note"],
@@ -38,21 +39,85 @@ const sampleResult = {
 test("buildGatewayHandoffContent renders core sections", () => {
   const content = buildGatewayHandoffContent(sampleResult as any);
   assert.ok(content.includes("# Gateway Handoff"));
+  assert.ok(!content.includes("## Task Context"));
   assert.ok(content.includes("## Summary"));
   assert.ok(content.includes("## Current State"));
   assert.ok(content.includes("## Todo"));
   assert.ok(content.includes("## Plan"));
   assert.ok(content.includes("## Files Likely Touched"));
+  assert.ok(content.includes("- src/file.ts"));
+  assert.ok(content.includes("## Files To Create"));
+  assert.ok(content.includes("- src/new.ts"));
+});
+
+test("buildGatewayHandoffContent includes task context when tasks are present", () => {
+  const content = buildGatewayHandoffContent({
+    ...sampleResult,
+    tasks: [
+      {
+        key: "TASK-1",
+        title: "Test Task",
+        description: "Task description",
+        acceptanceCriteria: ["Do thing A", "Do thing B"],
+        dependencies: ["TASK-0"],
+      },
+    ],
+  } as any);
+  assert.ok(content.includes("## Task Context"));
+  assert.ok(content.includes("- TASK-1: Test Task"));
+  assert.ok(content.includes("Description: Task description"));
+  assert.ok(content.includes("Acceptance: Do thing A | Do thing B"));
+  assert.ok(content.includes("Dependencies: TASK-0"));
+});
+
+test("buildGatewayHandoffContent includes QA and learning context when provided", () => {
+  const content = buildGatewayHandoffContent(sampleResult as any, {
+    qaFailureSummary: "QA fix_required: failing test tests/api.test.ts",
+    learningSummary: "User reverted previous solution because endpoint path was incorrect.",
+  });
+  assert.ok(content.includes("## QA Failure Summary"));
+  assert.ok(content.includes("failing test tests/api.test.ts"));
+  assert.ok(content.includes("## Revert Learning"));
+  assert.ok(content.includes("endpoint path was incorrect"));
+});
+
+test("buildGatewayHandoffDocdexUsage uses unified guidance", () => {
+  const guidance = buildGatewayHandoffDocdexUsage();
+  assert.ok(guidance.includes("Docdex context is injected by mcoda; do not run docdexd directly."));
+  assert.ok(guidance.includes("--repo <workspaceRoot>"));
+  assert.ok(guidance.includes("DOCDEX_REPO=<workspaceRoot>"));
+});
+
+test("buildGatewayHandoffContent includes docdex guidance once", () => {
+  const content = buildGatewayHandoffContent(sampleResult as any);
+  const marker = "Docdex context is injected by mcoda; do not run docdexd directly.";
+  assert.equal(content.split(marker).length - 1, 1);
 });
 
 test("writeGatewayHandoffFile writes content and returns path", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-handoff-"));
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-handoff-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
   try {
     const handoffPath = await writeGatewayHandoffFile(dir, "run-1", "content");
     const onDisk = await fs.readFile(handoffPath, "utf8");
     assert.equal(onDisk, "content");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(tempHome, { recursive: true, force: true });
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
   }
 });
 

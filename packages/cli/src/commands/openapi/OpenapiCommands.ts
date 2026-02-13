@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createRequire } from "node:module";
-import { OpenApiService, WorkspaceResolver } from "@mcoda/core";
+import { OpenApiJobError, OpenApiService, WorkspaceResolver } from "@mcoda/core";
 
 const usage =
   "mcoda openapi-from-docs [--workspace-root <PATH>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--force] [--dry-run] [--validate-only] [--no-telemetry]";
@@ -101,7 +101,7 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
   return {
     workspaceRoot,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     force,
     dryRun,
@@ -120,6 +120,25 @@ const readCliVersion = (): string => {
   } catch {
     return "0.0.0";
   }
+};
+
+export const formatOpenapiErrorOutput = (error: unknown): string[] => {
+  if (error instanceof OpenApiJobError) {
+    const jobLabel = error.jobId ? ` ${error.jobId}` : "";
+    const lines: string[] = [`ERROR: ${error.message || `OpenAPI job${jobLabel} failed.`}`];
+    if (error.code === "timeout") {
+      lines.push("Hint: set MCODA_OPENAPI_TIMEOUT_SECONDS to extend the timeout.");
+    }
+    if (error.code === "cancelled") {
+      lines.push("Hint: rerun the command if the cancellation was accidental.");
+    }
+    if (error.jobId) {
+      lines.push(`Resume: mcoda job resume ${error.jobId}`);
+    }
+    return lines;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return [`ERROR: ${message}`];
 };
 
 export class OpenapiCommands {
@@ -159,9 +178,17 @@ export class OpenapiCommands {
         // eslint-disable-next-line no-console
         console.log("Dry run: spec not written to disk.");
       }
+      if (result.adminOutputPath) {
+        // eslint-disable-next-line no-console
+        console.log(`Admin Output: ${result.adminOutputPath}`);
+      }
       if (result.docdexId) {
         // eslint-disable-next-line no-console
         console.log(`Docdex ID: ${result.docdexId}`);
+      }
+      if (result.adminDocdexId) {
+        // eslint-disable-next-line no-console
+        console.log(`Admin Docdex ID: ${result.adminDocdexId}`);
       }
       if (result.warnings.length) {
         const banner = result.warnings.map((w) => `! ${w}`).join("\n");
@@ -173,11 +200,19 @@ export class OpenapiCommands {
         console.log("\n--- Generated OpenAPI ---\n");
         // eslint-disable-next-line no-console
         console.log(result.spec);
+        if (result.adminSpec) {
+          // eslint-disable-next-line no-console
+          console.log("\n--- Generated Admin OpenAPI ---\n");
+          // eslint-disable-next-line no-console
+          console.log(result.adminSpec);
+        }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      // eslint-disable-next-line no-console
-      console.error(`ERROR: ${message}`);
+      const lines = formatOpenapiErrorOutput(error);
+      for (const line of lines) {
+        // eslint-disable-next-line no-console
+        console.error(line);
+      }
       process.exitCode = 1;
     } finally {
       await service.close();

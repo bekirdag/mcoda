@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Agent, RoutingPreview } from "@mcoda/shared";
+import { Agent, RoutingPreview, PathHelper } from "@mcoda/shared";
 import { RoutingService } from "../RoutingService.js";
 
 class StubAgentService {
@@ -110,9 +110,9 @@ const workspace = {
   workspaceId: "ws-1",
   id: "ws-1",
   workspaceRoot: "/tmp/ws-1",
-  workspaceDbPath: "/tmp/ws-1/.mcoda/mcoda.db",
-  globalDbPath: "/tmp/global/mcoda.db",
-  mcodaDir: "/tmp/ws-1/.mcoda",
+  workspaceDbPath: PathHelper.getWorkspaceDbPath("/tmp/ws-1"),
+  globalDbPath: PathHelper.getGlobalDbPath(),
+  mcodaDir: PathHelper.getWorkspaceDir("/tmp/ws-1"),
   legacyWorkspaceIds: [],
 };
 
@@ -178,6 +178,30 @@ test("falls back when workspace default lacks required capabilities", async () =
   assert.equal(resolved.source, "global_default");
 });
 
+test("honors extra required capabilities when resolving docgen agents", async () => {
+  const agents = new StubAgentService();
+  const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a-global", agent("a-global", "global"));
+  routingApi.agents.set("a-workspace", agent("a-workspace", "workspace"));
+  agents.register(agent("a-global", "global"));
+  agents.register(agent("a-workspace", "workspace"));
+  routingApi.defaults.set("__GLOBAL__", new Map([["pdr", "a-global"]]));
+  routingApi.defaults.set(workspace.workspaceId, new Map([["pdr", "a-workspace"]]));
+  agents.capabilities.set("a-global", ["doc_generation", "docdex_query"]);
+  agents.capabilities.set("a-workspace", ["docdex_query"]);
+
+  const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
+  const resolved = await service.resolveAgentForCommand({
+    workspace: workspace as any,
+    commandName: "pdr",
+    requiredCapabilities: ["doc_generation"],
+  });
+
+  assert.equal(resolved.agentId, "a-global");
+  assert.equal(resolved.source, "global_default");
+  assert.ok(resolved.requiredCapabilities.includes("doc_generation"));
+});
+
 test("skips unhealthy or incapable agents and falls back", async () => {
   const agents = new StubAgentService();
   const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
@@ -199,6 +223,27 @@ test("skips unhealthy or incapable agents and falls back", async () => {
   assert.equal(resolved.agentId, "a1");
   assert.equal(resolved.source, "global_default");
   assert.equal(resolved.healthStatus, "healthy");
+});
+
+test("falls back when override lacks required capabilities", async () => {
+  const agents = new StubAgentService();
+  const routingApi = new StubRoutingApi((id) => agents.getCapabilities(id));
+  routingApi.agents.set("a-global", agent("a-global", "global"));
+  routingApi.agents.set("a-override", agent("a-override", "override"));
+  agents.register(agent("a-global", "global"));
+  agents.register(agent("a-override", "override"));
+  routingApi.defaults.set("__GLOBAL__", new Map([["work-on-tasks", "a-global"]]));
+  agents.capabilities.set("a-global", ["code_write"]);
+  agents.capabilities.set("a-override", []);
+  const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
+
+  const resolved = await service.resolveAgentForCommand({
+    workspace: workspace as any,
+    commandName: "work-on-tasks",
+    overrideAgentSlug: "override",
+  });
+  assert.equal(resolved.agentId, "a-global");
+  assert.equal(resolved.source, "global_default");
 });
 
 test("throws when no defaults are configured", async () => {
@@ -228,7 +273,7 @@ test("updateWorkspaceDefaults validates capabilities and profiles", async () => 
   const service = new RoutingService({ routingApi: routingApi as any, agentService: agents as any });
 
   await assert.rejects(
-    () => service.updateWorkspaceDefaults("ws", { set: { "qa-tasks": "codex" } }),
+    () => service.updateWorkspaceDefaults("ws", { set: { "work-on-tasks": "codex" } }),
     /missing required capabilities/i,
   );
 

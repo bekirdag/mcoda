@@ -1,4 +1,5 @@
 import { WorkspaceRepository, TaskRow, ProjectRow } from "@mcoda/db";
+import { normalizeReviewStatuses } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 
 export interface TaskSelectionFilters {
@@ -7,8 +8,12 @@ export interface TaskSelectionFilters {
   storyKey?: string;
   taskKeys?: string[];
   statusFilter?: string[];
+  ignoreStatusFilter?: boolean;
+  includeTypes?: string[];
+  excludeTypes?: string[];
   limit?: number;
   parallel?: number;
+  ignoreDependencies?: boolean;
 }
 
 export interface SelectedTask {
@@ -25,23 +30,29 @@ export interface SelectedTask {
     keys: string[];
     blocking: string[];
   };
-  blockedReason?: string;
 }
 
 export interface TaskSelectionPlan {
   project?: ProjectRow;
   filters: TaskSelectionFilters & { effectiveStatuses: string[] };
   ordered: SelectedTask[];
-  blocked: SelectedTask[];
   warnings: string[];
 }
 
-const DEFAULT_IMPLEMENTATION_STATUSES = ["not_started", "in_progress"];
+const DEFAULT_IMPLEMENTATION_STATUSES = ["not_started", "in_progress", "changes_requested"];
 const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
 
 const normalizeStatusList = (statuses?: string[]): string[] => {
   if (!statuses || statuses.length === 0) return DEFAULT_IMPLEMENTATION_STATUSES;
-  return Array.from(new Set(statuses.map((s) => s.toLowerCase().trim()).filter(Boolean)));
+  const normalized = Array.from(new Set(statuses.map((s) => s.toLowerCase().trim()).filter(Boolean))).filter(
+    (status) => status !== "blocked",
+  );
+  return normalizeReviewStatuses(normalized);
+};
+
+const normalizeTypeList = (types?: string[]): string[] => {
+  if (!types || types.length === 0) return [];
+  return Array.from(new Set(types.map((type) => type.toLowerCase().trim()).filter(Boolean)));
 };
 
 const parseAcceptanceCriteria = (raw?: string | null): string[] | undefined => {
@@ -50,6 +61,63 @@ const parseAcceptanceCriteria = (raw?: string | null): string[] | undefined => {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+};
+
+const DOD_HEADER = /(definition of done|dod)\b/i;
+const SECTION_HEADER = /^(?:\*+\s*)?(?:\*\*)?\s*(objective|context|inputs|implementation plan|testing|dependencies|risks|references|related documentation|acceptance criteria)\b/i;
+
+const extractTaskDodCriteria = (description?: string | null): string[] => {
+  if (!description) return [];
+  const lines = description.split(/\r?\n/);
+  let startIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (DOD_HEADER.test(line)) {
+      startIndex = i;
+      break;
+    }
+  }
+  if (startIndex === -1) return [];
+  const results: string[] = [];
+  const addInline = (line: string) => {
+    const parts = line.split(":");
+    if (parts.length < 2) return;
+    const tail = parts.slice(1).join(":").trim();
+    if (!tail) return;
+    tail
+      .split(/\s*;\s*/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((item) => results.push(item));
+  };
+  const isBullet = (line: string) => /^[-*]\s+/.test(line);
+  const isHeading = (line: string) =>
+    SECTION_HEADER.test(line) ||
+    (/^\*+\s*\*\*.+\*\*\s*:?\s*$/.test(line) && !DOD_HEADER.test(line)) ||
+    (/^[A-Z][A-Za-z0-9 &/]{2,}:\s*$/.test(line) && !DOD_HEADER.test(line));
+
+  const headerLine = lines[startIndex].trim();
+  addInline(headerLine);
+  for (let i = startIndex + 1; i < lines.length; i += 1) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    if (!line) {
+      if (results.length) break;
+      continue;
+    }
+    if (!isBullet(line) && isHeading(line)) break;
+    if (isBullet(line)) {
+      results.push(line.replace(/^[-*]\s+/, "").trim());
+      continue;
+    }
+    if (results.length) {
+      results[results.length - 1] = `${results[results.length - 1]} ${line}`.trim();
+    } else {
+      results.push(line);
+    }
+  }
+  return Array.from(new Set(results.filter(Boolean)));
 };
 
 type RawTaskRow = {
@@ -109,6 +177,8 @@ export class TaskSelectionService {
   }
 
   private buildTaskFromRow(row: RawTaskRow): SelectedTask["task"] {
+    const taskDod = extractTaskDodCriteria(row.task_description ?? "");
+    const storyAcceptance = parseAcceptanceCriteria(row.story_acceptance);
     return {
       id: row.task_id,
       projectId: row.project_id,
@@ -135,7 +205,7 @@ export class TaskSelectionService {
       epicTitle: row.epic_title ?? undefined,
       storyTitle: row.story_title ?? undefined,
       storyDescription: row.story_description ?? undefined,
-      acceptanceCriteria: parseAcceptanceCriteria(row.story_acceptance),
+      acceptanceCriteria: taskDod.length ? taskDod : storyAcceptance,
     };
   }
 
@@ -261,9 +331,9 @@ export class TaskSelectionService {
     const ordered: SelectedTask[] = [];
     while (queue.length) {
       queue.sort((a, b) => {
-        const pa = a.task.priority ?? Number.NEGATIVE_INFINITY;
-        const pb = b.task.priority ?? Number.NEGATIVE_INFINITY;
-        if (pa !== pb) return pb - pa;
+        const pa = a.task.priority ?? Number.POSITIVE_INFINITY;
+        const pb = b.task.priority ?? Number.POSITIVE_INFINITY;
+        if (pa !== pb) return pa - pb;
         const spa = a.task.storyPoints ?? Number.POSITIVE_INFINITY;
         const spb = b.task.storyPoints ?? Number.POSITIVE_INFINITY;
         if (spa !== spb) return spa - spb;
@@ -299,14 +369,50 @@ export class TaskSelectionService {
     if (filters.projectKey && !project) {
       throw new Error(`Unknown project key: ${filters.projectKey}`);
     }
-    const effectiveStatuses = normalizeStatusList(filters.statusFilter);
-    const allowBlocked = effectiveStatuses.includes("blocked");
-    const tasks = await this.loadTasks({ ...filters, project });
-    const filteredTasks = tasks.filter((task) => effectiveStatuses.includes(task.task_status.toLowerCase()));
-    const candidateIds = filteredTasks.map((t) => t.task_id);
+    const dedupedTaskKeys = filters.taskKeys?.length
+      ? Array.from(new Set(filters.taskKeys.map((key) => key.trim()).filter(Boolean)))
+      : undefined;
+    const ignoreStatusFilter = Boolean(filters.ignoreStatusFilter);
+    const effectiveStatuses = ignoreStatusFilter ? [] : normalizeStatusList(filters.statusFilter);
+    const includeTypes = normalizeTypeList(filters.includeTypes);
+    const excludeTypes = normalizeTypeList(filters.excludeTypes);
+    const tasks = await this.loadTasks({ ...filters, project, taskKeys: dedupedTaskKeys });
+    const filteredTasks = tasks.filter((task) => {
+      if (!ignoreStatusFilter && !effectiveStatuses.includes(task.task_status.toLowerCase())) return false;
+      const type = task.task_type?.toLowerCase().trim() ?? "";
+      if (includeTypes.length > 0 && !includeTypes.includes(type)) return false;
+      if (excludeTypes.length > 0 && type && excludeTypes.includes(type)) return false;
+      return true;
+    });
+    const dedupeWarnings: string[] = [];
+    const selectionWarnings: string[] = [];
+    if (!ignoreStatusFilter) {
+      const requestedBlocked =
+        filters.statusFilter?.some((status) => status.toLowerCase().trim() === "blocked") ?? false;
+      const requestedLegacyReview =
+        filters.statusFilter?.some((status) => status.toLowerCase().trim() === "ready_to_review") ?? false;
+      if (requestedBlocked) {
+        selectionWarnings.push("Status 'blocked' is no longer supported; ignoring it in selection.");
+      }
+      if (requestedLegacyReview) {
+        selectionWarnings.push("Status 'ready_to_review' is deprecated; use 'ready_to_code_review' instead.");
+      }
+    }
+    const seenKeys = new Set<string>();
+    const dedupedTasks: RawTaskRow[] = [];
+    for (const row of filteredTasks) {
+      const key = row.task_key;
+      if (seenKeys.has(key)) {
+        dedupeWarnings.push(`Duplicate task key detected in selection: ${key}.`);
+        continue;
+      }
+      seenKeys.add(key);
+      dedupedTasks.push(row);
+    }
+    const candidateIds = dedupedTasks.map((t) => t.task_id);
     const deps = await this.loadDependencies(candidateIds);
     const taskMap = new Map<string, SelectedTask>();
-    for (const row of filteredTasks) {
+    for (const row of dedupedTasks) {
       const task = this.buildTaskFromRow(row);
       taskMap.set(task.id, {
         task,
@@ -314,14 +420,15 @@ export class TaskSelectionService {
       });
     }
 
-    const blocked: SelectedTask[] = [];
     const eligible: SelectedTask[] = [];
+    const skippedDependencies: string[] = [];
+    const ignoreDependencies = filters.ignoreDependencies === true;
     for (const [taskId, entry] of taskMap.entries()) {
       const depRows = deps.get(taskId) ?? [];
       const ids: string[] = [];
       const keys: string[] = [];
       const blocking: string[] = [];
-      let blockedReason: string | undefined;
+      let dependencyNotReady = false;
       for (const dep of depRows) {
         ids.push(dep.dependsOnTaskId);
         if (dep.dependsOnKey) keys.push(dep.dependsOnKey);
@@ -331,32 +438,39 @@ export class TaskSelectionService {
           ? DONE_DEPENDENCY_STATUSES.has(status ?? "")
           : true;
         if (!clear) {
-          blockedReason = "dependency_not_ready";
+          if (!ignoreDependencies) dependencyNotReady = true;
           blocking.push(dep.dependsOnTaskId);
         } else if (!status && !depInSelection) {
-          // unknown status but dependency referenced; treat as blocked unless explicitly ignored
-          blockedReason = "dependency_not_ready";
+          // unknown status but dependency referenced; treat as not ready unless explicitly ignored
+          if (!ignoreDependencies) dependencyNotReady = true;
           blocking.push(dep.dependsOnTaskId);
         }
       }
       entry.dependencies = { ids, keys, blocking };
-      if (blockedReason && !(allowBlocked || (filters.taskKeys ?? []).includes(entry.task.key))) {
-        entry.blockedReason = blockedReason;
-        blocked.push(entry);
-      } else {
-        entry.blockedReason = blockedReason;
-        eligible.push(entry);
+      if (dependencyNotReady && !ignoreDependencies) {
+        skippedDependencies.push(entry.task.key);
+        continue;
       }
+      eligible.push(entry);
     }
 
-    const { ordered, warnings } = this.topologicalOrder(eligible, deps);
+    const { ordered, warnings: topoWarnings } = this.topologicalOrder(eligible, deps);
+    if (skippedDependencies.length > 0) {
+      selectionWarnings.push(`Skipped ${skippedDependencies.length} task(s) due to dependencies not ready.`);
+    }
+    const combinedWarnings = [...dedupeWarnings, ...selectionWarnings, ...topoWarnings];
     const limited = typeof filters.limit === "number" && filters.limit > 0 ? ordered.slice(0, filters.limit) : ordered;
     return {
       project: project ?? undefined,
-      filters: { ...filters, effectiveStatuses },
+      filters: {
+        ...filters,
+        taskKeys: dedupedTaskKeys ?? filters.taskKeys,
+        effectiveStatuses,
+        includeTypes: includeTypes.length ? includeTypes : undefined,
+        excludeTypes: excludeTypes.length ? excludeTypes : undefined,
+      },
       ordered: limited,
-      blocked,
-      warnings,
+      warnings: combinedWarnings,
     };
   }
 }

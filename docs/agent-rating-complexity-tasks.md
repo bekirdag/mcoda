@@ -97,7 +97,7 @@ Description:
   - Call reviewer agent (default system agent) to produce a `quality_score`.  
   - Compute run score and update `agents.rating`/`reasoning_rating`, `rating_samples`, `rating_last_score`.  
   - Update `max_complexity` with promotion/demotion logic and apply a cooldown to prevent oscillation.  
-  - Write a `rating.json` artifact under `.mcoda/jobs/<jobId>/`.  
+  - Write a `rating.json` artifact under `<workspace-dir>/jobs/<jobId>/`.  
   - Persist `agent_run_ratings` record.  
 - Use `RoutingService` with command name `agent-rating` to resolve reviewer agent, fallback to default.  
 Unit tests:  
@@ -156,7 +156,7 @@ Slug: arcx-05-reviewer-prompt
 Title: Add default reviewer prompt and command metadata  
 Description:  
 - Add a default prompt template for `agent-rating` reviewers (similar to other prompts).  
-- Ensure the prompt is stored/loaded from `.mcoda/prompts/agent-rating.md`.  
+- Ensure the prompt is stored/loaded from `<workspace-dir>/prompts/agent-rating.md`.  
 - Add `agent-rating` to command metadata/capabilities (fallback list and/or OpenAPI extension).  
 Unit tests:  
 - `packages/shared/src/__tests__/CommandMetadata.test.ts`: ensure `agent-rating` is recognized.  

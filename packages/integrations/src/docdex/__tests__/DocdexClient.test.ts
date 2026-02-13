@@ -9,10 +9,19 @@ import { DocdexClient } from "../DocdexClient.js";
 const shouldSkipDocdexClient =
   process.platform === "win32" || process.env.MCODA_SKIP_DOCDEX_CLIENT_TESTS === "1";
 
-const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<void> }> => {
+const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<void>; headers: () => Record<string, string | string[] | undefined> }> => {
+  let lastHeaders: http.IncomingHttpHeaders = {};
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "", "http://localhost");
+    lastHeaders = req.headers;
+    const repoHeader = req.headers["x-docdex-repo-id"];
+    const rootHeader = req.headers["x-docdex-repo-root"];
     if (url.pathname === "/search") {
+      if (!repoHeader || !rootHeader) {
+        res.statusCode = 400;
+        res.end("missing_repo");
+        return;
+      }
       res.setHeader("Content-Type", "application/json");
       res.end(
         JSON.stringify({
@@ -30,6 +39,11 @@ const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<vo
       return;
     }
     if (url.pathname.startsWith("/snippet/")) {
+      if (!repoHeader || !rootHeader) {
+        res.statusCode = 400;
+        res.end("missing_repo");
+        return;
+      }
       res.setHeader("Content-Type", "text/plain");
       res.end("Snippet detail");
       return;
@@ -42,7 +56,19 @@ const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<vo
     res.statusCode = 404;
     res.end("Not found");
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.removeListener("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.removeListener("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Failed to bind test server");
@@ -56,6 +82,7 @@ const startServer = async (): Promise<{ baseUrl: string; close: () => Promise<vo
           else resolve();
         }),
       ),
+    headers: () => ({ ...lastHeaders }),
     };
 };
 
@@ -64,13 +91,25 @@ test("DocdexClient searches via docdex daemon and fetches snippets", async (t) =
     t.skip("docdex client tests can hang on Windows CI");
     return;
   }
-  const server = await startServer();
+  let server: Awaited<ReturnType<typeof startServer>>;
+  try {
+    server = await startServer();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EPERM") {
+      t.skip("network listeners are not permitted in this environment");
+      return;
+    }
+    throw error;
+  }
   try {
     const client = new DocdexClient({ baseUrl: server.baseUrl, workspaceRoot: "/tmp/ws" });
     const search = await client.search({ docType: "SDS", query: "demo" });
     assert.equal(search.length, 1);
     assert.equal(search[0].id, "doc-1");
     assert.equal(search[0].docType, "SDS");
+    const headers = server.headers();
+    assert.equal(headers["x-docdex-repo-id"], "repo-1");
+    assert.ok(headers["x-docdex-repo-root"]);
 
     const fetched = await client.fetchDocumentById("doc-1");
     assert.equal(fetched.id, "doc-1");
@@ -95,6 +134,28 @@ test("DocdexClient falls back to local docs when baseUrl is missing", async (t) 
     const doc = await client.ensureRegisteredFromFile(docPath, "RFP", { projectKey: "proj" });
     assert.equal(doc.docType, "RFP");
     assert.ok(doc.segments && doc.segments.length > 0);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("DocdexClient findDocumentByPath falls back to local file", async (t) => {
+  if (shouldSkipDocdexClient) {
+    t.skip("docdex client tests can hang on Windows CI");
+    return;
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-docdex-path-"));
+  const docPath = path.join(dir, "docs", "sds", "tl.md");
+  await fs.mkdir(path.dirname(docPath), { recursive: true });
+  await fs.writeFile(docPath, "# SDS\nLocal content", "utf8");
+  const client = new DocdexClient({ workspaceRoot: dir });
+
+  try {
+    const doc = await client.findDocumentByPath("docs/sds/tl.md", "SDS");
+    assert.ok(doc);
+    assert.equal(doc?.docType, "SDS");
+    assert.equal(doc?.path, "docs/sds/tl.md");
+    assert.ok(doc?.content?.includes("Local content"));
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
