@@ -25,10 +25,10 @@ mcoda is a workflow CLI that connects planning, documentation, and delivery. It 
 | ⚙️ Execution | Drive work, review, and QA loops | Jobs, logs, and telemetry |
 | 🤝 Routing | Choose the right agent per command | Defaults and previews |
 
-Optional agent rating is available with `--rate-agents` to score outputs (quality, cost, time, iterations), update per-agent ratings, and inform gateway routing with max-complexity gates and exploration. The reviewer prompt is stored at `~/.mcoda/workspaces/<fingerprint>/prompts/agent-rating.md`.
+Optional agent rating is available with `--rate-agents` to score outputs (quality, cost, time, iterations), update per-agent ratings, and inform gateway routing with max-complexity gates and exploration. The reviewer prompt is stored at `~/.mcoda/workspaces/<name>-<hash>/prompts/agent-rating.md`.
 
 ## 🚀 Why teams use it
-- **Local-first**: keeps artifacts and state local on your machine under `~/.mcoda/workspaces/<fingerprint>/`.
+- **Local-first**: keeps artifacts and state local on your machine under `~/.mcoda/workspaces/<name>-<hash>/`.
 - **Repeatable**: stable workflows with versioned outputs.
 - **Agent-ready**: works with codex, openai, gemini, ollama, and more.
 - **Traceable**: jobs, telemetry, and backlog live in one place.
@@ -52,7 +52,7 @@ mcoda --help
 - **QA runners** (Chromium, Maestro, CLI).
 
 ## 📂 What gets created
-mcoda stores workspace state under `~/.mcoda/workspaces/<fingerprint>/`:
+mcoda stores workspace state under `~/.mcoda/workspaces/<name>-<hash>/`:
 - `docs/` for generated PDR/SDS artifacts.
 - `tasks/` for planning outputs.
 - `jobs/` for run checkpoints and logs.

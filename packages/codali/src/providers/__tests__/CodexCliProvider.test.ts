@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { CodexCliProvider } from "../CodexCliProvider.js";
 import type { AgentEvent, ProviderRequest } from "../ProviderTypes.js";
+
+const CODEX_COMMAND_ENV = "MCODA_CODEX_COMMAND";
+const CODEX_COMMAND_ARGS_ENV = "MCODA_CODEX_COMMAND_ARGS";
 
 const restoreEnvVar = (name: string, value: string | undefined): void => {
   if (value === undefined) {
@@ -14,20 +17,10 @@ const restoreEnvVar = (name: string, value: string | undefined): void => {
   process.env[name] = value;
 };
 
-const prependPath = (entry: string, originalPath: string | undefined): string =>
-  [entry, originalPath].filter((value): value is string => Boolean(value && value.length > 0)).join(path.delimiter);
-
-const writeFakeCodex = async (tempDir: string, scriptSource: string): Promise<void> => {
+const writeFakeCodexScript = async (tempDir: string, scriptSource: string): Promise<string> => {
   const scriptPath = path.join(tempDir, "codex.js");
   await writeFile(scriptPath, scriptSource, "utf8");
-  if (process.platform === "win32") {
-    const launcher = path.join(tempDir, "codex.cmd");
-    await writeFile(launcher, '@echo off\r\nnode "%~dp0codex.js" %*\r\n', "utf8");
-    return;
-  }
-  const launcher = path.join(tempDir, "codex");
-  await writeFile(launcher, '#!/bin/sh\nnode "$(dirname "$0")/codex.js" "$@"\n', "utf8");
-  await chmod(launcher, 0o755);
+  return scriptPath;
 };
 
 test("CodexCliProvider returns stub output when MCODA_CLI_STUB=1", { concurrency: false }, async () => {
@@ -81,9 +74,10 @@ test("CodexCliProvider throws when model is missing", async () => {
 
 test("CodexCliProvider enforces timeout for stalled codex process", { concurrency: false }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-timeout-"));
-  const originalPath = process.env.PATH;
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
   try {
-    await writeFakeCodex(
+    const scriptPath = await writeFakeCodexScript(
       tempDir,
       `
 process.stdin.resume();
@@ -91,7 +85,8 @@ process.stdin.on("error", () => {});
 setTimeout(() => {}, 5000);
 `,
     );
-    process.env.PATH = prependPath(tempDir, originalPath);
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
     const provider = new CodexCliProvider({ model: "test-model", timeoutMs: 50 });
     const request: ProviderRequest = { messages: [{ role: "user", content: "hello" }] };
     await assert.rejects(
@@ -99,7 +94,8 @@ setTimeout(() => {}, 5000);
       /timed out/i,
     );
   } finally {
-    restoreEnvVar("PATH", originalPath);
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
     await rm(tempDir, { recursive: true, force: true });
   }
 });
@@ -107,11 +103,12 @@ setTimeout(() => {}, 5000);
 test("CodexCliProvider normalizes unsupported reasoning effort aliases", { concurrency: false }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-reasoning-"));
   const capturedArgs = path.join(tempDir, "args.txt");
-  const originalPath = process.env.PATH;
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
   const originalReasoning = process.env.MCODA_CODEX_REASONING_EFFORT;
   const originalFallbackReasoning = process.env.CODEX_REASONING_EFFORT;
   try {
-    await writeFakeCodex(
+    const scriptPath = await writeFakeCodexScript(
       tempDir,
       `
 const fs = require("node:fs");
@@ -123,7 +120,8 @@ process.stdin.on("end", () => {
 });
 `,
     );
-    process.env.PATH = prependPath(tempDir, originalPath);
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
     process.env.MCODA_CODEX_REASONING_EFFORT = "xhigh";
     delete process.env.CODEX_REASONING_EFFORT;
     const provider = new CodexCliProvider({ model: "test-model", timeoutMs: 1000 });
@@ -136,7 +134,8 @@ process.stdin.on("end", () => {
     assert.ok(args.includes("reasoning_effort=high"));
     assert.ok(args.includes("model_reasoning_effort=high"));
   } finally {
-    restoreEnvVar("PATH", originalPath);
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
     restoreEnvVar("MCODA_CODEX_REASONING_EFFORT", originalReasoning);
     restoreEnvVar("CODEX_REASONING_EFFORT", originalFallbackReasoning);
     await rm(tempDir, { recursive: true, force: true });
@@ -146,11 +145,12 @@ process.stdin.on("end", () => {
 test("CodexCliProvider falls back to a supported reasoning effort when values are invalid", { concurrency: false }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-reasoning-invalid-"));
   const capturedArgs = path.join(tempDir, "args.txt");
-  const originalPath = process.env.PATH;
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
   const originalReasoning = process.env.MCODA_CODEX_REASONING_EFFORT;
   const originalFallbackReasoning = process.env.CODEX_REASONING_EFFORT;
   try {
-    await writeFakeCodex(
+    const scriptPath = await writeFakeCodexScript(
       tempDir,
       `
 const fs = require("node:fs");
@@ -162,7 +162,8 @@ process.stdin.on("end", () => {
 });
 `,
     );
-    process.env.PATH = prependPath(tempDir, originalPath);
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
     process.env.MCODA_CODEX_REASONING_EFFORT = "banana";
     delete process.env.CODEX_REASONING_EFFORT;
     const provider = new CodexCliProvider({ model: "test-model", timeoutMs: 1000 });
@@ -173,7 +174,8 @@ process.stdin.on("end", () => {
     assert.match(argsRaw, /model_reasoning_effort=high/);
     assert.match(argsRaw, /reasoning_effort=high/);
   } finally {
-    restoreEnvVar("PATH", originalPath);
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
     restoreEnvVar("MCODA_CODEX_REASONING_EFFORT", originalReasoning);
     restoreEnvVar("CODEX_REASONING_EFFORT", originalFallbackReasoning);
     await rm(tempDir, { recursive: true, force: true });
@@ -184,11 +186,12 @@ test("CodexCliProvider overwrites invalid inherited reasoning env values for chi
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-reasoning-child-env-"));
   const capturedArgs = path.join(tempDir, "args.txt");
   const capturedEnv = path.join(tempDir, "env.txt");
-  const originalPath = process.env.PATH;
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
   const originalReasoning = process.env.MCODA_CODEX_REASONING_EFFORT;
   const originalFallbackReasoning = process.env.CODEX_REASONING_EFFORT;
   try {
-    await writeFakeCodex(
+    const scriptPath = await writeFakeCodexScript(
       tempDir,
       `
 const fs = require("node:fs");
@@ -205,7 +208,8 @@ process.stdin.on("end", () => {
 });
 `,
     );
-    process.env.PATH = prependPath(tempDir, originalPath);
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
     delete process.env.MCODA_CODEX_REASONING_EFFORT;
     process.env.CODEX_REASONING_EFFORT = "invalid-effort";
     const provider = new CodexCliProvider({ model: "test-model", timeoutMs: 1000 });
@@ -219,7 +223,8 @@ process.stdin.on("end", () => {
     assert.match(envRaw, /MCODA=high/m);
     assert.match(envRaw, /CODEX=high/m);
   } finally {
-    restoreEnvVar("PATH", originalPath);
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
     restoreEnvVar("MCODA_CODEX_REASONING_EFFORT", originalReasoning);
     restoreEnvVar("CODEX_REASONING_EFFORT", originalFallbackReasoning);
     await rm(tempDir, { recursive: true, force: true });

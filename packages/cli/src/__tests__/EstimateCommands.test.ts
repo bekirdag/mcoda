@@ -21,6 +21,23 @@ const captureLogs = async (fn: () => Promise<void> | void): Promise<string[]> =>
   return logs;
 };
 
+const removeWithRetries = async (target?: string): Promise<void> => {
+  if (!target) return;
+  const retries = process.platform === "win32" ? 30 : 1;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+      return;
+    } catch (error: any) {
+      const code = error?.code;
+      if (attempt >= retries - 1 || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(code)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+};
+
 describe("estimate argument parsing", () => {
   it("parses velocity window and aliases", () => {
     const parsed = parseEstimateArgs(["--velocity-window", "20", "--window", "10"]);
@@ -74,7 +91,7 @@ describe("estimate argument parsing", () => {
   });
 });
 
-describe("estimate output rendering", () => {
+describe("estimate output rendering", { concurrency: false }, () => {
   let workspaceRoot: string;
   let tempHome: string | undefined;
   let originalHome: string | undefined;
@@ -170,10 +187,8 @@ describe("estimate output rendering", () => {
   });
 
   afterEach(async () => {
-    await fs.rm(workspaceRoot, { recursive: true, force: true });
-    if (tempHome) {
-      await fs.rm(tempHome, { recursive: true, force: true });
-    }
+    await removeWithRetries(workspaceRoot);
+    await removeWithRetries(tempHome);
     if (originalHome === undefined) {
       delete process.env.HOME;
     } else {
