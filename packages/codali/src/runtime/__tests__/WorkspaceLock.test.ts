@@ -41,12 +41,18 @@ test("WorkspaceLock releases on signal", { concurrency: false }, async () => {
   const lockPath = path.join(workspaceRoot, "locks", "codali.lock");
   assert.ok(existsSync(lockPath));
 
-  const unregister = lock.registerSignalHandlers({ exitOnSignal: false });
+  let signalHandledResolve: (() => void) | undefined;
+  const signalHandled = new Promise<void>((resolve) => {
+    signalHandledResolve = resolve;
+  });
+  const unregister = lock.registerSignalHandlers({
+    exitOnSignal: false,
+    onSignal: async () => {
+      signalHandledResolve?.();
+    },
+  });
   process.emit("SIGINT");
-  const start = Date.now();
-  while (existsSync(lockPath) && Date.now() - start < 200) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await signalHandled;
   assert.ok(!existsSync(lockPath));
   unregister();
 });

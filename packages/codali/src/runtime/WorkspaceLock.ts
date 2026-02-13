@@ -73,14 +73,14 @@ export class WorkspaceLock {
       if (handled) return;
       handled = true;
       const releasePromise = this.release().catch(() => undefined);
-      // Fire and forget any extra signal handling to avoid delaying unlock/exit.
-      Promise.resolve(options.onSignal?.(signal)).catch(() => undefined);
-      releasePromise.finally(() => {
-        if (exitOnSignal) {
-          process.exitCode = exitCodeForSignal(signal);
-          process.exit();
-        }
-      });
+      releasePromise
+        .then(() => Promise.resolve(options.onSignal?.(signal)).catch(() => undefined))
+        .finally(() => {
+          if (exitOnSignal) {
+            process.exitCode = exitCodeForSignal(signal);
+            process.exit();
+          }
+        });
     };
 
     for (const signal of signals) {

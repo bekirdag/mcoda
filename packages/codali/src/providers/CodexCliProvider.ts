@@ -214,6 +214,15 @@ export class CodexCliProvider implements Provider {
         stderr += chunk.toString();
       });
 
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        if (settled) return;
+        // Codex can exit before consuming stdin; ignore the resulting broken-pipe.
+        if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") {
+          return;
+        }
+        finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${error.message})`));
+      });
+
       child.on("error", (error) => {
         finishReject(new Error(`AUTH_ERROR: codex CLI failed (${error.message})`));
       });
@@ -235,8 +244,14 @@ export class CodexCliProvider implements Provider {
         finishResolve({ message: { role: "assistant", content: output }, raw });
       });
 
-      child.stdin.write(prompt);
-      child.stdin.end();
+      try {
+        child.stdin.end(prompt);
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err.code !== "EPIPE" && err.code !== "ERR_STREAM_DESTROYED") {
+          finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${err.message})`));
+        }
+      }
     });
   }
 }
