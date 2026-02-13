@@ -51,7 +51,7 @@ mcoda openapi-from-docs --workspace-root . --agent codex --force
 Create tasks, refine them, and order them by dependencies.
 
 ```sh
-mcoda create-tasks --workspace-root . --project WEB --agent codex --doc <workspace-dir>/docs/sds/web.md --openapi openapi/mcoda.yaml
+mcoda create-tasks --workspace-root . --project WEB --agent codex <workspace-dir>/docs/sds/web.md openapi/mcoda.yaml
 mcoda refine-tasks --workspace-root . --project WEB --agent codex
 mcoda migrate-tasks --workspace-root . --project WEB --plan-dir <workspace-dir>/tasks/WEB
 mcoda order-tasks --workspace-root . --project WEB
@@ -72,10 +72,11 @@ Note: `--max-iterations` and `--max-cycles` are optional; omit them to run witho
 
 Runner selection for `work-on-tasks`:
 - CLI flags (`--work-runner`, `--use-codali`) override env vars (`MCODA_WORK_ON_TASKS_ADAPTER`, `MCODA_WORK_ON_TASKS_USE_CODALI`), which override defaults.
-- codali runs are non-streaming; legacy patch mode (`MCODA_WORK_ON_TASKS_PATCH_MODE=1`) is ignored when codali is required.
+- `work-on-tasks` defaults to non-streaming (`--agent-stream false`); enable streaming explicitly with `--agent-stream true`.
+- Legacy patch mode (`MCODA_WORK_ON_TASKS_PATCH_MODE=1`) is ignored when codali is required.
 
 ## codali (tool runner)
-codali is a standalone, non-streaming tool runner that can edit a repo directly and can be used as a mcoda agent adapter.
+codali is a standalone tool runner that can edit a repo directly, supports optional streaming output, and can be used as a mcoda agent adapter.
 
 ```sh
 codali run --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
@@ -206,18 +207,19 @@ mcoda backlog --project WEB --order dependencies       # same core ordering
 - Behavior: topo order over `task_dependencies`, ties by priority → dependency impact → SP → age → status. Updates `priority` across tasks, stories, and epics in the scoped project.
 
 ### Create tasks (plan files + DB), then migrate
-Generate epics/stories/tasks from SDS/OpenAPI into JSON plan files (and attempt DB insert):
+Generate epics/stories/tasks into JSON plan files (and attempt DB insert):
 
 ```sh
 mcoda create-tasks \
   --workspace-root . \
   --project TODO \
   --agent openai \
-  --doc <workspace-dir>/docs/sds/todo.md \
-  --openapi openapi/mcoda.yaml
+  <workspace-dir>/docs/sds/todo.md \
+  openapi/mcoda.yaml
 ```
 
 Writes plan artifacts to `<workspace-dir>/tasks/<PROJECT>/plan.json` plus `epics.json`, `stories.json`, `tasks.json`. If the DB is busy, the files still persist for later import.
+`create-tasks` accepts optional positional input files (`INPUT...`) for context sources such as SDS/OpenAPI paths (it does not use `--doc` or `--openapi` flags).
 Project key is sticky: after the first run, `create-tasks` reuses the workspace `projectKey` from `<workspace-dir>/config.json` or an existing `<workspace-dir>/tasks/<PROJECT>` folder to avoid creating new slugs. Edit `<workspace-dir>/config.json` if you need to change it.
 Use `--force` to wipe and replace the existing backlog for the project. Add `--rate-agents` to score the planning agent.
 Create-tasks also captures QA readiness metadata (profiles, entrypoints, blockers) from repo preflight (scripts/tests) and writes it into each task’s metadata/description so QA can select the right profiles later. Override defaults with:
@@ -317,9 +319,9 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 ```
 
 - Scopes: `--project <KEY>` (required), `--task <KEY>...`, `--epic <KEY>`, or `--story <KEY>`. Default statuses: `not_started,in_progress` (override with `--status ...`).
-- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--max-agent-seconds <N>`, `--json`.
+- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--work-runner <codali|default>`, `--use-codali <true|false>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--json`.
 - Selection & ordering: dependency-aware (skips tasks with unmet dependencies or missing_context), topo + priority + SP + created_at, with in-progress tie-breaks. Skips are reported as warnings.
-- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, streams agent output by default, and stops tasks at `ready_to_code_review`. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
+- Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, stops tasks at `ready_to_code_review`, and streams agent output when `--agent-stream true` is set. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
 - Scope & safety: enforces allowed files/tests from task metadata; scope violations fail the task and are logged.
 - Tests: if test requirements exist and `tests/all.js` is missing, `work-on-tasks` attempts to create it and reruns tests.
 - VCS: creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
@@ -368,7 +370,7 @@ mcoda code-review --workspace . --project WEB --status ready_to_code_review --li
 ```
 
 - Scopes: `--project <KEY>`, `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, default `--status ready_to_code_review` (override with `--status ...`), optional `--limit <N>`.
-- Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default true), `--rate-agents`, `--json`.
+- Behavior: `--base <BRANCH>` (diff base), `--dry-run` (skip status transitions), `--resume <JOB_ID>`, `--agent <NAME>`, `--agent-stream <true|false>` (default false), `--rate-agents`, `--json`.
 - Outputs & side effects: creates `jobs`/`command_runs`/`task_runs`, writes `task_comments` + `task_reviews`, records `token_usage`, may auto-create follow-up tasks for review findings, and transitions tasks (`ready_to_code_review → ready_to_qa/in_progress/failed` unless `--dry-run`). Artifacts (diffs, context, checkpoints) under `<workspace-dir>/jobs/<jobId>/review/`. JSON output shape: `{ job: {id, commandRunId}, tasks: [...], errors: [...], warnings: [...] }`.
 - Invalid JSON after retry fails the task with `review_invalid_output`. Empty diffs fail review with `review_empty_diff`.
 

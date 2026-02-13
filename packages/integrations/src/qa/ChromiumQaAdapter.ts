@@ -263,7 +263,15 @@ const resolveBinaryFromPath = async (command: string): Promise<string | undefine
   if (!pathValue) return undefined;
   const extensions =
     process.platform === 'win32'
-      ? [''].concat((process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean))
+      ? [''].concat(
+          (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM')
+            .split(';')
+            .filter(Boolean)
+            .map((ext) => {
+              const normalized = ext.startsWith('.') ? ext : `.${ext}`;
+              return normalized.toLowerCase();
+            }),
+        )
       : [''];
   for (const base of pathValue.split(path.delimiter)) {
     if (!base) continue;

@@ -690,7 +690,11 @@ test("GatewayTrioService stops when job is cancelled", async () => {
   }
 });
 
-test("GatewayTrioService records docdex preflight failures", async () => {
+test("GatewayTrioService records docdex preflight failures", { concurrency: false }, async () => {
+  const prevMcodaDocdexUrl = process.env.MCODA_DOCDEX_URL;
+  const prevDocdexUrl = process.env.DOCDEX_URL;
+  delete process.env.MCODA_DOCDEX_URL;
+  delete process.env.DOCDEX_URL;
   const statusStore = makeStatusStore({ "TASK-DOCDEX": "in_progress" });
   const { service, dir, workspace } = await makeService({
     statusStore,
@@ -706,6 +710,10 @@ test("GatewayTrioService records docdex preflight failures", async () => {
     const artifactPath = path.join(workspace.mcodaDir, "jobs", result.jobId, "gateway-trio", "docdex", "docdex-check.json");
     await fs.access(artifactPath);
   } finally {
+    if (prevMcodaDocdexUrl === undefined) delete process.env.MCODA_DOCDEX_URL;
+    else process.env.MCODA_DOCDEX_URL = prevMcodaDocdexUrl;
+    if (prevDocdexUrl === undefined) delete process.env.DOCDEX_URL;
+    else process.env.DOCDEX_URL = prevDocdexUrl;
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }

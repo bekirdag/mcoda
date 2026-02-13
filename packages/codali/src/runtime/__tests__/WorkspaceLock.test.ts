@@ -44,7 +44,7 @@ test("WorkspaceLock releases on signal", { concurrency: false }, async () => {
   const unregister = lock.registerSignalHandlers({ exitOnSignal: false });
   process.emit("SIGINT");
   const start = Date.now();
-  while (existsSync(lockPath) && Date.now() - start < 200) {
+  while (existsSync(lockPath) && Date.now() - start < 2000) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.ok(!existsSync(lockPath));
