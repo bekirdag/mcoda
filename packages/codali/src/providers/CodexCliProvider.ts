@@ -87,6 +87,9 @@ const parseCodexOutput = (raw: string): string => {
   return message;
 };
 
+const isIgnorableStdinError = (error: NodeJS.ErrnoException): boolean =>
+  error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED";
+
 export class CodexCliProvider implements Provider {
   name = "codex-cli";
 
@@ -214,6 +217,11 @@ export class CodexCliProvider implements Provider {
         stderr += chunk.toString();
       });
 
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        if (settled || isIgnorableStdinError(error)) return;
+        finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${error.message})`));
+      });
+
       child.on("error", (error) => {
         finishReject(new Error(`AUTH_ERROR: codex CLI failed (${error.message})`));
       });
@@ -235,8 +243,14 @@ export class CodexCliProvider implements Provider {
         finishResolve({ message: { role: "assistant", content: output }, raw });
       });
 
-      child.stdin.write(prompt);
-      child.stdin.end();
+      try {
+        child.stdin.end(prompt);
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (!isIgnorableStdinError(err)) {
+          finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${err.message})`));
+        }
+      }
     });
   }
 }
