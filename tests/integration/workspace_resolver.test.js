@@ -34,8 +34,9 @@ test("WorkspaceResolver initializes mcoda workspace state", async (t) => {
 
   const resolveWorkspaceDir = (root) => {
     const normalizedRoot = path.normalize(path.resolve(root));
-    const hash = createHash("sha256").update(process.platform === "win32" ? normalizedRoot.toLowerCase() : normalizedRoot).digest("hex").slice(0, 12);
-    const rawName = path.basename(normalizedRoot) || "workspace";
+    const normalizedForPathing = process.platform === "win32" ? normalizedRoot.toLowerCase() : normalizedRoot;
+    const hash = createHash("sha256").update(normalizedForPathing).digest("hex").slice(0, 12);
+    const rawName = path.basename(normalizedForPathing) || "workspace";
     const safeName = rawName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 32) || "workspace";
     return path.join(tempHome, ".mcoda", "workspaces", `${safeName}-${hash}`);
   };

@@ -8,7 +8,8 @@ test("OpenAPI spec includes core endpoints", async () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
   const specPath = path.join(root, "openapi", "mcoda.yaml");
   const raw = await fs.readFile(specPath, "utf8");
-  const openapiLine = raw.split("\n").find((line) => line.startsWith("openapi:"));
+  const normalizedRaw = raw.replace(/\r\n/g, "\n");
+  const openapiLine = normalizedRaw.split("\n").find((line) => line.startsWith("openapi:"));
   assert.ok(openapiLine, "Missing openapi version line");
   assert.ok(openapiLine?.includes("3."), "Expected OpenAPI 3.x version");
   const extractInfoVersion = (content) => {
@@ -27,18 +28,18 @@ test("OpenAPI spec includes core endpoints", async () => {
     }
     return undefined;
   };
-  const primaryVersion = extractInfoVersion(raw);
+  const primaryVersion = extractInfoVersion(normalizedRaw);
 
   const requiredPaths = ["/agents", "/tasks/{id}", "/workspaces/{id}/backlog", "/system/ping"];
   for (const entry of requiredPaths) {
     const escaped = entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const pattern = new RegExp(`^\\s*${escaped}:`, "m");
-    assert.ok(pattern.test(raw), `Missing OpenAPI path: ${entry}`);
+    assert.ok(pattern.test(normalizedRaw), `Missing OpenAPI path: ${entry}`);
     const operationPattern = new RegExp(
       `^\\s*${escaped}:\\n(?:\\s{2,}.*\\n)*?\\s+operationId:\\s*\\S+`,
       "m",
     );
-    assert.ok(operationPattern.test(raw), `Missing operationId for path: ${entry}`);
+    assert.ok(operationPattern.test(normalizedRaw), `Missing operationId for path: ${entry}`);
   }
 
   const adminSpecPath = path.join(root, "openapi", "mcoda-admin.yaml");
@@ -48,10 +49,11 @@ test("OpenAPI spec includes core endpoints", async () => {
     .catch(() => false);
   if (adminExists) {
     const adminRaw = await fs.readFile(adminSpecPath, "utf8");
-    const adminOpenapiLine = adminRaw.split("\n").find((line) => line.startsWith("openapi:"));
+    const normalizedAdminRaw = adminRaw.replace(/\r\n/g, "\n");
+    const adminOpenapiLine = normalizedAdminRaw.split("\n").find((line) => line.startsWith("openapi:"));
     assert.ok(adminOpenapiLine, "Missing admin openapi version line");
     assert.equal(adminOpenapiLine?.trim(), openapiLine?.trim());
-    const adminVersion = extractInfoVersion(adminRaw);
+    const adminVersion = extractInfoVersion(normalizedAdminRaw);
     if (primaryVersion || adminVersion) {
       assert.equal(adminVersion, primaryVersion);
     }

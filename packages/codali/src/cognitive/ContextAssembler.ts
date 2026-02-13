@@ -2109,7 +2109,7 @@ const listWorkspaceFilesByPattern = async (
     return filterExcludedPaths(
       stdout
         .split(/\r?\n/)
-        .map((line) => line.trim())
+        .map((line) => normalizePath(line.trim()))
         .filter((line) => line.length > 0),
     );
   } catch {
@@ -2134,7 +2134,7 @@ const listWorkspaceFilesByPattern = async (
           queue.push(path.join(current, entry.name));
           continue;
         }
-        const rel = path.relative(workspaceRoot, path.join(current, entry.name));
+        const rel = normalizePath(path.relative(workspaceRoot, path.join(current, entry.name)));
         if (!matchPattern(rel, pattern)) continue;
         results.push(rel);
         if (results.length >= 5000) break;

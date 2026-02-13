@@ -243,14 +243,19 @@ export class CodexCliProvider implements Provider {
         finishResolve({ message: { role: "assistant", content: output }, raw });
       });
 
-      try {
-        child.stdin.end(prompt);
-      } catch (error) {
-        const err = error as NodeJS.ErrnoException;
-        if (!isIgnorableStdinError(err)) {
-          finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${err.message})`));
+      setImmediate(() => {
+        if (settled) return;
+        const stdin = child.stdin;
+        if (!stdin || stdin.destroyed || !stdin.writable) return;
+        try {
+          stdin.end(prompt);
+        } catch (error) {
+          const err = error as NodeJS.ErrnoException;
+          if (!isIgnorableStdinError(err)) {
+            finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${err.message})`));
+          }
         }
-      }
+      });
     });
   }
 }

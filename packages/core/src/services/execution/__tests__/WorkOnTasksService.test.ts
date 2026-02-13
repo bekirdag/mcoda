@@ -3927,7 +3927,7 @@ test("workOnTasks retries failing tests until they pass", async () => {
   }
 });
 
-test("workOnTasks applies chromium env for browser test commands", async () => {
+test("workOnTasks applies chromium env for browser test commands", { concurrency: false }, async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
