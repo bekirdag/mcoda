@@ -369,6 +369,7 @@ export class EstimateCommands {
       process.exitCode = 1;
     } finally {
       await service.close?.();
+      await jobService.close?.();
     }
   }
 }

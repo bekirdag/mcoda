@@ -347,9 +347,10 @@ export class GatewayTrioService {
     if (process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" || process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS === "1") {
       return;
     }
+    const usingCustomCheck = Boolean(this.deps.docdexCheck);
     const configuredUrl =
       this.workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL ?? process.env.DOCDEX_URL;
-    if (configuredUrl) {
+    if (configuredUrl && !usingCustomCheck) {
       return;
     }
     const checkFn = this.deps.docdexCheck ?? readDocdexCheck;

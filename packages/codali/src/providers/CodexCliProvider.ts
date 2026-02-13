@@ -5,6 +5,8 @@ const CODEX_NO_SANDBOX_ENV = "MCODA_CODEX_NO_SANDBOX";
 const CODEX_REASONING_ENV = "MCODA_CODEX_REASONING_EFFORT";
 const CODEX_REASONING_ENV_FALLBACK = "CODEX_REASONING_EFFORT";
 const CODEX_STUB_ENV = "MCODA_CLI_STUB";
+const CODEX_COMMAND_ENV = "MCODA_CODEX_COMMAND";
+const CODEX_COMMAND_ARGS_ENV = "MCODA_CODEX_COMMAND_ARGS";
 const ALLOWED_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 const DEFAULT_REASONING_EFFORT = "high";
 
@@ -35,6 +37,30 @@ const resolveReasoningEffort = (): string | undefined => {
   const raw = process.env[CODEX_REASONING_ENV] ?? process.env[CODEX_REASONING_ENV_FALLBACK];
   if (!raw) return DEFAULT_REASONING_EFFORT;
   return normalizeReasoningEffort(raw) ?? DEFAULT_REASONING_EFFORT;
+};
+
+const parseCommandArgs = (raw: string | undefined): string[] => {
+  const trimmed = raw?.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter((entry) => entry.length > 0);
+      }
+    } catch {
+      // fall through to whitespace parsing
+    }
+  }
+  return trimmed.split(/\s+/).filter(Boolean);
+};
+
+const resolveCodexCommand = (): { command: string; preArgs: string[] } => {
+  const command = process.env[CODEX_COMMAND_ENV]?.trim() || "codex";
+  const preArgs = parseCommandArgs(process.env[CODEX_COMMAND_ARGS_ENV]);
+  return { command, preArgs };
 };
 
 const formatMessages = (messages: ProviderMessage[]): string => {
@@ -125,7 +151,8 @@ export class CodexCliProvider implements Provider {
       );
     }
     const sandbox = resolveSandboxArgs();
-    const args = [...sandbox.args, "exec", "--model", resolvedModel, "--json"];
+    const codexCommand = resolveCodexCommand();
+    const args = [...codexCommand.preArgs, ...sandbox.args, "exec", "--model", resolvedModel, "--json"];
     if (!sandbox.bypass) {
       args.push("--full-auto");
     }
@@ -145,7 +172,7 @@ export class CodexCliProvider implements Provider {
     }
 
     return await new Promise<ProviderResponse>((resolve, reject) => {
-      const child = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+      const child = spawn(codexCommand.command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
       let raw = "";
       let stderr = "";
       let lineBuffer = "";
