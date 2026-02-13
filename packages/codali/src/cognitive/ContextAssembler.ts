@@ -2083,6 +2083,14 @@ const matchPattern = (relativePath: string, pattern?: string): boolean => {
   return relativePath.includes(normalizedPattern);
 };
 
+const patternTargetsHiddenPath = (value?: string): boolean => {
+  if (!value) return false;
+  const normalized = normalizePath(value);
+  return normalized
+    .split("/")
+    .some((segment) => segment.length > 1 && segment.startsWith("."));
+};
+
 const listWorkspaceFilesByPattern = async (
   workspaceRoot: string,
   root: string,
@@ -2107,6 +2115,8 @@ const listWorkspaceFilesByPattern = async (
   } catch {
     const results: string[] = [];
     const resolvedRoot = resolveWorkspacePath(workspaceRoot, normalizedRoot || ".");
+    const allowHiddenEntries =
+      patternTargetsHiddenPath(normalizedRoot) || patternTargetsHiddenPath(pattern);
     const queue: string[] = [resolvedRoot];
     while (queue.length > 0 && results.length < 5000) {
       const current = queue.shift();
@@ -2118,7 +2128,7 @@ const listWorkspaceFilesByPattern = async (
         continue;
       }
       for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue;
+        if (entry.name.startsWith(".") && !allowHiddenEntries) continue;
         if (entry.isDirectory()) {
           if (isExcludedDirName(entry.name)) continue;
           queue.push(path.join(current, entry.name));
