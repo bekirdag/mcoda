@@ -3450,11 +3450,11 @@ export class WorkOnTasksService {
           "Chromium binary not found for CLI browser tests. Install Docdex Chromium (docdex setup or MCODA_QA_CHROMIUM_PATH).",
       };
     }
-    if (!env.CHROME_PATH) env.CHROME_PATH = chromiumPath;
-    if (!env.CHROME_BIN) env.CHROME_BIN = chromiumPath;
-    if (!env.PUPPETEER_EXECUTABLE_PATH) env.PUPPETEER_EXECUTABLE_PATH = chromiumPath;
-    if (!env.PUPPETEER_PRODUCT) env.PUPPETEER_PRODUCT = "chrome";
-    if (!env.CYPRESS_BROWSER) env.CYPRESS_BROWSER = "chromium";
+    env.CHROME_PATH = chromiumPath;
+    env.CHROME_BIN = chromiumPath;
+    env.PUPPETEER_EXECUTABLE_PATH = chromiumPath;
+    env.PUPPETEER_PRODUCT = "chrome";
+    env.CYPRESS_BROWSER = "chromium";
     const updated = commands.map((command) => this.ensureCypressChromium(command));
     return { ok: true, commands: updated, env };
   }
