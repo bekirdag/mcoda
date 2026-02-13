@@ -693,8 +693,12 @@ test("GatewayTrioService stops when job is cancelled", async () => {
 test("GatewayTrioService records docdex preflight failures", { concurrency: false }, async () => {
   const prevMcodaDocdexUrl = process.env.MCODA_DOCDEX_URL;
   const prevDocdexUrl = process.env.DOCDEX_URL;
+  const prevSkipDocdexChecks = process.env.MCODA_SKIP_DOCDEX_CHECKS;
+  const prevSkipDocdexRuntimeChecks = process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS;
   delete process.env.MCODA_DOCDEX_URL;
   delete process.env.DOCDEX_URL;
+  delete process.env.MCODA_SKIP_DOCDEX_CHECKS;
+  delete process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS;
   const statusStore = makeStatusStore({ "TASK-DOCDEX": "in_progress" });
   const { service, dir, workspace } = await makeService({
     statusStore,
@@ -714,6 +718,10 @@ test("GatewayTrioService records docdex preflight failures", { concurrency: fals
     else process.env.MCODA_DOCDEX_URL = prevMcodaDocdexUrl;
     if (prevDocdexUrl === undefined) delete process.env.DOCDEX_URL;
     else process.env.DOCDEX_URL = prevDocdexUrl;
+    if (prevSkipDocdexChecks === undefined) delete process.env.MCODA_SKIP_DOCDEX_CHECKS;
+    else process.env.MCODA_SKIP_DOCDEX_CHECKS = prevSkipDocdexChecks;
+    if (prevSkipDocdexRuntimeChecks === undefined) delete process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS;
+    else process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS = prevSkipDocdexRuntimeChecks;
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
