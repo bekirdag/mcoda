@@ -344,10 +344,13 @@ export class GatewayTrioService {
   }
 
   private async runDocdexPreflight(jobId: string, warnings: string[]): Promise<void> {
-    if (process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" || process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS === "1") {
+    const usingCustomCheck = Boolean(this.deps.docdexCheck);
+    if (
+      !usingCustomCheck &&
+      (process.env.MCODA_SKIP_DOCDEX_CHECKS === "1" || process.env.MCODA_SKIP_DOCDEX_RUNTIME_CHECKS === "1")
+    ) {
       return;
     }
-    const usingCustomCheck = Boolean(this.deps.docdexCheck);
     const configuredUrl =
       this.workspace.config?.docdexUrl ?? process.env.MCODA_DOCDEX_URL ?? process.env.DOCDEX_URL;
     if (configuredUrl && !usingCustomCheck) {
