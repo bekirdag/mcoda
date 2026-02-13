@@ -137,4 +137,12 @@ jobs:
       - name: Publish packages (OIDC)
         env:
           NPM_CONFIG_PROVENANCE: "true"
-        run: pnpm -r --filter "./packages/*" publish --access public --no-git-checks
+        run: |
+          pnpm -r \
+            --filter "./packages/cli" \
+            --filter "./packages/core" \
+            --filter "./packages/shared" \
+            --filter "./packages/db" \
+            --filter "./packages/integrations" \
+            --filter "./packages/agents" \
+            publish --access public --no-git-checks

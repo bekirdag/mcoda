@@ -37,4 +37,12 @@ jobs:
         run: pnpm --filter mcoda run pack:verify
 
       - name: npm publish dry run
-        run: pnpm -r publish --dry-run --access public --no-git-checks
+        run: |
+          pnpm -r \
+            --filter "./packages/cli" \
+            --filter "./packages/core" \
+            --filter "./packages/shared" \
+            --filter "./packages/db" \
+            --filter "./packages/integrations" \
+            --filter "./packages/agents" \
+            publish --dry-run --access public --no-git-checks
