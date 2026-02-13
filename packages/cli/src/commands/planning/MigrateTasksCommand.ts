@@ -80,7 +80,7 @@ export class MigrateTasksCommand {
       if (!args.quiet) {
         console.log(
           [
-            `Migrated plan from ${planDir ?? path.join(workspaceRoot, ".mcoda", "tasks", projectKey)}`,
+            `Migrated plan from ${planDir ?? path.join(workspace.mcodaDir, "tasks", projectKey)}`,
             `Epics: ${result.epics.length}`,
             `Stories: ${result.stories.length}`,
             `Tasks: ${result.tasks.length}`,

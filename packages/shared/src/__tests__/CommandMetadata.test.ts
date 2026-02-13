@@ -14,6 +14,11 @@ describe("CommandMetadata", () => {
     assert.ok(caps.includes("code_review"));
   });
 
+  it("includes code_write for work-on-tasks", () => {
+    const caps = getCommandRequiredCapabilities("work-on-tasks");
+    assert.deepEqual(caps, ["code_write"]);
+  });
+
   it("returns empty capabilities for agent rating", () => {
     const caps = getCommandRequiredCapabilities("agent-rating");
     assert.equal(caps.length, 0);

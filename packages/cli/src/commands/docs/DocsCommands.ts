@@ -1,8 +1,8 @@
 import path from "node:path";
 import { DocsService, WorkspaceResolver } from "@mcoda/core";
 
-const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--rfp-id <ID>] [--fast] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
-const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--rate-agents] [--fast] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
+const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--rfp-id <ID>] [--fast] [--iterate] [--quality <build-ready>] [--resolve-open-questions] [--no-placeholders] [--no-maybes] [--cross-align] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
+const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--rate-agents] [--fast] [--iterate] [--quality <build-ready>] [--resolve-open-questions] [--no-placeholders] [--no-maybes] [--cross-align] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
 
 export interface ParsedPdrArgs {
   workspaceRoot?: string;
@@ -14,6 +14,13 @@ export interface ParsedPdrArgs {
   agentStream: boolean;
   rateAgents: boolean;
   fast: boolean;
+  iterate: boolean;
+  quality?: string;
+  buildReady: boolean;
+  resolveOpenQuestions: boolean;
+  noPlaceholders: boolean;
+  noMaybes: boolean;
+  crossAlign: boolean;
   dryRun: boolean;
   json: boolean;
   quiet: boolean;
@@ -31,6 +38,13 @@ export interface ParsedSdsArgs {
   agentStream: boolean;
   rateAgents: boolean;
   fast: boolean;
+  iterate: boolean;
+  quality?: string;
+  buildReady: boolean;
+  resolveOpenQuestions: boolean;
+  noPlaceholders: boolean;
+  noMaybes: boolean;
+  crossAlign: boolean;
   force: boolean;
   resumeJobId?: string;
   dryRun: boolean;
@@ -59,6 +73,12 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
   let agentStream: boolean | undefined;
   let rateAgents = false;
   let fast = false;
+  let iterate = false;
+  let quality: string | undefined;
+  let resolveOpenQuestions = false;
+  let noPlaceholders = false;
+  let noMaybes = false;
+  let crossAlign = true;
   let dryRun = false;
   let json = false;
   let quiet = false;
@@ -71,6 +91,36 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
     if (arg.startsWith("--rate-agents=")) {
       const [, raw] = arg.split("=", 2);
       rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--quality=")) {
+      const [, raw] = arg.split("=", 2);
+      quality = raw;
+      continue;
+    }
+    if (arg.startsWith("--iterate=")) {
+      const [, raw] = arg.split("=", 2);
+      iterate = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--resolve-open-questions=")) {
+      const [, raw] = arg.split("=", 2);
+      resolveOpenQuestions = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--no-placeholders=")) {
+      const [, raw] = arg.split("=", 2);
+      noPlaceholders = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--no-maybes=")) {
+      const [, raw] = arg.split("=", 2);
+      noMaybes = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--cross-align=")) {
+      const [, raw] = arg.split("=", 2);
+      crossAlign = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -121,6 +171,66 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
       case "--fast":
         fast = true;
         break;
+      case "--iterate": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          iterate = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          iterate = true;
+        }
+        break;
+      }
+      case "--quality": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          quality = next;
+          i += 1;
+        } else {
+          quality = "";
+        }
+        break;
+      }
+      case "--resolve-open-questions": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          resolveOpenQuestions = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          resolveOpenQuestions = true;
+        }
+        break;
+      }
+      case "--no-placeholders": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          noPlaceholders = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          noPlaceholders = true;
+        }
+        break;
+      }
+      case "--no-maybes": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          noMaybes = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          noMaybes = true;
+        }
+        break;
+      }
+      case "--cross-align": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          crossAlign = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          crossAlign = true;
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -152,6 +262,8 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
     }
   }
 
+  const normalizedQuality = quality?.trim().toLowerCase();
+  const buildReady = normalizedQuality === "build-ready";
   return {
     workspaceRoot,
     projectKey,
@@ -159,9 +271,16 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
     rfpPath,
     outPath,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     fast,
+    iterate,
+    quality,
+    buildReady,
+    resolveOpenQuestions,
+    noPlaceholders,
+    noMaybes,
+    crossAlign,
     dryRun,
     json,
     quiet,
@@ -181,6 +300,12 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
   let rateAgents = false;
   let force = false;
   let fast = false;
+  let iterate = false;
+  let quality: string | undefined;
+  let resolveOpenQuestions = false;
+  let noPlaceholders = false;
+  let noMaybes = false;
+  let crossAlign = true;
   let resumeJobId: string | undefined;
   let dryRun = false;
   let json = false;
@@ -194,6 +319,36 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
     if (arg.startsWith("--rate-agents=")) {
       const [, raw] = arg.split("=", 2);
       rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--quality=")) {
+      const [, raw] = arg.split("=", 2);
+      quality = raw;
+      continue;
+    }
+    if (arg.startsWith("--iterate=")) {
+      const [, raw] = arg.split("=", 2);
+      iterate = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--resolve-open-questions=")) {
+      const [, raw] = arg.split("=", 2);
+      resolveOpenQuestions = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--no-placeholders=")) {
+      const [, raw] = arg.split("=", 2);
+      noPlaceholders = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--no-maybes=")) {
+      const [, raw] = arg.split("=", 2);
+      noMaybes = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--cross-align=")) {
+      const [, raw] = arg.split("=", 2);
+      crossAlign = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -240,6 +395,66 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
       case "--fast":
         fast = true;
         break;
+      case "--iterate": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          iterate = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          iterate = true;
+        }
+        break;
+      }
+      case "--quality": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          quality = next;
+          i += 1;
+        } else {
+          quality = "";
+        }
+        break;
+      }
+      case "--resolve-open-questions": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          resolveOpenQuestions = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          resolveOpenQuestions = true;
+        }
+        break;
+      }
+      case "--no-placeholders": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          noPlaceholders = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          noPlaceholders = true;
+        }
+        break;
+      }
+      case "--no-maybes": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          noMaybes = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          noMaybes = true;
+        }
+        break;
+      }
+      case "--cross-align": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          crossAlign = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          crossAlign = true;
+        }
+        break;
+      }
       case "--force":
         force = true;
         break;
@@ -273,15 +488,24 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
     }
   }
 
+  const normalizedQuality = quality?.trim().toLowerCase();
+  const buildReady = normalizedQuality === "build-ready";
   return {
     workspaceRoot,
     projectKey,
     outPath,
     agentName,
     templateName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     fast,
+    iterate,
+    quality,
+    buildReady,
+    resolveOpenQuestions,
+    noPlaceholders,
+    noMaybes,
+    crossAlign,
     force,
     resumeJobId,
     dryRun,
@@ -300,6 +524,17 @@ const printWarnings = (warnings: string[]): void => {
   console.warn(banner);
 };
 
+const resolveBuildReady = (quality: string | undefined, usage: string): boolean => {
+  if (quality === undefined) return false;
+  const trimmed = quality.trim();
+  if (!trimmed) {
+    throw new Error(`Missing --quality value.\n\n${usage}`);
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "build-ready") return true;
+  throw new Error(`Unsupported --quality value: ${quality}\n\n${usage}`);
+};
+
 export class DocsCommands {
   static async run(argv: string[]): Promise<void> {
     let service: DocsService | undefined;
@@ -309,6 +544,7 @@ export class DocsCommands {
         args = args.slice(1);
         if (args[0] === "generate") args = args.slice(1);
         const parsed = parseSdsArgs(args);
+        const buildReady = resolveBuildReady(parsed.quality, sdsUsage);
         const workspace = await WorkspaceResolver.resolveWorkspace({
           cwd: process.cwd(),
           explicitWorkspace: parsed.workspaceRoot,
@@ -329,6 +565,12 @@ export class DocsCommands {
           agentStream: parsed.agentStream,
           rateAgents: parsed.rateAgents,
           fast: parsed.fast,
+          iterate: parsed.iterate,
+          buildReady,
+          resolveOpenQuestions: parsed.resolveOpenQuestions,
+          noPlaceholders: parsed.noPlaceholders,
+          noMaybes: parsed.noMaybes,
+          crossAlign: parsed.crossAlign,
           dryRun: parsed.dryRun,
           json: parsed.json,
           force: parsed.force,
@@ -381,6 +623,7 @@ export class DocsCommands {
       if (args[0] === "pdr") args = args.slice(1);
       if (args[0] === "generate") args = args.slice(1);
       const parsed = parsePdrArgs(args);
+      const buildReady = resolveBuildReady(parsed.quality, pdrUsage);
       if (!parsed.rfpId && !parsed.rfpPath) {
         throw new Error(`Missing --rfp-id or --rfp-path\n\n${pdrUsage}`);
       }
@@ -406,6 +649,12 @@ export class DocsCommands {
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
         fast: parsed.fast,
+        iterate: parsed.iterate,
+        buildReady,
+        resolveOpenQuestions: parsed.resolveOpenQuestions,
+        noPlaceholders: parsed.noPlaceholders,
+        noMaybes: parsed.noMaybes,
+        crossAlign: parsed.crossAlign,
         dryRun: parsed.dryRun,
         json: parsed.json,
         onToken,

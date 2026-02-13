@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
 import { AgentRunCommand } from "../commands/agents/AgentRunCommand.js";
@@ -54,6 +55,18 @@ const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> 
   }
 };
 
+const withMockedStdin = async (input: string, fn: () => Promise<void>): Promise<void> => {
+  const originalStdin = process.stdin;
+  const stream = Readable.from([input]);
+  Object.defineProperty(stream, "isTTY", { value: false });
+  Object.defineProperty(process, "stdin", { value: stream });
+  try {
+    await fn();
+  } finally {
+    Object.defineProperty(process, "stdin", { value: originalStdin });
+  }
+};
+
 test("mcoda agent-run records command_runs and token_usage", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await AgentsCommands.run(["add", "qa", "--adapter", "qa-cli", "--capability", "chat"]);
@@ -65,5 +78,75 @@ test("mcoda agent-run records command_runs and token_usage", { concurrency: fals
     const tokens = await repo["db"].all("SELECT agent_id FROM token_usage WHERE command_run_id IS NOT NULL");
     assert.ok(tokens.length >= 1);
     await repo.close();
+  });
+});
+
+test("mcoda agent-run validates missing prompt flag values", async () => {
+  const cases = [
+    { args: ["qa", "--prompt"], message: "agent-run: missing value for --prompt" },
+    { args: ["qa", "--prompt-file"], message: "agent-run: missing value for --prompt-file" },
+    { args: ["qa", "--task-file"], message: "agent-run: missing value for --task-file" },
+  ];
+
+  for (const { args, message } of cases) {
+    await assert.rejects(() => AgentRunCommand.run(args), { message });
+  }
+});
+
+test("mcoda agent-run includes stdin when --stdin is set", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "qa", "--adapter", "qa-cli", "--capability", "chat"]);
+
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.join(" "));
+    };
+    try {
+      await withMockedStdin("stdin prompt", async () => {
+        await AgentRunCommand.run(["qa", "--prompt", "Inline prompt", "--stdin", "--json"]);
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const parsed = (() => {
+      for (let i = logs.length - 1; i >= 0; i -= 1) {
+        const entry = logs[i];
+        try {
+          return JSON.parse(entry);
+        } catch {
+          continue;
+        }
+      }
+      throw new Error("Expected JSON output from agent-run");
+    })();
+
+    const prompts = parsed.responses.map((entry: { prompt: string }) => entry.prompt);
+    assert.ok(prompts.includes("Inline prompt"));
+    assert.ok(prompts.includes("stdin prompt"));
+  });
+});
+
+test("mcoda agent-run emits JSON output with prompts and responses", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "json-run", "--adapter", "qa-cli", "--capability", "chat"]);
+
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.join(" "));
+    };
+    try {
+      await AgentRunCommand.run(["json-run", "--prompt", "Ping", "--json"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    assert.equal(parsed.agent.slug, "json-run");
+    assert.ok(Array.isArray(parsed.responses));
+    assert.equal(parsed.responses[0].prompt, "Ping");
+    assert.equal(typeof parsed.responses[0].output, "string");
   });
 });

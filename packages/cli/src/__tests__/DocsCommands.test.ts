@@ -4,10 +4,17 @@ import path from "node:path";
 import { parsePdrArgs, parseSdsArgs } from "../commands/docs/DocsCommands.js";
 
 describe("docs pdr argument parsing", () => {
-  it("defaults agentStream to true", () => {
+  it("defaults agentStream to false", () => {
     const parsed = parsePdrArgs(["--rfp-path", "/tmp/rfp.md"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
+    assert.equal(parsed.iterate, false);
+    assert.equal(parsed.quality, undefined);
+    assert.equal(parsed.buildReady, false);
+    assert.equal(parsed.resolveOpenQuestions, false);
+    assert.equal(parsed.noPlaceholders, false);
+    assert.equal(parsed.noMaybes, false);
+    assert.equal(parsed.crossAlign, true);
   });
 
   it("parses agentStream false", () => {
@@ -34,6 +41,35 @@ describe("docs pdr argument parsing", () => {
     assert.equal(parsed.fast, true);
   });
 
+  it("parses iterative flags for pdr", () => {
+    const parsed = parsePdrArgs([
+      "--rfp-path",
+      "/tmp/rfp.md",
+      "--iterate",
+      "--quality",
+      "build-ready",
+      "--resolve-open-questions",
+      "--no-placeholders",
+      "--no-maybes",
+      "--cross-align",
+    ]);
+    assert.equal(parsed.iterate, true);
+    assert.equal(parsed.quality, "build-ready");
+    assert.equal(parsed.buildReady, true);
+    assert.equal(parsed.resolveOpenQuestions, true);
+    assert.equal(parsed.noPlaceholders, true);
+    assert.equal(parsed.noMaybes, true);
+    assert.equal(parsed.crossAlign, true);
+  });
+
+  it("parses agent overrides for pdr and sds", () => {
+    const pdr = parsePdrArgs(["--rfp-path", "/tmp/rfp.md", "--agent", "docgen-agent"]);
+    assert.equal(pdr.agentName, "docgen-agent");
+
+    const sds = parseSdsArgs(["--project", "SDS", "--agent", "docgen-agent"]);
+    assert.equal(sds.agentName, "docgen-agent");
+  });
+
   it("parses sds defaults and flags", () => {
     const parsed = parseSdsArgs([
       "--project",
@@ -56,9 +92,36 @@ describe("docs pdr argument parsing", () => {
     assert.equal(parsed.fast, true);
   });
 
-  it("defaults sds agentStream to true", () => {
+  it("defaults sds agentStream to false", () => {
     const parsed = parseSdsArgs(["--project", "SDS"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
+    assert.equal(parsed.iterate, false);
+    assert.equal(parsed.quality, undefined);
+    assert.equal(parsed.buildReady, false);
+    assert.equal(parsed.resolveOpenQuestions, false);
+    assert.equal(parsed.noPlaceholders, false);
+    assert.equal(parsed.noMaybes, false);
+    assert.equal(parsed.crossAlign, true);
+  });
+
+  it("parses iterative flags for sds", () => {
+    const parsed = parseSdsArgs([
+      "--project",
+      "SDS",
+      "--iterate",
+      "--quality=build-ready",
+      "--resolve-open-questions",
+      "--no-placeholders",
+      "--no-maybes",
+      "--cross-align",
+    ]);
+    assert.equal(parsed.iterate, true);
+    assert.equal(parsed.quality, "build-ready");
+    assert.equal(parsed.buildReady, true);
+    assert.equal(parsed.resolveOpenQuestions, true);
+    assert.equal(parsed.noPlaceholders, true);
+    assert.equal(parsed.noMaybes, true);
+    assert.equal(parsed.crossAlign, true);
   });
 });

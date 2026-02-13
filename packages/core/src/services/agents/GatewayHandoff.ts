@@ -1,87 +1,120 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { GatewayAgentResult } from "./GatewayAgentService.js";
+import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
+import { PathHelper } from "@mcoda/shared";
 
 export const GATEWAY_HANDOFF_ENV_PATH = "MCODA_GATEWAY_HANDOFF_PATH";
 
+export interface GatewayHandoffContext {
+  qaFailureSummary?: string;
+  learningSummary?: string;
+}
+
 export const buildGatewayHandoffDocdexUsage = (): string => {
-  const lines: string[] = [];
-  lines.push("## Docdex Usage (required)");
-  lines.push("- Use docdexd CLI (daemon-backed), not curl or MCP.");
-  lines.push("- Search: `docdexd chat --repo <repo> --query \"...\" --limit 8` (HTTP: `GET /search`).");
-  lines.push("- Web: `docdexd web-search`, `docdexd web-fetch`, `docdexd web-rag` (HTTP: `/v1/web/*`).");
-  lines.push("- Memory: `docdexd memory-store` / `memory-recall` (HTTP: `/v1/memory/store`, `/v1/memory/recall`).");
-  lines.push(
-    "- Agent profile: `docdexd profile add/search` (HTTP: `/v1/profile/add`, `/v1/profile/search`, `/v1/profile/save`).",
-  );
-  lines.push("- AST/impact/snippets use daemon endpoints (`/v1/ast`, `/v1/graph/impact`, `/snippet/:doc_id`).");
-  lines.push(
-    "- Reasoning DAG: capture session_id (docdex request_id) and export with `docdexd dag view --repo <repo> <session_id> --format text|dot|json`.",
-  );
-  lines.push("- HTTP DAG export: `GET /v1/dag/export?session_id=<id>&format=json|text|dot&max_nodes=<n>`.");
-  lines.push("- Note any docdex failures/disabled memory/profile in task comments or docdexNotes.");
-  return lines.join("\n");
+  return buildDocdexUsageGuidance({
+    contextLabel: "docdexNotes or task comments",
+    includeHeading: true,
+    includeFallback: true,
+  });
 };
 
-export const buildGatewayHandoffContent = (result: GatewayAgentResult): string => {
+export const buildGatewayHandoffContent = (
+  result: GatewayAgentResult,
+  context?: GatewayHandoffContext,
+): string => {
   const lines: string[] = [];
+  const analysis = result.analysis;
+  const filesLikelyTouched = analysis.filesLikelyTouched ?? [];
+  const filesToCreate = analysis.filesToCreate ?? [];
+  const dirsToCreate = analysis.dirsToCreate ?? [];
+  const assumptions = analysis.assumptions ?? [];
+  const risks = analysis.risks ?? [];
+  const docdexNotes = analysis.docdexNotes ?? [];
   lines.push("# Gateway Handoff");
   lines.push("");
   lines.push(`Job: ${result.job}`);
   lines.push(`Gateway agent: ${result.gatewayAgent.slug}`);
   lines.push(`Chosen agent: ${result.chosenAgent.agentSlug}`);
   lines.push("");
-  if (result.analysis.reasoningSummary?.trim()) {
+  if (analysis.reasoningSummary?.trim()) {
     lines.push("## Reasoning Summary");
-    lines.push(result.analysis.reasoningSummary.trim());
+    lines.push(analysis.reasoningSummary.trim());
+    lines.push("");
+  }
+  if (result.tasks?.length) {
+    lines.push("## Task Context");
+    result.tasks.forEach((task) => {
+      lines.push(`- ${task.key}: ${task.title}`);
+      if (task.description) lines.push(`  Description: ${task.description}`);
+      if (task.acceptanceCriteria?.length) lines.push(`  Acceptance: ${task.acceptanceCriteria.join(" | ")}`);
+      if (task.dependencies?.length) lines.push(`  Dependencies: ${task.dependencies.join(", ")}`);
+    });
     lines.push("");
   }
   lines.push("## Summary");
-  lines.push(result.analysis.summary || "(none)");
+  lines.push(analysis.summary || "(none)");
   lines.push("");
   lines.push("## Current State");
-  lines.push(result.analysis.currentState || "(none)");
+  lines.push(analysis.currentState || "(none)");
   lines.push("");
   lines.push("## Todo");
-  lines.push(result.analysis.todo || "(none)");
+  lines.push(analysis.todo || "(none)");
   lines.push("");
   lines.push("## Understanding");
-  lines.push(result.analysis.understanding || "(none)");
+  lines.push(analysis.understanding || "(none)");
   lines.push("");
   lines.push("## Plan");
-  if (result.analysis.plan.length) {
-    result.analysis.plan.forEach((step, idx) => lines.push(`${idx + 1}. ${step}`));
+  if (analysis.plan.length) {
+    analysis.plan.forEach((step, idx) => lines.push(`${idx + 1}. ${step}`));
   } else {
     lines.push("(none)");
   }
   lines.push("");
   lines.push("## Files Likely Touched");
-  if (result.analysis.filesLikelyTouched.length) {
-    result.analysis.filesLikelyTouched.forEach((file) => lines.push(`- ${file}`));
+  if (filesLikelyTouched.length) {
+    filesLikelyTouched.forEach((file) => lines.push(`- ${file}`));
   } else {
     lines.push("(none)");
   }
   lines.push("");
   lines.push("## Files To Create");
-  if (result.analysis.filesToCreate.length) {
-    result.analysis.filesToCreate.forEach((file) => lines.push(`- ${file}`));
+  if (filesToCreate.length) {
+    filesToCreate.forEach((file) => lines.push(`- ${file}`));
   } else {
     lines.push("(none)");
   }
-  if (result.analysis.assumptions.length) {
+  lines.push("");
+  lines.push("## Dirs To Create");
+  if (dirsToCreate.length) {
+    dirsToCreate.forEach((dir) => lines.push(`- ${dir}`));
+  } else {
+    lines.push("(none)");
+  }
+  if (assumptions.length) {
     lines.push("");
     lines.push("## Assumptions");
-    result.analysis.assumptions.forEach((item) => lines.push(`- ${item}`));
+    assumptions.forEach((item) => lines.push(`- ${item}`));
   }
-  if (result.analysis.risks.length) {
+  if (risks.length) {
     lines.push("");
     lines.push("## Risks");
-    result.analysis.risks.forEach((item) => lines.push(`- ${item}`));
+    risks.forEach((item) => lines.push(`- ${item}`));
   }
-  if (result.analysis.docdexNotes.length) {
+  if (docdexNotes.length) {
     lines.push("");
     lines.push("## Docdex Notes");
-    result.analysis.docdexNotes.forEach((item) => lines.push(`- ${item}`));
+    docdexNotes.forEach((item) => lines.push(`- ${item}`));
+  }
+  if (context?.qaFailureSummary?.trim()) {
+    lines.push("");
+    lines.push("## QA Failure Summary");
+    lines.push(context.qaFailureSummary.trim());
+  }
+  if (context?.learningSummary?.trim()) {
+    lines.push("");
+    lines.push("## Revert Learning");
+    lines.push(context.learningSummary.trim());
   }
   lines.push("");
   lines.push(buildGatewayHandoffDocdexUsage());
@@ -94,7 +127,7 @@ export const writeGatewayHandoffFile = async (
   content: string,
   prefix = "gateway",
 ): Promise<string> => {
-  const handoffDir = path.join(workspaceRoot, ".mcoda", "handoffs");
+  const handoffDir = path.join(PathHelper.getWorkspaceDir(workspaceRoot), "handoffs");
   await fs.mkdir(handoffDir, { recursive: true });
   const handoffPath = path.join(handoffDir, `${prefix}-${commandRunId}.md`);
   await fs.writeFile(handoffPath, content, "utf8");

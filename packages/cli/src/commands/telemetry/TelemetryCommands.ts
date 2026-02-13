@@ -175,7 +175,7 @@ const formatNumber = (value: number | null | undefined, digits = 0): string => {
   return `${value}`;
 };
 
-const renderTokensTable = (rows: TokenUsageSummaryRow[], groupBy: string[]): void => {
+export const renderTokensTable = (rows: TokenUsageSummaryRow[], groupBy: string[]): void => {
   const dims = new Set(groupBy);
   const headers: string[] = [];
   const extractors: ((row: TokenUsageSummaryRow) => string)[] = [];
@@ -209,12 +209,26 @@ const renderTokensTable = (rows: TokenUsageSummaryRow[], groupBy: string[]): voi
     extractors.push((row) => row.action ?? "-");
   }
 
-  headers.push("CALLS", "TOKENS_IN", "TOKENS_OUT", "TOKENS_TOTAL", "COST");
+  headers.push(
+    "CALLS",
+    "TOKENS_IN",
+    "TOKENS_OUT",
+    "TOKENS_TOTAL",
+    "TOKENS_CACHED",
+    "CACHE_READ",
+    "CACHE_WRITE",
+    "DURATION_MS",
+    "COST",
+  );
   extractors.push(
     (row) => `${row.calls}`,
     (row) => formatNumber(row.tokens_prompt),
     (row) => formatNumber(row.tokens_completion),
     (row) => formatNumber(row.tokens_total),
+    (row) => formatNumber(row.tokens_cached),
+    (row) => formatNumber(row.tokens_cache_read),
+    (row) => formatNumber(row.tokens_cache_write),
+    (row) => formatNumber(row.duration_ms),
     (row) => formatNumber(row.cost_estimate, 4),
   );
 

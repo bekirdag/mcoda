@@ -10,7 +10,7 @@ const FALLBACK_CAPABILITIES: Record<string, string[]> = {
   "refine-tasks": ["plan"],
   "work-on-tasks": ["code_write"],
   "code-review": ["code_review"],
-  "qa-tasks": ["qa_interpretation"],
+  "qa-tasks": [],
   "agent-rating": [],
   pdr: ["docdex_query"],
   sds: ["docdex_query"],

@@ -63,8 +63,12 @@ const FOLLOWUP_DESCRIPTION_TEMPLATE = (
 export class QaFollowupService {
   constructor(private workspaceRepo: WorkspaceRepository, private workspaceRoot: string) {}
 
+  private get mcodaDir(): string {
+    return PathHelper.getWorkspaceDir(this.workspaceRoot);
+  }
+
   private get cachePath(): string {
-    return path.join(this.workspaceRoot, '.mcoda', 'qa-containers.json');
+    return path.join(this.mcodaDir, 'qa-containers.json');
   }
 
   private async readCache(): Promise<Record<string, { epicId: string; storyId: string; epicKey: string; storyKey: string }>> {
@@ -140,9 +144,12 @@ export class QaFollowupService {
     const keyGen = createTaskKeyGenerator(storyKeyBase, existingKeys);
     const followupKey = keyGen();
     const now = new Date().toISOString();
+    const storyPoints = suggestion.storyPoints ?? 1;
+    const boundedPoints = Math.min(10, Math.max(1, Math.round(storyPoints)));
     const metadata: Record<string, unknown> = {
       tags: ['qa-found', 'auto-created', 'ready-for-ai-dev', 'source=qa', ...(suggestion.tags ?? [])],
       source_task: sourceTask.key,
+      complexity: boundedPoints,
       ...(suggestion.followupSlug ? { qa_followup_slug: suggestion.followupSlug } : {}),
       ...(suggestion.components ? { components: suggestion.components } : {}),
       ...(suggestion.docLinks ? { doc_links: suggestion.docLinks } : {}),
@@ -175,7 +182,7 @@ export class QaFollowupService {
       description,
       type: suggestion.type ?? 'bug',
       status: 'not_started',
-      storyPoints: suggestion.storyPoints ?? 1,
+      storyPoints: boundedPoints,
       priority: suggestion.priority ?? 99,
       metadata,
     };

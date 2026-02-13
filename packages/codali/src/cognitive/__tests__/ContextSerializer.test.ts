@@ -1,0 +1,300 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { sanitizeContextBundleForOutput, serializeContext } from "../ContextSerializer.js";
+import type { ContextBundle } from "../Types.js";
+
+const baseBundle: ContextBundle = {
+  request: "Fix login",
+  query_signals: {
+    phrases: ["Fix login"],
+    file_tokens: ["src/auth.ts"],
+    keywords: ["login", "auth"],
+    keyword_phrases: ["fix login"],
+  },
+  request_digest: {
+    summary: "Update login/auth behavior in existing source files.",
+    refined_query: "login auth source flow",
+    confidence: "medium",
+    signals: ["login", "auth", "source"],
+    candidate_files: ["src/auth.ts"],
+  },
+  queries: ["login"],
+  search_results: [
+    { query: "login", hits: [{ path: "src/auth.ts", score: 12 }] },
+  ],
+  snippets: [],
+  symbols: [{ path: "src/auth.ts", summary: "symbol-summary" }],
+  ast: [{ path: "src/auth.ts", nodes: ["node"] }],
+  impact: [{ file: "src/auth.ts", inbound: [], outbound: ["src/user.ts"] }],
+  impact_diagnostics: [],
+  dag_summary: "src/auth.ts -> src/user.ts",
+  intent: {
+    intents: ["ui"],
+    matches: {
+      ui: ["header"],
+      content: [],
+      behavior: [],
+      data: [],
+      testing: [],
+      infra: [],
+      security: [],
+      performance: [],
+      observability: [],
+    },
+  },
+  project_info: {
+    workspace_root: "/repo",
+    readme_path: "README.md",
+    readme_summary: "Sample Repo: Test summary for context.",
+    manifests: ["package.json"],
+    docs: ["docs/rfp.md"],
+    file_types: [".ts", ".md"],
+  },
+  memory: [],
+  preferences_detected: [],
+  profile: [],
+  index: { last_updated_epoch_ms: 0, num_docs: 0 },
+  warnings: ["docdex_low_confidence"],
+  allow_write_paths: ["src/auth.ts"],
+  read_only_paths: ["docs/sds"],
+  files: [
+    {
+      path: "src/auth.ts",
+      role: "focus",
+      content: "export const login = () => {};",
+      size: 10,
+      truncated: false,
+      sliceStrategy: "full",
+      origin: "fs",
+    },
+    {
+      path: "src/user.ts",
+      role: "periphery",
+      content: "interface User { id: string }",
+      size: 10,
+      truncated: false,
+      sliceStrategy: "symbols",
+      origin: "docdex",
+    },
+  ],
+};
+
+test("ContextSerializer outputs bundle_text with headers", { concurrency: false }, () => {
+  const serialized = serializeContext(baseBundle, { mode: "bundle_text", audience: "librarian" });
+  assert.ok(serialized.content.includes("PROJECT SUMMARY (README):"));
+  assert.ok(!serialized.content.includes("RESEARCH SUMMARY:"));
+  assert.ok(serialized.content.includes("AGENT PROTOCOL (REQUEST MORE CONTEXT):"));
+  assert.ok(serialized.content.includes("FILE REFERENCES (CONTENT WITHHELD):"));
+  assert.ok(serialized.content.includes("INTENT:"));
+  assert.ok(serialized.content.includes("PROJECT INFO:"));
+  assert.ok(serialized.content.includes("QUERIES:"));
+  assert.ok(serialized.content.includes("QUERY SIGNALS:"));
+  assert.ok(serialized.content.includes("REQUEST DIGEST:"));
+  assert.ok(serialized.content.includes("SEARCH RESULTS:"));
+  assert.ok(serialized.content.includes("WARNINGS:"));
+  assert.ok(serialized.content.includes("INDEX INFO:"));
+  assert.ok(serialized.content.includes("Fix login"));
+  assert.ok(!serialized.content.includes("export const login"));
+});
+
+test("ContextSerializer includes research summary section when present", { concurrency: false }, () => {
+  const bundle: ContextBundle = {
+    ...baseBundle,
+    research: {
+      status: "completed",
+      duration_ms: 42,
+      key_findings: ["Reviewed auth module and user flow"],
+      notes: ["summary note"],
+      tool_usage: {
+        search: 3,
+        open_or_snippet: 2,
+        symbols_or_ast: 1,
+        impact: 1,
+        tree: 1,
+        dag_export: 0,
+      },
+      evidence: {
+        search_hits: 5,
+        snippet_count: 2,
+        symbol_files: 1,
+        ast_files: 1,
+        impact_files: 1,
+        impact_edges: 0,
+        repo_map: true,
+        dag_summary: false,
+        gaps: ["missing_dag_export"],
+      },
+    },
+  };
+  const serialized = serializeContext(bundle, { mode: "bundle_text", audience: "librarian" });
+  assert.ok(serialized.content.includes("RESEARCH SUMMARY:"));
+  assert.ok(serialized.content.includes("Tool usage: search=3"));
+  assert.ok(serialized.content.includes("Key findings: Reviewed auth module"));
+  assert.ok(serialized.content.includes("Notes: summary note"));
+  assert.ok(serialized.content.includes("Unresolved gaps: missing_dag_export"));
+});
+
+test("ContextSerializer expands known warnings and preserves unknown warnings", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      warnings: ["docdex_low_confidence", "unknown_warning_code"],
+    },
+    { mode: "bundle_text", audience: "librarian" },
+  );
+  assert.ok(serialized.content.includes("WARNINGS:"));
+  assert.ok(serialized.content.includes("docdex_low_confidence"));
+  assert.ok(serialized.content.includes("Low-confidence selection"));
+  assert.ok(serialized.content.includes("unknown_warning_code"));
+});
+
+test("ContextSerializer surfaces related search hits not in selection", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      selection: {
+        focus: ["src/auth.ts"],
+        periphery: ["src/user.ts"],
+        all: ["src/auth.ts", "src/user.ts"],
+        low_confidence: false,
+      },
+      search_results: [
+        {
+          query: "login",
+          hits: [
+            { path: "tests/auth.test.js", score: 12 },
+            { path: "docs/rfp.md", score: 10 },
+          ],
+        },
+      ],
+    },
+    { mode: "bundle_text", audience: "librarian" },
+  );
+  assert.ok(serialized.content.includes("RELATED HITS (NOT SELECTED):"));
+  assert.ok(serialized.content.includes("tests/auth.test.js"));
+  assert.ok(serialized.content.includes("docs/rfp.md"));
+});
+
+test("ContextSerializer outputs json when requested", { concurrency: false }, () => {
+  const serialized = serializeContext(baseBundle, { mode: "json" });
+  const parsed = JSON.parse(serialized.content);
+  assert.equal(parsed.request, "Fix login");
+});
+
+test("ContextSerializer preserves research summary in json and sanitization", { concurrency: false }, () => {
+  const bundle: ContextBundle = {
+    ...baseBundle,
+    research: {
+      status: "completed",
+      started_at_ms: 10,
+      ended_at_ms: 25,
+      duration_ms: 15,
+      key_findings: ["Evidence shows auth.ts is primary entry"],
+      tool_usage: {
+        search: 2,
+        open_or_snippet: 1,
+        symbols_or_ast: 1,
+        impact: 1,
+        tree: 1,
+        dag_export: 0,
+      },
+      evidence: {
+        search_hits: 4,
+        snippet_count: 1,
+        symbol_files: 1,
+        ast_files: 1,
+        impact_files: 1,
+        impact_edges: 0,
+        repo_map: true,
+        dag_summary: false,
+        warnings: ["low_impact_edges"],
+        gaps: ["missing_dag_export"],
+      },
+      warnings: ["research_docdex_tree_failed"],
+      notes: ["summary note"],
+    },
+  };
+  const serialized = serializeContext(bundle, { mode: "json" });
+  const parsed = JSON.parse(serialized.content);
+  assert.equal(parsed.research.status, "completed");
+  assert.equal(parsed.research.key_findings[0], "Evidence shows auth.ts is primary entry");
+  assert.equal(parsed.research.tool_usage.search, 2);
+  const sanitized = sanitizeContextBundleForOutput(bundle);
+  assert.equal(sanitized.research?.evidence?.repo_map, true);
+  assert.ok(sanitized.research?.warnings?.includes("research_docdex_tree_failed"));
+});
+
+test("ContextSerializer includes missing data section when provided", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    { ...baseBundle, files: [], missing: ["no_context_files_loaded"] },
+    { mode: "bundle_text", audience: "librarian" },
+  );
+  assert.ok(serialized.content.includes("MISSING DATA:"));
+  assert.ok(serialized.content.includes("no_context_files_loaded"));
+});
+
+test("ContextSerializer sanitizes policy fields for librarian output", { concurrency: false }, () => {
+  const bundle = {
+    ...baseBundle,
+    warnings: [
+      ...baseBundle.warnings,
+      "write_policy_blocks_focus",
+      "write_policy_blocks_focus:src/auth.ts",
+    ],
+  };
+  const sanitized = sanitizeContextBundleForOutput(bundle);
+  assert.equal(sanitized.allow_write_paths, undefined);
+  assert.equal(sanitized.read_only_paths, undefined);
+  assert.ok(!sanitized.warnings.some((warning) => warning.startsWith("write_policy_")));
+  assert.ok(sanitized.warnings.includes("docdex_low_confidence"));
+});
+
+test("ContextSerializer emits a single repo map section when both are present", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      repo_map: "repo\n└── src",
+      repo_map_raw: "repo\n├── docs\n└── src\n    └── index.html",
+    },
+    { mode: "bundle_text", audience: "librarian" },
+  );
+  assert.ok(serialized.content.includes("REPO MAP:"));
+  assert.ok(!serialized.content.includes("REPO MAP (COMPACT VIEW):"));
+  assert.ok(!serialized.content.includes("REPO MAP (FULL):"));
+  assert.ok(serialized.content.includes("└── index.html"));
+});
+
+test("ContextSerializer caps large sections deterministically", { concurrency: false }, () => {
+  const oversized = "x".repeat(10_000);
+  const bundle: ContextBundle = {
+    ...baseBundle,
+    files: [],
+    snippets: Array.from({ length: 8 }).map((_, index) => ({
+      doc_id: `doc-${index}`,
+      path: `src/file-${index}.ts`,
+      content: oversized,
+    })),
+    symbols: Array.from({ length: 8 }).map((_, index) => ({
+      path: `src/symbol-${index}.ts`,
+      summary: oversized,
+    })),
+    ast: Array.from({ length: 6 }).map((_, index) => ({
+      path: `src/ast-${index}.ts`,
+      nodes: Array.from({ length: 120 }).map((__, nodeIndex) => ({ id: nodeIndex, kind: "node" })),
+    })),
+    memory: Array.from({ length: 10 }).map((_, index) => ({
+      text: `memory-${index} ${oversized}`,
+      source: "repo",
+    })),
+    profile: Array.from({ length: 10 }).map((_, index) => ({
+      content: `profile-${index} ${oversized}`,
+      source: "agent",
+    })),
+  };
+  const serialized = serializeContext(bundle, { mode: "bundle_text", audience: "builder" });
+  assert.ok(serialized.content.includes("Snippet entries truncated"));
+  assert.ok(serialized.content.includes("Symbol entries truncated"));
+  assert.ok(serialized.content.includes("AST entries truncated"));
+  assert.ok(serialized.content.includes("additional memory entries omitted"));
+  assert.ok(serialized.content.includes("additional profile entries omitted"));
+});

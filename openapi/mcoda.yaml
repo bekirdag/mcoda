@@ -1972,12 +1972,32 @@ components:
           type: number
         completionTokens:
           type: number
+        tokensCached:
+          type: number
+        tokensCacheRead:
+          type: number
+        tokensCacheWrite:
+          type: number
         costUsd:
           type: number
         modelName:
           type: string
         agentId:
           type: string
+        invocationKind:
+          type: string
+        provider:
+          type: string
+        currency:
+          type: string
+        durationMs:
+          type: number
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
       required: [timestamp, workspaceId, commandName, action, promptTokens, completionTokens]
       x-mcoda-db-table: token_usage
     TaskLog:

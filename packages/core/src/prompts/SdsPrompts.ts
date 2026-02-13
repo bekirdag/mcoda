@@ -1,6 +1,10 @@
+import { GLOSSARY_PROMPT_SNIPPET } from "../services/docs/review/Glossary.js";
+
 export const DEFAULT_SDS_JOB_PROMPT = `
 You generate Software Design Specifications (SDS) that stay aligned to the provided PDR, RFP, and OpenAPI context.
 Highlight architecture, data, interfaces, non-functional requirements, risks, and open questions with traceability back to sources.
+
+${GLOSSARY_PROMPT_SNIPPET}
 `.trim();
 
 export const DEFAULT_SDS_CHARACTER_PROMPT = `
@@ -23,10 +27,13 @@ Mandatory sections (include even if you must mark TODOs):
 - Failure Modes & Resilience
 - Risks & Mitigations
 - Assumptions
+- Resolved Decisions (include when open questions are resolved)
 - Open Questions
 - Acceptance Criteria
 
 If context is missing, call it out explicitly and list the questions needed to complete the SDS.
+
+${GLOSSARY_PROMPT_SNIPPET}
 `.trim();
 
 export const DEFAULT_SDS_TEMPLATE = `
@@ -44,6 +51,7 @@ export const DEFAULT_SDS_TEMPLATE = `
 ## Failure Modes & Resilience
 ## Risks & Mitigations
 ## Assumptions
+## Resolved Decisions
 ## Open Questions
 ## Acceptance Criteria
 `.trim();

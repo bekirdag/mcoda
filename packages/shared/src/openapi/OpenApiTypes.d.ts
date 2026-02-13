@@ -4,28 +4,83 @@ export interface Agent {
     slug: string;
     adapter: string;
     defaultModel?: string;
+    openaiCompatible?: boolean;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
+    rating?: number;
+    reasoningRating?: number;
+    bestUsage?: string;
+    costPerMillion?: number;
+    maxComplexity?: number;
+    ratingSamples?: number;
+    ratingLastScore?: number;
+    ratingUpdatedAt?: string;
+    complexitySamples?: number;
+    complexityUpdatedAt?: string;
     config?: Record<string, unknown>;
     createdAt: string;
     updatedAt: string;
+    capabilities?: string[];
+    health?: AgentHealth;
+    models?: AgentModel[];
+    prompts?: AgentPromptManifest;
+    auth?: AgentAuthMetadata;
 }
 export interface CreateAgentInput {
     slug: string;
     adapter: string;
     defaultModel?: string;
+    openaiCompatible?: boolean;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
+    rating?: number;
+    reasoningRating?: number;
+    bestUsage?: string;
+    costPerMillion?: number;
+    maxComplexity?: number;
+    ratingSamples?: number;
+    ratingLastScore?: number;
+    ratingUpdatedAt?: string;
+    complexitySamples?: number;
+    complexityUpdatedAt?: string;
     config?: Record<string, unknown>;
     capabilities?: string[];
     prompts?: AgentPromptManifest;
+    models?: AgentModel[];
 }
 export interface UpdateAgentInput {
     adapter?: string;
     defaultModel?: string;
+    openaiCompatible?: boolean;
+    contextWindow?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
+    rating?: number;
+    reasoningRating?: number;
+    bestUsage?: string;
+    costPerMillion?: number;
+    maxComplexity?: number;
+    ratingSamples?: number;
+    ratingLastScore?: number;
+    ratingUpdatedAt?: string;
+    complexitySamples?: number;
+    complexityUpdatedAt?: string;
     config?: Record<string, unknown>;
     capabilities?: string[];
     prompts?: AgentPromptManifest;
+    models?: AgentModel[];
 }
 export interface AgentCapability {
     agentId: string;
     capability: string;
+}
+export interface AgentModel {
+    agentId: string;
+    modelName: string;
+    isDefault?: boolean;
+    config?: Record<string, unknown>;
 }
 export interface AgentPromptManifest {
     agentId?: string;
@@ -43,6 +98,9 @@ export interface AgentAuthMetadata {
 }
 export interface AgentAuthSecret extends AgentAuthMetadata {
     encryptedSecret: string;
+}
+export interface AgentAuthRequest {
+    secret: string;
 }
 export type UpdateChannel = "stable" | "beta" | "nightly";
 export interface UpdateInfo {
@@ -67,7 +125,39 @@ export interface WorkspaceDefault {
     workspaceId: string;
     commandName: string;
     agentId: string;
-    updatedAt: string;
+    qaProfile?: string;
+    docdexScope?: string;
+    updatedAt?: string;
+}
+export type RoutingDefault = WorkspaceDefault;
+export type RoutingDefaults = RoutingDefault[];
+export type RoutingProvenance = "override" | "workspace_default" | "global_default";
+export interface RoutingCandidate {
+    agent: Agent;
+    agentId: string;
+    agentSlug?: string;
+    source: RoutingProvenance;
+    capabilities?: string[];
+    health?: AgentHealth;
+    missingCapabilities?: string[];
+    notes?: string;
+}
+export interface RoutingPreview {
+    workspaceId: string;
+    commandName: string;
+    resolvedAgent: Agent;
+    provenance?: RoutingProvenance;
+    requiredCapabilities?: string[];
+    qaProfile?: string;
+    docdexScope?: string;
+    notes?: string;
+    candidates?: RoutingCandidate[];
+}
+export interface RoutingDefaultsUpdate {
+    set?: Record<string, string>;
+    reset?: string[];
+    qaProfile?: string;
+    docdexScope?: string;
 }
 export type VelocitySource = "config" | "empirical" | "mixed";
 export interface BacklogLaneTotals {
@@ -94,6 +184,7 @@ export interface EffectiveVelocity {
     reviewSpPerHour: number;
     qaSpPerHour: number;
     source: VelocitySource;
+    requestedMode?: VelocitySource;
     windowTasks?: 10 | 20 | 50;
     samples?: {
         implementation?: number;
@@ -125,6 +216,28 @@ export interface EstimateResult {
     durationsHours: EstimateDurations;
     etas: EstimateEtas;
 }
+export interface TokenUsage {
+    timestamp: string;
+    workspaceId: string;
+    commandName: string;
+    action: string;
+    promptTokens: number;
+    completionTokens: number;
+    jobId?: string;
+    taskId?: string;
+    costUsd?: number;
+    modelName?: string;
+    agentId?: string;
+    invocationKind?: string;
+    provider?: string;
+    currency?: string;
+    tokensCached?: number;
+    tokensCacheRead?: number;
+    tokensCacheWrite?: number;
+    durationMs?: number;
+    startedAt?: string;
+    finishedAt?: string;
+}
 export type RefineStrategy = "split" | "merge" | "enrich" | "estimate" | "auto";
 export interface RefineTasksRequest {
     projectKey: string;
@@ -136,6 +249,7 @@ export interface RefineTasksRequest {
     maxTasks?: number;
     dryRun?: boolean;
     agentIdOverride?: string;
+    rateAgents?: boolean;
     planInPath?: string;
     planOutPath?: string;
 }

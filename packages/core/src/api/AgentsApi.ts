@@ -171,11 +171,13 @@ export class AgentsApi {
         agentId: agent.id,
         commandRunId: run.id,
         modelName: agent.defaultModel,
+        commandName: "agent.test",
+        action: "health_check",
         tokensPrompt: 0,
         tokensCompletion: 0,
         tokensTotal: 0,
         timestamp: new Date().toISOString(),
-        metadata: { reason: "agent.test", healthStatus: health.status },
+        metadata: { reason: "agent.test", healthStatus: health.status, phase: "health_check", attempt: 1 },
       });
       return health;
     });
@@ -192,19 +194,49 @@ export class AgentsApi {
       { id: agent.id, slug: agent.slug, prompt: trimmedPrompt },
       async (run) => {
         const health = await this.agentService.healthCheck(agent.id);
+        const startedAtMs = Date.now();
+        const startedAt = new Date(startedAtMs).toISOString();
         const response = await this.agentService.invoke(agent.id, {
           input: trimmedPrompt,
           metadata: { command: "test-agent" },
         });
+        const finishedAtMs = Date.now();
+        const finishedAt = new Date(finishedAtMs).toISOString();
+        const durationMs = finishedAtMs - startedAtMs;
+        const durationSeconds = durationMs / 1000;
+        const usage = this.extractTokenUsage(response.metadata as Record<string, unknown> | undefined);
+        const telemetry = this.extractTelemetryInfo(response.metadata as Record<string, unknown> | undefined);
+        const resolvedDurationMs = usage.durationMs ?? durationMs;
+        const resolvedDurationSeconds = resolvedDurationMs !== undefined ? resolvedDurationMs / 1000 : durationSeconds;
+        const resolvedStartedAt = usage.startedAt ?? startedAt;
+        const resolvedFinishedAt = usage.finishedAt ?? finishedAt;
         await this.repo.recordTokenUsage({
           agentId: agent.id,
           commandRunId: run.id,
           modelName: agent.defaultModel,
-          tokensPrompt: 0,
-          tokensCompletion: 0,
-          tokensTotal: 0,
-          timestamp: new Date().toISOString(),
-          metadata: { reason: "agent.test", healthStatus: health.status, adapter: response.adapter },
+          commandName: "agent.test",
+          action: "probe",
+          invocationKind: telemetry.invocationKind,
+          provider: telemetry.provider,
+          currency: telemetry.currency,
+          tokensPrompt: usage.tokensPrompt ?? 0,
+          tokensCompletion: usage.tokensCompletion ?? 0,
+          tokensTotal: usage.tokensTotal ?? 0,
+          tokensCached: usage.tokensCached,
+          tokensCacheRead: usage.tokensCacheRead,
+          tokensCacheWrite: usage.tokensCacheWrite,
+          durationSeconds: resolvedDurationSeconds,
+          durationMs: resolvedDurationMs,
+          startedAt: resolvedStartedAt,
+          finishedAt: resolvedFinishedAt,
+          timestamp: resolvedFinishedAt ?? new Date().toISOString(),
+          metadata: {
+            reason: "agent.test",
+            healthStatus: health.status,
+            adapter: response.adapter,
+            phase: "probe",
+            attempt: 1,
+          },
         });
         return { health, response, prompt: trimmedPrompt };
       },
@@ -215,11 +247,27 @@ export class AgentsApi {
     tokensPrompt?: number;
     tokensCompletion?: number;
     tokensTotal?: number;
+    tokensCached?: number;
+    tokensCacheRead?: number;
+    tokensCacheWrite?: number;
+    durationMs?: number;
+    startedAt?: string;
+    finishedAt?: string;
   } {
     if (!metadata || typeof metadata !== "object") return {};
     const usage = typeof metadata.usage === "object" && metadata.usage ? (metadata.usage as Record<string, unknown>) : undefined;
+    const promptDetails =
+      typeof usage?.prompt_tokens_details === "object" && usage?.prompt_tokens_details
+        ? (usage.prompt_tokens_details as Record<string, unknown>)
+        : undefined;
+    const cacheDetails = typeof usage?.cache === "object" && usage?.cache ? (usage.cache as Record<string, unknown>) : undefined;
     const toNumber = (value: unknown): number | undefined =>
       typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    const toTimestamp = (value: unknown): string | undefined => {
+      if (typeof value === "string" && value.trim()) return value;
+      if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+      return undefined;
+    };
     const tokensPrompt =
       toNumber(metadata.tokensPrompt) ??
       toNumber(metadata.tokens_prompt) ??
@@ -241,7 +289,79 @@ export class AgentsApi {
     if (tokensTotal === undefined && tokensPrompt !== undefined && tokensCompletion !== undefined) {
       tokensTotal = tokensPrompt + tokensCompletion;
     }
-    return { tokensPrompt, tokensCompletion, tokensTotal };
+    const tokensCached =
+      toNumber(metadata.tokensCached) ??
+      toNumber(metadata.tokens_cached) ??
+      toNumber(metadata.cachedTokens) ??
+      toNumber(metadata.cached_tokens) ??
+      toNumber(usage?.cached_tokens) ??
+      toNumber(usage?.cachedTokens) ??
+      toNumber(promptDetails?.cached_tokens) ??
+      toNumber(promptDetails?.cachedTokens) ??
+      toNumber(cacheDetails?.cached_tokens) ??
+      toNumber(cacheDetails?.cachedTokens);
+    const tokensCacheRead =
+      toNumber(metadata.tokensCacheRead) ??
+      toNumber(metadata.tokens_cache_read) ??
+      toNumber(metadata.cacheRead) ??
+      toNumber(metadata.cache_read) ??
+      toNumber(usage?.tokens_cache_read) ??
+      toNumber(usage?.cache_read) ??
+      toNumber(usage?.cacheRead) ??
+      toNumber(promptDetails?.cache_read) ??
+      toNumber(promptDetails?.cacheRead) ??
+      toNumber(cacheDetails?.cache_read) ??
+      toNumber(cacheDetails?.cacheRead);
+    const tokensCacheWrite =
+      toNumber(metadata.tokensCacheWrite) ??
+      toNumber(metadata.tokens_cache_write) ??
+      toNumber(metadata.cacheWrite) ??
+      toNumber(metadata.cache_write) ??
+      toNumber(usage?.tokens_cache_write) ??
+      toNumber(usage?.cache_write) ??
+      toNumber(usage?.cacheWrite) ??
+      toNumber(promptDetails?.cache_write) ??
+      toNumber(promptDetails?.cacheWrite) ??
+      toNumber(cacheDetails?.cache_write) ??
+      toNumber(cacheDetails?.cacheWrite);
+    const durationSeconds =
+      toNumber(metadata.durationSeconds) ??
+      toNumber(metadata.duration_seconds);
+    const durationMs =
+      toNumber(metadata.durationMs) ??
+      toNumber(metadata.duration_ms) ??
+      toNumber(metadata.elapsed_ms) ??
+      toNumber(metadata.latency_ms) ??
+      toNumber(metadata.latencyMs) ??
+      toNumber(usage?.duration_ms) ??
+      (durationSeconds !== undefined ? durationSeconds * 1000 : undefined);
+    const startedAt =
+      toTimestamp(metadata.startedAt) ??
+      toTimestamp(metadata.started_at) ??
+      toTimestamp(metadata.startTime) ??
+      toTimestamp(metadata.start_time);
+    const finishedAt =
+      toTimestamp(metadata.finishedAt) ??
+      toTimestamp(metadata.finished_at) ??
+      toTimestamp(metadata.endTime) ??
+      toTimestamp(metadata.end_time) ??
+      toTimestamp(metadata.completed_at);
+    return { tokensPrompt, tokensCompletion, tokensTotal, tokensCached, tokensCacheRead, tokensCacheWrite, durationMs, startedAt, finishedAt };
+  }
+
+  private extractTelemetryInfo(metadata?: Record<string, unknown>): {
+    invocationKind?: string;
+    provider?: string;
+    currency?: string;
+  } {
+    if (!metadata || typeof metadata !== "object") return {};
+    const toString = (value: unknown): string | undefined =>
+      typeof value === "string" && value.trim() ? value : undefined;
+    return {
+      invocationKind: toString(metadata.invocationKind) ?? toString(metadata.invocation_kind),
+      provider: toString(metadata.provider) ?? toString(metadata.vendor),
+      currency: toString(metadata.currency),
+    };
   }
 
   async runAgent(
@@ -261,7 +381,8 @@ export class AgentsApi {
         const responses: InvocationResult[] = [];
         for (let index = 0; index < cleaned.length; index += 1) {
           const input = cleaned[index];
-          const startedAt = Date.now();
+          const startedAtMs = Date.now();
+          const startedAt = new Date(startedAtMs).toISOString();
           const response = await this.agentService.invoke(agent.id, {
             input,
             metadata: {
@@ -270,21 +391,42 @@ export class AgentsApi {
               ...metadata,
             },
           });
-          const durationSeconds = (Date.now() - startedAt) / 1000;
+          const finishedAtMs = Date.now();
+          const finishedAt = new Date(finishedAtMs).toISOString();
+          const durationMs = finishedAtMs - startedAtMs;
+          const durationSeconds = durationMs / 1000;
           const usage = this.extractTokenUsage(response.metadata as Record<string, unknown> | undefined);
+          const telemetry = this.extractTelemetryInfo(response.metadata as Record<string, unknown> | undefined);
+          const resolvedDurationMs = usage.durationMs ?? durationMs;
+          const resolvedDurationSeconds = resolvedDurationMs !== undefined ? resolvedDurationMs / 1000 : durationSeconds;
+          const resolvedStartedAt = usage.startedAt ?? startedAt;
+          const resolvedFinishedAt = usage.finishedAt ?? finishedAt;
           await this.repo.recordTokenUsage({
             agentId: agent.id,
             commandRunId: run.id,
             modelName: response.model ?? agent.defaultModel,
+            commandName: "agent.run",
+            action: "invoke",
+            invocationKind: telemetry.invocationKind,
+            provider: telemetry.provider,
+            currency: telemetry.currency,
             tokensPrompt: usage.tokensPrompt,
             tokensCompletion: usage.tokensCompletion,
             tokensTotal: usage.tokensTotal,
-            durationSeconds,
-            timestamp: new Date().toISOString(),
+            tokensCached: usage.tokensCached,
+            tokensCacheRead: usage.tokensCacheRead,
+            tokensCacheWrite: usage.tokensCacheWrite,
+            durationSeconds: resolvedDurationSeconds,
+            durationMs: resolvedDurationMs,
+            startedAt: resolvedStartedAt,
+            finishedAt: resolvedFinishedAt,
+            timestamp: resolvedFinishedAt ?? new Date().toISOString(),
             metadata: {
               reason: "agent.run",
               adapter: response.adapter,
               promptIndex: index,
+              phase: "agent_run",
+              attempt: 1,
             },
           });
           responses.push(response);

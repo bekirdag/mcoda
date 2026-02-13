@@ -4,9 +4,9 @@ import path from "node:path";
 import { parseCreateTasksArgs, pickCreateTasksProjectKey } from "../commands/planning/CreateTasksCommand.js";
 
 describe("create-tasks argument parsing", () => {
-  it("defaults agent stream to true and captures inputs", () => {
+  it("defaults agent stream to false and captures inputs", () => {
     const parsed = parseCreateTasksArgs(["Feature", "More", "--quiet"]);
-    assert.equal(parsed.agentStream, true);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.quiet, true);
     assert.deepEqual(parsed.inputs, ["Feature", "More"]);
@@ -41,6 +41,23 @@ describe("create-tasks argument parsing", () => {
     assert.equal(parsed.maxStoriesPerEpic, 3);
     assert.equal(parsed.maxTasksPerStory, 4);
     assert.equal(parsed.rateAgents, true);
+  });
+
+  it("parses qa override flags", () => {
+    const parsed = parseCreateTasksArgs([
+      "--qa-profile",
+      "cli,chromium",
+      "--qa-entry-url",
+      "http://localhost:5173",
+      "--qa-start-command",
+      "npm run dev",
+      "--qa-requires",
+      "db,seed",
+    ]);
+    assert.deepEqual(parsed.qaProfiles, ["cli", "chromium"]);
+    assert.equal(parsed.qaEntryUrl, "http://localhost:5173");
+    assert.equal(parsed.qaStartCommand, "npm run dev");
+    assert.deepEqual(parsed.qaRequires, ["db", "seed"]);
   });
 
   it("prefers configured project key over requested or derived", () => {

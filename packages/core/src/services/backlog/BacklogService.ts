@@ -1,13 +1,12 @@
 import fs from "node:fs/promises";
 import { Connection, type Database } from "@mcoda/db";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, READY_TO_CODE_REVIEW, isReadyToReviewStatus } from "@mcoda/shared";
 import { TaskOrderingService } from "./TaskOrderingService.js";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 
 type BacklogLane = "implementation" | "review" | "qa" | "done";
 
-const IMPLEMENTATION_STATUSES = new Set(["not_started", "in_progress", "blocked"]);
-const REVIEW_STATUSES = new Set(["ready_to_review"]);
+const IMPLEMENTATION_STATUSES = new Set(["not_started", "in_progress"]);
 const QA_STATUSES = new Set(["ready_to_qa"]);
 const DONE_STATUSES = new Set(["completed", "cancelled"]);
 
@@ -16,6 +15,29 @@ export interface BacklogTotals {
   review: { tasks: number; story_points: number };
   qa: { tasks: number; story_points: number };
   done: { tasks: number; story_points: number };
+}
+
+export interface BacklogOrderingMeta {
+  requested: boolean;
+  applied: boolean;
+  reason: string;
+}
+
+export interface BacklogCrossLaneDependency {
+  task_key: string;
+  depends_on_key: string;
+  task_lane: BacklogLane;
+  dependency_lane: BacklogLane;
+}
+
+export interface BacklogCrossLaneMeta {
+  count: number;
+  dependencies: BacklogCrossLaneDependency[];
+}
+
+export interface BacklogMeta {
+  ordering: BacklogOrderingMeta;
+  crossLaneDependencies: BacklogCrossLaneMeta;
 }
 
 export interface EpicBacklogSummary {
@@ -79,6 +101,7 @@ export interface BacklogQueryOptions {
 export interface BacklogResult {
   summary: BacklogSummary;
   warnings: string[];
+  meta: BacklogMeta;
 }
 
 interface RawTaskRow {
@@ -112,7 +135,7 @@ const emptyTotals = (): BacklogTotals => ({
 const bucketForStatus = (status: string): BacklogLane => {
   const normalized = status?.toLowerCase() ?? "";
   if (IMPLEMENTATION_STATUSES.has(normalized)) return "implementation";
-  if (REVIEW_STATUSES.has(normalized)) return "review";
+  if (isReadyToReviewStatus(normalized)) return "review";
   if (QA_STATUSES.has(normalized)) return "qa";
   if (DONE_STATUSES.has(normalized)) return "done";
   return "implementation";
@@ -141,7 +164,7 @@ const hasTables = async (db: Database, required: string[]): Promise<boolean> => 
 };
 
 const deriveStoryStatus = (statuses: Set<string>): string | undefined => {
-  const order = ["completed", "cancelled", "ready_to_qa", "ready_to_review", "in_progress", "blocked", "not_started"];
+  const order = ["completed", "cancelled", "ready_to_qa", READY_TO_CODE_REVIEW, "changes_requested", "in_progress", "not_started"];
   for (const status of order) {
     if (statuses.has(status)) return status;
   }
@@ -222,11 +245,11 @@ export class BacklogService {
           priority: row.epic_priority ?? null,
           description: row.epic_description ?? undefined,
           totals: emptyTotals(),
-        stories: [],
-        storiesMap: new Map(),
-      };
-      epics.set(row.epic_id, epicSummary);
-    }
+          stories: [],
+          storiesMap: new Map(),
+        };
+        epics.set(row.epic_id, epicSummary);
+      }
       this.epicPriority.set(row.epic_key, row.epic_priority ?? null);
       addToTotals(epicSummary.totals, lane, row.task_story_points);
 
@@ -265,10 +288,23 @@ export class BacklogService {
       });
     }
 
+    const crossLaneDependencies = this.findCrossLaneDependencies(tasksRows);
+    if (crossLaneDependencies.length > 0) {
+      this.warnings.push(
+        `Cross-lane dependencies detected (${crossLaneDependencies.length}). Ordering by lane may be misleading.`,
+      );
+    }
+
     let orderedTasks: TaskBacklogRow[];
+    const orderingMeta: BacklogOrderingMeta = {
+      requested: options.orderByDependencies === true,
+      applied: false,
+      reason: options.orderByDependencies ? "requested" : "default_order",
+    };
     if (options.orderByDependencies) {
       if (!project) {
         this.warnings.push("Dependency ordering requires a project scope; using default ordering.");
+        orderingMeta.reason = "missing_project_scope";
         orderedTasks = this.orderTasks(tasksRows, options.verbose === true);
       } else {
         const orderingService = await TaskOrderingService.create(this.workspace, { recordTelemetry: false });
@@ -279,8 +315,9 @@ export class BacklogService {
             storyKey: story?.key,
             assignee: options.assignee,
             statusFilter: options.statuses,
-            includeBlocked: true,
           });
+          orderingMeta.applied = true;
+          orderingMeta.reason = "dependency_graph";
           const orderMap = new Map<string, number>(ordering.ordered.map((t, idx) => [t.taskId, idx]));
           orderedTasks = tasksRows
             .slice()
@@ -292,15 +329,21 @@ export class BacklogService {
             });
           this.warnings.push(...ordering.warnings);
         } catch (error) {
+          const prefix = "Dependency ordering failed; falling back to heuristic ordering.";
           if (options.verbose) {
-            this.warnings.push(`Dependency ordering failed; falling back to heuristic ordering. ${(error as Error).message}`);
+            this.warnings.push(`${prefix} ${(error as Error).message}`);
+          } else {
+            this.warnings.push(prefix);
           }
+          orderingMeta.applied = false;
+          orderingMeta.reason = "heuristic_fallback";
           orderedTasks = this.orderTasks(tasksRows, options.verbose === true);
         } finally {
           await orderingService.close();
         }
       }
     } else {
+      orderingMeta.reason = "default_order";
       orderedTasks = this.defaultOrder(tasksRows);
     }
 
@@ -340,6 +383,13 @@ export class BacklogService {
         tasks: orderedTasks,
       },
       warnings: this.warnings,
+      meta: {
+        ordering: orderingMeta,
+        crossLaneDependencies: {
+          count: crossLaneDependencies.length,
+          dependencies: crossLaneDependencies,
+        },
+      },
     };
   }
 
@@ -576,5 +626,33 @@ export class BacklogService {
             return a.user_story_key.localeCompare(b.user_story_key);
           }),
       }));
+  }
+
+  private findCrossLaneDependencies(tasks: TaskBacklogRow[]): BacklogCrossLaneDependency[] {
+    if (tasks.length === 0) return [];
+    const laneByKey = new Map<string, BacklogLane>();
+    for (const task of tasks) {
+      laneByKey.set(task.task_key, bucketForStatus(task.status));
+    }
+    const results: BacklogCrossLaneDependency[] = [];
+    for (const task of tasks) {
+      const taskLane = laneByKey.get(task.task_key);
+      if (!taskLane || task.dependency_keys.length === 0) continue;
+      for (const depKey of task.dependency_keys) {
+        const dependencyLane = laneByKey.get(depKey);
+        if (!dependencyLane || dependencyLane === taskLane) continue;
+        results.push({
+          task_key: task.task_key,
+          depends_on_key: depKey,
+          task_lane: taskLane,
+          dependency_lane: dependencyLane,
+        });
+      }
+    }
+    return results.sort((a, b) => {
+      const taskCompare = a.task_key.localeCompare(b.task_key);
+      if (taskCompare !== 0) return taskCompare;
+      return a.depends_on_key.localeCompare(b.depends_on_key);
+    });
   }
 }

@@ -1,5 +1,6 @@
 import path from "node:path";
-import { WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
+import { JobService, WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
+import { WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -17,6 +18,9 @@ interface ParsedArgs {
   rateAgents: boolean;
   autoMerge?: boolean;
   autoPush?: boolean;
+  workRunner?: string;
+  useCodali?: boolean;
+  agentAdapterOverride?: string;
   json: boolean;
 }
 
@@ -24,13 +28,15 @@ const usage = `mcoda work-on-tasks \\
   [--workspace <PATH>] \\
   [--project <PROJECT_KEY>] \\
   [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] \\
-  [--status not_started,in_progress] \\
+  [--status not_started,in_progress,changes_requested] \\
   [--limit N] \\
   [--parallel N] \\
   [--no-commit] \\
   [--dry-run] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
+  [--work-runner <codali|default>] \\
+  [--use-codali <true|false>] \\
   [--rate-agents] \\
   [--auto-merge <true|false>] \\
   [--auto-push <true|false>] \\
@@ -54,6 +60,32 @@ const parseCsv = (value: string | undefined): string[] => {
     .filter(Boolean);
 };
 
+const normalizeRunner = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toLowerCase();
+};
+
+const resolveEnvRunner = (): string | undefined => normalizeRunner(process.env.MCODA_WORK_ON_TASKS_ADAPTER);
+
+const resolveRunnerOverride = (
+  workRunner?: string,
+): { agentAdapterOverride?: string; workRunner?: string } => {
+  if (!workRunner) return {};
+  const normalized = normalizeRunner(workRunner);
+  if (!normalized || normalized === "default") {
+    return {};
+  }
+  if (normalized === "codali") {
+    return { workRunner: normalized, agentAdapterOverride: "codali-cli" };
+  }
+  if (normalized === "codali-cli") {
+    return { workRunner: normalized, agentAdapterOverride: "codali-cli" };
+  }
+  return { workRunner: normalized, agentAdapterOverride: normalized };
+};
+
 export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   let workspaceRoot: string | undefined;
   let projectKey: string | undefined;
@@ -70,6 +102,8 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   let rateAgents = false;
   let autoMerge: boolean | undefined;
   let autoPush: boolean | undefined;
+  let workRunner: string | undefined;
+  let useCodali: boolean | undefined;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -102,6 +136,16 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--rate-agents=")) {
       const [, raw] = arg.split("=", 2);
       rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--work-runner=")) {
+      const [, raw] = arg.split("=", 2);
+      workRunner = normalizeRunner(raw);
+      continue;
+    }
+    if (arg.startsWith("--use-codali=")) {
+      const [, raw] = arg.split("=", 2);
+      useCodali = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -161,6 +205,24 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--work-runner": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          workRunner = normalizeRunner(next);
+          i += 1;
+        }
+        break;
+      }
+      case "--use-codali": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          useCodali = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          useCodali = true;
+        }
+        break;
+      }
       case "--auto-merge": {
         const next = argv[i + 1];
         if (next && !next.startsWith("--")) {
@@ -211,9 +273,25 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     }
   }
 
-  if (statusFilter.length === 0) {
-    statusFilter.push("not_started", "in_progress");
+  const { filtered } = filterTaskStatuses(
+    statusFilter.length ? statusFilter : undefined,
+    WORK_ALLOWED_STATUSES,
+    WORK_ALLOWED_STATUSES,
+  );
+  statusFilter.splice(0, statusFilter.length, ...filtered);
+
+  if (!workRunner) {
+    workRunner = resolveEnvRunner();
   }
+  const envUseCodali = parseBooleanFlag(process.env.MCODA_WORK_ON_TASKS_USE_CODALI, false);
+  const runnerImpliesCodali = workRunner === "codali" || workRunner === "codali-cli";
+  if (useCodali === undefined) {
+    useCodali = runnerImpliesCodali || envUseCodali;
+  }
+  if (!workRunner && useCodali) {
+    workRunner = "codali";
+  }
+  const runnerOverride = resolveRunnerOverride(workRunner);
 
   return {
     workspaceRoot,
@@ -227,10 +305,13 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     noCommit,
     dryRun,
     agentName,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
     rateAgents,
     autoMerge,
     autoPush,
+    workRunner: runnerOverride.workRunner ?? workRunner,
+    useCodali,
+    agentAdapterOverride: runnerOverride.agentAdapterOverride,
     json,
   };
 };
@@ -254,6 +335,23 @@ export class WorkOnTasksCommand {
     }
     const service = await WorkOnTasksService.create(workspace);
     try {
+      const abortController = new AbortController();
+      let cancelHandled = false;
+      const handleCancel = async (signal: NodeJS.Signals) => {
+        if (cancelHandled) return;
+        cancelHandled = true;
+        abortController.abort(new Error(`Cancelled by ${signal}`));
+        await JobService.cancelActiveJobs(signal);
+      };
+      process.once("SIGINT", () => {
+        void handleCancel("SIGINT");
+      });
+      process.once("SIGTERM", () => {
+        void handleCancel("SIGTERM");
+      });
+      process.once("SIGTSTP", () => {
+        void handleCancel("SIGTSTP");
+      });
       const streamSink = (chunk: string) => {
         const target = parsed.json ? process.stderr : process.stdout;
         target.write(chunk);
@@ -266,6 +364,7 @@ export class WorkOnTasksCommand {
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
         statusFilter: parsed.statusFilter,
+        ignoreStatusFilter: parsed.taskKeys.length > 0 ? true : undefined,
         limit: parsed.limit,
         parallel: parsed.parallel,
         noCommit: parsed.noCommit,
@@ -275,16 +374,16 @@ export class WorkOnTasksCommand {
         rateAgents: parsed.rateAgents,
         autoMerge: parsed.autoMerge,
         autoPush: parsed.autoPush,
+        workRunner: parsed.workRunner,
+        useCodali: parsed.useCodali,
+        agentAdapterOverride: parsed.agentAdapterOverride,
         onAgentChunk,
+        abortSignal: abortController.signal,
       });
 
       const success = result.results.filter((r) => r.status === "succeeded").length;
-      const failed = result.results.filter((r) => r.status === "failed" || r.status === "blocked").length;
+      const failed = result.results.filter((r) => r.status === "failed").length;
       const skipped = result.results.filter((r) => r.status === "skipped").length;
-      const blockedKeys = [
-        ...result.selection.blocked.map((t) => t.task.key),
-        ...result.results.filter((r) => r.status === "blocked").map((r) => r.taskKey),
-      ];
       if (failed > 0) {
         process.exitCode = 1;
       }
@@ -300,7 +399,6 @@ export class WorkOnTasksCommand {
               succeeded: success,
               failed,
               skipped,
-              blocked: blockedKeys,
               warnings: result.warnings,
             },
             null,
@@ -313,7 +411,6 @@ export class WorkOnTasksCommand {
       const summary = [
         `Job: ${result.jobId}, Command Run: ${result.commandRunId}`,
         `Tasks processed: ${result.results.length} (succeeded=${success}, failed=${failed}, skipped=${skipped})`,
-        blockedKeys.length ? `Blocked: ${blockedKeys.join(", ")}` : undefined,
       ]
         .filter(Boolean)
         .join("\n");

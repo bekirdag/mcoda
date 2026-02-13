@@ -1,1 +1,1 @@
-{"version":3,"file":"GlobalMigrations.d.ts","sourceRoot":"","sources":["GlobalMigrations.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,QAAQ,EAAE,MAAM,QAAQ,CAAC;AAElC;;;GAGG;AACH,qBAAa,gBAAgB;WACd,GAAG,CAAC,EAAE,EAAE,QAAQ,GAAG,OAAO,CAAC,IAAI,CAAC;CA8D9C"}
+{"version":3,"file":"GlobalMigrations.d.ts","sourceRoot":"","sources":["GlobalMigrations.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,QAAQ,EAAE,MAAM,QAAQ,CAAC;AAElC;;;GAGG;AACH,qBAAa,gBAAgB;WACd,GAAG,CAAC,EAAE,EAAE,QAAQ,GAAG,OAAO,CAAC,IAAI,CAAC;CAqb9C"}

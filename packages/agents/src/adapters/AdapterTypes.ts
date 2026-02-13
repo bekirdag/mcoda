@@ -5,6 +5,16 @@ export interface AdapterConfig {
   capabilities: string[];
   model?: string;
   apiKey?: string;
+  provider?: string;
+  baseUrl?: string;
+  docdexBaseUrl?: string;
+  docdexRepoId?: string;
+  docdexRepoRoot?: string;
+  docdex?: {
+    baseUrl?: string;
+    repoId?: string;
+    repoRoot?: string;
+  };
   prompts?: AgentPromptManifest;
   authMetadata?: AgentAuthMetadata;
   adapter?: string;

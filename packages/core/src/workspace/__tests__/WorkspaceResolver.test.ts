@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { WorkspaceResolver } from "../WorkspaceManager.js";
+import {
+  WorkspaceResolver,
+  cleanupWorkspaceStateDirs,
+  resolveDocgenStatePath,
+} from "../WorkspaceManager.js";
+import { PathHelper } from "@mcoda/shared";
 
 const uuidRegex = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -37,6 +42,29 @@ const withTempDir = async (fn: (dir: string) => Promise<void>): Promise<void> =>
   }
 };
 
+const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> => {
+  const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-home-"));
+  process.env.HOME = tempHome;
+  process.env.USERPROFILE = tempHome;
+  try {
+    await fn(tempHome);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalUserProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalUserProfile;
+    }
+    await cleanupTempDir(tempHome);
+  }
+};
+
 test("rejects explicit workspace paths that do not exist", async () => {
   const missing = path.join(os.tmpdir(), `mcoda-missing-${Date.now()}`);
   await assert.rejects(
@@ -54,23 +82,105 @@ test("rejects explicit workspace ids without registry support", async () => {
 });
 
 test("migrates legacy workspace id to UUID and preserves legacy ids", async () => {
-  await withTempDir(async (dir) => {
-    const mcodaDir = path.join(dir, ".mcoda");
-    await fs.mkdir(mcodaDir, { recursive: true });
-    await fs.writeFile(
-      path.join(mcodaDir, "workspace.json"),
-      JSON.stringify({ id: "legacy-id" }, null, 2),
-      "utf8",
-    );
+  await withTempHome(async () => {
+    await withTempDir(async (dir) => {
+      const legacyDir = path.join(dir, ".mcoda");
+      await fs.mkdir(legacyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(legacyDir, "workspace.json"),
+        JSON.stringify({ id: "legacy-id" }, null, 2),
+        "utf8",
+      );
 
-    const resolved = await WorkspaceResolver.resolveWorkspace({ explicitWorkspace: dir });
-    const payload = JSON.parse(await fs.readFile(path.join(mcodaDir, "workspace.json"), "utf8"));
+      const resolved = await WorkspaceResolver.resolveWorkspace({ explicitWorkspace: dir });
+      const globalDir = PathHelper.getWorkspaceDir(dir);
+      const payload = JSON.parse(await fs.readFile(path.join(globalDir, "workspace.json"), "utf8"));
 
-    assert.match(payload.id, uuidRegex);
-    assert.ok(payload.legacyIds.includes("legacy-id"));
-    assert.ok(payload.legacyIds.includes(dir));
-    assert.equal(resolved.workspaceId, payload.id);
-    assert.ok(resolved.legacyWorkspaceIds.includes("legacy-id"));
-    assert.ok(resolved.legacyWorkspaceIds.includes(dir));
+      assert.match(payload.id, uuidRegex);
+      assert.ok(payload.legacyIds.includes("legacy-id"));
+      assert.ok(payload.legacyIds.includes(dir));
+      assert.equal(resolved.workspaceId, payload.id);
+      assert.equal(resolved.mcodaDir, globalDir);
+      assert.ok(resolved.legacyWorkspaceIds.includes("legacy-id"));
+      assert.ok(resolved.legacyWorkspaceIds.includes(dir));
+    });
+  });
+});
+
+test("cleanupWorkspaceStateDirs relocates legacy state dirs and preserves config", async () => {
+  await withTempHome(async () => {
+    await withTempDir(async (dir) => {
+      const legacyDir = path.join(dir, ".mcoda");
+      await fs.mkdir(legacyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(legacyDir, "config.json"),
+        JSON.stringify({ projectKey: "demo" }, null, 2),
+        "utf8",
+      );
+      await fs.writeFile(path.join(legacyDir, "state.json"), "legacy-state", "utf8");
+
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const warnings = await cleanupWorkspaceStateDirs({ workspaceRoot: dir, mcodaDir });
+
+      assert.ok(warnings.some((warning) => warning.includes("Relocated legacy state directory")));
+      await assert.rejects(() => fs.access(legacyDir));
+
+      const configPath = path.join(mcodaDir, "config.json");
+      const copiedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+      assert.equal(copiedConfig.projectKey, "demo");
+
+      const legacyRoot = path.join(mcodaDir, "legacy");
+      const entries = await fs.readdir(legacyRoot);
+      assert.ok(entries.some((entry) => entry.startsWith("mcoda")));
+    });
+  });
+});
+
+test("resolveDocgenStatePath redirects output outside .mcoda to workspace state", async () => {
+  await withTempHome(async () => {
+    await withTempDir(async (dir) => {
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const outputPath = path.join(path.parse(os.tmpdir()).root, "mcoda-docs", "out.md");
+      const result = resolveDocgenStatePath({
+        outputPath,
+        mcodaDir,
+        jobId: "job-123",
+        commandName: "docs-pdr-generate",
+      });
+
+      assert.ok(PathHelper.isPathInside(mcodaDir, result.statePath));
+      assert.ok(
+        result.statePath.endsWith(
+          path.join("state", "docgen", "docs-pdr-generate", "job-123", "out.md"),
+        ),
+      );
+      assert.equal(result.warnings.length, 1);
+      assert.ok(result.warnings[0]?.includes(outputPath));
+    });
+  });
+});
+
+test("resolveDocgenStatePath preserves output already inside .mcoda", async () => {
+  await withTempHome(async () => {
+    await withTempDir(async (dir) => {
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const outputPath = path.join(
+        mcodaDir,
+        "state",
+        "docgen",
+        "docs-pdr-generate",
+        "job-123",
+        "out.md",
+      );
+      const result = resolveDocgenStatePath({
+        outputPath,
+        mcodaDir,
+        jobId: "job-123",
+        commandName: "docs-pdr-generate",
+      });
+
+      assert.equal(result.statePath, outputPath);
+      assert.equal(result.warnings.length, 0);
+    });
   });
 });

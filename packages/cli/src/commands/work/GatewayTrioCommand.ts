@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { GatewayTrioService, JobService, WorkspaceResolver } from "@mcoda/core";
+import { GatewayTrioService, JobService, WorkspaceResolver, type GatewayLogDetails } from "@mcoda/core";
+import { READY_TO_CODE_REVIEW, normalizeReviewStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -23,12 +24,16 @@ interface ParsedArgs {
   noCommit: boolean;
   dryRun: boolean;
   agentStream?: boolean;
+  workRunner?: string;
+  useCodali?: boolean;
+  agentAdapterOverride?: string;
   reviewBase?: string;
   qaProfileName?: string;
   qaLevel?: string;
   qaTestCommand?: string;
   qaMode: "auto" | "manual";
   qaFollowups: "auto" | "none" | "prompt";
+  reviewFollowups: boolean;
   qaAllowDirty: boolean;
   resumeJobId?: string;
   rateAgents: boolean;
@@ -49,6 +54,8 @@ const usage = `mcoda gateway-trio \\
   [--max-agent-seconds N] (default disabled) \\
   [--gateway-agent <NAME>] \\
   [--work-agent <NAME>] \\
+  [--work-runner <codali|default>] \\
+  [--use-codali <true|false>] \\
   [--review-agent <NAME>] \\
   [--qa-agent <NAME>] \\
   [--max-docs N] \\
@@ -60,6 +67,7 @@ const usage = `mcoda gateway-trio \\
   [--qa-test-command "<CMD>"] \\
   [--qa-mode auto|manual] \\
   [--qa-followups auto|none|prompt] \\
+  [--review-followups <true|false>] \\
   [--qa-allow-dirty <true|false>] \\
   [--escalate-on-no-change <true|false>] \\
   [--agent-stream <true|false>] \\
@@ -67,6 +75,110 @@ const usage = `mcoda gateway-trio \\
   [--watch] \\
   [--resume <JOB_ID>] \\
   [--json]`;
+
+let pipeGuardInstalled = false;
+
+const installPipeGuards = (): void => {
+  if (pipeGuardInstalled) return;
+  pipeGuardInstalled = true;
+  const onStreamError = (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") {
+      return;
+    }
+    process.exitCode = 1;
+  };
+  process.stdout.on("error", onStreamError);
+  process.stderr.on("error", onStreamError);
+  if (process.platform !== "win32") {
+    process.on("SIGPIPE", () => {
+      process.exit(0);
+    });
+  }
+};
+
+const resolvePollIntervalMs = (): number => {
+  const raw = process.env.MCODA_WATCH_POLL_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return 15000;
+};
+
+const formatSessionId = (iso: string): string => {
+  const date = new Date(iso);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(
+    date.getMinutes(),
+  )}${pad(date.getSeconds())}`;
+};
+
+const formatDuration = (ms: number): string => {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const seconds = totalSeconds % 60;
+  const minutesTotal = Math.floor(totalSeconds / 60);
+  const minutes = minutesTotal % 60;
+  const hours = Math.floor(minutesTotal / 60);
+  if (hours > 0) return `${hours}H ${minutes}M ${seconds}S`;
+  return `${minutes}M ${seconds}S`;
+};
+
+const createGatewayLogger = (options: { agentStream: boolean }) => {
+  const emitLine = (line: string): void => {
+    console.info(line);
+  };
+  const emitBlank = (): void => emitLine("");
+  const onGatewayChunk = (chunk: string) => {
+    if (!chunk) return;
+    process.stdout.write(chunk);
+  };
+  const onGatewaySelection = (details: GatewayLogDetails): void => {
+    if (!details.chosenAgent) return;
+    const modelLabel = details.chosenModel ? ` | model ${details.chosenModel}` : "";
+    const adapterLabel = details.chosenAdapter ? ` | adapter ${details.chosenAdapter}` : "";
+    emitLine(`  [🎯] Selected:      ${details.chosenAgent}${modelLabel}${adapterLabel}`);
+  };
+  const onGatewayStart = (details: GatewayLogDetails): void => {
+    const sessionId = formatSessionId(details.startedAt);
+    emitLine("╭──────────────────────────────────────────────────────────╮");
+    emitLine("│                START OF GATEWAY TASK                     │");
+    emitLine("╰──────────────────────────────────────────────────────────╯");
+    emitLine(`  [🪪] Gateway Task ID: ${details.taskKey}`);
+    emitLine(`  [👹] Alias:          Gateway task ${details.taskKey}`);
+    emitLine(`  [ℹ️] Summary:        Gateway ${details.job}`);
+    emitLine(`  [🤖] Agent:          ${details.gatewayAgent ?? "auto"}`);
+    emitLine(`  [🧩] Job:            ${details.job}`);
+    emitLine(`  [🔑] Session:        ${sessionId}`);
+    emitLine(`  [🕒] Started:        ${details.startedAt}`);
+    emitBlank();
+    emitLine("    ░░░░░ START OF GATEWAY TASK ░░░░░");
+    emitBlank();
+    emitLine(`    [JOB ${details.job}]`);
+    emitBlank();
+    emitBlank();
+  };
+  const onGatewayEnd = (details: GatewayLogDetails): void => {
+    const endedAt = details.endedAt ?? new Date().toISOString();
+    const elapsedMs = new Date(endedAt).getTime() - new Date(details.startedAt).getTime();
+    const statusLabel = details.status === "failed" ? "FAILED" : "COMPLETED";
+    const agentLabel = details.gatewayAgent ?? "auto";
+    const chosenLabel = details.chosenAgent ?? "n/a";
+    emitLine("╭──────────────────────────────────────────────────────────╮");
+    emitLine("│                 END OF GATEWAY TASK                      │");
+    emitLine("╰──────────────────────────────────────────────────────────╯");
+    emitLine(
+      `  🧭 GATEWAY TASK ${details.taskKey} | 📜 STATUS ${statusLabel} | 🤖 AGENT ${agentLabel} | 🎯 CHOSEN ${chosenLabel} | ⌛ TIME ${formatDuration(
+        elapsedMs,
+      )}`,
+    );
+    emitLine(`  [🕒] Started:        ${details.startedAt}`);
+    emitLine(`  [🕒] Ended:          ${endedAt}`);
+    if (details.error) {
+      emitLine(`  ❗ Error:           ${details.error}`);
+    }
+    emitBlank();
+    emitLine("    ░░░░░ END OF GATEWAY TASK ░░░░░");
+  };
+  return { onGatewayStart, onGatewayChunk, onGatewaySelection, onGatewayEnd };
+};
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -82,6 +194,32 @@ const parseCsv = (value: string | undefined): string[] => {
     .split(",")
     .map((v) => v.trim())
     .filter(Boolean);
+};
+
+const normalizeRunner = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toLowerCase();
+};
+
+const resolveEnvRunner = (): string | undefined => normalizeRunner(process.env.MCODA_WORK_ON_TASKS_ADAPTER);
+
+const resolveRunnerOverride = (
+  workRunner?: string,
+): { agentAdapterOverride?: string; workRunner?: string } => {
+  if (!workRunner) return {};
+  const normalized = normalizeRunner(workRunner);
+  if (!normalized || normalized === "default") {
+    return {};
+  }
+  if (normalized === "codali") {
+    return { workRunner: normalized, agentAdapterOverride: "codali-cli" };
+  }
+  if (normalized === "codali-cli") {
+    return { workRunner: normalized, agentAdapterOverride: "codali-cli" };
+  }
+  return { workRunner: normalized, agentAdapterOverride: normalized };
 };
 
 const TASK_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-_]*$/;
@@ -171,15 +309,18 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   let noCommit = false;
   let dryRun = false;
   let agentStream: boolean | undefined;
+  let workRunner: string | undefined;
+  let useCodali: boolean | undefined;
   let reviewBase: string | undefined;
   let qaProfileName: string | undefined;
   let qaLevel: string | undefined;
   let qaTestCommand: string | undefined;
   let qaMode: "auto" | "manual" = "auto";
   let qaFollowups: "auto" | "none" | "prompt" = "auto";
+  let reviewFollowups = false;
   let qaAllowDirty = false;
   let resumeJobId: string | undefined;
-  let rateAgents = false;
+  let rateAgents = true;
   let escalateOnNoChange = true;
   let watch = false;
   let json = false;
@@ -222,6 +363,24 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
         errors.push("gateway-trio: --agent-stream requires a value");
       } else {
         agentStream = parseBooleanFlag(raw, true);
+      }
+      continue;
+    }
+    if (arg.startsWith("--work-runner=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --work-runner requires a value");
+      } else {
+        workRunner = normalizeRunner(raw);
+      }
+      continue;
+    }
+    if (arg.startsWith("--use-codali=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --use-codali requires a value");
+      } else {
+        useCodali = parseBooleanFlag(raw, true);
       }
       continue;
     }
@@ -341,6 +500,15 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           errors.push("gateway-trio: --qa-followups must be auto|none|prompt");
         }
         qaFollowups = normalizeQaFollowups(raw);
+      }
+      continue;
+    }
+    if (arg.startsWith("--review-followups=")) {
+      const [, raw] = arg.split("=", 2);
+      if (!raw) {
+        errors.push("gateway-trio: --review-followups requires a value");
+      } else {
+        reviewFollowups = parseBooleanFlag(raw, true);
       }
       continue;
     }
@@ -582,6 +750,16 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           if (consumed) i += 1;
         }
         break;
+      case "--review-followups": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          reviewFollowups = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          reviewFollowups = true;
+        }
+        break;
+      }
       case "--qa-allow-dirty":
         {
           const { value, consumed } = takeValue("--qa-allow-dirty", argv, i, errors);
@@ -596,6 +774,24 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
           i += 1;
         } else {
           agentStream = true;
+        }
+        break;
+      }
+      case "--work-runner": {
+        const { value, consumed } = takeValue("--work-runner", argv, i, errors);
+        if (consumed) {
+          workRunner = normalizeRunner(value);
+          i += 1;
+        }
+        break;
+      }
+      case "--use-codali": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          useCodali = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          useCodali = true;
         }
         break;
       }
@@ -666,8 +862,27 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
   invalidTaskKeys.push(...normalized.invalid);
 
   if (statusFilter.length === 0) {
-    statusFilter.push("not_started", "in_progress", "ready_to_review", "ready_to_qa");
+    statusFilter.push(
+      ...normalizeReviewStatuses(["not_started", "in_progress", "changes_requested", READY_TO_CODE_REVIEW, "ready_to_qa"]),
+    );
   }
+  const normalizedStatuses = normalizeReviewStatuses(statusFilter);
+  statusFilter.splice(0, statusFilter.length, ...normalizedStatuses);
+
+  if (!workRunner) {
+    workRunner = resolveEnvRunner();
+  }
+  const envUseCodali = parseBooleanFlag(process.env.MCODA_WORK_ON_TASKS_USE_CODALI, false);
+  const runnerImpliesCodali = workRunner === "codali" || workRunner === "codali-cli";
+  if (useCodali === undefined) {
+    useCodali = runnerImpliesCodali || envUseCodali;
+  }
+  if (!workRunner && useCodali) {
+    workRunner = "codali";
+  }
+  const runnerOverride = resolveRunnerOverride(workRunner);
+  workRunner = runnerOverride.workRunner ?? workRunner;
+  const agentAdapterOverride = runnerOverride.agentAdapterOverride;
 
   return {
     workspaceRoot,
@@ -689,13 +904,17 @@ export const parseGatewayTrioArgs = (argv: string[]): ParsedArgs => {
     maxDocs: Number.isFinite(maxDocs) ? maxDocs : undefined,
     noCommit,
     dryRun,
-    agentStream: agentStream ?? true,
+    agentStream: agentStream ?? false,
+    workRunner,
+    useCodali,
+    agentAdapterOverride,
     reviewBase,
     qaProfileName,
     qaLevel,
     qaTestCommand,
     qaMode,
     qaFollowups,
+    reviewFollowups,
     qaAllowDirty,
     resumeJobId,
     rateAgents,
@@ -726,6 +945,7 @@ export const validateGatewayTrioArgs = (parsed: ParsedArgs): string | undefined 
 
 export class GatewayTrioCommand {
   static async run(argv: string[]): Promise<void> {
+    installPipeGuards();
     const parsed = parseGatewayTrioArgs(argv);
     const validationError = validateGatewayTrioArgs(parsed);
     if (validationError) {
@@ -746,11 +966,39 @@ export class GatewayTrioCommand {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
+    const jobService = new JobService(workspace);
     const service = await GatewayTrioService.create(workspace);
     try {
       let watchDone = false;
       let watchPromise: Promise<void> | undefined;
       let watchResolve: ((value: { jobId: string; commandRunId: string }) => void) | undefined;
+      let activeJobId: string | undefined;
+      let cancelHandled = false;
+      const handleCancel = async (signal: NodeJS.Signals) => {
+        if (cancelHandled) return;
+        cancelHandled = true;
+        watchDone = true;
+        await JobService.cancelActiveJobs(signal);
+        if (activeJobId) {
+          try {
+            await jobService.updateJobStatus(activeJobId, "cancelled", {
+              errorSummary: `Cancelled by ${signal}`,
+              job_state_detail: "cancelled_by_user",
+            } as any);
+          } catch {
+            // ignore cancellation failures
+          }
+        }
+      };
+      process.once("SIGINT", () => {
+        void handleCancel("SIGINT");
+      });
+      process.once("SIGTERM", () => {
+        void handleCancel("SIGTERM");
+      });
+      process.once("SIGTSTP", () => {
+        void handleCancel("SIGTSTP");
+      });
       const watchStart = new Promise<{ jobId: string; commandRunId: string }>((resolve) => {
         watchResolve = resolve;
       });
@@ -759,27 +1007,27 @@ export class GatewayTrioCommand {
         watchPromise = (async () => {
           const { jobId } = await watchStart;
           const watcher = new JobService(workspace);
+          const pollIntervalMs = resolvePollIntervalMs();
           try {
             while (!watchDone) {
               const job = await watcher.getJob(jobId);
               if (job) {
                 const state = job.jobState ?? job.state ?? "unknown";
                 const detail = job.jobStateDetail ? ` (${job.jobStateDetail})` : "";
-                const total = job.totalItems ?? 0;
-                const processed = job.processedItems ?? 0;
-                const line = `gateway-trio job ${jobId}: ${state}${detail} ${processed}/${total}`;
-                if (parsed.json) {
+                const totalKnown = typeof job.totalItems === "number";
+                const isTerminal = ["completed", "failed", "cancelled", "partial"].includes(state);
+                if (totalKnown || isTerminal) {
+                  const total = totalKnown ? (job.totalItems ?? 0) : 0;
+                  const processed = typeof job.processedItems === "number" ? job.processedItems : 0;
+                  const line = `gateway-trio job ${jobId}: ${state}${detail} ${processed}/${total}`;
                   // eslint-disable-next-line no-console
                   console.error(line);
-                } else {
-                  // eslint-disable-next-line no-console
-                  console.log(line);
-                }
-                if (["completed", "failed", "cancelled", "partial"].includes(state)) {
-                  return;
+                  if (isTerminal) {
+                    return;
+                  }
                 }
               }
-              await new Promise((resolve) => setTimeout(resolve, 15000));
+              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
             }
           } finally {
             await watcher.close();
@@ -787,6 +1035,7 @@ export class GatewayTrioCommand {
         })();
       }
 
+      const gatewayLogger = createGatewayLogger({ agentStream: parsed.agentStream !== false });
       const result = await service.run({
         workspace,
         projectKey: parsed.projectKey,
@@ -806,17 +1055,26 @@ export class GatewayTrioCommand {
         noCommit: parsed.noCommit,
         dryRun: parsed.dryRun,
         agentStream: parsed.agentStream,
+        workRunner: parsed.workRunner,
+        useCodali: parsed.useCodali,
+        agentAdapterOverride: parsed.agentAdapterOverride,
         reviewBase: parsed.reviewBase,
         qaProfileName: parsed.qaProfileName,
         qaLevel: parsed.qaLevel,
         qaTestCommand: parsed.qaTestCommand,
         qaMode: parsed.qaMode,
         qaFollowups: parsed.qaFollowups,
+        reviewFollowups: parsed.reviewFollowups,
         qaAllowDirty: parsed.qaAllowDirty,
         resumeJobId: parsed.resumeJobId,
         rateAgents: parsed.rateAgents,
         escalateOnNoChange: parsed.escalateOnNoChange,
+        onGatewayStart: gatewayLogger.onGatewayStart,
+        onGatewayChunk: gatewayLogger.onGatewayChunk,
+        onGatewaySelection: gatewayLogger.onGatewaySelection,
+        onGatewayEnd: gatewayLogger.onGatewayEnd,
         onJobStart: (jobId, commandRunId) => {
+          activeJobId = jobId;
           if (watchResolve) {
             watchResolve({ jobId, commandRunId });
             watchResolve = undefined;
@@ -846,7 +1104,6 @@ export class GatewayTrioCommand {
         {
           total: 0,
           completed: 0,
-          blocked: 0,
           failed: 0,
           skipped: 0,
           pending: 0,
@@ -869,16 +1126,14 @@ export class GatewayTrioCommand {
               summary: {
                 total: counts.total,
                 completed: counts.completed,
-                blocked: counts.blocked,
-              failed: counts.failed,
-              skipped: counts.skipped,
-              pending: counts.pending,
+                failed: counts.failed,
+                skipped: counts.skipped,
+                pending: counts.pending,
+              },
+              failed: result.failed,
+              skipped: result.skipped,
+              warnings,
             },
-            blocked: result.blocked,
-            failed: result.failed,
-            skipped: result.skipped,
-            warnings,
-          },
           null,
           2,
         ),
@@ -887,7 +1142,7 @@ export class GatewayTrioCommand {
     }
 
       const header = `Job: ${result.jobId}, Command Run: ${result.commandRunId}`;
-      const summary = `Tasks: ${counts.total} (completed=${counts.completed}, blocked=${counts.blocked}, failed=${counts.failed}, skipped=${counts.skipped}, pending=${counts.pending})`;
+      const summary = `Tasks: ${counts.total} (completed=${counts.completed}, failed=${counts.failed}, skipped=${counts.skipped}, pending=${counts.pending})`;
       const taskLines = result.tasks.map((task) => {
         const ratingDetails = task.ratings?.length
           ? `ratings=${task.ratings

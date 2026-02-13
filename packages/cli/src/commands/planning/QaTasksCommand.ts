@@ -1,6 +1,6 @@
 import path from "node:path";
 import { QaTasksApi, WorkspaceResolver } from "@mcoda/core";
-import { PathHelper } from "@mcoda/shared";
+import { PathHelper, QA_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -9,6 +9,7 @@ interface ParsedArgs {
   epicKey?: string;
   storyKey?: string;
   statusFilter: string[];
+  limit?: number;
   mode: "auto" | "manual";
   profileName?: string;
   level?: string;
@@ -22,14 +23,15 @@ interface ParsedArgs {
   debug: boolean;
   noTelemetry: boolean;
   resumeJobId?: string;
-  result?: "pass" | "fail" | "blocked";
+  result?: "pass" | "fail";
   notes?: string;
   evidenceUrl?: string;
   allowDirty: boolean;
+  cleanIgnorePaths: string[];
   quiet?: boolean;
 }
 
-const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail|blocked] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--dry-run] [--json]`;
+const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--limit N] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--clean-ignore "<path[,path]...>"] [--dry-run] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -46,6 +48,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   let epicKey: string | undefined;
   let storyKey: string | undefined;
   let statusFilter: string[] = ["ready_to_qa"];
+  let limit: number | undefined;
   let mode: "auto" | "manual" = "auto";
   let profileName: string | undefined;
   let level: string | undefined;
@@ -60,7 +63,8 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   let noTelemetry = false;
   let resumeJobId: string | undefined;
   let allowDirty = false;
-  let result: "pass" | "fail" | "blocked" | undefined;
+  let cleanIgnorePaths: string[] = [];
+  let result: "pass" | "fail" | undefined;
   let notes: string | undefined;
   let evidenceUrl: string | undefined;
   let quiet = false;
@@ -99,6 +103,10 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
             argv[i + 1] && !argv[i + 1].startsWith("--")
               ? argv[i + 1].split(",").map((s) => s.trim()).filter(Boolean)
               : statusFilter;
+          i += 1;
+          break;
+        case "--limit":
+          limit = Number(argv[i + 1]);
           i += 1;
           break;
         case "--mode":
@@ -165,6 +173,17 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
           allowDirty = parseBooleanFlag(argv[i + 1], allowDirty);
           i += 1;
           break;
+        case "--clean-ignore":
+          if (argv[i + 1] && !argv[i + 1].startsWith("--")) {
+            cleanIgnorePaths.push(
+              ...argv[i + 1]
+                .split(",")
+                .map((entry) => entry.trim())
+                .filter(Boolean),
+            );
+          }
+          i += 1;
+          break;
         case "--result":
           result = argv[i + 1] as any;
           i += 1;
@@ -191,6 +210,12 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
       }
     }
   }
+  const { filtered } = filterTaskStatuses(
+    statusFilter.length ? statusFilter : undefined,
+    QA_ALLOWED_STATUSES,
+    QA_ALLOWED_STATUSES,
+  );
+  statusFilter = filtered;
 
   return {
     workspaceRoot,
@@ -199,6 +224,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     storyKey,
     taskKeys: tasks,
     statusFilter,
+    limit: Number.isFinite(limit) ? limit : undefined,
     mode,
     profileName,
     level,
@@ -213,6 +239,7 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     noTelemetry,
     resumeJobId,
     allowDirty,
+    cleanIgnorePaths,
     result,
     notes,
     evidenceUrl,
@@ -231,13 +258,13 @@ export class QaTasksCommand {
     }
     if (parsed.mode === "manual" && !parsed.result) {
       // eslint-disable-next-line no-console
-      console.error("--mode manual requires --result <pass|fail|blocked>.");
+      console.error("--mode manual requires --result <pass|fail>.");
       process.exitCode = 1;
       return;
     }
     if (parsed.mode === "manual" && parsed.result && parsed.result !== "pass" && !parsed.notes && !parsed.evidenceUrl) {
       // eslint-disable-next-line no-console
-      console.error("--mode manual with fail/blocked requires --notes or --evidence-url.");
+      console.error("--mode manual with fail requires --notes or --evidence-url.");
       process.exitCode = 1;
       return;
     }
@@ -250,6 +277,7 @@ export class QaTasksCommand {
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
+      noRepoWrites: true,
     });
     const derivedKey = path.basename(workspace.workspaceRoot).replace(/[^a-z0-9]+/gi, "").toLowerCase();
     const projectKey = parsed.projectKey ?? (derivedKey || undefined);
@@ -267,6 +295,8 @@ export class QaTasksCommand {
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
         statusFilter: parsed.statusFilter,
+        ignoreStatusFilter: parsed.taskKeys.length > 0 ? true : undefined,
+        limit: parsed.limit,
         mode: parsed.mode,
         resumeJobId: parsed.resumeJobId,
         profileName: parsed.profileName,
@@ -281,6 +311,7 @@ export class QaTasksCommand {
         notes: parsed.notes,
         evidenceUrl: parsed.evidenceUrl,
         allowDirty: parsed.allowDirty,
+        cleanIgnorePaths: parsed.cleanIgnorePaths,
         noTelemetry: parsed.noTelemetry,
       });
 
@@ -294,6 +325,7 @@ export class QaTasksCommand {
           mode: parsed.mode,
           profile: parsed.profileName,
           level: parsed.level,
+          limit: parsed.limit,
           testCommand: parsed.testCommand,
           followups: followupMode,
           dryRun: parsed.dryRun,

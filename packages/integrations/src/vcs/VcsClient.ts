@@ -7,9 +7,16 @@ const exec = promisify(execCb);
 const execFile = promisify(execFileCb);
 
 export class VcsClient {
-  private async runGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-    const { stdout, stderr } = await execFile("git", args, { cwd });
-    return { stdout, stderr };
+  private async runGit(
+    cwd: string,
+    args: string[],
+    options: ExecOptions = {},
+  ): Promise<{ stdout: string; stderr: string }> {
+    const { stdout, stderr } = await execFile("git", args, { cwd, ...options });
+    return {
+      stdout: typeof stdout === "string" ? stdout : stdout?.toString?.() ?? "",
+      stderr: typeof stderr === "string" ? stderr : stderr?.toString?.() ?? "",
+    };
   }
 
   private async gitDirExists(cwd: string): Promise<boolean> {
@@ -18,6 +25,15 @@ export class VcsClient {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async isRepo(cwd: string): Promise<boolean> {
+    try {
+      await this.runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+      return true;
+    } catch {
+      return this.gitDirExists(cwd);
     }
   }
 
@@ -99,6 +115,36 @@ export class VcsClient {
     await this.runGit(cwd, ["checkout", "-b", branch, base]);
   }
 
+  async addWorktree(
+    cwd: string,
+    worktreePath: string,
+    branch: string,
+    options?: { detach?: boolean },
+  ): Promise<void> {
+    const args = ["worktree", "add", "--force"];
+    if (options?.detach) {
+      args.push("--detach");
+    }
+    args.push(worktreePath, branch);
+    await this.runGit(cwd, args);
+  }
+
+  async removeWorktree(cwd: string, worktreePath: string): Promise<void> {
+    try {
+      await this.runGit(cwd, ["worktree", "remove", "--force", worktreePath]);
+    } catch {
+      // ignore; cleanup caller will remove directory
+    }
+  }
+
+  async cherryPick(cwd: string, commit: string): Promise<void> {
+    await this.runGit(cwd, ["cherry-pick", commit]);
+  }
+
+  async abortCherryPick(cwd: string): Promise<void> {
+    await this.runGit(cwd, ["cherry-pick", "--abort"]);
+  }
+
   async applyPatch(cwd: string, patch: string): Promise<void> {
     const opts: ExecOptions = { cwd, shell: true } as any;
     const applyCmd = `cat <<'__PATCH__' | git apply --whitespace=nowarn\n${patch}\n__PATCH__`;
@@ -124,6 +170,23 @@ export class VcsClient {
     }
   }
 
+  async applyPatchWithReject(cwd: string, patch: string): Promise<{ stdout?: string; stderr?: string; error?: string }> {
+    const opts: ExecOptions = { cwd, shell: true } as any;
+    const applyCmd = `cat <<'__PATCH__' | git apply --reject --whitespace=nowarn\n${patch}\n__PATCH__`;
+    try {
+      const { stdout, stderr } = await exec(applyCmd, opts as any);
+      return {
+        stdout: typeof stdout === "string" ? stdout : stdout?.toString?.() ?? "",
+        stderr: typeof stderr === "string" ? stderr : stderr?.toString?.() ?? "",
+      };
+    } catch (error: any) {
+      const stdout = typeof error?.stdout === "string" ? error.stdout : error?.stdout?.toString?.() ?? "";
+      const stderr = typeof error?.stderr === "string" ? error.stderr : error?.stderr?.toString?.() ?? "";
+      const message = error instanceof Error ? error.message : String(error);
+      return { stdout, stderr, error: stderr || message };
+    }
+  }
+
   async stage(cwd: string, paths: string[]): Promise<void> {
     await this.runGit(cwd, ["add", ...paths]);
   }
@@ -131,12 +194,13 @@ export class VcsClient {
   async commit(
     cwd: string,
     message: string,
-    options: { noVerify?: boolean; noGpgSign?: boolean } = {},
+    options: { noVerify?: boolean; noGpgSign?: boolean; env?: NodeJS.ProcessEnv } = {},
   ): Promise<void> {
     const args = ["commit", "-m", message];
     if (options.noVerify) args.push("--no-verify");
     if (options.noGpgSign) args.push("--no-gpg-sign");
-    await this.runGit(cwd, args);
+    const execOptions: ExecOptions = options.env ? { env: options.env } : {};
+    await this.runGit(cwd, args, execOptions);
   }
 
   async merge(cwd: string, source: string, target: string, ensureClean = false): Promise<void> {
@@ -153,6 +217,20 @@ export class VcsClient {
     } catch {
       // Ignore when no merge is in progress.
     }
+  }
+
+  async resolveMergeConflicts(
+    cwd: string,
+    strategy: "theirs" | "ours",
+    paths?: string[],
+  ): Promise<string[]> {
+    const conflicts = paths?.length ? paths : await this.conflictPaths(cwd);
+    if (!conflicts.length) return [];
+    const flag = strategy === "theirs" ? "--theirs" : "--ours";
+    await this.runGit(cwd, ["checkout", flag, "--", ...conflicts]);
+    await this.runGit(cwd, ["add", "--", ...conflicts]);
+    await this.runGit(cwd, ["commit", "--no-edit"]);
+    return conflicts;
   }
 
   async push(cwd: string, remote: string, branch: string): Promise<void> {
@@ -204,13 +282,46 @@ export class VcsClient {
 
   async ensureClean(cwd: string, ignoreDotMcoda = true, ignorePaths: string[] = []): Promise<void> {
     const dirty = await this.dirtyPaths(cwd);
-    const filtered = dirty.filter((p) => {
-      if (ignoreDotMcoda && p.startsWith(".mcoda")) return false;
-      return !ignorePaths.some((prefix) => p.startsWith(prefix));
-    });
+    const normalize = (value: string): string =>
+      value.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
+    const normalizedIgnore = ignorePaths
+      .map((entry) => normalize(entry.trim()))
+      .filter(Boolean)
+      .map((entry) => (entry.endsWith("/") ? `${entry.replace(/\/+$/, "")}/` : entry));
+    const isIgnored = (value: string): boolean => {
+      const normalized = normalize(value);
+      if (ignoreDotMcoda && normalized.startsWith(".mcoda")) return true;
+      return normalizedIgnore.some((entry) => {
+        if (entry.endsWith("/")) {
+          const dir = entry.slice(0, -1);
+          return normalized === dir || normalized.startsWith(entry);
+        }
+        return normalized === entry || normalized.startsWith(`${entry}/`);
+      });
+    };
+    const filtered = dirty.filter((p) => !isIgnored(p));
     if (filtered.length) {
       throw new Error(`Working tree dirty: ${filtered.join(", ")}`);
     }
+  }
+
+  async resetHard(cwd: string, options?: { exclude?: string[] }): Promise<void> {
+    await this.runGit(cwd, ["reset", "--hard"]);
+    const args = ["clean", "-fd"];
+    (options?.exclude ?? [])
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .forEach((entry) => {
+        args.push("-e", entry);
+      });
+    await this.runGit(cwd, args);
+  }
+
+  async restorePaths(cwd: string, paths: string[]): Promise<void> {
+    const cleaned = paths.map((entry) => entry.trim()).filter(Boolean);
+    if (!cleaned.length) return;
+    await this.runGit(cwd, ["checkout", "--", ...cleaned]);
+    await this.runGit(cwd, ["clean", "-fd", "--", ...cleaned]);
   }
 
   async lastCommitSha(cwd: string): Promise<string> {

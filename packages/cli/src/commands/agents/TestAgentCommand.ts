@@ -30,6 +30,9 @@ export class TestAgentCommand {
     if (!name || parsed.flags.help) {
       throw new Error(USAGE);
     }
+    if (parsed.flags.prompt === true) {
+      throw new Error("test-agent: missing value for --prompt");
+    }
     const prompt = typeof parsed.flags.prompt === "string" ? parsed.flags.prompt : undefined;
 
     const api = await AgentsApi.create();

@@ -11,7 +11,7 @@ import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
   workspaceRoot,
   workspaceId: workspaceRoot,
-  mcodaDir: path.join(workspaceRoot, ".mcoda"),
+  mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
   id: workspaceRoot,
   legacyWorkspaceIds: [],
   workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
@@ -20,10 +20,18 @@ const workspaceFromRoot = (workspaceRoot: string): WorkspaceResolution => ({
 
 describe("BacklogService", () => {
   let workspaceRoot: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-backlog-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-backlog-"));
-    await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
+    await fs.mkdir(PathHelper.getWorkspaceDir(workspaceRoot), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
     const connection = await Connection.open(dbPath);
     await WorkspaceMigrations.run(connection.db);
@@ -98,7 +106,7 @@ describe("BacklogService", () => {
           key: "web-01-us-01-t02",
           title: "Hook login API",
           description: "Wire up API",
-          status: "blocked",
+          status: "not_started",
           storyPoints: 2,
           priority: 2,
           assigneeHuman: "bob",
@@ -110,7 +118,7 @@ describe("BacklogService", () => {
           key: "web-01-us-02-t01",
           title: "Add review gate",
           description: "Implement review checks",
-          status: "ready_to_review",
+          status: "ready_to_code_review",
           storyPoints: 5,
           priority: 1,
           assigneeHuman: "alice",
@@ -165,14 +173,24 @@ describe("BacklogService", () => {
 
   afterEach(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalProfile;
   });
 
-  it("aggregates backlog buckets and orders dependencies per bucket", async () => {
+  it("aggregates backlog buckets and orders dependencies per bucket", { concurrency: false }, async () => {
     const workspace = workspaceFromRoot(workspaceRoot);
     const service = await BacklogService.create(workspace);
-    const { summary, warnings } = await service.getBacklog({ projectKey: "WEB", orderByDependencies: true });
+    const { summary, warnings, meta } = await service.getBacklog({ projectKey: "WEB", orderByDependencies: true });
 
-    assert.equal(warnings.length, 0);
+    assert.ok(warnings.some((warning) => warning.includes("Cross-lane dependencies detected")));
+    assert.equal(meta.ordering.requested, true);
+    assert.equal(meta.ordering.applied, true);
+    assert.equal(meta.ordering.reason, "dependency_graph");
+    assert.ok(meta.crossLaneDependencies.count > 0);
+    assert.ok(meta.crossLaneDependencies.dependencies.length > 0);
     assert.equal(summary.scope.project_key, "WEB");
     assert.equal(summary.totals.implementation.tasks, 3);
     assert.equal(summary.totals.implementation.story_points, 5);
@@ -186,7 +204,7 @@ describe("BacklogService", () => {
       ["web-01", "web-02"],
     );
     const storyStatuses = summary.epics.flatMap((e) => e.stories.map((s) => s.status));
-    assert.deepEqual(storyStatuses.sort(), ["completed", "in_progress", "ready_to_review"].sort());
+    assert.deepEqual(storyStatuses.sort(), ["completed", "in_progress", "ready_to_code_review"].sort());
 
     const tasksByKey = new Map(summary.tasks.map((t) => [t.task_key, t]));
     assert.deepEqual(tasksByKey.get("web-01-us-01-t02")?.dependency_keys, ["web-01-us-01-t01"]);
@@ -195,9 +213,9 @@ describe("BacklogService", () => {
     const orderedKeys = summary.tasks.map((t) => t.task_key);
     assert.deepEqual(orderedKeys, [
       "web-01-us-01-t01",
-      "web-02-us-01-t01",
       "web-01-us-01-t02",
       "web-01-us-02-t01",
+      "web-02-us-01-t01",
       "web-01-us-01-t03",
       "web-02-us-01-t02",
     ]);
@@ -205,10 +223,22 @@ describe("BacklogService", () => {
     await service.close();
   });
 
-  it("filters by status when requested", async () => {
+  it("records skipped ordering when dependency ordering lacks project scope", { concurrency: false }, async () => {
     const workspace = workspaceFromRoot(workspaceRoot);
     const service = await BacklogService.create(workspace);
-    const { summary } = await service.getBacklog({ projectKey: "WEB", statuses: ["ready_to_review"] });
+    const { meta, warnings } = await service.getBacklog({ orderByDependencies: true });
+
+    assert.equal(meta.ordering.requested, true);
+    assert.equal(meta.ordering.applied, false);
+    assert.equal(meta.ordering.reason, "missing_project_scope");
+    assert.ok(warnings.some((warning) => warning.includes("Dependency ordering requires a project scope")));
+    await service.close();
+  });
+
+  it("filters by status when requested", { concurrency: false }, async () => {
+    const workspace = workspaceFromRoot(workspaceRoot);
+    const service = await BacklogService.create(workspace);
+    const { summary } = await service.getBacklog({ projectKey: "WEB", statuses: ["ready_to_code_review"] });
 
     assert.equal(summary.tasks.length, 1);
     assert.equal(summary.tasks[0]?.task_key, "web-01-us-02-t01");

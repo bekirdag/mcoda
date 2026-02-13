@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { PathHelper } from "@mcoda/shared";
 const nowIso = () => new Date().toISOString();
 const segmentize = (docId, content) => {
     const lines = content.split(/\r?\n/);
@@ -40,7 +41,7 @@ export class DocdexClient {
     getStorePath() {
         const base = this.options.storePath
             ? path.resolve(this.options.storePath)
-            : path.join(this.options.workspaceRoot ?? process.cwd(), ".mcoda", "docdex", "documents.json");
+            : path.join(PathHelper.getWorkspaceDir(this.options.workspaceRoot ?? process.cwd()), "docdex", "documents.json");
         return base;
     }
     normalizePath(inputPath) {

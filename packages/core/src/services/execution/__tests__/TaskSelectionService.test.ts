@@ -61,7 +61,7 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
         key: "proj-epic-us-01-t05",
         title: "Review Task",
         description: "",
-        status: "ready_to_review",
+        status: "ready_to_code_review",
       },
     ],
     false,
@@ -123,10 +123,52 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
 
   const selection = new TaskSelectionService(workspace, repo);
   const plan = await selection.selectTasks({ projectKey: "proj" });
-  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t03", "proj-epic-us-01-t01"]);
-  assert.equal(plan.blocked.length, 2);
-  assert.ok(plan.blocked.some((b) => b.task.key === "proj-epic-us-01-t04"));
-  assert.ok(plan.blocked.some((b) => b.task.key === "proj-epic-us-01-t02"));
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t01", "proj-epic-us-01-t03"]);
+  assert.ok(plan.warnings.some((warning) => warning.includes("dependencies not ready")));
+  await cleanupWorkspace(dir, repo);
+});
+
+test("selectTasks includes tasks even with open missing_context comments", async () => {
+  const ctx = await setupWorkspace();
+  const { repo, story, project, dir, workspace } = ctx;
+
+  const [t1, t2] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t20",
+        title: "Setup project scaffold",
+        description: "",
+        status: "not_started",
+      },
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t21",
+        title: "Implement API route",
+        description: "",
+        status: "not_started",
+      },
+    ],
+    false,
+  );
+
+  await repo.createTaskComment({
+    taskId: t2.id,
+    sourceCommand: "gateway-trio",
+    authorType: "agent",
+    category: "missing_context",
+    body: "Missing API shape details.",
+    createdAt: new Date().toISOString(),
+  });
+
+  const selection = new TaskSelectionService(workspace, repo);
+  const plan = await selection.selectTasks({ projectKey: "proj" });
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key).sort(), ["proj-epic-us-01-t20", "proj-epic-us-01-t21"].sort());
+  assert.ok(!plan.warnings.some((warning) => warning.includes("missing_context")));
   await cleanupWorkspace(dir, repo);
 });
 
@@ -171,9 +213,50 @@ test("selectTasks surfaces cycles in dependencies", async () => {
     projectKey: "proj",
     taskKeys: ["proj-epic-us-01-t10", "proj-epic-us-01-t11"],
   });
-  assert.equal(plan.ordered.length, 2);
-  assert.equal(plan.blocked.length, 0);
-  assert.ok(plan.ordered.every((t) => t.blockedReason === "dependency_not_ready"));
-  assert.ok(plan.warnings.some((w) => w.toLowerCase().includes("cycle")));
+  assert.equal(plan.ordered.length, 0);
+  assert.ok(plan.warnings.some((warning) => warning.includes("dependencies not ready")));
+  await cleanupWorkspace(dir, repo);
+});
+
+test("selectTasks ignores blocked in status filters", async () => {
+  const ctx = await setupWorkspace();
+  const { repo, story, project, dir, workspace } = ctx;
+
+  const tasks = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t30",
+        title: "Prereq",
+        description: "",
+        status: "not_started",
+      },
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t31",
+        title: "Dependent",
+        description: "",
+        status: "blocked",
+      },
+    ],
+    false,
+  );
+
+  await repo.insertTaskDependencies(
+    [{ taskId: tasks[1].id, dependsOnTaskId: tasks[0].id, relationType: "blocks" }],
+    false,
+  );
+
+  const selection = new TaskSelectionService(workspace, repo);
+  const plan = await selection.selectTasks({
+    projectKey: "proj",
+    statusFilter: ["not_started", "blocked"],
+  });
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t30"]);
+  assert.ok(plan.warnings.some((warning) => warning.includes("Status 'blocked' is no longer supported")));
   await cleanupWorkspace(dir, repo);
 });

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { CodeReviewService } from "@mcoda/core";
+import { PathHelper } from "@mcoda/shared";
 import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
 import { parseCodeReviewArgs } from "../commands/review/CodeReviewCommand.js";
 
@@ -85,7 +86,6 @@ class FakeSelectionService {
           dependencies: { ids: [], keys: [], blocking: [] },
         },
       ],
-      blocked: [],
       warnings: [],
     };
   }
@@ -95,15 +95,11 @@ class FakeSelectionService {
 class FakeStateService {
   readyToQaCalled = false;
   inProgressCalled = false;
-  blockedCalled = false;
   async markReadyToQa() {
     this.readyToQaCalled = true;
   }
   async returnToInProgress() {
     this.inProgressCalled = true;
-  }
-  async markBlocked() {
-    this.blockedCalled = true;
   }
   async recordReviewMetadata() {}
 }
@@ -251,17 +247,18 @@ const makeWorkspace = async () => {
   return {
     workspaceRoot: dir,
     workspaceId: dir,
-    mcodaDir: path.join(dir, ".mcoda"),
+    mcodaDir: PathHelper.getWorkspaceDir(dir),
   };
 };
 
 describe("code-review argument parsing", () => {
-  it("defaults status to ready_to_review and agent streaming on", () => {
+  it("defaults status to ready_to_code_review and agent streaming off", () => {
     const parsed = parseCodeReviewArgs([]);
-    assert.deepEqual(parsed.statusFilter, ["ready_to_review"]);
-    assert.equal(parsed.agentStream, true);
+    assert.deepEqual(parsed.statusFilter, ["ready_to_code_review"]);
+    assert.equal(parsed.agentStream, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
+    assert.equal(parsed.createFollowupTasks, false);
   });
 
   it("parses filters, resume and agent stream override", () => {
@@ -276,13 +273,14 @@ describe("code-review argument parsing", () => {
       "S1",
       "--task=TASK-1",
       "--status",
-      "blocked,ready_to_review",
+      "ready_to_code_review",
       "--base",
       "main",
       "--resume",
       "job-1",
       "--agent-stream=false",
       "--rate-agents",
+      "--create-followup-tasks=true",
       "--json",
     ]);
     assert.equal(parsed.workspaceRoot, path.resolve("/tmp/demo"));
@@ -292,10 +290,11 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.resumeJobId, "job-1");
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, true);
+    assert.equal(parsed.createFollowupTasks, true);
     assert.equal(parsed.baseRef, "main");
     assert.equal(parsed.json, true);
     assert.deepEqual(parsed.taskKeys, ["TASK-1"]);
-    assert.deepEqual(parsed.statusFilter, ["blocked", "ready_to_review"]);
+    assert.deepEqual(parsed.statusFilter, ["ready_to_code_review"]);
   });
 });
 
@@ -306,8 +305,16 @@ describe("code-review service flow", () => {
   let fakeWorkspaceRepo: FakeWorkspaceRepo;
   let fakeJobService: FakeJobService;
   let fakeStateService: FakeStateService;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspace = await makeWorkspace();
     task = {
       id: "task-1",
@@ -318,7 +325,7 @@ describe("code-review service flow", () => {
       title: "Review demo",
       description: "",
       type: "feature",
-      status: "ready_to_review",
+      status: "ready_to_code_review",
       storyPoints: 3,
       priority: 1,
       assignedAgentId: null,
@@ -343,6 +350,19 @@ describe("code-review service flow", () => {
     if (workspace?.workspaceRoot) {
       await fs.rm(workspace.workspaceRoot, { recursive: true, force: true });
     }
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
   });
 
   it("creates a review job, writes comments/reviews, and records token usage", async () => {
@@ -361,7 +381,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
     });
@@ -390,7 +410,7 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
     });
     assert.equal(result.tasks.length, 1);
@@ -407,6 +427,8 @@ describe("code-review service flow", () => {
             type: "bug",
             severity: "high",
             message: "Fix this issue",
+            file: "src/demo.ts",
+            line: 12,
           },
         ],
       }),
@@ -426,14 +448,16 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
+      createFollowupTasks: true,
     });
     const followups = result.tasks[0].followupTasks ?? [];
     assert.ok(followups.length >= 1);
     assert.ok(fakeWorkspaceRepo.tasks.length > 1);
-    assert.ok(fakeWorkspaceRepo.epics.find((e: any) => e.key === "epic-bugs" || e.key === "epic-issues"));
+    const created = fakeWorkspaceRepo.tasks.find((item: any) => item.key !== task.key);
+    assert.equal(created?.epicId, task.epicId);
   });
 
   it("does not create follow-up tasks for approved low/info findings", async () => {
@@ -447,11 +471,15 @@ describe("code-review service flow", () => {
             type: "style",
             severity: "low",
             message: "Nit only",
+            file: "src/demo.ts",
+            line: 8,
           },
           {
             type: "docs",
             severity: "info",
             message: "Note",
+            file: "README.md",
+            line: 3,
           },
         ],
       }),
@@ -472,9 +500,10 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       agentStream: false,
+      createFollowupTasks: true,
     });
     const afterCount = fakeWorkspaceRepo.tasks.length;
     assert.equal(afterCount, beforeCount);
@@ -496,7 +525,7 @@ describe("code-review service flow", () => {
     await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       taskKeys: ["TASK-1"],
       limit: 1,
     });
@@ -509,9 +538,9 @@ describe("code-review service flow", () => {
     const resumeJob = { id: "job-1", commandName: "code-review", type: "review", payload: { selection: [task.id] }, totalItems: 1 };
     fakeJobService = new FakeJobService(resumeJob);
     fakeWorkspaceRepo = new FakeWorkspaceRepo([task]);
-    await fs.mkdir(path.join(workspace.workspaceRoot, ".mcoda", "jobs", "job-1", "review"), { recursive: true });
+    await fs.mkdir(path.join(workspace.mcodaDir, "jobs", "job-1", "review"), { recursive: true });
     await fs.writeFile(
-      path.join(workspace.workspaceRoot, ".mcoda", "jobs", "job-1", "review", "state.json"),
+      path.join(workspace.mcodaDir, "jobs", "job-1", "review", "state.json"),
       JSON.stringify({ schema_version: 1, job_id: "job-1", selectedTaskIds: [task.id], contextBuilt: [], reviewed: [] }, null, 2),
       "utf8",
     );
@@ -529,14 +558,14 @@ describe("code-review service flow", () => {
     const result = await service.reviewTasks({
       workspace,
       projectKey: "P1",
-      statusFilter: ["ready_to_review"],
+      statusFilter: ["ready_to_code_review"],
       resumeJobId: "job-1",
     });
     assert.equal(result.jobId, "job-1");
     assert.equal(fakeJobService.jobStatuses.length > 0, true);
   });
 
-  it("passes default status filter to selection service", async () => {
+  it("ignores status filters when task keys are explicit", async () => {
     const service = new CodeReviewService(workspace, {
       agentService: new FakeAgentService() as any,
       docdex: new FakeDocdex() as any,
@@ -556,7 +585,8 @@ describe("code-review service flow", () => {
     });
 
     assert.ok(fakeSelection.lastFilters);
-    assert.deepEqual(fakeSelection.lastFilters.statusFilter, ["ready_to_review"]);
+    assert.equal(fakeSelection.lastFilters.ignoreStatusFilter, true);
+    assert.equal(fakeSelection.lastFilters.statusFilter, undefined);
   });
 });
 
@@ -571,7 +601,7 @@ describe("code-review CLI output shape", () => {
           taskId: "t1",
           taskKey: "TASK-1",
           decision: "approve",
-          statusBefore: "ready_to_review",
+          statusBefore: "ready_to_code_review",
           statusAfter: "ready_to_qa",
           findings: [],
         },

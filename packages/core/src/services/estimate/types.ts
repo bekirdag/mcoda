@@ -23,6 +23,7 @@ export interface VelocityOptions {
   mode?: VelocitySource;
   windowTasks?: 10 | 20 | 50;
   spPerHourAll?: number;
+  spPerHourImplementation?: number;
   spPerHourReview?: number;
   spPerHourQa?: number;
 }

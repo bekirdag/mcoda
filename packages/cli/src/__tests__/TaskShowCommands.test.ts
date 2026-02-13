@@ -37,10 +37,18 @@ describe("task show arg parsing", () => {
 describe("task show rendering", () => {
   let workspaceRoot: string;
   let taskKey: string;
+  let tempHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
 
   beforeEach(async () => {
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-task-home-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-cli-task-"));
-    await fs.mkdir(path.join(workspaceRoot, ".mcoda"), { recursive: true });
+    await fs.mkdir(PathHelper.getWorkspaceDir(workspaceRoot), { recursive: true });
     const dbPath = PathHelper.getWorkspaceDbPath(workspaceRoot);
     const connection = await Connection.open(dbPath);
     await WorkspaceMigrations.run(connection.db);
@@ -103,6 +111,19 @@ describe("task show rendering", () => {
 
   afterEach(async () => {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
   });
 
   it("prints key fields in table mode", async () => {

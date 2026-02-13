@@ -18,6 +18,7 @@ export interface CommandRunRecord {
   workspaceId: string;
   projectKey?: string;
   jobId?: string;
+  agentId?: string;
   taskIds?: string[];
   gitBranch?: string;
   gitBaseBranch?: string;
@@ -40,6 +41,8 @@ export interface JobRecord {
   workspaceId: string;
   projectKey?: string;
   payload?: Record<string, unknown>;
+  agentId?: string;
+  agentIds?: string[];
   totalItems?: number;
   processedItems?: number;
   totalUnits?: number;
@@ -55,9 +58,18 @@ export interface JobRecord {
 export interface TokenUsageRecord extends TokenUsageInsert {
   commandName?: string;
   action?: string;
+  invocationKind?: string;
+  provider?: string;
+  currency?: string;
   promptTokens?: number;
   completionTokens?: number;
+  tokensCached?: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
   costUsd?: number;
+  durationMs?: number;
+  startedAt?: string;
+  finishedAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -65,6 +77,23 @@ export interface JobCheckpoint {
   stage: string;
   timestamp: string;
   details?: Record<string, unknown>;
+}
+
+export interface JobIterationProgress {
+  current: number;
+  max: number;
+  phase?: string;
+}
+
+export interface JobProgressUpdate {
+  stage: string;
+  message: string;
+  iteration?: JobIterationProgress;
+  details?: Record<string, unknown>;
+  totalItems?: number;
+  processedItems?: number;
+  payload?: Record<string, unknown>;
+  heartbeat?: boolean;
 }
 
 export interface JobLogRow {
@@ -89,8 +118,20 @@ export interface TaskRunSnapshotRow {
 }
 
 const nowIso = (): string => new Date().toISOString();
+const TERMINAL_JOB_STATES = new Set<JobState>(["completed", "failed", "cancelled", "partial"]);
+
+type JobServiceWorkspace =
+  | string
+  | {
+      workspaceRoot: string;
+      workspaceId?: string;
+      mcodaDir?: string;
+    };
 
 export class JobService {
+  private static activeJobs = new Map<string, { service: JobService; commandRunId?: string }>();
+  private static signalHandlersRegistered = false;
+  private static handlingSignal = false;
   private checkpointCounters = new Map<string, number>();
   private workspaceRepoInit = false;
   private telemetryConfig?: { optOut?: boolean; strict?: boolean };
@@ -101,22 +142,61 @@ export class JobService {
   private requireRepo: boolean;
   private workspaceRoot: string;
   private workspaceId: string;
+  private mcodaDirOverride?: string;
+
+  private static ensureSignalHandlers(): void {
+    if (JobService.signalHandlersRegistered) return;
+    if (process.env.MCODA_DISABLE_JOB_SIGNAL_HANDLERS === "1") return;
+    JobService.signalHandlersRegistered = true;
+    const handler = (signal: NodeJS.Signals) => {
+      void JobService.handleProcessSignal(signal);
+    };
+    process.once("SIGINT", handler);
+    process.once("SIGTERM", handler);
+    process.once("SIGTSTP", handler);
+  }
+
+  private static registerActiveJob(jobId: string, service: JobService, commandRunId?: string): void {
+    JobService.activeJobs.set(jobId, { service, commandRunId });
+    JobService.ensureSignalHandlers();
+  }
+
+  private static unregisterActiveJob(jobId: string): void {
+    JobService.activeJobs.delete(jobId);
+  }
+
+  static async cancelActiveJobs(signal: NodeJS.Signals): Promise<void> {
+    const active = Array.from(JobService.activeJobs.entries());
+    await Promise.all(
+      active.map(async ([jobId, entry]) => entry.service.cancelJobOnSignal(jobId, entry.commandRunId, signal)),
+    );
+  }
+
+  private static async handleProcessSignal(signal: NodeJS.Signals): Promise<void> {
+    if (JobService.handlingSignal) return;
+    JobService.handlingSignal = true;
+    await JobService.cancelActiveJobs(signal);
+    const exitCode = signal === "SIGTERM" ? 143 : 130;
+    process.exitCode = exitCode;
+    process.exit(exitCode);
+  }
 
   constructor(
-    workspace: string | { workspaceRoot: string; workspaceId?: string },
+    workspace: JobServiceWorkspace,
     private workspaceRepo?: WorkspaceRepository,
     options: { noTelemetry?: boolean; requireRepo?: boolean } = {},
   ) {
     const resolvedRoot = typeof workspace === "string" ? workspace : workspace.workspaceRoot;
     this.workspaceRoot = resolvedRoot;
     this.workspaceId = typeof workspace === "string" ? resolvedRoot : workspace.workspaceId ?? resolvedRoot;
+    this.mcodaDirOverride = typeof workspace === "string" ? undefined : workspace.mcodaDir;
     this.perRunTelemetryDisabled = options.noTelemetry ?? false;
     this.envTelemetryDisabled = (process.env.MCODA_TELEMETRY ?? "").toLowerCase() === "off";
     this.requireRepo = options.requireRepo ?? false;
   }
 
   private get mcodaDir(): string {
-    return path.join(this.workspaceRoot, ".mcoda");
+    return this.mcodaDirOverride ?? PathHelper.getWorkspaceDir(this.workspaceRoot);
   }
 
   private get commandRunsPath(): string {
@@ -173,6 +253,34 @@ export class JobService {
     }
   }
 
+  private async cancelJobOnSignal(jobId: string, commandRunId: string | undefined, signal: NodeJS.Signals): Promise<void> {
+    const reason = `Cancelled by ${signal}`;
+    try {
+      await this.ensureMcoda();
+    } catch {
+      // ignore workspace bootstrap failures during shutdown
+    }
+    if (this.workspaceRepo && "releaseTaskLocksByJob" in this.workspaceRepo) {
+      try {
+        await (this.workspaceRepo as any).releaseTaskLocksByJob(jobId);
+      } catch {
+        // ignore lock cleanup failures during shutdown
+      }
+    }
+    try {
+      await this.updateJobStatus(jobId, "cancelled", { errorSummary: reason });
+    } catch {
+      // ignore job status failures during shutdown
+    }
+    if (commandRunId) {
+      try {
+        await this.finishCommandRun(commandRunId, "cancelled", reason);
+      } catch {
+        // ignore command run failures during shutdown
+      }
+    }
+  }
+
   private async readJsonArray<T>(filePath: string): Promise<T[]> {
     try {
       const raw = await fs.readFile(filePath, "utf8");
@@ -211,6 +319,16 @@ export class JobService {
     }
     const jobs = await this.readJsonArray<JobRecord>(this.jobsStorePath);
     return jobs.find((j) => j.id === jobId);
+  }
+
+  async readManifest(jobId: string): Promise<Record<string, unknown> | undefined> {
+    const manifestPath = this.manifestPath(jobId);
+    try {
+      const raw = await fs.readFile(manifestPath, "utf8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
   }
 
   async readCheckpoints(jobId: string): Promise<JobCheckpoint[]> {
@@ -321,7 +439,7 @@ export class JobService {
   async startCommandRun(
     commandName: string,
     projectKey?: string,
-    options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[]; jobId?: string },
+    options?: { gitBranch?: string; gitBaseBranch?: string; taskIds?: string[]; jobId?: string; agentId?: string },
   ): Promise<CommandRunRecord> {
     await this.ensureMcoda();
     const startedAt = nowIso();
@@ -331,6 +449,7 @@ export class JobService {
       workspaceId: this.workspaceId,
       projectKey,
       jobId: options?.jobId,
+      agentId: options?.agentId,
       taskIds: options?.taskIds,
       gitBranch: options?.gitBranch,
       gitBaseBranch: options?.gitBaseBranch,
@@ -343,6 +462,7 @@ export class JobService {
         workspaceId: this.workspaceId,
         commandName,
         jobId: record.jobId,
+        agentId: record.agentId ?? null,
         taskIds: record.taskIds,
         gitBranch: record.gitBranch,
         gitBaseBranch: record.gitBaseBranch,
@@ -379,7 +499,14 @@ export class JobService {
     type: string,
     commandRunId?: string,
     projectKey?: string,
-    options: { payload?: Record<string, unknown>; commandName?: string; totalItems?: number; processedItems?: number } = {},
+    options: {
+      payload?: Record<string, unknown>;
+      commandName?: string;
+      totalItems?: number;
+      processedItems?: number;
+      agentId?: string;
+      agentIds?: string[];
+    } = {},
   ): Promise<JobRecord> {
     await this.ensureMcoda();
     const createdAt = nowIso();
@@ -392,6 +519,8 @@ export class JobService {
       workspaceId: this.workspaceId,
       projectKey,
       payload: options.payload,
+      agentId: options.agentId,
+      agentIds: options.agentIds ?? (options.agentId ? [options.agentId] : undefined),
       totalItems: options.totalItems,
       processedItems: options.processedItems,
       totalUnits: options.totalItems,
@@ -406,6 +535,8 @@ export class JobService {
         state: "running",
         commandName: record.commandName,
         payload: options.payload,
+        agentId: record.agentId ?? null,
+        agentIds: record.agentIds ?? null,
         totalItems: record.totalItems,
         processedItems: record.processedItems,
       });
@@ -418,6 +549,7 @@ export class JobService {
     if (commandRunId) {
       await this.attachCommandRunToJob(commandRunId, record.id);
     }
+    JobService.registerActiveJob(record.id, this, commandRunId);
     return record;
   }
 
@@ -498,6 +630,117 @@ export class JobService {
         payload: updated.payload,
       });
     }
+    if (state === "cancelled" && this.workspaceRepo && "releaseTaskLocksByJob" in this.workspaceRepo) {
+      try {
+        await (this.workspaceRepo as any).releaseTaskLocksByJob(jobId);
+      } catch {
+        // ignore lock cleanup failures during cancellation
+      }
+    }
+    if (TERMINAL_JOB_STATES.has(state)) {
+      JobService.unregisterActiveJob(jobId);
+    } else if (state === "running") {
+      JobService.registerActiveJob(jobId, this, updated.commandRunId);
+    }
+  }
+
+  private async computeElapsed(jobId: string): Promise<{ elapsedMs?: number; elapsedSeconds?: number }> {
+    const job = await this.getJob(jobId);
+    if (!job?.createdAt) return {};
+    const startedAt = Date.parse(job.createdAt);
+    if (Number.isNaN(startedAt)) return {};
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    return { elapsedMs, elapsedSeconds: Math.round(elapsedMs / 1000) };
+  }
+
+  async recordJobProgress(jobId: string, input: JobProgressUpdate): Promise<void> {
+    const elapsed = await this.computeElapsed(jobId);
+    const payload: Record<string, unknown> = {
+      docgen_stage: input.stage,
+      docgen_status_message: input.message,
+    };
+    if (elapsed.elapsedMs !== undefined) {
+      payload.docgen_elapsed_ms = elapsed.elapsedMs;
+      payload.docgen_elapsed_seconds = elapsed.elapsedSeconds;
+    }
+    if (input.iteration) {
+      payload.docgen_iteration_current = input.iteration.current;
+      payload.docgen_iteration_max = input.iteration.max;
+      if (input.iteration.phase) {
+        payload.docgen_iteration_phase = input.iteration.phase;
+      }
+    }
+    if (input.payload && Object.keys(input.payload).length > 0) {
+      Object.assign(payload, input.payload);
+    }
+
+    await this.updateJobStatus(jobId, "running", {
+      totalItems: input.totalItems,
+      processedItems: input.processedItems,
+      lastCheckpoint: input.stage,
+      jobStateDetail: input.message,
+      payload,
+    });
+
+    const checkpointDetails: Record<string, unknown> = { message: input.message };
+    if (elapsed.elapsedMs !== undefined) {
+      checkpointDetails.elapsedMs = elapsed.elapsedMs;
+      checkpointDetails.elapsedSeconds = elapsed.elapsedSeconds;
+    }
+    if (input.iteration) {
+      checkpointDetails.iteration = input.iteration;
+    }
+    if (input.details && Object.keys(input.details).length > 0) {
+      Object.assign(checkpointDetails, input.details);
+    }
+
+    await this.writeCheckpoint(jobId, {
+      stage: input.stage,
+      timestamp: nowIso(),
+      details: checkpointDetails,
+    });
+
+    if (input.heartbeat) {
+      const parts = [`[docgen heartbeat] ${input.message}`];
+      if (input.iteration) {
+        const phase = input.iteration.phase ? `:${input.iteration.phase}` : "";
+        parts.push(`iter=${input.iteration.current}/${input.iteration.max}${phase}`);
+      }
+      if (elapsed.elapsedSeconds !== undefined) {
+        parts.push(`elapsed=${elapsed.elapsedSeconds}s`);
+      }
+      await this.appendLog(jobId, `${parts.join(" ")}\n`);
+    }
+  }
+
+  async recordIterationProgress(
+    jobId: string,
+    input: { current: number; max: number; phase: string; details?: Record<string, unknown> },
+  ): Promise<void> {
+    const stage = `iteration_${input.current}_${input.phase}`;
+    const phaseLabel =
+      input.phase === "recheck"
+        ? "Re-check"
+        : input.phase === "review"
+          ? "Review"
+          : input.phase === "patch"
+            ? "Patch"
+            : input.phase;
+    const payload: Record<string, unknown> = {
+      iteration: { current: input.current, max: input.max, phase: input.phase },
+    };
+    if (input.details && Object.keys(input.details).length > 0) {
+      payload.iterationDetails = input.details;
+    }
+    await this.recordJobProgress(jobId, {
+      stage,
+      message: `${phaseLabel} iteration ${input.current}/${input.max}`,
+      iteration: { current: input.current, max: input.max, phase: input.phase },
+      details: input.details,
+      totalItems: input.max,
+      processedItems: input.current,
+      payload,
+    });
   }
 
   async writeCheckpoint(jobId: string, checkpoint: JobCheckpoint): Promise<void> {
@@ -602,26 +845,65 @@ export class JobService {
       projectId: entry.projectId ?? null,
       epicId: entry.epicId ?? null,
       userStoryId: entry.userStoryId ?? null,
+      commandName: entry.commandName ?? null,
+      action: entry.action ?? null,
+      invocationKind: entry.invocationKind ?? null,
+      provider: entry.provider ?? null,
+      currency: entry.currency ?? null,
       tokensPrompt: entry.tokensPrompt ?? entry.promptTokens ?? null,
       tokensCompletion: entry.tokensCompletion ?? entry.completionTokens ?? null,
       tokensTotal: entry.tokensTotal ?? null,
+      tokensCached: entry.tokensCached ?? null,
+      tokensCacheRead: entry.tokensCacheRead ?? null,
+      tokensCacheWrite: entry.tokensCacheWrite ?? null,
       costEstimate: entry.costEstimate ?? entry.costUsd ?? null,
       durationSeconds: entry.durationSeconds ?? null,
+      durationMs: entry.durationMs ?? null,
+      startedAt: entry.startedAt ?? null,
+      finishedAt: entry.finishedAt ?? null,
       timestamp: entry.timestamp,
       metadata: {
         ...(entry.metadata ?? {}),
         ...(entry.commandName ? { commandName: entry.commandName } : {}),
         ...(entry.action ? { action: entry.action } : {}),
+        ...(entry.invocationKind ? { invocationKind: entry.invocationKind } : {}),
+        ...(entry.provider ? { provider: entry.provider } : {}),
+        ...(entry.currency ? { currency: entry.currency } : {}),
       },
     };
     const fileRecord = {
       ...normalized,
       ...(entry.commandName ? { commandName: entry.commandName } : {}),
       ...(entry.action ? { action: entry.action } : {}),
+      ...(entry.invocationKind ? { invocationKind: entry.invocationKind } : {}),
+      ...(entry.provider ? { provider: entry.provider } : {}),
+      ...(entry.currency ? { currency: entry.currency } : {}),
+      ...(entry.tokensCached !== undefined && entry.tokensCached !== null ? { tokensCached: entry.tokensCached } : {}),
+      ...(entry.tokensCacheRead !== undefined && entry.tokensCacheRead !== null ? { tokensCacheRead: entry.tokensCacheRead } : {}),
+      ...(entry.tokensCacheWrite !== undefined && entry.tokensCacheWrite !== null ? { tokensCacheWrite: entry.tokensCacheWrite } : {}),
+      ...(entry.durationMs !== undefined && entry.durationMs !== null ? { durationMs: entry.durationMs } : {}),
+      ...(entry.startedAt ? { startedAt: entry.startedAt } : {}),
+      ...(entry.finishedAt ? { finishedAt: entry.finishedAt } : {}),
     };
     await this.appendJsonArray(this.tokenUsagePath, fileRecord as any);
     if (this.workspaceRepo) {
       await this.workspaceRepo.recordTokenUsage(normalized);
+      if (entry.agentId) {
+        if (entry.commandRunId) {
+          try {
+            await this.workspaceRepo.setCommandRunAgentId(entry.commandRunId, entry.agentId);
+          } catch {
+            // ignore attribution failures
+          }
+        }
+        if (entry.jobId) {
+          try {
+            await this.workspaceRepo.setJobAgentIds(entry.jobId, entry.agentId);
+          } catch {
+            // ignore attribution failures
+          }
+        }
+      }
     }
   }
 

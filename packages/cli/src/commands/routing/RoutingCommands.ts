@@ -13,6 +13,7 @@ interface DefaultsArgs {
   set: Record<string, string>;
   reset: string[];
   list: boolean;
+  showIds: boolean;
   noTelemetry?: boolean;
   qaProfile?: string;
   docdexScope?: string;
@@ -33,6 +34,7 @@ interface PreviewArgs {
 const DEFAULTS_USAGE = `mcoda routing defaults \\
   [--workspace <PATH>] \\
   [--list] \\
+  [--show-ids] \\
   [--set-command <COMMAND>=<AGENT>]... \\
   [--set-qa-profile <PROFILE>] \\
   [--set-docdex-scope <SCOPE>] \\
@@ -46,6 +48,7 @@ Manage per-workspace routing defaults backed by the global DB (~/.mcoda/mcoda.db
 
 Flags:
   --list                      List workspace + __GLOBAL__ defaults (default if no setters are passed)
+  --show-ids                  Include agent ids in list output (e.g., slug (id))
   --set-command c=a           Set default agent for command c (validates capabilities)
   --reset-command c           Remove workspace override so __GLOBAL__ applies
   --set-qa-profile name       Set workspace QA profile override (validated against OpenAPI profiles)
@@ -105,14 +108,14 @@ const formatTable = (headers: string[], rows: string[][]): string => {
 };
 
 const parseDefaultsArgs = (argv: string[]): DefaultsArgs => {
-    const args: DefaultsArgs = { workspace: undefined, set: {}, reset: [], list: false, json: false };
-    for (let i = 0; i < argv.length; i += 1) {
-      const arg = argv[i];
-      if (arg === "--help" || arg === "-h") {
-        // eslint-disable-next-line no-console
-        console.log(DEFAULTS_HELP);
-        process.exit(0);
-      }
+  const args: DefaultsArgs = { workspace: undefined, set: {}, reset: [], list: false, showIds: false, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") {
+      // eslint-disable-next-line no-console
+      console.log(DEFAULTS_HELP);
+      process.exit(0);
+    }
     if (arg === "--workspace") {
       args.workspace = argv[i + 1];
       i += 1;
@@ -120,6 +123,10 @@ const parseDefaultsArgs = (argv: string[]): DefaultsArgs => {
     }
     if (arg === "--list") {
       args.list = true;
+      continue;
+    }
+    if (arg === "--show-ids") {
+      args.showIds = true;
       continue;
     }
     if (arg.startsWith("--set-command")) {
@@ -337,6 +344,11 @@ export class RoutingCommands {
           `Unknown docdex scope ${args.docdexScope}; allowed values: ${knownDocdex.filter(Boolean).join(", ")}`,
         );
       }
+      if (!args.list) {
+        for (const command of Object.keys(args.set)) {
+          validateCommandName(routing, command);
+        }
+      }
       if (args.list) {
         const defaults = await routing.getWorkspaceDefaults(workspace);
         const globalDefaults = await routing.getWorkspaceDefaults("__GLOBAL__");
@@ -354,13 +366,31 @@ export class RoutingCommands {
           defaults.forEach((d) => commands.add(routing.normalizeCommand(d.commandName)));
           globalDefaults.forEach((d) => commands.add(routing.normalizeCommand(d.commandName)));
           const rows: string[][] = [];
+          const agentCache = new Map<string, Awaited<ReturnType<typeof routing.getAgentSummary>>>();
+          const getAgentSummary = async (agentId?: string) => {
+            if (!agentId) return undefined;
+            if (agentCache.has(agentId)) return agentCache.get(agentId);
+            const summary = await routing.getAgentSummary(agentId);
+            agentCache.set(agentId, summary);
+            return summary;
+          };
+          const formatAgent = (summary: { slug?: string; id?: string } | undefined, fallbackId?: string) => {
+            if (args.showIds) {
+              if (summary?.slug) {
+                const id = summary.id ?? fallbackId;
+                return id ? `${summary.slug} (${id})` : summary.slug;
+              }
+              return fallbackId ?? "-";
+            }
+            return summary?.slug ?? fallbackId ?? "-";
+          };
           for (const cmd of Array.from(commands).sort()) {
             const ws = defaults.find((d) => routing.normalizeCommand(d.commandName) === cmd);
             const global = globalDefaults.find((d) => routing.normalizeCommand(d.commandName) === cmd);
-            const wsAgentSummary = ws ? await routing.getAgentSummary(ws.agentId) : undefined;
-            const globalAgentSummary = global ? await routing.getAgentSummary(global.agentId) : undefined;
-            const wsAgent = wsAgentSummary?.slug ?? ws?.agentId ?? "-";
-            const globalAgent = globalAgentSummary?.slug ?? global?.agentId ?? "-";
+            const wsAgentSummary = ws ? await getAgentSummary(ws.agentId) : undefined;
+            const globalAgentSummary = global ? await getAgentSummary(global.agentId) : undefined;
+            const wsAgent = formatAgent(wsAgentSummary, ws?.agentId);
+            const globalAgent = formatAgent(globalAgentSummary, global?.agentId);
             rows.push([
               cmd,
               wsAgent,
@@ -504,13 +534,24 @@ export class RoutingCommands {
           resolved.source,
           resolved.healthStatus,
           resolved.capabilities.join(",") || "-",
+          resolved.requiredCapabilities.join(",") || "-",
           resolved.qaProfile ?? "-",
           resolved.docdexScope ?? "-",
         ];
         // eslint-disable-next-line no-console
         console.log(
           formatTable(
-            ["Command", "Workspace", "Agent", "Source", "Health", "Capabilities", "QA Profile", "Docdex Scope"],
+            [
+              "Command",
+              "Workspace",
+              "Agent",
+              "Source",
+              "Health",
+              "Capabilities",
+              "Required Capabilities",
+              "QA Profile",
+              "Docdex Scope",
+            ],
             [row],
           ),
         );

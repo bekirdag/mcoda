@@ -4,7 +4,7 @@ import path from "node:path";
 import { parseQaTasksArgs } from "../commands/planning/QaTasksCommand.js";
 
 describe("qa-tasks argument parsing", () => {
-  it("defaults to auto mode, ready_to_qa status, and streaming", () => {
+  it("defaults to auto mode, ready_to_qa status, and streaming off", () => {
     const parsed = parseQaTasksArgs([]);
     assert.equal(parsed.mode, "auto");
     assert.deepEqual(parsed.statusFilter, ["ready_to_qa"]);
@@ -12,6 +12,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.createFollowupTasks, "auto");
     assert.equal(parsed.rateAgents, false);
+    assert.deepEqual(parsed.cleanIgnorePaths, []);
   });
 
   it("parses manual flags, statuses, and overrides", () => {
@@ -22,6 +23,8 @@ describe("qa-tasks argument parsing", () => {
       "fail",
       "--status",
       "ready_to_qa,in_progress",
+      "--limit",
+      "3",
       "--agent-stream",
       "false",
       "--profile",
@@ -39,10 +42,13 @@ describe("qa-tasks argument parsing", () => {
       "needs fix",
       "--evidence-url",
       "https://ci.example",
+      "--clean-ignore",
+      "logs/,repo_meta.json",
     ]);
     assert.equal(parsed.mode, "manual");
     assert.equal(parsed.result, "fail");
-    assert.deepEqual(parsed.statusFilter, ["ready_to_qa", "in_progress"]);
+    assert.deepEqual(parsed.statusFilter, ["ready_to_qa"]);
+    assert.equal(parsed.limit, 3);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.profileName, "ui");
     assert.equal(parsed.level, "integration");
@@ -52,6 +58,7 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.allowDirty, true);
     assert.equal(parsed.notes, "needs fix");
     assert.equal(parsed.evidenceUrl, "https://ci.example");
+    assert.deepEqual(parsed.cleanIgnorePaths, ["logs/", "repo_meta.json"]);
   });
 
   it("captures task selection and workspace metadata", () => {

@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/core",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "description": "Core services and APIs for the mcoda CLI.",
   "type": "module",
   "main": "dist/index.js",
@@ -39,6 +39,7 @@
     "@mcoda/shared": "workspace:*",
     "@mcoda/db": "workspace:*",
     "@mcoda/agents": "workspace:*",
+    "@mcoda/generators": "workspace:*",
     "@mcoda/integrations": "workspace:*",
     "yaml": "^2.4.2"
   }
