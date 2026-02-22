@@ -38,11 +38,10 @@ jobs:
 
       - name: npm publish dry run
         run: |
-          pnpm -r \
-            --filter "./packages/cli" \
-            --filter "./packages/core" \
-            --filter "./packages/shared" \
-            --filter "./packages/db" \
-            --filter "./packages/integrations" \
-            --filter "./packages/agents" \
-            publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/shared" publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/db" publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/agents" publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/generators" publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/integrations" publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/core" publish --dry-run --access public --no-git-checks
+          pnpm --filter "./packages/cli" publish --dry-run --access public --no-git-checks
