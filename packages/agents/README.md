@@ -9,7 +9,7 @@ Agent registry, adapter wiring, and invocation helpers for mcoda.
 ## What it provides
 - AgentService for resolving agents, prompts, capabilities, and secrets.
 - Adapter interfaces (AgentAdapter, InvocationRequest/InvocationResult).
-- Built-in adapters for OpenAI, Codex, Gemini, Ollama, Zhipu, local models, and QA.
+- Built-in adapters for OpenAI, Claude, Codex, Gemini, Ollama, Zhipu, local models, and QA.
 
 ## Example
 ```ts

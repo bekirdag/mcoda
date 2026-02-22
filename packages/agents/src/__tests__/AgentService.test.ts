@@ -81,6 +81,29 @@ test("CLI adapter works without stored secret", async () => {
   assert.equal(result.metadata?.mode, "cli");
 });
 
+test("Claude CLI adapter works without stored secret", async () => {
+  const originalBin = process.env.MCODA_CLAUDE_CLI_BIN;
+  try {
+    process.env.MCODA_CLAUDE_CLI_BIN = "/definitely/missing/claude";
+    const agent = await repo.createAgent({
+      slug: "claude-cli-agent",
+      adapter: "claude-cli",
+      capabilities: ["chat"],
+      prompts: { jobPrompt: "job", characterPrompt: "character" },
+    });
+    const result = await service.invoke(agent.id, { input: "ping" });
+    assert.equal(result.adapter, "claude-cli");
+    assert.equal(result.metadata?.mode, "cli");
+    assert.match(result.output, /claude-stub:/);
+  } finally {
+    if (originalBin === undefined) {
+      delete process.env.MCODA_CLAUDE_CLI_BIN;
+    } else {
+      process.env.MCODA_CLAUDE_CLI_BIN = originalBin;
+    }
+  }
+});
+
 test("adapter override uses the requested adapter for invoke", async () => {
   const originalKey = process.env.CODALI_API_KEY;
   const agent = await repo.createAgent({

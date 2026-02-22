@@ -50,7 +50,7 @@ Subcommands:
   list                       List agents (supports --json)
   details <NAME>             Show agent details (supports --json)
   add <NAME>                 Create a global agent
-    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|gemini-cli|local-model|qa-cli|ollama-remote)
+    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|claude-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
     --rating <N>             Relative capability rating (higher is stronger)
     --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
