@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
@@ -42,11 +42,18 @@
     "test:repo": "node --input-type=module -e \"process.env.MCODA_SKIP_WORKSPACE_TESTS='1'; import('./tests/all.js');\"",
     "test:workspaces": "pnpm -r run test"
   },
+  "pnpm": {
+    "overrides": {
+      "tar": "7.5.8",
+      "minimatch": "10.2.1",
+      "axios": "1.13.5",
+      "systeminformation": "5.31.0"
+    }
+  },
   "devDependencies": {
     "@types/node": "^20.11.30",
     "@types/supertest": "^6.0.3",
     "ava": "^6.4.1",
-    "axios-mock-adapter": "^2.1.0",
     "chai": "^6.2.2",
     "cypress": "^15.9.0",
     "eslint": "^8.57.0",

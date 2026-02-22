@@ -1,9 +1,9 @@
 {
-  "packages/cli": "0.1.12",
-  "packages/core": "0.1.12",
-  "packages/shared": "0.1.12",
-  "packages/db": "0.1.12",
-  "packages/integrations": "0.1.12",
-  "packages/agents": "0.1.12",
-  "packages/generators": "0.1.12"
+  "packages/cli": "0.1.13",
+  "packages/core": "0.1.13",
+  "packages/shared": "0.1.13",
+  "packages/db": "0.1.13",
+  "packages/integrations": "0.1.13",
+  "packages/agents": "0.1.13",
+  "packages/generators": "0.1.13"
 }
