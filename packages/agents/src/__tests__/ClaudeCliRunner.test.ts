@@ -1,8 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { claudeHealthy, runClaudeExec, runClaudeExecStream } from "../adapters/claude/ClaudeCliRunner.js";
 
 test("Claude CLI runner uses stub outputs when stub env is enabled", { concurrency: false }, async () => {
@@ -94,30 +91,14 @@ test("Claude CLI runner surfaces CLI diagnostics when invocation fails", { concu
   const originalGlobalStub = process.env.MCODA_CLI_STUB;
   const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
   const originalBin = process.env.MCODA_CLAUDE_CLI_BIN;
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-claude-runner-"));
-  const fakeClaude = path.join(tempDir, "claude");
   try {
-    await fs.writeFile(
-      fakeClaude,
-      `#!/usr/bin/env bash
-if [ "$1" = "--version" ]; then
-  echo "2.1.37 (Claude Code)"
-  exit 0
-fi
-echo "limit reached"
-exit 1
-`,
-      { encoding: "utf8", mode: 0o755 },
-    );
-
     delete process.env.MCODA_CLAUDE_STUB;
     delete process.env.MCODA_CLI_STUB;
     delete process.env.MCODA_SKIP_CLI_CHECKS;
-    process.env.MCODA_CLAUDE_CLI_BIN = fakeClaude;
+    process.env.MCODA_CLAUDE_CLI_BIN = process.execPath;
 
-    assert.throws(() => runClaudeExec("hello"), /limit reached/);
+    assert.throws(() => runClaudeExec("hello"), /output-format|bad option|unknown option/i);
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
     if (originalStub === undefined) {
       delete process.env.MCODA_CLAUDE_STUB;
     } else {
