@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/codali",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Standalone tool-runner adapter for mcoda.",
   "type": "module",
   "main": "dist/index.js",
