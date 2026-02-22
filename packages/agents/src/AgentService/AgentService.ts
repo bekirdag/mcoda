@@ -13,15 +13,17 @@ import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
 import { OpenAiCliAdapter } from "../adapters/openai/OpenAiCliAdapter.js";
 import { ZhipuApiAdapter } from "../adapters/zhipu/ZhipuApiAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
+import { ClaudeAdapter } from "../adapters/claude/ClaudeAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
 
-const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli", "codali-cli"]);
+const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli", "codali-cli", "claude-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
 const SUPPORTED_ADAPTERS = new Set([
   "openai-api",
   "codex-cli",
   "gemini-cli",
   "openai-cli",
+  "claude-cli",
   "zhipu-api",
   "local-model",
   "qa-cli",
@@ -304,6 +306,9 @@ export class AgentService {
     }
     if (adapterType === "openai-cli") {
       return new OpenAiCliAdapter(configWithAdapter);
+    }
+    if (adapterType === "claude-cli") {
+      return new ClaudeAdapter(configWithAdapter);
     }
     if (adapterType === "local-model" || LOCAL_ADAPTERS.has(adapterType)) {
       return new LocalAdapter(configWithAdapter);
