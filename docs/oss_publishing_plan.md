@@ -37,5 +37,5 @@
 
 ## Decisions (current)
 - npm package name: `mcoda`.
-- Published packages: `mcoda`, `@mcoda/core`, `@mcoda/shared`, `@mcoda/db`, `@mcoda/integrations`, `@mcoda/agents`.
-- Private packages: `@mcoda/generators`, `@mcoda/testing`.
+- Published packages: `mcoda`, `@mcoda/core`, `@mcoda/shared`, `@mcoda/db`, `@mcoda/integrations`, `@mcoda/agents`, `@mcoda/generators`.
+- Private packages: `@mcoda/testing`.

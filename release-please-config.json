@@ -34,6 +34,10 @@
       "component": "@mcoda/agents",
       "changelog-path": "packages/agents/CHANGELOG.md",
       "release-type": "node"
+    },
+    "packages/generators": {
+      "component": "@mcoda/generators",
+      "release-type": "node"
     }
   }
 }

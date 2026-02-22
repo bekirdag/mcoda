@@ -6,12 +6,13 @@ import path from "node:path";
 const root = process.cwd();
 const dest = path.join(root, "artifacts");
 const packages = [
-  "packages/cli",
-  "packages/core",
   "packages/shared",
   "packages/db",
-  "packages/integrations",
   "packages/agents",
+  "packages/generators",
+  "packages/integrations",
+  "packages/core",
+  "packages/cli",
 ];
 
 mkdirSync(dest, { recursive: true });

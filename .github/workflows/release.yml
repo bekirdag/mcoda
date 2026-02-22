@@ -109,12 +109,13 @@ jobs:
             const path = require('path');
             const tag = process.env.TAG.replace(/^v/, '');
             const packages = [
-              'packages/cli',
-              'packages/core',
               'packages/shared',
               'packages/db',
+              'packages/agents',
+              'packages/generators',
               'packages/integrations',
-              'packages/agents'
+              'packages/core',
+              'packages/cli'
             ];
             const mismatches = [];
             for (const dir of packages) {
@@ -138,11 +139,10 @@ jobs:
         env:
           NPM_CONFIG_PROVENANCE: "true"
         run: |
-          pnpm -r \
-            --filter "./packages/cli" \
-            --filter "./packages/core" \
-            --filter "./packages/shared" \
-            --filter "./packages/db" \
-            --filter "./packages/integrations" \
-            --filter "./packages/agents" \
-            publish --access public --no-git-checks
+          pnpm --filter "./packages/shared" publish --access public --no-git-checks
+          pnpm --filter "./packages/db" publish --access public --no-git-checks
+          pnpm --filter "./packages/agents" publish --access public --no-git-checks
+          pnpm --filter "./packages/generators" publish --access public --no-git-checks
+          pnpm --filter "./packages/integrations" publish --access public --no-git-checks
+          pnpm --filter "./packages/core" publish --access public --no-git-checks
+          pnpm --filter "./packages/cli" publish --access public --no-git-checks
