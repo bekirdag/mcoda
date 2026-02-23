@@ -60,6 +60,8 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
     quiet: false,
     noColor: false,
     noTelemetry: false,
+    velocityMode: "empirical",
+    velocityWindow: 50,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -112,7 +114,12 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
         i += 1;
         break;
       case "--velocity-mode":
-        parsed.velocityMode = parseVelocityMode(argv[i + 1]);
+        {
+          const mode = parseVelocityMode(argv[i + 1]);
+          if (mode) {
+            parsed.velocityMode = mode;
+          }
+        }
         i += 1;
         break;
       case "--velocity-window":
@@ -148,7 +155,10 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
         } else if (arg.startsWith("--assignee=")) {
           parsed.assignee = arg.split("=")[1];
         } else if (arg.startsWith("--velocity-mode=")) {
-          parsed.velocityMode = parseVelocityMode(arg.split("=")[1]);
+          const mode = parseVelocityMode(arg.split("=")[1]);
+          if (mode) {
+            parsed.velocityMode = mode;
+          }
         } else if (arg.startsWith("--velocity-window=") || arg.startsWith("--window=")) {
           const value = parseNumber(arg.split("=")[1]);
           if (value === 10 || value === 20 || value === 50) {
@@ -183,6 +193,32 @@ const fmt = (value: number | null | undefined): string => {
   if (value === null || value === undefined) return "N/A";
   if (Number.isInteger(value)) return `${value}`;
   return value.toFixed(2);
+};
+
+export const formatTimeLeft = (hours: number | null | undefined): string => {
+  if (hours === null || hours === undefined) return "N/A";
+  if (!Number.isFinite(hours) || hours <= 0) return "0h";
+
+  let remainingHours = Math.max(1, Math.round(hours));
+  const monthHours = 24 * 30;
+  const weekHours = 24 * 7;
+  const dayHours = 24;
+
+  const months = Math.floor(remainingHours / monthHours);
+  remainingHours -= months * monthHours;
+
+  const weeks = Math.floor(remainingHours / weekHours);
+  remainingHours -= weeks * weekHours;
+
+  const days = Math.floor(remainingHours / dayHours);
+  remainingHours -= days * dayHours;
+
+  const parts: string[] = [];
+  if (months > 0) parts.push(`${months}mo`);
+  if (weeks > 0) parts.push(`${weeks}w`);
+  if (days > 0) parts.push(`${days}d`);
+  if (remainingHours > 0 || parts.length === 0) parts.push(`${remainingHours}h`);
+  return parts.join("");
 };
 
 const pad2 = (value: number): string => `${value}`.padStart(2, "0");
@@ -242,37 +278,37 @@ const renderResult = (result: EstimateResult): void => {
       "Implementation",
       fmt(result.backlogTotals.implementation.story_points),
       fmt(result.effectiveVelocity.implementationSpPerHour),
-      fmt(result.durationsHours.implementationHours),
+      formatTimeLeft(result.durationsHours.implementationHours),
     ],
     [
       "Review",
       fmt(result.backlogTotals.review.story_points),
       fmt(result.effectiveVelocity.reviewSpPerHour),
-      fmt(result.durationsHours.reviewHours),
+      formatTimeLeft(result.durationsHours.reviewHours),
     ],
     [
       "QA",
       fmt(result.backlogTotals.qa.story_points),
       fmt(result.effectiveVelocity.qaSpPerHour),
-      fmt(result.durationsHours.qaHours),
+      formatTimeLeft(result.durationsHours.qaHours),
     ],
     [
       "Done",
       fmt(result.backlogTotals.done.story_points),
       fmt(null),
-      fmt(0),
+      formatTimeLeft(0),
     ],
     [
       "Total",
       fmt(totalSp),
       fmt(null),
-      fmt(result.durationsHours.totalHours),
+      formatTimeLeft(result.durationsHours.totalHours),
     ],
   ];
   // eslint-disable-next-line no-console
   console.log(
     formatTable(
-      ["LANE", "STORY_POINTS", spHeader, "HOURS"],
+      ["LANE", "STORY_POINTS", spHeader, "TIME_LEFT"],
       rows,
     ),
   );

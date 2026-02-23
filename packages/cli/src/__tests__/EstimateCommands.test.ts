@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { Connection, WorkspaceMigrations, WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
-import { EstimateCommands, parseEstimateArgs } from "../commands/estimate/EstimateCommands.js";
+import { EstimateCommands, formatTimeLeft, parseEstimateArgs } from "../commands/estimate/EstimateCommands.js";
 
 const captureLogs = async (fn: () => Promise<void> | void): Promise<string[]> => {
   const logs: string[] = [];
@@ -39,6 +39,12 @@ const removeWithRetries = async (target?: string): Promise<void> => {
 };
 
 describe("estimate argument parsing", () => {
+  it("defaults velocity settings to empirical mode with a 50-task window", () => {
+    const parsed = parseEstimateArgs([]);
+    assert.equal(parsed.velocityMode, "empirical");
+    assert.equal(parsed.velocityWindow, 50);
+  });
+
   it("parses velocity window and aliases", () => {
     const parsed = parseEstimateArgs(["--velocity-window", "20", "--window", "10"]);
     // last one wins
@@ -88,6 +94,19 @@ describe("estimate argument parsing", () => {
     assert.equal(parsed.epic, "E1");
     assert.equal(parsed.story, "S1");
     assert.equal(parsed.assignee, "user");
+  });
+});
+
+describe("estimate time-left formatting", () => {
+  it("formats day/hour values compactly", () => {
+    assert.equal(formatTimeLeft(26), "1d2h");
+    assert.equal(formatTimeLeft(1), "1h");
+    assert.equal(formatTimeLeft(0), "0h");
+  });
+
+  it("formats week and month boundaries", () => {
+    assert.equal(formatTimeLeft(24 * 10), "1w3d");
+    assert.equal(formatTimeLeft(24 * 45), "1mo2w1d");
   });
 });
 
@@ -213,9 +232,10 @@ describe("estimate output rendering", { concurrency: false }, () => {
       ]),
     );
     const output = logs.join("\n");
+    assert.ok(output.includes("TIME_LEFT"));
     assert.ok(output.includes("Done"));
     assert.ok(output.includes("Total"));
-    assert.ok(output.includes("Velocity samples (window 10): impl=0, review=0, qa=0"));
+    assert.ok(output.includes("Velocity samples (window 50): impl=0, review=0, qa=0"));
     assert.ok(output.includes("Assumptions: lane work runs in parallel; total hours uses the longest lane."));
   });
 
