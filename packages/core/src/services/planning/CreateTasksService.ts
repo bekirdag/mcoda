@@ -22,6 +22,7 @@ import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { classifyTask } from "../backlog/TaskOrderingHeuristics.js";
 import { TaskOrderingService } from "../backlog/TaskOrderingService.js";
+import { QaTestCommandBuilder } from "../execution/QaTestCommandBuilder.js";
 import {
   createEpicKeyGenerator,
   createStoryKeyGenerator,
@@ -1403,6 +1404,7 @@ export class CreateTasksService {
 
       const localToKey = new Map(taskDetails.map((t) => [t.localId, t.key]));
       const taskInserts: TaskInsert[] = [];
+      const testCommandBuilder = new QaTestCommandBuilder(this.workspace.workspaceRoot);
       for (const task of taskDetails) {
         const storyId = storyIdByKey.get(task.storyKey);
         const epicId = epicIdByKey.get(task.epicKey);
@@ -1418,9 +1420,60 @@ export class CreateTasksService {
           preflight: options?.qaPreflight,
           overrides: options?.qaOverrides,
         });
+        const testRequirements = {
+          unit: task.plan.unitTests ?? [],
+          component: task.plan.componentTests ?? [],
+          integration: task.plan.integrationTests ?? [],
+          api: task.plan.apiTests ?? [],
+        };
+        const testsRequired =
+          testRequirements.unit.length > 0 ||
+          testRequirements.component.length > 0 ||
+          testRequirements.integration.length > 0 ||
+          testRequirements.api.length > 0;
+        let discoveredTestCommands: string[] = [];
+        if (testsRequired) {
+          try {
+            const commandPlan = await testCommandBuilder.build({
+              task: {
+                id: task.key,
+                key: task.key,
+                title: task.plan.title ?? `Task ${task.key}`,
+                description: task.plan.description ?? "",
+                type: task.plan.type ?? "feature",
+                status: "not_started",
+                metadata: { test_requirements: testRequirements },
+              } as TaskRow & { metadata?: any },
+            });
+            discoveredTestCommands = Array.from(new Set(commandPlan.commands.map((command) => command.trim()).filter(Boolean)));
+          } catch {
+            discoveredTestCommands = [];
+          }
+        }
+        const qaBlockers = uniqueStrings([
+          ...(qaReadiness.blockers ?? []),
+          ...(testsRequired && discoveredTestCommands.length === 0
+            ? ["No runnable test harness discovered for required tests during planning."]
+            : []),
+        ]);
+        const qaReadinessWithHarness: QaReadiness = {
+          ...qaReadiness,
+          blockers: qaBlockers.length ? qaBlockers : undefined,
+        };
         const depSlugs = (task.plan.dependsOnKeys ?? [])
           .map((dep) => localToKey.get(dep))
           .filter((value): value is string => Boolean(value));
+        const metadata: Record<string, unknown> = {
+          doc_links: task.plan.relatedDocs ?? [],
+          test_requirements: testRequirements,
+          stage: classification.stage,
+          foundation: classification.foundation,
+          qa: qaReadinessWithHarness,
+        };
+        if (discoveredTestCommands.length > 0) {
+          metadata.tests = discoveredTestCommands;
+          metadata.testCommands = discoveredTestCommands;
+        }
         taskInserts.push({
           projectId,
           epicId,
@@ -1441,24 +1494,13 @@ export class CreateTasksService {
               integrationTests: task.plan.integrationTests,
               apiTests: task.plan.apiTests,
             },
-            qaReadiness,
+            qaReadinessWithHarness,
           ),
           type: task.plan.type ?? "feature",
           status: "not_started",
           storyPoints: task.plan.estimatedStoryPoints ?? null,
           priority: task.plan.priorityHint ?? (taskInserts.length + 1),
-          metadata: {
-            doc_links: task.plan.relatedDocs ?? [],
-            test_requirements: {
-              unit: task.plan.unitTests ?? [],
-              component: task.plan.componentTests ?? [],
-              integration: task.plan.integrationTests ?? [],
-              api: task.plan.apiTests ?? [],
-            },
-            stage: classification.stage,
-            foundation: classification.foundation,
-            qa: qaReadiness,
-          },
+          metadata,
         });
       }
 

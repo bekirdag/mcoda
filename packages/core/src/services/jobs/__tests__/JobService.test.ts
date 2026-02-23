@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Connection } from "@mcoda/db";
+import { Connection, WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { JobService } from "../JobService.js";
 
@@ -178,6 +178,83 @@ test("JobService records iteration progress in manifest and checkpoints", async 
       } else {
         process.env.MCODA_DISABLE_DB = previous;
       }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("JobService cancellation terminalizes running task runs for active jobs", async () => {
+  await withTempHome(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-jobservice-cancel-"));
+    const service = new JobService(dir);
+    const repo = await WorkspaceRepository.create(dir);
+    try {
+      const commandRun = await service.startCommandRun("work-on-tasks", "proj");
+      const job = await service.startJob("work", commandRun.id, "proj", {
+        commandName: "work-on-tasks",
+      });
+
+      const project = await repo.createProjectIfMissing({ key: "proj", name: "Project proj" });
+      const [epic] = await repo.insertEpics(
+        [
+          {
+            projectId: project.id,
+            key: "proj-01",
+            title: "Epic",
+            description: "Epic",
+            priority: 1,
+          },
+        ],
+        false,
+      );
+      const [story] = await repo.insertStories(
+        [
+          {
+            projectId: project.id,
+            epicId: epic.id,
+            key: "proj-01-us-01",
+            title: "Story",
+            description: "Story",
+          },
+        ],
+        false,
+      );
+      const [task] = await repo.insertTasks(
+        [
+          {
+            projectId: project.id,
+            epicId: epic.id,
+            userStoryId: story.id,
+            key: "proj-01-us-01-t01",
+            title: "Task",
+            description: "Task",
+            status: "in_progress",
+            storyPoints: 1,
+          },
+        ],
+        false,
+      );
+      const run = await repo.createTaskRun({
+        taskId: task.id,
+        command: "work-on-tasks",
+        jobId: job.id,
+        commandRunId: commandRun.id,
+        status: "running",
+        startedAt: new Date().toISOString(),
+      });
+
+      await (service as any).cancelJobOnSignal(job.id, commandRun.id, "SIGINT");
+
+      const db = repo.getDb();
+      const row = await db.get<{ status: string; finished_at: string | null }>(
+        "SELECT status, finished_at FROM task_runs WHERE id = ?",
+        run.id,
+      );
+      assert.equal(row?.status, "cancelled");
+      assert.ok(row?.finished_at);
+    } finally {
+      await repo.close();
+      await service.close();
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

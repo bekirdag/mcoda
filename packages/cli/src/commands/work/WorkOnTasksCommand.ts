@@ -21,6 +21,8 @@ interface ParsedArgs {
   workRunner?: string;
   useCodali?: boolean;
   agentAdapterOverride?: string;
+  missingTestsPolicy?: "block_job" | "skip_task" | "fail_task";
+  allowMissingTests?: boolean;
   json: boolean;
 }
 
@@ -37,6 +39,8 @@ const usage = `mcoda work-on-tasks \\
   [--agent-stream <true|false>] \\
   [--work-runner <codali|default>] \\
   [--use-codali <true|false>] \\
+  [--missing-tests-policy <block_job|skip_task|fail_task>] \\
+  [--allow-missing-tests <true|false>] \\
   [--rate-agents] \\
   [--auto-merge <true|false>] \\
   [--auto-push <true|false>] \\
@@ -65,6 +69,17 @@ const normalizeRunner = (value?: string): string | undefined => {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   return trimmed.toLowerCase();
+};
+
+const normalizeMissingTestsPolicy = (
+  value?: string,
+): ParsedArgs["missingTestsPolicy"] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "block_job" || normalized === "skip_task" || normalized === "fail_task") {
+    return normalized;
+  }
+  return undefined;
 };
 
 const resolveEnvRunner = (): string | undefined => normalizeRunner(process.env.MCODA_WORK_ON_TASKS_ADAPTER);
@@ -104,6 +119,8 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   let autoPush: boolean | undefined;
   let workRunner: string | undefined;
   let useCodali: boolean | undefined;
+  let missingTestsPolicy: ParsedArgs["missingTestsPolicy"];
+  let allowMissingTests: boolean | undefined;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -146,6 +163,17 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--use-codali=")) {
       const [, raw] = arg.split("=", 2);
       useCodali = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--missing-tests-policy=")) {
+      const [, raw] = arg.split("=", 2);
+      const parsedPolicy = normalizeMissingTestsPolicy(raw);
+      if (parsedPolicy) missingTestsPolicy = parsedPolicy;
+      continue;
+    }
+    if (arg.startsWith("--allow-missing-tests=")) {
+      const [, raw] = arg.split("=", 2);
+      allowMissingTests = parseBooleanFlag(raw, true);
       continue;
     }
     switch (arg) {
@@ -220,6 +248,27 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
           i += 1;
         } else {
           useCodali = true;
+        }
+        break;
+      }
+      case "--missing-tests-policy": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          const parsedPolicy = normalizeMissingTestsPolicy(next);
+          if (parsedPolicy) {
+            missingTestsPolicy = parsedPolicy;
+          }
+          i += 1;
+        }
+        break;
+      }
+      case "--allow-missing-tests": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          allowMissingTests = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          allowMissingTests = true;
         }
         break;
       }
@@ -312,6 +361,8 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     workRunner: runnerOverride.workRunner ?? workRunner,
     useCodali,
     agentAdapterOverride: runnerOverride.agentAdapterOverride,
+    missingTestsPolicy,
+    allowMissingTests,
     json,
   };
 };
@@ -377,6 +428,8 @@ export class WorkOnTasksCommand {
         workRunner: parsed.workRunner,
         useCodali: parsed.useCodali,
         agentAdapterOverride: parsed.agentAdapterOverride,
+        missingTestsPolicy: parsed.missingTestsPolicy,
+        allowMissingTests: parsed.allowMissingTests,
         onAgentChunk,
         abortSignal: abortController.signal,
       });
