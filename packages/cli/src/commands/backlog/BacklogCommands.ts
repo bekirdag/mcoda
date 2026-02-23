@@ -30,7 +30,7 @@ const usage = `mcoda backlog \\
   [--include-done] \\
   [--include-cancelled] \\
   [--order dependencies]   # dependency-aware ordering (topological, most depended-on first) \\
-  [--view summary|epics|stories|tasks] \\
+  [--view summary|epics|stories|tasks] # default: tasks \\
   [--limit <N> | --top <N>] \\
   [--json] \\
   [--verbose]`;
@@ -51,6 +51,7 @@ export const parseBacklogArgs = (argv: string[]): ParsedArgs => {
     includeDone: false,
     includeCancelled: false,
     orderDependencies: false,
+    view: "tasks",
     json: false,
     verbose: false,
   };

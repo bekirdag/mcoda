@@ -16,7 +16,12 @@ import { QaTestCommandBuilder } from "./QaTestCommandBuilder.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { GATEWAY_HANDOFF_ENV_PATH } from "../agents/GatewayHandoff.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
-import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
+import {
+  ensureProjectGuidance,
+  isDocContextExcluded,
+  loadProjectGuidance,
+  normalizeDocType,
+} from "../shared/ProjectGuidance.js";
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
@@ -3784,6 +3789,18 @@ export class WorkOnTasksService {
       const results: TaskExecutionResult[] = [];
       const taskSummaries = new Map<string, WorkOnTasksTaskSummary>();
       const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings, ...selection.warnings];
+      try {
+        const guidance = await ensureProjectGuidance(this.workspace.workspaceRoot, {
+          mcodaDir: this.workspace.mcodaDir,
+        });
+        if (guidance.status !== "existing") {
+          warnings.push(`project_guidance_${guidance.status}: ${guidance.path}`);
+        }
+      } catch (error) {
+        warnings.push(
+          `project_guidance_bootstrap_failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       if (missingTestsPolicy === "block_job") {
         const missingHarnessTasks = await this.findMissingTestHarnessTasks(selection.ordered);
         if (missingHarnessTasks.length > 0) {

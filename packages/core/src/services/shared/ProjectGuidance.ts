@@ -7,15 +7,55 @@ export type ProjectGuidance = {
   source: string;
 };
 
+export type EnsureProjectGuidanceOptions = {
+  mcodaDir?: string;
+  force?: boolean;
+  template?: string;
+};
+
+export type EnsureProjectGuidanceResult = {
+  path: string;
+  status: "created" | "existing" | "overwritten";
+};
+
 const QA_DOC_PATTERN = /(^|[\\/])(qa|e2e)([-_/]|$)/i;
 const MCODA_DOC_PATTERN = /(^|[\\/])\.mcoda([\\/]|$)/i;
 const SDS_DOC_PATTERN = /(^|[\\/])docs[\\/]+sds([\\/]|$)/i;
 const FRONTMATTER_BLOCK = /^---[\s\S]*?\n---/;
 
-const guidanceCandidates = (workspaceRoot: string, mcodaDir?: string): string[] => {
+const DEFAULT_PROJECT_GUIDANCE_TEMPLATE = [
+  "# Project Guidance",
+  "",
+  "This file is loaded by mcoda agents before task execution.",
+  "Keep it concise and specific to this workspace.",
+  "",
+  "## Product Context",
+  "- Describe the product domain and user-facing goals.",
+  "",
+  "## Architecture Notes",
+  "- List important modules, boundaries, and integration points.",
+  "",
+  "## Coding Constraints",
+  "- Document non-negotiable implementation rules.",
+  "",
+  "## Testing Policy",
+  "- Define required test levels and critical regression checks.",
+  "",
+  "## Operational Notes",
+  "- Add deployment/runtime constraints, known caveats, and troubleshooting hints.",
+  "",
+].join("\n");
+
+export const getDefaultProjectGuidanceTemplate = (): string => DEFAULT_PROJECT_GUIDANCE_TEMPLATE;
+
+export const resolveWorkspaceProjectGuidancePath = (workspaceRoot: string, mcodaDir?: string): string => {
   const resolvedMcodaDir = mcodaDir ?? PathHelper.getWorkspaceDir(workspaceRoot);
+  return path.join(resolvedMcodaDir, "docs", "project-guidance.md");
+};
+
+const guidanceCandidates = (workspaceRoot: string, mcodaDir?: string): string[] => {
   return [
-    path.join(resolvedMcodaDir, "docs", "project-guidance.md"),
+    resolveWorkspaceProjectGuidancePath(workspaceRoot, mcodaDir),
     path.join(workspaceRoot, "docs", "project-guidance.md"),
   ];
 };
@@ -85,4 +125,36 @@ export const loadProjectGuidance = async (
     `[project-guidance] no project guidance found; searched: ${guidanceCandidates(workspaceRoot, mcodaDir).join(", ")}`,
   );
   return null;
+};
+
+export const ensureProjectGuidance = async (
+  workspaceRoot: string,
+  options: EnsureProjectGuidanceOptions = {},
+): Promise<EnsureProjectGuidanceResult> => {
+  const targetPath = resolveWorkspaceProjectGuidancePath(workspaceRoot, options.mcodaDir);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  const force = Boolean(options.force);
+  let existed = false;
+  try {
+    await fs.access(targetPath);
+    existed = true;
+  } catch {
+    existed = false;
+  }
+
+  if (existed && !force) {
+    try {
+      const existing = (await fs.readFile(targetPath, "utf8")).trim();
+      if (existing.length > 0) {
+        return { path: targetPath, status: "existing" };
+      }
+    } catch {
+      // fall through and write template
+    }
+  }
+
+  const template = (options.template ?? getDefaultProjectGuidanceTemplate()).trim();
+  const payload = template.length > 0 ? `${template}\n` : "";
+  await fs.writeFile(targetPath, payload, "utf8");
+  return { path: targetPath, status: existed ? "overwritten" : "created" };
 };

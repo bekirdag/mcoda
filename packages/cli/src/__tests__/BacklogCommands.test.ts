@@ -62,6 +62,11 @@ describe("backlog argument parsing", () => {
     assert.equal(parsed.limit, 3);
   });
 
+  it("defaults view to tasks when omitted", () => {
+    const parsed = parseBacklogArgs([]);
+    assert.equal(parsed.view, "tasks");
+  });
+
   it("recognizes status all and include flags", () => {
     const parsed = parseBacklogArgs(["--status", "all", "--include-done", "--include-cancelled"]);
     assert.equal(parsed.statusAll, true);
@@ -182,6 +187,19 @@ describe("backlog output rendering", () => {
     assert.ok(output.includes("view=tasks"));
     assert.ok(output.includes("web-01-us-01-t01"));
     assert.ok(!output.includes("web-01-us-01-t02"));
+    assert.ok(!output.includes("Epics:"));
+    assert.ok(!output.includes("Stories:"));
+    assert.ok(!output.includes("Summary (tasks / SP):"));
+  });
+
+  it("defaults to tasks view when --view is omitted", async () => {
+    const logs = await captureLogs(() =>
+      BacklogCommands.run(["--workspace-root", workspaceRoot, "--project", "WEB"]),
+    );
+    const output = logs.join("\n");
+    assert.ok(output.includes("Scope:"));
+    assert.ok(output.includes("view=tasks"));
+    assert.ok(output.includes("Tasks:"));
     assert.ok(!output.includes("Epics:"));
     assert.ok(!output.includes("Stories:"));
     assert.ok(!output.includes("Summary (tasks / SP):"));

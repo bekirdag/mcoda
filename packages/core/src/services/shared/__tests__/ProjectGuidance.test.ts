@@ -3,7 +3,7 @@ import assert from "node:assert";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadProjectGuidance } from "../ProjectGuidance.js";
+import { ensureProjectGuidance, loadProjectGuidance } from "../ProjectGuidance.js";
 import { PathHelper } from "@mcoda/shared";
 
 const setupDir = async () => {
@@ -87,6 +87,47 @@ test("loadProjectGuidance prefers workspace docs/project-guidance.md", async () 
       assert.ok(result);
       assert.equal(result?.content, "Mcoda guidance");
       assert.equal(result?.source, mcodaPath);
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+});
+
+test("ensureProjectGuidance creates workspace guidance in .mcoda docs", async () => {
+  await withTempHome(async () => {
+    const dir = await setupDir();
+    try {
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const result = await ensureProjectGuidance(dir, { mcodaDir });
+      assert.equal(result.status, "created");
+      const content = await fs.readFile(result.path, "utf8");
+      assert.ok(content.includes("# Project Guidance"));
+      assert.ok(result.path.startsWith(path.join(mcodaDir, "docs")));
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+});
+
+test("ensureProjectGuidance keeps existing content unless force is enabled", async () => {
+  await withTempHome(async () => {
+    const dir = await setupDir();
+    try {
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const docsDir = path.join(mcodaDir, "docs");
+      await fs.mkdir(docsDir, { recursive: true });
+      const guidancePath = path.join(docsDir, "project-guidance.md");
+      await fs.writeFile(guidancePath, "Custom guidance", "utf8");
+
+      const existing = await ensureProjectGuidance(dir, { mcodaDir });
+      assert.equal(existing.status, "existing");
+      assert.equal((await fs.readFile(guidancePath, "utf8")).trim(), "Custom guidance");
+
+      const overwritten = await ensureProjectGuidance(dir, { mcodaDir, force: true });
+      assert.equal(overwritten.status, "overwritten");
+      const updated = await fs.readFile(guidancePath, "utf8");
+      assert.ok(updated.includes("# Project Guidance"));
+      assert.equal(updated.includes("Custom guidance"), false);
     } finally {
       await cleanupDir(dir);
     }
