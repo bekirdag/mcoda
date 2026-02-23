@@ -45,6 +45,11 @@ test("McodaEntrypoint qa-tasks help prints usage", { concurrency: false }, async
   assert.ok(logs.join("\n").includes("Usage: mcoda qa-tasks"));
 });
 
+test("McodaEntrypoint project-guidance help prints usage", { concurrency: false }, async () => {
+  const logs = await captureLogs(() => McodaEntrypoint.run(["project-guidance", "--help"]));
+  assert.ok(logs.join("\n").includes("Usage: mcoda project-guidance"));
+});
+
 test("McodaEntrypoint rejects unknown commands", { concurrency: false }, async () => {
   await assert.rejects(() => McodaEntrypoint.run(["totally-unknown"]), /Unknown command/);
 });

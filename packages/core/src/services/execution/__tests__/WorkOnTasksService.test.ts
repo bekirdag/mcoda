@@ -1236,6 +1236,44 @@ test("workOnTasks marks tasks ready_to_code_review and records task runs", async
   }
 });
 
+test("workOnTasks bootstraps project guidance in workspace state on first run", async () => {
+  const { dir, workspace, repo } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  const guidancePath = path.join(workspace.mcodaDir, "docs", "project-guidance.md");
+  await fs.rm(guidancePath, { force: true });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: true,
+      noCommit: true,
+      limit: 1,
+    });
+
+    const content = await fs.readFile(guidancePath, "utf8");
+    assert.ok(content.includes("# Project Guidance"));
+    assert.ok(result.warnings.some((warning) => warning.startsWith("project_guidance_created: ")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks passes adapter override into invocation request", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -2692,7 +2730,7 @@ test("workOnTasks prepends project guidance to agent input", async () => {
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
   const agent = new StubAgentServiceCapture();
-  const guidanceDir = path.join(dir, "docs");
+  const guidanceDir = path.join(workspace.mcodaDir, "docs");
   await fs.mkdir(guidanceDir, { recursive: true });
   const guidancePath = path.join(guidanceDir, "project-guidance.md");
   await fs.writeFile(guidancePath, "GUIDANCE BLOCK", "utf8");

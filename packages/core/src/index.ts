@@ -27,5 +27,6 @@ export * from "./services/agents/GatewayAgentService.js";
 export * from "./services/agents/GatewayHandoff.js";
 export * from "./services/agents/AgentRatingService.js";
 export * from "./services/agents/AgentRatingFormula.js";
+export * from "./services/shared/ProjectGuidance.js";
 export * from "./workspace/WorkspaceManager.js";
 export * from "./services/system/SystemUpdateService.js";

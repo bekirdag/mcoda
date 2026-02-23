@@ -24,6 +24,7 @@ import { RoutingCommands } from "../commands/routing/RoutingCommands.js";
 import { TestAgentCommand } from "../commands/agents/TestAgentCommand.js";
 import { AgentRunCommand } from "../commands/agents/AgentRunCommand.js";
 import { SetWorkspaceCommand } from "../commands/workspace/SetWorkspaceCommand.js";
+import { ProjectGuidanceCommand } from "../commands/workspace/ProjectGuidanceCommand.js";
 
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -81,7 +82,7 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|pdr|sds> [...args]\n" +
+        "Usage: mcoda <agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
           "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
@@ -200,6 +201,10 @@ export class McodaEntrypoint {
     }
     if (command === "set-workspace") {
       await SetWorkspaceCommand.run(rest);
+      return;
+    }
+    if (command === "project-guidance") {
+      await ProjectGuidanceCommand.run(rest);
       return;
     }
     throw new Error(`Unknown command: ${command}`);
