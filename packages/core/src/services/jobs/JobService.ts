@@ -268,6 +268,11 @@ export class JobService {
       }
     }
     try {
+      await this.cancelRunningTaskRuns(jobId);
+    } catch {
+      // ignore task run cleanup failures during shutdown
+    }
+    try {
       await this.updateJobStatus(jobId, "cancelled", { errorSummary: reason });
     } catch {
       // ignore job status failures during shutdown
@@ -279,6 +284,21 @@ export class JobService {
         // ignore command run failures during shutdown
       }
     }
+  }
+
+  private async cancelRunningTaskRuns(jobId: string): Promise<void> {
+    if (!this.workspaceRepo || !("getDb" in this.workspaceRepo)) return;
+    const db = (this.workspaceRepo as any).getDb();
+    const finishedAt = nowIso();
+    await db.run(
+      `UPDATE task_runs
+       SET status = 'cancelled',
+           finished_at = CASE WHEN finished_at IS NULL THEN ? ELSE finished_at END
+       WHERE job_id = ?
+         AND status = 'running'`,
+      finishedAt,
+      jobId,
+    );
   }
 
   private async readJsonArray<T>(filePath: string): Promise<T[]> {
@@ -631,6 +651,11 @@ export class JobService {
       });
     }
     if (state === "cancelled" && this.workspaceRepo && "releaseTaskLocksByJob" in this.workspaceRepo) {
+      try {
+        await this.cancelRunningTaskRuns(jobId);
+      } catch {
+        // ignore task run cleanup failures during cancellation
+      }
       try {
         await (this.workspaceRepo as any).releaseTaskLocksByJob(jobId);
       } catch {

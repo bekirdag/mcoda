@@ -67,6 +67,21 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.agentAdapterOverride, "codali-cli");
   });
 
+  it("parses missing test harness policy flags", () => {
+    const parsed = parseWorkOnTasksArgs([
+      "--missing-tests-policy",
+      "fail_task",
+      "--allow-missing-tests=false",
+    ]);
+    assert.equal(parsed.missingTestsPolicy, "fail_task");
+    assert.equal(parsed.allowMissingTests, false);
+  });
+
+  it("treats allow-missing-tests as boolean alias", () => {
+    const parsed = parseWorkOnTasksArgs(["--allow-missing-tests"]);
+    assert.equal(parsed.allowMissingTests, true);
+  });
+
   it("derives runner from use-codali flag", () => {
     const parsed = parseWorkOnTasksArgs(["--use-codali"]);
     assert.equal(parsed.useCodali, true);

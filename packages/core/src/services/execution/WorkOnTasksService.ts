@@ -113,6 +113,8 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   abortSignal?: AbortSignal;
   maxAgentSeconds?: number;
   allowFileOverwrite?: boolean;
+  missingTestsPolicy?: MissingTestsPolicy;
+  allowMissingTests?: boolean;
 }
 
 export interface TaskExecutionResult {
@@ -909,6 +911,17 @@ type TestRequirements = {
 };
 
 type TestRunResult = { command: string; stdout: string; stderr: string; code: number };
+export type MissingTestsPolicy = "block_job" | "skip_task" | "fail_task";
+const DEFAULT_MISSING_TESTS_POLICY: MissingTestsPolicy = "block_job";
+
+const normalizeMissingTestsPolicy = (value: unknown): MissingTestsPolicy | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "block_job" || normalized === "skip_task" || normalized === "fail_task") {
+    return normalized;
+  }
+  return undefined;
+};
 
 const normalizeStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
@@ -1255,6 +1268,7 @@ const buildRunAllTestsScript = (seedCategory: keyof TestRequirements, seedComman
     "  const status = typeof result.status === \"number\" ? result.status : 1;",
     "  if (status !== 0) failed = true;",
     "}",
+    'console.log(`MCODA_RUN_ALL_TESTS_COMPLETE status=${failed ? "failed" : "passed"}`);',
     'console.log("MCODA_RUN_ALL_TESTS_END");',
     "process.exit(failed ? 1 : 0);",
     "",
@@ -3459,6 +3473,72 @@ export class WorkOnTasksService {
     return { ok: true, commands: updated, env };
   }
 
+  private async findMissingTestHarnessTasks(
+    orderedTasks: TaskSelectionPlan["ordered"],
+  ): Promise<
+    Array<{
+      taskKey: string;
+      testRequirements: TestRequirements;
+      attemptedCommands: string[];
+    }>
+  > {
+    const issues: Array<{
+      taskKey: string;
+      testRequirements: TestRequirements;
+      attemptedCommands: string[];
+    }> = [];
+    const commandBuilder = new QaTestCommandBuilder(this.workspace.workspaceRoot);
+    const runAllTestsCommandHint = detectRunAllTestsCommand(this.workspace.workspaceRoot);
+
+    for (const selected of orderedTasks) {
+      const metadata = (selected.task.metadata as Record<string, unknown> | undefined) ?? {};
+      const testRequirements = normalizeTestRequirements(metadata.test_requirements ?? metadata.testRequirements);
+      if (!hasTestRequirements(testRequirements)) continue;
+
+      let testCommands = normalizeTestCommands(metadata.tests ?? metadata.testCommands);
+      const attemptedCommands: string[] = [];
+      const sanitizedMetadata = sanitizeTestCommands(testCommands, this.workspace.workspaceRoot);
+      testCommands = sanitizedMetadata.commands;
+      attemptedCommands.push(...testCommands);
+
+      if (!testCommands.length) {
+        try {
+          const commandPlan = await commandBuilder.build({ task: selected.task });
+          const built = sanitizeTestCommands(commandPlan.commands, this.workspace.workspaceRoot);
+          testCommands = built.commands;
+          attemptedCommands.push(...built.commands);
+        } catch {
+          // Ignore command builder errors for preflight and rely on fallback checks.
+        }
+      }
+
+      if (!testCommands.length) {
+        let allowedFiles = Array.isArray(metadata.files) ? normalizePaths(this.workspace.workspaceRoot, metadata.files) : [];
+        const allowedDirs = normalizeDirList(metadata.allowed_dirs ?? metadata.allowedDirs);
+        if (allowedDirs.length) {
+          const normalizedDirs = normalizePaths(this.workspace.workspaceRoot, allowedDirs);
+          allowedFiles = Array.from(new Set([...allowedFiles, ...normalizedDirs]));
+        }
+        const fallbackCommand = detectScopedTestCommand(this.workspace.workspaceRoot, allowedFiles);
+        if (fallbackCommand) {
+          const fallback = sanitizeTestCommands([fallbackCommand], this.workspace.workspaceRoot);
+          testCommands = fallback.commands;
+          attemptedCommands.push(...fallback.commands);
+        }
+      }
+
+      const hasRunnableTests = testCommands.length > 0 || Boolean(runAllTestsCommandHint);
+      if (hasRunnableTests) continue;
+      issues.push({
+        taskKey: selected.task.key,
+        testRequirements,
+        attemptedCommands: dedupeCommands(attemptedCommands),
+      });
+    }
+
+    return issues;
+  }
+
   private async runTests(
     commands: string[],
     cwd: string,
@@ -3523,6 +3603,9 @@ export class WorkOnTasksService {
     const directEditsEnabled = !patchModeEnabled;
     const enforceCommentBacklog = isCommentBacklogEnforced();
     const commentBacklogMaxFails = resolveCommentBacklogMaxFails();
+    const requestedMissingTestsPolicy = normalizeMissingTestsPolicy(request.missingTestsPolicy);
+    const missingTestsPolicy: MissingTestsPolicy =
+      requestedMissingTestsPolicy ?? (request.allowMissingTests ? "skip_task" : DEFAULT_MISSING_TESTS_POLICY);
     const baseCodaliEnvOverrides = codaliRequired ? buildCodaliEnvOverrides() : {};
     const configuredBaseBranch = this.workspace.config?.branch;
     const requestedBaseBranch = request.baseBranch;
@@ -3536,6 +3619,11 @@ export class WorkOnTasksService {
     const baseBranchWarnings: string[] = [];
     const statusWarnings: string[] = [];
     const runnerWarnings: string[] = [];
+    if (request.missingTestsPolicy && !requestedMissingTestsPolicy) {
+      runnerWarnings.push(
+        `Unknown missing-tests policy "${String(request.missingTestsPolicy)}"; using "${missingTestsPolicy}".`,
+      );
+    }
     const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
     const { filtered: statusFilter, rejected } = ignoreStatusFilter
       ? { filtered: request.statusFilter ?? [], rejected: [] as string[] }
@@ -3587,6 +3675,8 @@ export class WorkOnTasksService {
         dryRun: request.dryRun ?? false,
         agent: request.agentName,
         agentStream,
+        missingTestsPolicy,
+        allowMissingTests: request.allowMissingTests ?? false,
       },
     });
 
@@ -3694,6 +3784,27 @@ export class WorkOnTasksService {
       const results: TaskExecutionResult[] = [];
       const taskSummaries = new Map<string, WorkOnTasksTaskSummary>();
       const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings, ...selection.warnings];
+      if (missingTestsPolicy === "block_job") {
+        const missingHarnessTasks = await this.findMissingTestHarnessTasks(selection.ordered);
+        if (missingHarnessTasks.length > 0) {
+          const taskKeys = missingHarnessTasks.map((issue) => issue.taskKey);
+          await this.checkpoint(job.id, "tests_preflight_blocked", {
+            reason: "missing_test_harness",
+            policy: missingTestsPolicy,
+            taskKeys,
+            issues: missingHarnessTasks.map((issue) => ({
+              taskKey: issue.taskKey,
+              testRequirements: issue.testRequirements,
+              attemptedCommands: issue.attemptedCommands,
+            })),
+          });
+          throw new Error(
+            `missing_test_harness: selected tasks require tests but no runnable test harness was found (${taskKeys.join(
+              ", ",
+            )}). Configure metadata.tests/testCommands or add tests/all.js.`,
+          );
+        }
+      }
       const gatewayHandoffPath = codaliRequired ? process.env[GATEWAY_HANDOFF_ENV_PATH] : undefined;
       let gatewayHandoff: GatewayHandoffSummary | null = null;
       if (gatewayHandoffPath) {
@@ -4268,11 +4379,45 @@ export class WorkOnTasksService {
               : "";
           const hasRunnableTests = testCommands.length > 0 || Boolean(runAllTestsCommandHint);
           if (testsRequired && !hasRunnableTests) {
+            if (missingTestsPolicy === "skip_task") {
+              await this.logTask(
+                taskRun.id,
+                "Tests required but no runnable test commands were found; skipping task due to missing-tests policy.",
+                "tests",
+                { testRequirements, missingTestsPolicy },
+              );
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                status: "cancelled",
+                finishedAt: new Date().toISOString(),
+              });
+              results.push({ taskKey: task.task.key, status: "skipped", notes: "missing_test_harness" });
+              taskStatus = "skipped";
+              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+              await emitTaskEndOnce();
+              continue taskLoop;
+            }
+            if (missingTestsPolicy === "block_job") {
+              await this.logTask(
+                taskRun.id,
+                "Tests required but no runnable test commands were found; stopping job due to missing-tests policy.",
+                "tests",
+                { testRequirements, missingTestsPolicy },
+              );
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                status: "cancelled",
+                finishedAt: new Date().toISOString(),
+              });
+              taskStatus = "skipped";
+              await emitTaskEndOnce();
+              throw new Error(
+                `missing_test_harness: ${task.task.key} requires tests but no runnable test commands were found`,
+              );
+            }
             await this.logTask(
               taskRun.id,
               "Tests required but no runnable test commands were found; failing task.",
               "tests",
-              { testRequirements },
+              { testRequirements, missingTestsPolicy },
             );
             await this.stateService.markFailed(task.task, "tests_not_configured", statusContext);
             await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {

@@ -4021,6 +4021,7 @@ test("workOnTasks creates run-all tests script when missing", async () => {
     const contents = await fs.readFile(scriptPath, "utf8");
     assert.ok(contents.includes("unit-test.js"));
     assert.ok(contents.includes("require(\"node:child_process\")"));
+    assert.ok(contents.includes("MCODA_RUN_ALL_TESTS_COMPLETE"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -4090,7 +4091,63 @@ test("workOnTasks uses category test commands when requirements are set", async 
   }
 });
 
-test("workOnTasks fails when tests are required but no commands exist", async () => {
+test("workOnTasks blocks the job when tests are required but no commands exist", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      test_requirements: {
+        unit: ["missing test commands"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await assert.rejects(
+      service.workOnTasks({
+        workspace,
+        projectKey: "proj",
+        agentStream: false,
+        dryRun: false,
+        noCommit: true,
+        limit: 1,
+      }),
+      /missing_test_harness/,
+    );
+
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "not_started");
+    assert.equal((updated?.metadata as any)?.failed_reason, undefined);
+
+    const db = repo.getDb();
+    const taskRuns = await db.all<{ status: string }[]>("SELECT status FROM task_runs WHERE command = 'work-on-tasks'");
+    assert.equal(taskRuns.length, 0);
+    const tokenUsage = await db.all("SELECT id FROM token_usage");
+    assert.equal(tokenUsage.length, 0);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks supports fail_task policy when tests are required but no commands exist", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -4126,6 +4183,7 @@ test("workOnTasks fails when tests are required but no commands exist", async ()
       dryRun: false,
       noCommit: true,
       limit: 1,
+      missingTestsPolicy: "fail_task",
     });
 
     assert.equal(result.results.length, 1);
@@ -4135,6 +4193,57 @@ test("workOnTasks fails when tests are required but no commands exist", async ()
     const updated = await repo.getTaskByKey(tasks[0].key);
     assert.equal(updated?.status, "failed");
     assert.equal((updated?.metadata as any)?.failed_reason, "tests_not_configured");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks supports skip_task policy when tests are required but no commands exist", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      test_requirements: {
+        unit: ["missing test commands"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+      missingTestsPolicy: "skip_task",
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "skipped");
+    assert.equal(result.results[0]?.notes, "missing_test_harness");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "not_started");
+    assert.equal((updated?.metadata as any)?.failed_reason, undefined);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

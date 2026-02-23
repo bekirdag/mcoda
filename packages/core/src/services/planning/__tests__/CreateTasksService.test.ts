@@ -341,6 +341,85 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.ok(result.tasks[0].description.includes("Profiles:"));
 });
 
+test("createTasks persists runnable metadata tests when harness is discoverable", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "package.json"),
+    JSON.stringify(
+      {
+        name: "create-tasks-tests",
+        version: "1.0.0",
+        scripts: {
+          "test:unit": "node tests/unit.js",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: ["Add unit coverage for task path"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const metadata = result.tasks[0].metadata as any;
+  assert.ok(Array.isArray(metadata?.tests));
+  assert.ok(metadata?.tests.some((command: string) => command.includes("test:unit")));
+});
+
 test("createTasks merges qa overrides into task metadata", async () => {
   const outputs = [
     JSON.stringify({
