@@ -14,6 +14,7 @@ type StatusRank = Record<string, number>;
 const DEFAULT_STATUSES = ["not_started", "in_progress", "changes_requested", READY_TO_CODE_REVIEW, "ready_to_qa"];
 const DONE_STATUSES = new Set(["completed", "cancelled"]);
 const DEFAULT_STAGE_ORDER: TaskStage[] = ["foundation", "backend", "frontend", "other"];
+const PLANNING_DOC_HINT_PATTERN = /(sds|pdr|rfp|requirements|architecture|openapi|swagger|design)/i;
 const STATUS_RANK: StatusRank = {
   in_progress: 0,
   changes_requested: 0,
@@ -87,9 +88,11 @@ interface TaskRow {
   assignee_human?: string | null;
   epic_id: string;
   epic_key: string;
+  epic_priority: number | null;
   story_id: string;
   story_key: string;
   story_title: string;
+  story_priority: number | null;
   created_at: string;
   updated_at: string;
   metadata?: Record<string, unknown> | null;
@@ -371,9 +374,21 @@ export class TaskOrderingService {
 
   private async buildDocContext(projectKey: string, warnings: string[]): Promise<DocContext | undefined> {
     try {
-      const docs = await this.docdex.search({ docType: "SDS", projectKey });
+      let docs = await this.docdex.search({ docType: "SDS", projectKey });
+      if (!docs.length) {
+        docs = await this.docdex.search({
+          projectKey,
+          profile: "workspace-code",
+          query: "sds requirements architecture openapi",
+        });
+      }
       if (!docs.length) return undefined;
-      const doc = docs[0];
+      const doc =
+        docs.find((entry) => {
+          const type = (entry.docType ?? "").toLowerCase();
+          const label = `${entry.path ?? ""} ${entry.title ?? ""}`.toLowerCase();
+          return type.includes("sds") || type.includes("pdr") || type.includes("rfp") || PLANNING_DOC_HINT_PATTERN.test(label);
+        }) ?? docs[0];
       const segments = (doc.segments ?? []).slice(0, 3);
       const body =
         segments.length > 0
@@ -483,9 +498,11 @@ export class TaskOrderingService {
           t.assignee_human,
           t.epic_id,
           e.key as epic_key,
+          e.priority as epic_priority,
           t.user_story_id as story_id,
           us.key as story_key,
           us.title as story_title,
+          us.priority as story_priority,
           t.created_at,
           t.updated_at,
           t.metadata_json
@@ -501,6 +518,8 @@ export class TaskOrderingService {
       ...row,
       story_points: row.story_points ?? null,
       priority: row.priority ?? null,
+      epic_priority: row.epic_priority ?? null,
+      story_priority: row.story_priority ?? null,
       metadata: row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : null,
     }));
   }
@@ -790,6 +809,12 @@ export class TaskOrderingService {
     agentRank?: AgentRanking,
     stageOrderMap?: Map<TaskStage, number>,
   ): number {
+    const epicPriorityA = a.epic_priority ?? Number.MAX_SAFE_INTEGER;
+    const epicPriorityB = b.epic_priority ?? Number.MAX_SAFE_INTEGER;
+    if (epicPriorityA !== epicPriorityB) return epicPriorityA - epicPriorityB;
+    const storyPriorityA = a.story_priority ?? Number.MAX_SAFE_INTEGER;
+    const storyPriorityB = b.story_priority ?? Number.MAX_SAFE_INTEGER;
+    if (storyPriorityA !== storyPriorityB) return storyPriorityA - storyPriorityB;
     const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
     const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
     if (priorityA !== priorityB) return priorityA - priorityB;

@@ -45,7 +45,7 @@ const DEFAULT_CODE_WRITER_PROMPT = [
   "Use docdex snippets to ground decisions (data model, offline/online expectations, constraints, acceptance criteria).",
   "When a comment backlog is provided (code-review/qa-tasks), resolve those items first and do not mark a slug resolved unless you made real repo changes that address it.",
   "Do not ignore the main task description or acceptance criteria; address them after resolving comment backlog items.",
-  "Re-use existing store/slices/adapters and tests; avoid inventing new backends or ad-hoc actions. Keep behavior backward-compatible and scoped to the documented contracts.",
+  "Re-use existing store/slices/adapters and documented product patterns; avoid inventing new backends or ad-hoc actions. Prioritize product behavior changes first, then align tests.",
   "Do not hardcode ports. Read PORT/HOST (or MCODA_QA_PORT/MCODA_QA_HOST) from env, and document base URLs with http://localhost:<PORT> placeholders when needed.",
   "Do not create docs/qa/* reports unless the task explicitly requests one. Work-on-tasks should not generate QA reports.",
   "If you encounter merge conflicts or conflict markers, stop and report; do not attempt to merge them.",
@@ -1407,6 +1407,140 @@ const findOutOfScopeActionPaths = (
 
 const normalizePaths = (workspaceRoot: string, files: string[]): string[] =>
   files.map((f) => PathHelper.resolveRelativePath(workspaceRoot, f));
+const DOC_CONTEXT_QUERY_TOKEN_LIMIT = 24;
+const DOC_CONTEXT_QUERY_MAX_CHARS = 320;
+const DOC_CONTEXT_STOP_WORDS = new Set([
+  "and",
+  "the",
+  "for",
+  "with",
+  "that",
+  "this",
+  "from",
+  "into",
+  "onto",
+  "task",
+  "story",
+  "epic",
+  "add",
+  "update",
+  "implement",
+  "ensure",
+  "support",
+  "across",
+  "should",
+  "must",
+  "able",
+  "when",
+  "then",
+  "than",
+  "using",
+  "user",
+  "users",
+  "project",
+]);
+const TEST_CONTEXT_PATH_PATTERN =
+  /(^|[\\/])(__tests__|tests?|specs?|fixtures?|mocks?)([\\/]|$)|\.(test|spec)\.[cm]?[jt]sx?$/i;
+const DOC_PATH_PATTERN = /(^|[\\/])docs?([\\/]|$)|\.(md|mdx|rst|adoc)$/i;
+const TEST_TASK_HINT_PATTERN =
+  /\b(test|tests|qa|quality|e2e|unit|integration|spec|regression|coverage|benchmark|throughput|resilience|audit)\b/i;
+const DOC_TASK_HINT_PATTERN = /\b(doc|docs|documentation|readme|sds|rfp|openapi|changelog|guide)\b/i;
+
+const normalizeMatcherPath = (value: string): string => value.replace(/\\/g, "/").replace(/^\.\/+/, "").toLowerCase();
+
+const isTestLikePath = (value: string | undefined): boolean => {
+  if (!value) return false;
+  return TEST_CONTEXT_PATH_PATTERN.test(normalizeMatcherPath(value));
+};
+
+const isDocumentationPath = (value: string | undefined): boolean => {
+  if (!value) return false;
+  return DOC_PATH_PATTERN.test(normalizeMatcherPath(value));
+};
+
+const buildTaskTextBlob = (task: TaskSelectionPlan["ordered"][number]["task"]): string =>
+  [
+    task.type,
+    task.title,
+    task.description,
+    task.epicTitle,
+    task.storyTitle,
+    task.storyDescription,
+    ...(task.acceptanceCriteria ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
+
+const isTestFocusedTask = (task: TaskSelectionPlan["ordered"][number]["task"]): boolean =>
+  TEST_TASK_HINT_PATTERN.test(buildTaskTextBlob(task)) ||
+  (task.type ?? "").toLowerCase().includes("test") ||
+  (task.type ?? "").toLowerCase().includes("qa");
+
+const isDocumentationFocusedTask = (task: TaskSelectionPlan["ordered"][number]["task"]): boolean =>
+  DOC_TASK_HINT_PATTERN.test(buildTaskTextBlob(task));
+
+const normalizeBoolean = (value: unknown): boolean => value === true || value === "true";
+
+const allowsTestsOnlyCompletion = (
+  task: TaskSelectionPlan["ordered"][number]["task"],
+  metadata: Record<string, unknown>,
+  allowedFiles: string[],
+): boolean => {
+  if (normalizeBoolean(metadata.allow_doc_edits) || normalizeBoolean(metadata.allowDocEdits)) {
+    return true;
+  }
+  if (normalizeBoolean(metadata.allow_large_doc_edits) || normalizeBoolean(metadata.allowLargeDocEdits)) {
+    return true;
+  }
+  if (normalizeBoolean(metadata.allow_tests_only_completion) || normalizeBoolean(metadata.allowTestOnlyCompletion)) {
+    return true;
+  }
+  if (isTestFocusedTask(task) || isDocumentationFocusedTask(task)) {
+    return true;
+  }
+  if (allowedFiles.length > 0 && allowedFiles.every((file) => isTestLikePath(file) || isDocumentationPath(file))) {
+    return true;
+  }
+  return false;
+};
+
+const hasProductTouchedFiles = (touchedFiles: string[]): boolean =>
+  touchedFiles.some((file) => !isTestLikePath(file) && !isDocumentationPath(file));
+
+const buildDocContextQuery = (
+  task: TaskSelectionPlan["ordered"][number]["task"],
+  allowedFiles: string[],
+): string | undefined => {
+  const seeds = [
+    task.key,
+    task.title,
+    task.description,
+    task.epicTitle,
+    task.storyTitle,
+    task.storyDescription,
+    ...(task.acceptanceCriteria ?? []),
+    ...allowedFiles.map((file) => path.basename(file)),
+  ];
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  for (const seed of seeds) {
+    if (!seed) continue;
+    const rawTokens = seed.toLowerCase().split(/[^a-z0-9]+/g);
+    for (const token of rawTokens) {
+      if (token.length < 3) continue;
+      if (DOC_CONTEXT_STOP_WORDS.has(token)) continue;
+      if (seen.has(token)) continue;
+      seen.add(token);
+      tokens.push(token);
+      if (tokens.length >= DOC_CONTEXT_QUERY_TOKEN_LIMIT) break;
+    }
+    if (tokens.length >= DOC_CONTEXT_QUERY_TOKEN_LIMIT) break;
+  }
+  if (!tokens.length) return undefined;
+  const query = tokens.join(" ").slice(0, DOC_CONTEXT_QUERY_MAX_CHARS).trim();
+  return query || undefined;
+};
+
 const resolveLockTtlSeconds = (maxAgentSeconds?: number): number => {
   if (!maxAgentSeconds || maxAgentSeconds <= 0) return TASK_LOCK_TTL_SECONDS;
   return Math.max(1, Math.min(TASK_LOCK_TTL_SECONDS, maxAgentSeconds + 60));
@@ -2291,13 +2425,17 @@ export class WorkOnTasksService {
   }
 
   private async gatherDocContext(
+    task: TaskSelectionPlan["ordered"][number]["task"],
     projectKey?: string,
     docLinks: string[] = [],
+    allowedFiles: string[] = [],
   ): Promise<{ summary: string; warnings: string[]; docdexUnavailable: boolean }> {
     const warnings: string[] = [];
     const parts: string[] = [];
     let openApiIncluded = false;
     let docdexUnavailable = false;
+    const includeTestDocs = isTestFocusedTask(task);
+    const docQuery = buildDocContextQuery(task, allowedFiles);
     const shouldIncludeDocType = (docType: string): boolean => {
       if (docType.toUpperCase() !== "OPENAPI") return true;
       if (openApiIncluded) return false;
@@ -2314,9 +2452,14 @@ export class WorkOnTasksService {
       }
     }
     try {
-      const docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code" });
+      let docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code", query: docQuery });
+      if (!docs.length && docQuery) {
+        docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code" });
+      }
       const filteredDocs = docs.filter(
-        (doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false),
+        (doc) =>
+          !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false) &&
+          (includeTestDocs || !isTestLikePath(doc.path ?? doc.title ?? doc.id)),
       );
       const resolveDocType = (doc: { docType?: string; path?: string; title?: string; content?: string; segments?: Array<{ content?: string }> }) => {
         const content = doc.segments?.[0]?.content ?? doc.content ?? "";
@@ -4789,7 +4932,7 @@ export class WorkOnTasksService {
           if (skipDocContext) {
             docWarnings = ["Gateway handoff present; skipping docdex context gathering."];
           } else {
-            const docContext = await this.gatherDocContext(request.projectKey, docLinks);
+            const docContext = await this.gatherDocContext(task.task, request.projectKey, docLinks, allowedFiles);
             docSummary = docContext.summary;
             docWarnings = docContext.warnings;
             docdexUnavailable = docContext.docdexUnavailable;
@@ -6393,6 +6536,55 @@ export class WorkOnTasksService {
                 await this.deps.workspaceRepo.updateTaskRun(taskRun.id, { status: "succeeded", finishedAt: new Date().toISOString() });
                 results.push({ taskKey: task.task.key, status: "succeeded", notes: "no_changes" });
                 taskStatus = "succeeded";
+                await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+                continue taskLoop;
+              }
+              const allowTestOnlyCompletion = allowsTestsOnlyCompletion(
+                task.task,
+                metadata as Record<string, unknown>,
+                allowedFiles,
+              );
+              if (!allowTestOnlyCompletion && !hasProductTouchedFiles(touched)) {
+                const body = [
+                  "[work-on-tasks]",
+                  "Completion guard blocked finalization.",
+                  "Only test/documentation files were touched for a task that appears to require product implementation changes.",
+                  `Touched files: ${touched.join(", ")}`,
+                  "Update product code (or set metadata.allow_tests_only_completion=true for explicitly test-only tasks) and rerun.",
+                ].join("\n");
+                await this.deps.workspaceRepo.createTaskComment({
+                  taskId: task.task.id,
+                  taskRunId: taskRun.id,
+                  jobId: job.id,
+                  sourceCommand: "work-on-tasks",
+                  authorType: "agent",
+                  authorAgentId: agent.id,
+                  category: "completion_guard",
+                  body,
+                  createdAt: new Date().toISOString(),
+                  metadata: { reason: "tests_only_changes", touchedFiles: touched, allowedFiles },
+                });
+                await this.logTask(
+                  taskRun.id,
+                  `Completion guard blocked task: non-product touched files only (${touched.join(", ")}).`,
+                  "execution",
+                );
+                await this.updateTaskPhase(job.id, taskRun.id, task.task.key, "finalize", "error", {
+                  error: "tests_only_changes",
+                  touchedFiles: touched,
+                });
+                await this.stateService.markChangesRequested(
+                  task.task,
+                  { failed_reason: "tests_only_changes", touched_files: touched },
+                  statusContext,
+                );
+                await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                  status: "failed",
+                  finishedAt: new Date().toISOString(),
+                });
+                setFailureReason("tests_only_changes");
+                results.push({ taskKey: task.task.key, status: "failed", notes: "tests_only_changes" });
+                taskStatus = "failed";
                 await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
                 continue taskLoop;
               }

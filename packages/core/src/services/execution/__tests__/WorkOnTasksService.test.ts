@@ -393,6 +393,23 @@ class StubAgentServiceNoChange {
   }
 }
 
+class StubAgentServiceTestsOnlyChange {
+  async resolveAgent() {
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    const output = ["FILE: tests/feature.guard.test.js", "```", "console.log('test change');", "```"].join("\n");
+    return { output, adapter: "local-model" };
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubAgentServiceFallbackFileOverwrite {
   invocations = 0;
   async resolveAgent() {
@@ -2475,7 +2492,8 @@ test("workOnTasks logs docdex scope failures before search", async () => {
 });
 
 test("workOnTasks normalizes absolute patch paths into workspace-relative paths", async () => {
-  const { dir, workspace, repo } = await setupWorkspace();
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  await repo.updateTask(tasks[0].id, { type: "testing" });
   await fs.mkdir(path.join(dir, "tests"), { recursive: true });
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -2512,7 +2530,8 @@ test("workOnTasks normalizes absolute patch paths into workspace-relative paths"
 });
 
 test("workOnTasks converts add patches for missing files into new-file patches", async () => {
-  const { dir, workspace, repo } = await setupWorkspace();
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  await repo.updateTask(tasks[0].id, { type: "testing" });
   await fs.mkdir(path.join(dir, "tests"), { recursive: true });
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -3038,6 +3057,74 @@ test("workOnTasks filters QA and .mcoda docs from doc context", async () => {
   }
 });
 
+test("workOnTasks uses task-scoped docdex query and filters test context for feature tasks", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  await repo.updateTask(tasks[0].id, {
+    title: "Implement OAuth login callback flow",
+    description: "Persist callback token and update session handling.",
+  });
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceCapture();
+  const searchCalls: Array<Record<string, unknown>> = [];
+  const docdex = {
+    search: async (filter: Record<string, unknown>) => {
+      searchCalls.push(filter);
+      return [
+        {
+          id: "doc-impl",
+          docType: "DOC",
+          path: "src/auth/callback.ts",
+          title: "Login callback implementation",
+          createdAt: "now",
+          updatedAt: "now",
+        },
+        {
+          id: "doc-test",
+          docType: "DOC",
+          path: "tests/auth/login.spec.ts",
+          title: "Login spec",
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      ];
+    },
+    close: async () => {},
+  };
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: docdex as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    const input = agent.lastInput ?? "";
+    assert.ok(searchCalls.length >= 1);
+    assert.equal(searchCalls[0]?.profile, "workspace-code");
+    assert.ok(String(searchCalls[0]?.query ?? "").includes("login"));
+    assert.ok(input.includes("Login callback implementation"));
+    assert.ok(!input.includes("Login spec"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks includes unresolved review + QA comment backlog", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3483,6 +3570,88 @@ test("workOnTasks defaults base branch to mcoda-dev when config missing", async 
       limit: 1,
     });
     assert.ok(vcs.bases.includes("mcoda-dev"));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks blocks feature tasks that only modify tests/docs", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceTestsOnlyChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results[0]?.status, "failed");
+    assert.equal(result.results[0]?.notes, "tests_only_changes");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "changes_requested");
+    assert.equal((updated?.metadata as any)?.failed_reason, "tests_only_changes");
+    const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
+    const guardComment = comments.find((comment) => comment.category === "completion_guard");
+    assert.ok(guardComment?.body.includes("Completion guard blocked finalization."));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks allows tests-only completion for testing-focused tasks", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  await repo.updateTask(tasks[0].id, {
+    type: "testing",
+    title: "Add regression tests for login flow",
+  });
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceTestsOnlyChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results[0]?.status, "succeeded");
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_code_review");
+    const comments = await repo.listTaskComments(tasks[0].id, { sourceCommands: ["work-on-tasks"] });
+    const guardComment = comments.find((comment) => comment.category === "completion_guard");
+    assert.equal(Boolean(guardComment), false);
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

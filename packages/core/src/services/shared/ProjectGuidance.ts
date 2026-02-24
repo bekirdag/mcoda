@@ -20,7 +20,7 @@ export type EnsureProjectGuidanceResult = {
 
 const QA_DOC_PATTERN = /(^|[\\/])(qa|e2e)([-_/]|$)/i;
 const MCODA_DOC_PATTERN = /(^|[\\/])\.mcoda([\\/]|$)/i;
-const SDS_DOC_PATTERN = /(^|[\\/])docs[\\/]+sds([\\/]|$)/i;
+const SDS_DOC_PATTERN = /(^|[\\/])docs[\\/]+sds([\\/]|\.|$)/i;
 const FRONTMATTER_BLOCK = /^---[\s\S]*?\n---/;
 
 const DEFAULT_PROJECT_GUIDANCE_TEMPLATE = [

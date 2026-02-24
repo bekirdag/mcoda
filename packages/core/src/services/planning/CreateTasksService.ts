@@ -118,6 +118,12 @@ interface GeneratedPlan {
   tasks: PlanTask[];
 }
 
+type ServiceDependencyGraph = {
+  services: string[];
+  dependencies: Map<string, Set<string>>;
+  aliases: Map<string, Set<string>>;
+};
+
 type QaPreflight = {
   scripts: Record<string, string>;
   entrypoints: QaEntrypoint[];
@@ -542,6 +548,115 @@ const collectFilesRecursively = async (target: string): Promise<string[]> => {
   return [target];
 };
 
+const DOC_SCAN_MAX_DEPTH = 5;
+const DOC_SCAN_IGNORE_DIRS = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".mcoda",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  "tmp",
+  "temp",
+]);
+const DOC_SCAN_FILE_PATTERN = /\.(md|markdown|txt|rst|ya?ml|json)$/i;
+const SDS_LIKE_PATH_PATTERN =
+  /(^|\/)(sds|software[-_ ]design|design[-_ ]spec|requirements|prd|pdr|rfp|architecture|solution[-_ ]design)/i;
+const OPENAPI_LIKE_PATH_PATTERN = /(openapi|swagger)/i;
+const STRUCTURE_LIKE_PATH_PATTERN = /(^|\/)(tree|structure|layout|folder|directory|services?|modules?)(\/|[-_.]|$)/i;
+const DOC_PATH_TOKEN_PATTERN = /(^|[\s`"'([{<])([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+)(?=$|[\s`"')\]}>.,;:!?])/g;
+const FILE_EXTENSION_PATTERN = /\.[a-z0-9]{1,10}$/i;
+const SERVICE_PATH_CONTAINER_SEGMENTS = new Set([
+  "services",
+  "service",
+  "apps",
+  "app",
+  "packages",
+  "package",
+  "modules",
+  "module",
+  "libs",
+  "lib",
+  "src",
+]);
+const SERVICE_NAME_STOPWORDS = new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "for",
+  "to",
+  "of",
+  "in",
+  "on",
+  "with",
+  "by",
+  "from",
+  "layer",
+  "stack",
+  "system",
+  "platform",
+  "project",
+  "repository",
+  "codebase",
+  "component",
+  "feature",
+  "implement",
+  "build",
+  "create",
+  "develop",
+  "deliver",
+  "setup",
+  "set",
+  "provision",
+  "define",
+  "configure",
+  "add",
+  "update",
+  "refactor",
+  "init",
+  "initialize",
+  "prepare",
+  "establish",
+  "support",
+  "enable",
+]);
+const SERVICE_NAME_INVALID = new Set([
+  "service",
+  "services",
+  "module",
+  "modules",
+  "app",
+  "apps",
+  "layer",
+  "stack",
+  "system",
+  "project",
+  "repository",
+  "codebase",
+]);
+const SERVICE_LABEL_PATTERN =
+  /\b([A-Za-z][A-Za-z0-9]*(?:[ _/-]+[A-Za-z][A-Za-z0-9]*){0,3})\s+(service|api|backend|frontend|worker|gateway|database|db|ui|client|server|adapter)\b/gi;
+const SERVICE_ARROW_PATTERN =
+  /([A-Za-z][A-Za-z0-9 _/-]{1,80})\s*(?:->|=>|→)\s*([A-Za-z][A-Za-z0-9 _/-]{1,80})/g;
+
+const nextUniqueLocalId = (prefix: string, existing: Set<string>): string => {
+  let index = 1;
+  let candidate = `${prefix}-${index}`;
+  while (existing.has(candidate)) {
+    index += 1;
+    candidate = `${prefix}-${index}`;
+  }
+  existing.add(candidate);
+  return candidate;
+};
+
 const EPIC_SCHEMA_SNIPPET = `{
   "epics": [
     {
@@ -763,7 +878,744 @@ export class CreateTasksService {
         // Ignore missing candidates; fall back to empty inputs.
       }
     }
-    return existing;
+    if (existing.length > 0) return existing;
+    return this.findFuzzyDocInputs();
+  }
+
+  private async walkDocCandidates(
+    currentDir: string,
+    depth: number,
+    collector: (filePath: string) => void,
+  ): Promise<void> {
+    if (depth > DOC_SCAN_MAX_DEPTH) return;
+    let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (DOC_SCAN_IGNORE_DIRS.has(entry.name.toLowerCase())) continue;
+        await this.walkDocCandidates(entryPath, depth + 1, collector);
+        continue;
+      }
+      if (entry.isFile()) {
+        collector(entryPath);
+      }
+    }
+  }
+
+  private scoreDocCandidate(filePath: string): number {
+    const workspaceRelative = path.relative(this.workspace.workspaceRoot, filePath).replace(/\\/g, "/").toLowerCase();
+    const mcodaRelative = path.relative(this.workspace.mcodaDir, filePath).replace(/\\/g, "/").toLowerCase();
+    const relative =
+      workspaceRelative && !workspaceRelative.startsWith("..")
+        ? workspaceRelative
+        : mcodaRelative && !mcodaRelative.startsWith("..")
+          ? mcodaRelative
+          : path.basename(filePath).toLowerCase();
+    const normalized = `/${relative}`;
+    const baseName = path.basename(relative);
+    if (!DOC_SCAN_FILE_PATTERN.test(baseName)) return 0;
+    let score = 0;
+    if (SDS_LIKE_PATH_PATTERN.test(normalized)) score += 100;
+    if (OPENAPI_LIKE_PATH_PATTERN.test(normalized)) score += 80;
+    if (STRUCTURE_LIKE_PATH_PATTERN.test(normalized)) score += 30;
+    if (normalized.includes("/docs/")) score += 20;
+    if (normalized.endsWith(".md") || normalized.endsWith(".markdown")) score += 10;
+    return score;
+  }
+
+  private async findFuzzyDocInputs(): Promise<string[]> {
+    const ranked: Array<{ path: string; score: number }> = [];
+    const seen = new Set<string>();
+    const collect = (candidate: string) => {
+      const resolved = path.resolve(candidate);
+      if (seen.has(resolved)) return;
+      const score = this.scoreDocCandidate(resolved);
+      if (score <= 0) return;
+      ranked.push({ path: resolved, score });
+      seen.add(resolved);
+    };
+    await this.walkDocCandidates(this.workspace.workspaceRoot, 0, collect);
+    const mcodaDocs = path.join(this.workspace.mcodaDir, "docs");
+    try {
+      const stat = await fs.stat(mcodaDocs);
+      if (stat.isDirectory()) {
+        await this.walkDocCandidates(mcodaDocs, 0, collect);
+      }
+    } catch {
+      // Ignore missing workspace docs.
+    }
+    return ranked
+      .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      .slice(0, 24)
+      .map((entry) => entry.path);
+  }
+
+  private normalizeStructurePathToken(value: string): string | undefined {
+    const normalized = value
+      .replace(/\\/g, "/")
+      .replace(/^[./]+/, "")
+      .replace(/^\/+/, "")
+      .trim();
+    if (!normalized) return undefined;
+    if (normalized.length > 140) return undefined;
+    if (!normalized.includes("/")) return undefined;
+    if (normalized.includes("://")) return undefined;
+    if (/[\u0000-\u001f]/.test(normalized)) return undefined;
+    const parts = normalized.split("/").filter(Boolean);
+    if (parts.length < 2) return undefined;
+    if (parts.some((part) => part === "." || part === "..")) return undefined;
+    if (DOC_SCAN_IGNORE_DIRS.has(parts[0].toLowerCase())) return undefined;
+    return parts.join("/");
+  }
+
+  private extractStructureTargets(docs: DocdexDocument[]): { directories: string[]; files: string[] } {
+    const directories = new Set<string>();
+    const files = new Set<string>();
+    for (const doc of docs) {
+      const segments = (doc.segments ?? []).map((segment) => segment.content).filter(Boolean).join("\n");
+      const corpus = [doc.title, doc.path, doc.content, segments].filter(Boolean).join("\n");
+      for (const match of corpus.matchAll(DOC_PATH_TOKEN_PATTERN)) {
+        const token = match[2];
+        if (!token) continue;
+        const normalized = this.normalizeStructurePathToken(token);
+        if (!normalized) continue;
+        if (FILE_EXTENSION_PATTERN.test(path.basename(normalized))) {
+          files.add(normalized);
+          const parent = path.dirname(normalized).replace(/\\/g, "/");
+          if (parent && parent !== ".") directories.add(parent);
+        } else {
+          directories.add(normalized);
+        }
+      }
+    }
+    return {
+      directories: Array.from(directories).sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, 32),
+      files: Array.from(files).sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, 32),
+    };
+  }
+
+  private normalizeServiceName(value: string): string | undefined {
+    const normalized = value
+      .toLowerCase()
+      .replace(/[`"'()[\]{}]/g, " ")
+      .replace(/[._/-]+/g, " ")
+      .replace(/[^a-z0-9\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalized) return undefined;
+    const keepTokens = new Set(["api", "ui", "db", "qa", "ml", "ai", "etl"]);
+    const tokens = normalized
+      .split(" ")
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .filter((token) => keepTokens.has(token) || !SERVICE_NAME_STOPWORDS.has(token))
+      .slice(0, 4);
+    if (!tokens.length) return undefined;
+    const candidate = tokens.join(" ");
+    if (SERVICE_NAME_INVALID.has(candidate)) return undefined;
+    return candidate.length >= 2 ? candidate : undefined;
+  }
+
+  private deriveServiceFromPathToken(pathToken: string): string | undefined {
+    const parts = pathToken
+      .replace(/\\/g, "/")
+      .split("/")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean);
+    if (!parts.length) return undefined;
+    let idx = 0;
+    while (idx < parts.length - 1 && SERVICE_PATH_CONTAINER_SEGMENTS.has(parts[idx])) {
+      idx += 1;
+    }
+    return this.normalizeServiceName(parts[idx] ?? parts[0]);
+  }
+
+  private addServiceAlias(aliases: Map<string, Set<string>>, rawValue: string): string | undefined {
+    const canonical = this.normalizeServiceName(rawValue);
+    if (!canonical) return undefined;
+    const existing = aliases.get(canonical) ?? new Set<string>();
+    existing.add(canonical);
+    const alias = rawValue
+      .toLowerCase()
+      .replace(/[._/-]+/g, " ")
+      .replace(/[^a-z0-9\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (alias) existing.add(alias);
+    aliases.set(canonical, existing);
+    return canonical;
+  }
+
+  private extractServiceMentionsFromText(text: string): string[] {
+    if (!text) return [];
+    const mentions = new Set<string>();
+    for (const match of text.matchAll(SERVICE_LABEL_PATTERN)) {
+      const phrase = `${match[1] ?? ""} ${match[2] ?? ""}`.trim();
+      const normalized = this.normalizeServiceName(phrase);
+      if (normalized) mentions.add(normalized);
+    }
+    for (const match of text.matchAll(DOC_PATH_TOKEN_PATTERN)) {
+      const token = match[2];
+      if (!token) continue;
+      const normalized = this.deriveServiceFromPathToken(token);
+      if (normalized) mentions.add(normalized);
+    }
+    return Array.from(mentions);
+  }
+
+  private resolveServiceMentionFromPhrase(phrase: string, aliases: Map<string, Set<string>>): string | undefined {
+    const normalizedPhrase = phrase
+      .toLowerCase()
+      .replace(/[._/-]+/g, " ")
+      .replace(/[^a-z0-9\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalizedPhrase) return undefined;
+    let best: { key: string; aliasLength: number } | undefined;
+    const haystack = ` ${normalizedPhrase} `;
+    for (const [service, names] of aliases.entries()) {
+      for (const alias of names) {
+        const needle = ` ${alias} `;
+        if (!haystack.includes(needle)) continue;
+        if (!best || alias.length > best.aliasLength) {
+          best = { key: service, aliasLength: alias.length };
+        }
+      }
+    }
+    if (best) return best.key;
+    const mention = this.extractServiceMentionsFromText(phrase)[0];
+    if (!mention) return undefined;
+    return this.addServiceAlias(aliases, mention);
+  }
+
+  private collectDependencyStatements(text: string): Array<{ dependent: string; dependency: string }> {
+    const statements: Array<{ dependent: string; dependency: string }> = [];
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 300);
+    const dependencyPatterns: Array<{
+      regex: RegExp;
+      dependentGroup: number;
+      dependencyGroup: number;
+    }> = [
+      {
+        regex:
+          /^(.+?)\b(?:depends on|requires|needs|uses|consumes|calls|reads from|writes to|must come after|comes after|built after|runs after|backed by)\b(.+)$/i,
+        dependentGroup: 1,
+        dependencyGroup: 2,
+      },
+      {
+        regex: /^(.+?)\b(?:before|prerequisite for)\b(.+)$/i,
+        dependentGroup: 2,
+        dependencyGroup: 1,
+      },
+    ];
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/^[-*]\s+/, "").trim();
+      if (!line) continue;
+      for (const match of line.matchAll(SERVICE_ARROW_PATTERN)) {
+        const dependent = match[1]?.trim();
+        const dependency = match[2]?.trim();
+        if (dependent && dependency) {
+          statements.push({ dependent, dependency });
+        }
+      }
+      for (const pattern of dependencyPatterns) {
+        const match = line.match(pattern.regex);
+        if (!match) continue;
+        const dependent = match[pattern.dependentGroup]?.trim();
+        const dependency = match[pattern.dependencyGroup]?.trim();
+        if (!dependent || !dependency) continue;
+        statements.push({ dependent, dependency });
+      }
+    }
+    return statements;
+  }
+
+  private sortServicesByDependency(services: string[], dependencies: Map<string, Set<string>>): string[] {
+    const nodes = Array.from(new Set(services));
+    const indegree = new Map<string, number>();
+    const adjacency = new Map<string, Set<string>>();
+    const dependedBy = new Map<string, number>();
+    for (const node of nodes) {
+      indegree.set(node, 0);
+      dependedBy.set(node, 0);
+    }
+    for (const [dependent, dependencySet] of dependencies.entries()) {
+      if (!indegree.has(dependent)) {
+        indegree.set(dependent, 0);
+        dependedBy.set(dependent, 0);
+        nodes.push(dependent);
+      }
+      for (const dependency of dependencySet) {
+        if (!indegree.has(dependency)) {
+          indegree.set(dependency, 0);
+          dependedBy.set(dependency, 0);
+          nodes.push(dependency);
+        }
+        indegree.set(dependent, (indegree.get(dependent) ?? 0) + 1);
+        const out = adjacency.get(dependency) ?? new Set<string>();
+        out.add(dependent);
+        adjacency.set(dependency, out);
+        dependedBy.set(dependency, (dependedBy.get(dependency) ?? 0) + 1);
+      }
+    }
+    const compare = (a: string, b: string): number => {
+      const dependedByA = dependedBy.get(a) ?? 0;
+      const dependedByB = dependedBy.get(b) ?? 0;
+      if (dependedByA !== dependedByB) return dependedByB - dependedByA;
+      return a.localeCompare(b);
+    };
+    const queue = nodes.filter((node) => (indegree.get(node) ?? 0) === 0).sort(compare);
+    const ordered: string[] = [];
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current) continue;
+      ordered.push(current);
+      const out = adjacency.get(current);
+      if (!out) continue;
+      for (const neighbor of out) {
+        const nextInDegree = (indegree.get(neighbor) ?? 0) - 1;
+        indegree.set(neighbor, nextInDegree);
+        if (nextInDegree === 0) {
+          queue.push(neighbor);
+        }
+      }
+      queue.sort(compare);
+    }
+    if (ordered.length === nodes.length) return ordered;
+    const remaining = nodes.filter((node) => !ordered.includes(node)).sort(compare);
+    return [...ordered, ...remaining];
+  }
+
+  private buildServiceDependencyGraph(plan: GeneratedPlan, docs: DocdexDocument[]): ServiceDependencyGraph {
+    const aliases = new Map<string, Set<string>>();
+    const dependencies = new Map<string, Set<string>>();
+    const register = (value: string | undefined): string | undefined => {
+      if (!value) return undefined;
+      return this.addServiceAlias(aliases, value);
+    };
+    const docsText = docs
+      .map((doc) => [doc.title, doc.path, doc.content, ...(doc.segments ?? []).map((segment) => segment.content)].filter(Boolean).join("\n"))
+      .join("\n");
+    const planText = [
+      ...plan.epics.map((epic) => `${epic.title}\n${epic.description ?? ""}`),
+      ...plan.stories.map((story) => `${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`),
+      ...plan.tasks.map((task) => `${task.title}\n${task.description ?? ""}`),
+    ].join("\n");
+    const structureTargets = this.extractStructureTargets(docs);
+    for (const token of [...structureTargets.directories, ...structureTargets.files]) {
+      register(this.deriveServiceFromPathToken(token));
+    }
+    for (const mention of this.extractServiceMentionsFromText(docsText)) register(mention);
+    for (const mention of this.extractServiceMentionsFromText(planText)) register(mention);
+    const corpus = [docsText, planText].filter(Boolean);
+    for (const text of corpus) {
+      const statements = this.collectDependencyStatements(text);
+      for (const statement of statements) {
+        const dependent = this.resolveServiceMentionFromPhrase(statement.dependent, aliases);
+        const dependency = this.resolveServiceMentionFromPhrase(statement.dependency, aliases);
+        if (!dependent || !dependency || dependent === dependency) continue;
+        const next = dependencies.get(dependent) ?? new Set<string>();
+        next.add(dependency);
+        dependencies.set(dependent, next);
+      }
+    }
+    const services = this.sortServicesByDependency(Array.from(aliases.keys()), dependencies);
+    return { services, dependencies, aliases };
+  }
+
+  private orderStoryTasksByDependencies(
+    storyTasks: PlanTask[],
+    serviceRank: Map<string, number>,
+    taskServiceByLocalId: Map<string, string | undefined>,
+  ): PlanTask[] {
+    const byLocalId = new Map(storyTasks.map((task) => [task.localId, task]));
+    const indegree = new Map<string, number>();
+    const outgoing = new Map<string, Set<string>>();
+    for (const task of storyTasks) {
+      indegree.set(task.localId, 0);
+    }
+    for (const task of storyTasks) {
+      for (const dep of task.dependsOnKeys ?? []) {
+        if (!byLocalId.has(dep) || dep === task.localId) continue;
+        indegree.set(task.localId, (indegree.get(task.localId) ?? 0) + 1);
+        const edges = outgoing.get(dep) ?? new Set<string>();
+        edges.add(task.localId);
+        outgoing.set(dep, edges);
+      }
+    }
+    const priorityComparator = (a: PlanTask, b: PlanTask): number => {
+      const classA = classifyTask({ title: a.title ?? "", description: a.description, type: a.type });
+      const classB = classifyTask({ title: b.title ?? "", description: b.description, type: b.type });
+      if (classA.foundation !== classB.foundation) return classA.foundation ? -1 : 1;
+      const rankA = serviceRank.get(taskServiceByLocalId.get(a.localId) ?? "") ?? Number.MAX_SAFE_INTEGER;
+      const rankB = serviceRank.get(taskServiceByLocalId.get(b.localId) ?? "") ?? Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
+      const priorityA = a.priorityHint ?? Number.MAX_SAFE_INTEGER;
+      const priorityB = b.priorityHint ?? Number.MAX_SAFE_INTEGER;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      return a.localId.localeCompare(b.localId);
+    };
+    const queue = storyTasks.filter((task) => (indegree.get(task.localId) ?? 0) === 0).sort(priorityComparator);
+    const ordered: PlanTask[] = [];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (!next || seen.has(next.localId)) continue;
+      seen.add(next.localId);
+      ordered.push(next);
+      const dependents = outgoing.get(next.localId);
+      if (!dependents) continue;
+      for (const dependent of dependents) {
+        const updated = (indegree.get(dependent) ?? 0) - 1;
+        indegree.set(dependent, updated);
+        if (updated === 0) {
+          const depTask = byLocalId.get(dependent);
+          if (depTask) queue.push(depTask);
+        }
+      }
+      queue.sort(priorityComparator);
+    }
+    if (ordered.length === storyTasks.length) return ordered;
+    const remaining = storyTasks.filter((task) => !seen.has(task.localId)).sort(priorityComparator);
+    return [...ordered, ...remaining];
+  }
+
+  private applyServiceDependencySequencing(plan: GeneratedPlan, docs: DocdexDocument[]): GeneratedPlan {
+    const graph = this.buildServiceDependencyGraph(plan, docs);
+    if (!graph.services.length) return plan;
+    const serviceRank = new Map(graph.services.map((service, index) => [service, index]));
+    const resolveEntityService = (text: string): string | undefined => this.resolveServiceMentionFromPhrase(text, graph.aliases);
+    const epics = plan.epics.map((epic) => ({ ...epic }));
+    const stories = plan.stories.map((story) => ({ ...story }));
+    const tasks = plan.tasks.map((task) => ({ ...task, dependsOnKeys: uniqueStrings(task.dependsOnKeys ?? []) }));
+    const storyByLocalId = new Map(stories.map((story) => [story.localId, story]));
+    const taskServiceByLocalId = new Map<string, string | undefined>();
+
+    for (const task of tasks) {
+      const text = `${task.title ?? ""}\n${task.description ?? ""}`;
+      taskServiceByLocalId.set(task.localId, resolveEntityService(text));
+    }
+
+    const tasksByStory = new Map<string, PlanTask[]>();
+    for (const task of tasks) {
+      const bucket = tasksByStory.get(task.storyLocalId) ?? [];
+      bucket.push(task);
+      tasksByStory.set(task.storyLocalId, bucket);
+    }
+
+    for (const storyTasks of tasksByStory.values()) {
+      const tasksByService = new Map<string, PlanTask[]>();
+      for (const task of storyTasks) {
+        const service = taskServiceByLocalId.get(task.localId);
+        if (!service) continue;
+        const serviceTasks = tasksByService.get(service) ?? [];
+        serviceTasks.push(task);
+        tasksByService.set(service, serviceTasks);
+      }
+      for (const serviceTasks of tasksByService.values()) {
+        serviceTasks.sort((a, b) => (a.priorityHint ?? Number.MAX_SAFE_INTEGER) - (b.priorityHint ?? Number.MAX_SAFE_INTEGER));
+      }
+      for (const task of storyTasks) {
+        const service = taskServiceByLocalId.get(task.localId);
+        if (!service) continue;
+        const requiredServices = graph.dependencies.get(service);
+        if (!requiredServices || requiredServices.size === 0) continue;
+        for (const requiredService of requiredServices) {
+          const candidate = tasksByService.get(requiredService)?.[0];
+          if (!candidate || candidate.localId === task.localId) continue;
+          if (!(task.dependsOnKeys ?? []).includes(candidate.localId)) {
+            task.dependsOnKeys = uniqueStrings([...(task.dependsOnKeys ?? []), candidate.localId]);
+          }
+        }
+      }
+    }
+
+    const storyRankByLocalId = new Map<string, number>();
+    for (const story of stories) {
+      const storyTasks = tasksByStory.get(story.localId) ?? [];
+      const taskRanks = storyTasks
+        .map((task) => serviceRank.get(taskServiceByLocalId.get(task.localId) ?? ""))
+        .filter((value): value is number => typeof value === "number");
+      const storyTextRank = serviceRank.get(resolveEntityService(`${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`) ?? "");
+      const rank = taskRanks.length > 0 ? Math.min(...taskRanks) : storyTextRank ?? Number.MAX_SAFE_INTEGER;
+      storyRankByLocalId.set(story.localId, rank);
+    }
+
+    const epicRankByLocalId = new Map<string, number>();
+    for (const epic of epics) {
+      const epicStories = stories.filter((story) => story.epicLocalId === epic.localId);
+      const storyRanks = epicStories
+        .map((story) => storyRankByLocalId.get(story.localId))
+        .filter((value): value is number => typeof value === "number");
+      const epicTextRank = serviceRank.get(resolveEntityService(`${epic.title}\n${epic.description ?? ""}`) ?? "");
+      const rank = storyRanks.length > 0 ? Math.min(...storyRanks) : epicTextRank ?? Number.MAX_SAFE_INTEGER;
+      epicRankByLocalId.set(epic.localId, rank);
+    }
+
+    const isBootstrap = (value: string): boolean => /bootstrap|foundation|structure/i.test(value);
+    epics.sort((a, b) => {
+      const bootstrapA = isBootstrap(`${a.title} ${a.description ?? ""}`);
+      const bootstrapB = isBootstrap(`${b.title} ${b.description ?? ""}`);
+      if (bootstrapA !== bootstrapB) return bootstrapA ? -1 : 1;
+      const rankA = epicRankByLocalId.get(a.localId) ?? Number.MAX_SAFE_INTEGER;
+      const rankB = epicRankByLocalId.get(b.localId) ?? Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
+      const priorityA = a.priorityHint ?? Number.MAX_SAFE_INTEGER;
+      const priorityB = b.priorityHint ?? Number.MAX_SAFE_INTEGER;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      return a.localId.localeCompare(b.localId);
+    });
+    epics.forEach((epic, index) => {
+      epic.priorityHint = index + 1;
+    });
+
+    const storiesOrdered: PlanStory[] = [];
+    const tasksOrdered: PlanTask[] = [];
+    for (const epic of epics) {
+      const epicStories = stories
+        .filter((story) => story.epicLocalId === epic.localId)
+        .sort((a, b) => {
+          const bootstrapA = isBootstrap(`${a.title} ${a.description ?? ""}`);
+          const bootstrapB = isBootstrap(`${b.title} ${b.description ?? ""}`);
+          if (bootstrapA !== bootstrapB) return bootstrapA ? -1 : 1;
+          const rankA = storyRankByLocalId.get(a.localId) ?? Number.MAX_SAFE_INTEGER;
+          const rankB = storyRankByLocalId.get(b.localId) ?? Number.MAX_SAFE_INTEGER;
+          if (rankA !== rankB) return rankA - rankB;
+          const priorityA = a.priorityHint ?? Number.MAX_SAFE_INTEGER;
+          const priorityB = b.priorityHint ?? Number.MAX_SAFE_INTEGER;
+          if (priorityA !== priorityB) return priorityA - priorityB;
+          return a.localId.localeCompare(b.localId);
+        });
+      epicStories.forEach((story, index) => {
+        story.priorityHint = index + 1;
+        storiesOrdered.push(story);
+        const storyTasks = tasksByStory.get(story.localId) ?? [];
+        const orderedTasks = this.orderStoryTasksByDependencies(storyTasks, serviceRank, taskServiceByLocalId);
+        orderedTasks.forEach((task, taskIndex) => {
+          task.priorityHint = taskIndex + 1;
+          tasksOrdered.push(task);
+        });
+      });
+    }
+
+    const orderedStoryIds = new Set(storiesOrdered.map((story) => story.localId));
+    for (const story of stories) {
+      if (orderedStoryIds.has(story.localId)) continue;
+      storiesOrdered.push(story);
+    }
+    const orderedTaskIds = new Set(tasksOrdered.map((task) => task.localId));
+    for (const task of tasks) {
+      if (orderedTaskIds.has(task.localId)) continue;
+      tasksOrdered.push(task);
+    }
+
+    // Keep parent linkage intact even if malformed story references exist.
+    for (const story of storiesOrdered) {
+      if (!storyByLocalId.has(story.localId)) continue;
+      story.epicLocalId = storyByLocalId.get(story.localId)?.epicLocalId ?? story.epicLocalId;
+    }
+
+    return { epics, stories: storiesOrdered, tasks: tasksOrdered };
+  }
+
+  private shouldInjectStructureBootstrap(plan: GeneratedPlan, docs: DocdexDocument[]): boolean {
+    if (docs.length === 0) return false;
+    return !plan.tasks.some((task) =>
+      /codebase structure|folder tree|scaffold|bootstrap|repository layout|project skeleton/i.test(
+        `${task.title} ${task.description ?? ""}`,
+      ),
+    );
+  }
+
+  private injectStructureBootstrapPlan(
+    plan: GeneratedPlan,
+    docs: DocdexDocument[],
+    projectKey: string,
+  ): GeneratedPlan {
+    if (!this.shouldInjectStructureBootstrap(plan, docs)) return plan;
+    const localIds = new Set<string>([
+      ...plan.epics.map((epic) => epic.localId),
+      ...plan.stories.map((story) => story.localId),
+      ...plan.tasks.map((task) => task.localId),
+    ]);
+    const epicLocalId = nextUniqueLocalId("bootstrap-epic", localIds);
+    const storyLocalId = nextUniqueLocalId("bootstrap-story", localIds);
+    const task1LocalId = nextUniqueLocalId("bootstrap-task", localIds);
+    const task2LocalId = nextUniqueLocalId("bootstrap-task", localIds);
+    const task3LocalId = nextUniqueLocalId("bootstrap-task", localIds);
+    const structureTargets = this.extractStructureTargets(docs);
+    const directoryPreview = structureTargets.directories.length
+      ? structureTargets.directories.slice(0, 20).map((item) => `- ${item}`).join("\n")
+      : "- Infer top-level source directories from SDS sections and create them.";
+    const filePreview = structureTargets.files.length
+      ? structureTargets.files.slice(0, 20).map((item) => `- ${item}`).join("\n")
+      : "- Create minimal entrypoint/config placeholders required by the SDS-defined architecture.";
+    const relatedDocs = docs
+      .map((doc) => (doc.id ? `docdex:${doc.id}` : undefined))
+      .filter((value): value is string => Boolean(value))
+      .slice(0, 12);
+    const bootstrapEpic: PlanEpic = {
+      localId: epicLocalId,
+      area: normalizeArea(projectKey) ?? "infra",
+      title: "Codebase Foundation and Structure Setup",
+      description:
+        "Create the SDS-defined codebase scaffold first (folders/files/service boundaries) before feature implementation tasks.",
+      acceptanceCriteria: [
+        "Required folder tree exists for the planned architecture.",
+        "Minimal entrypoint/config files exist for each discovered service/module.",
+        "Service dependency assumptions are explicit and actionable in follow-up tasks.",
+      ],
+      relatedDocs,
+      priorityHint: 1,
+      stories: [],
+    };
+    const bootstrapStory: PlanStory = {
+      localId: storyLocalId,
+      epicLocalId,
+      title: "Bootstrap repository structure from SDS",
+      userStory:
+        "As an engineer, I want a concrete codebase scaffold first so implementation tasks can target real modules instead of only tests.",
+      description: [
+        "Parse SDS/PDR/OpenAPI context and establish the expected folder/file tree.",
+        "Start with dependencies-first service ordering (foundational components before dependents).",
+      ].join("\n"),
+      acceptanceCriteria: [
+        "Repository scaffold matches documented architecture at a high level.",
+        "Core service/module placeholders are committed as executable starting points.",
+        "Follow-up tasks reference real directories/files under the scaffold.",
+      ],
+      relatedDocs,
+      priorityHint: 1,
+      tasks: [],
+    };
+    const bootstrapTasks: PlanTask[] = [
+      {
+        localId: task1LocalId,
+        storyLocalId,
+        epicLocalId,
+        title: "Create SDS-aligned folder tree",
+        type: "chore",
+        description: [
+          "Create the initial folder tree inferred from SDS and related docs.",
+          "Target directories:",
+          directoryPreview,
+        ].join("\n"),
+        estimatedStoryPoints: 2,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs,
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+      {
+        localId: task2LocalId,
+        storyLocalId,
+        epicLocalId,
+        title: "Create foundational file stubs for discovered modules",
+        type: "chore",
+        description: [
+          "Create minimal file stubs/config entrypoints for the scaffolded modules/services.",
+          "Target files:",
+          filePreview,
+        ].join("\n"),
+        estimatedStoryPoints: 3,
+        priorityHint: 2,
+        dependsOnKeys: [task1LocalId],
+        relatedDocs,
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+      {
+        localId: task3LocalId,
+        storyLocalId,
+        epicLocalId,
+        title: "Define service dependency baseline for implementation sequencing",
+        type: "spike",
+        description:
+          "Document and codify service/module dependency direction so highly depended foundational services are implemented first.",
+        estimatedStoryPoints: 2,
+        priorityHint: 3,
+        dependsOnKeys: [task2LocalId],
+        relatedDocs,
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ];
+    return {
+      epics: [bootstrapEpic, ...plan.epics],
+      stories: [bootstrapStory, ...plan.stories],
+      tasks: [...bootstrapTasks, ...plan.tasks],
+    };
+  }
+
+  private enforceStoryScopedDependencies(plan: GeneratedPlan): GeneratedPlan {
+    const scopedLocalKey = (storyLocalId: string, localId: string): string => `${storyLocalId}::${localId}`;
+    const taskMap = new Map(
+      plan.tasks.map((task) => [
+        scopedLocalKey(task.storyLocalId, task.localId),
+        {
+          ...task,
+          dependsOnKeys: uniqueStrings((task.dependsOnKeys ?? []).filter(Boolean)),
+        },
+      ]),
+    );
+    const tasksByStory = new Map<string, PlanTask[]>();
+    for (const task of taskMap.values()) {
+      const storyTasks = tasksByStory.get(task.storyLocalId) ?? [];
+      storyTasks.push(task);
+      tasksByStory.set(task.storyLocalId, storyTasks);
+    }
+    for (const storyTasks of tasksByStory.values()) {
+      const localIds = new Set(storyTasks.map((task) => task.localId));
+      const foundationTasks = storyTasks
+        .filter((task) =>
+          classifyTask({
+            title: task.title ?? "",
+            description: task.description,
+            type: task.type,
+          }).foundation,
+        )
+        .sort((a, b) => (a.priorityHint ?? Number.MAX_SAFE_INTEGER) - (b.priorityHint ?? Number.MAX_SAFE_INTEGER));
+      const foundationAnchor =
+        foundationTasks.find((task) => !(task.dependsOnKeys ?? []).some((dep) => localIds.has(dep)))?.localId ??
+        foundationTasks[0]?.localId;
+      for (const task of storyTasks) {
+        const filtered = (task.dependsOnKeys ?? []).filter((dep) => dep !== task.localId && localIds.has(dep));
+        const classification = classifyTask({
+          title: task.title ?? "",
+          description: task.description,
+          type: task.type,
+        });
+        if (
+          foundationAnchor &&
+          foundationAnchor !== task.localId &&
+          !classification.foundation &&
+          !filtered.includes(foundationAnchor)
+        ) {
+          filtered.push(foundationAnchor);
+        }
+        task.dependsOnKeys = uniqueStrings(filtered);
+      }
+    }
+    return {
+      ...plan,
+      tasks: plan.tasks.map((task) => taskMap.get(scopedLocalKey(task.storyLocalId, task.localId)) ?? task),
+    };
   }
 
   private async buildQaPreflight(): Promise<QaPreflight> {
@@ -920,6 +1772,8 @@ export class CreateTasksService {
       "- Do NOT include final slugs; the system will assign keys.",
       "- Use docdex handles when referencing docs.",
       "- acceptanceCriteria must be an array of strings (5-10 items).",
+      "- Prefer dependency-first sequencing: foundational codebase/service setup epics should precede dependent feature epics.",
+      "- Keep output technology-agnostic and derived from docs; do not assume specific stacks unless docs state them.",
       limits || "Use reasonable scope without over-generating epics.",
       "Docs available:",
       docSummary || "- (no docs provided; propose sensible epics).",
@@ -1178,6 +2032,9 @@ export class CreateTasksService {
       "- When known, include qa object with profiles_expected/requires/entrypoints/data_setup to guide QA.",
       "- Do not hardcode ports. For QA entrypoints, use http://localhost:<PORT> placeholders or omit base_url when unknown.",
       "- dependsOnKeys must reference localIds in this story.",
+      "- Start from prerequisite codebase setup: add structure/bootstrap tasks before feature tasks when missing.",
+      "- Keep dependencies strictly inside this story; never reference tasks from other stories/epics.",
+      "- Order tasks from foundational prerequisites to dependents (infrastructure -> backend/services -> frontend/consumers where applicable).",
       "- Use docdex handles when citing docs.",
       `Story context (key=${story.key ?? story.localId ?? "TBD"}):`,
       story.description ?? story.userStory ?? "",
@@ -1382,7 +2239,14 @@ export class CreateTasksService {
       const storyIdByKey = new Map(storyRows.map((row) => [row.key, row.id]));
       const epicIdByKey = new Map(epicRows.map((row) => [row.key, row.id]));
 
-      type TaskDetail = { localId: string; key: string; storyKey: string; epicKey: string; plan: PlanTask };
+      type TaskDetail = {
+        localId: string;
+        key: string;
+        storyLocalId: string;
+        storyKey: string;
+        epicKey: string;
+        plan: PlanTask;
+      };
       const taskDetails: TaskDetail[] = [];
       for (const story of storyMeta) {
         const storyId = storyIdByKey.get(story.storyKey);
@@ -1395,6 +2259,7 @@ export class CreateTasksService {
           taskDetails.push({
             localId,
             key,
+            storyLocalId: story.node.localId,
             storyKey: story.storyKey,
             epicKey: story.epicKey,
             plan: task,
@@ -1402,7 +2267,8 @@ export class CreateTasksService {
         }
       }
 
-      const localToKey = new Map(taskDetails.map((t) => [t.localId, t.key]));
+      const scopedLocalKey = (storyLocalId: string, localId: string): string => `${storyLocalId}::${localId}`;
+      const localToKey = new Map(taskDetails.map((t) => [scopedLocalKey(t.storyLocalId, t.localId), t.key]));
       const taskInserts: TaskInsert[] = [];
       const testCommandBuilder = new QaTestCommandBuilder(this.workspace.workspaceRoot);
       for (const task of taskDetails) {
@@ -1461,7 +2327,7 @@ export class CreateTasksService {
           blockers: qaBlockers.length ? qaBlockers : undefined,
         };
         const depSlugs = (task.plan.dependsOnKeys ?? [])
-          .map((dep) => localToKey.get(dep))
+          .map((dep) => localToKey.get(scopedLocalKey(task.storyLocalId, dep)))
           .filter((value): value is string => Boolean(value));
         const metadata: Record<string, unknown> = {
           doc_links: task.plan.relatedDocs ?? [],
@@ -1509,17 +2375,17 @@ export class CreateTasksService {
       for (const detail of taskDetails) {
         const row = taskRows.find((t) => t.key === detail.key);
         if (row) {
-          taskByLocal.set(detail.localId, row);
+          taskByLocal.set(scopedLocalKey(detail.storyLocalId, detail.localId), row);
         }
       }
 
       const depKeys = new Set<string>();
       const dependencies: TaskDependencyInsert[] = [];
       for (const detail of taskDetails) {
-        const current = taskByLocal.get(detail.localId);
+        const current = taskByLocal.get(scopedLocalKey(detail.storyLocalId, detail.localId));
         if (!current) continue;
         for (const dep of detail.plan.dependsOnKeys ?? []) {
-          const target = taskByLocal.get(dep);
+          const target = taskByLocal.get(scopedLocalKey(detail.storyLocalId, dep));
           if (!target || target.id === current.id) continue;
           const depKey = `${current.id}|${target.id}|blocks`;
           if (depKeys.has(depKey)) continue;
@@ -1638,13 +2504,18 @@ export class CreateTasksService {
           details: { epics: epics.length },
         });
 
-        const plan = await this.generatePlanFromAgent(epics, agent, docSummary, {
+        let plan = await this.generatePlanFromAgent(epics, agent, docSummary, {
           agentStream,
           jobId: job.id,
           commandRunId: commandRun.id,
           maxStoriesPerEpic: options.maxStoriesPerEpic,
           maxTasksPerStory: options.maxTasksPerStory,
         });
+        plan = this.enforceStoryScopedDependencies(plan);
+        plan = this.injectStructureBootstrapPlan(plan, docs, options.projectKey);
+        plan = this.enforceStoryScopedDependencies(plan);
+        plan = this.applyServiceDependencySequencing(plan, docs);
+        plan = this.enforceStoryScopedDependencies(plan);
 
         await this.jobService.writeCheckpoint(job.id, {
           stage: "stories_generated",
@@ -1788,11 +2659,14 @@ export class CreateTasksService {
         description: `Workspace project ${projectKey}`,
       });
 
-      const plan: GeneratedPlan = {
+      let plan: GeneratedPlan = {
         epics: epics as PlanEpic[],
         stories: stories as PlanStory[],
         tasks: tasks as PlanTask[],
       };
+      plan = this.enforceStoryScopedDependencies(plan);
+      plan = this.applyServiceDependencySequencing(plan, []);
+      plan = this.enforceStoryScopedDependencies(plan);
 
       const loadRefinePlans = async (): Promise<string[]> => {
         const candidates: string[] = [];
