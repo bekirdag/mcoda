@@ -219,6 +219,103 @@ test("orders tasks by dependency impact and normalizes priorities", { concurrenc
   });
 });
 
+test("orders tasks by epic then story hierarchy before task priority tie-breakers", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const [epicTwo] = await ctx.repo.insertEpics(
+        [
+          {
+            projectId: ctx.project.id,
+            key: "proj-02",
+            title: "Epic Two",
+            description: "",
+          },
+        ],
+        true,
+      );
+      const [storyA2] = await ctx.repo.insertStories(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            key: "proj-01-us-02",
+            title: "Story A2",
+            description: "",
+          },
+        ],
+        true,
+      );
+      const [storyB1] = await ctx.repo.insertStories(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: epicTwo.id,
+            key: "proj-02-us-01",
+            title: "Story B1",
+            description: "",
+          },
+        ],
+        true,
+      );
+      await ctx.repo.getDb().run(`UPDATE epics SET priority = 1 WHERE id = ?`, ctx.epic.id);
+      await ctx.repo.getDb().run(`UPDATE epics SET priority = 2 WHERE id = ?`, epicTwo.id);
+      await ctx.repo.getDb().run(`UPDATE user_stories SET priority = 2 WHERE id = ?`, ctx.story.id);
+      await ctx.repo.getDb().run(`UPDATE user_stories SET priority = 1 WHERE id = ?`, storyA2.id);
+      await ctx.repo.getDb().run(`UPDATE user_stories SET priority = 1 WHERE id = ?`, storyB1.id);
+
+      await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T01",
+            title: "Lower story priority but lower task priority",
+            description: "",
+            status: "not_started",
+            priority: 1,
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: storyA2.id,
+            key: "PROJ-01-US-02-T01",
+            title: "Higher story priority but higher task priority",
+            description: "",
+            status: "not_started",
+            priority: 9,
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: epicTwo.id,
+            userStoryId: storyB1.id,
+            key: "PROJ-02-US-01-T01",
+            title: "Second epic task",
+            description: "",
+            status: "not_started",
+            priority: 0,
+          },
+        ],
+        true,
+      );
+
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
+        assert.deepEqual(
+          result.ordered.map((task) => task.taskKey),
+          ["PROJ-01-US-02-T01", "PROJ-01-US-01-T01", "PROJ-02-US-01-T01"],
+        );
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
 test("orders tasks with dependencies and still assigns priorities", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();

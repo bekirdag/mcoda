@@ -3,7 +3,7 @@ import assert from "node:assert";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ensureProjectGuidance, loadProjectGuidance } from "../ProjectGuidance.js";
+import { ensureProjectGuidance, loadProjectGuidance, normalizeDocType } from "../ProjectGuidance.js";
 import { PathHelper } from "@mcoda/shared";
 
 const setupDir = async () => {
@@ -132,4 +132,24 @@ test("ensureProjectGuidance keeps existing content unless force is enabled", asy
       await cleanupDir(dir);
     }
   });
+});
+
+test("normalizeDocType keeps SDS for docs/sds.md path", () => {
+  const normalized = normalizeDocType({
+    docType: "SDS",
+    path: "docs/sds.md",
+  });
+  assert.equal(normalized.docType, "SDS");
+  assert.equal(normalized.downgraded, false);
+});
+
+test("normalizeDocType downgrades SDS outside docs/sds without frontmatter", () => {
+  const normalized = normalizeDocType({
+    docType: "SDS",
+    path: "docs/architecture.md",
+    content: "# Architecture",
+  });
+  assert.equal(normalized.docType, "DOC");
+  assert.equal(normalized.downgraded, true);
+  assert.ok(normalized.reason?.includes("path_not_sds"));
 });

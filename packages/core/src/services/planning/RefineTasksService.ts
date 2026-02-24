@@ -72,6 +72,7 @@ const normalizeCreateStatus = (status?: string): string => {
 };
 const DEFAULT_MAX_TASKS = 250;
 const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
+const PLANNING_DOC_HINT_PATTERN = /(sds|pdr|rfp|requirements|architecture|openapi|swagger|design)/i;
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 
@@ -736,6 +737,7 @@ export class RefineTasksService {
       "- Splits: children stay under same story; keep parent unless keepParent=false; child dependsOn must reference existing tasks or siblings.",
       "- Merges: target and sources must be in same story; prefer cancelling redundant sources (status=cancelled) and preserve useful details in target updates.",
       "- Dependencies: maintain DAG; do not introduce cycles or cross-story edges.",
+      "- Enrichment focus: strengthen task descriptions with concrete implementation scope, expected files/modules, and actionable validation details.",
       "- Story points: non-negative, keep within typical agile range (0-13).",
       "- Do not invent new epics/stories or change parentage.",
     ].join("\n");
@@ -762,20 +764,30 @@ export class RefineTasksService {
     const warnings: string[] = [];
     const startedAt = Date.now();
     try {
-      const docs = await this.docdex.search({
+      const query = [epicKey, storyKey, "sds requirements architecture"].filter(Boolean).join(" ");
+      let docs = await this.docdex.search({
         projectKey,
         profile: "sds",
-        query: [epicKey, storyKey].filter(Boolean).join(" "),
+        query,
       });
+      if (!docs || docs.length === 0) {
+        docs = await this.docdex.search({
+          projectKey,
+          profile: "workspace-code",
+          query,
+        });
+      }
       if (!docs || docs.length === 0) {
         return { summary: "(no relevant docdex entries)", warnings: [] };
       }
       const top = docs
         .filter((doc) => {
           const type = (doc.docType ?? "").toLowerCase();
-          return type.includes("sds") || type.includes("pdr") || type.includes("rfp");
+          const pathTitle = `${doc.path ?? ""} ${doc.title ?? ""}`.toLowerCase();
+          return type.includes("sds") || type.includes("pdr") || type.includes("rfp") || PLANNING_DOC_HINT_PATTERN.test(pathTitle);
         })
         .slice(0, 5);
+      const selected = top.length > 0 ? top : docs.slice(0, 5);
       const summary = top
         .map((doc) => {
           const segments = (doc.segments ?? []).slice(0, 3);
@@ -789,6 +801,7 @@ export class RefineTasksService {
           return [`- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}${head ? ` — ${head}` : ""}`, segText].filter(Boolean).join("\n");
         })
         .join("\n");
+      const finalSummary = (summary || (selected.length ? selected.map((doc) => `- ${doc.title ?? doc.path ?? doc.id}`).join("\n") : "")).trim();
       const durationSeconds = (Date.now() - startedAt) / 1000;
       await this.jobService.recordTokenUsage({
         workspaceId: this.workspace.workspaceId,
@@ -803,7 +816,7 @@ export class RefineTasksService {
         timestamp: new Date().toISOString(),
         metadata: { command: "refine-tasks", action: "docdex_search", projectKey, epicKey, storyKey },
       });
-      return { summary: summary || "(no doc segments found)", warnings };
+      return { summary: finalSummary || "(no doc segments found)", warnings };
     } catch (error) {
       warnings.push(`Docdex lookup failed: ${(error as Error).message}`);
       return { summary: "(docdex unavailable)", warnings };

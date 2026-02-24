@@ -61,11 +61,13 @@ const fakeDoc = {
 };
 
 class StubDocdex {
+  registeredFiles: string[] = [];
   async fetchDocumentById(id: string) {
     return { ...fakeDoc, id };
   }
-  async ensureRegisteredFromFile() {
-    return fakeDoc;
+  async ensureRegisteredFromFile(filePath: string) {
+    this.registeredFiles.push(path.resolve(filePath));
+    return { ...fakeDoc, id: `doc-${this.registeredFiles.length}` };
   }
 }
 
@@ -858,6 +860,323 @@ test("createTasks invokes agent rating when enabled", async () => {
   assert.equal(ratingService.calls.length, 1);
   assert.equal(ratingService.calls[0]?.commandName, "create-tasks");
   assert.equal(ratingService.calls[0]?.agentId, "agent-1");
+});
+
+test("createTasks keeps duplicate local dependency ids scoped within each story", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc one",
+          acceptanceCriteria: ["s ac1"],
+        },
+        {
+          localId: "us2",
+          title: "Story Two",
+          description: "Story desc two",
+          acceptanceCriteria: ["s ac2"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Story One Task One",
+          type: "feature",
+          description: "Task one",
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t2",
+          title: "Story One Task Two",
+          type: "feature",
+          description: "Task two",
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          dependsOnKeys: ["t1"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Story Two Task One",
+          type: "feature",
+          description: "Task one",
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t2",
+          title: "Story Two Task Two",
+          type: "feature",
+          description: "Task two",
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          dependsOnKeys: ["t1"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.equal(result.dependencies.length, 2);
+  const tasksById = new Map(result.tasks.map((task) => [task.id, task]));
+  for (const dep of result.dependencies) {
+    const from = tasksById.get(dep.taskId);
+    const to = tasksById.get(dep.dependsOnTaskId);
+    assert.ok(from);
+    assert.ok(to);
+    assert.equal(from?.userStoryId, to?.userStoryId);
+  }
+});
+
+test("createTasks fuzzy-discovers SDS-like docs and injects structure bootstrap tasks", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "software-design-outline.md"),
+    [
+      "# Software Design",
+      "Folder tree:",
+      "- services/api/src/index.ts",
+      "- apps/web/src/main.tsx",
+      "- packages/shared/src/index.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const docdex = new StubDocdex();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.ok(docdex.registeredFiles.some((entry) => entry.endsWith("software-design-outline.md")));
+  assert.ok(result.tasks.some((task) => task.title === "Create SDS-aligned folder tree"));
+  assert.ok(result.tasks.length >= 4);
+});
+
+test("createTasks infers service dependency ordering from SDS text", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "architecture-overview.md"),
+    [
+      "# Architecture Overview",
+      "Service dependency baseline:",
+      "- web ui depends on backend api",
+      "- backend api depends on database service",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Implementation",
+          description: "Implement services",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Deliver service stack",
+          description: [
+            "Build dependent services in order.",
+            "web ui depends on backend api",
+            "backend api depends on database service",
+          ].join("\n"),
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t-web",
+          title: "Implement web ui shell",
+          type: "feature",
+          description: "Build web UI shell for user flows.",
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t-api",
+          title: "Implement backend api endpoints",
+          type: "feature",
+          description: "Build backend API endpoints for web consumers.",
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t-db",
+          title: "Implement database service schema",
+          type: "feature",
+          description: "Create database service schema and migrations.",
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const taskById = new Map(result.tasks.map((task) => [task.id, task]));
+  const taskByTitle = new Map(result.tasks.map((task) => [task.title, task]));
+  const webTask = taskByTitle.get("Implement web ui shell");
+  const apiTask = taskByTitle.get("Implement backend api endpoints");
+  const dbTask = taskByTitle.get("Implement database service schema");
+  assert.ok(webTask);
+  assert.ok(apiTask);
+  assert.ok(dbTask);
+  const depPairs = result.dependencies
+    .map((dep) => {
+      const from = taskById.get(dep.taskId);
+      const to = taskById.get(dep.dependsOnTaskId);
+      return `${from?.title ?? ""}->${to?.title ?? ""}`;
+    })
+    .filter(Boolean);
+  assert.ok(
+    depPairs.includes("Implement backend api endpoints->Implement database service schema"),
+    `unexpected dependencies: ${depPairs.join(" | ")}`,
+  );
+  assert.ok(
+    depPairs.includes("Implement web ui shell->Implement backend api endpoints"),
+    `unexpected dependencies: ${depPairs.join(" | ")}`,
+  );
 });
 
 test("createTasks tolerates JSON wrapped in think tags", async () => {
