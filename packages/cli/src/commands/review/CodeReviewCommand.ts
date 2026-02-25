@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WorkspaceRepository } from "@mcoda/db";
 import { CodeReviewService, WorkspaceResolver } from "@mcoda/core";
 import { REVIEW_ALLOWED_STATUSES, filterTaskStatuses, normalizeReviewStatuses } from "@mcoda/shared";
 
@@ -17,8 +18,12 @@ interface ParsedArgs {
   agentStream?: boolean;
   rateAgents: boolean;
   createFollowupTasks: boolean;
+  executionContextPolicy?: "best_effort" | "require_any" | "require_sds_or_openapi";
+  emptyDiffApprovalPolicy?: "ready_to_qa" | "complete";
   json: boolean;
 }
+
+type ProjectKeyCandidate = { key: string; createdAt?: string | null };
 
 const usage = `mcoda code-review \\
   [--workspace-root <PATH>] \\
@@ -32,6 +37,8 @@ const usage = `mcoda code-review \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
   [--create-followup-tasks <true|false>] \\
+  [--execution-context-policy <best_effort|require_any|require_sds_or_openapi>] \\
+  [--empty-diff-approval-policy <ready_to_qa|complete>] \\
   [--rate-agents] \\
   [--json]
 
@@ -53,6 +60,28 @@ const parseCsv = (value: string | undefined): string[] => {
     .filter(Boolean);
 };
 
+const normalizeExecutionContextPolicy = (
+  value?: string,
+): ParsedArgs["executionContextPolicy"] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "best_effort" || normalized === "require_any" || normalized === "require_sds_or_openapi") {
+    return normalized;
+  }
+  return undefined;
+};
+
+const normalizeEmptyDiffApprovalPolicy = (
+  value?: string,
+): ParsedArgs["emptyDiffApprovalPolicy"] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "ready_to_qa" || normalized === "complete") {
+    return normalized;
+  }
+  return undefined;
+};
+
 export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
   let workspaceRoot: string | undefined;
   let projectKey: string | undefined;
@@ -68,6 +97,8 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
   let agentStream: boolean | undefined;
   let rateAgents = false;
   let createFollowupTasks = false;
+  let executionContextPolicy: ParsedArgs["executionContextPolicy"];
+  let emptyDiffApprovalPolicy: ParsedArgs["emptyDiffApprovalPolicy"];
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -95,6 +126,18 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--create-followup-tasks=")) {
       const [, raw] = arg.split("=", 2);
       createFollowupTasks = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--execution-context-policy=")) {
+      const [, raw] = arg.split("=", 2);
+      const parsedPolicy = normalizeExecutionContextPolicy(raw);
+      if (parsedPolicy) executionContextPolicy = parsedPolicy;
+      continue;
+    }
+    if (arg.startsWith("--empty-diff-approval-policy=")) {
+      const [, raw] = arg.split("=", 2);
+      const parsedPolicy = normalizeEmptyDiffApprovalPolicy(raw);
+      if (parsedPolicy) emptyDiffApprovalPolicy = parsedPolicy;
       continue;
     }
     switch (arg) {
@@ -175,6 +218,28 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--execution-context-policy": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          const parsedPolicy = normalizeExecutionContextPolicy(next);
+          if (parsedPolicy) {
+            executionContextPolicy = parsedPolicy;
+            i += 1;
+          }
+        }
+        break;
+      }
+      case "--empty-diff-approval-policy": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          const parsedPolicy = normalizeEmptyDiffApprovalPolicy(next);
+          if (parsedPolicy) {
+            emptyDiffApprovalPolicy = parsedPolicy;
+            i += 1;
+          }
+        }
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -212,8 +277,68 @@ export const parseCodeReviewArgs = (argv: string[]): ParsedArgs => {
     agentStream: agentStream ?? false,
     rateAgents,
     createFollowupTasks,
+    executionContextPolicy: executionContextPolicy ?? "require_sds_or_openapi",
+    emptyDiffApprovalPolicy: emptyDiffApprovalPolicy ?? "ready_to_qa",
     json,
   };
+};
+
+const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyCandidate[]> => {
+  const repo = await WorkspaceRepository.create(workspaceRoot);
+  try {
+    const rows = await repo
+      .getDb()
+      .all<{ key: string; created_at?: string | null }[]>(
+        `SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`,
+      );
+    return rows
+      .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
+      .filter((row) => row.key.trim().length > 0);
+  } catch {
+    return [];
+  } finally {
+    await repo.close();
+  }
+};
+
+export const pickCodeReviewProjectKey = (options: {
+  requestedKey?: string;
+  configuredKey?: string;
+  existing: ProjectKeyCandidate[];
+}): { projectKey?: string; warnings: string[] } => {
+  const warnings: string[] = [];
+  const requestedKey = options.requestedKey?.trim() || undefined;
+  const configuredKey = options.configuredKey?.trim() || undefined;
+  const existing = options.existing ?? [];
+  const firstExisting = existing[0]?.key;
+
+  if (requestedKey) {
+    if (configuredKey && configuredKey !== requestedKey) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
+      );
+    }
+    if (firstExisting && requestedKey !== firstExisting) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; first workspace project is "${firstExisting}".`,
+      );
+    }
+    return { projectKey: requestedKey, warnings };
+  }
+
+  if (configuredKey) {
+    if (firstExisting && configuredKey !== firstExisting) {
+      warnings.push(`Using configured project key "${configuredKey}" instead of first workspace project "${firstExisting}".`);
+    }
+    return { projectKey: configuredKey, warnings };
+  }
+
+  if (firstExisting) {
+    warnings.push(`No --project provided; defaulting to first workspace project "${firstExisting}".`);
+    return { projectKey: firstExisting, warnings };
+  }
+
+  return { projectKey: undefined, warnings };
 };
 
 export class CodeReviewCommand {
@@ -224,11 +349,34 @@ export class CodeReviewCommand {
       explicitWorkspace: parsed.workspaceRoot,
       noRepoWrites: true,
     });
+    const existingProjects = parsed.projectKey ? [] : await listWorkspaceProjects(workspace.workspaceRoot);
+    const configuredKey =
+      typeof workspace.config?.projectKey === "string" && workspace.config.projectKey.trim().length > 0
+        ? workspace.config.projectKey
+        : undefined;
+    const projectResolution = pickCodeReviewProjectKey({
+      requestedKey: parsed.projectKey,
+      configuredKey,
+      existing: existingProjects,
+    });
+    const commandWarnings = [...projectResolution.warnings];
+    if (!projectResolution.projectKey) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "code-review could not resolve a project key. Provide --project <PROJECT_KEY> or create tasks for this workspace first.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (commandWarnings.length && !parsed.json) {
+      // eslint-disable-next-line no-console
+      console.warn(commandWarnings.map((warning) => `! ${warning}`).join("\n"));
+    }
     const service = await CodeReviewService.create(workspace);
     try {
       const result = await service.reviewTasks({
         workspace,
-        projectKey: parsed.projectKey,
+        projectKey: projectResolution.projectKey,
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
@@ -242,9 +390,12 @@ export class CodeReviewCommand {
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
         createFollowupTasks: parsed.createFollowupTasks,
+        executionContextPolicy: parsed.executionContextPolicy,
+        emptyDiffApprovalPolicy: parsed.emptyDiffApprovalPolicy,
       });
 
       if (parsed.json) {
+        const warnings = [...commandWarnings, ...result.warnings];
         // eslint-disable-next-line no-console
         console.log(
           JSON.stringify(
@@ -261,7 +412,7 @@ export class CodeReviewCommand {
                 followupTasks: t.followupTasks,
               })),
               errors: result.tasks.filter((t) => t.error).map((t) => ({ taskId: t.taskId, taskKey: t.taskKey, error: t.error })),
-              warnings: result.warnings,
+              warnings,
             },
             null,
             2,
@@ -292,8 +443,9 @@ export class CodeReviewCommand {
         `Artifacts: ${path.join(workspace.mcodaDir, "jobs", result.jobId, "review")}`,
         ...lines,
       ];
-      if (result.warnings.length) {
-        summary.push(`Warnings: ${result.warnings.join("; ")}`);
+      const warnings = [...commandWarnings, ...result.warnings];
+      if (warnings.length) {
+        summary.push(`Warnings: ${warnings.join("; ")}`);
       }
       // eslint-disable-next-line no-console
       console.log(summary.join("\n"));

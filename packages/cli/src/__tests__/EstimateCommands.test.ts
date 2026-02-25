@@ -240,6 +240,8 @@ describe("estimate output rendering", { concurrency: false }, () => {
     assert.ok(output.includes("Work on tasks"));
     assert.ok(output.includes("Ready to qa"));
     assert.ok(output.includes("impl=0, review=0, qa=0"));
+    assert.ok(!output.includes("│ 🧮 Effort by Lane"));
+    assert.ok(!output.includes("│ ⏱️ ETAs"));
     assert.ok(output.includes("lane work runs in parallel; total hours uses the longest lane."));
   });
 

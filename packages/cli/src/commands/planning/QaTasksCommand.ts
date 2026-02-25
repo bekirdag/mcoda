@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WorkspaceRepository } from "@mcoda/db";
 import { QaTasksApi, WorkspaceResolver } from "@mcoda/core";
 import { PathHelper, QA_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 
@@ -18,6 +19,8 @@ interface ParsedArgs {
   agentStream: boolean;
   rateAgents: boolean;
   createFollowupTasks: "auto" | "none" | "prompt";
+  dependencyPolicy: "enforce" | "ignore";
+  noChangesPolicy: "require_qa" | "skip" | "manual";
   dryRun: boolean;
   json: boolean;
   debug: boolean;
@@ -31,7 +34,9 @@ interface ParsedArgs {
   quiet?: boolean;
 }
 
-const usage = `mcoda qa-tasks [--workspace-root <path>] --project <PROJECT_KEY> [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--limit N] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--result pass|fail] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--clean-ignore "<path[,path]...>"] [--dry-run] [--json]`;
+type ProjectKeyCandidate = { key: string; createdAt?: string | null };
+
+const usage = `mcoda qa-tasks [--workspace-root <path>] [--project <PROJECT_KEY>] [--task <TASK_KEY> ... | --epic <EPIC_KEY> | --story <STORY_KEY>] [--status <STATUS_FILTER>] [--limit N] [--mode auto|manual] [--profile <PROFILE_NAME>] [--level unit|integration|acceptance] [--test-command "<CMD>"] [--agent <NAME>] [--agent-stream true|false] [--rate-agents] [--create-followup-tasks auto|none|prompt] [--dependency-policy enforce|ignore] [--no-changes-policy require_qa|skip|manual] [--result pass|fail] [--notes "<text>"] [--evidence-url "<url>"] [--resume <JOB_ID>] [--allow-dirty true|false] [--clean-ignore "<path[,path]...>"] [--dry-run] [--json]`;
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -57,6 +62,8 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
   let agentStream: boolean | undefined;
   let rateAgents = false;
   let followups: "auto" | "none" | "prompt" = "auto";
+  let dependencyPolicy: "enforce" | "ignore" | undefined;
+  let noChangesPolicy: "require_qa" | "skip" | "manual" | undefined;
   let dryRun = false;
   let json = false;
   let debug = false;
@@ -153,6 +160,23 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
           followups = (argv[i + 1] as any) ?? "auto";
           i += 1;
           break;
+        case "--dependency-policy": {
+          const next = argv[i + 1];
+          if (next && !next.startsWith("--")) {
+            dependencyPolicy = next === "ignore" ? "ignore" : "enforce";
+            i += 1;
+          }
+          break;
+        }
+        case "--no-changes-policy": {
+          const next = argv[i + 1];
+          if (next && !next.startsWith("--")) {
+            noChangesPolicy =
+              next === "skip" || next === "manual" || next === "require_qa" ? next : "require_qa";
+            i += 1;
+          }
+          break;
+        }
         case "--dry-run":
           dryRun = true;
           break;
@@ -233,6 +257,8 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     agentStream: agentStream ?? true,
     rateAgents,
     createFollowupTasks: followups,
+    dependencyPolicy: dependencyPolicy ?? "enforce",
+    noChangesPolicy: noChangesPolicy ?? "require_qa",
     dryRun,
     json,
     debug,
@@ -245,6 +271,60 @@ export const parseQaTasksArgs = (argv: string[]): ParsedArgs => {
     evidenceUrl,
     quiet,
   };
+};
+
+const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyCandidate[]> => {
+  const repo = await WorkspaceRepository.create(workspaceRoot);
+  try {
+    const rows = await repo
+      .getDb()
+      .all<{ key: string; created_at?: string | null }[]>(`SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`);
+    return rows
+      .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
+      .filter((row) => row.key.trim().length > 0);
+  } catch {
+    return [];
+  } finally {
+    await repo.close();
+  }
+};
+
+export const pickQaTasksProjectKey = (options: {
+  requestedKey?: string;
+  configuredKey?: string;
+  existing: ProjectKeyCandidate[];
+}): { projectKey?: string; warnings: string[] } => {
+  const warnings: string[] = [];
+  const requestedKey = options.requestedKey?.trim() || undefined;
+  const configuredKey = options.configuredKey?.trim() || undefined;
+  const existing = options.existing ?? [];
+  const firstExisting = existing[0]?.key;
+
+  if (requestedKey) {
+    if (configuredKey && configuredKey !== requestedKey) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
+      );
+    }
+    if (firstExisting && requestedKey !== firstExisting) {
+      warnings.push(`Using explicitly requested project key "${requestedKey}"; first workspace project is "${firstExisting}".`);
+    }
+    return { projectKey: requestedKey, warnings };
+  }
+
+  if (configuredKey) {
+    if (firstExisting && configuredKey !== firstExisting) {
+      warnings.push(`Using configured project key "${configuredKey}" instead of first workspace project "${firstExisting}".`);
+    }
+    return { projectKey: configuredKey, warnings };
+  }
+
+  if (firstExisting) {
+    warnings.push(`No --project provided; defaulting to first workspace project "${firstExisting}".`);
+    return { projectKey: firstExisting, warnings };
+  }
+
+  return { projectKey: undefined, warnings };
 };
 
 export class QaTasksCommand {
@@ -279,18 +359,32 @@ export class QaTasksCommand {
       explicitWorkspace: parsed.workspaceRoot,
       noRepoWrites: true,
     });
-    const derivedKey = path.basename(workspace.workspaceRoot).replace(/[^a-z0-9]+/gi, "").toLowerCase();
-    const projectKey = parsed.projectKey ?? (derivedKey || undefined);
-    if (!projectKey) {
+    const existingProjects = parsed.projectKey ? [] : await listWorkspaceProjects(workspace.workspaceRoot);
+    const configuredKey =
+      typeof workspace.config?.projectKey === "string" && workspace.config.projectKey.trim().length > 0
+        ? workspace.config.projectKey
+        : undefined;
+    const projectResolution = pickQaTasksProjectKey({
+      requestedKey: parsed.projectKey,
+      configuredKey,
+      existing: existingProjects,
+    });
+    if (!projectResolution.projectKey) {
       // eslint-disable-next-line no-console
-      console.error("--project is required for qa-tasks.");
+      console.error(
+        "qa-tasks could not resolve a project key. Provide --project <PROJECT_KEY> or create tasks for this workspace first.",
+      );
       process.exitCode = 1;
       return;
+    }
+    if (projectResolution.warnings.length && !parsed.json && !parsed.quiet) {
+      // eslint-disable-next-line no-console
+      console.warn(projectResolution.warnings.map((warning) => `! ${warning}`).join("\n"));
     }
     try {
       const result = await QaTasksApi.runQa({
         workspaceRoot: workspace.workspaceRoot,
-        projectKey,
+        projectKey: projectResolution.projectKey,
         taskKeys: parsed.taskKeys,
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
@@ -306,6 +400,9 @@ export class QaTasksCommand {
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
         createFollowupTasks: followupMode,
+        dependencyPolicy: parsed.dependencyPolicy,
+        noChangesPolicy: parsed.noChangesPolicy,
+        debug: parsed.debug,
         dryRun: parsed.dryRun,
         result: parsed.result,
         notes: parsed.notes,
@@ -318,7 +415,7 @@ export class QaTasksCommand {
       if (parsed.debug && !parsed.json && !parsed.quiet) {
         // eslint-disable-next-line no-console
         console.log("[debug] options", {
-          projectKey,
+          projectKey: projectResolution.projectKey,
           tasks: parsed.taskKeys,
           epicKey: parsed.epicKey,
           storyKey: parsed.storyKey,
@@ -328,6 +425,8 @@ export class QaTasksCommand {
           limit: parsed.limit,
           testCommand: parsed.testCommand,
           followups: followupMode,
+          dependencyPolicy: parsed.dependencyPolicy,
+          noChangesPolicy: parsed.noChangesPolicy,
           dryRun: parsed.dryRun,
           noTelemetry: parsed.noTelemetry,
         });

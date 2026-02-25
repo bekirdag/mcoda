@@ -33,7 +33,13 @@ import { runRfpDefinitionGate } from "../review/gates/RfpDefinitionGate.js";
 import { runPdrInterfacesGate } from "../review/gates/PdrInterfacesGate.js";
 import { runPdrOwnershipGate } from "../review/gates/PdrOwnershipGate.js";
 import { runPdrOpenQuestionsGate } from "../review/gates/PdrOpenQuestionsGate.js";
+import { runPdrTechStackRationaleGate } from "../review/gates/PdrTechStackRationaleGate.js";
+import { runPdrFolderTreeGate } from "../review/gates/PdrFolderTreeGate.js";
+import { runPdrNoUnresolvedItemsGate } from "../review/gates/PdrNoUnresolvedItemsGate.js";
 import { runSdsDecisionsGate } from "../review/gates/SdsDecisionsGate.js";
+import { runSdsTechStackRationaleGate } from "../review/gates/SdsTechStackRationaleGate.js";
+import { runSdsFolderTreeGate } from "../review/gates/SdsFolderTreeGate.js";
+import { runSdsNoUnresolvedItemsGate } from "../review/gates/SdsNoUnresolvedItemsGate.js";
 import { runSdsPolicyTelemetryGate } from "../review/gates/SdsPolicyTelemetryGate.js";
 import { runSdsOpsGate } from "../review/gates/SdsOpsGate.js";
 import { runSdsAdaptersGate } from "../review/gates/SdsAdaptersGate.js";
@@ -126,20 +132,26 @@ class FakeAgentService {
     }
     if (prompt.includes("Generate ONLY a concise table of contents for the Software Design Specification")) {
       const output = [
-        "1. Introduction",
-        "2. Goals & Scope",
-        "3. Architecture Overview",
-        "4. Components & Responsibilities",
-        "5. Planned Folder Tree",
-        "6. Data Model & Persistence",
-        "7. Interfaces & Contracts",
-        "8. Non-Functional Requirements",
-        "9. Security & Compliance",
-        "10. Failure Modes & Resilience",
-        "11. Risks & Mitigations",
-        "12. Assumptions",
-        "13. Open Questions",
-        "14. Acceptance Criteria",
+        "0. Introduction, Document Governance, and Change Policy",
+        "1. Purpose and Scope",
+        "2. System Boundaries and Non-Goals",
+        "3. Core Decisions (Baseline)",
+        "4. Platform Model and Technology Stack",
+        "5. Service Architecture and Dependency Contracts",
+        "6. Data Architecture and Ownership",
+        "7. Eventing, APIs, and Interface Contracts",
+        "8. Security, IAM, and Compliance",
+        "9. Risk and Control Model",
+        "10. Compute, Deployment, and Startup Sequencing",
+        "11. Target Folder Tree (Expanded with File Responsibilities)",
+        "12. Operations, Observability, and Quality Gates",
+        "13. External Integrations and Adapter Contracts",
+        "14. Policy, Telemetry, and Metering",
+        "15. Failure Modes, Recovery, and Rollback",
+        "16. Assumptions and Constraints",
+        "17. Resolved Decisions",
+        "18. Open Questions (Resolved)",
+        "19. Acceptance Criteria and Verification Plan",
       ].join("\n");
       return { output, adapter: "fake", metadata: { request } };
     }
@@ -698,8 +710,13 @@ describe("DocsService.generatePdr", () => {
 
       const content = result.draft ?? "";
       assert.match(content, /## Interfaces \/ APIs/i);
-      assert.match(content, /Capture interface needs as open questions/i);
-      assert.match(content, /authentication\/identity/i);
+      assert.match(
+        content,
+        /No OpenAPI excerpts available\. Document required interfaces as explicit contracts\/assumptions/i,
+      );
+      assert.match(content, /without inventing endpoint paths/i);
+      assert.doesNotMatch(content, /todo CRUD/i);
+      assert.doesNotMatch(content, /localStorage/i);
       assert.doesNotMatch(content, /restaurant/i);
       assert.doesNotMatch(content, /voting cycles/i);
     } finally {
@@ -794,7 +811,7 @@ describe("DocsService.generatePdr", () => {
     assert.ok(result.outputPath);
     const content = await fs.readFile(result.outputPath ?? "", "utf8");
     assert.match(content, /Software Design Specification/);
-    assert.match(content, /Planned Folder Tree/i);
+    assert.match(content, /Folder Tree/i);
     const manifestPath = path.join(workspace.mcodaDir, "jobs", result.jobId, "manifest.json");
     const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
     assert.equal(manifest.type, "sds_generate");
@@ -2676,6 +2693,188 @@ describe("PdrOpenQuestionsGate", () => {
   });
 });
 
+describe("PdrTechStackRationaleGate", () => {
+  it("flags missing technology stack rationale section", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-pdr-stack-"));
+    const pdrPath = path.join(workspaceRoot, "pdr.md");
+    const content = ["# PDR", "## Architecture", "Service boundaries are defined."].join("\n");
+    await fs.writeFile(pdrPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      pdr: { kind: "pdr", path: pdrPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runPdrTechStackRationaleGate({ artifacts });
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.issues.some(
+          (issue) => String(issue.metadata?.issueType) === "missing_tech_stack_section",
+        ),
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("passes when chosen stack, alternatives, and rationale are explicit", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-pdr-stack-"));
+    const pdrPath = path.join(workspaceRoot, "pdr.md");
+    const content = [
+      "# PDR",
+      "## Technology Stack",
+      "- Chosen stack: TypeScript services with MySQL persistence.",
+      "- Alternatives considered: JVM stack and Python stack.",
+      "- Rationale: selected for delivery speed, operational fit, and maintainability.",
+    ].join("\n");
+    await fs.writeFile(pdrPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      pdr: { kind: "pdr", path: pdrPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runPdrTechStackRationaleGate({ artifacts });
+      assert.equal(result.status, "pass");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("PdrFolderTreeGate", () => {
+  it("flags folder tree sections without fenced tree blocks", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-pdr-tree-"));
+    const pdrPath = path.join(workspaceRoot, "pdr.md");
+    const content = [
+      "# PDR",
+      "## Target Folder Tree",
+      "- docs/",
+      "- packages/",
+      "- tests/",
+    ].join("\n");
+    await fs.writeFile(pdrPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      pdr: { kind: "pdr", path: pdrPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runPdrFolderTreeGate({ artifacts });
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.issues.some((issue) => String(issue.metadata?.issueType) === "missing_fenced_tree"),
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("passes when folder tree is expanded and responsibility-annotated", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-pdr-tree-"));
+    const pdrPath = path.join(workspaceRoot, "pdr.md");
+    const content = [
+      "# PDR",
+      "## Target Folder Tree",
+      "```text",
+      ".",
+      "├── docs/            # architecture and delivery docs",
+      "├── packages/        # source modules",
+      "│   ├── cli/         # command interfaces",
+      "│   ├── core/        # domain services",
+      "│   └── adapters/    # external integrations",
+      "├── openapi/         # API contracts",
+      "├── db/              # schema and migrations",
+      "├── deploy/          # runtime manifests",
+      "└── tests/           # verification suites",
+      "```",
+    ].join("\n");
+    await fs.writeFile(pdrPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      pdr: { kind: "pdr", path: pdrPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runPdrFolderTreeGate({ artifacts });
+      assert.equal(result.status, "pass");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("PdrNoUnresolvedItemsGate", () => {
+  it("flags unresolved markers and unresolved open-question entries", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-pdr-unresolved-"));
+    const pdrPath = path.join(workspaceRoot, "pdr.md");
+    const content = [
+      "# PDR",
+      "## Resolved Decisions",
+      "- TBD: finalize queue provider.",
+      "## Open Questions",
+      "- Which deployment environment should be primary?",
+    ].join("\n");
+    await fs.writeFile(pdrPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      pdr: { kind: "pdr", path: pdrPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runPdrNoUnresolvedItemsGate({ artifacts });
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.issues.some((issue) => String(issue.metadata?.issueType) === "unresolved_marker"),
+      );
+      assert.ok(
+        result.issues.some(
+          (issue) => String(issue.metadata?.issueType) === "unresolved_open_question",
+        ),
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("passes when open questions are explicitly resolved", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-pdr-unresolved-"));
+    const pdrPath = path.join(workspaceRoot, "pdr.md");
+    const content = [
+      "# PDR",
+      "## Resolved Decisions",
+      "- Queue provider is fixed to Redis Streams.",
+      "## Open Questions",
+      "- Resolved: Primary deployment environment is production region eu-west-1.",
+      "- Resolved: No unresolved questions remain.",
+    ].join("\n");
+    await fs.writeFile(pdrPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      pdr: { kind: "pdr", path: pdrPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runPdrNoUnresolvedItemsGate({ artifacts });
+      assert.equal(result.status, "pass");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SdsDecisionsGate", () => {
   it("flags ambiguous choices in decision sections", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-decisions-"));
@@ -2746,6 +2945,188 @@ describe("SdsDecisionsGate", () => {
 
     try {
       const result = await runSdsDecisionsGate({ artifacts });
+      assert.equal(result.status, "pass");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SdsTechStackRationaleGate", () => {
+  it("flags missing technology stack rationale section", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-stack-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = ["# SDS", "## Architecture", "Service boundaries are defined."].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsTechStackRationaleGate({ artifacts });
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.issues.some(
+          (issue) => String(issue.metadata?.issueType) === "missing_tech_stack_section",
+        ),
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("passes when chosen stack, alternatives, and rationale are explicit", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-stack-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "## Technology Stack",
+      "- Chosen stack: TypeScript services with MySQL persistence.",
+      "- Alternatives considered: JVM stack and Python stack.",
+      "- Rationale: selected for delivery speed, operational fit, and maintainability.",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsTechStackRationaleGate({ artifacts });
+      assert.equal(result.status, "pass");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SdsFolderTreeGate", () => {
+  it("flags folder tree sections without fenced tree blocks", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-tree-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "## Target Folder Tree",
+      "- docs/",
+      "- packages/",
+      "- tests/",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsFolderTreeGate({ artifacts });
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.issues.some((issue) => String(issue.metadata?.issueType) === "missing_fenced_tree"),
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("passes when folder tree is expanded and responsibility-annotated", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-tree-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "## Target Folder Tree",
+      "```text",
+      ".",
+      "├── docs/            # architecture and delivery docs",
+      "├── packages/        # source modules",
+      "│   ├── cli/         # command interfaces",
+      "│   ├── core/        # domain services",
+      "│   └── adapters/    # external integrations",
+      "├── openapi/         # API contracts",
+      "├── db/              # schema and migrations",
+      "├── deploy/          # runtime manifests",
+      "└── tests/           # verification suites",
+      "```",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsFolderTreeGate({ artifacts });
+      assert.equal(result.status, "pass");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SdsNoUnresolvedItemsGate", () => {
+  it("flags unresolved markers and unresolved open-question entries", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-unresolved-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "## Core Decisions",
+      "- TBD: finalize queue provider.",
+      "## Open Questions",
+      "- Which deployment environment should be primary?",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsNoUnresolvedItemsGate({ artifacts });
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.issues.some((issue) => String(issue.metadata?.issueType) === "unresolved_marker"),
+      );
+      assert.ok(
+        result.issues.some(
+          (issue) => String(issue.metadata?.issueType) === "unresolved_open_question",
+        ),
+      );
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("passes when open questions are explicitly resolved", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-unresolved-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "## Core Decisions",
+      "- Queue provider is fixed to Redis Streams.",
+      "## Open Questions (Resolved)",
+      "- Resolved: Primary deployment environment is production region eu-west-1.",
+      "- Resolved: No unresolved questions remain.",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsNoUnresolvedItemsGate({ artifacts });
       assert.equal(result.status, "pass");
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });

@@ -30,6 +30,12 @@ beforeEach(async () => {
     workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
     globalDbPath: PathHelper.getGlobalDbPath(),
   };
+  await fs.mkdir(path.join(workspaceRoot, "docs"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    ["# Software Design Specification", "Folder tree:", "- src/main.ts"].join("\n"),
+    "utf8",
+  );
 });
 
 afterEach(async () => {
@@ -68,6 +74,24 @@ class StubDocdex {
   async ensureRegisteredFromFile(filePath: string) {
     this.registeredFiles.push(path.resolve(filePath));
     return { ...fakeDoc, id: `doc-${this.registeredFiles.length}` };
+  }
+}
+
+class StubDocdexTyped extends StubDocdex {
+  async ensureRegisteredFromFile(filePath: string, docType?: string) {
+    this.registeredFiles.push(path.resolve(filePath));
+    const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
+    const content = await fs.readFile(filePath, "utf8");
+    const isSdsByPath = /(^|\/)(sds|software[-_ ]design|design[-_ ]spec)/i.test(normalizedPath);
+    const isSdsByContent = /\b(software design specification|system design specification|\bsds\b)\b/i.test(content);
+    return {
+      ...fakeDoc,
+      id: `doc-${this.registeredFiles.length}`,
+      docType: isSdsByPath || isSdsByContent ? "SDS" : (docType ?? "DOC"),
+      path: filePath,
+      title: path.basename(filePath),
+      content,
+    };
   }
 }
 
@@ -317,14 +341,14 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
     agentStream: false,
   });
 
-  assert.equal(result.epics.length, 1);
-  assert.equal(result.stories.length, 1);
-  assert.equal(result.tasks.length, 1);
-  assert.equal(result.dependencies.length, 0);
-  assert.equal(result.tasks[0].status, "not_started");
-  assert.equal(result.tasks[0].storyPoints, 3);
-  assert.equal(typeof result.tasks[0].priority, "number");
-  const metadata = result.tasks[0].metadata as any;
+  assert.ok(result.epics.length >= 1);
+  assert.ok(result.stories.length >= 1);
+  const task = result.tasks.find((entry) => entry.title === "Task One");
+  assert.ok(task, "expected generated task in result set");
+  assert.equal(task.status, "not_started");
+  assert.equal(task.storyPoints, 3);
+  assert.equal(typeof task.priority, "number");
+  const metadata = task.metadata as any;
   assert.deepEqual(metadata?.test_requirements, {
     unit: ["Add unit coverage for task path"],
     component: [],
@@ -335,12 +359,74 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.ok(metadata?.qa?.profiles_expected.includes("cli"));
   assert.equal(metadata?.stage, "other");
   assert.equal(metadata?.foundation, false);
-  assert.ok(result.tasks[0].description.includes("Unit tests: Add unit coverage for task path"));
-  assert.ok(result.tasks[0].description.includes("Component tests: Not applicable"));
-  assert.ok(result.tasks[0].description.includes("Integration tests: Run integration flow A"));
-  assert.ok(result.tasks[0].description.includes("API tests: Validate API response contract"));
-  assert.ok(result.tasks[0].description.includes("QA Readiness"));
-  assert.ok(result.tasks[0].description.includes("Profiles:"));
+  assert.ok(task.description.includes("Unit tests: Add unit coverage for task path"));
+  assert.ok(task.description.includes("Component tests: Not applicable"));
+  assert.ok(task.description.includes("Integration tests: Run integration flow A"));
+  assert.ok(task.description.includes("API tests: Validate API response contract"));
+  assert.ok(task.description.includes("QA Readiness"));
+  assert.ok(task.description.includes("Profiles:"));
+});
+
+test("buildDocContext appends OpenAPI hint summary", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      id: "sds-1",
+      docType: "SDS",
+      title: "sds",
+      content: "# SDS\n## Interfaces",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      segments: [],
+    },
+    {
+      id: "openapi-1",
+      docType: "OPENAPI",
+      title: "openapi",
+      content: [
+        "openapi: 3.1.0",
+        "info:",
+        "  title: Demo API",
+        "  version: 1.0.0",
+        "paths:",
+        "  /users:",
+        "    get:",
+        "      operationId: listUsers",
+        "      x-mcoda-task-hints:",
+        "        service: backend-api",
+        "        capability: user-listing",
+        "        stage: backend",
+        "        complexity: 5",
+        "        depends_on_operations: []",
+        "        test_requirements:",
+        "          unit: [\"test list query\"]",
+        "          component: []",
+        "          integration: [\"test users endpoint\"]",
+        "          api: [\"validate users schema\"]",
+        "      responses:",
+        "        '200':",
+        "          description: ok",
+      ].join("\n"),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      segments: [],
+    },
+  ] as any[];
+
+  const context = (service as any).buildDocContext(docs);
+  assert.ok(context.docSummary.includes("[OPENAPI_HINTS]"));
+  assert.ok(context.docSummary.includes("backend-api"));
+  assert.ok(context.docSummary.includes("GET /users"));
 });
 
 test("createTasks persists runnable metadata tests when harness is discoverable", async () => {
@@ -417,7 +503,9 @@ test("createTasks persists runnable metadata tests when harness is discoverable"
     agentStream: false,
   });
 
-  const metadata = result.tasks[0].metadata as any;
+  const task = result.tasks.find((entry) => entry.title === "Task One");
+  assert.ok(task, "expected generated task in result set");
+  const metadata = task.metadata as any;
   assert.ok(Array.isArray(metadata?.tests));
   assert.ok(metadata?.tests.some((command: string) => command.includes("test:unit")));
 });
@@ -701,7 +789,9 @@ test("createTasks adds UI entrypoint blocker when scripts are missing", async ()
     agentStream: false,
   });
 
-  const metadata = result.tasks[0].metadata as any;
+  const task = result.tasks.find((entry) => entry.title === "UI layout update");
+  assert.ok(task, "expected generated task in result set");
+  const metadata = task.metadata as any;
   assert.ok(
     (metadata?.qa?.blockers as string[]).some((entry) => entry.includes("Missing UI entrypoint")),
   );
@@ -979,17 +1069,21 @@ test("createTasks keeps duplicate local ids scoped across epics and stories", as
     agentStream: false,
   });
 
-  assert.equal(result.stories.length, 2);
-  assert.equal(result.tasks.length, 4);
-  assert.equal(result.dependencies.length, 2);
-  const tasksById = new Map(result.tasks.map((task) => [task.id, task]));
+  const generatedTasks = result.tasks.filter((task) => /^Story (One|Two) Task (One|Two)$/i.test(task.title));
+  assert.equal(result.stories.length, 3);
+  assert.equal(generatedTasks.length, 4);
+  const tasksById = new Map(generatedTasks.map((task) => [task.id, task]));
   const storyTaskCount = new Map<string, number>();
-  for (const task of result.tasks) {
+  for (const task of generatedTasks) {
     storyTaskCount.set(task.userStoryId, (storyTaskCount.get(task.userStoryId) ?? 0) + 1);
   }
   assert.equal(Math.max(...Array.from(storyTaskCount.values())), 2);
   assert.equal(Math.min(...Array.from(storyTaskCount.values())), 2);
-  for (const dep of result.dependencies) {
+  const generatedDependencies = result.dependencies.filter(
+    (dep) => tasksById.has(dep.taskId) && tasksById.has(dep.dependsOnTaskId),
+  );
+  assert.equal(generatedDependencies.length, 2);
+  for (const dep of generatedDependencies) {
     const from = tasksById.get(dep.taskId);
     const to = tasksById.get(dep.dependsOnTaskId);
     assert.ok(from);
@@ -1149,6 +1243,179 @@ test("createTasks fuzzy-discovers SDS-like docs and injects structure bootstrap 
   assert.ok(docdex.registeredFiles.some((entry) => entry.endsWith("software-design-outline.md")));
   assert.ok(result.tasks.some((task) => task.title === "Create SDS-aligned folder tree"));
   assert.ok(result.tasks.length >= 4);
+  const bootstrapTask = result.tasks.find((task) => task.title === "Create SDS-aligned folder tree");
+  assert.ok(bootstrapTask);
+});
+
+test("createTasks includes fuzzy SDS docs outside default docs paths when docs directory exists", async () => {
+  await fs.mkdir(path.join(workspaceRoot, "docs"), { recursive: true });
+  await fs.writeFile(path.join(workspaceRoot, "docs", "notes.md"), "# Notes\nGeneral requirements.", "utf8");
+  const externalSdsPath = path.join(workspaceRoot, "software-design-outline.md");
+  await fs.writeFile(
+    externalSdsPath,
+    [
+      "# Software Design",
+      "Folder tree:",
+      "- services/api/src/index.ts",
+      "- apps/web/src/main.tsx",
+      "- packages/shared/src/index.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const docdex = new StubDocdex();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.ok(docdex.registeredFiles.some((entry) => entry === externalSdsPath));
+  assert.ok(result.tasks.some((task) => task.title === "Create SDS-aligned folder tree"));
+});
+
+test("createTasks auto-discovers SDS docs when explicit inputs omit them", async () => {
+  await fs.writeFile(path.join(workspaceRoot, "docs", "notes.md"), "# Notes\nGeneral requirements only.", "utf8");
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const docdex = new StubDocdexTyped();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [path.join("docs", "notes.md")],
+    agentStream: false,
+  });
+
+  assert.ok(
+    docdex.registeredFiles.some((entry) => entry.endsWith(path.join("docs", "sds.md"))),
+    `expected SDS file to be discovered; registered=${docdex.registeredFiles.join(", ")}`,
+  );
+});
+
+test("createTasks blocks when no SDS document is discoverable", async () => {
+  await fs.rm(path.join(workspaceRoot, "docs"), { recursive: true, force: true });
+  await fs.writeFile(path.join(workspaceRoot, "requirements.md"), "# Requirements\nProduct objectives.", "utf8");
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [path.join(workspaceRoot, "requirements.md")],
+        agentStream: false,
+      }),
+    /requires at least one SDS document/i,
+  );
 });
 
 test("createTasks infers service dependency ordering from SDS text", async () => {
@@ -1275,6 +1542,114 @@ test("createTasks infers service dependency ordering from SDS text", async () =>
   );
 });
 
+test("createTasks prioritizes startup waves from SDS dependency tables", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "architecture-overview.md"),
+    [
+      "# Startup Dependency Contract",
+      "| Service | Startup wave (`13.3.1.1`) | Startup dependencies | Runtime dependencies |",
+      "|---|---|---|---|",
+      "| `svc-api-gateway` | `Wave 1` | IAM, Redis | downstream services |",
+      "| `svc-market-data` | `Wave 2` | Kafka, Redis | venue adapters |",
+      "| `ui-web` | `Wave 7` | `svc-api-gateway` | ws/read models |",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Implementation",
+          description: "Implement services",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Deliver startup-aligned services",
+          description: "Implement services aligned with startup waves.",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t-ui",
+          title: "Implement ui-web shell",
+          type: "feature",
+          description: "Build the UI shell consuming gateway APIs.",
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t-market",
+          title: "Implement svc-market-data ingestion",
+          type: "feature",
+          description: "Build market feed ingestion service.",
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t-gateway",
+          title: "Implement svc-api-gateway routes",
+          type: "feature",
+          description: "Build gateway routing layer.",
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const orderedTitles = result.tasks.map((task) => task.title);
+  const gatewayIndex = orderedTitles.indexOf("Implement svc-api-gateway routes");
+  const marketIndex = orderedTitles.indexOf("Implement svc-market-data ingestion");
+  const uiIndex = orderedTitles.indexOf("Implement ui-web shell");
+  assert.ok(gatewayIndex >= 0 && marketIndex >= 0 && uiIndex >= 0);
+  assert.ok(
+    gatewayIndex < marketIndex && marketIndex < uiIndex,
+    `unexpected task order from startup waves: ${orderedTitles.join(" | ")}`,
+  );
+});
+
 test("createTasks tolerates JSON wrapped in think tags", async () => {
   const epic = {
     epics: [
@@ -1337,12 +1712,12 @@ test("createTasks tolerates JSON wrapped in think tags", async () => {
     agentStream: false,
   });
 
-  assert.equal(result.epics.length, 1);
-  assert.equal(result.stories.length, 1);
-  assert.equal(result.tasks.length, 1);
+  assert.ok(result.epics.length >= 1);
+  assert.ok(result.stories.length >= 1);
+  assert.ok(result.tasks.some((task) => task.title === "Task One"));
 });
 
-test("createTasks fails on invalid agent output", async () => {
+test("createTasks falls back to deterministic planning on invalid agent output", async () => {
   const outputs = ["not json"];
   const jobService = new StubJobService();
   const workspaceRepo = new StubWorkspaceRepo();
@@ -1355,14 +1730,17 @@ test("createTasks fails on invalid agent output", async () => {
     workspaceRepo: workspaceRepo as any,
     taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
-  await assert.rejects(
-    () =>
-      service.createTasks({
-        workspace,
-        projectKey: "web",
-        inputs: [],
-        agentStream: false,
-      }),
-    /valid JSON/i,
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+  assert.ok(result.epics.length >= 1);
+  assert.ok(result.stories.length >= 1);
+  assert.ok(result.tasks.length >= 1);
+  assert.ok(result.tasks.some((task) => task.title === "Summarize requirements"));
+  assert.ok(
+    jobService.checkpoints.some((entry) => entry.stage === "epics_generated" && entry.details?.source === "fallback"),
   );
 });

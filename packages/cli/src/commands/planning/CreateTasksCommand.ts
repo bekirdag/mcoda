@@ -87,34 +87,43 @@ export const pickCreateTasksProjectKey = (options: {
   existing: ProjectKeyCandidate[];
 }): { projectKey: string; warnings: string[] } => {
   const warnings: string[] = [];
+  const requestedKey = options.requestedKey?.trim() || undefined;
+  const configuredKey = options.configuredKey?.trim() || undefined;
   const derivedKey = options.derivedKey || "proj";
   const existing = options.existing ?? [];
   const latestExisting = existing[0]?.key;
+  const existingMatchesRequested = requestedKey ? existing.some((item) => item.key === requestedKey) : false;
 
-  if (options.configuredKey) {
-    if (options.requestedKey && options.requestedKey !== options.configuredKey) {
+  if (requestedKey) {
+    if (configuredKey && configuredKey !== requestedKey) {
       warnings.push(
-        `Using configured project key "${options.configuredKey}" from workspace config; ignoring requested "${options.requestedKey}".`,
+        `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
+      );
+    }
+    if (latestExisting && !existingMatchesRequested) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; existing task plans were found for "${latestExisting}".`,
       );
     }
     if (existing.length > 1) {
       warnings.push(
-        `Multiple task plan folders detected (${existing.map((item) => item.key).join(", ")}); using configured project key "${options.configuredKey}".`,
+        `Multiple task plan folders detected (${existing.map((item) => item.key).join(", ")}); using explicitly requested project key "${requestedKey}".`,
       );
     }
-    return { projectKey: options.configuredKey, warnings };
+    return { projectKey: requestedKey, warnings };
+  }
+
+  if (configuredKey) {
+    if (existing.length > 1) {
+      warnings.push(
+        `Multiple task plan folders detected (${existing.map((item) => item.key).join(", ")}); using configured project key "${configuredKey}".`,
+      );
+    }
+    return { projectKey: configuredKey, warnings };
   }
 
   if (latestExisting) {
-    const requestedMatches = options.requestedKey
-      ? existing.some((item) => item.key === options.requestedKey)
-      : false;
-    const selected = requestedMatches ? (options.requestedKey ?? latestExisting) : latestExisting;
-    if (options.requestedKey && !requestedMatches) {
-      warnings.push(
-        `Found existing project key "${latestExisting}" under workspace task plans; ignoring requested "${options.requestedKey}".`,
-      );
-    }
+    const selected = latestExisting;
     if (!options.requestedKey && selected !== derivedKey) {
       warnings.push(`Reusing existing project key "${selected}" from workspace task plans.`);
     }

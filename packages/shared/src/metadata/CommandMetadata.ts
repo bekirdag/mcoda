@@ -17,6 +17,7 @@ const FALLBACK_CAPABILITIES: Record<string, string[]> = {
   "openapi-from-docs": ["docdex_query"],
   "order-tasks": ["plan"],
   "gateway-agent": ["plan", "docdex_query"],
+  "project-guidance": [],
 };
 
 const COMMAND_ALIASES: Record<string, string[]> = {
@@ -31,6 +32,7 @@ const COMMAND_ALIASES: Record<string, string[]> = {
   sds: ["docs:sds:generate", "docs-sds-generate", "sds-generate", "docs-sds"],
   "openapi-from-docs": ["openapi", "openapi_from_docs", "openapi-from-docs"],
   "gateway-agent": ["gateway", "gateway agent", "gateway_agent"],
+  "project-guidance": ["project_guidance", "project guidance"],
 };
 
 type CommandMetadataCache = {

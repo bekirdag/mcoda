@@ -299,6 +299,54 @@ describe("RefineTasksService", () => {
     assert.ok(result.plan.warnings?.some((w) => w.includes("not in selection")));
   });
 
+  it("appends OPENAPI_HINTS summary when OpenAPI docs include x-mcoda-task-hints", async () => {
+    (service as any).docdex = {
+      search: async (request: any) => {
+        if (request?.profile === "sds") return [];
+        if (request?.profile === "openapi") {
+          return [
+            {
+              id: "openapi-1",
+              docType: "OPENAPI",
+              title: "openapi.yaml",
+              path: "docs/openapi/openapi.yaml",
+              content: [
+                "openapi: 3.1.0",
+                "info:",
+                "  title: Demo API",
+                "  version: 1.0.0",
+                "paths:",
+                "  /users:",
+                "    get:",
+                "      operationId: listUsers",
+                "      x-mcoda-task-hints:",
+                "        service: backend-api",
+                "        capability: users-list",
+                "        stage: backend",
+                "        complexity: 5",
+                "        depends_on_operations: []",
+                "        test_requirements:",
+                "          unit: [\"validate query builder\"]",
+                "          component: []",
+                "          integration: [\"exercise users endpoint\"]",
+                "          api: [\"validate users schema\"]",
+                "      responses:",
+                "        '200':",
+                "          description: ok",
+              ].join("\n"),
+              segments: [],
+            },
+          ];
+        }
+        return [];
+      },
+    };
+    const result = await (service as any).summarizeDocs("demo", "demo-01", "demo-01-us-01");
+    assert.ok(result.summary.includes("[OPENAPI_HINTS]"));
+    assert.ok(result.summary.includes("GET /users"));
+    assert.ok(result.summary.includes("backend-api"));
+  });
+
   it("invokes agent rating when enabled", { concurrency: false }, async () => {
     await service.close();
     repo = await WorkspaceRepository.create(workspaceDir);

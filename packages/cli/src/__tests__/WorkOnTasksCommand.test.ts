@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { parseWorkOnTasksArgs } from "../commands/work/WorkOnTasksCommand.js";
+import { parseWorkOnTasksArgs, pickWorkOnTasksProjectKey } from "../commands/work/WorkOnTasksCommand.js";
 
 describe("work-on-tasks argument parsing", () => {
   it("applies defaults for booleans and statuses", () => {
@@ -10,6 +10,7 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.noCommit, false);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
+    assert.equal(parsed.executionContextPolicy, "require_sds_or_openapi");
     assert.deepEqual(parsed.statusFilter, ["not_started", "in_progress", "changes_requested"]);
   });
 
@@ -77,6 +78,22 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.allowMissingTests, false);
   });
 
+  it("parses missing context policy flag", () => {
+    const parsed = parseWorkOnTasksArgs([
+      "--missing-context-policy",
+      "warn",
+    ]);
+    assert.equal(parsed.missingContextPolicy, "warn");
+  });
+
+  it("parses execution context policy flag", () => {
+    const parsed = parseWorkOnTasksArgs([
+      "--execution-context-policy",
+      "best_effort",
+    ]);
+    assert.equal(parsed.executionContextPolicy, "best_effort");
+  });
+
   it("treats allow-missing-tests as boolean alias", () => {
     const parsed = parseWorkOnTasksArgs(["--allow-missing-tests"]);
     assert.equal(parsed.allowMissingTests, true);
@@ -118,5 +135,34 @@ describe("work-on-tasks argument parsing", () => {
         process.env.MCODA_WORK_ON_TASKS_USE_CODALI = originalUse;
       }
     }
+  });
+
+  it("picks explicit project key over configured and existing", () => {
+    const selected = pickWorkOnTasksProjectKey({
+      requestedKey: "explicit",
+      configuredKey: "configured",
+      existing: [{ key: "existing", createdAt: "2026-02-01T00:00:00.000Z" }],
+    });
+    assert.equal(selected.projectKey, "explicit");
+    assert.ok(selected.warnings.some((warning) => warning.includes("overriding configured project key")));
+  });
+
+  it("falls back to configured project key when request is missing", () => {
+    const selected = pickWorkOnTasksProjectKey({
+      configuredKey: "configured",
+      existing: [{ key: "existing", createdAt: "2026-02-01T00:00:00.000Z" }],
+    });
+    assert.equal(selected.projectKey, "configured");
+  });
+
+  it("falls back to first existing workspace project when no request/config", () => {
+    const selected = pickWorkOnTasksProjectKey({
+      existing: [
+        { key: "proj-a", createdAt: "2026-01-01T00:00:00.000Z" },
+        { key: "proj-b", createdAt: "2026-01-02T00:00:00.000Z" },
+      ],
+    });
+    assert.equal(selected.projectKey, "proj-a");
+    assert.ok(selected.warnings.some((warning) => warning.includes("defaulting to first workspace project")));
   });
 });

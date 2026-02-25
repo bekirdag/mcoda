@@ -124,6 +124,8 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
     "CLI",
     "--epic",
     "E1",
+    "--story",
+    "S1",
     "--status",
     "not_started,in_progress",
     "--agent",
@@ -132,6 +134,8 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
     "false",
     "--infer-deps",
     "--apply",
+    "--planning-context-policy",
+    "require_any",
     "--stage-order",
     "foundation,backend,frontend,other",
     "--rate-agents",
@@ -140,14 +144,22 @@ test("parseOrderTasksArgs respects defaults and flags", () => {
   assert.equal(parsed.workspaceRoot, path.resolve("/tmp/ws"));
   assert.equal(parsed.project, "CLI");
   assert.equal(parsed.epic, "E1");
+  assert.equal(parsed.story, "S1");
   assert.deepEqual(parsed.status, ["not_started", "in_progress"]);
   assert.equal(parsed.agentName, "codex");
   assert.equal(parsed.agentStream, false);
   assert.equal(parsed.rateAgents, true);
   assert.equal(parsed.inferDeps, true);
   assert.equal(parsed.apply, true);
+  assert.equal(parsed.planningContextPolicy, "require_any");
   assert.deepEqual(parsed.stageOrder, ["foundation", "backend", "frontend", "other"]);
   assert.equal(parsed.json, true);
+});
+
+test("parseOrderTasksArgs defaults apply=true", () => {
+  const parsed = parseOrderTasksArgs(["--project", "CLI"]);
+  assert.equal(parsed.apply, true);
+  assert.equal(parsed.planningContextPolicy, "require_sds_or_openapi");
 });
 
 test("order-tasks requires --apply when infer-deps is set", { concurrency: false }, async () => {
@@ -165,6 +177,7 @@ test("order-tasks requires --apply when infer-deps is set", { concurrency: false
         "--project",
         ctx.project.key,
         "--infer-deps",
+        "--apply=false",
       ]);
       assert.equal(process.exitCode, 1);
       assert.ok(errors.some((line) => line.includes("--apply")));
@@ -201,13 +214,20 @@ test("order-tasks passes inference flags to core service", { concurrency: false 
         ctx.dir,
         "--project",
         ctx.project.key,
+        "--story",
+        "cli-01-us-01",
         "--infer-deps",
         "--apply",
         "--stage-order",
         "foundation,backend",
+        "--planning-context-policy",
+        "best_effort",
         "--json",
       ]);
       assert.equal(captured?.inferDependencies, true);
+      assert.equal(captured?.storyKey, "cli-01-us-01");
+      assert.equal(captured?.apply, true);
+      assert.equal(captured?.planningContextPolicy, "best_effort");
       assert.deepEqual(captured?.stageOrder, ["foundation", "backend"]);
     } finally {
       console.log = origLog;
@@ -231,6 +251,8 @@ test("order-tasks command prints ordering and records telemetry", { concurrency:
         ctx.project.key,
         "--status",
         "not_started,completed",
+        "--planning-context-policy",
+        "best_effort",
       ]);
     } finally {
       console.log = origLog;

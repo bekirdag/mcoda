@@ -1,5 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import YAML from "yaml";
 import { AgentService } from "@mcoda/agents";
 import { DocdexClient } from "@mcoda/integrations";
 import { READY_TO_CODE_REVIEW } from "@mcoda/shared";
@@ -73,8 +74,29 @@ const normalizeCreateStatus = (status?: string): string => {
 const DEFAULT_MAX_TASKS = 250;
 const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
 const PLANNING_DOC_HINT_PATTERN = /(sds|pdr|rfp|requirements|architecture|openapi|swagger|design)/i;
+const OPENAPI_METHODS = new Set(["get", "post", "put", "patch", "delete", "options", "head", "trace"]);
+const OPENAPI_HINTS_LIMIT = 20;
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const parseStructuredDoc = (raw: string): Record<string, unknown> | undefined => {
+  if (!raw || raw.trim().length === 0) return undefined;
+  try {
+    const parsed = YAML.parse(raw);
+    if (isPlainObject(parsed)) return parsed;
+  } catch {
+    // continue
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (isPlainObject(parsed)) return parsed;
+  } catch {
+    // ignore
+  }
+  return undefined;
+};
 
 const extractJson = (raw: string): any | undefined => {
   const fencedMatches = [...raw.matchAll(/```json([\s\S]*?)```/g)].map((match) => match[1]);
@@ -299,6 +321,7 @@ export class RefineTasksService {
     try {
       await ordering.orderTasks({
         projectKey,
+        apply: true,
       });
     } finally {
       await ordering.close();
@@ -760,16 +783,72 @@ export class RefineTasksService {
     ].join("\n\n");
   }
 
+  private buildOpenApiHintSummary(docs: any[]): string {
+    const lines: string[] = [];
+    for (const doc of docs ?? []) {
+      const raw =
+        typeof doc?.content === "string" && doc.content.trim().length > 0
+          ? doc.content
+          : Array.isArray(doc?.segments)
+            ? doc.segments
+                .map((segment: any) => (typeof segment?.content === "string" ? segment.content : ""))
+                .filter(Boolean)
+                .join("\n\n")
+            : "";
+      const parsed = parseStructuredDoc(raw);
+      if (!parsed) continue;
+      const paths = parsed.paths;
+      if (!isPlainObject(paths)) continue;
+      for (const [apiPath, pathItem] of Object.entries(paths)) {
+        if (!isPlainObject(pathItem)) continue;
+        for (const [method, operation] of Object.entries(pathItem)) {
+          const normalizedMethod = method.toLowerCase();
+          if (!OPENAPI_METHODS.has(normalizedMethod)) continue;
+          if (!isPlainObject(operation)) continue;
+          const hints = operation["x-mcoda-task-hints"];
+          if (!isPlainObject(hints)) continue;
+          const service = typeof hints.service === "string" ? hints.service : "-";
+          const capability = typeof hints.capability === "string" ? hints.capability : "-";
+          const stage = typeof hints.stage === "string" ? hints.stage : "-";
+          const complexity =
+            typeof hints.complexity === "number" && Number.isFinite(hints.complexity)
+              ? hints.complexity.toFixed(1)
+              : "-";
+          const countItems = (value: unknown): number =>
+            Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").length : 0;
+          const dependsOn = countItems(hints.depends_on_operations);
+          const testRequirements = isPlainObject(hints.test_requirements) ? hints.test_requirements : undefined;
+          lines.push(
+            `- ${normalizedMethod.toUpperCase()} ${apiPath} :: service=${service}; capability=${capability}; stage=${stage}; complexity=${complexity}; deps=${dependsOn}; tests(u/c/i/a)=${countItems(testRequirements?.unit)}/${countItems(testRequirements?.component)}/${countItems(testRequirements?.integration)}/${countItems(testRequirements?.api)}`,
+          );
+          if (lines.length >= OPENAPI_HINTS_LIMIT) {
+            return lines.join("\n");
+          }
+        }
+      }
+    }
+    return lines.join("\n");
+  }
+
   private async summarizeDocs(projectKey: string, epicKey?: string, storyKey?: string): Promise<{ summary: string; warnings: string[] }> {
     const warnings: string[] = [];
     const startedAt = Date.now();
     try {
-      const query = [epicKey, storyKey, "sds requirements architecture"].filter(Boolean).join(" ");
+      const query = [epicKey, storyKey, "sds requirements architecture openapi swagger api contracts endpoints"]
+        .filter(Boolean)
+        .join(" ");
       let docs = await this.docdex.search({
         projectKey,
         profile: "sds",
         query,
       });
+      if (!docs || docs.length === 0) {
+        docs = await this.docdex.search({
+          projectKey,
+          profile: "openapi",
+          query,
+        });
+      }
       if (!docs || docs.length === 0) {
         docs = await this.docdex.search({
           projectKey,
@@ -802,6 +881,10 @@ export class RefineTasksService {
         })
         .join("\n");
       const finalSummary = (summary || (selected.length ? selected.map((doc) => `- ${doc.title ?? doc.path ?? doc.id}`).join("\n") : "")).trim();
+      const openApiHintSummary = this.buildOpenApiHintSummary(selected);
+      const composedSummary = [finalSummary || "(no doc segments found)", openApiHintSummary ? `[OPENAPI_HINTS]\n${openApiHintSummary}` : ""]
+        .filter(Boolean)
+        .join("\n\n");
       const durationSeconds = (Date.now() - startedAt) / 1000;
       await this.jobService.recordTokenUsage({
         workspaceId: this.workspace.workspaceId,
@@ -816,7 +899,7 @@ export class RefineTasksService {
         timestamp: new Date().toISOString(),
         metadata: { command: "refine-tasks", action: "docdex_search", projectKey, epicKey, storyKey },
       });
-      return { summary: finalSummary || "(no doc segments found)", warnings };
+      return { summary: composedSummary, warnings };
     } catch (error) {
       warnings.push(`Docdex lookup failed: ${(error as Error).message}`);
       return { summary: "(docdex unavailable)", warnings };

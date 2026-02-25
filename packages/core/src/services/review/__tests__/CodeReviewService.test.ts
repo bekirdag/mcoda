@@ -118,6 +118,78 @@ test("CodeReviewService records approvals and updates status", async () => {
   }
 });
 
+test("CodeReviewService blocks when strict execution context policy cannot resolve SDS or OpenAPI", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+
+  const service = new CodeReviewService(workspace, {
+    agentService: {
+      invoke: async () => ({ output: '{"decision":"approve","summary":"ok","findings":[]}', adapter: "local" }),
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "code-review": "Review prompt" },
+      }),
+    } as any,
+    docdex: { search: async () => [] } as any,
+    jobService,
+    workspaceRepo: repo,
+    repo: { close: async () => {} } as any,
+    routingService: {
+      resolveAgentForCommand: async () => ({
+        agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any,
+    vcsClient: {
+      ensureRepo: async () => {},
+      diff: async () => "",
+    } as any,
+  });
+
+  try {
+    const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const [epic] = await repo.insertEpics([
+      { projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 },
+    ]);
+    const [story] = await repo.insertStories([
+      { projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" },
+    ]);
+    const [task] = await repo.insertTasks([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t01",
+        title: "Task",
+        description: "",
+        status: "ready_to_code_review",
+      },
+    ]);
+    await repo.updateTask(task.id, { vcsBranch: "feature/task" });
+
+    await assert.rejects(
+      async () => {
+        await service.reviewTasks({
+          workspace,
+          projectKey: project.key,
+          agentStream: false,
+          dryRun: false,
+          executionContextPolicy: "require_sds_or_openapi",
+        });
+      },
+      /requires SDS\/OpenAPI/i,
+    );
+
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "ready_to_code_review");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CodeReviewService avoids repo prompt/job writes when noRepoWrites is set", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-norepo-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir, noRepoWrites: true });
@@ -422,6 +494,7 @@ test("CodeReviewService retries docdex search after reindex", async () => {
 
   let searchCalls = 0;
   let reindexCalls = 0;
+  let failedTaskQueryOnce = false;
 
   const service = new CodeReviewService(workspace, {
     agentService: {
@@ -433,9 +506,10 @@ test("CodeReviewService retries docdex search after reindex", async () => {
       }),
     } as any,
     docdex: {
-      search: async () => {
+      search: async (filter: { query?: string }) => {
         searchCalls += 1;
-        if (searchCalls === 1) {
+        if (!failedTaskQueryOnce && filter?.query === "Task") {
+          failedTaskQueryOnce = true;
           throw new Error("docdex down");
         }
         return [{ id: "doc-1", docType: "DOC", content: "Doc content", createdAt: "now", updatedAt: "now" }];
@@ -1247,6 +1321,77 @@ test("CodeReviewService reviews empty diff and completes when no changes are req
   }
 });
 
+test("CodeReviewService routes empty diff approvals to ready_to_qa when policy is ready_to_qa", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+
+  const service = new CodeReviewService(workspace, {
+    agentService: {
+      invoke: async () => ({ output: '{"decision":"approve","summary":"No changes required.","findings":[]}', adapter: "local" }),
+      getPrompts: async () => ({
+        jobPrompt: "Job",
+        characterPrompt: "Char",
+        commandPrompts: { "code-review": "Review prompt" },
+      }),
+    } as any,
+    docdex: { search: async () => [] } as any,
+    jobService,
+    workspaceRepo: repo,
+    repo: { close: async () => {} } as any,
+    routingService: {
+      resolveAgentForCommand: async () => ({
+        agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any,
+    vcsClient: {
+      ensureRepo: async () => {},
+      diff: async () => "",
+    } as any,
+  });
+
+  try {
+    const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+    const [epic] = await repo.insertEpics([
+      { projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 },
+    ]);
+    const [story] = await repo.insertStories([
+      { projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" },
+    ]);
+    const [task] = await repo.insertTasks([
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t02",
+        title: "Task",
+        description: "",
+        status: "ready_to_code_review",
+      },
+    ]);
+    await repo.updateTask(task.id, {
+      vcsBranch: "feature/task",
+      metadata: { completed_reason: "no_changes" },
+    });
+
+    const result = await service.reviewTasks({
+      workspace,
+      projectKey: project.key,
+      agentStream: false,
+      dryRun: false,
+      emptyDiffApprovalPolicy: "ready_to_qa",
+    });
+
+    assert.equal(result.tasks[0]?.decision, "approve");
+    const updated = await repo.getTaskByKey(task.key);
+    assert.equal(updated?.status, "ready_to_qa");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CodeReviewService requests changes when empty diff lacks justification", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-review-"));
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
@@ -1499,7 +1644,7 @@ test("CodeReviewService prepends project guidance to agent prompt", async () => 
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
   const jobService = new JobService(workspace.workspaceRoot, repo);
-  const guidanceDir = path.join(dir, "docs");
+  const guidanceDir = path.join(workspace.mcodaDir, "docs", "projects", "proj");
   await fs.mkdir(guidanceDir, { recursive: true });
   await fs.writeFile(path.join(guidanceDir, "project-guidance.md"), "GUIDANCE BLOCK", "utf8");
 

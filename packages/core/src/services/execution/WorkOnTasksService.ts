@@ -120,6 +120,7 @@ export interface WorkOnTasksRequest extends TaskSelectionFilters {
   allowFileOverwrite?: boolean;
   missingTestsPolicy?: MissingTestsPolicy;
   allowMissingTests?: boolean;
+  executionContextPolicy?: ExecutionContextPolicy;
 }
 
 export interface TaskExecutionResult {
@@ -917,12 +918,26 @@ type TestRequirements = {
 
 type TestRunResult = { command: string; stdout: string; stderr: string; code: number };
 export type MissingTestsPolicy = "block_job" | "skip_task" | "fail_task";
+export type ExecutionContextPolicy = "best_effort" | "require_any" | "require_sds_or_openapi";
 const DEFAULT_MISSING_TESTS_POLICY: MissingTestsPolicy = "block_job";
+const DEFAULT_EXECUTION_CONTEXT_POLICY: ExecutionContextPolicy = "best_effort";
+
+type ExecutionContextKind = "sds" | "openapi" | "fallback";
+type ExecutionPlanningContext = { source: string; kind: ExecutionContextKind };
 
 const normalizeMissingTestsPolicy = (value: unknown): MissingTestsPolicy | undefined => {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase().replace(/-/g, "_");
   if (normalized === "block_job" || normalized === "skip_task" || normalized === "fail_task") {
+    return normalized;
+  }
+  return undefined;
+};
+
+const normalizeExecutionContextPolicy = (value: unknown): ExecutionContextPolicy | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "best_effort" || normalized === "require_any" || normalized === "require_sds_or_openapi") {
     return normalized;
   }
   return undefined;
@@ -1506,6 +1521,14 @@ const allowsTestsOnlyCompletion = (
 
 const hasProductTouchedFiles = (touchedFiles: string[]): boolean =>
   touchedFiles.some((file) => !isTestLikePath(file) && !isDocumentationPath(file));
+
+const classifyExecutionContextKind = (doc: { docType?: string; path?: string; title?: string }): ExecutionContextKind => {
+  const type = (doc.docType ?? "").toLowerCase();
+  const label = `${doc.path ?? ""} ${doc.title ?? ""}`.toLowerCase();
+  if (type.includes("sds") || /\bsds\b/.test(label)) return "sds";
+  if (type.includes("openapi") || type.includes("swagger") || /(openapi|swagger)/.test(label)) return "openapi";
+  return "fallback";
+};
 
 const buildDocContextQuery = (
   task: TaskSelectionPlan["ordered"][number]["task"],
@@ -2424,6 +2447,69 @@ export class WorkOnTasksService {
     await this.checkpoint(jobId, `task:${taskKey}:${phase}:${status}`, payload);
   }
 
+  private enforceExecutionContextPolicy(
+    policy: ExecutionContextPolicy,
+    context: ExecutionPlanningContext | undefined,
+  ): void {
+    if (policy === "best_effort") return;
+    if (policy === "require_any") {
+      if (!context) {
+        throw new Error("Execution context is required but no planning documents were resolved (policy=require_any).");
+      }
+      return;
+    }
+    if (!context) {
+      throw new Error(
+        "Execution context requires SDS/OpenAPI sources, but none were resolved (policy=require_sds_or_openapi).",
+      );
+    }
+    if (context.kind !== "sds" && context.kind !== "openapi") {
+      throw new Error(
+        `Execution context policy require_sds_or_openapi rejected source '${context.source}' (kind=${context.kind}).`,
+      );
+    }
+  }
+
+  private async resolveExecutionPlanningContext(
+    projectKey: string | undefined,
+    warnings: string[],
+  ): Promise<ExecutionPlanningContext | undefined> {
+    if (!projectKey) return undefined;
+    const pickFirst = async (filter: Record<string, unknown>) => {
+      const docs = await this.deps.docdex.search(filter as any);
+      return docs[0];
+    };
+    try {
+      const sdsDoc = await pickFirst({ projectKey, docType: "SDS", profile: "workspace-code" });
+      if (sdsDoc) {
+        return {
+          source: sdsDoc.id ?? sdsDoc.path ?? sdsDoc.title ?? "sds",
+          kind: classifyExecutionContextKind(sdsDoc),
+        };
+      }
+      const openapiDoc = await pickFirst({ projectKey, docType: "OPENAPI", profile: "workspace-code" });
+      if (openapiDoc) {
+        return {
+          source: openapiDoc.id ?? openapiDoc.path ?? openapiDoc.title ?? "openapi",
+          kind: classifyExecutionContextKind(openapiDoc),
+        };
+      }
+      const fallbackDoc = await pickFirst({
+        projectKey,
+        profile: "workspace-code",
+        query: "sds requirements architecture openapi swagger",
+      });
+      if (!fallbackDoc) return undefined;
+      return {
+        source: fallbackDoc.id ?? fallbackDoc.path ?? fallbackDoc.title ?? "workspace-code",
+        kind: classifyExecutionContextKind(fallbackDoc),
+      };
+    } catch (error) {
+      warnings.push(`Execution context preflight failed to query docdex: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
+
   private async gatherDocContext(
     task: TaskSelectionPlan["ordered"][number]["task"],
     projectKey?: string,
@@ -2452,10 +2538,44 @@ export class WorkOnTasksService {
       }
     }
     try {
-      let docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code", query: docQuery });
-      if (!docs.length && docQuery) {
-        docs = await this.deps.docdex.search({ projectKey, profile: "workspace-code" });
+      const docs: Array<{
+        id?: string;
+        path?: string;
+        title?: string;
+        docType?: string;
+        content?: string;
+        segments?: Array<{ content?: string }>;
+      }> = [];
+      const seen = new Set<string>();
+      const appendDocs = async (filter: Record<string, unknown>) => {
+        const found = await this.deps.docdex.search(filter as any);
+        for (const doc of found) {
+          const key = String(doc.id ?? doc.path ?? doc.title ?? "");
+          if (!key) continue;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          docs.push(doc);
+        }
+      };
+
+      const sdsFilter = docQuery
+        ? { projectKey, docType: "SDS", profile: "workspace-code", query: docQuery }
+        : { projectKey, docType: "SDS", profile: "workspace-code" };
+      const openapiFilter = docQuery
+        ? { projectKey, docType: "OPENAPI", profile: "workspace-code", query: docQuery }
+        : { projectKey, docType: "OPENAPI", profile: "workspace-code" };
+      await appendDocs(sdsFilter);
+      await appendDocs(openapiFilter);
+      if (!docs.length) {
+        const genericFilter = docQuery
+          ? { projectKey, profile: "workspace-code", query: docQuery }
+          : { projectKey, profile: "workspace-code" };
+        await appendDocs(genericFilter);
       }
+      if (!docs.length && docQuery) {
+        await appendDocs({ projectKey, profile: "workspace-code" });
+      }
+
       const filteredDocs = docs.filter(
         (doc) =>
           !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false) &&
@@ -3754,12 +3874,15 @@ export class WorkOnTasksService {
     const requestedMissingTestsPolicy = normalizeMissingTestsPolicy(request.missingTestsPolicy);
     const missingTestsPolicy: MissingTestsPolicy =
       requestedMissingTestsPolicy ?? (request.allowMissingTests ? "skip_task" : DEFAULT_MISSING_TESTS_POLICY);
+    const requestedExecutionContextPolicy = normalizeExecutionContextPolicy(request.executionContextPolicy);
+    const executionContextPolicy: ExecutionContextPolicy =
+      requestedExecutionContextPolicy ?? DEFAULT_EXECUTION_CONTEXT_POLICY;
     const baseCodaliEnvOverrides = codaliRequired ? buildCodaliEnvOverrides() : {};
     const configuredBaseBranch = this.workspace.config?.branch;
     const requestedBaseBranch = request.baseBranch;
     const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
     const normalizedBaseBranch = resolvedBaseBranch === "dev" ? DEFAULT_BASE_BRANCH : resolvedBaseBranch;
-    const baseBranch = DEFAULT_BASE_BRANCH;
+    const baseBranch = normalizedBaseBranch || DEFAULT_BASE_BRANCH;
     const configuredAutoMerge = this.workspace.config?.autoMerge;
     const configuredAutoPush = this.workspace.config?.autoPush;
     const autoMerge = request.autoMerge ?? configuredAutoMerge ?? true;
@@ -3770,6 +3893,11 @@ export class WorkOnTasksService {
     if (request.missingTestsPolicy && !requestedMissingTestsPolicy) {
       runnerWarnings.push(
         `Unknown missing-tests policy "${String(request.missingTestsPolicy)}"; using "${missingTestsPolicy}".`,
+      );
+    }
+    if (request.executionContextPolicy && !requestedExecutionContextPolicy) {
+      runnerWarnings.push(
+        `Unknown execution-context policy "${String(request.executionContextPolicy)}"; using "${executionContextPolicy}".`,
       );
     }
     const explicitTaskSelection = Boolean(request.taskKeys?.length);
@@ -3799,11 +3927,6 @@ export class WorkOnTasksService {
     if (codaliRequired && isPatchModeEnabled()) {
       runnerWarnings.push("work-on-tasks patch mode is ignored when codali is required.");
     }
-    if (normalizedBaseBranch && normalizedBaseBranch !== DEFAULT_BASE_BRANCH) {
-      baseBranchWarnings.push(
-        `Base branch ${normalizedBaseBranch} ignored; work-on-tasks always uses ${DEFAULT_BASE_BRANCH}.`,
-      );
-    }
     const commandRun = await this.deps.jobService.startCommandRun(commandName, request.projectKey, {
       taskIds: request.taskKeys,
     });
@@ -3827,6 +3950,7 @@ export class WorkOnTasksService {
         agentStream,
         missingTestsPolicy,
         allowMissingTests: request.allowMissingTests ?? false,
+        executionContextPolicy,
       },
     });
 
@@ -3890,6 +4014,31 @@ export class WorkOnTasksService {
       return message === resolveAbortReason();
     };
     try {
+      const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings];
+      try {
+        const guidance = await ensureProjectGuidance(this.workspace.workspaceRoot, {
+          mcodaDir: this.workspace.mcodaDir,
+          projectKey: request.projectKey,
+        });
+        if (guidance.status !== "existing") {
+          warnings.push(`project_guidance_${guidance.status}: ${guidance.path}`);
+        }
+        for (const warning of guidance.warnings ?? []) {
+          warnings.push(`project_guidance_warning:${warning}`);
+        }
+      } catch (error) {
+        warnings.push(
+          `project_guidance_bootstrap_failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const executionContext = await this.resolveExecutionPlanningContext(request.projectKey, warnings);
+      this.enforceExecutionContextPolicy(executionContextPolicy, executionContext);
+      await this.checkpoint(job.id, "execution_context_preflight", {
+        policy: executionContextPolicy,
+        source: executionContext?.source ?? null,
+        kind: executionContext?.kind ?? null,
+      });
+
       await this.checkoutBaseBranch(baseBranch, { allowDirty: true });
       selection = await this.selectionService.selectTasks({
         projectKey: request.projectKey,
@@ -3901,6 +4050,7 @@ export class WorkOnTasksService {
         includeTypes,
         excludeTypes,
         ignoreDependencies,
+        missingContextPolicy: request.missingContextPolicy ?? "block",
         limit: request.limit,
         parallel: request.parallel,
       });
@@ -3918,6 +4068,8 @@ export class WorkOnTasksService {
         processedItems: 0,
       });
 
+      warnings.push(...selection.warnings);
+
       type WorkOnTasksTaskSummary = {
         taskKey: string;
         adapter: string;
@@ -3933,19 +4085,6 @@ export class WorkOnTasksService {
       };
       const results: TaskExecutionResult[] = [];
       const taskSummaries = new Map<string, WorkOnTasksTaskSummary>();
-      const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings, ...selection.warnings];
-      try {
-        const guidance = await ensureProjectGuidance(this.workspace.workspaceRoot, {
-          mcodaDir: this.workspace.mcodaDir,
-        });
-        if (guidance.status !== "existing") {
-          warnings.push(`project_guidance_${guidance.status}: ${guidance.path}`);
-        }
-      } catch (error) {
-        warnings.push(
-          `project_guidance_bootstrap_failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
       if (missingTestsPolicy === "block_job") {
         const missingHarnessTasks = await this.findMissingTestHarnessTasks(selection.ordered);
         if (missingHarnessTasks.length > 0) {
@@ -4963,9 +5102,14 @@ export class WorkOnTasksService {
           }
           await endPhase("context", { docWarnings, docSummary: Boolean(docSummary) });
 
-          const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
+          const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir, {
+            projectKey: request.projectKey,
+          });
           if (projectGuidance) {
             await this.logTask(taskRun.id, `Loaded project guidance from ${projectGuidance.source}`, "project_guidance");
+            for (const warning of projectGuidance.warnings ?? []) {
+              await this.logTask(taskRun.id, `Project guidance warning: ${warning}`, "project_guidance");
+            }
           }
 
           await startPhase("prompt", { docSummary: Boolean(docSummary), agent: agent.id });

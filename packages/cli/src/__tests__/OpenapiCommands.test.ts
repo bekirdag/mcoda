@@ -29,6 +29,11 @@ describe("openapi-from-docs argument parsing", () => {
     assert.equal(parsed.workspaceRoot, root);
   });
 
+  it("captures project when provided", () => {
+    const parsed = parseOpenapiArgs(["--project", "demo"]);
+    assert.equal(parsed.project, "demo");
+  });
+
   it("captures force, dry-run, and validate-only flags", () => {
     const parsed = parseOpenapiArgs(["--force", "--dry-run", "--validate-only"]);
     assert.equal(parsed.force, true);

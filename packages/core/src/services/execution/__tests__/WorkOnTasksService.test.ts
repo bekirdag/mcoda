@@ -1269,7 +1269,7 @@ test("workOnTasks bootstraps project guidance in workspace state on first run", 
     routingService: new StubRoutingService() as any,
     vcsClient: new StubVcs() as any,
   });
-  const guidancePath = path.join(workspace.mcodaDir, "docs", "project-guidance.md");
+  const guidancePath = path.join(workspace.mcodaDir, "docs", "projects", "proj", "project-guidance.md");
   await fs.rm(guidancePath, { force: true });
 
   try {
@@ -2749,7 +2749,7 @@ test("workOnTasks prepends project guidance to agent input", async () => {
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
   const agent = new StubAgentServiceCapture();
-  const guidanceDir = path.join(workspace.mcodaDir, "docs");
+  const guidanceDir = path.join(workspace.mcodaDir, "docs", "projects", "proj");
   await fs.mkdir(guidanceDir, { recursive: true });
   const guidancePath = path.join(guidanceDir, "project-guidance.md");
   await fs.writeFile(guidancePath, "GUIDANCE BLOCK", "utf8");
@@ -3115,8 +3115,10 @@ test("workOnTasks uses task-scoped docdex query and filters test context for fea
     });
     const input = agent.lastInput ?? "";
     assert.ok(searchCalls.length >= 1);
-    assert.equal(searchCalls[0]?.profile, "workspace-code");
-    assert.ok(String(searchCalls[0]?.query ?? "").includes("login"));
+    assert.ok(searchCalls.some((call) => call.profile === "workspace-code"));
+    const queryFilters = searchCalls.filter((call) => typeof call.query === "string");
+    assert.ok(queryFilters.length >= 1);
+    assert.ok(queryFilters.some((call) => String(call.query).toLowerCase().includes("login")));
     assert.ok(input.includes("Login callback implementation"));
     assert.ok(!input.includes("Login spec"));
   } finally {
@@ -3506,7 +3508,7 @@ test("workOnTasks fails no-change runs when unresolved comments exist", async ()
   }
 });
 
-test("workOnTasks ignores workspace config base branch and uses mcoda-dev", async () => {
+test("workOnTasks honors workspace config base branch when provided", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   workspace.config = { ...(workspace.config ?? {}), branch: "main" };
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3534,7 +3536,7 @@ test("workOnTasks ignores workspace config base branch and uses mcoda-dev", asyn
       noCommit: true,
       limit: 1,
     });
-    assert.ok(vcs.bases.includes("mcoda-dev"));
+    assert.ok(vcs.bases.includes("main"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -4395,6 +4397,45 @@ test("workOnTasks blocks the job when tests are required but no commands exist",
     assert.equal(taskRuns.length, 0);
     const tokenUsage = await db.all("SELECT id FROM token_usage");
     assert.equal(tokenUsage.length, 0);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks blocks the job when execution context policy requires SDS/OpenAPI and none are found", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    await assert.rejects(
+      service.workOnTasks({
+        workspace,
+        projectKey: "proj",
+        agentStream: false,
+        dryRun: true,
+        noCommit: true,
+        limit: 1,
+        executionContextPolicy: "require_sds_or_openapi",
+      }),
+      /require_sds_or_openapi/,
+    );
+
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "not_started");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

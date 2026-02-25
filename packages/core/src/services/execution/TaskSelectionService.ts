@@ -14,7 +14,10 @@ export interface TaskSelectionFilters {
   limit?: number;
   parallel?: number;
   ignoreDependencies?: boolean;
+  missingContextPolicy?: MissingContextPolicy;
 }
+
+export type MissingContextPolicy = "allow" | "warn" | "block";
 
 export interface SelectedTask {
   task: TaskRow & {
@@ -300,6 +303,22 @@ export class TaskSelectionService {
     return grouped;
   }
 
+  private async loadMissingContext(taskIds: string[]): Promise<Set<string>> {
+    if (taskIds.length === 0) return new Set();
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const rows = await this.workspaceRepo.getDb().all<{ task_id: string }[]>(
+      `
+        SELECT DISTINCT task_id
+        FROM task_comments
+        WHERE task_id IN (${placeholders})
+          AND LOWER(category) = 'missing_context'
+          AND (status IS NULL OR LOWER(status) = 'open')
+      `,
+      ...taskIds,
+    );
+    return new Set(rows.map((row) => row.task_id));
+  }
+
   private topologicalOrder(
     tasks: SelectedTask[],
     deps: Map<string, DependencyRow[]>,
@@ -411,6 +430,9 @@ export class TaskSelectionService {
     }
     const candidateIds = dedupedTasks.map((t) => t.task_id);
     const deps = await this.loadDependencies(candidateIds);
+    const missingContextPolicy: MissingContextPolicy = filters.missingContextPolicy ?? "warn";
+    const missingContext =
+      missingContextPolicy === "allow" ? new Set<string>() : await this.loadMissingContext(candidateIds);
     const taskMap = new Map<string, SelectedTask>();
     for (const row of dedupedTasks) {
       const task = this.buildTaskFromRow(row);
@@ -422,6 +444,8 @@ export class TaskSelectionService {
 
     const eligible: SelectedTask[] = [];
     const skippedDependencies: string[] = [];
+    const skippedMissingContext: string[] = [];
+    const warnedMissingContext: string[] = [];
     const ignoreDependencies = filters.ignoreDependencies === true;
     for (const [taskId, entry] of taskMap.entries()) {
       const depRows = deps.get(taskId) ?? [];
@@ -451,12 +475,27 @@ export class TaskSelectionService {
         skippedDependencies.push(entry.task.key);
         continue;
       }
+      if (missingContext.has(taskId)) {
+        if (missingContextPolicy === "block") {
+          skippedMissingContext.push(entry.task.key);
+          continue;
+        }
+        if (missingContextPolicy === "warn") {
+          warnedMissingContext.push(entry.task.key);
+        }
+      }
       eligible.push(entry);
     }
 
     const { ordered, warnings: topoWarnings } = this.topologicalOrder(eligible, deps);
     if (skippedDependencies.length > 0) {
       selectionWarnings.push(`Skipped ${skippedDependencies.length} task(s) due to dependencies not ready.`);
+    }
+    if (missingContextPolicy === "warn" && warnedMissingContext.length > 0) {
+      selectionWarnings.push(`Tasks with open missing_context comments: ${warnedMissingContext.length}.`);
+    }
+    if (missingContextPolicy === "block" && skippedMissingContext.length > 0) {
+      selectionWarnings.push(`Skipped ${skippedMissingContext.length} task(s) with open missing_context comments.`);
     }
     const combinedWarnings = [...dedupeWarnings, ...selectionWarnings, ...topoWarnings];
     const limited = typeof filters.limit === "number" && filters.limit > 0 ? ordered.slice(0, filters.limit) : ordered;
@@ -468,6 +507,7 @@ export class TaskSelectionService {
         effectiveStatuses,
         includeTypes: includeTypes.length ? includeTypes : undefined,
         excludeTypes: excludeTypes.length ? excludeTypes : undefined,
+        missingContextPolicy,
       },
       ordered: limited,
       warnings: combinedWarnings,

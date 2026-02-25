@@ -4,6 +4,7 @@ import { DocdexClient } from "@mcoda/integrations";
 import { GlobalRepository, WorkspaceRepository, Connection, type Database } from "@mcoda/db";
 import { PathHelper, READY_TO_CODE_REVIEW, normalizeReviewStatuses } from "@mcoda/shared";
 import type { Agent } from "@mcoda/shared";
+import YAML from "yaml";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { RoutingService } from "../agents/RoutingService.js";
@@ -15,6 +16,8 @@ const DEFAULT_STATUSES = ["not_started", "in_progress", "changes_requested", REA
 const DONE_STATUSES = new Set(["completed", "cancelled"]);
 const DEFAULT_STAGE_ORDER: TaskStage[] = ["foundation", "backend", "frontend", "other"];
 const PLANNING_DOC_HINT_PATTERN = /(sds|pdr|rfp|requirements|architecture|openapi|swagger|design)/i;
+const OPENAPI_METHODS = new Set(["get", "post", "put", "patch", "delete", "options", "head", "trace"]);
+const OPENAPI_HINTS_LIMIT = 20;
 const STATUS_RANK: StatusRank = {
   in_progress: 0,
   changes_requested: 0,
@@ -43,6 +46,25 @@ const normalizeStatuses = (statuses?: string[]): string[] => {
 };
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil((text ?? "").length / 4));
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const parseStructuredDoc = (raw: string): Record<string, unknown> | undefined => {
+  if (!raw || raw.trim().length === 0) return undefined;
+  try {
+    const parsed = YAML.parse(raw);
+    if (isPlainObject(parsed)) return parsed;
+  } catch {
+    // continue
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (isPlainObject(parsed)) return parsed;
+  } catch {
+    // ignore invalid parse
+  }
+  return undefined;
+};
 
 const SDS_DEPENDENCY_GUIDE = [
   "SDS hints for dependency-aware ordering:",
@@ -54,7 +76,11 @@ const SDS_DEPENDENCY_GUIDE = [
 interface DocContext {
   content: string;
   source: string;
+  kind: DocContextKind;
 }
+
+type DocContextKind = "sds" | "openapi" | "fallback";
+type PlanningContextPolicy = "best_effort" | "require_any" | "require_sds_or_openapi";
 
 interface ProjectRow {
   id: string;
@@ -154,6 +180,9 @@ export interface TaskOrderingRequest {
   stageOrder?: TaskStage[];
   injectFoundationDeps?: boolean;
   inferDependencies?: boolean;
+  enrichMetadata?: boolean;
+  apply?: boolean;
+  planningContextPolicy?: PlanningContextPolicy;
 }
 
 type TaskNode = TaskRow & {
@@ -162,6 +191,7 @@ type TaskNode = TaskRow & {
 };
 
 type AgentRanking = Map<string, number>;
+type ComplexityByTask = Map<string, number>;
 
 const extractJson = (raw: string): any | undefined => {
   if (!raw) return undefined;
@@ -331,6 +361,94 @@ export class TaskOrderingService {
     private recordTelemetry: boolean,
   ) {}
 
+  private classifyDocContextKind(doc: {
+    docType?: string | null;
+    path?: string | null;
+    title?: string | null;
+  }): DocContextKind {
+    const type = (doc.docType ?? "").toLowerCase();
+    const label = `${doc.path ?? ""} ${doc.title ?? ""}`.toLowerCase();
+    if (type.includes("sds") || /\bsds\b/.test(label)) return "sds";
+    if (type.includes("openapi") || type.includes("swagger") || /(openapi|swagger)/.test(label)) return "openapi";
+    return "fallback";
+  }
+
+  private buildOpenApiHintSummary(
+    docs: Array<{
+      docType?: string | null;
+      path?: string | null;
+      title?: string | null;
+      content?: string | null;
+      segments?: Array<{ content: string }>;
+    }>,
+  ): string {
+    const lines: string[] = [];
+    const countEntries = (value: unknown): number =>
+      Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string").length : 0;
+    for (const doc of docs) {
+      if (this.classifyDocContextKind(doc) !== "openapi") continue;
+      const rawContent =
+        doc.content && doc.content.trim().length > 0 ? doc.content : (doc.segments ?? []).map((segment) => segment.content).join("\n\n");
+      const parsed = parseStructuredDoc(rawContent);
+      if (!parsed) continue;
+      const paths = parsed.paths;
+      if (!isPlainObject(paths)) continue;
+      for (const [apiPath, pathItem] of Object.entries(paths)) {
+        if (!isPlainObject(pathItem)) continue;
+        for (const [method, operation] of Object.entries(pathItem)) {
+          const normalizedMethod = method.toLowerCase();
+          if (!OPENAPI_METHODS.has(normalizedMethod)) continue;
+          if (!isPlainObject(operation)) continue;
+          const hints = operation["x-mcoda-task-hints"];
+          if (!isPlainObject(hints)) continue;
+          const service = typeof hints.service === "string" ? hints.service : "-";
+          const capability = typeof hints.capability === "string" ? hints.capability : "-";
+          const stage = typeof hints.stage === "string" ? hints.stage : "-";
+          const complexity =
+            typeof hints.complexity === "number" && Number.isFinite(hints.complexity) ? hints.complexity.toFixed(1) : "-";
+          const dependsOn = Array.isArray(hints.depends_on_operations)
+            ? hints.depends_on_operations.filter((entry): entry is string => typeof entry === "string").length
+            : 0;
+          const tests = isPlainObject(hints.test_requirements) ? hints.test_requirements : undefined;
+          const unitCount = countEntries(tests?.unit);
+          const componentCount = countEntries(tests?.component);
+          const integrationCount = countEntries(tests?.integration);
+          const apiCount = countEntries(tests?.api);
+          lines.push(
+            `- ${normalizedMethod.toUpperCase()} ${apiPath} :: service=${service}; capability=${capability}; stage=${stage}; complexity=${complexity}; deps=${dependsOn}; tests(u/c/i/a)=${unitCount}/${componentCount}/${integrationCount}/${apiCount}`,
+          );
+          if (lines.length >= OPENAPI_HINTS_LIMIT) {
+            return lines.join("\n");
+          }
+        }
+      }
+    }
+    return lines.join("\n");
+  }
+
+  private enforcePlanningContextPolicy(
+    policy: PlanningContextPolicy,
+    context: DocContext | undefined,
+  ): void {
+    if (policy === "best_effort") return;
+    if (policy === "require_any") {
+      if (!context) {
+        throw new Error("Planning context is required but no planning documents were resolved (policy=require_any).");
+      }
+      return;
+    }
+    if (!context) {
+      throw new Error(
+        "Planning context is required from SDS/OpenAPI sources, but none were resolved (policy=require_sds_or_openapi).",
+      );
+    }
+    if (context.kind !== "sds" && context.kind !== "openapi") {
+      throw new Error(
+        `Planning context policy require_sds_or_openapi rejected source '${context.source}' (kind=${context.kind}).`,
+      );
+    }
+  }
+
   static async create(
     workspace: WorkspaceResolution,
     options: { recordTelemetry?: boolean } = {},
@@ -376,10 +494,13 @@ export class TaskOrderingService {
     try {
       let docs = await this.docdex.search({ docType: "SDS", projectKey });
       if (!docs.length) {
+        docs = await this.docdex.search({ docType: "OPENAPI", projectKey });
+      }
+      if (!docs.length) {
         docs = await this.docdex.search({
           projectKey,
           profile: "workspace-code",
-          query: "sds requirements architecture openapi",
+          query: "sds requirements architecture openapi swagger",
         });
       }
       if (!docs.length) return undefined;
@@ -389,6 +510,7 @@ export class TaskOrderingService {
           const label = `${entry.path ?? ""} ${entry.title ?? ""}`.toLowerCase();
           return type.includes("sds") || type.includes("pdr") || type.includes("rfp") || PLANNING_DOC_HINT_PATTERN.test(label);
         }) ?? docs[0];
+      const kind = this.classifyDocContextKind(doc);
       const segments = (doc.segments ?? []).slice(0, 3);
       const body =
         segments.length > 0
@@ -400,9 +522,15 @@ export class TaskOrderingService {
               })
               .join("\n\n")
           : doc.content ?? "";
+      const openApiHints = this.buildOpenApiHintSummary([doc]);
+      const contextBlocks = ["[Planning context]", doc.title ?? doc.path ?? doc.id, body];
+      if (openApiHints) {
+        contextBlocks.push(`[OPENAPI_HINTS]\n${openApiHints}`);
+      }
       return {
-        content: ["[SDS context]", doc.title ?? doc.path ?? doc.id, body].filter(Boolean).join("\n\n"),
+        content: contextBlocks.filter(Boolean).join("\n\n"),
         source: doc.id ?? doc.path ?? "sds",
+        kind,
       };
     } catch (error) {
       warnings.push(`Docdex context unavailable: ${(error as Error).message}`);
@@ -611,6 +739,75 @@ export class TaskOrderingService {
     return { stage: inferred.stage, foundation: inferred.foundation };
   }
 
+  private complexityBand(score: number): "low" | "medium" | "high" | "very_high" {
+    if (score < 12) return "low";
+    if (score < 24) return "medium";
+    if (score < 40) return "high";
+    return "very_high";
+  }
+
+  private buildOrderingMetadata(
+    tasks: TaskNode[],
+    impact: Map<string, DependencyImpact>,
+    missingContext: Set<string>,
+    docContext?: DocContext,
+  ): { metadataByTask: Map<string, Record<string, unknown> | null>; complexityByTask: ComplexityByTask } {
+    const metadataByTask = new Map<string, Record<string, unknown> | null>();
+    const complexityByTask: ComplexityByTask = new Map();
+    for (const task of tasks) {
+      const classification = this.resolveClassification(task);
+      const inferred = classifyTask({ title: task.title, description: task.description, type: task.type ?? undefined });
+      const impactEntry = impact.get(task.id) ?? { direct: 0, total: 0 };
+      const dependencyCount = task.dependencies.length;
+      const missingContextOpen = missingContext.has(task.id);
+      const textLength = `${task.title ?? ""} ${task.description ?? ""}`.trim().length;
+      const textWeight = Math.min(6, Math.ceil(textLength / 200));
+      const stageWeight =
+        classification.stage === "backend" ? 2 : classification.stage === "frontend" ? 1.5 : classification.stage === "foundation" ? 1.2 : 1;
+      let complexityScore =
+        (task.story_points ?? 0) * 5 +
+        impactEntry.total * 3 +
+        dependencyCount * 2 +
+        textWeight * stageWeight +
+        (classification.foundation ? 2 : 0) +
+        (missingContextOpen ? 4 : 0);
+      complexityScore = Number(Math.max(1, complexityScore).toFixed(2));
+      complexityByTask.set(task.id, complexityScore);
+
+      const existingMetadata = task.metadata ?? {};
+      const existingOrdering =
+        existingMetadata && typeof existingMetadata.ordering === "object" && !Array.isArray(existingMetadata.ordering)
+          ? (existingMetadata.ordering as Record<string, unknown>)
+          : {};
+      const reasons = [...inferred.reasons];
+      if (typeof existingMetadata.stage === "string") {
+        reasons.unshift(`metadata:stage:${String(existingMetadata.stage).toLowerCase()}`);
+      }
+      if (typeof existingMetadata.foundation === "boolean") {
+        reasons.unshift(`metadata:foundation:${existingMetadata.foundation ? "true" : "false"}`);
+      }
+      const mergedMetadata: Record<string, unknown> = {
+        ...existingMetadata,
+        stage: classification.stage,
+        foundation: classification.foundation,
+        ordering: {
+          ...existingOrdering,
+          stage: classification.stage,
+          foundation: classification.foundation,
+          dependencyImpact: impactEntry,
+          dependencyCount,
+          complexityScore,
+          complexityBand: this.complexityBand(complexityScore),
+          missingContextOpen,
+          classificationReasons: reasons,
+          docContextSource: docContext?.source,
+        },
+      };
+      metadataByTask.set(task.id, mergedMetadata);
+    }
+    return { metadataByTask, complexityByTask };
+  }
+
   private buildDependencyGraph(tasks: TaskRow[], deps: Map<string, DependencyRow[]>): Map<string, Set<string>> {
     const taskIds = new Set(tasks.map((task) => task.id));
     const graph = new Map<string, Set<string>>();
@@ -651,6 +848,7 @@ export class TaskOrderingService {
     tasks: TaskRow[],
     deps: Map<string, DependencyRow[]>,
     warnings: string[],
+    persist: boolean,
   ): Promise<void> {
     const classification = new Map<string, { foundation: boolean }>();
     for (const task of tasks) {
@@ -704,7 +902,9 @@ export class TaskOrderingService {
       return;
     }
 
-    await this.repo.insertTaskDependencies(inserts, true);
+    if (persist) {
+      await this.repo.insertTaskDependencies(inserts, true);
+    }
     for (const insert of inserts) {
       const depList = deps.get(insert.taskId) ?? [];
       const dependsOn = taskById.get(insert.dependsOnTaskId);
@@ -716,7 +916,11 @@ export class TaskOrderingService {
       });
       deps.set(insert.taskId, depList);
     }
-    warnings.push(`Injected ${inserts.length} inferred foundation deps.`);
+    if (persist) {
+      warnings.push(`Injected ${inserts.length} inferred foundation deps.`);
+    } else {
+      warnings.push(`Dry run: inferred ${inserts.length} foundation deps (not persisted).`);
+    }
     if (skippedCycles > 0) {
       warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
       if (skippedEdges.length > 0) {
@@ -730,6 +934,7 @@ export class TaskOrderingService {
     deps: Map<string, DependencyRow[]>,
     inferred: InferredDependency[],
     warnings: string[],
+    persist: boolean,
   ): Promise<void> {
     if (inferred.length === 0) return;
     const taskByKey = new Map(tasks.map((task) => [task.key, task]));
@@ -780,7 +985,9 @@ export class TaskOrderingService {
       return;
     }
 
-    await this.repo.insertTaskDependencies(inserts, true);
+    if (persist) {
+      await this.repo.insertTaskDependencies(inserts, true);
+    }
     const taskById = new Map(tasks.map((task) => [task.id, task]));
     for (const insert of inserts) {
       const depList = deps.get(insert.taskId) ?? [];
@@ -793,7 +1000,11 @@ export class TaskOrderingService {
       });
       deps.set(insert.taskId, depList);
     }
-    warnings.push(`Applied ${inserts.length} inferred agent deps.`);
+    if (persist) {
+      warnings.push(`Applied ${inserts.length} inferred agent deps.`);
+    } else {
+      warnings.push(`Dry run: inferred ${inserts.length} agent deps (not persisted).`);
+    }
     if (skippedCycles > 0) {
       warnings.push(`Skipped ${skippedCycles} inferred agent deps due to cycles.`);
       if (skippedEdges.length > 0) {
@@ -806,6 +1017,8 @@ export class TaskOrderingService {
     a: TaskNode,
     b: TaskNode,
     impact: Map<string, DependencyImpact>,
+    complexityByTask: ComplexityByTask,
+    missingContext: Set<string>,
     agentRank?: AgentRanking,
     stageOrderMap?: Map<TaskStage, number>,
   ): number {
@@ -815,19 +1028,9 @@ export class TaskOrderingService {
     const storyPriorityA = a.story_priority ?? Number.MAX_SAFE_INTEGER;
     const storyPriorityB = b.story_priority ?? Number.MAX_SAFE_INTEGER;
     if (storyPriorityA !== storyPriorityB) return storyPriorityA - storyPriorityB;
-    const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
-    const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
-    if (priorityA !== priorityB) return priorityA - priorityB;
-    const impactA = impact.get(a.id)?.total ?? 0;
-    const impactB = impact.get(b.id)?.total ?? 0;
-    if (impactA !== impactB) return impactB - impactA;
-    const rankA = agentRank?.get(a.id);
-    const rankB = agentRank?.get(b.id);
-    if (rankA !== undefined || rankB !== undefined) {
-      if (rankA === undefined) return 1;
-      if (rankB === undefined) return -1;
-      if (rankA !== rankB) return rankA - rankB;
-    }
+    const missingA = missingContext.has(a.id);
+    const missingB = missingContext.has(b.id);
+    if (missingA !== missingB) return missingA ? 1 : -1;
     const classA = this.resolveClassification(a);
     const classB = this.resolveClassification(b);
     if (classA.foundation !== classB.foundation) {
@@ -838,6 +1041,22 @@ export class TaskOrderingService {
       const stageB = stageOrderMap.get(classB.stage) ?? stageOrderMap.get("other") ?? Number.MAX_SAFE_INTEGER;
       if (stageA !== stageB) return stageA - stageB;
     }
+    const impactA = impact.get(a.id)?.total ?? 0;
+    const impactB = impact.get(b.id)?.total ?? 0;
+    if (impactA !== impactB) return impactB - impactA;
+    const complexityA = complexityByTask.get(a.id) ?? 0;
+    const complexityB = complexityByTask.get(b.id) ?? 0;
+    if (complexityA !== complexityB) return complexityB - complexityA;
+    const rankA = agentRank?.get(a.id);
+    const rankB = agentRank?.get(b.id);
+    if (rankA !== undefined || rankB !== undefined) {
+      if (rankA === undefined) return 1;
+      if (rankB === undefined) return -1;
+      if (rankA !== rankB) return rankA - rankB;
+    }
+    const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
+    const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
+    if (priorityA !== priorityB) return priorityA - priorityB;
     const spA = a.story_points ?? Number.POSITIVE_INFINITY;
     const spB = b.story_points ?? Number.POSITIVE_INFINITY;
     if (spA !== spB) return spA - spB;
@@ -854,6 +1073,8 @@ export class TaskOrderingService {
     tasks: TaskNode[],
     edges: Map<string, string[]>,
     impact: Map<string, DependencyImpact>,
+    complexityByTask: ComplexityByTask,
+    missingContext: Set<string>,
     agentRank?: AgentRanking,
     stageOrderMap?: Map<TaskStage, number>,
   ): { ordered: TaskNode[]; cycle: boolean; cycleMembers: Set<string> } {
@@ -869,7 +1090,8 @@ export class TaskOrderingService {
       }
     }
     const queue = tasks.filter((t) => (indegree.get(t.id) ?? 0) === 0);
-    const sortQueue = () => queue.sort((a, b) => this.compareTasks(a, b, impact, agentRank, stageOrderMap));
+    const sortQueue = () =>
+      queue.sort((a, b) => this.compareTasks(a, b, impact, complexityByTask, missingContext, agentRank, stageOrderMap));
     sortQueue();
     const ordered: TaskNode[] = [];
     const visited = new Set<string>();
@@ -896,7 +1118,9 @@ export class TaskOrderingService {
         }
       }
       const remaining = tasks.filter((t) => !visited.has(t.id));
-      remaining.sort((a, b) => this.compareTasks(a, b, impact, agentRank, stageOrderMap));
+      remaining.sort((a, b) =>
+        this.compareTasks(a, b, impact, complexityByTask, missingContext, agentRank, stageOrderMap),
+      );
       ordered.push(...remaining);
     }
     return { ordered, cycle, cycleMembers };
@@ -1066,11 +1290,16 @@ export class TaskOrderingService {
     ordered: TaskNode[],
     epicMap: Map<string, TaskNode[]>,
     storyMap: Map<string, TaskNode[]>,
+    metadataByTask?: Map<string, Record<string, unknown> | null>,
   ): Promise<void> {
     await this.repo.withTransaction(async () => {
       for (let i = 0; i < ordered.length; i += 1) {
         const task = ordered[i];
-        await this.repo.updateTask(task.id, { priority: i + 1 });
+        const nextMetadata = metadataByTask?.get(task.id);
+        await this.repo.updateTask(task.id, {
+          priority: i + 1,
+          metadata: nextMetadata !== undefined ? nextMetadata : undefined,
+        });
       }
       const epicEntries = Array.from(epicMap.entries()).map(([epicId, tasks]) => ({
         epicId,
@@ -1167,10 +1396,13 @@ export class TaskOrderingService {
       if (request.storyKey && !story) {
         throw new Error(`Unknown user story key: ${request.storyKey} for project ${request.projectKey}`);
       }
+      const applyChanges = request.apply !== false;
+      const enrichMetadata = request.enrichMetadata !== false;
+      const planningContextPolicy: PlanningContextPolicy = request.planningContextPolicy ?? "best_effort";
       const tasks = await this.fetchTasks(project.id, epic?.id, statuses, story?.id, request.assignee);
       const deps = await this.fetchDependencies(tasks.map((t) => t.id));
       if (request.injectFoundationDeps !== false) {
-        await this.injectFoundationDependencies(tasks, deps, warnings);
+        await this.injectFoundationDependencies(tasks, deps, warnings, applyChanges);
       }
       let { nodes, dependents, missingRefs } = this.buildNodes(tasks, deps);
       const enableAgentRanking = Boolean(request.agentName);
@@ -1178,8 +1410,9 @@ export class TaskOrderingService {
       const useAgent = enableAgentRanking || enableInference;
       const agentStream = request.agentStream !== false;
       let docContext: DocContext | undefined;
-      if (useAgent) {
+      if (useAgent || enrichMetadata) {
         docContext = await this.buildDocContext(project.key, warnings);
+        this.enforcePlanningContextPolicy(planningContextPolicy, docContext);
         if (docContext && commandRun && this.recordTelemetry) {
           const contextTokens = estimateTokens(docContext.content);
           await this.jobService.recordTokenUsage({
@@ -1214,7 +1447,7 @@ export class TaskOrderingService {
             stream: agentStream,
             warnings,
           });
-          await this.applyInferredDependencies(tasks, deps, inferred, warnings);
+          await this.applyInferredDependencies(tasks, deps, inferred, warnings, applyChanges);
           ({ nodes, dependents, missingRefs } = this.buildNodes(tasks, deps));
         } catch (error) {
           warnings.push(`Dependency inference skipped: ${(error as Error).message}`);
@@ -1232,6 +1465,9 @@ export class TaskOrderingService {
           `Tasks with open missing_context comments: ${Array.from(missingContext).length}`,
         );
       }
+      if (enrichMetadata && !docContext) {
+        warnings.push("Planning context unavailable: ordering metadata enrichment used task/dependency heuristics only.");
+      }
       const stageOrder = (request.stageOrder && request.stageOrder.length > 0
         ? request.stageOrder
         : DEFAULT_STAGE_ORDER) as TaskStage[];
@@ -1245,10 +1481,15 @@ export class TaskOrderingService {
         DEFAULT_STAGE_ORDER.forEach((stage, idx) => stageOrderMap.set(stage, idx));
       }
       const impact = this.dependencyImpactMap(dependents);
+      const { metadataByTask, complexityByTask } = enrichMetadata
+        ? this.buildOrderingMetadata(nodes, impact, missingContext, docContext)
+        : { metadataByTask: new Map<string, Record<string, unknown> | null>(), complexityByTask: new Map<string, number>() };
       const { ordered: initialOrder, cycle, cycleMembers } = this.topologicalSort(
         nodes,
         dependents,
         impact,
+        complexityByTask,
+        missingContext,
         undefined,
         stageOrderMap,
       );
@@ -1336,6 +1577,8 @@ export class TaskOrderingService {
         nodes,
         dependents,
         impact,
+        complexityByTask,
+        missingContext,
         agentRank,
         stageOrderMap,
       );
@@ -1345,6 +1588,14 @@ export class TaskOrderingService {
       }
 
       const prioritized = ordered;
+      if (enrichMetadata) {
+        for (const task of prioritized) {
+          const metadata = metadataByTask.get(task.id);
+          if (metadata) {
+            task.metadata = metadata;
+          }
+        }
+      }
 
       const epicMap = new Map<string, TaskNode[]>();
       const storyMap = new Map<string, TaskNode[]>();
@@ -1358,7 +1609,11 @@ export class TaskOrderingService {
         storyMap.set(task.story_id, storyTasks);
       });
 
-      await this.persistPriorities(prioritized, epicMap, storyMap);
+      if (applyChanges) {
+        await this.persistPriorities(prioritized, epicMap, storyMap, enrichMetadata ? metadataByTask : undefined);
+      } else {
+        warnings.push("Dry run: priorities and dependency inferences were not persisted.");
+      }
 
       const mapped = this.mapResult(prioritized, impact, finalCycleMembers);
 
