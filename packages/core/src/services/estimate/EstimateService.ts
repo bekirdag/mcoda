@@ -118,6 +118,52 @@ export class EstimateService {
     };
   }
 
+  private buildStatusCounts(backlogTasks: { task_id: string; status: string }[]): EstimateResult["statusCounts"] {
+    const counts = {
+      total: backlogTasks.length,
+      readyToCodeReview: 0,
+      failed: 0,
+      inProgress: 0,
+      readyToQa: 0,
+      completed: 0,
+    };
+    for (const task of backlogTasks) {
+      const status = task.status.trim().toLowerCase();
+      if (status === "ready_to_code_review") counts.readyToCodeReview += 1;
+      if (status === "failed") counts.failed += 1;
+      if (status === "in_progress") counts.inProgress += 1;
+      if (status === "ready_to_qa") counts.readyToQa += 1;
+      if (status === "completed") counts.completed += 1;
+    }
+    return counts;
+  }
+
+  private buildCompletion(statusCounts: EstimateResult["statusCounts"]): EstimateResult["completion"] {
+    const ratio = (done: number, total: number): number => {
+      if (!total || total <= 0) return 0;
+      return Math.max(0, Math.min(100, (done / total) * 100));
+    };
+    const workDone = statusCounts.readyToCodeReview + statusCounts.readyToQa + statusCounts.completed;
+    const qaDone = statusCounts.readyToQa + statusCounts.completed;
+    return {
+      workOnTasks: {
+        done: workDone,
+        total: statusCounts.total,
+        percent: ratio(workDone, statusCounts.total),
+      },
+      readyToQa: {
+        done: qaDone,
+        total: statusCounts.total,
+        percent: ratio(qaDone, statusCounts.total),
+      },
+      done: {
+        done: statusCounts.completed,
+        total: statusCounts.total,
+        percent: ratio(statusCounts.completed, statusCounts.total),
+      },
+    };
+  }
+
   async estimate(options: Omit<EstimateOptions, "workspace">): Promise<EstimateResult> {
     const backlogService = await BacklogService.create(this.workspace);
     let backlogTotals: BacklogTotals;
@@ -158,6 +204,8 @@ export class EstimateService {
     const elapsedImplementationHours = await this.computeElapsedLaneHours(inProgressTaskIds, "in_progress");
     const durationsHours = this.computeDurations(backlogTotals, effectiveVelocity, elapsedImplementationHours);
     const etas = this.computeEtas(backlogTotals, effectiveVelocity, durationsHours);
+    const statusCounts = this.buildStatusCounts(backlogTasks);
+    const completion = this.buildCompletion(statusCounts);
 
     return {
       scope: {
@@ -171,6 +219,8 @@ export class EstimateService {
       effectiveVelocity,
       durationsHours,
       etas,
+      statusCounts,
+      completion,
     };
   }
 

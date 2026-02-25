@@ -862,7 +862,7 @@ test("createTasks invokes agent rating when enabled", async () => {
   assert.equal(ratingService.calls[0]?.agentId, "agent-1");
 });
 
-test("createTasks keeps duplicate local dependency ids scoped within each story", async () => {
+test("createTasks keeps duplicate local ids scoped across epics and stories", async () => {
   const outputs = [
     JSON.stringify({
       epics: [
@@ -872,6 +872,13 @@ test("createTasks keeps duplicate local dependency ids scoped within each story"
           title: "Epic One",
           description: "Epic desc",
           acceptanceCriteria: ["ac1"],
+        },
+        {
+          localId: "e2",
+          area: "bck",
+          title: "Epic Two",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac2"],
         },
       ],
     }),
@@ -883,8 +890,12 @@ test("createTasks keeps duplicate local dependency ids scoped within each story"
           description: "Story desc one",
           acceptanceCriteria: ["s ac1"],
         },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
         {
-          localId: "us2",
+          localId: "us1",
           title: "Story Two",
           description: "Story desc two",
           acceptanceCriteria: ["s ac2"],
@@ -968,8 +979,16 @@ test("createTasks keeps duplicate local dependency ids scoped within each story"
     agentStream: false,
   });
 
+  assert.equal(result.stories.length, 2);
+  assert.equal(result.tasks.length, 4);
   assert.equal(result.dependencies.length, 2);
   const tasksById = new Map(result.tasks.map((task) => [task.id, task]));
+  const storyTaskCount = new Map<string, number>();
+  for (const task of result.tasks) {
+    storyTaskCount.set(task.userStoryId, (storyTaskCount.get(task.userStoryId) ?? 0) + 1);
+  }
+  assert.equal(Math.max(...Array.from(storyTaskCount.values())), 2);
+  assert.equal(Math.min(...Array.from(storyTaskCount.values())), 2);
   for (const dep of result.dependencies) {
     const from = tasksById.get(dep.taskId);
     const to = tasksById.get(dep.dependsOnTaskId);
@@ -977,6 +996,83 @@ test("createTasks keeps duplicate local dependency ids scoped within each story"
     assert.ok(to);
     assert.equal(from?.userStoryId, to?.userStoryId);
   }
+});
+
+test("createTasks fails fast on duplicate scoped task local ids", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc one",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task one",
+          type: "feature",
+          description: "Task one",
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t1",
+          title: "Task two",
+          type: "feature",
+          description: "Task two",
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [],
+        agentStream: false,
+      }),
+    /duplicate task scope: e1::us1::t1/,
+  );
+  assert.equal(workspaceRepo.tasks.length, 0);
+  assert.equal(workspaceRepo.deps.length, 0);
 });
 
 test("createTasks fuzzy-discovers SDS-like docs and injects structure bootstrap tasks", async () => {

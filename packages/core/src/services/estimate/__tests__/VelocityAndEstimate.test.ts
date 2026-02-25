@@ -421,6 +421,23 @@ test("EstimateService combines backlog totals and velocity", async () => {
   assert.ok(Number.isFinite(complete));
   assert.ok(readyReview < readyQa);
   assert.ok(readyQa < complete);
+  assert.deepEqual(result.statusCounts, {
+    total: 3,
+    readyToCodeReview: 1,
+    failed: 0,
+    inProgress: 0,
+    readyToQa: 1,
+    completed: 0,
+  });
+  assert.equal(result.completion.workOnTasks.done, 2);
+  assert.equal(result.completion.workOnTasks.total, 3);
+  assert.ok(Math.abs(result.completion.workOnTasks.percent - 66.6666666667) < 0.001);
+  assert.equal(result.completion.readyToQa.done, 1);
+  assert.equal(result.completion.readyToQa.total, 3);
+  assert.ok(Math.abs(result.completion.readyToQa.percent - 33.3333333333) < 0.001);
+  assert.equal(result.completion.done.done, 0);
+  assert.equal(result.completion.done.total, 3);
+  assert.equal(result.completion.done.percent, 0);
 
   await repo.close();
   await fs.rm(dir, { recursive: true, force: true });

@@ -3959,7 +3959,7 @@ test("workOnTasks skips qa_followup tasks during auto selection", async () => {
   }
 });
 
-test("workOnTasks ignores dependency readiness during selection", async () => {
+test("workOnTasks skips dependency-blocked tasks during default selection", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -3975,7 +3975,6 @@ test("workOnTasks ignores dependency readiness during selection", async () => {
     routingService: new StubRoutingService() as any,
     vcsClient: new StubVcs() as any,
   });
-  await repo.updateTask(tasks[1].id, { status: "failed" });
   await repo.insertTaskDependencies(
     [
       {
@@ -3996,8 +3995,56 @@ test("workOnTasks ignores dependency readiness during selection", async () => {
       noCommit: true,
       limit: 1,
     });
+    assert.equal(result.selection.ordered[0]?.task.key, tasks[1].key);
+    assert.ok(result.selection.warnings.some((warning) => warning.includes("dependencies not ready")));
+    const updatedBlocked = await repo.getTaskByKey(tasks[0].key);
+    const updatedSelected = await repo.getTaskByKey(tasks[1].key);
+    assert.equal(updatedBlocked?.status, "not_started");
+    assert.equal(updatedSelected?.status, "ready_to_code_review");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks allows explicit task key execution even when dependencies are blocked", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await repo.insertTaskDependencies(
+    [
+      {
+        taskId: tasks[0].id,
+        dependsOnTaskId: tasks[1].id,
+        relationType: "blocks",
+      },
+    ],
+    false,
+  );
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      taskKeys: [tasks[0].key],
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
     assert.equal(result.selection.ordered[0]?.task.key, tasks[0].key);
-    assert.ok(!result.selection.warnings.some((warning) => warning.includes("dependencies not ready")));
     const updated = await repo.getTaskByKey(tasks[0].key);
     assert.equal(updated?.status, "ready_to_code_review");
   } finally {

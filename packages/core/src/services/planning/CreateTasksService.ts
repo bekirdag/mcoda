@@ -788,6 +788,22 @@ export class CreateTasksService {
     await swallow(docdex?.close?.bind(docdex));
   }
 
+  private storyScopeKey(epicLocalId: string, storyLocalId: string): string {
+    return `${epicLocalId}::${storyLocalId}`;
+  }
+
+  private taskScopeKey(epicLocalId: string, storyLocalId: string, taskLocalId: string): string {
+    return `${epicLocalId}::${storyLocalId}::${taskLocalId}`;
+  }
+
+  private scopeStory(story: Pick<PlanStory, "epicLocalId" | "localId">): string {
+    return this.storyScopeKey(story.epicLocalId, story.localId);
+  }
+
+  private scopeTask(task: Pick<PlanTask, "epicLocalId" | "storyLocalId" | "localId">): string {
+    return this.taskScopeKey(task.epicLocalId, task.storyLocalId, task.localId);
+  }
+
   private async seedPriorities(projectKey: string): Promise<void> {
     const ordering = await this.taskOrderingFactory(this.workspace, { recordTelemetry: false });
     try {
@@ -1235,7 +1251,7 @@ export class CreateTasksService {
   private orderStoryTasksByDependencies(
     storyTasks: PlanTask[],
     serviceRank: Map<string, number>,
-    taskServiceByLocalId: Map<string, string | undefined>,
+    taskServiceByScope: Map<string, string | undefined>,
   ): PlanTask[] {
     const byLocalId = new Map(storyTasks.map((task) => [task.localId, task]));
     const indegree = new Map<string, number>();
@@ -1256,8 +1272,10 @@ export class CreateTasksService {
       const classA = classifyTask({ title: a.title ?? "", description: a.description, type: a.type });
       const classB = classifyTask({ title: b.title ?? "", description: b.description, type: b.type });
       if (classA.foundation !== classB.foundation) return classA.foundation ? -1 : 1;
-      const rankA = serviceRank.get(taskServiceByLocalId.get(a.localId) ?? "") ?? Number.MAX_SAFE_INTEGER;
-      const rankB = serviceRank.get(taskServiceByLocalId.get(b.localId) ?? "") ?? Number.MAX_SAFE_INTEGER;
+      const rankA =
+        serviceRank.get(taskServiceByScope.get(this.scopeTask(a)) ?? "") ?? Number.MAX_SAFE_INTEGER;
+      const rankB =
+        serviceRank.get(taskServiceByScope.get(this.scopeTask(b)) ?? "") ?? Number.MAX_SAFE_INTEGER;
       if (rankA !== rankB) return rankA - rankB;
       const priorityA = a.priorityHint ?? Number.MAX_SAFE_INTEGER;
       const priorityB = b.priorityHint ?? Number.MAX_SAFE_INTEGER;
@@ -1297,25 +1315,26 @@ export class CreateTasksService {
     const epics = plan.epics.map((epic) => ({ ...epic }));
     const stories = plan.stories.map((story) => ({ ...story }));
     const tasks = plan.tasks.map((task) => ({ ...task, dependsOnKeys: uniqueStrings(task.dependsOnKeys ?? []) }));
-    const storyByLocalId = new Map(stories.map((story) => [story.localId, story]));
-    const taskServiceByLocalId = new Map<string, string | undefined>();
+    const storyByScope = new Map(stories.map((story) => [this.scopeStory(story), story]));
+    const taskServiceByScope = new Map<string, string | undefined>();
 
     for (const task of tasks) {
       const text = `${task.title ?? ""}\n${task.description ?? ""}`;
-      taskServiceByLocalId.set(task.localId, resolveEntityService(text));
+      taskServiceByScope.set(this.scopeTask(task), resolveEntityService(text));
     }
 
     const tasksByStory = new Map<string, PlanTask[]>();
     for (const task of tasks) {
-      const bucket = tasksByStory.get(task.storyLocalId) ?? [];
+      const storyScope = this.storyScopeKey(task.epicLocalId, task.storyLocalId);
+      const bucket = tasksByStory.get(storyScope) ?? [];
       bucket.push(task);
-      tasksByStory.set(task.storyLocalId, bucket);
+      tasksByStory.set(storyScope, bucket);
     }
 
     for (const storyTasks of tasksByStory.values()) {
       const tasksByService = new Map<string, PlanTask[]>();
       for (const task of storyTasks) {
-        const service = taskServiceByLocalId.get(task.localId);
+        const service = taskServiceByScope.get(this.scopeTask(task));
         if (!service) continue;
         const serviceTasks = tasksByService.get(service) ?? [];
         serviceTasks.push(task);
@@ -1325,7 +1344,7 @@ export class CreateTasksService {
         serviceTasks.sort((a, b) => (a.priorityHint ?? Number.MAX_SAFE_INTEGER) - (b.priorityHint ?? Number.MAX_SAFE_INTEGER));
       }
       for (const task of storyTasks) {
-        const service = taskServiceByLocalId.get(task.localId);
+        const service = taskServiceByScope.get(this.scopeTask(task));
         if (!service) continue;
         const requiredServices = graph.dependencies.get(service);
         if (!requiredServices || requiredServices.size === 0) continue;
@@ -1339,22 +1358,23 @@ export class CreateTasksService {
       }
     }
 
-    const storyRankByLocalId = new Map<string, number>();
+    const storyRankByScope = new Map<string, number>();
     for (const story of stories) {
-      const storyTasks = tasksByStory.get(story.localId) ?? [];
+      const storyScope = this.scopeStory(story);
+      const storyTasks = tasksByStory.get(storyScope) ?? [];
       const taskRanks = storyTasks
-        .map((task) => serviceRank.get(taskServiceByLocalId.get(task.localId) ?? ""))
+        .map((task) => serviceRank.get(taskServiceByScope.get(this.scopeTask(task)) ?? ""))
         .filter((value): value is number => typeof value === "number");
       const storyTextRank = serviceRank.get(resolveEntityService(`${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`) ?? "");
       const rank = taskRanks.length > 0 ? Math.min(...taskRanks) : storyTextRank ?? Number.MAX_SAFE_INTEGER;
-      storyRankByLocalId.set(story.localId, rank);
+      storyRankByScope.set(storyScope, rank);
     }
 
     const epicRankByLocalId = new Map<string, number>();
     for (const epic of epics) {
       const epicStories = stories.filter((story) => story.epicLocalId === epic.localId);
       const storyRanks = epicStories
-        .map((story) => storyRankByLocalId.get(story.localId))
+        .map((story) => storyRankByScope.get(this.scopeStory(story)))
         .filter((value): value is number => typeof value === "number");
       const epicTextRank = serviceRank.get(resolveEntityService(`${epic.title}\n${epic.description ?? ""}`) ?? "");
       const rank = storyRanks.length > 0 ? Math.min(...storyRanks) : epicTextRank ?? Number.MAX_SAFE_INTEGER;
@@ -1387,8 +1407,8 @@ export class CreateTasksService {
           const bootstrapA = isBootstrap(`${a.title} ${a.description ?? ""}`);
           const bootstrapB = isBootstrap(`${b.title} ${b.description ?? ""}`);
           if (bootstrapA !== bootstrapB) return bootstrapA ? -1 : 1;
-          const rankA = storyRankByLocalId.get(a.localId) ?? Number.MAX_SAFE_INTEGER;
-          const rankB = storyRankByLocalId.get(b.localId) ?? Number.MAX_SAFE_INTEGER;
+          const rankA = storyRankByScope.get(this.scopeStory(a)) ?? Number.MAX_SAFE_INTEGER;
+          const rankB = storyRankByScope.get(this.scopeStory(b)) ?? Number.MAX_SAFE_INTEGER;
           if (rankA !== rankB) return rankA - rankB;
           const priorityA = a.priorityHint ?? Number.MAX_SAFE_INTEGER;
           const priorityB = b.priorityHint ?? Number.MAX_SAFE_INTEGER;
@@ -1398,8 +1418,8 @@ export class CreateTasksService {
       epicStories.forEach((story, index) => {
         story.priorityHint = index + 1;
         storiesOrdered.push(story);
-        const storyTasks = tasksByStory.get(story.localId) ?? [];
-        const orderedTasks = this.orderStoryTasksByDependencies(storyTasks, serviceRank, taskServiceByLocalId);
+        const storyTasks = tasksByStory.get(this.scopeStory(story)) ?? [];
+        const orderedTasks = this.orderStoryTasksByDependencies(storyTasks, serviceRank, taskServiceByScope);
         orderedTasks.forEach((task, taskIndex) => {
           task.priorityHint = taskIndex + 1;
           tasksOrdered.push(task);
@@ -1407,21 +1427,21 @@ export class CreateTasksService {
       });
     }
 
-    const orderedStoryIds = new Set(storiesOrdered.map((story) => story.localId));
+    const orderedStoryScopes = new Set(storiesOrdered.map((story) => this.scopeStory(story)));
     for (const story of stories) {
-      if (orderedStoryIds.has(story.localId)) continue;
+      if (orderedStoryScopes.has(this.scopeStory(story))) continue;
       storiesOrdered.push(story);
     }
-    const orderedTaskIds = new Set(tasksOrdered.map((task) => task.localId));
+    const orderedTaskScopes = new Set(tasksOrdered.map((task) => this.scopeTask(task)));
     for (const task of tasks) {
-      if (orderedTaskIds.has(task.localId)) continue;
+      if (orderedTaskScopes.has(this.scopeTask(task))) continue;
       tasksOrdered.push(task);
     }
 
     // Keep parent linkage intact even if malformed story references exist.
     for (const story of storiesOrdered) {
-      if (!storyByLocalId.has(story.localId)) continue;
-      story.epicLocalId = storyByLocalId.get(story.localId)?.epicLocalId ?? story.epicLocalId;
+      if (!storyByScope.has(this.scopeStory(story))) continue;
+      story.epicLocalId = storyByScope.get(this.scopeStory(story))?.epicLocalId ?? story.epicLocalId;
     }
 
     return { epics, stories: storiesOrdered, tasks: tasksOrdered };
@@ -1564,10 +1584,9 @@ export class CreateTasksService {
   }
 
   private enforceStoryScopedDependencies(plan: GeneratedPlan): GeneratedPlan {
-    const scopedLocalKey = (storyLocalId: string, localId: string): string => `${storyLocalId}::${localId}`;
     const taskMap = new Map(
       plan.tasks.map((task) => [
-        scopedLocalKey(task.storyLocalId, task.localId),
+        this.scopeTask(task),
         {
           ...task,
           dependsOnKeys: uniqueStrings((task.dependsOnKeys ?? []).filter(Boolean)),
@@ -1576,9 +1595,10 @@ export class CreateTasksService {
     );
     const tasksByStory = new Map<string, PlanTask[]>();
     for (const task of taskMap.values()) {
-      const storyTasks = tasksByStory.get(task.storyLocalId) ?? [];
+      const storyScope = this.storyScopeKey(task.epicLocalId, task.storyLocalId);
+      const storyTasks = tasksByStory.get(storyScope) ?? [];
       storyTasks.push(task);
-      tasksByStory.set(task.storyLocalId, storyTasks);
+      tasksByStory.set(storyScope, storyTasks);
     }
     for (const storyTasks of tasksByStory.values()) {
       const localIds = new Set(storyTasks.map((task) => task.localId));
@@ -1614,8 +1634,72 @@ export class CreateTasksService {
     }
     return {
       ...plan,
-      tasks: plan.tasks.map((task) => taskMap.get(scopedLocalKey(task.storyLocalId, task.localId)) ?? task),
+      tasks: plan.tasks.map((task) => taskMap.get(this.scopeTask(task)) ?? task),
     };
+  }
+
+  private validatePlanLocalIdentifiers(plan: GeneratedPlan): void {
+    const errors: string[] = [];
+    const epicIds = new Set<string>();
+    for (const epic of plan.epics) {
+      if (!epic.localId || !epic.localId.trim()) {
+        errors.push("epic has missing localId");
+        continue;
+      }
+      if (epicIds.has(epic.localId)) {
+        errors.push(`duplicate epic localId: ${epic.localId}`);
+        continue;
+      }
+      epicIds.add(epic.localId);
+    }
+
+    const storyScopes = new Set<string>();
+    for (const story of plan.stories) {
+      const scope = this.scopeStory(story);
+      if (!epicIds.has(story.epicLocalId)) {
+        errors.push(`story ${scope} references unknown epicLocalId ${story.epicLocalId}`);
+      }
+      if (storyScopes.has(scope)) {
+        errors.push(`duplicate story scope: ${scope}`);
+        continue;
+      }
+      storyScopes.add(scope);
+    }
+
+    const taskScopes = new Set<string>();
+    const storyTaskLocals = new Map<string, Set<string>>();
+    for (const task of plan.tasks) {
+      const storyScope = this.storyScopeKey(task.epicLocalId, task.storyLocalId);
+      const taskScope = this.scopeTask(task);
+      if (!storyScopes.has(storyScope)) {
+        errors.push(`task ${taskScope} references unknown story scope ${storyScope}`);
+      }
+      if (taskScopes.has(taskScope)) {
+        errors.push(`duplicate task scope: ${taskScope}`);
+        continue;
+      }
+      taskScopes.add(taskScope);
+      const locals = storyTaskLocals.get(storyScope) ?? new Set<string>();
+      locals.add(task.localId);
+      storyTaskLocals.set(storyScope, locals);
+    }
+
+    for (const task of plan.tasks) {
+      const storyScope = this.storyScopeKey(task.epicLocalId, task.storyLocalId);
+      const localIds = storyTaskLocals.get(storyScope) ?? new Set<string>();
+      for (const dep of task.dependsOnKeys ?? []) {
+        if (!dep || dep === task.localId) continue;
+        if (!localIds.has(dep)) {
+          errors.push(
+            `task ${this.scopeTask(task)} has dependency ${dep} that is outside story scope ${storyScope}`,
+          );
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`Invalid generated plan local identifiers:\n- ${errors.join("\n- ")}`);
+    }
   }
 
   private async buildQaPreflight(): Promise<QaPreflight> {
@@ -2241,6 +2325,7 @@ export class CreateTasksService {
 
       type TaskDetail = {
         localId: string;
+        epicLocalId: string;
         key: string;
         storyLocalId: string;
         storyKey: string;
@@ -2251,13 +2336,16 @@ export class CreateTasksService {
       for (const story of storyMeta) {
         const storyId = storyIdByKey.get(story.storyKey);
         const existingTaskKeys = storyId ? await this.workspaceRepo.listTaskKeys(storyId) : [];
-        const tasks = plan.tasks.filter((t) => t.storyLocalId === story.node.localId);
+        const tasks = plan.tasks.filter(
+          (t) => t.storyLocalId === story.node.localId && t.epicLocalId === story.node.epicLocalId,
+        );
         const taskKeyGen = createTaskKeyGenerator(story.storyKey, existingTaskKeys);
         for (const task of tasks) {
           const key = taskKeyGen();
           const localId = task.localId ?? key;
           taskDetails.push({
             localId,
+            epicLocalId: story.node.epicLocalId,
             key,
             storyLocalId: story.node.localId,
             storyKey: story.storyKey,
@@ -2267,8 +2355,11 @@ export class CreateTasksService {
         }
       }
 
-      const scopedLocalKey = (storyLocalId: string, localId: string): string => `${storyLocalId}::${localId}`;
-      const localToKey = new Map(taskDetails.map((t) => [scopedLocalKey(t.storyLocalId, t.localId), t.key]));
+      const scopedLocalKey = (epicLocalId: string, storyLocalId: string, localId: string): string =>
+        this.taskScopeKey(epicLocalId, storyLocalId, localId);
+      const localToKey = new Map(
+        taskDetails.map((t) => [scopedLocalKey(t.epicLocalId, t.storyLocalId, t.localId), t.key]),
+      );
       const taskInserts: TaskInsert[] = [];
       const testCommandBuilder = new QaTestCommandBuilder(this.workspace.workspaceRoot);
       for (const task of taskDetails) {
@@ -2327,7 +2418,7 @@ export class CreateTasksService {
           blockers: qaBlockers.length ? qaBlockers : undefined,
         };
         const depSlugs = (task.plan.dependsOnKeys ?? [])
-          .map((dep) => localToKey.get(scopedLocalKey(task.storyLocalId, dep)))
+          .map((dep) => localToKey.get(scopedLocalKey(task.plan.epicLocalId, task.storyLocalId, dep)))
           .filter((value): value is string => Boolean(value));
         const metadata: Record<string, unknown> = {
           doc_links: task.plan.relatedDocs ?? [],
@@ -2375,17 +2466,17 @@ export class CreateTasksService {
       for (const detail of taskDetails) {
         const row = taskRows.find((t) => t.key === detail.key);
         if (row) {
-          taskByLocal.set(scopedLocalKey(detail.storyLocalId, detail.localId), row);
+          taskByLocal.set(scopedLocalKey(detail.epicLocalId, detail.storyLocalId, detail.localId), row);
         }
       }
 
       const depKeys = new Set<string>();
       const dependencies: TaskDependencyInsert[] = [];
       for (const detail of taskDetails) {
-        const current = taskByLocal.get(scopedLocalKey(detail.storyLocalId, detail.localId));
+        const current = taskByLocal.get(scopedLocalKey(detail.epicLocalId, detail.storyLocalId, detail.localId));
         if (!current) continue;
         for (const dep of detail.plan.dependsOnKeys ?? []) {
-          const target = taskByLocal.get(scopedLocalKey(detail.storyLocalId, dep));
+          const target = taskByLocal.get(scopedLocalKey(detail.plan.epicLocalId, detail.storyLocalId, dep));
           if (!target || target.id === current.id) continue;
           const depKey = `${current.id}|${target.id}|blocks`;
           if (depKeys.has(depKey)) continue;
@@ -2516,6 +2607,7 @@ export class CreateTasksService {
         plan = this.enforceStoryScopedDependencies(plan);
         plan = this.applyServiceDependencySequencing(plan, docs);
         plan = this.enforceStoryScopedDependencies(plan);
+        this.validatePlanLocalIdentifiers(plan);
 
         await this.jobService.writeCheckpoint(job.id, {
           stage: "stories_generated",
@@ -2667,6 +2759,7 @@ export class CreateTasksService {
       plan = this.enforceStoryScopedDependencies(plan);
       plan = this.applyServiceDependencySequencing(plan, []);
       plan = this.enforceStoryScopedDependencies(plan);
+      this.validatePlanLocalIdentifiers(plan);
 
       const loadRefinePlans = async (): Promise<string[]> => {
         const candidates: string[] = [];
