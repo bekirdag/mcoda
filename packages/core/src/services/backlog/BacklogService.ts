@@ -315,6 +315,9 @@ export class BacklogService {
             storyKey: story?.key,
             assignee: options.assignee,
             statusFilter: options.statuses,
+            injectFoundationDeps: false,
+            enrichMetadata: false,
+            apply: false,
           });
           orderingMeta.applied = true;
           orderingMeta.reason = "dependency_graph";

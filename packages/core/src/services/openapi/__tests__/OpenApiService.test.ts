@@ -21,12 +21,23 @@ class StubRatingService {
   }
 }
 
+const ensureLocalSds = async (workspaceRoot: string): Promise<void> => {
+  const sdsDir = path.join(workspaceRoot, "docs", "sds");
+  await fs.mkdir(sdsDir, { recursive: true });
+  await fs.writeFile(
+    path.join(sdsDir, "sds.md"),
+    "# Software Design Specification\n\n## Interfaces / APIs\n- GET /health\n",
+    "utf8",
+  );
+};
+
 test("OpenApiService generates spec with stubbed agent", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-openapi-"));
   const previous = process.env.MCODA_DISABLE_DB;
   process.env.MCODA_DISABLE_DB = "1";
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const jobService = new JobService(workspace.workspaceRoot);
+  await ensureLocalSds(workspace.workspaceRoot);
   const spec = [
     "openapi: 3.1.0",
     "info:",
@@ -88,12 +99,74 @@ test("OpenApiService generates spec with stubbed agent", async () => {
   }
 });
 
+test("OpenApiService fails when SDS document is missing", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-openapi-"));
+  const previous = process.env.MCODA_DISABLE_DB;
+  process.env.MCODA_DISABLE_DB = "1";
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const jobService = new JobService(workspace.workspaceRoot);
+  const spec = [
+    "openapi: 3.1.0",
+    "info:",
+    "  title: Demo API",
+    "  version: 0.1.8",
+    "paths:",
+    "  /health:",
+    "    get:",
+    "      operationId: getHealth",
+    "      responses:",
+    "        '200':",
+    "          description: ok",
+    "components:",
+    "  schemas:",
+    "    Health:",
+    "      type: object",
+  ].join("\n");
+
+  const service = new OpenApiService(workspace, {
+    jobService,
+    docdex: { search: async () => [] } as any,
+    routingService: {
+      resolveAgentForCommand: async () => ({
+        agent: { id: "agent-1", slug: "agent-1", adapter: "local", defaultModel: "stub" },
+      }),
+    } as any,
+    agentService: {
+      invoke: async () => ({ output: spec, adapter: "local" }),
+    } as any,
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        service.generateFromDocs({
+          workspace,
+          cliVersion: "0.1.8",
+          agentStream: false,
+          dryRun: true,
+        }),
+      (error: any) =>
+        typeof error?.message === "string" &&
+        error.message.includes("requires an SDS document"),
+    );
+  } finally {
+    await service.close();
+    if (previous === undefined) {
+      delete process.env.MCODA_DISABLE_DB;
+    } else {
+      process.env.MCODA_DISABLE_DB = previous;
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("OpenApiService generates admin spec when docs mention admin surfaces", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-openapi-"));
   const previous = process.env.MCODA_DISABLE_DB;
   process.env.MCODA_DISABLE_DB = "1";
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const jobService = new JobService(workspace.workspaceRoot);
+  await ensureLocalSds(workspace.workspaceRoot);
   const primarySpec = [
     "openapi: 3.1.0",
     "info:",
@@ -195,6 +268,7 @@ test("OpenApiService invokes agent rating when enabled", async () => {
   process.env.MCODA_DISABLE_DB = "1";
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const jobService = new JobService(workspace.workspaceRoot);
+  await ensureLocalSds(workspace.workspaceRoot);
   const spec = [
     "openapi: 3.1.0",
     "info:",
@@ -264,6 +338,7 @@ test("OpenApiService resumes from saved draft without invoking agent", async () 
   process.env.MCODA_DISABLE_DB = "1";
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const jobService = new JobService(workspace.workspaceRoot);
+  await ensureLocalSds(workspace.workspaceRoot);
   const spec = [
     "openapi: 3.1.0",
     "info:",
@@ -353,6 +428,7 @@ test("OpenApiService times out agent invocation", async () => {
   process.env.MCODA_DISABLE_DB = "1";
   const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
   const jobService = new JobService(workspace.workspaceRoot);
+  await ensureLocalSds(workspace.workspaceRoot);
   const spec = [
     "openapi: 3.1.0",
     "info:",
@@ -504,4 +580,36 @@ test("validateOpenApiSchemaContent flags invalid versions and operation ids", ()
   assert.ok(result.errors.some((error) => error.includes("Invalid openapi version")));
   assert.ok(result.errors.some((error) => error.includes("Missing info.version")));
   assert.ok(result.errors.some((error) => error.includes("Invalid operationId")));
+});
+
+test("validateOpenApiSchemaContent flags invalid x-mcoda-task-hints", () => {
+  const spec = [
+    "openapi: 3.1.0",
+    "info:",
+    "  title: Demo",
+    "  version: 1.0.0",
+    "paths:",
+    "  /health:",
+    "    get:",
+    "      operationId: getHealth",
+    "      x-mcoda-task-hints:",
+    "        stage: invalid_stage",
+    "        test_requirements:",
+    "          unit: bad",
+    "      responses:",
+    "        '200':",
+    "          description: ok",
+    "          content:",
+    "            application/json:",
+    "              schema:",
+    "                $ref: '#/components/schemas/Health'",
+    "components:",
+    "  schemas:",
+    "    Health:",
+    "      type: object",
+  ].join("\n");
+
+  const result = validateOpenApiSchemaContent(spec);
+  assert.ok(result.errors.some((error) => error.includes("x-mcoda-task-hints.stage")));
+  assert.ok(result.errors.some((error) => error.includes("x-mcoda-task-hints.test_requirements.unit")));
 });

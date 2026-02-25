@@ -74,10 +74,10 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
   let rateAgents = false;
   let fast = false;
   let iterate = false;
-  let quality: string | undefined;
-  let resolveOpenQuestions = false;
-  let noPlaceholders = false;
-  let noMaybes = false;
+  let quality: string | undefined = "build-ready";
+  let resolveOpenQuestions = true;
+  let noPlaceholders = true;
+  let noMaybes = true;
   let crossAlign = true;
   let dryRun = false;
   let json = false;
@@ -249,9 +249,6 @@ export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
       case "--no-telemetry":
         noTelemetry = true;
         break;
-      case "--no-telemetry":
-        noTelemetry = true;
-        break;
       case "--help":
       case "-h":
         // eslint-disable-next-line no-console
@@ -301,10 +298,10 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
   let force = false;
   let fast = false;
   let iterate = false;
-  let quality: string | undefined;
-  let resolveOpenQuestions = false;
-  let noPlaceholders = false;
-  let noMaybes = false;
+  let quality: string | undefined = "build-ready";
+  let resolveOpenQuestions = true;
+  let noPlaceholders = true;
+  let noMaybes = true;
   let crossAlign = true;
   let resumeJobId: string | undefined;
   let dryRun = false;
@@ -477,6 +474,9 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
         break;
       case "--no-color":
         noColor = true;
+        break;
+      case "--no-telemetry":
+        noTelemetry = true;
         break;
       case "--help":
       case "-h":

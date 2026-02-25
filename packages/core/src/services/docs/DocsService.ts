@@ -43,7 +43,13 @@ import { runRfpDefinitionGate } from "./review/gates/RfpDefinitionGate.js";
 import { runPdrInterfacesGate } from "./review/gates/PdrInterfacesGate.js";
 import { runPdrOwnershipGate } from "./review/gates/PdrOwnershipGate.js";
 import { runPdrOpenQuestionsGate } from "./review/gates/PdrOpenQuestionsGate.js";
+import { runPdrTechStackRationaleGate } from "./review/gates/PdrTechStackRationaleGate.js";
+import { runPdrFolderTreeGate } from "./review/gates/PdrFolderTreeGate.js";
+import { runPdrNoUnresolvedItemsGate } from "./review/gates/PdrNoUnresolvedItemsGate.js";
 import { runSdsDecisionsGate } from "./review/gates/SdsDecisionsGate.js";
+import { runSdsTechStackRationaleGate } from "./review/gates/SdsTechStackRationaleGate.js";
+import { runSdsFolderTreeGate } from "./review/gates/SdsFolderTreeGate.js";
+import { runSdsNoUnresolvedItemsGate } from "./review/gates/SdsNoUnresolvedItemsGate.js";
 import { runSdsPolicyTelemetryGate } from "./review/gates/SdsPolicyTelemetryGate.js";
 import { runSdsOpsGate } from "./review/gates/SdsOpsGate.js";
 import { runSdsAdaptersGate } from "./review/gates/SdsAdaptersGate.js";
@@ -211,7 +217,13 @@ const BUILD_READY_ONLY_GATES = new Set([
   "gate-rfp-definition-coverage",
   "gate-pdr-interfaces-pipeline",
   "gate-pdr-ownership-consent-flow",
+  "gate-pdr-tech-stack-rationale",
+  "gate-pdr-folder-tree",
+  "gate-pdr-no-unresolved-items",
   "gate-sds-explicit-decisions",
+  "gate-sds-tech-stack-rationale",
+  "gate-sds-folder-tree",
+  "gate-sds-no-unresolved-items",
   "gate-sds-policy-telemetry-metering",
   "gate-sds-ops-observability-testing",
   "gate-sds-external-adapters",
@@ -231,12 +243,16 @@ const readPromptIfExists = async (workspace: WorkspaceResolution, relative: stri
 const PDR_REQUIRED_HEADINGS: string[][] = [
   ["Introduction"],
   ["Scope"],
+  ["Goals", "Goals & Success Metrics", "Success Metrics"],
   ["Technology Stack", "Tech Stack"],
   ["Requirements", "Requirements & Constraints"],
   ["Architecture", "Architecture Overview"],
   ["Interfaces", "Interfaces / APIs"],
+  ["Delivery", "Delivery & Dependency Sequencing", "Dependency Sequencing"],
+  ["Target Folder Tree", "Folder Tree", "Directory Structure", "Repository Structure"],
   ["Non-Functional", "Non-Functional Requirements"],
   ["Risks", "Risks & Mitigations"],
+  ["Resolved Decisions"],
   ["Open Questions"],
   ["Acceptance Criteria"],
 ];
@@ -269,20 +285,27 @@ const ensureSectionContent = (draft: string, title: string, fallback: string): s
 
 const validateSdsDraft = (draft: string): boolean => {
   if (!draft || draft.trim().length < 100) return false;
-  const required = [
-    "Introduction",
-    "Scope",
-    "Architecture",
-    "Components",
-    "Data Model",
-    "Interfaces",
-    "Non-Functional",
-    "Security",
-    "Failure",
-    "Risks",
-    "Open Questions",
+  const headings = draft
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,6}\s+/.test(line))
+    .map((line) => line.replace(/^#{1,6}\s+/, "").toLowerCase());
+  const requiredGroups = [
+    ["introduction", "purpose"],
+    ["scope"],
+    ["architecture"],
+    ["data"],
+    ["interface"],
+    ["security"],
+    ["failure", "recovery", "rollback"],
+    ["risk"],
+    ["operations", "observability", "quality"],
+    ["open questions"],
+    ["acceptance criteria"],
   ];
-  return required.every((section) => new RegExp(`^#{1,6}\\s+[^\\n]*${section}\\b`, "im").test(draft));
+  return requiredGroups.every((group) =>
+    headings.some((heading) => group.some((term) => heading.includes(term))),
+  );
 };
 
 const slugify = (value: string): string =>
@@ -344,6 +367,117 @@ const contextIndicatesMlStack = (context: PdrContext): boolean => {
 
 const resolveTechStackFallback = (context: PdrContext): string => {
   return contextIndicatesMlStack(context) ? ML_TECH_STACK_FALLBACK : DEFAULT_TECH_STACK_FALLBACK;
+};
+
+const DEFAULT_PDR_FOLDER_TREE_BLOCK = [
+  "```text",
+  ".",
+  "├── docs/                      # product, design, and architecture docs",
+  "│   ├── rfp/                   # requirement sources",
+  "│   ├── pdr/                   # product design reviews",
+  "│   └── sds/                   # software design specifications",
+  "├── packages/                  # application/service modules",
+  "│   ├── cli/                   # command and operator interfaces",
+  "│   ├── core/                  # business/domain services",
+  "│   └── integrations/          # provider adapters",
+  "├── openapi/                   # API contracts",
+  "├── db/                        # schema, migrations, seed data",
+  "├── deploy/                    # runtime manifests/compose/k8s",
+  "├── tests/                     # unit/integration/e2e checks",
+  "└── scripts/                   # automation and release scripts",
+  "```",
+].join("\n");
+
+const normalizePdrResolvedEntry = (line: string): string | undefined => {
+  const stripped = line
+    .trim()
+    .replace(/^[-*+]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .trim();
+  if (!stripped) return undefined;
+  if (/no unresolved questions remain|no open questions remain/i.test(stripped)) {
+    return "Resolved: No unresolved questions remain.";
+  }
+  const withoutPrefix = stripped.replace(/^resolved:\s*/i, "").trim();
+  const withoutQuestions = withoutPrefix.replace(/\?+$/, "").trim();
+  if (!withoutQuestions) return undefined;
+  const withTerminal = /[.!?]$/.test(withoutQuestions) ? withoutQuestions : `${withoutQuestions}.`;
+  return `Resolved: ${withTerminal}`;
+};
+
+const enforcePdrResolvedOpenQuestionsContract = (draft: string): string => {
+  const section =
+    extractSection(draft, "Open Questions") ??
+    extractSection(draft, "Open Questions (Resolved)");
+  if (!section) return draft;
+  const resolvedEntries = section.body
+    .split(/\r?\n/)
+    .map(normalizePdrResolvedEntry)
+    .filter((value): value is string => Boolean(value));
+  const uniqueEntries = Array.from(
+    new Map(resolvedEntries.map((entry) => [entry.toLowerCase(), entry])).values(),
+  );
+  const body =
+    uniqueEntries.length > 0
+      ? uniqueEntries.map((entry) => `- ${entry}`).join("\n")
+      : "- Resolved: No unresolved questions remain.";
+  return replaceSection(draft, "Open Questions", body);
+};
+
+const enforcePdrTechStackContract = (draft: string): string => {
+  const section =
+    extractSection(draft, "Technology Stack") ??
+    extractSection(draft, "Tech Stack");
+  if (!section) return draft;
+  const body = cleanBody(section.body ?? "");
+  const additions: string[] = [];
+  if (!/chosen stack|selected stack|primary stack|we use/i.test(body)) {
+    additions.push("- Chosen stack: declare runtime, language, persistence, and tooling baseline.");
+  }
+  if (!/alternatives? considered|options? considered|alternative/i.test(body)) {
+    additions.push("- Alternatives considered: list realistic options evaluated but not selected.");
+  }
+  if (!/rationale|trade[- ]?off|because|why/i.test(body)) {
+    additions.push("- Rationale: explain why the selected stack is preferred for delivery and operations.");
+  }
+  if (additions.length === 0) return draft;
+  const merged = [body, ...additions].filter(Boolean).join("\n");
+  return replaceSection(draft, "Technology Stack", merged);
+};
+
+const enforcePdrFolderTreeContract = (draft: string): string => {
+  const section =
+    extractSection(draft, "Target Folder Tree") ??
+    extractSection(draft, "Folder Tree");
+  if (!section) return draft;
+  const body = section.body ?? "";
+  const treeBlock = body.match(/```(?:text)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const treeEntries =
+    treeBlock?.split(/\r?\n/).filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (trimmed === ".") return true;
+      if (/^[├└│]/.test(trimmed)) return true;
+      return /[A-Za-z0-9_.-]+\/?/.test(trimmed);
+    }).length ?? 0;
+  const hasResponsibilityHints = treeBlock
+    ? /#|responsibilit|owner|module|service|tests?|scripts?/i.test(treeBlock)
+    : false;
+  const hasFence = /```(?:text)?[\s\S]*?```/i.test(body);
+  if (hasFence && treeEntries >= 8 && hasResponsibilityHints) return draft;
+  const mergedBody =
+    cleanBody(body).length > 0
+      ? `${cleanBody(body)}\n\n${DEFAULT_PDR_FOLDER_TREE_BLOCK}`
+      : DEFAULT_PDR_FOLDER_TREE_BLOCK;
+  return replaceSection(draft, "Target Folder Tree", mergedBody);
+};
+
+const applyPdrHardContracts = (draft: string): string => {
+  let updated = draft;
+  updated = enforcePdrTechStackContract(updated);
+  updated = enforcePdrFolderTreeContract(updated);
+  updated = enforcePdrResolvedOpenQuestionsContract(updated);
+  return updated;
 };
 
 class DocContextAssembler {
@@ -687,8 +821,13 @@ const buildRunPrompt = (
     docdexNote,
     [
       "Return markdown with exactly these sections as H2 headings, one time each:",
-      "Introduction, Scope, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria",
+      "Introduction, Scope, Goals & Success Metrics, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Delivery & Dependency Sequencing, Target Folder Tree, Non-Functional Requirements, Risks & Mitigations, Resolved Decisions, Open Questions, Acceptance Criteria",
       "Do not use bold headings; use `##` headings only. Do not repeat sections.",
+      "Quality requirements:",
+      "- Produce implementation-ready, self-consistent content (no TODO/TBD/maybe placeholders).",
+      "- Include chosen stack, alternatives considered, and rationale in Technology Stack.",
+      "- Include a fenced `text` folder tree with responsibilities in Target Folder Tree.",
+      "- Keep Open Questions resolved-only (lines beginning with `Resolved:`).",
     ].join("\n"),
     runbookPrompt,
   ]
@@ -725,6 +864,14 @@ const buildSdsRunPrompt = (
     `Context summary: ${context.summary}`,
     blocks,
     docdexNote,
+    [
+      "SDS quality requirements:",
+      "- Produce implementation-ready, self-consistent content (no TODO/TBD/maybe placeholders).",
+      "- Make architecture and stack choices explicit; include alternatives considered with rationale.",
+      "- Include a detailed folder tree in a fenced text block with file/folder responsibilities.",
+      "- Keep Open Questions resolved-only (lines beginning with 'Resolved:').",
+      "- Keep terminology, API contracts, data model, security, deployment, and operations aligned.",
+    ].join("\n"),
     runbook,
   ]
     .filter(Boolean)
@@ -745,21 +892,44 @@ const ensureStructuredDraft = (
     {
       title: "Scope",
       fallback:
-        "In-scope: todo CRUD (title required; optional description, due date, priority), status toggle, filters/sort/search, bulk complete/delete, keyboard shortcuts, responsive UI, offline/localStorage. Out-of-scope: multi-user/auth/sync/backends, notifications/reminders, team features, heavy UI kits.",
+        "In-scope: capabilities, interfaces, and delivery outcomes explicitly defined in the RFP/context. Out-of-scope: speculative features, undocumented integrations, and requirements without source grounding.",
+    },
+    {
+      title: "Goals & Success Metrics",
+      fallback:
+        "- Goal: deliver prioritized product outcomes from the RFP with a production-viable implementation path.\n- Success metric: core user workflows are complete and testable with defined acceptance criteria.\n- Success metric: release blockers are reduced to zero unresolved items before build-ready handoff.",
     },
     { title: "Technology Stack", fallback: techStackFallback },
     {
       title: "Requirements & Constraints",
       fallback:
         context.bullets.map((b) => `- ${b}`).join("\n") ||
-        "- Data model, UX flows, keyboard shortcuts, and offline localStorage persistence per RFP.",
+        "- Capture functional, contract, data, security, compliance, and operational constraints from the source context.",
     },
     { title: "Architecture Overview", fallback: "Describe the system architecture, components, and interactions." },
     { title: "Interfaces / APIs", fallback: "List key interfaces and constraints. Do not invent endpoints." },
+    {
+      title: "Delivery & Dependency Sequencing",
+      fallback:
+        "- Define foundational capabilities first, then dependent services/features.\n- Sequence work by dependency direction (providers before consumers).\n- Identify readiness gates and handoff criteria between phases.",
+    },
+    {
+      title: "Target Folder Tree",
+      fallback: DEFAULT_PDR_FOLDER_TREE_BLOCK,
+    },
     { title: "Non-Functional Requirements", fallback: "- Performance, reliability, compliance, and operational needs." },
     { title: "Risks & Mitigations", fallback: "- Enumerate risks from the RFP and proposed mitigations." },
-    { title: "Open Questions", fallback: "- Outstanding questions to clarify with stakeholders." },
-    { title: "Acceptance Criteria", fallback: "- Add/edit/delete todos persists offline; filters/sorts/search <100ms for 500 items; shortcuts (`n`, Ctrl/Cmd+Enter) work; bulk actions confirm/undo; responsive and accessible (WCAG AA basics)." },
+    {
+      title: "Resolved Decisions",
+      fallback:
+        "- Decision: architecture and contract baselines are fixed for this implementation cycle.\n- Decision: dependency sequencing and release gates are mandatory.",
+    },
+    { title: "Open Questions", fallback: "- Resolved: No unresolved questions remain." },
+    {
+      title: "Acceptance Criteria",
+      fallback:
+        "- Functional flows defined by the RFP are implemented and testable.\n- Interface and contract assumptions are explicit, validated, and traceable.\n- Operational and quality gates (tests, observability, release readiness) are satisfied for build-ready handoff.",
+    },
   ];
 
   const parts: string[] = [];
@@ -771,14 +941,14 @@ const ensureStructuredDraft = (
     if (section.title === "Interfaces / APIs" && (context.openapi?.length ?? 0) === 0) {
       const scrubbed = stripInventedEndpoints(body);
       const openApiFallback =
-        "No OpenAPI excerpts available. Capture interface needs as open questions (authentication/identity, data access, integrations, eventing, analytics/observability).";
+        "No OpenAPI excerpts available. Document required interfaces as explicit contracts/assumptions without inventing endpoint paths.";
       if (!scrubbed || scrubbed.length === 0 || /endpoint/i.test(scrubbed)) {
         body = cleanBody(openApiFallback);
       } else {
         body = scrubbed;
       }
       if (!/openapi/i.test(body)) {
-        body = `${body}\n- No OpenAPI excerpts available; keep endpoints as open questions.`;
+        body = `${body}\n- No OpenAPI excerpts available; avoid inventing endpoint paths.`;
       }
     }
     parts.push(`## ${section.title}`);
@@ -786,7 +956,7 @@ const ensureStructuredDraft = (
   }
   parts.push("## Source RFP");
   parts.push(rfpSource);
-  return parts.join("\n\n");
+  return applyPdrHardContracts(parts.join("\n\n"));
 };
 
 const tidyPdrDraft = async (
@@ -799,7 +969,7 @@ const tidyPdrDraft = async (
     draft,
     "",
     "Requirements:",
-    "- Keep exactly one instance of each H2 section: Introduction, Scope, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Non-Functional Requirements, Risks & Mitigations, Open Questions, Acceptance Criteria, Source RFP.",
+    "- Keep exactly one instance of each H2 section: Introduction, Scope, Goals & Success Metrics, Technology Stack, Requirements & Constraints, Architecture Overview, Interfaces / APIs, Delivery & Dependency Sequencing, Target Folder Tree, Non-Functional Requirements, Risks & Mitigations, Resolved Decisions, Open Questions, Acceptance Criteria, Source RFP.",
     "- Remove duplicate sections, bold headings posing as sections, placeholder sentences, and repeated bullet blocks. If the same idea appears twice, keep the richer/longer version and drop the restatement.",
     "- Do not add new sections or reorder the required outline.",
     "- Keep content concise and aligned to the headings. Do not alter semantics.",
@@ -820,48 +990,206 @@ const PDR_ENRICHMENT_SECTIONS: { title: string; guidance: string[] }[] = [
   {
     title: "Architecture Overview",
     guidance: [
-      "List concrete modules/components: UI shells (list/detail), state/store, persistence adapter (localStorage), keyboard/shortcut handler, bulk selection manager, search/filter/sort utilities.",
-      "Describe data flow (load -> store -> UI render; user actions -> store mutate -> persist).",
-      "Call out offline-first behavior and how persistence errors are handled.",
+      "List concrete components/services/modules from the source context and define responsibilities and boundaries for each.",
+      "Describe primary data/control flows across those components and include failure-handling boundaries.",
+      "State operational assumptions explicitly (readiness, dependencies, and degradation behavior) without domain-specific bias.",
     ],
   },
   {
     title: "Requirements & Constraints",
     guidance: [
-      "Spell out data model fields (id, title, description?, status enum, dueDate format/timezone, priority enum order, createdAt/updatedAt, selection flag).",
-      "Define localStorage key naming, schema versioning, and migration approach.",
-      "Include accessibility expectations (keyboard focus, ARIA basics) and bundle size/perf targets.",
+      "Define domain entities, invariants, validation constraints, compatibility rules, and evolution/migration expectations where applicable.",
+      "Capture security/compliance constraints and any operational limitations explicitly tied to the source context.",
+      "Quantify measurable quality expectations (performance, reliability, accessibility, etc.) when available from context.",
     ],
   },
   {
     title: "Interfaces / APIs",
     guidance: [
-      "Define internal contracts: store API (add/update/delete/toggle/filter/search), persistence adapter API (load/save/validate), shortcut map (keys -> actions), bulk action contract, optional export/import shape.",
-      "Clarify validation rules (required title, length limits, due date handling).",
+      "Define internal and external interfaces/contracts, including responsibilities, inputs/outputs, and error semantics.",
+      "When OpenAPI is missing, state bounded interface assumptions and avoid inventing concrete endpoint paths.",
+    ],
+  },
+  {
+    title: "Delivery & Dependency Sequencing",
+    guidance: [
+      "Describe foundational-to-dependent delivery order and why that order reduces rework.",
+      "Identify hard dependencies, readiness criteria, and phase handoff checks.",
+    ],
+  },
+  {
+    title: "Target Folder Tree",
+    guidance: [
+      "Provide a fenced text tree with directories/files and short responsibility comments.",
+      "Include docs, source modules, contracts, database, deploy, tests, and scripts paths.",
     ],
   },
   {
     title: "Non-Functional Requirements",
     guidance: [
-      "Quantify perf (<100ms for 500 items), bundle size goal, offline expectations, and accessibility targets (focus order, contrast).",
-      "Reliability: handling storage quota/corruption, error surfacing.",
+      "Quantify performance/reliability/security/operability targets that are justified by source context.",
+      "Include observability and failure-containment expectations required for production readiness.",
     ],
   },
   {
     title: "Risks & Mitigations",
     guidance: [
-      "Cover localStorage limits/corruption, keyboard conflicts, bulk delete accidents, schema drift, and mobile usability.",
-      "Provide specific mitigations (validation, confirmations/undo, migrations, debounced search, accessible shortcuts).",
+      "Enumerate concrete delivery/architecture/operational risks derived from source context.",
+      "Provide explicit mitigations, fallback behavior, and verification checks for each high-impact risk.",
     ],
   },
   {
     title: "Open Questions",
     guidance: [
-      "Resolve defaults: sort/tie-breakers, priority order, initial filters, due date format/timezone.",
-      "Ask about export/import needs, accessibility targets, theming/branding, undo/confirm patterns.",
+      "Convert unresolved items to resolved decisions with explicit outcomes.",
+      "Keep entries in `Resolved: ...` form and remove TODO/TBD language.",
     ],
   },
 ];
+
+const DEFAULT_SDS_SECTION_OUTLINE = [
+  "0. Introduction, Document Governance, and Change Policy",
+  "1. Purpose and Scope",
+  "2. System Boundaries and Non-Goals",
+  "3. Core Decisions (Baseline)",
+  "4. Platform Model and Technology Stack",
+  "5. Service Architecture and Dependency Contracts",
+  "6. Data Architecture and Ownership",
+  "7. Eventing, APIs, and Interface Contracts",
+  "8. Security, IAM, and Compliance",
+  "9. Risk and Control Model",
+  "10. Compute, Deployment, and Startup Sequencing",
+  "11. Target Folder Tree (Expanded with File Responsibilities)",
+  "12. Operations, Observability, and Quality Gates",
+  "13. External Integrations and Adapter Contracts",
+  "14. Policy, Telemetry, and Metering",
+  "15. Failure Modes, Recovery, and Rollback",
+  "16. Assumptions and Constraints",
+  "17. Resolved Decisions",
+  "18. Open Questions (Resolved)",
+  "19. Acceptance Criteria and Verification Plan",
+];
+
+const DEFAULT_SDS_FOLDER_TREE_BLOCK = [
+  "```text",
+  ".",
+  "├── docs/                      # product and architecture docs",
+  "│   ├── rfp/                   # requirement sources",
+  "│   ├── pdr/                   # product design reviews",
+  "│   └── sds/                   # software design specifications",
+  "├── packages/                  # source modules/services",
+  "│   ├── cli/                   # command interfaces",
+  "│   ├── core/                  # business/application services",
+  "│   └── integrations/          # external adapters/providers",
+  "├── openapi/                   # API contracts",
+  "├── db/                        # schema and migrations",
+  "├── deploy/                    # compose/k8s/runtime manifests",
+  "├── tests/                     # unit/integration/e2e suites",
+  "└── scripts/                   # build/release/ops automation",
+  "```",
+].join("\n");
+
+const findSdsSectionTitle = (
+  sections: string[],
+  pattern: RegExp,
+  fallback: string,
+): string => sections.find((section) => pattern.test(section)) ?? fallback;
+
+const ensureTrailingPeriod = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (/[.!?]$/.test(trimmed)) return trimmed;
+  return `${trimmed}.`;
+};
+
+const normalizeResolvedEntry = (line: string): string | undefined => {
+  const stripped = line
+    .trim()
+    .replace(/^[-*+]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .trim();
+  if (!stripped) return undefined;
+  if (/no unresolved questions remain|no open questions remain/i.test(stripped)) {
+    return "Resolved: No unresolved questions remain.";
+  }
+  const withoutPrefix = stripped.replace(/^resolved:\s*/i, "").trim();
+  const withoutQuestions = withoutPrefix.replace(/\?+$/, "").trim();
+  if (!withoutQuestions) return undefined;
+  return `Resolved: ${ensureTrailingPeriod(withoutQuestions)}`;
+};
+
+const enforceResolvedOpenQuestionsContract = (draft: string, sections: string[]): string => {
+  const title = findSdsSectionTitle(sections, /open questions?/i, "Open Questions (Resolved)");
+  const section = extractSection(draft, title);
+  if (!section) return draft;
+  const resolvedEntries = section.body
+    .split(/\r?\n/)
+    .map(normalizeResolvedEntry)
+    .filter((value): value is string => Boolean(value));
+  const deduped = Array.from(new Set(resolvedEntries.map((entry) => entry.toLowerCase()))).map((lower) =>
+    resolvedEntries.find((entry) => entry.toLowerCase() === lower)!,
+  );
+  const body =
+    deduped.length > 0
+      ? deduped.map((entry) => `- ${entry}`).join("\n")
+      : "- Resolved: No unresolved questions remain.";
+  return replaceSection(draft, title, body);
+};
+
+const enforceTechStackContract = (draft: string, sections: string[]): string => {
+  const title = findSdsSectionTitle(sections, /platform model|technology stack|tech stack/i, sections[0] ?? "Architecture");
+  const section = extractSection(draft, title);
+  if (!section) return draft;
+  const body = cleanBody(section.body ?? "");
+  const additions: string[] = [];
+  if (!/chosen stack|selected stack|primary stack|we use/i.test(body)) {
+    additions.push("- Chosen stack: declare the selected runtime, language, persistence, and tooling baseline.");
+  }
+  if (!/alternatives? considered|options? considered|alternative/i.test(body)) {
+    additions.push("- Alternatives considered: list realistic options that were evaluated but not selected.");
+  }
+  if (!/rationale|trade[- ]?off|because|why/i.test(body)) {
+    additions.push("- Rationale: document why the selected stack is preferred for delivery, operations, and maintenance.");
+  }
+  if (additions.length === 0) return draft;
+  const merged = [body, ...additions].filter(Boolean).join("\n");
+  return replaceSection(draft, title, merged);
+};
+
+const enforceFolderTreeContract = (draft: string, sections: string[]): string => {
+  const title = findSdsSectionTitle(
+    sections,
+    /folder tree|directory structure|repository structure|target structure/i,
+    "Target Folder Tree (Expanded with File Responsibilities)",
+  );
+  const section = extractSection(draft, title);
+  if (!section) return draft;
+  const body = section.body ?? "";
+  const treeBlock = body.match(/```(?:text)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+  const treeEntries =
+    treeBlock?.split(/\r?\n/).filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (trimmed === ".") return true;
+      if (/^[├└│]/.test(trimmed)) return true;
+      return /[A-Za-z0-9_.-]+\/?/.test(trimmed);
+    }).length ?? 0;
+  const hasResponsibilityHints = treeBlock ? /#|responsibilit|owner|module|service|tests?|scripts?/i.test(treeBlock) : false;
+  const hasFence = /```(?:text)?[\s\S]*?```/i.test(body);
+
+  if (hasFence && treeEntries >= 8 && hasResponsibilityHints) return draft;
+
+  const mergedBody = cleanBody(body).length > 0 ? `${cleanBody(body)}\n\n${DEFAULT_SDS_FOLDER_TREE_BLOCK}` : DEFAULT_SDS_FOLDER_TREE_BLOCK;
+  return replaceSection(draft, title, mergedBody);
+};
+
+const applySdsHardContracts = (draft: string, sections: string[]): string => {
+  let updated = draft;
+  updated = enforceTechStackContract(updated, sections);
+  updated = enforceFolderTreeContract(updated, sections);
+  updated = enforceResolvedOpenQuestionsContract(updated, sections);
+  return updated;
+};
 
 const ensureSdsStructuredDraft = (
   draft: string,
@@ -876,21 +1204,7 @@ const ensureSdsStructuredDraft = (
     .filter((line) => /^#{1,6}\s+/.test(line))
     .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
 
-  const defaultSections = [
-    "Introduction",
-    "Goals & Scope",
-    "Architecture Overview",
-    "Components & Responsibilities",
-    "Data Model & Persistence",
-    "Interfaces & Contracts",
-    "Non-Functional Requirements",
-    "Security & Compliance",
-    "Failure Modes & Resilience",
-    "Risks & Mitigations",
-    "Assumptions",
-    "Open Questions",
-    "Acceptance Criteria",
-  ];
+  const defaultSections = DEFAULT_SDS_SECTION_OUTLINE;
 
   const sections = templateHeadings.length ? templateHeadings : defaultSections;
   const cues = extractBullets(context.pdrs[0]?.content ?? context.rfp?.content ?? "", 10);
@@ -901,6 +1215,136 @@ const ensureSdsStructuredDraft = (
 
   const fallbackFor = (section: string): string => {
     const key = section.toLowerCase();
+    if (key.includes("governance") || key.includes("change policy")) {
+      return [
+        "- Versioning: major/minor SDS revisions are tracked with implementation impact notes.",
+        "- Change control: architectural, schema, API, and security changes require explicit decision entries.",
+        "- Review cadence: update this SDS before task generation and before release hardening.",
+      ].join("\n");
+    }
+    if (key.includes("purpose") || key.includes("scope")) {
+      return cues.length ? cues.map((c) => `- ${c}`).join("\n") : "- Scope and objectives derived from PDR/RFP.";
+    }
+    if (key.includes("boundaries") || key.includes("non-goals")) {
+      return [
+        "- In-scope capabilities are limited to documented product outcomes and owned interfaces.",
+        "- Out-of-scope paths are explicitly excluded to prevent accidental scope drift.",
+      ].join("\n");
+    }
+    if (key.includes("core decisions")) {
+      return [
+        "- Runtime and language decisions are explicit and finalized for this delivery phase.",
+        "- Data ownership boundaries and source-of-truth services are fixed.",
+        "- API contract authority and compatibility policy are fixed before implementation.",
+      ].join("\n");
+    }
+    if (key.includes("platform model") || key.includes("technology stack")) {
+      return [
+        "- Chosen stack: TypeScript services, relational persistence, and deterministic CI/CD workflows.",
+        "- Alternatives considered: Python-first service core and JVM stack; rejected for this phase due to operational complexity and delivery latency.",
+        "- Rationale: the chosen stack aligns with current team skills, release constraints, and maintainability goals.",
+      ].join("\n");
+    }
+    if (key.includes("service architecture") || key.includes("dependency contracts")) {
+      return [
+        "- Define service boundaries, ownership, and contract direction (provider -> consumer).",
+        "- Define startup dependency sequencing (foundational services first, dependent services after readiness).",
+        "- Include health/readiness contracts and failure containment boundaries per service.",
+      ].join("\n");
+    }
+    if (key.includes("data architecture") || key.includes("ownership")) {
+      return [
+        "- Define primary entities, write ownership, read models, and migration strategy.",
+        "- Document retention, auditability, and schema evolution rules.",
+      ].join("\n");
+    }
+    if (key.includes("eventing") || key.includes("interfaces") || key.includes("api")) {
+      return [
+        "- Define synchronous API contracts, async events, and schema compatibility rules.",
+        "- Bind all external/public operations to OpenAPI references when available.",
+      ].join("\n");
+    }
+    if (key.includes("security") || key.includes("iam") || key.includes("compliance")) {
+      return [
+        "- Document authentication, authorization, secret handling, and audit trails.",
+        "- Define compliance boundaries for data handling and privileged operations.",
+      ].join("\n");
+    }
+    if (key.includes("risk and control")) {
+      return [
+        "- Define risk gates, escalation paths, and release veto conditions.",
+        "- Define controls for data quality, rollback triggers, and emergency stop criteria.",
+      ].join("\n");
+    }
+    if (key.includes("compute") || key.includes("deployment") || key.includes("startup sequencing")) {
+      return [
+        "- Define runtime topology, environment contracts, and deployment wave order.",
+        "- Define startup/readiness dependencies and rollback-safe rollout strategy.",
+      ].join("\n");
+    }
+    if (key.includes("folder tree")) {
+      return [
+        "```text",
+        ".",
+        "├── docs/                      # product and architecture docs",
+        "│   ├── rfp/                   # requirement sources",
+        "│   ├── pdr/                   # product design reviews",
+        "│   └── sds/                   # software design specifications",
+        "├── packages/                  # source modules/services",
+        "│   ├── cli/                   # command interfaces",
+        "│   ├── core/                  # business/application services",
+        "│   └── integrations/          # external adapters/providers",
+        "├── openapi/                   # API contracts",
+        "├── db/                        # schema and migrations",
+        "├── deploy/                    # compose/k8s/runtime manifests",
+        "├── tests/                     # unit/integration/e2e suites",
+        "└── scripts/                   # build/release/ops automation",
+        "```",
+      ].join("\n");
+    }
+    if (key.includes("operations") || key.includes("observability") || key.includes("quality")) {
+      return [
+        "- Define SLOs with alert thresholds and runbook actions for breaches.",
+        "- Define required test gates (unit/component/integration/e2e) before promotion.",
+        "- Define operational dashboards, logging standards, and incident drill cadence.",
+      ].join("\n");
+    }
+    if (key.includes("external integrations") || key.includes("adapter")) {
+      return [
+        "- For each external provider, document contract, rate limit/quota constraints, and timeout budgets.",
+        "- Document adapter error handling, retry/backoff policy, and fallback behavior.",
+      ].join("\n");
+    }
+    if (key.includes("policy") || key.includes("telemetry") || key.includes("metering")) {
+      return [
+        "- Policy: define cache key construction, TTL tiers, and consent matrix handling.",
+        "- Telemetry: define schema for anonymous and identified events, including validation rules.",
+        "- Metering: define usage collection, rate limits, quota enforcement, and billing/audit traces.",
+      ].join("\n");
+    }
+    if (key.includes("failure") || key.includes("recovery") || key.includes("rollback")) {
+      return [
+        "- Enumerate failure modes, detection signals, rollback triggers, and recovery playbooks.",
+        "- Define RTO/RPO or equivalent recovery objectives and escalation policy.",
+      ].join("\n");
+    }
+    if (key.includes("assumption")) return assumptionFallback;
+    if (key.includes("resolved decisions")) {
+      return [
+        "- Decision: Architecture, stack, and contract baselines are fixed for this implementation cycle.",
+        "- Decision: Dependency sequencing and release gates are mandatory and deterministic.",
+      ].join("\n");
+    }
+    if (key.includes("open question")) {
+      return "- Resolved: No unresolved questions remain; implementation blockers are closed.";
+    }
+    if (key.includes("acceptance") || key.includes("verification")) {
+      return [
+        "- All required sections are complete, internally consistent, and traceable to source context.",
+        "- Deployment and rollback procedures are validated in CI with reproducible artifacts.",
+        "- Test gates pass and release readiness checks are green.",
+      ].join("\n");
+    }
     if (key.includes("goal") || key.includes("scope")) {
       return cues.length ? cues.map((c) => `- ${c}`).join("\n") : "- Goals and scope derived from PDR/RFP.";
     }
@@ -914,12 +1358,11 @@ const ensureSdsStructuredDraft = (
     if (key.includes("failure") || key.includes("resilience"))
       return "- Failure modes, detection, rollback, and recovery paths.";
     if (key.includes("risk")) return "- Enumerate major risks and proposed mitigations.";
-    if (key.includes("assumption")) return assumptionFallback;
-    if (key.includes("question")) return "- Outstanding questions and clarifications required.";
+    if (key.includes("question")) return "- Resolved: No unresolved questions remain.";
     if (key.includes("acceptance")) return "- Criteria for sign-off and verification.";
     if (key.includes("introduction"))
       return `SDS for ${projectKey ?? "project"} derived from available PDR/RFP context.`;
-    return "- TBD";
+    return "- Provide explicit implementation-ready decisions, ownership, and verification details.";
   };
 
   const hasHeading = (title: string) => new RegExp(`^#{1,6}\\s+${title}\\b`, "im").test(normalized);
@@ -951,7 +1394,7 @@ const ensureSdsStructuredDraft = (
       structured = replaceSection(structured, interfaceTitle, body);
     }
   }
-  return structured;
+  return applySdsHardContracts(structured, sections);
 };
 
 const getSdsSections = (template: string): string[] => {
@@ -961,21 +1404,7 @@ const getSdsSections = (template: string): string[] => {
     .filter((line) => /^#{1,6}\s+/.test(line))
     .map((line) => line.replace(/^#{1,6}\s+/, "").trim());
 
-  const defaultSections = [
-    "Introduction",
-    "Goals & Scope",
-    "Architecture Overview",
-    "Components & Responsibilities",
-    "Data Model & Persistence",
-    "Interfaces & Contracts",
-    "Non-Functional Requirements",
-    "Security & Compliance",
-    "Failure Modes & Resilience",
-    "Risks & Mitigations",
-    "Assumptions",
-    "Open Questions",
-    "Acceptance Criteria",
-  ];
+  const defaultSections = DEFAULT_SDS_SECTION_OUTLINE;
 
   const sections = templateHeadings.length ? templateHeadings : defaultSections;
   const seen = new Set<string>();
@@ -2089,6 +2518,21 @@ export class DocsService {
         runPdrOwnershipGate({ artifacts: runContext.artifacts }),
       ),
     );
+    addResult(
+      await runGate("gate-pdr-tech-stack-rationale", "PDR Tech Stack Rationale", () =>
+        runPdrTechStackRationaleGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-pdr-folder-tree", "PDR Folder Tree", () =>
+        runPdrFolderTreeGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-pdr-no-unresolved-items", "PDR No Unresolved Items", () =>
+        runPdrNoUnresolvedItemsGate({ artifacts: runContext.artifacts }),
+      ),
+    );
 
     const openQuestionsEnabled = resolveOpenQuestions;
     addResult(
@@ -2103,6 +2547,21 @@ export class DocsService {
     addResult(
       await runGate("gate-sds-explicit-decisions", "SDS Explicit Decisions", () =>
         runSdsDecisionsGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sds-tech-stack-rationale", "SDS Tech Stack Rationale", () =>
+        runSdsTechStackRationaleGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sds-folder-tree", "SDS Folder Tree", () =>
+        runSdsFolderTreeGate({ artifacts: runContext.artifacts }),
+      ),
+    );
+    addResult(
+      await runGate("gate-sds-no-unresolved-items", "SDS No Unresolved Items", () =>
+        runSdsNoUnresolvedItemsGate({ artifacts: runContext.artifacts }),
       ),
     );
     addResult(
@@ -3478,6 +3937,12 @@ export class DocsService {
           }
         }
       }
+      draft = ensureStructuredDraft(
+        draft,
+        options.projectKey,
+        context,
+        context.rfp.path ?? context.rfp.id ?? "RFP",
+      );
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
         timestamp: new Date().toISOString(),
@@ -3975,6 +4440,7 @@ export class DocsService {
           warnings.push(`Iterative SDS refinement failed; keeping first draft. ${String(error)}`);
         }
       }
+      draft = ensureSdsStructuredDraft(draft, options.projectKey, context, template.content);
       await this.jobService.writeCheckpoint(job.id, {
         stage: "draft_completed",
         timestamp: new Date().toISOString(),

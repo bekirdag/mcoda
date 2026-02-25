@@ -212,13 +212,19 @@ const formatPanel = (lines: string[]): string => {
   return [top, ...body, bottom].join("\n");
 };
 
-const formatBoxTable = (headers: string[], rows: string[][]): string => {
+type BoxTableOptions = {
+  lineStyle?: (value: string) => string;
+};
+
+const formatBoxTable = (headers: string[], rows: string[][], options?: BoxTableOptions): string => {
   const widths = headers.map((header, idx) => Math.max(visibleLength(header), ...rows.map((row) => visibleLength(row[idx] ?? ""))));
+  const lineStyle = options?.lineStyle ?? ((value: string) => value);
   const border = (left: string, join: string, right: string): string =>
-    `${left}${widths.map((width) => "─".repeat(width + 2)).join(join)}${right}`;
-  const headerLine = `│${headers.map((header, idx) => ` ${padVisible(header, widths[idx])} `).join("│")}│`;
+    lineStyle(`${left}${widths.map((width) => "─".repeat(width + 2)).join(join)}${right}`);
+  const verticalLine = lineStyle("│");
+  const headerLine = `${verticalLine}${headers.map((header, idx) => ` ${padVisible(header, widths[idx])} `).join(verticalLine)}${verticalLine}`;
   const rowLines = rows.map(
-    (row) => `│${row.map((cell, idx) => ` ${padVisible(cell ?? "", widths[idx])} `).join("│")}│`,
+    (row) => `${verticalLine}${row.map((cell, idx) => ` ${padVisible(cell ?? "", widths[idx])} `).join(verticalLine)}${verticalLine}`,
   );
   return [
     border("╭", "┬", "╮"),
@@ -367,6 +373,7 @@ const renderProgressSection = (result: EstimateResult, colorEnabled: boolean): s
 
 const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }): void => {
   const { colorEnabled } = options;
+  const purpleTableLines = (value: string): string => style.magenta(colorEnabled, value);
   const velocity = result.effectiveVelocity;
   const source = velocity.source;
   const spHeader = `SP/H (${source})`;
@@ -408,19 +415,19 @@ const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }
     ],
   ];
   // eslint-disable-next-line no-console
+  console.log(style.bold(colorEnabled, style.magenta(colorEnabled, "🧮 Effort by Lane")));
+  // eslint-disable-next-line no-console
   console.log(
-    formatPanel([
-      style.bold(colorEnabled, "🧮 Effort by Lane"),
-      formatBoxTable(
-        [
-          style.bold(colorEnabled, "LANE"),
-          style.bold(colorEnabled, "STORY POINTS"),
-          style.bold(colorEnabled, spHeader.toUpperCase()),
-          style.bold(colorEnabled, "TIME LEFT"),
-        ],
-        rows,
-      ),
-    ]),
+    formatBoxTable(
+      [
+        style.bold(colorEnabled, "LANE"),
+        style.bold(colorEnabled, "STORY POINTS"),
+        style.bold(colorEnabled, spHeader.toUpperCase()),
+        style.bold(colorEnabled, "TIME LEFT"),
+      ],
+      rows,
+      { lineStyle: purpleTableLines },
+    ),
   );
   const counts = result.statusCounts;
   // eslint-disable-next-line no-console
@@ -452,24 +459,24 @@ const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }
     ]),
   );
   // eslint-disable-next-line no-console
+  console.log(style.bold(colorEnabled, style.magenta(colorEnabled, "⏱️ ETAs")));
+  // eslint-disable-next-line no-console
   console.log(
-    formatPanel([
-      style.bold(colorEnabled, "⏱️ ETAs"),
-      formatBoxTable(
+    formatBoxTable(
+      [
+        style.bold(colorEnabled, "READY TO REVIEW"),
+        style.bold(colorEnabled, "READY TO QA"),
+        style.bold(colorEnabled, "COMPLETE"),
+      ],
+      [
         [
-          style.bold(colorEnabled, "READY TO REVIEW"),
-          style.bold(colorEnabled, "READY TO QA"),
-          style.bold(colorEnabled, "COMPLETE"),
+          formatEtaCell(result.etas.readyToReviewEta),
+          formatEtaCell(result.etas.readyToQaEta),
+          formatEtaCell(result.etas.completeEta),
         ],
-        [
-          [
-            formatEtaCell(result.etas.readyToReviewEta),
-            formatEtaCell(result.etas.readyToQaEta),
-            formatEtaCell(result.etas.completeEta),
-          ],
-        ],
-      ),
-    ]),
+      ],
+      { lineStyle: purpleTableLines },
+    ),
   );
   // eslint-disable-next-line no-console
   console.log(

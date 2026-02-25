@@ -191,14 +191,14 @@ test("orders tasks by dependency impact and normalizes priorities", { concurrenc
         assert.equal(result.ordered.length, 4);
         assert.deepEqual(
           result.ordered.map((t) => t.taskKey),
-          ["PROJ-01-US-01-T01", "PROJ-01-US-01-T03", "PROJ-01-US-01-T02", "PROJ-01-US-01-T04"],
+          ["PROJ-01-US-01-T01", "PROJ-01-US-01-T03", "PROJ-01-US-01-T04", "PROJ-01-US-01-T02"],
         );
         const priorities = await Promise.all(
           [t1, t2, t3, t4].map((task) => ctx.repo.getTaskByKey(task.key)),
         );
         assert.deepEqual(
           priorities.map((t) => t?.priority),
-          [1, 3, 2, 4],
+          [1, 4, 2, 3],
         );
         const epicRow = await ctx.repo.getDb().get<{ priority: number }>(
           "SELECT priority FROM epics WHERE id = ?",
@@ -486,6 +486,152 @@ test("warns on tasks with open missing_context comments", { concurrency: false }
   });
 });
 
+test("does not persist priorities or inferred dependencies when apply=false", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const [foundation, feature] = await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T11",
+            title: "Setup scaffold",
+            description: "",
+            status: "not_started",
+            type: "chore",
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T12",
+            title: "Implement API endpoint",
+            description: "",
+            status: "not_started",
+          },
+        ],
+        true,
+      );
+
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        const result = await service.orderTasks({ projectKey: ctx.project.key, apply: false });
+        assert.deepEqual(
+          result.ordered.map((t) => t.taskKey),
+          ["PROJ-01-US-01-T11", "PROJ-01-US-01-T12"],
+        );
+        assert.ok(result.warnings.some((warning) => warning.includes("not persisted")));
+      } finally {
+        await service.close();
+      }
+
+      const rows = await Promise.all([ctx.repo.getTaskByKey(foundation.key), ctx.repo.getTaskByKey(feature.key)]);
+      assert.deepEqual(rows.map((row) => row?.priority ?? null), [null, null]);
+      const deps = await ctx.repo.getTaskDependencies([foundation.id, feature.id]);
+      assert.equal(deps.length, 0);
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("persists ordering enrichment metadata when apply=true", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T13",
+            title: "Setup scaffold",
+            description: "Create project structure and baseline runtime.",
+            status: "not_started",
+            type: "chore",
+            storyPoints: 3,
+          },
+        ],
+        true,
+      );
+
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        await service.orderTasks({ projectKey: ctx.project.key, apply: true });
+      } finally {
+        await service.close();
+      }
+
+      const task = await ctx.repo.getTaskByKey("PROJ-01-US-01-T13");
+      const metadata = (task?.metadata ?? {}) as Record<string, any>;
+      assert.equal(metadata.stage, "foundation");
+      assert.equal(metadata.foundation, true);
+      assert.equal(typeof metadata.ordering?.complexityScore, "number");
+      assert.equal(typeof metadata.ordering?.complexityBand, "string");
+      assert.equal(metadata.ordering?.missingContextOpen, false);
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("ranks tasks with open missing_context after unblocked peers", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const [t1, t2] = await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T14",
+            title: "Implement API gateway",
+            description: "",
+            status: "not_started",
+            storyPoints: 3,
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T15",
+            title: "Implement API auth",
+            description: "",
+            status: "not_started",
+            storyPoints: 3,
+          },
+        ],
+        true,
+      );
+      await ctx.repo.createTaskComment({
+        taskId: t1.id,
+        sourceCommand: "gateway-trio",
+        authorType: "agent",
+        category: "missing_context",
+        body: "Missing API contract details",
+        createdAt: new Date().toISOString(),
+      });
+
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
+        assert.deepEqual(
+          result.ordered.map((task) => task.taskKey),
+          ["PROJ-01-US-01-T15", "PROJ-01-US-01-T14"],
+        );
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
 test("injects inferred foundation dependencies for non-foundation tasks", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
@@ -760,6 +906,155 @@ test("handles dependency cycles gracefully", { concurrency: false }, async () =>
           .map((t) => t?.priority ?? 0)
           .sort((a, b) => a - b);
         assert.deepEqual(sortedPriorities, [1, 2]);
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("fails when planning context policy requires any context and none is available", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        (service as any).buildDocContext = async () => undefined;
+        await assert.rejects(
+          () =>
+            service.orderTasks({
+              projectKey: ctx.project.key,
+              planningContextPolicy: "require_any",
+            }),
+          /policy=require_any/i,
+        );
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("fails when planning context policy requires SDS/OpenAPI but fallback context is used", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        (service as any).buildDocContext = async () => ({
+          content: "fallback",
+          source: "workspace-code",
+          kind: "fallback",
+        });
+        await assert.rejects(
+          () =>
+            service.orderTasks({
+              projectKey: ctx.project.key,
+              planningContextPolicy: "require_sds_or_openapi",
+            }),
+          /require_sds_or_openapi/i,
+        );
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("accepts SDS context when planning context policy requires SDS/OpenAPI", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const [task] = await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T11",
+            title: "Seed task",
+            description: "",
+            status: "not_started",
+          },
+        ],
+        true,
+      );
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        (service as any).buildDocContext = async () => ({
+          content: "sds",
+          source: "docs/sds.md",
+          kind: "sds",
+        });
+        const result = await service.orderTasks({
+          projectKey: ctx.project.key,
+          planningContextPolicy: "require_sds_or_openapi",
+        });
+        assert.equal(result.ordered.length, 1);
+        assert.equal(result.ordered[0]?.taskKey, task.key);
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("buildDocContext appends OPENAPI_HINTS when OpenAPI docs include x-mcoda-task-hints", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        (service as any).docdex.search = async (filter: Record<string, unknown>) => {
+          if (filter.docType === "SDS") return [];
+          if (filter.docType === "OPENAPI") {
+            return [
+              {
+                id: "openapi-doc",
+                docType: "OPENAPI",
+                path: "openapi/mcoda.yaml",
+                title: "OpenAPI",
+                content: [
+                  "openapi: 3.0.3",
+                  "paths:",
+                  "  /users:",
+                  "    get:",
+                  "      summary: List users",
+                  "      x-mcoda-task-hints:",
+                  "        service: identity-api",
+                  "        capability: users.list",
+                  "        stage: backend",
+                  "        complexity: 3",
+                  "        depends_on_operations:",
+                  "          - auth.login",
+                  "        test_requirements:",
+                  "          unit: [\"users list mapper\"]",
+                  "          component: [\"users list handler\"]",
+                  "          integration: [\"users list route\"]",
+                  "          api: [\"GET /users contract\"]",
+                ].join("\n"),
+                segments: [],
+              },
+            ];
+          }
+          return [];
+        };
+        const warnings: string[] = [];
+        const context = await (service as any).buildDocContext(ctx.project.key, warnings);
+        assert.ok(context);
+        assert.equal(context.kind, "openapi");
+        assert.ok(context.content.includes("[OPENAPI_HINTS]"));
+        assert.ok(context.content.includes("GET /users"));
+        assert.ok(context.content.includes("service=identity-api"));
+        assert.ok(context.content.includes("stage=backend"));
       } finally {
         await service.close();
       }

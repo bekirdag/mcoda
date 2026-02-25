@@ -9,11 +9,11 @@ describe("docs pdr argument parsing", () => {
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.iterate, false);
-    assert.equal(parsed.quality, undefined);
-    assert.equal(parsed.buildReady, false);
-    assert.equal(parsed.resolveOpenQuestions, false);
-    assert.equal(parsed.noPlaceholders, false);
-    assert.equal(parsed.noMaybes, false);
+    assert.equal(parsed.quality, "build-ready");
+    assert.equal(parsed.buildReady, true);
+    assert.equal(parsed.resolveOpenQuestions, true);
+    assert.equal(parsed.noPlaceholders, true);
+    assert.equal(parsed.noMaybes, true);
     assert.equal(parsed.crossAlign, true);
   });
 
@@ -97,12 +97,17 @@ describe("docs pdr argument parsing", () => {
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.iterate, false);
-    assert.equal(parsed.quality, undefined);
-    assert.equal(parsed.buildReady, false);
-    assert.equal(parsed.resolveOpenQuestions, false);
-    assert.equal(parsed.noPlaceholders, false);
-    assert.equal(parsed.noMaybes, false);
+    assert.equal(parsed.quality, "build-ready");
+    assert.equal(parsed.buildReady, true);
+    assert.equal(parsed.resolveOpenQuestions, true);
+    assert.equal(parsed.noPlaceholders, true);
+    assert.equal(parsed.noMaybes, true);
     assert.equal(parsed.crossAlign, true);
+  });
+
+  it("parses no-telemetry for sds", () => {
+    const parsed = parseSdsArgs(["--project", "SDS", "--no-telemetry"]);
+    assert.equal(parsed.noTelemetry, true);
   });
 
   it("parses iterative flags for sds", () => {

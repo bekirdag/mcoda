@@ -3,10 +3,11 @@ import { createRequire } from "node:module";
 import { OpenApiJobError, OpenApiService, WorkspaceResolver } from "@mcoda/core";
 
 const usage =
-  "mcoda openapi-from-docs [--workspace-root <PATH>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--force] [--dry-run] [--validate-only] [--no-telemetry]";
+  "mcoda openapi-from-docs [--workspace-root <PATH>] [--project <PROJECT_KEY>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--force] [--dry-run] [--validate-only] [--no-telemetry]";
 
 export interface ParsedOpenapiArgs {
   workspaceRoot?: string;
+  project?: string;
   agentName?: string;
   agentStream: boolean;
   rateAgents: boolean;
@@ -26,6 +27,7 @@ const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boo
 
 export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
   let workspaceRoot: string | undefined;
+  let project: string | undefined;
   let agentName: string | undefined;
   let agentStream: boolean | undefined;
   let rateAgents = false;
@@ -49,6 +51,10 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
     switch (arg) {
       case "--workspace-root":
         workspaceRoot = argv[i + 1] ? path.resolve(argv[i + 1]) : undefined;
+        i += 1;
+        break;
+      case "--project":
+        project = argv[i + 1];
         i += 1;
         break;
       case "--agent":
@@ -94,12 +100,16 @@ export const parseOpenapiArgs = (argv: string[]): ParsedOpenapiArgs => {
         process.exit(0);
         break;
       default:
+        if (arg.startsWith("--project=")) {
+          project = arg.split("=")[1];
+        }
         break;
     }
   }
 
   return {
     workspaceRoot,
+    project,
     agentName,
     agentStream: agentStream ?? false,
     rateAgents,
@@ -155,6 +165,7 @@ export class OpenapiCommands {
       const onToken = shouldStream ? (token: string) => process.stdout.write(token) : undefined;
       const result = await service.generateFromDocs({
         workspace,
+        projectKey: parsed.project,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,

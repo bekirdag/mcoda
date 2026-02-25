@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { parseQaTasksArgs } from "../commands/planning/QaTasksCommand.js";
+import { parseQaTasksArgs, pickQaTasksProjectKey } from "../commands/planning/QaTasksCommand.js";
 
 describe("qa-tasks argument parsing", () => {
   it("defaults to auto mode, ready_to_qa status, and streaming off", () => {
@@ -11,6 +11,8 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.agentStream, true);
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.createFollowupTasks, "auto");
+    assert.equal(parsed.dependencyPolicy, "enforce");
+    assert.equal(parsed.noChangesPolicy, "require_qa");
     assert.equal(parsed.rateAgents, false);
     assert.deepEqual(parsed.cleanIgnorePaths, []);
   });
@@ -35,6 +37,10 @@ describe("qa-tasks argument parsing", () => {
       "npm test",
       "--create-followup-tasks",
       "none",
+      "--dependency-policy",
+      "ignore",
+      "--no-changes-policy",
+      "manual",
       "--rate-agents",
       "--allow-dirty",
       "true",
@@ -54,6 +60,8 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.level, "integration");
     assert.equal(parsed.testCommand, "npm test");
     assert.equal(parsed.createFollowupTasks, "none");
+    assert.equal(parsed.dependencyPolicy, "ignore");
+    assert.equal(parsed.noChangesPolicy, "manual");
     assert.equal(parsed.rateAgents, true);
     assert.equal(parsed.allowDirty, true);
     assert.equal(parsed.notes, "needs fix");
@@ -67,5 +75,25 @@ describe("qa-tasks argument parsing", () => {
     assert.equal(parsed.workspaceRoot, root);
     assert.equal(parsed.projectKey, "proj");
     assert.deepEqual(parsed.taskKeys, ["T1", "T2"]);
+  });
+
+  it("resolves project key using explicit, configured, then first existing", () => {
+    const explicit = pickQaTasksProjectKey({
+      requestedKey: "P2",
+      configuredKey: "P1",
+      existing: [{ key: "P1" }, { key: "P2" }],
+    });
+    assert.equal(explicit.projectKey, "P2");
+
+    const configured = pickQaTasksProjectKey({
+      configuredKey: "P1",
+      existing: [{ key: "P2" }, { key: "P1" }],
+    });
+    assert.equal(configured.projectKey, "P1");
+
+    const fallback = pickQaTasksProjectKey({
+      existing: [{ key: "P3" }, { key: "P4" }],
+    });
+    assert.equal(fallback.projectKey, "P3");
   });
 });

@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import { CodeReviewService } from "@mcoda/core";
 import { PathHelper } from "@mcoda/shared";
 import { CodeReviewCommand } from "../commands/review/CodeReviewCommand.js";
-import { parseCodeReviewArgs } from "../commands/review/CodeReviewCommand.js";
+import { parseCodeReviewArgs, pickCodeReviewProjectKey } from "../commands/review/CodeReviewCommand.js";
 
 class FakeAgentService {
   constructor(private decision: string = "approve") {}
@@ -259,6 +259,8 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.dryRun, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.createFollowupTasks, false);
+    assert.equal(parsed.executionContextPolicy, "require_sds_or_openapi");
+    assert.equal(parsed.emptyDiffApprovalPolicy, "ready_to_qa");
   });
 
   it("parses filters, resume and agent stream override", () => {
@@ -281,6 +283,8 @@ describe("code-review argument parsing", () => {
       "--agent-stream=false",
       "--rate-agents",
       "--create-followup-tasks=true",
+      "--execution-context-policy=require_any",
+      "--empty-diff-approval-policy=complete",
       "--json",
     ]);
     assert.equal(parsed.workspaceRoot, path.resolve("/tmp/demo"));
@@ -291,10 +295,32 @@ describe("code-review argument parsing", () => {
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, true);
     assert.equal(parsed.createFollowupTasks, true);
+    assert.equal(parsed.executionContextPolicy, "require_any");
+    assert.equal(parsed.emptyDiffApprovalPolicy, "complete");
     assert.equal(parsed.baseRef, "main");
     assert.equal(parsed.json, true);
     assert.deepEqual(parsed.taskKeys, ["TASK-1"]);
     assert.deepEqual(parsed.statusFilter, ["ready_to_code_review"]);
+  });
+
+  it("resolves project key using explicit, configured, then first existing", () => {
+    const explicit = pickCodeReviewProjectKey({
+      requestedKey: "P2",
+      configuredKey: "P1",
+      existing: [{ key: "P1" }, { key: "P2" }],
+    });
+    assert.equal(explicit.projectKey, "P2");
+
+    const configured = pickCodeReviewProjectKey({
+      configuredKey: "P1",
+      existing: [{ key: "P2" }, { key: "P1" }],
+    });
+    assert.equal(configured.projectKey, "P1");
+
+    const fallback = pickCodeReviewProjectKey({
+      existing: [{ key: "P3" }, { key: "P4" }],
+    });
+    assert.equal(fallback.projectKey, "P3");
   });
 });
 

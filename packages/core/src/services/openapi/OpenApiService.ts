@@ -217,6 +217,7 @@ export interface OpenApiSchemaValidationResult {
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "options", "head", "trace"];
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const TASK_HINT_STAGE_VALUES = new Set(["foundation", "backend", "frontend", "other"]);
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -303,6 +304,59 @@ export const validateOpenApiSchema = (doc: any): string[] => {
           errors.push(`Duplicate operationId "${operationId}" detected.`);
         } else {
           operationIds.set(operationId, `${method.toUpperCase()} ${pathKey}`);
+        }
+        const taskHints = (operation as any)["x-mcoda-task-hints"];
+        if (taskHints !== undefined) {
+          if (!isPlainObject(taskHints)) {
+            errors.push(
+              `Invalid x-mcoda-task-hints for ${method.toUpperCase()} ${pathKey}: must be an object.`,
+            );
+          } else {
+            const stage = taskHints.stage;
+            if (stage !== undefined && (typeof stage !== "string" || !TASK_HINT_STAGE_VALUES.has(stage))) {
+              errors.push(
+                `Invalid x-mcoda-task-hints.stage for ${method.toUpperCase()} ${pathKey}: expected one of foundation|backend|frontend|other.`,
+              );
+            }
+            const complexity = taskHints.complexity;
+            if (
+              complexity !== undefined &&
+              (typeof complexity !== "number" || !Number.isFinite(complexity) || complexity < 0)
+            ) {
+              errors.push(
+                `Invalid x-mcoda-task-hints.complexity for ${method.toUpperCase()} ${pathKey}: expected non-negative number.`,
+              );
+            }
+            const dependsOn = taskHints.depends_on_operations;
+            if (
+              dependsOn !== undefined &&
+              (!Array.isArray(dependsOn) || dependsOn.some((entry: unknown) => typeof entry !== "string"))
+            ) {
+              errors.push(
+                `Invalid x-mcoda-task-hints.depends_on_operations for ${method.toUpperCase()} ${pathKey}: expected string array.`,
+              );
+            }
+            const testRequirements = taskHints.test_requirements;
+            if (testRequirements !== undefined) {
+              if (!isPlainObject(testRequirements)) {
+                errors.push(
+                  `Invalid x-mcoda-task-hints.test_requirements for ${method.toUpperCase()} ${pathKey}: expected object.`,
+                );
+              } else {
+                for (const key of ["unit", "component", "integration", "api"]) {
+                  const value = (testRequirements as any)[key];
+                  if (
+                    value !== undefined &&
+                    (!Array.isArray(value) || value.some((entry: unknown) => typeof entry !== "string"))
+                  ) {
+                    errors.push(
+                      `Invalid x-mcoda-task-hints.test_requirements.${key} for ${method.toUpperCase()} ${pathKey}: expected string array.`,
+                    );
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -473,7 +527,9 @@ class OpenapiContextAssembler {
         warnings.push("No SDS found in docdex; using latest local SDS file.");
         sdsDocs = [local];
       } else {
-        warnings.push("No SDS found in docdex or local workspace.");
+        throw new Error(
+          "openapi-from-docs requires an SDS document. Generate SDS first (mcoda docs sds generate) or add docs/sds/sds.md.",
+        );
       }
     } else {
       blocks.push(this.formatBlock(sdsDocs[0], "SDS OpenAPI contract", 1, 8));
@@ -698,8 +754,8 @@ export class OpenApiService {
         : "";
     return [
       "You are generating an OpenAPI 3.1 YAML for THIS workspace/project using only the provided PDR/SDS/RFP context.",
-      "Derive resources, schemas, and HTTP endpoints directly from the product requirements (e.g., todos CRUD, filters, search, bulk actions).",
-      "If the documents describe a frontend-only/localStorage app, design a minimal REST API that could back those features (e.g., /todos, /todos/{id}, bulk operations, search/filter params) instead of returning an empty spec.",
+      "Derive resources, schemas, and HTTP endpoints directly from SDS-grounded product requirements only.",
+      "Do not invent endpoints, workflows, or schemas that are not traceable to SDS/PDR/RFP context.",
       "Prefer concise tags derived from domain resources (e.g., Todos). Avoid generic mcoda/system endpoints unless explicitly described in the context.",
       `Use OpenAPI version ${OPENAPI_VERSION}, set info.title to the project name from context (fallback \"mcoda API\"), and info.version ${cliVersion}.`,
       adminNote,
@@ -709,8 +765,9 @@ export class OpenApiService {
       "- Derive endpoints, schemas, and tags from the provided PDR/SDS/RFP context only.",
       "- Do NOT emit generic mcoda CLI/system endpoints unless explicitly described.",
       "- Prefer concise schemas and operations that map to described APIs; omit unused boilerplate.",
+      "- For each operation, include x-mcoda-task-hints with fields: service (string), capability (string), stage (foundation|backend|frontend|other), complexity (number), depends_on_operations (string[]), test_requirements ({ unit: string[], component: string[], integration: string[], api: string[] }).",
       "Context:",
-      contextBlocks || "No context available; if none, produce a minimal empty spec with paths: {}.",
+      contextBlocks || "SDS context is required and should always be present.",
     ].join("\n\n");
   }
 

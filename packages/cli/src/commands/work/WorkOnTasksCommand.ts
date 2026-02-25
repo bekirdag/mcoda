@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WorkspaceRepository } from "@mcoda/db";
 import { JobService, WorkOnTasksService, WorkspaceResolver } from "@mcoda/core";
 import { WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 
@@ -23,8 +24,12 @@ interface ParsedArgs {
   agentAdapterOverride?: string;
   missingTestsPolicy?: "block_job" | "skip_task" | "fail_task";
   allowMissingTests?: boolean;
+  missingContextPolicy?: "allow" | "warn" | "block";
+  executionContextPolicy?: "best_effort" | "require_any" | "require_sds_or_openapi";
   json: boolean;
 }
+
+type ProjectKeyCandidate = { key: string; createdAt?: string | null };
 
 const usage = `mcoda work-on-tasks \\
   [--workspace <PATH>] \\
@@ -41,6 +46,8 @@ const usage = `mcoda work-on-tasks \\
   [--use-codali <true|false>] \\
   [--missing-tests-policy <block_job|skip_task|fail_task>] \\
   [--allow-missing-tests <true|false>] \\
+  [--missing-context-policy <allow|warn|block>] \\
+  [--execution-context-policy <best_effort|require_any|require_sds_or_openapi>] \\
   [--rate-agents] \\
   [--auto-merge <true|false>] \\
   [--auto-push <true|false>] \\
@@ -77,6 +84,28 @@ const normalizeMissingTestsPolicy = (
   if (!value) return undefined;
   const normalized = value.trim().toLowerCase().replace(/-/g, "_");
   if (normalized === "block_job" || normalized === "skip_task" || normalized === "fail_task") {
+    return normalized;
+  }
+  return undefined;
+};
+
+const normalizeMissingContextPolicy = (
+  value?: string,
+): ParsedArgs["missingContextPolicy"] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "allow" || normalized === "warn" || normalized === "block") {
+    return normalized;
+  }
+  return undefined;
+};
+
+const normalizeExecutionContextPolicy = (
+  value?: string,
+): ParsedArgs["executionContextPolicy"] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "best_effort" || normalized === "require_any" || normalized === "require_sds_or_openapi") {
     return normalized;
   }
   return undefined;
@@ -121,6 +150,8 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
   let useCodali: boolean | undefined;
   let missingTestsPolicy: ParsedArgs["missingTestsPolicy"];
   let allowMissingTests: boolean | undefined;
+  let missingContextPolicy: ParsedArgs["missingContextPolicy"];
+  let executionContextPolicy: ParsedArgs["executionContextPolicy"];
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -174,6 +205,18 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     if (arg.startsWith("--allow-missing-tests=")) {
       const [, raw] = arg.split("=", 2);
       allowMissingTests = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--missing-context-policy=")) {
+      const [, raw] = arg.split("=", 2);
+      const parsedPolicy = normalizeMissingContextPolicy(raw);
+      if (parsedPolicy) missingContextPolicy = parsedPolicy;
+      continue;
+    }
+    if (arg.startsWith("--execution-context-policy=")) {
+      const [, raw] = arg.split("=", 2);
+      const parsedPolicy = normalizeExecutionContextPolicy(raw);
+      if (parsedPolicy) executionContextPolicy = parsedPolicy;
       continue;
     }
     switch (arg) {
@@ -272,6 +315,28 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
         }
         break;
       }
+      case "--missing-context-policy": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          const parsedPolicy = normalizeMissingContextPolicy(next);
+          if (parsedPolicy) {
+            missingContextPolicy = parsedPolicy;
+          }
+          i += 1;
+        }
+        break;
+      }
+      case "--execution-context-policy": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          const parsedPolicy = normalizeExecutionContextPolicy(next);
+          if (parsedPolicy) {
+            executionContextPolicy = parsedPolicy;
+          }
+          i += 1;
+        }
+        break;
+      }
       case "--auto-merge": {
         const next = argv[i + 1];
         if (next && !next.startsWith("--")) {
@@ -363,8 +428,68 @@ export const parseWorkOnTasksArgs = (argv: string[]): ParsedArgs => {
     agentAdapterOverride: runnerOverride.agentAdapterOverride,
     missingTestsPolicy,
     allowMissingTests,
+    missingContextPolicy,
+    executionContextPolicy: executionContextPolicy ?? "require_sds_or_openapi",
     json,
   };
+};
+
+const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyCandidate[]> => {
+  const repo = await WorkspaceRepository.create(workspaceRoot);
+  try {
+    const rows = await repo
+      .getDb()
+      .all<{ key: string; created_at?: string | null }[]>(
+        `SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`,
+      );
+    return rows
+      .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
+      .filter((row) => row.key.trim().length > 0);
+  } catch {
+    return [];
+  } finally {
+    await repo.close();
+  }
+};
+
+export const pickWorkOnTasksProjectKey = (options: {
+  requestedKey?: string;
+  configuredKey?: string;
+  existing: ProjectKeyCandidate[];
+}): { projectKey?: string; warnings: string[] } => {
+  const warnings: string[] = [];
+  const requestedKey = options.requestedKey?.trim() || undefined;
+  const configuredKey = options.configuredKey?.trim() || undefined;
+  const existing = options.existing ?? [];
+  const firstExisting = existing[0]?.key;
+
+  if (requestedKey) {
+    if (configuredKey && configuredKey !== requestedKey) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
+      );
+    }
+    if (firstExisting && requestedKey !== firstExisting) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; first workspace project is "${firstExisting}".`,
+      );
+    }
+    return { projectKey: requestedKey, warnings };
+  }
+
+  if (configuredKey) {
+    if (firstExisting && configuredKey !== firstExisting) {
+      warnings.push(`Using configured project key "${configuredKey}" instead of first workspace project "${firstExisting}".`);
+    }
+    return { projectKey: configuredKey, warnings };
+  }
+
+  if (firstExisting) {
+    warnings.push(`No --project provided; defaulting to first workspace project "${firstExisting}".`);
+    return { projectKey: firstExisting, warnings };
+  }
+
+  return { projectKey: undefined, warnings };
 };
 
 export class WorkOnTasksCommand {
@@ -378,11 +503,28 @@ export class WorkOnTasksCommand {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
-    if (!parsed.projectKey) {
+    const existingProjects = parsed.projectKey ? [] : await listWorkspaceProjects(workspace.workspaceRoot);
+    const configuredKey =
+      typeof workspace.config?.projectKey === "string" && workspace.config.projectKey.trim().length > 0
+        ? workspace.config.projectKey
+        : undefined;
+    const projectResolution = pickWorkOnTasksProjectKey({
+      requestedKey: parsed.projectKey,
+      configuredKey,
+      existing: existingProjects,
+    });
+    const commandWarnings = [...projectResolution.warnings];
+    if (!projectResolution.projectKey) {
       // eslint-disable-next-line no-console
-      console.error("work-on-tasks requires --project <PROJECT_KEY>");
+      console.error(
+        "work-on-tasks could not resolve a project key. Provide --project <PROJECT_KEY> or create tasks for this workspace first.",
+      );
       process.exitCode = 1;
       return;
+    }
+    if (commandWarnings.length && !parsed.json) {
+      // eslint-disable-next-line no-console
+      console.warn(commandWarnings.map((warning) => `! ${warning}`).join("\n"));
     }
     const service = await WorkOnTasksService.create(workspace);
     try {
@@ -410,7 +552,7 @@ export class WorkOnTasksCommand {
       const onAgentChunk = parsed.agentStream !== false ? streamSink : undefined;
       const result = await service.workOnTasks({
         workspace,
-        projectKey: parsed.projectKey,
+        projectKey: projectResolution.projectKey,
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
@@ -430,9 +572,12 @@ export class WorkOnTasksCommand {
         agentAdapterOverride: parsed.agentAdapterOverride,
         missingTestsPolicy: parsed.missingTestsPolicy,
         allowMissingTests: parsed.allowMissingTests,
+        missingContextPolicy: parsed.missingContextPolicy,
+        executionContextPolicy: parsed.executionContextPolicy,
         onAgentChunk,
         abortSignal: abortController.signal,
       });
+      const warnings = [...commandWarnings, ...result.warnings];
 
       const success = result.results.filter((r) => r.status === "succeeded").length;
       const failed = result.results.filter((r) => r.status === "failed").length;
@@ -452,7 +597,8 @@ export class WorkOnTasksCommand {
               succeeded: success,
               failed,
               skipped,
-              warnings: result.warnings,
+              projectKey: projectResolution.projectKey,
+              warnings,
             },
             null,
             2,
@@ -470,9 +616,9 @@ export class WorkOnTasksCommand {
 
       // eslint-disable-next-line no-console
       console.log(summary);
-      if (result.warnings.length) {
+      if (warnings.length) {
         // eslint-disable-next-line no-console
-        console.warn(result.warnings.map((w) => `! ${w}`).join("\n"));
+        console.warn(warnings.map((w) => `! ${w}`).join("\n"));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

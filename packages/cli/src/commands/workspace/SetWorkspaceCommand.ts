@@ -4,7 +4,7 @@ import os from "node:os";
 import { promises as fs } from "node:fs";
 import type { Dirent } from "node:fs";
 import { createRequire } from "node:module";
-import { WorkspaceResolver } from "@mcoda/core";
+import { WorkspaceResolver, ensureProjectGuidance } from "@mcoda/core";
 import { WorkspaceRepository } from "@mcoda/db";
 
 const USAGE =
@@ -82,6 +82,7 @@ type StackInstallResult = {
   skipped: string[];
   error?: string;
 };
+type ProjectKeyCandidate = { key: string; createdAt?: string | null };
 
 type JavaBuildKind = "maven" | "gradle" | "gradle-kts";
 type JavaDependency = {
@@ -1648,6 +1649,22 @@ const ensureDocsDirs = async (mcodaDir: string): Promise<void> => {
   await fs.mkdir(path.join(mcodaDir, "jobs"), { recursive: true });
 };
 
+const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyCandidate[]> => {
+  const repo = await WorkspaceRepository.create(workspaceRoot);
+  try {
+    const rows = await repo
+      .getDb()
+      .all<{ key: string; created_at?: string | null }[]>(`SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`);
+    return rows
+      .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
+      .filter((row) => row.key.trim().length > 0);
+  } catch {
+    return [];
+  } finally {
+    await repo.close();
+  }
+};
+
 const ensureGitRepo = async (workspaceRoot: string): Promise<boolean> => {
   try {
     await fs.access(path.join(workspaceRoot, ".git"));
@@ -1742,8 +1759,29 @@ export class SetWorkspaceCommand {
       const config = await readWorkspaceConfig(resolution.mcodaDir);
       await writeWorkspaceConfig(resolution.mcodaDir, { ...config, codexNoSandbox: parsed.codexNoSandbox });
     }
+    const configuredProjectKey =
+      typeof resolution.config?.projectKey === "string" && resolution.config.projectKey.trim().length > 0
+        ? resolution.config.projectKey.trim()
+        : undefined;
+    const existingProjects = configuredProjectKey ? [] : await listWorkspaceProjects(resolution.workspaceRoot);
+    const bootstrapProjectKey = configuredProjectKey ?? existingProjects[0]?.key;
     await ensureDocsDirs(resolution.mcodaDir);
     await (await WorkspaceRepository.create(resolution.workspaceRoot)).close();
+    try {
+      const guidance = await ensureProjectGuidance(resolution.workspaceRoot, {
+        mcodaDir: resolution.mcodaDir,
+        projectKey: bootstrapProjectKey,
+      });
+      if (guidance.status !== "existing") {
+        // eslint-disable-next-line no-console
+        console.log(`Project guidance ${guidance.status}: ${guidance.path}`);
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `Project guidance bootstrap failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     await ensureDocdexUrl(resolution.mcodaDir, resolution.workspaceRoot);
 
     let gitInited = false;

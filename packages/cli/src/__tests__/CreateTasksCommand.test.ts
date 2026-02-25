@@ -60,18 +60,18 @@ describe("create-tasks argument parsing", () => {
     assert.deepEqual(parsed.qaRequires, ["db", "seed"]);
   });
 
-  it("prefers configured project key over requested or derived", () => {
+  it("honors explicit requested project key over configured defaults", () => {
     const result = pickCreateTasksProjectKey({
       requestedKey: "B",
       configuredKey: "A",
       derivedKey: "C",
       existing: [{ key: "A", mtimeMs: 10 }],
     });
-    assert.equal(result.projectKey, "A");
-    assert.ok(result.warnings.some((message) => message.includes("configured project key")));
+    assert.equal(result.projectKey, "B");
+    assert.ok(result.warnings.some((message) => message.includes("overriding configured project key")));
   });
 
-  it("reuses existing project key when requested does not match", () => {
+  it("uses explicit requested project key even when existing task plans differ", () => {
     const result = pickCreateTasksProjectKey({
       requestedKey: "new",
       configuredKey: undefined,
@@ -81,7 +81,17 @@ describe("create-tasks argument parsing", () => {
         { key: "older", mtimeMs: 1 },
       ],
     });
-    assert.equal(result.projectKey, "old");
-    assert.ok(result.warnings.some((message) => message.includes("existing project key")));
+    assert.equal(result.projectKey, "new");
+    assert.ok(result.warnings.some((message) => message.includes("Using explicitly requested project key")));
+  });
+
+  it("falls back to configured project key when request is omitted", () => {
+    const result = pickCreateTasksProjectKey({
+      requestedKey: undefined,
+      configuredKey: "cfg",
+      derivedKey: "derived",
+      existing: [{ key: "old", mtimeMs: 5 }],
+    });
+    assert.equal(result.projectKey, "cfg");
   });
 });

@@ -29,7 +29,12 @@ import yaml from "yaml";
 import { createTaskKeyGenerator } from "../planning/KeyHelpers.js";
 import { RoutingService, type ResolvedAgent } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
-import { isDocContextExcluded, loadProjectGuidance, normalizeDocType } from "../shared/ProjectGuidance.js";
+import {
+  ensureProjectGuidance,
+  isDocContextExcluded,
+  loadProjectGuidance,
+  normalizeDocType,
+} from "../shared/ProjectGuidance.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
@@ -110,6 +115,40 @@ const filterOpenApiContext = (entries: string[], hasOpenApiSnippet: boolean): st
   return filtered;
 };
 
+const normalizeExecutionContextPolicy = (
+  value?: string,
+): ReviewExecutionContextPolicy => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "require_any" || normalized === "require_sds_or_openapi") {
+    return normalized;
+  }
+  return "best_effort";
+};
+
+const normalizeEmptyDiffApprovalPolicy = (
+  value?: string,
+  fallback: EmptyDiffApprovalPolicy = "complete",
+): EmptyDiffApprovalPolicy => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "complete") return "complete";
+  if (normalized === "ready_to_qa") return "ready_to_qa";
+  return fallback;
+};
+
+const classifyReviewPlanningContextKind = (doc: {
+  docType?: string;
+  path?: string;
+  title?: string;
+}): ReviewPlanningContextKind => {
+  const docType = String(doc.docType ?? "").toUpperCase();
+  if (docType === "SDS") return "sds";
+  if (docType === "OPENAPI") return "openapi";
+  const ref = String(doc.path ?? doc.title ?? "").toLowerCase();
+  if (/docs\/sds|\/sds\.md$|(^|\/)sds\.md$/.test(ref)) return "sds";
+  if (/openapi|swagger|(^|\/)openapi\.ya?ml$/.test(ref)) return "openapi";
+  return "doc";
+};
+
 export interface CodeReviewRequest extends TaskSelectionFilters {
   workspace: WorkspaceResolution;
   baseRef?: string;
@@ -118,9 +157,19 @@ export interface CodeReviewRequest extends TaskSelectionFilters {
   agentStream?: boolean;
   rateAgents?: boolean;
   createFollowupTasks?: boolean;
+  executionContextPolicy?: "best_effort" | "require_any" | "require_sds_or_openapi";
+  emptyDiffApprovalPolicy?: "ready_to_qa" | "complete";
   resumeJobId?: string;
   abortSignal?: AbortSignal;
 }
+
+type ReviewExecutionContextPolicy = "best_effort" | "require_any" | "require_sds_or_openapi";
+type EmptyDiffApprovalPolicy = "ready_to_qa" | "complete";
+type ReviewPlanningContextKind = "sds" | "openapi" | "doc";
+type ReviewPlanningContext = {
+  source: string;
+  kind: ReviewPlanningContextKind;
+};
 
 export interface ReviewFinding {
   type?: string;
@@ -632,6 +681,71 @@ export class CodeReviewService {
     return Math.min(10, Math.max(1, Math.round(candidate as number)));
   }
 
+  private enforceExecutionContextPolicy(
+    policy: ReviewExecutionContextPolicy,
+    context: ReviewPlanningContext | undefined,
+  ): void {
+    if (policy === "best_effort") return;
+    if (policy === "require_any") {
+      if (!context) {
+        throw new Error("Review context is required but no planning documents were resolved (policy=require_any).");
+      }
+      return;
+    }
+    if (!context) {
+      throw new Error(
+        "Review context requires SDS/OpenAPI sources, but none were resolved (policy=require_sds_or_openapi).",
+      );
+    }
+    if (context.kind !== "sds" && context.kind !== "openapi") {
+      throw new Error(
+        `Review context policy require_sds_or_openapi rejected source '${context.source}' (kind=${context.kind}).`,
+      );
+    }
+  }
+
+  private async resolveExecutionPlanningContext(
+    projectKey: string | undefined,
+    warnings: string[],
+  ): Promise<ReviewPlanningContext | undefined> {
+    if (!projectKey) return undefined;
+    const pickFirst = async (filter: Record<string, unknown>) => {
+      const docs = await this.deps.docdex.search({
+        profile: "workspace-code",
+        ...filter,
+      } as any);
+      return docs[0];
+    };
+    try {
+      const sdsDoc = await pickFirst({ projectKey, docType: "SDS" });
+      if (sdsDoc) {
+        return {
+          source: sdsDoc.id ?? sdsDoc.path ?? sdsDoc.title ?? "sds",
+          kind: classifyReviewPlanningContextKind(sdsDoc),
+        };
+      }
+      const openapiDoc = await pickFirst({ projectKey, docType: "OPENAPI" });
+      if (openapiDoc) {
+        return {
+          source: openapiDoc.id ?? openapiDoc.path ?? openapiDoc.title ?? "openapi",
+          kind: classifyReviewPlanningContextKind(openapiDoc),
+        };
+      }
+      const fallbackDoc = await pickFirst({
+        projectKey,
+        query: "sds requirements architecture openapi swagger",
+      });
+      if (!fallbackDoc) return undefined;
+      return {
+        source: fallbackDoc.id ?? fallbackDoc.path ?? fallbackDoc.title ?? "workspace-code",
+        kind: classifyReviewPlanningContextKind(fallbackDoc),
+      };
+    } catch (error) {
+      warnings.push(`Review context preflight failed to query docdex: ${(error as Error).message}`);
+      return undefined;
+    }
+  }
+
   private async selectTasksViaApi(filters: {
     projectKey?: string;
     epicKey?: string;
@@ -713,6 +827,7 @@ export class CodeReviewService {
     paths: string[],
     acceptance?: string[],
     docLinks: string[] = [],
+    projectKey?: string,
   ): Promise<{ snippets: string[]; warnings: string[] }> {
     const snippets: string[] = [];
     const warnings: string[] = [];
@@ -744,52 +859,107 @@ export class CodeReviewService {
       }
       return normalized.docType;
     };
-    for (const query of queries) {
+    const runSearch = async (
+      filter: Record<string, unknown>,
+      label: string,
+    ): Promise<Array<{ id?: string; path?: string; title?: string; docType?: string; content?: string; segments?: Array<{ content?: string }> }>> => {
       try {
-        const docs = await withTimeout(
-          this.deps.docdex.search({
-            query,
-            profile: "workspace-code",
-          }),
+        return await withTimeout(
+          this.deps.docdex.search(filter as any),
           DOCDEX_TIMEOUT_MS,
-          `docdex search for "${query}"`,
-        );
-        const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false));
-        snippets.push(
-          ...filteredDocs.slice(0, 2).map((doc) => {
-            const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
-            const ref = doc.path ?? doc.id ?? doc.title ?? query;
-            return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
-          }),
+          label,
         );
       } catch (error) {
         if (!reindexed && typeof (this.deps.docdex as any).reindex === "function") {
           reindexed = true;
-          try {
-            await (this.deps.docdex as any).reindex();
-            const docs = await withTimeout(
-              this.deps.docdex.search({
-                query,
-                profile: "workspace-code",
-              }),
-              DOCDEX_TIMEOUT_MS,
-              `docdex search for "${query}" after reindex`,
-            );
-            const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false));
-            snippets.push(
-              ...filteredDocs.slice(0, 2).map((doc) => {
-                const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
-                const ref = doc.path ?? doc.id ?? doc.title ?? query;
-                return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
-              }),
-            );
-            continue;
-          } catch (retryError) {
-            warnings.push(`docdex search failed after reindex for ${query}: ${(retryError as Error).message}`);
-            continue;
-          }
+          await (this.deps.docdex as any).reindex();
+          return await withTimeout(
+            this.deps.docdex.search(filter as any),
+            DOCDEX_TIMEOUT_MS,
+            `${label} after reindex`,
+          );
         }
+        throw error;
+      }
+    };
+    const pushDocs = (
+      docs: Array<{ id?: string; path?: string; title?: string; docType?: string; content?: string; segments?: Array<{ content?: string }> }>,
+      query: string,
+    ): number => {
+      const filteredDocs = docs.filter((doc) => !isDocContextExcluded(doc.path ?? doc.title ?? doc.id, false));
+      snippets.push(
+        ...filteredDocs.slice(0, 2).map((doc) => {
+          const content = (doc.segments?.[0]?.content ?? doc.content ?? "").slice(0, 400);
+          const ref = doc.path ?? doc.id ?? doc.title ?? query;
+          return `- [${resolveDocType(doc)}] ${ref}: ${content}`;
+        }),
+      );
+      return filteredDocs.length;
+    };
+    for (const query of queries) {
+      let structuredHits = 0;
+      try {
+        structuredHits += pushDocs(
+          await runSearch(
+            {
+              query,
+              projectKey,
+              docType: "SDS",
+              profile: "workspace-code",
+            },
+            `docdex search for "${query}"`,
+          ),
+          query,
+        );
+      } catch (error) {
+        warnings.push(`docdex search failed for SDS query ${query}: ${(error as Error).message}`);
+      }
+      try {
+        structuredHits += pushDocs(
+          await runSearch(
+            {
+              query,
+              projectKey,
+              docType: "OPENAPI",
+              profile: "workspace-code",
+            },
+            `docdex search for "${query}"`,
+          ),
+          query,
+        );
+      } catch (error) {
+        warnings.push(`docdex search failed for OPENAPI query ${query}: ${(error as Error).message}`);
+      }
+      if (structuredHits > 0) {
+        continue;
+      }
+      try {
+        pushDocs(
+          await runSearch(
+            {
+              query,
+              projectKey,
+              profile: "workspace-code",
+            },
+            `docdex search for "${query}"`,
+          ),
+          query,
+        );
+      } catch (error) {
         warnings.push(`docdex search failed for ${query}: ${(error as Error).message}`);
+      }
+    }
+    if (!snippets.length && projectKey) {
+      try {
+        pushDocs(
+          await runSearch(
+            { projectKey, query: "sds openapi requirements architecture", profile: "workspace-code" },
+            "docdex fallback search",
+          ),
+          "fallback",
+        );
+      } catch (error) {
+        warnings.push(`docdex fallback search failed: ${(error as Error).message}`);
       }
     }
     const normalizeDocLink = (value: string): { type: "id" | "path"; ref: string } => {
@@ -901,7 +1071,7 @@ export class CodeReviewService {
 
   private async buildHistorySummary(taskId: string): Promise<string> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
-      sourceCommands: ["work-on-tasks", "code-review"],
+      sourceCommands: ["work-on-tasks", "code-review", "qa-tasks"],
       limit: 10,
     });
     const lastReview = await this.deps.workspaceRepo.getLatestTaskReview(taskId);
@@ -932,7 +1102,7 @@ export class CodeReviewService {
 
   private async loadCommentContext(taskId: string): Promise<{ comments: TaskCommentRow[]; unresolved: TaskCommentRow[] }> {
     const comments = await this.deps.workspaceRepo.listTaskComments(taskId, {
-      sourceCommands: ["code-review"],
+      sourceCommands: ["code-review", "qa-tasks"],
       limit: 50,
     });
     const unresolved = comments.filter((comment) => !comment.resolvedAt);
@@ -1147,10 +1317,95 @@ export class CodeReviewService {
     return Array.from(paths);
   }
 
-  private async buildOpenApiSlice(changedPaths: string[], acceptance?: string[]): Promise<string | undefined> {
-    const openapiPath = path.join(this.workspace.workspaceRoot, "openapi", "mcoda.yaml");
+  private async readOpenApiFileIfExists(
+    targetPath: string,
+  ): Promise<{ sourcePath: string; content: string } | undefined> {
+    const absolutePath = path.isAbsolute(targetPath) ? targetPath : path.join(this.workspace.workspaceRoot, targetPath);
     try {
-      const content = await fs.readFile(openapiPath, "utf8");
+      const content = await fs.readFile(absolutePath, "utf8");
+      return { sourcePath: absolutePath, content };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async resolveOpenApiContent(
+    task: TaskRow,
+    projectKey?: string,
+  ): Promise<{ source: string; content: string } | undefined> {
+    const metadata = (task.metadata as Record<string, unknown> | null | undefined) ?? {};
+    const metadataPath =
+      (typeof metadata.openapi_path === "string" && metadata.openapi_path.trim()) ||
+      (typeof metadata.openapiPath === "string" && metadata.openapiPath.trim()) ||
+      undefined;
+    const configPath =
+      (typeof (this.workspace.config as any)?.openapiPath === "string" && (this.workspace.config as any).openapiPath.trim()) ||
+      (typeof (this.workspace.config as any)?.openapi === "string" && (this.workspace.config as any).openapi.trim()) ||
+      undefined;
+    const docLinkPaths = Array.isArray(metadata.doc_links)
+      ? (metadata.doc_links as unknown[])
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.replace(/^docdex:/i, "").replace(/^doc:/i, "").trim())
+          .filter((entry) => /\.(ya?ml|json)$/i.test(entry) && /openapi|swagger/i.test(entry))
+      : [];
+    const candidates = [
+      metadataPath,
+      configPath,
+      ...docLinkPaths,
+      "openapi/mcoda.yaml",
+      "openapi/openapi.yaml",
+      "openapi/openapi.yml",
+      "openapi.yaml",
+      "openapi.yml",
+      "docs/openapi.yaml",
+      "docs/openapi.yml",
+      "openapi/swagger.yaml",
+      "openapi/swagger.yml",
+    ].filter((entry): entry is string => Boolean(entry && entry.trim()));
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      const loaded = await this.readOpenApiFileIfExists(candidate);
+      if (loaded) {
+        return { source: loaded.sourcePath, content: loaded.content };
+      }
+    }
+
+    try {
+      const docs = await this.deps.docdex.search({
+        projectKey,
+        docType: "OPENAPI",
+        profile: "workspace-code",
+      });
+      for (const doc of docs) {
+        if (doc.path) {
+          const loaded = await this.readOpenApiFileIfExists(doc.path);
+          if (loaded) {
+            return { source: loaded.sourcePath, content: loaded.content };
+          }
+        }
+        const content = (doc.segments?.map((segment) => segment.content ?? "").join("\n") || doc.content || "").trim();
+        if (content.length > 0) {
+          return { source: doc.path ?? doc.id ?? doc.title ?? "docdex:openapi", content };
+        }
+      }
+    } catch {
+      // Best-effort fallback; no OpenAPI is acceptable for non-strict policies.
+    }
+    return undefined;
+  }
+
+  private async buildOpenApiSlice(
+    changedPaths: string[],
+    acceptance: string[] | undefined,
+    task: TaskRow,
+    projectKey?: string,
+  ): Promise<string | undefined> {
+    const resolved = await this.resolveOpenApiContent(task, projectKey);
+    if (!resolved) return undefined;
+    try {
+      const content = resolved.content;
       const parsed = yaml.parse(content) as any;
       const pathHints = this.componentHintsFromPaths(changedPaths);
       const criteriaHints = (acceptance ?? []).map((c) => c.toLowerCase()).slice(0, 5);
@@ -1188,7 +1443,7 @@ export class CodeReviewService {
       const rendered = yaml.stringify(slice);
       return rendered.slice(0, 8000);
     } catch {
-      return undefined;
+      return resolved.content.slice(0, 4000);
     }
   }
 
@@ -1505,6 +1760,8 @@ export class CodeReviewService {
     await this.ensureMcoda();
     const agentStream = request.agentStream !== false;
     const baseRef = request.baseRef ?? this.workspace.config?.branch ?? DEFAULT_BASE_BRANCH;
+    let executionContextPolicy = normalizeExecutionContextPolicy(request.executionContextPolicy);
+    let emptyDiffApprovalPolicy = normalizeEmptyDiffApprovalPolicy(request.emptyDiffApprovalPolicy, "complete");
     const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
     const rawStatusFilter = ignoreStatusFilter
       ? []
@@ -1534,6 +1791,17 @@ export class CodeReviewService {
           ", ",
         )}.`,
       );
+    }
+    const executionContext = await this.resolveExecutionPlanningContext(request.projectKey, warnings);
+    try {
+      this.enforceExecutionContextPolicy(executionContextPolicy, executionContext);
+    } catch (error) {
+      await this.deps.jobService.finishCommandRun(
+        commandRun.id,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
     }
     let allowFollowups = request.createFollowupTasks === true;
     let selectedTasks: Array<TaskRow & { epicKey: string; storyKey: string; epicTitle?: string; epicDescription?: string; storyTitle?: string; storyDescription?: string; acceptanceCriteria?: string[] }> =
@@ -1615,6 +1883,9 @@ export class CodeReviewService {
           agent: request.agentName,
           agentStream,
           createFollowupTasks: allowFollowups,
+          executionContextPolicy,
+          executionContext: executionContext ? { source: executionContext.source, kind: executionContext.kind } : undefined,
+          emptyDiffApprovalPolicy,
         },
         totalItems: selectedTaskIds.length,
         processedItems: 0,
@@ -1688,9 +1959,27 @@ export class CodeReviewService {
     }
     const prompts = await this.loadPrompts(agent.id);
     const extras = await this.loadRunbookAndChecklists();
-    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir);
+    try {
+      const ensuredGuidance = await ensureProjectGuidance(this.workspace.workspaceRoot, {
+        mcodaDir: this.workspace.mcodaDir,
+        projectKey: request.projectKey,
+      });
+      for (const warning of ensuredGuidance.warnings ?? []) {
+        warnings.push(`project_guidance_warning:${warning}`);
+      }
+    } catch (error) {
+      warnings.push(
+        `project_guidance_bootstrap_failed:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const projectGuidance = await loadProjectGuidance(this.workspace.workspaceRoot, this.workspace.mcodaDir, {
+      projectKey: request.projectKey,
+    });
     if (projectGuidance) {
       console.info(`[code-review] loaded project guidance from ${projectGuidance.source}`);
+      for (const warning of projectGuidance.warnings ?? []) {
+        warnings.push(`project_guidance_warning:${warning}`);
+      }
     }
     const guidanceBlock = projectGuidance?.content ? `Project Guidance (read first):\n${projectGuidance.content}` : undefined;
     const systemPrompts = [guidanceBlock, prompts.jobPrompt, prompts.characterPrompt, prompts.commandPrompt, ...extras].filter(Boolean) as string[];
@@ -1974,6 +2263,7 @@ export class CodeReviewService {
           changedPaths.length ? changedPaths : allowedFiles,
           task.acceptanceCriteria,
           Array.isArray((task.metadata as any)?.doc_links) ? (task.metadata as any).doc_links : [],
+          request.projectKey,
         );
         if (docLinks.warnings.length) warnings.push(...docLinks.warnings);
         await this.deps.workspaceRepo.insertTaskLog({
@@ -1985,7 +2275,7 @@ export class CodeReviewService {
           details: { snippets: docLinks.snippets },
         });
 
-        const openapiSnippet = await this.buildOpenApiSlice(changedPaths, task.acceptanceCriteria);
+        const openapiSnippet = await this.buildOpenApiSlice(changedPaths, task.acceptanceCriteria, task, request.projectKey);
         if (!openapiSnippet) {
           warnings.push("OpenAPI spec not found; proceeding without snippet");
         }
@@ -2485,7 +2775,7 @@ export class CodeReviewService {
         if (!request.dryRun) {
           const approveDecision = parsed.decision === "approve" || parsed.decision === "info_only";
           if (approveDecision) {
-            if (diffEmpty) {
+            if (diffEmpty && emptyDiffApprovalPolicy === "complete") {
               await this.stateService.markCompleted(task, { review_no_changes: true }, statusContext);
               taskStatusUpdate = "completed";
             } else {

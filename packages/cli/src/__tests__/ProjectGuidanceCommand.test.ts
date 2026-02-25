@@ -51,6 +51,7 @@ const withTempHome = async (
 test("parseProjectGuidanceArgs defaults", () => {
   const parsed = parseProjectGuidanceArgs([]);
   assert.equal(parsed.workspaceRoot, undefined);
+  assert.equal(parsed.projectKey, undefined);
   assert.equal(parsed.force, false);
   assert.equal(parsed.json, false);
   assert.equal(parsed.help, false);
@@ -61,10 +62,13 @@ test("parseProjectGuidanceArgs parses workspace aliases and flags", () => {
   const parsed = parseProjectGuidanceArgs([
     "--workspace",
     root,
+    "--project",
+    "demo",
     "--force",
     "--json=true",
   ]);
   assert.equal(parsed.workspaceRoot, root);
+  assert.equal(parsed.projectKey, "demo");
   assert.equal(parsed.force, true);
   assert.equal(parsed.json, true);
   assert.equal(parsed.help, false);
@@ -80,6 +84,7 @@ test(
       );
       const firstPayload = JSON.parse(firstRun.join("\n"));
       assert.equal(firstPayload.status, "created");
+      assert.equal(firstPayload.projectKey, null);
       assert.equal(typeof firstPayload.path, "string");
       const firstContent = await fs.readFile(firstPayload.path, "utf8");
       assert.ok(firstContent.includes("# Project Guidance"));
@@ -90,6 +95,22 @@ test(
       const secondPayload = JSON.parse(secondRun.join("\n"));
       assert.equal(secondPayload.status, "existing");
       assert.equal(secondPayload.path, firstPayload.path);
+    });
+  },
+);
+
+test(
+  "ProjectGuidanceCommand supports project-scoped guidance path",
+  { concurrency: false },
+  async () => {
+    await withTempHome(async (workspaceRoot) => {
+      const run = await captureLogs(() =>
+        ProjectGuidanceCommand.run(["--workspace-root", workspaceRoot, "--project", "WEB-01", "--json"]),
+      );
+      const payload = JSON.parse(run.join("\n"));
+      assert.equal(payload.projectKey, "WEB-01");
+      assert.equal(payload.status, "created");
+      assert.ok(payload.path.includes(path.join("docs", "projects", "web-01", "project-guidance.md")));
     });
   },
 );

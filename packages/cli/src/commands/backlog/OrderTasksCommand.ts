@@ -5,12 +5,14 @@ interface ParsedArgs {
   workspaceRoot?: string;
   project?: string;
   epic?: string;
+  story?: string;
   status?: string[];
   agentName?: string;
   agentStream?: boolean;
   rateAgents: boolean;
   inferDeps: boolean;
   apply: boolean;
+  planningContextPolicy: "best_effort" | "require_any" | "require_sds_or_openapi";
   stageOrder?: string[];
   json: boolean;
 }
@@ -19,11 +21,13 @@ const usage = `mcoda order-tasks \\
   [--workspace-root <PATH>] \\
   --project <PROJECT_KEY> \\
   [--epic <EPIC_KEY>] \\
+  [--story <STORY_KEY>] \\
   [--status <STATUS_FILTER>] \\
   [--agent <NAME>] \\
   [--agent-stream <true|false>] \\
   [--infer-deps] \\
-  [--apply] \\
+  [--apply <true|false>] \\
+  [--planning-context-policy <best_effort|require_any|require_sds_or_openapi>] \\
   [--stage-order <foundation,backend,frontend,other>] \\
   [--rate-agents] \\
   [--json]`;
@@ -55,12 +59,24 @@ const parseStageOrder = (value?: string): string[] | undefined => {
   return parts.length ? parts : undefined;
 };
 
+const normalizePlanningContextPolicy = (
+  value?: string,
+): ParsedArgs["planningContextPolicy"] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "best_effort" || normalized === "require_any" || normalized === "require_sds_or_openapi") {
+    return normalized;
+  }
+  return undefined;
+};
+
 export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
   const parsed: ParsedArgs = {
     agentStream: false,
     rateAgents: false,
     inferDeps: false,
-    apply: false,
+    apply: true,
+    planningContextPolicy: "require_sds_or_openapi",
     json: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -89,6 +105,11 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
       parsed.stageOrder = parseStageOrder(arg.split("=")[1]);
       continue;
     }
+    if (arg.startsWith("--planning-context-policy=")) {
+      const policy = normalizePlanningContextPolicy(arg.split("=")[1]);
+      if (policy) parsed.planningContextPolicy = policy;
+      continue;
+    }
     switch (arg) {
       case "--workspace-root":
         parsed.workspaceRoot = argv[i + 1] ? path.resolve(argv[i + 1]) : undefined;
@@ -100,6 +121,10 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
         break;
       case "--epic":
         parsed.epic = argv[i + 1];
+        i += 1;
+        break;
+      case "--story":
+        parsed.story = argv[i + 1];
         i += 1;
         break;
       case "--status":
@@ -144,6 +169,14 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
         parsed.stageOrder = parseStageOrder(argv[i + 1]);
         i += 1;
         break;
+      case "--planning-context-policy": {
+        const policy = normalizePlanningContextPolicy(argv[i + 1]);
+        if (policy) {
+          parsed.planningContextPolicy = policy;
+        }
+        i += 1;
+        break;
+      }
       case "--rate-agents": {
         const next = argv[i + 1];
         if (next && !next.startsWith("-")) {
@@ -168,6 +201,8 @@ export const parseOrderTasksArgs = (argv: string[]): ParsedArgs => {
           parsed.project = arg.split("=")[1];
         } else if (arg.startsWith("--epic=")) {
           parsed.epic = arg.split("=")[1];
+        } else if (arg.startsWith("--story=")) {
+          parsed.story = arg.split("=")[1];
         } else if (arg === "--json=true") {
           parsed.json = true;
         }
@@ -255,11 +290,14 @@ export class OrderTasksCommand {
       const result = await service.orderTasks({
         projectKey: parsed.project,
         epicKey: parsed.epic,
+        storyKey: parsed.story,
         statusFilter: parsed.status,
         agentName: parsed.agentName,
         agentStream: parsed.agentStream,
         rateAgents: parsed.rateAgents,
         inferDependencies: parsed.inferDeps,
+        apply: parsed.apply,
+        planningContextPolicy: parsed.planningContextPolicy,
         stageOrder: resolvedStageOrder,
       });
       if (parsed.json) {

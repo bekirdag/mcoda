@@ -37,6 +37,7 @@ Optional agent rating is available with `--rate-agents` to score outputs (qualit
 ```sh
 npm i -g mcoda
 mcoda set-workspace --workspace-root .
+mcoda project-guidance --workspace-root . --project <PROJECT_KEY>
 mcoda --help
 ```
 
@@ -54,6 +55,7 @@ mcoda --help
 ## 📂 What gets created
 mcoda stores workspace state under `~/.mcoda/workspaces/<name>-<hash>/`:
 - `docs/` for generated PDR/SDS artifacts.
+- `docs/project-guidance.md` (or `docs/projects/<project>/project-guidance.md`) for execution guidance loaded by work/review/QA agents.
 - `tasks/` for planning outputs.
 - `jobs/` for run checkpoints and logs.
 - `mcoda.db` for backlog, jobs, and telemetry.

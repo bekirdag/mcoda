@@ -3,7 +3,12 @@ import assert from "node:assert";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ensureProjectGuidance, loadProjectGuidance, normalizeDocType } from "../ProjectGuidance.js";
+import {
+  ensureProjectGuidance,
+  loadProjectGuidance,
+  normalizeDocType,
+  resolveWorkspaceProjectGuidancePath,
+} from "../ProjectGuidance.js";
 import { PathHelper } from "@mcoda/shared";
 
 const setupDir = async () => {
@@ -128,6 +133,90 @@ test("ensureProjectGuidance keeps existing content unless force is enabled", asy
       const updated = await fs.readFile(guidancePath, "utf8");
       assert.ok(updated.includes("# Project Guidance"));
       assert.equal(updated.includes("Custom guidance"), false);
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+});
+
+test("resolveWorkspaceProjectGuidancePath supports project-scoped guidance path", async () => {
+  await withTempHome(async () => {
+    const dir = await setupDir();
+    try {
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const scoped = resolveWorkspaceProjectGuidancePath(dir, mcodaDir, "WEB-01");
+      assert.ok(scoped.endsWith(path.join("docs", "projects", "web-01", "project-guidance.md")));
+      const global = resolveWorkspaceProjectGuidancePath(dir, mcodaDir);
+      assert.ok(global.endsWith(path.join("docs", "project-guidance.md")));
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+});
+
+test("ensureProjectGuidance seeds guidance from SDS and refreshes stale managed guidance", async () => {
+  await withTempHome(async () => {
+    const dir = await setupDir();
+    try {
+      const docsDir = path.join(dir, "docs");
+      await fs.mkdir(docsDir, { recursive: true });
+      const sdsPath = path.join(docsDir, "sds.md");
+      await fs.writeFile(
+        sdsPath,
+        [
+          "# Software Design Specification",
+          "",
+          "## Product Context",
+          "- Initial product context from SDS.",
+          "",
+          "## Architecture",
+          "- Service A talks to Service B.",
+          "",
+          "## Folder Tree",
+          "```text",
+          "src/",
+          "  services/",
+          "```",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const mcodaDir = PathHelper.getWorkspaceDir(dir);
+      const created = await ensureProjectGuidance(dir, { mcodaDir, projectKey: "WEB-01" });
+      assert.equal(created.status, "created");
+      assert.equal(created.source, "sds");
+      assert.equal(created.sdsSource, "docs/sds.md");
+      assert.ok(created.path.includes(path.join("docs", "projects", "web-01", "project-guidance.md")));
+      const seeded = await fs.readFile(created.path, "utf8");
+      assert.ok(seeded.includes("mcoda_guidance: true"));
+      assert.ok(seeded.includes("sds_source: docs/sds.md"));
+      assert.ok(seeded.includes("# Project Guidance"));
+
+      await fs.writeFile(
+        sdsPath,
+        [
+          "# Software Design Specification",
+          "",
+          "## Product Context",
+          "- Updated SDS product context.",
+          "",
+          "## Architecture",
+          "- Updated architecture summary.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const stale = await loadProjectGuidance(dir, mcodaDir, { projectKey: "web-01" });
+      assert.ok(stale);
+      assert.equal(stale?.stale, true);
+      assert.ok((stale?.warnings ?? []).some((warning) => warning.includes("guidance_stale_sds_hash")));
+
+      const refreshed = await ensureProjectGuidance(dir, { mcodaDir, projectKey: "web-01" });
+      assert.equal(refreshed.status, "overwritten");
+      assert.equal(refreshed.stale, true);
+      const refreshedContent = await fs.readFile(refreshed.path, "utf8");
+      assert.ok(refreshedContent.includes("Updated SDS product context"));
     } finally {
       await cleanupDir(dir);
     }

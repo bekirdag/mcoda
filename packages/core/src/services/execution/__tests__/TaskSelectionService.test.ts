@@ -128,7 +128,7 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
   await cleanupWorkspace(dir, repo);
 });
 
-test("selectTasks includes tasks even with open missing_context comments", async () => {
+test("selectTasks warns by default and keeps tasks with open missing_context comments", async () => {
   const ctx = await setupWorkspace();
   const { repo, story, project, dir, workspace } = ctx;
 
@@ -168,7 +168,51 @@ test("selectTasks includes tasks even with open missing_context comments", async
   const selection = new TaskSelectionService(workspace, repo);
   const plan = await selection.selectTasks({ projectKey: "proj" });
   assert.deepStrictEqual(plan.ordered.map((t) => t.task.key).sort(), ["proj-epic-us-01-t20", "proj-epic-us-01-t21"].sort());
-  assert.ok(!plan.warnings.some((warning) => warning.includes("missing_context")));
+  assert.ok(plan.warnings.some((warning) => warning.includes("missing_context")));
+  await cleanupWorkspace(dir, repo);
+});
+
+test("selectTasks blocks tasks with open missing_context comments when policy is block", async () => {
+  const ctx = await setupWorkspace();
+  const { repo, story, project, dir, workspace } = ctx;
+
+  const [t1, t2] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t22",
+        title: "Setup project scaffold",
+        description: "",
+        status: "not_started",
+      },
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t23",
+        title: "Implement API route",
+        description: "",
+        status: "not_started",
+      },
+    ],
+    false,
+  );
+
+  await repo.createTaskComment({
+    taskId: t2.id,
+    sourceCommand: "gateway-trio",
+    authorType: "agent",
+    category: "missing_context",
+    body: "Missing API shape details.",
+    createdAt: new Date().toISOString(),
+  });
+
+  const selection = new TaskSelectionService(workspace, repo);
+  const plan = await selection.selectTasks({ projectKey: "proj", missingContextPolicy: "block" });
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), [t1.key]);
+  assert.ok(plan.warnings.some((warning) => warning.includes("open missing_context comments")));
   await cleanupWorkspace(dir, repo);
 });
 
