@@ -1744,3 +1744,76 @@ test("createTasks falls back to deterministic planning on invalid agent output",
     jobService.checkpoints.some((entry) => entry.stage === "epics_generated" && entry.details?.source === "fallback"),
   );
 });
+
+test("createTasks keeps partial plan and applies story-level fallback when one story task generation fails", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story one desc",
+          acceptanceCriteria: ["story one ac"],
+        },
+        {
+          localId: "us2",
+          title: "Story Two",
+          description: "Story two desc",
+          acceptanceCriteria: ["story two ac"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Story One Task One",
+          type: "feature",
+          description: "Task for story one",
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+    "not json",
+    "still not json",
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.ok(result.tasks.some((task) => task.title === "Story One Task One"));
+  assert.ok(result.tasks.some((task) => task.title === "Fallback planning for Story Two"));
+  assert.ok(result.tasks.some((task) => task.title === "Fallback implementation for Story Two"));
+  assert.ok(!result.tasks.some((task) => task.title === "Summarize requirements"));
+});

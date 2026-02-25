@@ -2587,6 +2587,74 @@ export class CreateTasksService {
       .filter((t: AgentTaskNode) => t.title);
   }
 
+  private buildFallbackStoryForEpic(epic: PlanEpic): AgentStoryNode {
+    const criteria = epic.acceptanceCriteria?.filter(Boolean) ?? [];
+    return {
+      localId: "us-fallback-1",
+      title: `Deliver ${epic.title}`,
+      userStory: `As a delivery team, we need an executable implementation story for ${epic.title}.`,
+      description: [
+        `Deterministic fallback story generated because model output for epic "${epic.title}" could not be parsed reliably.`,
+        "Use SDS and related docs to decompose this story into concrete implementation tasks.",
+      ].join("\n"),
+      acceptanceCriteria:
+        criteria.length > 0
+          ? criteria
+          : [
+              "Story has actionable implementation tasks.",
+              "Dependencies are explicit and story-scoped.",
+              "Tasks are ready for execution.",
+            ],
+      relatedDocs: epic.relatedDocs ?? [],
+      priorityHint: 1,
+      tasks: [],
+    };
+  }
+
+  private buildFallbackTasksForStory(story: PlanStory): AgentTaskNode[] {
+    const criteriaLines = (story.acceptanceCriteria ?? [])
+      .slice(0, 6)
+      .map((criterion) => `- ${criterion}`)
+      .join("\n");
+    return [
+      {
+        localId: "t-fallback-1",
+        title: `Fallback planning for ${story.title}`,
+        type: "chore",
+        description: [
+          `Draft a concrete implementation plan for story "${story.title}" using SDS/OpenAPI context.`,
+          "List exact files/modules to touch and implementation order.",
+          criteriaLines ? `Acceptance criteria to satisfy:\n${criteriaLines}` : "Acceptance criteria: use story definition.",
+        ].join("\n"),
+        estimatedStoryPoints: 2,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: story.relatedDocs ?? [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+      {
+        localId: "t-fallback-2",
+        title: `Fallback implementation for ${story.title}`,
+        type: "feature",
+        description: [
+          `Implement story "${story.title}" according to the fallback planning task.`,
+          "Ensure done criteria and test requirements are explicitly documented for execution.",
+        ].join("\n"),
+        estimatedStoryPoints: 3,
+        priorityHint: 2,
+        dependsOnKeys: ["t-fallback-1"],
+        relatedDocs: story.relatedDocs ?? [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ];
+  }
+
   private async generatePlanFromAgent(
     epics: AgentEpicNode[],
     agent: Agent,
@@ -2607,39 +2675,91 @@ export class CreateTasksService {
 
     const planStories: PlanStory[] = [];
     const planTasks: PlanTask[] = [];
+    const fallbackStoryScopes = new Set<string>();
 
     for (const epic of planEpics) {
-      const stories = await this.generateStoriesForEpic(
-        agent,
-        { ...epic },
-        docSummary,
-        options.projectBuildMethod,
-        options.agentStream,
-        options.jobId,
-        options.commandRunId,
-      );
-      const limitedStories = stories.slice(0, options.maxStoriesPerEpic ?? stories.length);
+      let stories: AgentStoryNode[] = [];
+      let usedFallbackStories = false;
+      try {
+        stories = await this.generateStoriesForEpic(
+          agent,
+          { ...epic },
+          docSummary,
+          options.projectBuildMethod,
+          options.agentStream,
+          options.jobId,
+          options.commandRunId,
+        );
+      } catch (error) {
+        usedFallbackStories = true;
+        await this.jobService.appendLog(
+          options.jobId,
+          `Story generation failed for epic "${epic.title}". Using deterministic fallback story. Reason: ${
+            (error as Error).message ?? String(error)
+          }\n`,
+        );
+        stories = [this.buildFallbackStoryForEpic(epic)];
+      }
+      let limitedStories = stories.slice(0, options.maxStoriesPerEpic ?? stories.length);
+      if (limitedStories.length === 0) {
+        usedFallbackStories = true;
+        await this.jobService.appendLog(
+          options.jobId,
+          `Story generation returned no stories for epic "${epic.title}". Using deterministic fallback story.\n`,
+        );
+        limitedStories = [this.buildFallbackStoryForEpic(epic)];
+      }
       limitedStories.forEach((story, idx) => {
-        planStories.push({
+        const planStory: PlanStory = {
           ...story,
           localId: story.localId ?? `us${idx + 1}`,
           epicLocalId: epic.localId,
-        });
+        };
+        planStories.push(planStory);
+        if (usedFallbackStories) {
+          fallbackStoryScopes.add(this.storyScopeKey(planStory.epicLocalId, planStory.localId));
+        }
       });
     }
 
     for (const story of planStories) {
-      const tasks = await this.generateTasksForStory(
-        agent,
-        { key: story.epicLocalId, title: story.title },
-        story,
-        docSummary,
-        options.projectBuildMethod,
-        options.agentStream,
-        options.jobId,
-        options.commandRunId,
-      );
-      const limitedTasks = tasks.slice(0, options.maxTasksPerStory ?? tasks.length);
+      const storyScope = this.storyScopeKey(story.epicLocalId, story.localId);
+      let tasks: AgentTaskNode[] = [];
+      if (fallbackStoryScopes.has(storyScope)) {
+        tasks = this.buildFallbackTasksForStory(story);
+      } else {
+        try {
+          tasks = await this.generateTasksForStory(
+            agent,
+            { key: story.epicLocalId, title: story.title },
+            story,
+            docSummary,
+            options.projectBuildMethod,
+            options.agentStream,
+            options.jobId,
+            options.commandRunId,
+          );
+        } catch (error) {
+          await this.jobService.appendLog(
+            options.jobId,
+            `Task generation failed for story "${story.title}" (${storyScope}). Using deterministic fallback tasks. Reason: ${
+              (error as Error).message ?? String(error)
+            }\n`,
+          );
+          tasks = this.buildFallbackTasksForStory(story);
+        }
+      }
+      let limitedTasks = tasks.slice(0, options.maxTasksPerStory ?? tasks.length);
+      if (limitedTasks.length === 0) {
+        await this.jobService.appendLog(
+          options.jobId,
+          `Task generation returned no tasks for story "${story.title}" (${storyScope}). Using deterministic fallback tasks.\n`,
+        );
+        limitedTasks = this.buildFallbackTasksForStory(story).slice(
+          0,
+          options.maxTasksPerStory ?? Number.MAX_SAFE_INTEGER,
+        );
+      }
       limitedTasks.forEach((task, idx) => {
         planTasks.push({
           ...task,

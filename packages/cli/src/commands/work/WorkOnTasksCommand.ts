@@ -22,7 +22,7 @@ interface ParsedArgs {
   workRunner?: string;
   useCodali?: boolean;
   agentAdapterOverride?: string;
-  missingTestsPolicy?: "block_job" | "skip_task" | "fail_task";
+  missingTestsPolicy?: "block_job" | "skip_task" | "fail_task" | "continue_task";
   allowMissingTests?: boolean;
   missingContextPolicy?: "allow" | "warn" | "block";
   executionContextPolicy?: "best_effort" | "require_any" | "require_sds_or_openapi";
@@ -44,7 +44,7 @@ const usage = `mcoda work-on-tasks \\
   [--agent-stream <true|false>] \\
   [--work-runner <codali|default>] \\
   [--use-codali <true|false>] \\
-  [--missing-tests-policy <block_job|skip_task|fail_task>] \\
+  [--missing-tests-policy <continue_task|block_job|skip_task|fail_task>] \\
   [--allow-missing-tests <true|false>] \\
   [--missing-context-policy <allow|warn|block>] \\
   [--execution-context-policy <best_effort|require_any|require_sds_or_openapi>] \\
@@ -83,7 +83,18 @@ const normalizeMissingTestsPolicy = (
 ): ParsedArgs["missingTestsPolicy"] | undefined => {
   if (!value) return undefined;
   const normalized = value.trim().toLowerCase().replace(/-/g, "_");
-  if (normalized === "block_job" || normalized === "skip_task" || normalized === "fail_task") {
+  if (
+    normalized === "block_job" ||
+    normalized === "skip_task" ||
+    normalized === "fail_task" ||
+    normalized === "continue_task" ||
+    normalized === "continue" ||
+    normalized === "allow" ||
+    normalized === "warn_task"
+  ) {
+    if (normalized === "continue" || normalized === "allow" || normalized === "warn_task") {
+      return "continue_task";
+    }
     return normalized;
   }
   return undefined;

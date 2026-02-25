@@ -4347,7 +4347,64 @@ test("workOnTasks uses category test commands when requirements are set", async 
   }
 });
 
-test("workOnTasks blocks the job when tests are required but no commands exist", async () => {
+test("workOnTasks continues by default when tests are required but no commands exist", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await repo.updateTask(tasks[0].id, {
+    metadata: {
+      test_requirements: {
+        unit: ["missing test commands"],
+        component: [],
+        integration: [],
+        api: [],
+      },
+    },
+  });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentService() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.ok(result.warnings.some((warning) => warning.includes("proceeding without automated tests")));
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_code_review");
+    assert.equal((updated?.metadata as any)?.failed_reason, undefined);
+
+    const db = repo.getDb();
+    const taskRuns = await db.all<{ status: string }[]>("SELECT status FROM task_runs WHERE command = 'work-on-tasks'");
+    assert.equal(taskRuns.length, 1);
+    assert.ok(taskRuns.every((run) => run.status === "succeeded"));
+    const tokenUsage = await db.all("SELECT id FROM token_usage");
+    assert.equal(tokenUsage.length, 1);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks blocks the job when tests are required but no commands exist and policy is block_job", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -4384,6 +4441,7 @@ test("workOnTasks blocks the job when tests are required but no commands exist",
         dryRun: false,
         noCommit: true,
         limit: 1,
+        missingTestsPolicy: "block_job",
       }),
       /missing_test_harness/,
     );

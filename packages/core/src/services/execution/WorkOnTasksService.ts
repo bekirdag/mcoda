@@ -917,9 +917,9 @@ type TestRequirements = {
 };
 
 type TestRunResult = { command: string; stdout: string; stderr: string; code: number };
-export type MissingTestsPolicy = "block_job" | "skip_task" | "fail_task";
+export type MissingTestsPolicy = "block_job" | "skip_task" | "fail_task" | "continue_task";
 export type ExecutionContextPolicy = "best_effort" | "require_any" | "require_sds_or_openapi";
-const DEFAULT_MISSING_TESTS_POLICY: MissingTestsPolicy = "block_job";
+const DEFAULT_MISSING_TESTS_POLICY: MissingTestsPolicy = "continue_task";
 const DEFAULT_EXECUTION_CONTEXT_POLICY: ExecutionContextPolicy = "best_effort";
 
 type ExecutionContextKind = "sds" | "openapi" | "fallback";
@@ -928,7 +928,18 @@ type ExecutionPlanningContext = { source: string; kind: ExecutionContextKind };
 const normalizeMissingTestsPolicy = (value: unknown): MissingTestsPolicy | undefined => {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase().replace(/-/g, "_");
-  if (normalized === "block_job" || normalized === "skip_task" || normalized === "fail_task") {
+  if (
+    normalized === "block_job" ||
+    normalized === "skip_task" ||
+    normalized === "fail_task" ||
+    normalized === "continue_task" ||
+    normalized === "continue" ||
+    normalized === "allow" ||
+    normalized === "warn_task"
+  ) {
+    if (normalized === "continue" || normalized === "allow" || normalized === "warn_task") {
+      return "continue_task";
+    }
     return normalized;
   }
   return undefined;
@@ -3873,7 +3884,12 @@ export class WorkOnTasksService {
     const commentBacklogMaxFails = resolveCommentBacklogMaxFails();
     const requestedMissingTestsPolicy = normalizeMissingTestsPolicy(request.missingTestsPolicy);
     const missingTestsPolicy: MissingTestsPolicy =
-      requestedMissingTestsPolicy ?? (request.allowMissingTests ? "skip_task" : DEFAULT_MISSING_TESTS_POLICY);
+      requestedMissingTestsPolicy ??
+      (request.allowMissingTests === true
+        ? "continue_task"
+        : request.allowMissingTests === false
+          ? "block_job"
+          : DEFAULT_MISSING_TESTS_POLICY);
     const requestedExecutionContextPolicy = normalizeExecutionContextPolicy(request.executionContextPolicy);
     const executionContextPolicy: ExecutionContextPolicy =
       requestedExecutionContextPolicy ?? DEFAULT_EXECUTION_CONTEXT_POLICY;
@@ -4714,23 +4730,36 @@ export class WorkOnTasksService {
                 `missing_test_harness: ${task.task.key} requires tests but no runnable test commands were found`,
               );
             }
-            await this.logTask(
-              taskRun.id,
-              "Tests required but no runnable test commands were found; failing task.",
-              "tests",
-              { testRequirements, missingTestsPolicy },
-            );
-            await this.stateService.markFailed(task.task, "tests_not_configured", statusContext);
-            await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
-              status: "failed",
-              finishedAt: new Date().toISOString(),
-            });
-            setFailureReason("tests_not_configured");
-            results.push({ taskKey: task.task.key, status: "failed", notes: "tests_not_configured" });
-            taskStatus = "failed";
-            await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
-            await emitTaskEndOnce();
-            continue taskLoop;
+            if (missingTestsPolicy === "continue_task") {
+              const warning =
+                `Task ${task.task.key}: tests required but no runnable test harness was found; proceeding without automated tests.` +
+                " Add metadata.tests/testCommands or tests/all.js.";
+              warnings.push(warning);
+              await this.logTask(
+                taskRun.id,
+                "Tests required but no runnable test commands were found; continuing without automated tests due to missing-tests policy.",
+                "tests",
+                { testRequirements, missingTestsPolicy },
+              );
+            } else {
+              await this.logTask(
+                taskRun.id,
+                "Tests required but no runnable test commands were found; failing task.",
+                "tests",
+                { testRequirements, missingTestsPolicy },
+              );
+              await this.stateService.markFailed(task.task, "tests_not_configured", statusContext);
+              await this.deps.workspaceRepo.updateTaskRun(taskRun.id, {
+                status: "failed",
+                finishedAt: new Date().toISOString(),
+              });
+              setFailureReason("tests_not_configured");
+              results.push({ taskKey: task.task.key, status: "failed", notes: "tests_not_configured" });
+              taskStatus = "failed";
+              await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
+              await emitTaskEndOnce();
+              continue taskLoop;
+            }
           }
           const shouldRunTests = !request.dryRun && (testsRequired ? hasRunnableTests : testCommands.length > 0);
           let mergeConflicts: string[] = [];

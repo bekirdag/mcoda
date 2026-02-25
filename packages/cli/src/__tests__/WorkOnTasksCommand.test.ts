@@ -78,6 +78,13 @@ describe("work-on-tasks argument parsing", () => {
     assert.equal(parsed.allowMissingTests, false);
   });
 
+  it("parses continue-task missing test policy aliases", () => {
+    const explicit = parseWorkOnTasksArgs(["--missing-tests-policy", "continue_task"]);
+    assert.equal(explicit.missingTestsPolicy, "continue_task");
+    const alias = parseWorkOnTasksArgs(["--missing-tests-policy", "allow"]);
+    assert.equal(alias.missingTestsPolicy, "continue_task");
+  });
+
   it("parses missing context policy flag", () => {
     const parsed = parseWorkOnTasksArgs([
       "--missing-context-policy",
