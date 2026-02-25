@@ -326,11 +326,11 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 ```
 
 - Scopes: `--project <KEY>` (optional; defaults to workspace config project, then first workspace project), `--task <KEY>...`, `--epic <KEY>`, or `--story <KEY>`. Default statuses: `not_started,in_progress` (override with `--status ...`).
-- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--work-runner <codali|default>`, `--use-codali <true|false>`, `--missing-context-policy <allow|warn|block>`, `--missing-tests-policy <block_job|skip_task|fail_task>`, `--allow-missing-tests`, `--execution-context-policy <best_effort|require_any|require_sds_or_openapi>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--json`.
+- Behavior flags: `--limit <N>`, `--parallel <N>`, `--no-commit`, `--dry-run`, `--agent <NAME>`, `--agent-stream <true|false>`, `--work-runner <codali|default>`, `--use-codali <true|false>`, `--missing-context-policy <allow|warn|block>`, `--missing-tests-policy <continue_task|block_job|skip_task|fail_task>`, `--allow-missing-tests`, `--execution-context-policy <best_effort|require_any|require_sds_or_openapi>`, `--rate-agents`, `--auto-merge/--no-auto-merge`, `--auto-push/--no-auto-push`, `--json`.
 - Selection & ordering: dependency-aware (skips tasks with unmet dependencies or missing_context), topo + priority + SP + created_at, with in-progress tie-breaks. Skips are reported as warnings.
 - Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, stops tasks at `ready_to_code_review`, and streams agent output when `--agent-stream true` is set. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
 - Scope & safety: enforces allowed files/tests from task metadata; scope violations fail the task and are logged.
-- Tests: default missing-tests policy is `block_job` (job-level preflight block, no per-task status mutation). Use `--missing-tests-policy fail_task|skip_task` only when you explicitly want per-task handling.
+- Tests: default missing-tests policy is `continue_task` (work proceeds with explicit warnings when no runnable harness exists). Use `--missing-tests-policy block_job` when you explicitly want strict preflight blocking, or `skip_task|fail_task` for per-task handling.
 - VCS: creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
 
 ### Use a remote Ollama agent (GPU offload)
