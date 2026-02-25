@@ -187,6 +187,8 @@ describe("backlog output rendering", () => {
     assert.ok(output.includes("view=tasks"));
     assert.ok(output.includes("web-01-us-01-t01"));
     assert.ok(!output.includes("web-01-us-01-t02"));
+    assert.ok(output.includes("╭"));
+    assert.ok(output.includes("╰"));
     assert.ok(!output.includes("Epics:"));
     assert.ok(!output.includes("Stories:"));
     assert.ok(!output.includes("Summary (tasks / SP):"));

@@ -179,14 +179,54 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
   return parsed;
 };
 
-const pad = (value: string, width: number): string => value.padEnd(width, " ");
+const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 
-const formatTable = (headers: string[], rows: string[][]): string => {
-  const widths = headers.map((header, idx) => Math.max(header.length, ...rows.map((row) => (row[idx] ?? "").length)));
-  const headerLine = headers.map((h, idx) => pad(h, widths[idx])).join(" | ");
-  const sepLine = widths.map((w) => "-".repeat(w)).join("-+-");
-  const body = rows.map((row) => row.map((cell, idx) => pad(cell ?? "", widths[idx])).join(" | ")).join("\n");
-  return [headerLine, sepLine, body].filter(Boolean).join("\n");
+const stripAnsi = (value: string): string => value.replace(ANSI_REGEX, "");
+
+const visibleLength = (value: string): number => stripAnsi(value).length;
+
+const padVisible = (value: string, width: number): string => {
+  const diff = width - visibleLength(value);
+  return diff > 0 ? `${value}${" ".repeat(diff)}` : value;
+};
+
+const colorize = (enabled: boolean, code: number, value: string): string =>
+  enabled ? `\x1b[${code}m${value}\x1b[0m` : value;
+
+const style = {
+  bold: (enabled: boolean, value: string) => colorize(enabled, 1, value),
+  dim: (enabled: boolean, value: string) => colorize(enabled, 2, value),
+  blue: (enabled: boolean, value: string) => colorize(enabled, 34, value),
+  cyan: (enabled: boolean, value: string) => colorize(enabled, 36, value),
+  green: (enabled: boolean, value: string) => colorize(enabled, 32, value),
+  yellow: (enabled: boolean, value: string) => colorize(enabled, 33, value),
+  magenta: (enabled: boolean, value: string) => colorize(enabled, 35, value),
+  red: (enabled: boolean, value: string) => colorize(enabled, 31, value),
+};
+
+const formatPanel = (lines: string[]): string => {
+  const width = Math.max(0, ...lines.map((line) => visibleLength(line)));
+  const top = `╭${"─".repeat(width + 2)}╮`;
+  const body = lines.map((line) => `│ ${padVisible(line, width)} │`);
+  const bottom = `╰${"─".repeat(width + 2)}╯`;
+  return [top, ...body, bottom].join("\n");
+};
+
+const formatBoxTable = (headers: string[], rows: string[][]): string => {
+  const widths = headers.map((header, idx) => Math.max(visibleLength(header), ...rows.map((row) => visibleLength(row[idx] ?? ""))));
+  const border = (left: string, join: string, right: string): string =>
+    `${left}${widths.map((width) => "─".repeat(width + 2)).join(join)}${right}`;
+  const headerLine = `│${headers.map((header, idx) => ` ${padVisible(header, widths[idx])} `).join("│")}│`;
+  const rowLines = rows.map(
+    (row) => `│${row.map((cell, idx) => ` ${padVisible(cell ?? "", widths[idx])} `).join("│")}│`,
+  );
+  return [
+    border("╭", "┬", "╮"),
+    headerLine,
+    border("├", "┼", "┤"),
+    ...rowLines,
+    border("╰", "┴", "╯"),
+  ].join("\n");
 };
 
 const fmt = (value: number | null | undefined): string => {
@@ -264,7 +304,69 @@ const formatEtaCell = (eta?: string): string => {
   return `${eta} (local ${local}, ${relative})`;
 };
 
-const renderResult = (result: EstimateResult): void => {
+type ProgressBarTheme = {
+  full: (value: string) => string;
+  partial: (value: string) => string;
+  empty: (value: string) => string;
+};
+
+const createBar = (percentValue: number, theme: ProgressBarTheme): string => {
+  const percent = Math.max(0, Math.min(100, Number.isFinite(percentValue) ? percentValue : 0));
+  const rounded = Math.round(percent);
+  const width = 10;
+  if (rounded <= 0) {
+    return theme.empty("░".repeat(width));
+  }
+  if (rounded >= 100) {
+    return theme.full("█".repeat(width));
+  }
+  const fullCount = Math.min(width - 1, Math.floor((rounded / 100) * width));
+  const partialCount = 1;
+  const emptyCount = Math.max(0, width - fullCount - partialCount);
+  return `${theme.full("█".repeat(fullCount))}${theme.partial("▒".repeat(partialCount))}${theme.empty("░".repeat(emptyCount))}`;
+};
+
+const renderProgressSection = (result: EstimateResult, colorEnabled: boolean): string => {
+  const work = result.completion.workOnTasks;
+  const qa = result.completion.readyToQa;
+  const done = result.completion.done;
+  const labels = [
+    "🛠️ Work on tasks",
+    "🧪 Ready to qa",
+    "✅ Done",
+  ];
+  const maxLabel = Math.max(...labels.map((label) => visibleLength(label)));
+  const formatLine = (
+    label: string,
+    metric: { done: number; total: number; percent: number },
+    theme: ProgressBarTheme,
+  ): string => {
+    const bar = createBar(metric.percent, theme);
+    const percent = `${Math.round(metric.percent)}%`;
+    return `${padVisible(label, maxLabel)} : ${bar} ${percent} (${metric.done}/${metric.total})`;
+  };
+  return formatPanel([
+    style.bold(colorEnabled, "📊 Completion"),
+    formatLine("🛠️ Work on tasks", work, {
+      full: (value) => style.cyan(colorEnabled, value),
+      partial: (value) => style.blue(colorEnabled, value),
+      empty: (value) => style.dim(colorEnabled, value),
+    }),
+    formatLine("🧪 Ready to qa", qa, {
+      full: (value) => style.yellow(colorEnabled, value),
+      partial: (value) => style.magenta(colorEnabled, value),
+      empty: (value) => style.dim(colorEnabled, value),
+    }),
+    formatLine("✅ Done", done, {
+      full: (value) => style.green(colorEnabled, value),
+      partial: (value) => style.yellow(colorEnabled, value),
+      empty: (value) => style.dim(colorEnabled, value),
+    }),
+  ]);
+};
+
+const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }): void => {
+  const { colorEnabled } = options;
   const velocity = result.effectiveVelocity;
   const source = velocity.source;
   const spHeader = `SP/H (${source})`;
@@ -307,11 +409,34 @@ const renderResult = (result: EstimateResult): void => {
   ];
   // eslint-disable-next-line no-console
   console.log(
-    formatTable(
-      ["LANE", "STORY_POINTS", spHeader, "TIME_LEFT"],
-      rows,
-    ),
+    formatPanel([
+      style.bold(colorEnabled, "🧮 Effort by Lane"),
+      formatBoxTable(
+        [
+          style.bold(colorEnabled, "LANE"),
+          style.bold(colorEnabled, "STORY POINTS"),
+          style.bold(colorEnabled, spHeader.toUpperCase()),
+          style.bold(colorEnabled, "TIME LEFT"),
+        ],
+        rows,
+      ),
+    ]),
   );
+  const counts = result.statusCounts;
+  // eslint-disable-next-line no-console
+  console.log(
+    formatPanel([
+      style.bold(colorEnabled, "📌 Task Status"),
+      `${style.bold(colorEnabled, "Total tasks")}           : ${counts.total}`,
+      `${style.cyan(colorEnabled, "Ready to code review")} : ${counts.readyToCodeReview}`,
+      `${style.yellow(colorEnabled, "Ready to qa")}         : ${counts.readyToQa}`,
+      `${style.blue(colorEnabled, "In progress")}          : ${counts.inProgress}`,
+      `${style.red(colorEnabled, "Failed")}               : ${counts.failed}`,
+      `${style.green(colorEnabled, "Completed")}            : ${counts.completed}`,
+    ]),
+  );
+  // eslint-disable-next-line no-console
+  console.log(renderProgressSection(result, colorEnabled));
   const samples = velocity.samples ?? { implementation: 0, review: 0, qa: 0 };
   const windowLabel = velocity.windowTasks ? ` (window ${velocity.windowTasks})` : "";
   const fallbackNote =
@@ -319,28 +444,39 @@ const renderResult = (result: EstimateResult): void => {
       ? ` (requested ${velocity.requestedMode}; no empirical samples, using config)`
       : "";
   // eslint-disable-next-line no-console
-  console.log(`\nVelocity source: ${velocity.source}${fallbackNote}`);
-  // eslint-disable-next-line no-console
   console.log(
-    `Velocity samples${windowLabel}: impl=${samples.implementation ?? 0}, review=${samples.review ?? 0}, qa=${samples.qa ?? 0}`,
+    formatPanel([
+      style.bold(colorEnabled, "📈 Velocity"),
+      `${style.bold(colorEnabled, "Velocity source")} : ${velocity.source}${fallbackNote}`,
+      `${style.bold(colorEnabled, "Samples")}${windowLabel}        : impl=${samples.implementation ?? 0}, review=${samples.review ?? 0}, qa=${samples.qa ?? 0}`,
+    ]),
   );
   // eslint-disable-next-line no-console
-  console.log("ETAs:");
-  // eslint-disable-next-line no-console
   console.log(
-    formatTable(
-      ["READY_TO_REVIEW", "READY_TO_QA", "COMPLETE"],
-      [
+    formatPanel([
+      style.bold(colorEnabled, "⏱️ ETAs"),
+      formatBoxTable(
         [
-          formatEtaCell(result.etas.readyToReviewEta),
-          formatEtaCell(result.etas.readyToQaEta),
-          formatEtaCell(result.etas.completeEta),
+          style.bold(colorEnabled, "READY TO REVIEW"),
+          style.bold(colorEnabled, "READY TO QA"),
+          style.bold(colorEnabled, "COMPLETE"),
         ],
-      ],
-    ),
+        [
+          [
+            formatEtaCell(result.etas.readyToReviewEta),
+            formatEtaCell(result.etas.readyToQaEta),
+            formatEtaCell(result.etas.completeEta),
+          ],
+        ],
+      ),
+    ]),
   );
   // eslint-disable-next-line no-console
-  console.log("\nAssumptions: lane work runs in parallel; total hours uses the longest lane.");
+  console.log(
+    formatPanel([
+      `${style.bold(colorEnabled, "ℹ️ Assumptions")} : lane work runs in parallel; total hours uses the longest lane.`,
+    ]),
+  );
 };
 
 export class EstimateCommands {
@@ -381,22 +517,24 @@ export class EstimateCommands {
         // eslint-disable-next-line no-console
         console.log(JSON.stringify(result, null, 2));
       } else if (!parsed.quiet) {
+        const colorEnabled = !parsed.noColor;
         const totalTasks =
           result.backlogTotals.implementation.tasks +
           result.backlogTotals.review.tasks +
           result.backlogTotals.qa.tasks +
           result.backlogTotals.done.tasks;
+        const scopeText = `project=${parsed.project ?? "all"}${parsed.epic ? `, epic=${parsed.epic}` : ""}${
+          parsed.story ? `, story=${parsed.story}` : ""
+        }${parsed.assignee ? `, assignee=${parsed.assignee}` : ""}`;
         // eslint-disable-next-line no-console
-        console.log(
-          `Scope: project=${parsed.project ?? "all"}${parsed.epic ? `, epic=${parsed.epic}` : ""}${
-            parsed.story ? `, story=${parsed.story}` : ""
-          }${parsed.assignee ? `, assignee=${parsed.assignee}` : ""}`,
-        );
+        console.log(formatPanel([`${style.bold(colorEnabled, "🧭 Scope")} : ${scopeText}`]));
         if (totalTasks === 0) {
           // eslint-disable-next-line no-console
-          console.log("No tasks found in the selected scope. Showing zeroed estimate.");
+          console.log(
+            formatPanel([style.yellow(colorEnabled, "No tasks found in the selected scope. Showing zeroed estimate.")]),
+          );
         }
-        renderResult(result);
+        renderResult(result, { colorEnabled });
       }
     } catch (error) {
       await jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);

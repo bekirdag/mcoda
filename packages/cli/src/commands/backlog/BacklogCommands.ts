@@ -179,13 +179,18 @@ const resolveStatuses = (parsed: ParsedArgs): string[] | undefined => {
 const pad = (value: string, width: number): string => value.padEnd(width, " ");
 
 const formatTable = (headers: string[], rows: string[][]): string => {
-  const widths = headers.map((header, idx) => {
-    return Math.max(header.length, ...rows.map((row) => (row[idx] ?? "").length));
-  });
-  const headerLine = headers.map((h, idx) => pad(h, widths[idx])).join(" | ");
-  const sepLine = widths.map((w) => "-".repeat(w)).join("-+-");
-  const body = rows.map((row) => row.map((cell, idx) => pad(cell ?? "", widths[idx])).join(" | ")).join("\n");
-  return [headerLine, sepLine, body].filter(Boolean).join("\n");
+  const widths = headers.map((header, idx) => Math.max(header.length, ...rows.map((row) => (row[idx] ?? "").length)));
+  const border = (left: string, join: string, right: string): string =>
+    `${left}${widths.map((width) => "─".repeat(width + 2)).join(join)}${right}`;
+  const headerLine = `│${headers.map((header, idx) => ` ${pad(header, widths[idx])} `).join("│")}│`;
+  const rowLines = rows.map((row) => `│${row.map((cell, idx) => ` ${pad(cell ?? "", widths[idx])} `).join("│")}│`);
+  return [
+    border("╭", "┬", "╮"),
+    headerLine,
+    border("├", "┼", "┤"),
+    ...rowLines,
+    border("╰", "┴", "╯"),
+  ].join("\n");
 };
 
 const truncate = (value: string | undefined, max = 100): string => {

@@ -3772,7 +3772,9 @@ export class WorkOnTasksService {
         `Unknown missing-tests policy "${String(request.missingTestsPolicy)}"; using "${missingTestsPolicy}".`,
       );
     }
-    const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;
+    const explicitTaskSelection = Boolean(request.taskKeys?.length);
+    const ignoreDependencies = request.ignoreDependencies === true || explicitTaskSelection;
+    const ignoreStatusFilter = explicitTaskSelection || request.ignoreStatusFilter === true;
     const { filtered: statusFilter, rejected } = ignoreStatusFilter
       ? { filtered: request.statusFilter ?? [], rejected: [] as string[] }
       : filterTaskStatuses(request.statusFilter, WORK_ALLOWED_STATUSES, WORK_ALLOWED_STATUSES);
@@ -3816,7 +3818,7 @@ export class WorkOnTasksService {
         ignoreStatusFilter,
         includeTypes,
         excludeTypes,
-        ignoreDependencies: true,
+        ignoreDependencies,
         limit: request.limit,
         parallel: request.parallel,
         noCommit: request.noCommit ?? false,
@@ -3898,7 +3900,7 @@ export class WorkOnTasksService {
         ignoreStatusFilter,
         includeTypes,
         excludeTypes,
-        ignoreDependencies: true,
+        ignoreDependencies,
         limit: request.limit,
         parallel: request.parallel,
       });

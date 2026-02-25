@@ -229,14 +229,18 @@ describe("estimate output rendering", { concurrency: false }, () => {
         "PROJ",
         "--sp-per-hour",
         "10",
+        "--no-color",
       ]),
     );
     const output = logs.join("\n");
-    assert.ok(output.includes("TIME_LEFT"));
+    assert.ok(output.includes("TIME LEFT"));
     assert.ok(output.includes("Done"));
     assert.ok(output.includes("Total"));
-    assert.ok(output.includes("Velocity samples (window 50): impl=0, review=0, qa=0"));
-    assert.ok(output.includes("Assumptions: lane work runs in parallel; total hours uses the longest lane."));
+    assert.ok(output.includes("Total tasks"));
+    assert.ok(output.includes("Work on tasks"));
+    assert.ok(output.includes("Ready to qa"));
+    assert.ok(output.includes("impl=0, review=0, qa=0"));
+    assert.ok(output.includes("lane work runs in parallel; total hours uses the longest lane."));
   });
 
   it("notes when empirical mode falls back to config", async () => {
@@ -250,10 +254,12 @@ describe("estimate output rendering", { concurrency: false }, () => {
         "10",
         "--velocity-mode",
         "empirical",
+        "--no-color",
       ]),
     );
     const output = logs.join("\n");
-    assert.ok(output.includes("Velocity source: config (requested empirical; no empirical samples, using config)"));
+    assert.ok(output.includes("Velocity source"));
+    assert.ok(output.includes("config (requested empirical; no empirical samples, using config)"));
   });
 
   it("prints local and relative ETA values", async () => {
@@ -269,6 +275,7 @@ describe("estimate output rendering", { concurrency: false }, () => {
           "PROJ",
           "--sp-per-hour",
           "10",
+          "--no-color",
         ]),
       );
       const output = logs.join("\n");
@@ -296,5 +303,18 @@ describe("estimate output rendering", { concurrency: false }, () => {
     assert.ok(parsed.backlogTotals);
     assert.ok(parsed.durationsHours);
     assert.ok(parsed.etas);
+    assert.deepEqual(parsed.statusCounts, {
+      total: 4,
+      readyToCodeReview: 1,
+      failed: 0,
+      inProgress: 0,
+      readyToQa: 1,
+      completed: 1,
+    });
+    assert.deepEqual(parsed.completion, {
+      workOnTasks: { done: 3, total: 4, percent: 75 },
+      readyToQa: { done: 2, total: 4, percent: 50 },
+      done: { done: 1, total: 4, percent: 25 },
+    });
   });
 });

@@ -50,12 +50,35 @@ export interface EstimateEtas {
   completeEta?: string;
 }
 
+export interface EstimateStatusCounts {
+  total: number;
+  readyToCodeReview: number;
+  failed: number;
+  inProgress: number;
+  readyToQa: number;
+  completed: number;
+}
+
+export interface EstimateCompletionMetric {
+  done: number;
+  total: number;
+  percent: number;
+}
+
+export interface EstimateCompletion {
+  workOnTasks: EstimateCompletionMetric;
+  readyToQa: EstimateCompletionMetric;
+  done: EstimateCompletionMetric;
+}
+
 export interface EstimateResult {
   scope: BacklogScope & { workspaceId: string };
   backlogTotals: BacklogTotals;
   effectiveVelocity: EffectiveVelocity;
   durationsHours: EstimateDurations;
   etas: EstimateEtas;
+  statusCounts: EstimateStatusCounts;
+  completion: EstimateCompletion;
 }
 
 export interface WorkOnTasksRequest {
