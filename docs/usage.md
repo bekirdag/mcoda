@@ -57,6 +57,7 @@ Create tasks, refine them, and order them by dependencies.
 
 ```sh
 mcoda create-tasks --workspace-root . --project WEB --agent codex <workspace-dir>/docs/sds/web.md openapi/mcoda.yaml
+mcoda task-sufficiency-audit --workspace-root . --project WEB
 mcoda refine-tasks --workspace-root . --project WEB --agent codex
 mcoda migrate-tasks --workspace-root . --project WEB --plan-dir <workspace-dir>/tasks/WEB
 mcoda order-tasks --workspace-root . --project WEB
@@ -210,7 +211,7 @@ mcoda tasks order-by-deps --project WEB --status not_started,in_progress
 mcoda backlog --project WEB --order dependencies       # same core ordering
 ```
 
-- Flags: `--workspace-root <path>`, `--project <KEY>` (required), `--epic <KEY>`, `--story <KEY>`, `--status <STATUS_FILTER>`, `--agent <NAME>`, `--agent-stream <true|false>`, `--infer-deps <true|false>`, `--apply <true|false>`, `--stage-order <foundation,backend,frontend,other>`, `--rate-agents`, `--json`.
+- Flags: `--workspace-root <path>`, `--project <KEY>` (optional; defaults to workspace config project key, then first workspace project), `--epic <KEY>`, `--story <KEY>`, `--status <STATUS_FILTER>`, `--agent <NAME>`, `--agent-stream <true|false>`, `--infer-deps <true|false>`, `--apply <true|false>`, `--stage-order <foundation,backend,frontend,other>`, `--rate-agents`, `--json`.
 - Planning context policy: `--planning-context-policy best_effort|require_any|require_sds_or_openapi` (CLI default: `require_sds_or_openapi`).
 - Behavior: topo order over `task_dependencies`, with tie-breaks on foundation/stage, dependency impact, and complexity. By default `--apply=true` so priorities and ordering metadata are persisted to tasks/stories/epics. Use `--apply=false` for dry-run ordering with no DB mutations.
 
@@ -228,6 +229,8 @@ mcoda create-tasks \
 
 Writes plan artifacts to `<workspace-dir>/tasks/<PROJECT>/plan.json` plus `epics.json`, `stories.json`, `tasks.json`. If the DB is busy, the files still persist for later import.
 `create-tasks` accepts optional positional input files (`INPUT...`) for context sources such as SDS/OpenAPI paths (it does not use `--doc` or `--openapi` flags).
+At the end of `create-tasks`, mcoda auto-runs a sufficiency pass (same engine as `task-sufficiency-audit`) to compare SDS coverage against generated backlog items and add missing tasks when needed.
+If the sufficiency pass fails, `create-tasks` continues in fail-open mode and records audit failure details in job logs/checkpoints.
 Project key is sticky: after the first run, `create-tasks` reuses the workspace `projectKey` from `<workspace-dir>/config.json` or an existing `<workspace-dir>/tasks/<PROJECT>` folder to avoid creating new slugs. Edit `<workspace-dir>/config.json` if you need to change it.
 Use `--force` to wipe and replace the existing backlog for the project. Add `--rate-agents` to score the planning agent.
 Create-tasks also captures QA readiness metadata (profiles, entrypoints, blockers) from repo preflight (scripts/tests) and writes it into each task’s metadata/description so QA can select the right profiles later. Override defaults with:
@@ -254,6 +257,23 @@ mcoda migrate-tasks \
   --plan-dir <workspace-dir>/tasks/TODO \
   --refine-plans-dir <workspace-dir>/tasks/TODO/refinements
 ```
+
+### Audit task sufficiency directly
+Run the standalone sufficiency pass to compare SDS coverage against your current backlog and auto-remediate gaps:
+
+```sh
+mcoda task-sufficiency-audit \
+  --workspace-root . \
+  --project TODO \
+  --max-iterations 5 \
+  --max-tasks-per-iteration 30 \
+  --min-coverage-ratio 0.95
+```
+
+- Use `--dry-run` to inspect findings without mutating tasks.
+- Use `--json` for machine-readable output.
+- If `--project` is omitted, mcoda resolves it using workspace defaults (configured project key, then first workspace project).
+- Reports are written to `<workspace-dir>/tasks/<PROJECT>/task-sufficiency-report.json` with timestamped snapshots under `<workspace-dir>/tasks/<PROJECT>/sufficiency-audit/`.
 
 ### Update the CLI
 Check for updates without applying:

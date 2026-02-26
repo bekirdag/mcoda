@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WorkspaceRepository } from "@mcoda/db";
 import { TaskOrderingService, WorkspaceResolver, type TaskOrderingRequest } from "@mcoda/core";
 
 interface ParsedArgs {
@@ -17,9 +18,11 @@ interface ParsedArgs {
   json: boolean;
 }
 
+type ProjectKeyCandidate = { key: string; createdAt?: string | null };
+
 const usage = `mcoda order-tasks \\
   [--workspace-root <PATH>] \\
-  --project <PROJECT_KEY> \\
+  [--project <PROJECT_KEY>] \\
   [--epic <EPIC_KEY>] \\
   [--story <STORY_KEY>] \\
   [--status <STATUS_FILTER>] \\
@@ -31,6 +34,64 @@ const usage = `mcoda order-tasks \\
   [--stage-order <foundation,backend,frontend,other>] \\
   [--rate-agents] \\
   [--json]`;
+
+const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyCandidate[]> => {
+  const repo = await WorkspaceRepository.create(workspaceRoot);
+  try {
+    const rows = await repo
+      .getDb()
+      .all<{ key: string; created_at?: string | null }[]>(
+        `SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`,
+      );
+    return rows
+      .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
+      .filter((row) => row.key.trim().length > 0);
+  } catch {
+    return [];
+  } finally {
+    await repo.close();
+  }
+};
+
+export const pickOrderTasksProjectKey = (options: {
+  requestedKey?: string;
+  configuredKey?: string;
+  existing: ProjectKeyCandidate[];
+}): { projectKey?: string; warnings: string[] } => {
+  const warnings: string[] = [];
+  const requestedKey = options.requestedKey?.trim() || undefined;
+  const configuredKey = options.configuredKey?.trim() || undefined;
+  const existing = options.existing ?? [];
+  const firstExisting = existing[0]?.key;
+
+  if (requestedKey) {
+    if (configuredKey && configuredKey !== requestedKey) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
+      );
+    }
+    if (firstExisting && requestedKey !== firstExisting) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; first workspace project is "${firstExisting}".`,
+      );
+    }
+    return { projectKey: requestedKey, warnings };
+  }
+
+  if (configuredKey) {
+    if (firstExisting && configuredKey !== firstExisting) {
+      warnings.push(`Using configured project key "${configuredKey}" instead of first workspace project "${firstExisting}".`);
+    }
+    return { projectKey: configuredKey, warnings };
+  }
+
+  if (firstExisting) {
+    warnings.push(`No --project provided; defaulting to first workspace project "${firstExisting}".`);
+    return { projectKey: firstExisting, warnings };
+  }
+
+  return { projectKey: undefined, warnings };
+};
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -267,9 +328,22 @@ export class OrderTasksCommand {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
-    if (!parsed.project) {
+    const existingProjects = parsed.project ? [] : await listWorkspaceProjects(workspace.workspaceRoot);
+    const configuredKey =
+      typeof workspace.config?.projectKey === "string" && workspace.config.projectKey.trim().length > 0
+        ? workspace.config.projectKey
+        : undefined;
+    const projectResolution = pickOrderTasksProjectKey({
+      requestedKey: parsed.project,
+      configuredKey,
+      existing: existingProjects,
+    });
+    const commandWarnings = [...projectResolution.warnings];
+    if (!projectResolution.projectKey) {
       // eslint-disable-next-line no-console
-      console.error("order-tasks requires --project <PROJECT_KEY>");
+      console.error(
+        "order-tasks could not resolve a project key. Provide --project <PROJECT_KEY> or create tasks for this workspace first.",
+      );
       process.exitCode = 1;
       return;
     }
@@ -288,7 +362,7 @@ export class OrderTasksCommand {
     const service = await TaskOrderingService.create(workspace);
     try {
       const result = await service.orderTasks({
-        projectKey: parsed.project,
+        projectKey: projectResolution.projectKey,
         epicKey: parsed.epic,
         storyKey: parsed.story,
         statusFilter: parsed.status,
@@ -300,18 +374,19 @@ export class OrderTasksCommand {
         planningContextPolicy: parsed.planningContextPolicy,
         stageOrder: resolvedStageOrder,
       });
+      const warnings = [...commandWarnings, ...result.warnings];
       if (parsed.json) {
         const payload: Record<string, unknown> = {
           order: result.ordered,
         };
-        if (result.warnings.length > 0) {
-          payload.warnings = result.warnings;
+        if (warnings.length > 0) {
+          payload.warnings = warnings;
         }
         // eslint-disable-next-line no-console
         console.log(JSON.stringify(payload, null, 2));
         return;
       }
-      renderOrder(result.ordered, result.warnings);
+      renderOrder(result.ordered, warnings);
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error(`order-tasks failed: ${(error as Error).message}`);

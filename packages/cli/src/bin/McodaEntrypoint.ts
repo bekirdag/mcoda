@@ -9,6 +9,7 @@ import { JobsCommands } from "../commands/jobs/JobsCommands.js";
 import { OpenapiCommands } from "../commands/openapi/OpenapiCommands.js";
 import { CreateTasksCommand } from "../commands/planning/CreateTasksCommand.js";
 import { RefineTasksCommand } from "../commands/planning/RefineTasksCommand.js";
+import { TaskSufficiencyAuditCommand } from "../commands/planning/TaskSufficiencyAuditCommand.js";
 import { BacklogCommands } from "../commands/backlog/BacklogCommands.js";
 import { TaskShowCommands } from "../commands/backlog/TaskShowCommands.js";
 import { OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
@@ -83,7 +84,7 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
+        "Usage: mcoda <agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
           "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
@@ -148,6 +149,10 @@ export class McodaEntrypoint {
     }
     if (command === "refine-tasks") {
       await RefineTasksCommand.run(rest);
+      return;
+    }
+    if (command === "task-sufficiency-audit") {
+      await TaskSufficiencyAuditCommand.run(rest);
       return;
     }
     if (command === "qa-tasks") {

@@ -10,6 +10,7 @@ export * from "./commands/backlog/OrderTasksCommand.js";
 export * from "./commands/estimate/EstimateCommands.js";
 export * from "./commands/telemetry/TelemetryCommands.js";
 export * from "./commands/planning/RefineTasksCommand.js";
+export * from "./commands/planning/TaskSufficiencyAuditCommand.js";
 export * from "./commands/work/WorkOnTasksCommand.js";
 export * from "./commands/work/GatewayTrioCommand.js";
 export * from "./commands/review/CodeReviewCommand.js";

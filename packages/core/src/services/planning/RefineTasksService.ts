@@ -243,6 +243,25 @@ const formatTaskSummary = (task: CandidateTask): string => {
     .join("\n");
 };
 
+const splitChildReferenceFields = ["taskKey", "key", "localId", "id", "slug", "alias", "ref"] as const;
+
+const normalizeSplitDependencyRef = (value: string): string => value.trim().toLowerCase();
+
+const collectSplitChildReferences = (child: SplitTaskOp["children"][number]): string[] => {
+  const references: string[] = [];
+  const childRecord = child as unknown as Record<string, unknown>;
+  for (const field of splitChildReferenceFields) {
+    const candidate = childRecord[field];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      references.push(candidate.trim());
+    }
+  }
+  if (typeof child.title === "string" && child.title.trim().length > 0) {
+    references.push(child.title.trim());
+  }
+  return Array.from(new Set(references));
+};
+
 export class RefineTasksService {
   private docdex: DocdexClient;
   private jobService: JobService;
@@ -1042,9 +1061,38 @@ export class RefineTasksService {
     }
     if (op.op === "split_task") {
       const split = op as SplitTaskOp;
-      const invalidDep = split.children.some((child) => child.dependsOn?.some((dep) => !keySet.has(dep)));
+      const taskKeysByNormalized = new Map<string, string>();
+      for (const key of keySet) {
+        taskKeysByNormalized.set(normalizeSplitDependencyRef(key), key);
+      }
+      const siblingReferences = new Set<string>();
+      const selfReferencesByChild = split.children.map((child) => {
+        const selfReferences = new Set<string>();
+        for (const reference of collectSplitChildReferences(child)) {
+          const normalized = normalizeSplitDependencyRef(reference);
+          if (!normalized) continue;
+          selfReferences.add(normalized);
+          siblingReferences.add(normalized);
+        }
+        return selfReferences;
+      });
+      const invalidDep = split.children.some((child) =>
+        child.dependsOn?.some((dep) => {
+          const normalized = normalizeSplitDependencyRef(dep);
+          if (!normalized) return false;
+          if (taskKeysByNormalized.has(normalized)) return false;
+          if (siblingReferences.has(normalized)) return false;
+          return true;
+        }),
+      );
       if (invalidDep) {
         return { valid: false, reason: "Split child references unknown dependency" };
+      }
+      const selfDependency = split.children.some((child, index) =>
+        child.dependsOn?.some((dep) => selfReferencesByChild[index]?.has(normalizeSplitDependencyRef(dep))),
+      );
+      if (selfDependency) {
+        return { valid: false, reason: "Split child cannot depend on itself" };
       }
       if (split.children.some((child) => child.storyPoints !== undefined && child.storyPoints !== null && (child.storyPoints < 0 || child.storyPoints > 13))) {
         return { valid: false, reason: "Child story points out of bounds" };
@@ -1133,7 +1181,7 @@ export class RefineTasksService {
     await this.workspaceRepo.withTransaction(async () => {
       let stage = "start";
       const newTasks: TaskInsert[] = [];
-      const pendingDeps: { childKey: string; dependsOnId: string; dependsOnKey: string; relationType: string }[] = [];
+      const pendingDeps: { childKey: string; dependsOnKey: string; relationType: string }[] = [];
 
       try {
         stage = "load:storyKeys";
@@ -1225,8 +1273,25 @@ export class RefineTasksService {
                 createdAt: new Date().toISOString(),
               });
             }
-            for (const child of op.children) {
-              const childKey = keyGen();
+            const existingTaskKeyByNormalized = new Map<string, string>();
+            for (const key of taskByKey.keys()) {
+              existingTaskKeyByNormalized.set(normalizeSplitDependencyRef(key), key);
+            }
+            const childKeys = op.children.map(() => keyGen());
+            const childRefToKey = new Map<string, string>();
+            op.children.forEach((child, index) => {
+              const childKey = childKeys[index];
+              childRefToKey.set(normalizeSplitDependencyRef(childKey), childKey);
+              for (const reference of collectSplitChildReferences(child)) {
+                const normalized = normalizeSplitDependencyRef(reference);
+                if (!normalized || childRefToKey.has(normalized)) continue;
+                childRefToKey.set(normalized, childKey);
+              }
+            });
+
+            for (let index = 0; index < op.children.length; index += 1) {
+              const child = op.children[index];
+              const childKey = childKeys[index];
               const childSp = child.storyPoints ?? null;
               if (childSp) {
                 storyPointsDelta += childSp;
@@ -1258,17 +1323,26 @@ export class RefineTasksService {
                 openapiVersionAtCreation: target.openapiVersionAtCreation ?? null,
               };
               newTasks.push(childInsert);
-              const dependsOn = child.dependsOn ?? [];
-              for (const depKey of dependsOn) {
-                const depTask = taskByKey.get(depKey);
-                if (depTask) {
-                  pendingDeps.push({
-                    childKey,
-                    dependsOnId: depTask.id,
-                    dependsOnKey: depTask.key,
-                    relationType: "blocks",
-                  });
+              for (const dependencyReference of child.dependsOn ?? []) {
+                const normalizedReference = normalizeSplitDependencyRef(dependencyReference);
+                if (!normalizedReference) continue;
+                const dependencyKey =
+                  existingTaskKeyByNormalized.get(normalizedReference) ?? childRefToKey.get(normalizedReference);
+                if (!dependencyKey) {
+                  warnings.push(
+                    `Skipped split dependency ${childKey}->${dependencyReference}: unresolved sibling or task reference.`,
+                  );
+                  continue;
                 }
+                if (dependencyKey === childKey) {
+                  warnings.push(`Skipped split dependency ${childKey}->${dependencyReference}: self dependency.`);
+                  continue;
+                }
+                pendingDeps.push({
+                  childKey,
+                  dependsOnKey: dependencyKey,
+                  relationType: "blocks",
+                });
               }
               taskByKey.set(childKey, {
                 ...childInsert,
@@ -1429,9 +1503,13 @@ export class RefineTasksService {
           }
           for (const dep of allowedDeps) {
             const childId = idByKey.get(dep.childKey);
-            if (childId) {
-              deps.push({ taskId: childId, dependsOnTaskId: dep.dependsOnId, relationType: dep.relationType });
+            if (!childId) continue;
+            const dependsOnId = idByKey.get(dep.dependsOnKey) ?? taskByKey.get(dep.dependsOnKey)?.id;
+            if (!dependsOnId) {
+              warnings.push(`Skipped refine dependency ${dep.childKey}->${dep.dependsOnKey}: dependency task not found.`);
+              continue;
             }
+            deps.push({ taskId: childId, dependsOnTaskId: dependsOnId, relationType: dep.relationType });
           }
           if (deps.length > 0) {
             stage = "insert:deps";
