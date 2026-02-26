@@ -273,6 +273,47 @@ class StubRatingService {
   }
 }
 
+class StubTaskSufficiencyService {
+  calls: any[] = [];
+  async runAudit(request: any) {
+    this.calls.push(request);
+    return {
+      jobId: "suff-job-1",
+      commandRunId: "suff-cmd-1",
+      projectKey: request.projectKey,
+      sourceCommand: request.sourceCommand,
+      satisfied: true,
+      dryRun: false,
+      totalTasksAdded: 2,
+      totalTasksUpdated: 0,
+      maxIterations: 3,
+      minCoverageRatio: 0.95,
+      finalCoverageRatio: 1,
+      remainingSectionHeadings: [],
+      remainingFolderEntries: [],
+      remainingGaps: {
+        sections: 0,
+        folders: 0,
+        total: 0,
+      },
+      iterations: [
+        {
+          iteration: 1,
+          coverageRatio: 0.65,
+          totalSignals: 10,
+          missingSectionCount: 2,
+          missingFolderCount: 1,
+          createdTaskKeys: ["web-01-us-01-t90"],
+        },
+      ],
+      reportPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json"),
+      reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+      warnings: [],
+    };
+  }
+  async close() {}
+}
+
 test("Key generators respect existing keys", () => {
   const epicGen = createEpicKeyGenerator("web", ["web-01"]);
   assert.equal(epicGen(), "web-02");
@@ -359,12 +400,75 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.ok(metadata?.qa?.profiles_expected.includes("cli"));
   assert.equal(metadata?.stage, "other");
   assert.equal(metadata?.foundation, false);
+  assert.ok(
+    !(metadata?.qa?.blockers as string[] | undefined)?.some((entry) =>
+      entry.includes("No runnable test harness discovered for required tests during planning."),
+    ),
+  );
   assert.ok(task.description.includes("Unit tests: Add unit coverage for task path"));
   assert.ok(task.description.includes("Component tests: Not applicable"));
   assert.ok(task.description.includes("Integration tests: Run integration flow A"));
   assert.ok(task.description.includes("API tests: Validate API response contract"));
   assert.ok(task.description.includes("QA Readiness"));
   assert.ok(task.description.includes("Profiles:"));
+  assert.ok(!task.description.includes("Break this into concrete steps during execution."));
+  assert.ok(!task.description.includes("Tests passing, docs updated, review/QA complete."));
+  assert.ok(!task.description.includes("Highlight edge cases or risky areas."));
+});
+
+test("createTasks auto-runs task sufficiency audit and records summary checkpoint", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = new StubTaskSufficiencyService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.equal(sufficiencyService.calls.length, 1);
+  assert.equal(sufficiencyService.calls[0].projectKey, "web");
+  assert.ok(jobService.checkpoints.some((entry) => entry.stage === "task_sufficiency_audit"));
+  const completedJob = jobService.jobs[0];
+  assert.ok(completedJob?.meta?.payload?.sufficiencyAudit);
+  assert.equal(completedJob.meta.payload.sufficiencyAudit.satisfied, true);
 });
 
 test("buildDocContext appends OpenAPI hint summary", () => {
@@ -425,8 +529,101 @@ test("buildDocContext appends OpenAPI hint summary", () => {
 
   const context = (service as any).buildDocContext(docs);
   assert.ok(context.docSummary.includes("[OPENAPI_HINTS]"));
+  assert.ok(context.docSummary.includes("[SDS_COVERAGE_HINTS]"));
+  assert.ok(context.docSummary.includes("Interfaces"));
   assert.ok(context.docSummary.includes("backend-api"));
   assert.ok(context.docSummary.includes("GET /users"));
+});
+
+test("buildDocContext samples SDS segments across long documents", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const segments = Array.from({ length: 12 }, (_, index) => ({
+    id: `seg-${index + 1}`,
+    docId: "sds-long",
+    index,
+    heading: `Section ${index + 1}`,
+    content: `Segment ${index + 1} content marker`,
+  }));
+  const docs = [
+    {
+      id: "sds-long",
+      docType: "SDS",
+      title: "long sds",
+      content: segments.map((segment) => `## ${segment.heading}\n${segment.content}`).join("\n"),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      segments,
+    },
+  ] as any[];
+
+  const context = (service as any).buildDocContext(docs);
+  assert.ok(context.docSummary.includes("Section 1"));
+  assert.ok(context.docSummary.includes("Section 10"));
+  assert.ok(context.docSummary.includes("Section 12"));
+});
+
+test("collectDependencyStatements inspects late lines in long SDS text", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const longText = [
+    ...Array.from({ length: 1300 }, (_, index) => `filler-line-${index + 1}`),
+    "web ui depends on backend api",
+  ].join("\n");
+  const statements = (service as any).collectDependencyStatements(longText);
+  assert.ok(
+    statements.some(
+      (statement: { dependent: string; dependency: string }) =>
+        statement.dependent.toLowerCase().includes("web ui") &&
+        statement.dependency.toLowerCase().includes("backend api"),
+    ),
+    `late dependency statement was not captured: ${JSON.stringify(statements.slice(-3))}`,
+  );
+});
+
+test("extractStartupWaveHints inspects late wave rows in long SDS text", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const longText = [
+    ...Array.from({ length: 3800 }, (_, index) => `filler-wave-${index + 1}`),
+    "| svc-web | Wave 7 | svc-api-gateway | svc-api-gateway |",
+  ].join("\n");
+  const aliases = new Map<string, Set<string>>([["svc web", new Set(["svc web", "svc-web"])]]);
+  const hints = (service as any).extractStartupWaveHints(longText, aliases);
+  const waveEntries = Array.from((hints.waveRank as Map<string, number>).entries());
+  assert.ok(
+    waveEntries.some(
+      ([serviceName, wave]) => wave === 7 && /svc/.test(serviceName) && /web/.test(serviceName),
+    ),
+    `wave rank entries did not include expected late wave service: ${JSON.stringify(waveEntries)}`,
+  );
 });
 
 test("createTasks persists runnable metadata tests when harness is discoverable", async () => {
@@ -508,6 +705,149 @@ test("createTasks persists runnable metadata tests when harness is discoverable"
   const metadata = task.metadata as any;
   assert.ok(Array.isArray(metadata?.tests));
   assert.ok(metadata?.tests.some((command: string) => command.includes("test:unit")));
+});
+
+test("createTasks writes SDS coverage report artifact", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Lifecycle",
+          description: "Implement lifecycle capabilities",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Lifecycle story",
+          description: "Deliver lifecycle flow",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement lifecycle endpoint",
+          type: "feature",
+          description: "Implement endpoint and lifecycle persistence logic.",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const coveragePath = path.join(workspace.mcodaDir, "tasks", "web", "coverage-report.json");
+  const coverage = JSON.parse(await fs.readFile(coveragePath, "utf8"));
+  assert.equal(typeof coverage.totalSections, "number");
+  assert.ok(Array.isArray(coverage.matched));
+  assert.ok(Array.isArray(coverage.unmatched));
+  assert.equal(typeof coverage.coverageRatio, "number");
+});
+
+test("createTasks filters opaque local doc handles while preserving useful references", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Epic One",
+          description: "Epic desc",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          relatedDocs: [
+            "docdex:local-xyz",
+            "docdex:abc123",
+            "docs/sds.md",
+            "https://example.com/spec",
+            "docs/sds.md",
+          ],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const task = result.tasks.find((entry) => entry.title === "Task One");
+  assert.ok(task, "expected generated task in result set");
+  const links = ((task.metadata as any)?.doc_links ?? []) as string[];
+  assert.ok(links.includes("docdex:abc123"));
+  assert.ok(links.includes("docs/sds.md"));
+  assert.ok(links.includes("https://example.com/spec"));
+  assert.ok(!links.some((entry) => entry.startsWith("docdex:local")));
+  assert.equal(links.filter((entry) => entry === "docs/sds.md").length, 1);
 });
 
 test("createTasks merges qa overrides into task metadata", async () => {
@@ -1739,7 +2079,8 @@ test("createTasks falls back to deterministic planning on invalid agent output",
   assert.ok(result.epics.length >= 1);
   assert.ok(result.stories.length >= 1);
   assert.ok(result.tasks.length >= 1);
-  assert.ok(result.tasks.some((task) => task.title === "Summarize requirements"));
+  assert.ok(result.tasks.some((task) => task.title === "Implement baseline project scaffolding"));
+  assert.ok(result.tasks.some((task) => task.title === "Validate baseline behavior and regressions"));
   assert.ok(
     jobService.checkpoints.some((entry) => entry.stage === "epics_generated" && entry.details?.source === "fallback"),
   );
@@ -1813,7 +2154,8 @@ test("createTasks keeps partial plan and applies story-level fallback when one s
   });
 
   assert.ok(result.tasks.some((task) => task.title === "Story One Task One"));
-  assert.ok(result.tasks.some((task) => task.title === "Fallback planning for Story Two"));
-  assert.ok(result.tasks.some((task) => task.title === "Fallback implementation for Story Two"));
+  assert.ok(result.tasks.some((task) => task.title === "Implement core scope for Story Two"));
+  assert.ok(result.tasks.some((task) => task.title === "Integrate contracts for Story Two"));
+  assert.ok(result.tasks.some((task) => task.title === "Validate Story Two regressions and readiness"));
   assert.ok(!result.tasks.some((task) => task.title === "Summarize requirements"));
 });

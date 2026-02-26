@@ -222,6 +222,63 @@ describe("RefineTasksService", () => {
     assert.equal(epicRow?.total, 3);
   });
 
+  it("allows split children to depend on sibling references", { concurrency: false }, async () => {
+    const plan: RefineTasksPlan = {
+      strategy: "split",
+      operations: [
+        {
+          op: "split_task",
+          taskKey,
+          children: [
+            {
+              title: "Child A",
+              description: "first child",
+              storyPoints: 2,
+            },
+            {
+              title: "Child B",
+              description: "second child",
+              storyPoints: 2,
+              dependsOn: ["Child A"],
+            },
+          ],
+        },
+      ],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-sibling-deps.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "split",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    const childRows = await repo
+      .getDb()
+      .all<{ id: string; key: string; title: string }[]>(
+        `SELECT id, key, title FROM tasks WHERE user_story_id = ? AND title IN ('Child A', 'Child B')`,
+        storyId,
+      );
+    assert.equal(childRows.length, 2);
+    const childA = childRows.find((row) => row.title === "Child A");
+    const childB = childRows.find((row) => row.title === "Child B");
+    assert.ok(childA);
+    assert.ok(childB);
+    assert.ok(result.createdTasks?.includes(childA!.key));
+    assert.ok(result.createdTasks?.includes(childB!.key));
+
+    const depRow = await repo.getDb().get<{ depends_on_task_id: string }>(
+      `SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?`,
+      childB!.id,
+    );
+    assert.equal(depRow?.depends_on_task_id, childA!.id);
+  });
+
   it("skips operations outside status filter", { concurrency: false }, async () => {
     // Mark original task as failed and create another eligible task to keep selection non-empty.
     await repo.getDb().run(`UPDATE tasks SET status = 'failed' WHERE key = ?`, taskKey);

@@ -29,6 +29,7 @@ import {
   createStoryKeyGenerator,
   createTaskKeyGenerator,
 } from "./KeyHelpers.js";
+import { TaskSufficiencyService, type TaskSufficiencyAuditResult } from "./TaskSufficiencyService.js";
 
 export interface CreateTasksOptions {
   workspace: WorkspaceResolution;
@@ -147,6 +148,9 @@ type TaskOrderingFactory = (
   options?: { recordTelemetry?: boolean },
 ) => Promise<TaskOrderingClient>;
 
+type TaskSufficiencyClient = Pick<TaskSufficiencyService, "runAudit" | "close">;
+type TaskSufficiencyFactory = (workspace: WorkspaceResolution) => Promise<TaskSufficiencyClient>;
+
 const formatBullets = (items: string[] | undefined, fallback: string): string => {
   if (!items || items.length === 0) return `- ${fallback}`;
   return items.map((item) => `- ${item}`).join("\n");
@@ -257,6 +261,43 @@ const formatTestList = (items: string[] | undefined): string => {
 const ensureNonEmpty = (value: string | undefined, fallback: string): string =>
   value && value.trim().length > 0 ? value.trim() : fallback;
 
+const normalizeTaskLine = (line: string): string => line.replace(/^[-*]\s+/, "").trim();
+
+const looksLikeSectionHeader = (line: string): boolean => /^\* \*\*.+\*\*$/.test(line.trim());
+
+const isReferenceOnlyLine = (line: string): boolean =>
+  /^(epic|story|references?|related docs?|inputs?|objective|context|implementation plan|definition of done|testing & qa)\s*:/i.test(
+    line.trim(),
+  );
+
+const extractActionableLines = (description: string | undefined, limit: number): string[] => {
+  if (!description) return [];
+  const lines = description
+    .split(/\r?\n/)
+    .map((line) => normalizeTaskLine(line))
+    .filter(Boolean)
+    .filter((line) => !looksLikeSectionHeader(line))
+    .filter((line) => !isReferenceOnlyLine(line));
+  const actionable = lines.filter((line) =>
+    /^(?:\d+[.)]\s+|implement\b|create\b|update\b|add\b|define\b|wire\b|integrate\b|enforce\b|publish\b|configure\b|materialize\b|validate\b|verify\b)/i.test(
+      line,
+    ),
+  );
+  const source = actionable.length > 0 ? actionable : lines;
+  return uniqueStrings(source.slice(0, limit));
+};
+
+const extractRiskLines = (description: string | undefined, limit: number): string[] => {
+  if (!description) return [];
+  const lines = description
+    .split(/\r?\n/)
+    .map((line) => normalizeTaskLine(line))
+    .filter(Boolean)
+    .filter((line) => !looksLikeSectionHeader(line));
+  const risks = lines.filter((line) => /\b(risk|edge case|gotcha|constraint|failure|flaky|drift|regression)\b/i.test(line));
+  return uniqueStrings(risks.slice(0, limit));
+};
+
 const extractScriptPort = (script: string): number | undefined => {
   const matches = [script.match(/(?:--port|-p)\s*(\d{2,5})/), script.match(/PORT\s*=\s*(\d{2,5})/)];
   for (const match of matches) {
@@ -269,8 +310,19 @@ const extractScriptPort = (script: string): number | undefined => {
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 const DOC_CONTEXT_BUDGET = 8000;
+const DOC_CONTEXT_SEGMENTS_PER_DOC = 8;
+const DOC_CONTEXT_FALLBACK_CHUNK_LENGTH = 480;
+const SDS_COVERAGE_HINT_HEADING_LIMIT = 24;
+const SDS_COVERAGE_REPORT_SECTION_LIMIT = 80;
 const OPENAPI_HINT_OPERATIONS_LIMIT = 30;
 const DOCDEX_HANDLE = /^docdex:/i;
+const DOCDEX_LOCAL_HANDLE = /^docdex:local[-:/]/i;
+const RELATED_DOC_PATH_PATTERN =
+  /^(?:~\/|\/|[A-Za-z]:[\\/]|[A-Za-z0-9._-]+\/)[A-Za-z0-9._/-]+(?:\.[A-Za-z0-9._-]+)?(?:#[A-Za-z0-9._:-]+)?$/;
+const RELATIVE_DOC_PATH_PATTERN = /^(?:\.{1,2}\/)+[A-Za-z0-9._/-]+(?:\.[A-Za-z0-9._-]+)?(?:#[A-Za-z0-9._:-]+)?$/;
+const FUZZY_DOC_CANDIDATE_LIMIT = 64;
+const DEPENDENCY_SCAN_LINE_LIMIT = 1400;
+const STARTUP_WAVE_SCAN_LINE_LIMIT = 4000;
 const VALID_AREAS = new Set(["web", "adm", "bck", "ops", "infra", "mobile"]);
 const VALID_TASK_TYPES = new Set(["feature", "bug", "chore", "spike"]);
 
@@ -311,15 +363,80 @@ const normalizeTaskType = (value: unknown): string | undefined => {
 
 const normalizeRelatedDocs = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => {
-      if (typeof entry === "string") return entry;
-      if (entry && typeof entry === "object" && "handle" in entry && typeof entry.handle === "string") {
-        return entry.handle;
-      }
-      return undefined;
-    })
-    .filter((entry): entry is string => Boolean(entry && DOCDEX_HANDLE.test(entry)));
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const entry of value) {
+    const candidate =
+      typeof entry === "string"
+        ? entry.trim()
+        : entry && typeof entry === "object" && "handle" in entry && typeof entry.handle === "string"
+          ? entry.handle.trim()
+          : "";
+    if (!candidate) continue;
+    if (DOCDEX_LOCAL_HANDLE.test(candidate)) continue;
+    const isDocHandle = DOCDEX_HANDLE.test(candidate);
+    const isHttp = /^https?:\/\/\S+$/i.test(candidate);
+    const isPath = RELATED_DOC_PATH_PATTERN.test(candidate) || RELATIVE_DOC_PATH_PATTERN.test(candidate);
+    if (!isDocHandle && !isHttp && !isPath) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    normalized.push(candidate);
+  }
+  return normalized;
+};
+
+const extractMarkdownHeadings = (value: string, limit: number): string[] => {
+  if (!value) return [];
+  const lines = value.split(/\r?\n/);
+  const headings: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (!line) continue;
+    const hashHeading = line.match(/^#{1,6}\s+(.+)$/);
+    if (hashHeading) {
+      headings.push(hashHeading[1]!.trim());
+    } else if (
+      index + 1 < lines.length &&
+      /^[=-]{3,}\s*$/.test((lines[index + 1] ?? "").trim()) &&
+      !line.startsWith("-") &&
+      !line.startsWith("*")
+    ) {
+      headings.push(line);
+    }
+    if (headings.length >= limit) break;
+  }
+  return uniqueStrings(
+    headings
+      .map((entry) => entry.replace(/[`*_]/g, "").trim())
+      .filter(Boolean),
+  );
+};
+
+const pickDistributedIndices = (length: number, limit: number): number[] => {
+  if (length <= 0 || limit <= 0) return [];
+  if (length <= limit) return Array.from({ length }, (_, index) => index);
+  const selected = new Set<number>();
+  for (let index = 0; index < limit; index += 1) {
+    const ratio = limit === 1 ? 0 : index / (limit - 1);
+    selected.add(Math.round(ratio * (length - 1)));
+  }
+  return Array.from(selected)
+    .sort((a, b) => a - b)
+    .slice(0, limit);
+};
+
+const sampleRawContent = (value: string | undefined, chunkLength: number): string[] => {
+  if (!value) return [];
+  const content = value.trim();
+  if (!content) return [];
+  if (content.length <= chunkLength) return [content];
+  const anchors = [
+    0,
+    Math.max(0, Math.floor(content.length / 2) - Math.floor(chunkLength / 2)),
+    Math.max(0, content.length - chunkLength),
+  ];
+  const sampled = anchors.map((anchor) => content.slice(anchor, anchor + chunkLength).trim()).filter(Boolean);
+  return uniqueStrings(sampled);
 };
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
@@ -517,11 +634,39 @@ const buildTaskDescription = (
       })
       .join("\n");
   };
+  const objectiveText = ensureNonEmpty(description, `Deliver ${title} for story ${storyKey}.`);
+  const implementationLines = extractActionableLines(description, 4);
+  const riskLines = extractRiskLines(description, 3);
+  const testsDefined =
+    (tests.unitTests?.length ?? 0) +
+      (tests.componentTests?.length ?? 0) +
+      (tests.integrationTests?.length ?? 0) +
+      (tests.apiTests?.length ?? 0) >
+    0;
+  const definitionOfDone = [
+    `- Implementation for \`${taskKey}\` is complete and scoped to ${storyKey}.`,
+    testsDefined
+      ? "- Task-specific tests are added/updated and green in the task validation loop."
+      : "- Verification evidence is captured in task logs/checklists for this scope.",
+    relatedDocs?.length
+      ? "- Related contracts/docs are consistent with delivered behavior."
+      : "- Documentation impact is reviewed and no additional contract docs are required.",
+    qa?.blockers?.length ? "- Remaining QA blockers are explicit and actionable." : "- QA blockers are resolved or not present.",
+  ];
+  const defaultImplementationPlan = [
+    `- Implement ${title} with file/module-level changes aligned to the objective.`,
+    dependencies.length
+      ? `- Respect dependency order before completion: ${dependencies.join(", ")}.`
+      : "- Validate assumptions and finalize concrete implementation steps before coding.",
+  ];
+  const defaultRisks = dependencies.length
+    ? [`- Delivery depends on upstream tasks: ${dependencies.join(", ")}.`]
+    : ["- Keep implementation aligned to SDS/OpenAPI contracts to avoid drift."];
   return [
     `* **Task Key**: ${taskKey}`,
     "* **Objective**",
     "",
-    ensureNonEmpty(description, `Deliver ${title} for story ${storyKey}.`),
+    objectiveText,
     "* **Context**",
     "",
     `- Epic: ${epicKey}`,
@@ -529,9 +674,9 @@ const buildTaskDescription = (
     "* **Inputs**",
     formatBullets(relatedDocs, "Docdex excerpts, SDS/PDR/RFP sections, OpenAPI endpoints."),
     "* **Implementation Plan**",
-    "- Break this into concrete steps during execution.",
+    formatBullets(implementationLines, defaultImplementationPlan.join(" ")),
     "* **Definition of Done**",
-    "- Tests passing, docs updated, review/QA complete.",
+    definitionOfDone.join("\n"),
     "* **Testing & QA**",
     `- Unit tests: ${formatTestList(tests.unitTests)}`,
     `- Component tests: ${formatTestList(tests.componentTests)}`,
@@ -548,7 +693,7 @@ const buildTaskDescription = (
     "* **Dependencies**",
     formatBullets(dependencies, "Enumerate prerequisite tasks by key."),
     "* **Risks & Gotchas**",
-    "- Highlight edge cases or risky areas.",
+    formatBullets(riskLines, defaultRisks.join(" ")),
     "* **Related Documentation / References**",
     formatBullets(relatedDocs, "Docdex handles or file paths to consult."),
   ].join("\n");
@@ -767,6 +912,7 @@ export class CreateTasksService {
   private workspace: WorkspaceResolution;
   private ratingService?: AgentRatingService;
   private taskOrderingFactory: TaskOrderingFactory;
+  private taskSufficiencyFactory: TaskSufficiencyFactory;
 
   constructor(
     workspace: WorkspaceResolution,
@@ -779,6 +925,7 @@ export class CreateTasksService {
       routingService: RoutingService;
       ratingService?: AgentRatingService;
       taskOrderingFactory?: TaskOrderingFactory;
+      taskSufficiencyFactory?: TaskSufficiencyFactory;
     },
   ) {
     this.workspace = workspace;
@@ -790,6 +937,7 @@ export class CreateTasksService {
     this.routingService = deps.routingService;
     this.ratingService = deps.ratingService;
     this.taskOrderingFactory = deps.taskOrderingFactory ?? TaskOrderingService.create;
+    this.taskSufficiencyFactory = deps.taskSufficiencyFactory ?? TaskSufficiencyService.create;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CreateTasksService> {
@@ -812,6 +960,7 @@ export class CreateTasksService {
       repo,
       workspaceRepo,
       routingService,
+      taskSufficiencyFactory: TaskSufficiencyService.create,
     });
   }
 
@@ -1093,7 +1242,7 @@ export class CreateTasksService {
     }
     return ranked
       .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
-      .slice(0, 24)
+      .slice(0, FUZZY_DOC_CANDIDATE_LIMIT)
       .map((entry) => entry.path);
   }
 
@@ -1243,7 +1392,7 @@ export class CreateTasksService {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
-      .slice(0, 300);
+      .slice(0, DEPENDENCY_SCAN_LINE_LIMIT);
     const dependencyPatterns: Array<{
       regex: RegExp;
       dependentGroup: number;
@@ -1332,7 +1481,7 @@ export class CreateTasksService {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
-      .slice(0, 2000);
+      .slice(0, STARTUP_WAVE_SCAN_LINE_LIMIT);
     for (const line of lines) {
       if (!line.startsWith("|")) continue;
       const cells = line
@@ -2139,23 +2288,55 @@ export class CreateTasksService {
     return lines.join("\n");
   }
 
+  private extractSdsSectionCandidates(docs: DocdexDocument[], limit: number): string[] {
+    const sections: string[] = [];
+    for (const doc of docs) {
+      if (!looksLikeSdsDoc(doc)) continue;
+      const segmentHeadings = (doc.segments ?? [])
+        .map((segment) => segment.heading?.trim())
+        .filter((heading): heading is string => Boolean(heading));
+      const contentHeadings = extractMarkdownHeadings(doc.content ?? "", limit);
+      for (const heading of [...segmentHeadings, ...contentHeadings]) {
+        const normalized = heading.replace(/[`*_]/g, "").trim();
+        if (!normalized) continue;
+        sections.push(normalized);
+        if (sections.length >= limit) break;
+      }
+      if (sections.length >= limit) break;
+    }
+    return uniqueStrings(sections).slice(0, limit);
+  }
+
+  private buildSdsCoverageHints(docs: DocdexDocument[]): string {
+    const hints = this.extractSdsSectionCandidates(docs, SDS_COVERAGE_HINT_HEADING_LIMIT);
+    if (hints.length === 0) return "";
+    return hints.map((hint) => `- ${hint}`).join("\n");
+  }
+
   private buildDocContext(docs: DocdexDocument[]): { docSummary: string; warnings: string[] } {
     const warnings: string[] = [];
     const blocks: string[] = [];
     let budget = DOC_CONTEXT_BUDGET;
-    const sorted = [...docs].sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+    const sorted = [...docs].sort((a, b) => {
+      const sdsDelta = Number(looksLikeSdsDoc(b)) - Number(looksLikeSdsDoc(a));
+      if (sdsDelta !== 0) return sdsDelta;
+      return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    });
     for (const [idx, doc] of sorted.entries()) {
-      const segments = (doc.segments ?? []).slice(0, 5);
-      const content = segments.length
-        ? segments
+      const segments = doc.segments ?? [];
+      const sampledSegments = pickDistributedIndices(segments.length, DOC_CONTEXT_SEGMENTS_PER_DOC)
+        .map((index) => segments[index]!)
+        .filter(Boolean);
+      const content = sampledSegments.length
+        ? sampledSegments
             .map((seg, i) => {
               const trimmed = seg.content.length > 600 ? `${seg.content.slice(0, 600)}...` : seg.content;
               return `  - (${i + 1}) ${seg.heading ? `${seg.heading}: ` : ""}${trimmed}`;
             })
             .join("\n")
-        : doc.content
-          ? doc.content.slice(0, 800)
-          : "";
+        : sampleRawContent(doc.content, DOC_CONTEXT_FALLBACK_CHUNK_LENGTH)
+            .map((chunk, i) => `  - (${i + 1}) ${chunk.length > 600 ? `${chunk.slice(0, 600)}...` : chunk}`)
+            .join("\n");
       const entry = [`[${doc.docType}] docdex:${doc.id ?? `doc-${idx + 1}`}`, describeDoc(doc, idx), content]
         .filter(Boolean)
         .join("\n");
@@ -2177,6 +2358,17 @@ export class CreateTasksService {
         blocks.push(hintBlock);
       } else {
         warnings.push("Context truncated due to token budget; skipped OpenAPI hint summary.");
+      }
+    }
+    const sdsCoverageHints = this.buildSdsCoverageHints(sorted);
+    if (sdsCoverageHints) {
+      const hintBlock = ["[SDS_COVERAGE_HINTS]", sdsCoverageHints].join("\n");
+      const hintCost = estimateTokens(hintBlock);
+      if (budget - hintCost >= 0) {
+        budget -= hintCost;
+        blocks.push(hintBlock);
+      } else {
+        warnings.push("Context truncated due to token budget; skipped SDS coverage hints.");
       }
     }
     return { docSummary: blocks.join("\n\n") || "(no docs)", warnings };
@@ -2243,10 +2435,10 @@ export class CreateTasksService {
               tasks: [
                 {
                   localId: "task-1",
-                  title: "Summarize requirements",
-                  type: "chore",
-                  description: "Summarize key asks from docs and SDS/PDR/RFP inputs.",
-                  estimatedStoryPoints: 1,
+                  title: "Implement baseline project scaffolding",
+                  type: "feature",
+                  description: "Create SDS-aligned baseline structure and core implementation entrypoints from the available docs.",
+                  estimatedStoryPoints: 3,
                   priorityHint: 10,
                   relatedDocs: docRefs,
                   unitTests: [],
@@ -2256,12 +2448,26 @@ export class CreateTasksService {
                 },
                 {
                   localId: "task-2",
-                  title: "Propose tasks and ordering",
+                  title: "Integrate core contracts and dependencies",
                   type: "feature",
-                  description: "Break down the scope into tasks with initial dependencies.",
-                  estimatedStoryPoints: 2,
+                  description: "Wire key contracts/interfaces and dependency paths so core behavior can execute end-to-end.",
+                  estimatedStoryPoints: 3,
                   priorityHint: 20,
                   dependsOnKeys: ["task-1"],
+                  relatedDocs: docRefs,
+                  unitTests: [],
+                  componentTests: [],
+                  integrationTests: [],
+                  apiTests: [],
+                },
+                {
+                  localId: "task-3",
+                  title: "Validate baseline behavior and regressions",
+                  type: "chore",
+                  description: "Add targeted validation coverage and readiness evidence for the implemented baseline capabilities.",
+                  estimatedStoryPoints: 2,
+                  priorityHint: 30,
+                  dependsOnKeys: ["task-2"],
                   relatedDocs: docRefs,
                   unitTests: [],
                   componentTests: [],
@@ -2532,17 +2738,22 @@ export class CreateTasksService {
       TASK_SCHEMA_SNIPPET,
       "Rules:",
       "- Each task must include localId, title, description, type, estimatedStoryPoints, priorityHint.",
+      "- Descriptions must be implementation-concrete and include target modules/files/services where work happens.",
+      "- Prioritize software construction tasks before test-only/docs-only chores unless story scope explicitly requires those first.",
       "- Include test arrays: unitTests, componentTests, integrationTests, apiTests. Use [] when not applicable.",
       "- Only include tests that are relevant to the task's scope.",
       "- Prefer including task-relevant tests when they are concrete and actionable; do not invent generic placeholders.",
       "- When known, include qa object with profiles_expected/requires/entrypoints/data_setup to guide QA.",
       "- Do not hardcode ports. For QA entrypoints, use http://localhost:<PORT> placeholders or omit base_url when unknown.",
       "- dependsOnKeys must reference localIds in this story.",
+      "- If dependsOnKeys is non-empty, include dependency rationale in the task description.",
       "- Start from prerequisite codebase setup: add structure/bootstrap tasks before feature tasks when missing.",
       "- Keep dependencies strictly inside this story; never reference tasks from other stories/epics.",
       "- Order tasks from foundational prerequisites to dependents based on documented dependency direction and startup constraints.",
+      "- Avoid placeholder wording (TBD, TODO, to be defined, generic follow-up phrases).",
       "- Use docdex handles when citing docs.",
       "- If OPENAPI_HINTS are present in Docs, align tasks with hinted service/capability/stage/test_requirements.",
+      "- If SDS_COVERAGE_HINTS are present in Docs, cover the relevant SDS sections in implementation tasks.",
       "- Follow the project construction method and startup-wave order from SDS when available.",
       `Story context (key=${story.key ?? story.localId ?? "TBD"}):`,
       story.description ?? story.userStory ?? "",
@@ -2616,17 +2827,23 @@ export class CreateTasksService {
       .slice(0, 6)
       .map((criterion) => `- ${criterion}`)
       .join("\n");
+    const objectiveLine =
+      story.description && story.description.trim().length > 0
+        ? story.description.trim().split(/\r?\n/)[0]
+        : `Deliver story scope for "${story.title}".`;
     return [
       {
         localId: "t-fallback-1",
-        title: `Fallback planning for ${story.title}`,
-        type: "chore",
+        title: `Implement core scope for ${story.title}`,
+        type: "feature",
         description: [
-          `Draft a concrete implementation plan for story "${story.title}" using SDS/OpenAPI context.`,
-          "List exact files/modules to touch and implementation order.",
+          `Implement the core product behavior for story "${story.title}".`,
+          `Primary objective: ${objectiveLine}`,
+          "Create or update concrete modules/files and wire baseline runtime paths first.",
+          "Capture exact implementation targets and sequencing in commit-level task notes.",
           criteriaLines ? `Acceptance criteria to satisfy:\n${criteriaLines}` : "Acceptance criteria: use story definition.",
         ].join("\n"),
-        estimatedStoryPoints: 2,
+        estimatedStoryPoints: 3,
         priorityHint: 1,
         dependsOnKeys: [],
         relatedDocs: story.relatedDocs ?? [],
@@ -2637,15 +2854,34 @@ export class CreateTasksService {
       },
       {
         localId: "t-fallback-2",
-        title: `Fallback implementation for ${story.title}`,
+        title: `Integrate contracts for ${story.title}`,
         type: "feature",
         description: [
-          `Implement story "${story.title}" according to the fallback planning task.`,
-          "Ensure done criteria and test requirements are explicitly documented for execution.",
+          `Integrate dependent contracts/interfaces for "${story.title}" after core scope implementation.`,
+          "Align internal/external interfaces, data contracts, and dependency wiring with SDS/OpenAPI context.",
+          "Record dependency rationale and compatibility constraints in the task output.",
         ].join("\n"),
         estimatedStoryPoints: 3,
         priorityHint: 2,
         dependsOnKeys: ["t-fallback-1"],
+        relatedDocs: story.relatedDocs ?? [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+      {
+        localId: "t-fallback-3",
+        title: `Validate ${story.title} regressions and readiness`,
+        type: "chore",
+        description: [
+          `Validate "${story.title}" end-to-end with focused regression coverage and readiness evidence.`,
+          "Add/update targeted tests and verification scripts tied to implemented behavior.",
+          "Document release/code-review/QA evidence and unresolved risks explicitly.",
+        ].join("\n"),
+        estimatedStoryPoints: 2,
+        priorityHint: 3,
+        dependsOnKeys: ["t-fallback-2"],
         relatedDocs: story.relatedDocs ?? [],
         unitTests: [],
         componentTests: [],
@@ -2773,10 +3009,63 @@ export class CreateTasksService {
     return { epics: planEpics, stories: planStories, tasks: planTasks };
   }
 
+  private buildSdsCoverageReport(projectKey: string, docs: DocdexDocument[], plan: GeneratedPlan): Record<string, unknown> {
+    const sections = this.extractSdsSectionCandidates(docs, SDS_COVERAGE_REPORT_SECTION_LIMIT);
+    const normalize = (value: string): string =>
+      value
+        .toLowerCase()
+        .replace(/[`*_]/g, "")
+        .replace(/[^a-z0-9\s/-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const planCorpus = normalize(
+      [
+        ...plan.epics.map((epic) => `${epic.title} ${epic.description ?? ""} ${(epic.acceptanceCriteria ?? []).join(" ")}`),
+        ...plan.stories.map(
+          (story) =>
+            `${story.title} ${story.userStory ?? ""} ${story.description ?? ""} ${(story.acceptanceCriteria ?? []).join(" ")}`,
+        ),
+        ...plan.tasks.map((task) => `${task.title} ${task.description ?? ""}`),
+      ].join("\n"),
+    );
+    const matched: string[] = [];
+    const unmatched: string[] = [];
+    for (const section of sections) {
+      const normalizedSection = normalize(section);
+      if (!normalizedSection) continue;
+      const keywords = normalizedSection
+        .split(/\s+/)
+        .filter((token) => token.length >= 4)
+        .slice(0, 6);
+      const hasDirectMatch = normalizedSection.length >= 6 && planCorpus.includes(normalizedSection);
+      const hasKeywordMatch = keywords.some((keyword) => planCorpus.includes(keyword));
+      if (hasDirectMatch || hasKeywordMatch) {
+        matched.push(section);
+      } else {
+        unmatched.push(section);
+      }
+    }
+    const totalSections = matched.length + unmatched.length;
+    const coverageRatio = totalSections === 0 ? 1 : matched.length / totalSections;
+    return {
+      projectKey,
+      generatedAt: new Date().toISOString(),
+      totalSections,
+      matched,
+      unmatched,
+      coverageRatio: Number(coverageRatio.toFixed(4)),
+      notes:
+        totalSections === 0
+          ? ["No SDS section headings detected; coverage defaults to 1.0."]
+          : ["Coverage is heading-based heuristic match between SDS sections and generated epic/story/task corpus."],
+    };
+  }
+
   private async writePlanArtifacts(
     projectKey: string,
     plan: GeneratedPlan,
     docSummary: string,
+    docs: DocdexDocument[],
   ): Promise<{ folder: string }> {
     const baseDir = path.join(this.workspace.mcodaDir, "tasks", projectKey);
     await fs.mkdir(baseDir, { recursive: true });
@@ -2788,6 +3077,7 @@ export class CreateTasksService {
     await write("epics.json", plan.epics);
     await write("stories.json", plan.stories);
     await write("tasks.json", plan.tasks);
+    await write("coverage-report.json", this.buildSdsCoverageReport(projectKey, docs, plan));
     return { folder: baseDir };
   }
 
@@ -2957,12 +3247,7 @@ export class CreateTasksService {
             discoveredTestCommands = [];
           }
         }
-        const qaBlockers = uniqueStrings([
-          ...(qaReadiness.blockers ?? []),
-          ...(testsRequired && discoveredTestCommands.length === 0
-            ? ["No runnable test harness discovered for required tests during planning."]
-            : []),
-        ]);
+        const qaBlockers = uniqueStrings(qaReadiness.blockers ?? []);
         const qaReadinessWithHarness: QaReadiness = {
           ...qaReadiness,
           blockers: qaBlockers.length ? qaBlockers : undefined,
@@ -3196,7 +3481,7 @@ export class CreateTasksService {
           details: { tasks: plan.tasks.length, source: planSource, fallbackReason },
         });
 
-        const { folder } = await this.writePlanArtifacts(options.projectKey, plan, docSummary);
+        const { folder } = await this.writePlanArtifacts(options.projectKey, plan, docSummary, docs);
         await this.jobService.writeCheckpoint(job.id, {
           stage: "plan_written",
           timestamp: new Date().toISOString(),
@@ -3211,6 +3496,63 @@ export class CreateTasksService {
             qaOverrides,
           });
         await this.seedPriorities(options.projectKey);
+        let sufficiencyAudit: TaskSufficiencyAuditResult | undefined;
+        let sufficiencyAuditError: string | undefined;
+        if (this.taskSufficiencyFactory) {
+          try {
+            const sufficiencyService = await this.taskSufficiencyFactory(this.workspace);
+            try {
+              try {
+                sufficiencyAudit = await sufficiencyService.runAudit({
+                  workspace: options.workspace,
+                  projectKey: options.projectKey,
+                  sourceCommand: "create-tasks",
+                });
+              } catch (error) {
+                sufficiencyAuditError = (error as Error)?.message ?? String(error);
+                await this.jobService.appendLog(
+                  job.id,
+                  `Task sufficiency audit failed; continuing with created backlog: ${sufficiencyAuditError}\n`,
+                );
+              }
+            } finally {
+              try {
+                await sufficiencyService.close();
+              } catch (closeError) {
+                const closeMessage = (closeError as Error)?.message ?? String(closeError);
+                const details = `Task sufficiency audit close failed; continuing with created backlog: ${closeMessage}`;
+                sufficiencyAuditError = sufficiencyAuditError ? `${sufficiencyAuditError}; ${details}` : details;
+                await this.jobService.appendLog(job.id, `${details}\n`);
+              }
+            }
+          } catch (error) {
+            sufficiencyAuditError = (error as Error)?.message ?? String(error);
+            await this.jobService.appendLog(
+              job.id,
+              `Task sufficiency audit setup failed; continuing with created backlog: ${sufficiencyAuditError}\n`,
+            );
+          }
+          await this.jobService.writeCheckpoint(job.id, {
+            stage: "task_sufficiency_audit",
+            timestamp: new Date().toISOString(),
+            details: {
+              status: sufficiencyAudit ? "succeeded" : "failed",
+              error: sufficiencyAuditError,
+              jobId: sufficiencyAudit?.jobId,
+              commandRunId: sufficiencyAudit?.commandRunId,
+              satisfied: sufficiencyAudit?.satisfied,
+              dryRun: sufficiencyAudit?.dryRun,
+              totalTasksAdded: sufficiencyAudit?.totalTasksAdded,
+              totalTasksUpdated: sufficiencyAudit?.totalTasksUpdated,
+              finalCoverageRatio: sufficiencyAudit?.finalCoverageRatio,
+              reportPath: sufficiencyAudit?.reportPath,
+              remainingSectionCount: sufficiencyAudit?.remainingSectionHeadings.length,
+              remainingFolderCount: sufficiencyAudit?.remainingFolderEntries.length,
+              remainingGapCount: sufficiencyAudit?.remainingGaps.total,
+              warnings: sufficiencyAudit?.warnings,
+            },
+          });
+        }
 
         await this.jobService.updateJobStatus(job.id, "completed", {
           payload: {
@@ -3222,6 +3564,22 @@ export class CreateTasksService {
             planFolder: folder,
             planSource,
             fallbackReason,
+            sufficiencyAudit: sufficiencyAudit
+              ? {
+                  jobId: sufficiencyAudit.jobId,
+                  commandRunId: sufficiencyAudit.commandRunId,
+                  satisfied: sufficiencyAudit.satisfied,
+                  totalTasksAdded: sufficiencyAudit.totalTasksAdded,
+                  totalTasksUpdated: sufficiencyAudit.totalTasksUpdated,
+                  finalCoverageRatio: sufficiencyAudit.finalCoverageRatio,
+                  reportPath: sufficiencyAudit.reportPath,
+                  remainingSectionCount: sufficiencyAudit.remainingSectionHeadings.length,
+                  remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
+                  remainingGapCount: sufficiencyAudit.remainingGaps.total,
+                  warnings: sufficiencyAudit.warnings,
+                }
+              : undefined,
+            sufficiencyAuditError,
           },
         });
         await this.jobService.finishCommandRun(commandRun.id, "succeeded");

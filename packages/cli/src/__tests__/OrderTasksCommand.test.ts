@@ -6,7 +6,7 @@ import test from "node:test";
 import { Connection, WorkspaceMigrations, WorkspaceRepository } from "@mcoda/db";
 import { PathHelper } from "@mcoda/shared";
 import { TaskOrderingService } from "@mcoda/core";
-import { parseOrderTasksArgs, OrderTasksCommand } from "../commands/backlog/OrderTasksCommand.js";
+import { parseOrderTasksArgs, OrderTasksCommand, pickOrderTasksProjectKey } from "../commands/backlog/OrderTasksCommand.js";
 
 const withTempHome = async <T>(fn: () => Promise<T>) => {
   const originalHome = process.env.HOME;
@@ -162,6 +162,26 @@ test("parseOrderTasksArgs defaults apply=true", () => {
   assert.equal(parsed.planningContextPolicy, "require_sds_or_openapi");
 });
 
+test("pickOrderTasksProjectKey resolves explicit, configured, then first existing", () => {
+  const explicit = pickOrderTasksProjectKey({
+    requestedKey: "P2",
+    configuredKey: "P1",
+    existing: [{ key: "P1" }, { key: "P2" }],
+  });
+  assert.equal(explicit.projectKey, "P2");
+
+  const configured = pickOrderTasksProjectKey({
+    configuredKey: "P1",
+    existing: [{ key: "P2" }, { key: "P1" }],
+  });
+  assert.equal(configured.projectKey, "P1");
+
+  const fallback = pickOrderTasksProjectKey({
+    existing: [{ key: "P3" }, { key: "P4" }],
+  });
+  assert.equal(fallback.projectKey, "P3");
+});
+
 test("order-tasks requires --apply when infer-deps is set", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
@@ -184,6 +204,32 @@ test("order-tasks requires --apply when infer-deps is set", { concurrency: false
     } finally {
       console.error = origError;
       process.exitCode = originalExitCode;
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("order-tasks resolves project key when --project is omitted", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    const originalCreate = TaskOrderingService.create;
+    let capturedProjectKey: string | undefined;
+    (TaskOrderingService as any).create = async () => ({
+      orderTasks: async (request: unknown) => {
+        capturedProjectKey = (request as { projectKey?: string }).projectKey;
+        return {
+          project: { id: "proj", key: "CLI" },
+          ordered: [],
+          warnings: [],
+        };
+      },
+      close: async () => {},
+    });
+    try {
+      await OrderTasksCommand.run(["--workspace-root", ctx.dir, "--json"]);
+      assert.equal(capturedProjectKey, ctx.project.key);
+    } finally {
+      (TaskOrderingService as any).create = originalCreate;
       await cleanupWorkspace(ctx.dir, ctx.repo);
     }
   });

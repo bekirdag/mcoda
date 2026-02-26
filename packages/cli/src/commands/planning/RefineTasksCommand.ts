@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WorkspaceRepository } from "@mcoda/db";
 import { RefineTasksService, WorkspaceResolver } from "@mcoda/core";
 import type { RefineStrategy } from "@mcoda/shared";
 
@@ -27,7 +28,67 @@ interface ParsedRefineArgs {
   jobId?: string;
 }
 
-const usage = `mcoda refine-tasks --project <PROJECT_KEY> [--workspace-root <PATH>] [--epic <EPIC_KEY>] [--story <STORY_KEY>] [--task <TASK_KEY> ...] [--status <STATUS>] [--max-tasks N] [--strategy split|merge|enrich|estimate|auto] [--agent <NAME>] [--agent-stream [true|false]] [--rate-agents] [--from-db [true|false]] [--dry-run] [--apply] [--resume|--skip-refined] [--run-all] [--batch-size N] [--max-batches N] [--plan-in <PATH>] [--plan-out <PATH>] [--json]`;
+type ProjectKeyCandidate = { key: string; createdAt?: string | null };
+
+const usage = `mcoda refine-tasks [--project <PROJECT_KEY>] [--workspace-root <PATH>] [--epic <EPIC_KEY>] [--story <STORY_KEY>] [--task <TASK_KEY> ...] [--status <STATUS>] [--max-tasks N] [--strategy split|merge|enrich|estimate|auto] [--agent <NAME>] [--agent-stream [true|false]] [--rate-agents] [--from-db [true|false]] [--dry-run] [--apply] [--resume|--skip-refined] [--run-all] [--batch-size N] [--max-batches N] [--plan-in <PATH>] [--plan-out <PATH>] [--json]`;
+
+const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyCandidate[]> => {
+  const repo = await WorkspaceRepository.create(workspaceRoot);
+  try {
+    const rows = await repo
+      .getDb()
+      .all<{ key: string; created_at?: string | null }[]>(
+        `SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`,
+      );
+    return rows
+      .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
+      .filter((row) => row.key.trim().length > 0);
+  } catch {
+    return [];
+  } finally {
+    await repo.close();
+  }
+};
+
+export const pickRefineTasksProjectKey = (options: {
+  requestedKey?: string;
+  configuredKey?: string;
+  existing: ProjectKeyCandidate[];
+}): { projectKey?: string; warnings: string[] } => {
+  const warnings: string[] = [];
+  const requestedKey = options.requestedKey?.trim() || undefined;
+  const configuredKey = options.configuredKey?.trim() || undefined;
+  const existing = options.existing ?? [];
+  const firstExisting = existing[0]?.key;
+
+  if (requestedKey) {
+    if (configuredKey && configuredKey !== requestedKey) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
+      );
+    }
+    if (firstExisting && requestedKey !== firstExisting) {
+      warnings.push(
+        `Using explicitly requested project key "${requestedKey}"; first workspace project is "${firstExisting}".`,
+      );
+    }
+    return { projectKey: requestedKey, warnings };
+  }
+
+  if (configuredKey) {
+    if (firstExisting && configuredKey !== firstExisting) {
+      warnings.push(`Using configured project key "${configuredKey}" instead of first workspace project "${firstExisting}".`);
+    }
+    return { projectKey: configuredKey, warnings };
+  }
+
+  if (firstExisting) {
+    warnings.push(`No --project provided; defaulting to first workspace project "${firstExisting}".`);
+    return { projectKey: firstExisting, warnings };
+  }
+
+  return { projectKey: undefined, warnings };
+};
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
@@ -277,12 +338,6 @@ export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
 export class RefineTasksCommand {
   static async run(argv: string[]): Promise<void> {
     const parsed = parseRefineTasksArgs(argv);
-    if (!parsed.projectKey) {
-      // eslint-disable-next-line no-console
-      console.error("refine-tasks requires --project <PROJECT_KEY>");
-      process.exitCode = 1;
-      return;
-    }
     if (parsed.apply && parsed.dryRun) {
       // eslint-disable-next-line no-console
       console.error("refine-tasks: --apply cannot be used with --dry-run");
@@ -299,11 +354,34 @@ export class RefineTasksCommand {
       cwd: process.cwd(),
       explicitWorkspace: parsed.workspaceRoot,
     });
+    const existingProjects = parsed.projectKey ? [] : await listWorkspaceProjects(workspace.workspaceRoot);
+    const configuredKey =
+      typeof workspace.config?.projectKey === "string" && workspace.config.projectKey.trim().length > 0
+        ? workspace.config.projectKey
+        : undefined;
+    const projectResolution = pickRefineTasksProjectKey({
+      requestedKey: parsed.projectKey,
+      configuredKey,
+      existing: existingProjects,
+    });
+    const commandWarnings = [...projectResolution.warnings];
+    if (!projectResolution.projectKey) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "refine-tasks could not resolve a project key. Provide --project <PROJECT_KEY> or create tasks for this workspace first.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (commandWarnings.length > 0 && !parsed.json) {
+      // eslint-disable-next-line no-console
+      console.warn(commandWarnings.map((warning) => `! ${warning}`).join("\n"));
+    }
     const service = await RefineTasksService.create(workspace);
     try {
       const baseRequest = {
         workspace,
-        projectKey: parsed.projectKey,
+        projectKey: projectResolution.projectKey,
         epicKey: parsed.epicKey,
         storyKey: parsed.storyKey,
         taskKeys: parsed.taskKeys.length ? parsed.taskKeys : undefined,
@@ -369,7 +447,13 @@ export class RefineTasksCommand {
 
         if (parsed.json) {
           // eslint-disable-next-line no-console
-          console.log(JSON.stringify({ status: "completed", totalProcessed, totalAffected, batches }, null, 2));
+          console.log(
+            JSON.stringify(
+              { status: "completed", totalProcessed, totalAffected, batches, warnings: commandWarnings },
+              null,
+              2,
+            ),
+          );
         } else {
           // eslint-disable-next-line no-console
           console.log(`Done. Total processed: ${totalProcessed}, total affected: ${totalAffected}`);
@@ -383,6 +467,7 @@ export class RefineTasksCommand {
       });
 
       if (parsed.json) {
+        const warnings = [...commandWarnings, ...(result.plan.warnings ?? [])];
         // eslint-disable-next-line no-console
         console.log(
           JSON.stringify(
@@ -390,7 +475,7 @@ export class RefineTasksCommand {
               status: result.applied ? "applied" : "dry_run",
               summary: result.summary,
               plan: result.plan,
-              warnings: result.plan.warnings ?? [],
+              warnings,
             },
             null,
             2,

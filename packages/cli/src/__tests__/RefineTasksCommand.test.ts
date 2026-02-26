@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { parseRefineTasksArgs } from "../commands/planning/RefineTasksCommand.js";
+import { parseRefineTasksArgs, pickRefineTasksProjectKey } from "../commands/planning/RefineTasksCommand.js";
 
 describe("refine-tasks argument parsing", () => {
   it("defaults booleans correctly", () => {
@@ -61,5 +61,25 @@ describe("refine-tasks argument parsing", () => {
     assert.equal(parsed.runAll, true);
     assert.equal(parsed.batchSize, 50);
     assert.equal(parsed.maxBatches, 3);
+  });
+
+  it("resolves project key using explicit, configured, then first existing", () => {
+    const explicit = pickRefineTasksProjectKey({
+      requestedKey: "P2",
+      configuredKey: "P1",
+      existing: [{ key: "P1" }, { key: "P2" }],
+    });
+    assert.equal(explicit.projectKey, "P2");
+
+    const configured = pickRefineTasksProjectKey({
+      configuredKey: "P1",
+      existing: [{ key: "P2" }, { key: "P1" }],
+    });
+    assert.equal(configured.projectKey, "P1");
+
+    const fallback = pickRefineTasksProjectKey({
+      existing: [{ key: "P3" }, { key: "P4" }],
+    });
+    assert.equal(fallback.projectKey, "P3");
   });
 });

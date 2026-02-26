@@ -27,7 +27,7 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 ## Common commands
 - Docs: `mcoda docs pdr generate`, `mcoda docs sds generate`
 - Specs: `mcoda openapi-from-docs`
-- Planning: `mcoda create-tasks`, `mcoda refine-tasks`, `mcoda order-tasks`
+- Planning: `mcoda create-tasks`, `mcoda task-sufficiency-audit`, `mcoda refine-tasks`, `mcoda order-tasks`
 - Execution: `mcoda add-tests`, `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
 - Backlog: `mcoda backlog`, `mcoda task`
 - Jobs/telemetry: `mcoda jobs`, `mcoda tokens`, `mcoda telemetry`
@@ -35,6 +35,8 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 - Updates: `mcoda update --check`
 
 `mcoda work-on-tasks` auto-runs the same test-harness bootstrap logic as `mcoda add-tests` when selected tasks require tests but no runnable harness exists.
+`mcoda create-tasks` auto-runs a sufficiency pass (same engine as `mcoda task-sufficiency-audit`) to compare SDS coverage against generated backlog items and fill obvious planning gaps.
+If that sufficiency pass errors, create-tasks continues (fail-open) and records audit failure details in job checkpoints/logs.
 
 ## Configuration
 Environment variables are optional overrides for workspace settings:
