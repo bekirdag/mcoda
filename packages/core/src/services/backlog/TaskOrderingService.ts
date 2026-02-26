@@ -127,6 +127,7 @@ interface TaskRow {
 interface DependencyRow {
   task_id: string;
   depends_on_task_id: string | null;
+  relation_type?: string | null;
   depends_on_key?: string | null;
   depends_on_status?: string | null;
 }
@@ -660,6 +661,7 @@ export class TaskOrderingService {
         SELECT
           td.task_id,
           td.depends_on_task_id,
+          td.relation_type,
           dep.key as depends_on_key,
           dep.status as depends_on_status
         FROM task_dependencies td
@@ -850,13 +852,44 @@ export class TaskOrderingService {
     warnings: string[],
     persist: boolean,
   ): Promise<void> {
-    const classification = new Map<string, { foundation: boolean }>();
+    const relationType = "inferred_foundation";
+    const classification = new Map<string, { stage: TaskStage; foundation: boolean }>();
     for (const task of tasks) {
       classification.set(task.id, this.resolveClassification(task));
     }
     const foundationTasks = tasks.filter((task) => classification.get(task.id)?.foundation);
     const nonFoundationTasks = tasks.filter((task) => !classification.get(task.id)?.foundation);
-    if (foundationTasks.length === 0 || nonFoundationTasks.length === 0) return;
+
+    let removedInferred = 0;
+    for (const task of tasks) {
+      const rows = deps.get(task.id) ?? [];
+      if (rows.length === 0) continue;
+      const kept = rows.filter((row) => row.relation_type?.toLowerCase() !== relationType);
+      removedInferred += rows.length - kept.length;
+      deps.set(task.id, kept);
+    }
+
+    const foundationsByStory = new Map<string, TaskRow[]>();
+    const foundationsByEpic = new Map<string, TaskRow[]>();
+    for (const foundation of foundationTasks) {
+      const storyEntries = foundationsByStory.get(foundation.story_id) ?? [];
+      storyEntries.push(foundation);
+      foundationsByStory.set(foundation.story_id, storyEntries);
+      const epicEntries = foundationsByEpic.get(foundation.epic_id) ?? [];
+      epicEntries.push(foundation);
+      foundationsByEpic.set(foundation.epic_id, epicEntries);
+    }
+    const byRank = (a: TaskRow, b: TaskRow): number => {
+      const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
+      const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      const createdA = Date.parse(a.created_at) || 0;
+      const createdB = Date.parse(b.created_at) || 0;
+      if (createdA !== createdB) return createdA - createdB;
+      return a.key.localeCompare(b.key);
+    };
+    for (const list of foundationsByStory.values()) list.sort(byRank);
+    for (const list of foundationsByEpic.values()) list.sort(byRank);
 
     const taskById = new Map(tasks.map((task) => [task.id, task]));
     const dependencyGraph = this.buildDependencyGraph(tasks, deps);
@@ -865,34 +898,38 @@ export class TaskOrderingService {
     const skippedEdges: string[] = [];
 
     for (const task of nonFoundationTasks) {
-      const existing = new Set(
-        (deps.get(task.id) ?? [])
-          .map((dep) => dep.depends_on_task_id ?? "")
-          .filter(Boolean),
-      );
-      for (const foundation of foundationTasks) {
-        if (task.id === foundation.id) continue;
-        if (existing.has(foundation.id)) continue;
-        if (this.hasDependencyPath(dependencyGraph, foundation.id, task.id)) {
-          skippedCycles += 1;
-          if (skippedEdges.length < 5) {
-            skippedEdges.push(`${task.key}->${foundation.key}`);
-          }
-          continue;
+      const existingDeps = (deps.get(task.id) ?? []).filter((dep) => Boolean(dep.depends_on_task_id));
+      if (existingDeps.length > 0) continue;
+      const scopedCandidates = foundationsByStory.get(task.story_id) ?? foundationsByEpic.get(task.epic_id) ?? [];
+      const foundation = scopedCandidates.find((candidate) => candidate.id !== task.id);
+      if (!foundation) continue;
+      if (this.hasDependencyPath(dependencyGraph, foundation.id, task.id)) {
+        skippedCycles += 1;
+        if (skippedEdges.length < 5) {
+          skippedEdges.push(`${task.key}->${foundation.key}`);
         }
-        inserts.push({
-          taskId: task.id,
-          dependsOnTaskId: foundation.id,
-          relationType: "inferred_foundation",
-        });
-        existing.add(foundation.id);
-        const edges = dependencyGraph.get(task.id) ?? new Set<string>();
-        edges.add(foundation.id);
-        dependencyGraph.set(task.id, edges);
+        continue;
       }
+      inserts.push({
+        taskId: task.id,
+        dependsOnTaskId: foundation.id,
+        relationType,
+      });
+      const edges = dependencyGraph.get(task.id) ?? new Set<string>();
+      edges.add(foundation.id);
+      dependencyGraph.set(task.id, edges);
     }
 
-    if (inserts.length === 0) {
+    if (persist && removedInferred > 0) {
+      const placeholders = tasks.map(() => "?").join(", ");
+      await this.db.run(
+        `DELETE FROM task_dependencies WHERE relation_type = ? AND task_id IN (${placeholders})`,
+        relationType,
+        ...tasks.map((task) => task.id),
+      );
+    }
+
+    if (inserts.length === 0 && removedInferred === 0) {
       if (skippedCycles > 0) {
         warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
         if (skippedEdges.length > 0) {
@@ -911,15 +948,23 @@ export class TaskOrderingService {
       depList.push({
         task_id: insert.taskId,
         depends_on_task_id: insert.dependsOnTaskId,
+        relation_type: relationType,
         depends_on_key: dependsOn?.key,
         depends_on_status: dependsOn?.status,
       });
       deps.set(insert.taskId, depList);
     }
-    if (persist) {
-      warnings.push(`Injected ${inserts.length} inferred foundation deps.`);
-    } else {
-      warnings.push(`Dry run: inferred ${inserts.length} foundation deps (not persisted).`);
+    if (persist && removedInferred > 0) {
+      warnings.push(`Reconciled ${removedInferred} inferred foundation deps before re-inference.`);
+    } else if (!persist && removedInferred > 0) {
+      warnings.push(`Dry run: would reconcile ${removedInferred} inferred foundation deps.`);
+    }
+    if (inserts.length > 0) {
+      if (persist) {
+        warnings.push(`Injected ${inserts.length} scoped inferred foundation deps.`);
+      } else {
+        warnings.push(`Dry run: inferred ${inserts.length} scoped foundation deps (not persisted).`);
+      }
     }
     if (skippedCycles > 0) {
       warnings.push(`Skipped ${skippedCycles} inferred foundation deps due to cycles.`);
@@ -995,6 +1040,7 @@ export class TaskOrderingService {
       depList.push({
         task_id: insert.taskId,
         depends_on_task_id: insert.dependsOnTaskId,
+        relation_type: "inferred_agent",
         depends_on_key: dependsOn?.key,
         depends_on_status: dependsOn?.status,
       });
