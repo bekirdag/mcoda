@@ -48,7 +48,7 @@ const cleanupWorkspace = async (dir: string, repo: WorkspaceRepository) => {
   await fs.rm(dir, { recursive: true, force: true });
 };
 
-test("selectTasks orders by dependencies and priority and skips dependency-blocked tasks", async () => {
+test("selectTasks treats review-ready upstream dependencies as unblocked", async () => {
   const ctx = await setupWorkspace();
   const { repo, story, project, dir, workspace } = ctx;
 
@@ -115,7 +115,7 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
 
   await repo.insertTaskDependencies(
     [
-      { taskId: tasks[1].id, dependsOnTaskId: tasks[0].id, relationType: "blocks" },
+      { taskId: tasks[1].id, dependsOnTaskId: readyReview.id, relationType: "blocks" },
       { taskId: tasks[3].id, dependsOnTaskId: readyReview.id, relationType: "blocks" },
     ],
     false,
@@ -123,8 +123,60 @@ test("selectTasks orders by dependencies and priority and skips dependency-block
 
   const selection = new TaskSelectionService(workspace, repo);
   const plan = await selection.selectTasks({ projectKey: "proj" });
-  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), ["proj-epic-us-01-t01", "proj-epic-us-01-t03"]);
-  assert.ok(plan.warnings.some((warning) => warning.includes("dependencies not ready")));
+  assert.deepStrictEqual(plan.ordered.map((t) => t.task.key), [
+    "proj-epic-us-01-t01",
+    "proj-epic-us-01-t02",
+    "proj-epic-us-01-t03",
+    "proj-epic-us-01-t04",
+  ]);
+  assert.ok(!plan.warnings.some((warning) => warning.includes("dependencies not ready")));
+  await cleanupWorkspace(dir, repo);
+});
+
+test("selectTasks treats QA-ready upstream dependencies as unblocked", async () => {
+  const ctx = await setupWorkspace();
+  const { repo, story, project, dir, workspace } = ctx;
+
+  const [readyQa] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t40",
+        title: "QA Ready Upstream",
+        description: "",
+        status: "ready_to_qa",
+      },
+    ],
+    false,
+  );
+
+  const [dependent] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: story.epicId,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t41",
+        title: "Dependent Task",
+        description: "",
+        priority: 1,
+        status: "not_started",
+      },
+    ],
+    false,
+  );
+
+  await repo.insertTaskDependencies(
+    [{ taskId: dependent.id, dependsOnTaskId: readyQa.id, relationType: "blocks" }],
+    false,
+  );
+
+  const selection = new TaskSelectionService(workspace, repo);
+  const plan = await selection.selectTasks({ projectKey: "proj" });
+  assert.ok(plan.ordered.some((entry) => entry.task.key === dependent.key));
+  assert.ok(!plan.warnings.some((warning) => warning.includes("dependencies not ready")));
   await cleanupWorkspace(dir, repo);
 });
 
