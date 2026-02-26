@@ -13,6 +13,7 @@ import { JobService, type JobState } from "../jobs/JobService.js";
 import { TaskSelectionService, TaskSelectionFilters, TaskSelectionPlan } from "./TaskSelectionService.js";
 import { TaskStateService } from "./TaskStateService.js";
 import { QaTestCommandBuilder } from "./QaTestCommandBuilder.js";
+import { AddTestsService } from "./AddTestsService.js";
 import { RoutingService } from "../agents/RoutingService.js";
 import { GATEWAY_HANDOFF_ENV_PATH } from "../agents/GatewayHandoff.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
@@ -4101,15 +4102,75 @@ export class WorkOnTasksService {
       };
       const results: TaskExecutionResult[] = [];
       const taskSummaries = new Map<string, WorkOnTasksTaskSummary>();
+      let preflightMissingHarnessTasks = await this.findMissingTestHarnessTasks(selection.ordered);
+      if (preflightMissingHarnessTasks.length > 0 && !request.dryRun) {
+        const bootstrapProjectKey = selection.project?.key ?? request.projectKey;
+        if (!bootstrapProjectKey) {
+          warnings.push("add-tests bootstrap skipped: project key could not be resolved.");
+        } else {
+          try {
+            const addTestsService = new AddTestsService(this.workspace, {
+              workspaceRepo: this.deps.workspaceRepo,
+              selectionService: this.selectionService,
+              vcsClient: this.vcs,
+            });
+            const bootstrap = await addTestsService.addTests({
+              projectKey: bootstrapProjectKey,
+              taskKeys: preflightMissingHarnessTasks.map((issue) => issue.taskKey),
+              ignoreStatusFilter: true,
+              ignoreDependencies: true,
+              dryRun: false,
+              commit: !(request.noCommit ?? false),
+              baseBranch,
+            });
+            if (bootstrap.createdFiles.length > 0) {
+              warnings.push(`add-tests bootstrap created: ${bootstrap.createdFiles.join(", ")}`);
+            }
+            if (bootstrap.commitSha) {
+              warnings.push(
+                `add-tests bootstrap commit: ${bootstrap.commitSha}${bootstrap.branch ? ` on ${bootstrap.branch}` : ""}`,
+              );
+            }
+            warnings.push(...bootstrap.warnings.map((warning) => `add-tests: ${warning}`));
+            await this.checkpoint(job.id, "tests_bootstrap", {
+              createdFiles: bootstrap.createdFiles,
+              updatedTaskKeys: bootstrap.updatedTaskKeys,
+              skippedTaskKeys: bootstrap.skippedTaskKeys,
+              commitSha: bootstrap.commitSha ?? null,
+              branch: bootstrap.branch ?? null,
+            });
+            const refreshedRows = await this.deps.workspaceRepo.getTasksByIds(
+              selection.ordered.map((entry) => entry.task.id),
+            );
+            const refreshedById = new Map(refreshedRows.map((row) => [row.id, row]));
+            selection = {
+              ...selection,
+              ordered: selection.ordered.map((entry) => {
+                const refreshed = refreshedById.get(entry.task.id);
+                if (!refreshed) return entry;
+                return {
+                  ...entry,
+                  task: {
+                    ...entry.task,
+                    metadata: refreshed.metadata,
+                  },
+                };
+              }),
+            };
+          } catch (error) {
+            warnings.push(`add-tests bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        preflightMissingHarnessTasks = await this.findMissingTestHarnessTasks(selection.ordered);
+      }
       if (missingTestsPolicy === "block_job") {
-        const missingHarnessTasks = await this.findMissingTestHarnessTasks(selection.ordered);
-        if (missingHarnessTasks.length > 0) {
-          const taskKeys = missingHarnessTasks.map((issue) => issue.taskKey);
+        if (preflightMissingHarnessTasks.length > 0) {
+          const taskKeys = preflightMissingHarnessTasks.map((issue) => issue.taskKey);
           await this.checkpoint(job.id, "tests_preflight_blocked", {
             reason: "missing_test_harness",
             policy: missingTestsPolicy,
             taskKeys,
-            issues: missingHarnessTasks.map((issue) => ({
+            issues: preflightMissingHarnessTasks.map((issue) => ({
               taskKey: issue.taskKey,
               testRequirements: issue.testRequirements,
               attemptedCommands: issue.attemptedCommands,

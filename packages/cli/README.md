@@ -28,11 +28,13 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 - Docs: `mcoda docs pdr generate`, `mcoda docs sds generate`
 - Specs: `mcoda openapi-from-docs`
 - Planning: `mcoda create-tasks`, `mcoda refine-tasks`, `mcoda order-tasks`
-- Execution: `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
+- Execution: `mcoda add-tests`, `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
 - Backlog: `mcoda backlog`, `mcoda task`
 - Jobs/telemetry: `mcoda jobs`, `mcoda tokens`, `mcoda telemetry`
 - Agents: `mcoda test-agent`, `mcoda agent-run`
 - Updates: `mcoda update --check`
+
+`mcoda work-on-tasks` auto-runs the same test-harness bootstrap logic as `mcoda add-tests` when selected tasks require tests but no runnable harness exists.
 
 ## Configuration
 Environment variables are optional overrides for workspace settings:

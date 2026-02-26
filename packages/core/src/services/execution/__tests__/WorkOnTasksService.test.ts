@@ -4353,6 +4353,8 @@ test("workOnTasks continues by default when tests are required but no commands e
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
   await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await fs.rm(path.join(dir, "tests"), { recursive: true, force: true });
+  await fs.writeFile(path.join(dir, "tests"), "blocked tests dir", "utf8");
   await repo.updateTask(tasks[0].id, {
     metadata: {
       test_requirements: {
@@ -4387,6 +4389,7 @@ test("workOnTasks continues by default when tests are required but no commands e
 
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.status, "succeeded");
+    assert.ok(result.warnings.some((warning) => warning.includes("add-tests bootstrap failed")));
     assert.ok(result.warnings.some((warning) => warning.includes("proceeding without automated tests")));
     const updated = await repo.getTaskByKey(tasks[0].key);
     assert.equal(updated?.status, "ready_to_code_review");
@@ -4404,7 +4407,7 @@ test("workOnTasks continues by default when tests are required but no commands e
   }
 });
 
-test("workOnTasks blocks the job when tests are required but no commands exist and policy is block_job", async () => {
+test("workOnTasks bootstraps tests before block_job preflight", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);
   const selectionService = new TaskSelectionService(workspace, repo);
@@ -4433,28 +4436,32 @@ test("workOnTasks blocks the job when tests are required but no commands exist a
   });
 
   try {
-    await assert.rejects(
-      service.workOnTasks({
-        workspace,
-        projectKey: "proj",
-        agentStream: false,
-        dryRun: false,
-        noCommit: true,
-        limit: 1,
-        missingTestsPolicy: "block_job",
-      }),
-      /missing_test_harness/,
-    );
-
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+      missingTestsPolicy: "block_job",
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
     const updated = await repo.getTaskByKey(tasks[0].key);
-    assert.equal(updated?.status, "not_started");
+    assert.equal(updated?.status, "ready_to_code_review");
     assert.equal((updated?.metadata as any)?.failed_reason, undefined);
+    const tests = (updated?.metadata as any)?.tests ?? [];
+    assert.ok(tests.some((command: string) => String(command).includes("tests/all.js")));
+    const runAllExists = await fs
+      .access(path.join(dir, "tests", "all.js"))
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(runAllExists, true);
 
     const db = repo.getDb();
     const taskRuns = await db.all<{ status: string }[]>("SELECT status FROM task_runs WHERE command = 'work-on-tasks'");
-    assert.equal(taskRuns.length, 0);
-    const tokenUsage = await db.all("SELECT id FROM token_usage");
-    assert.equal(tokenUsage.length, 0);
+    assert.equal(taskRuns.length, 1);
+    assert.ok(taskRuns.every((run) => run.status === "succeeded"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -4506,6 +4513,8 @@ test("workOnTasks supports fail_task policy when tests are required but no comma
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
   await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await fs.rm(path.join(dir, "tests"), { recursive: true, force: true });
+  await fs.writeFile(path.join(dir, "tests"), "blocked tests dir", "utf8");
   await repo.updateTask(tasks[0].id, {
     metadata: {
       test_requirements: {
@@ -4558,6 +4567,8 @@ test("workOnTasks supports skip_task policy when tests are required but no comma
   const selectionService = new TaskSelectionService(workspace, repo);
   const stateService = new TaskStateService(repo);
   await fs.rm(path.join(dir, "tests", "all.js"), { force: true });
+  await fs.rm(path.join(dir, "tests"), { recursive: true, force: true });
+  await fs.writeFile(path.join(dir, "tests"), "blocked tests dir", "utf8");
   await repo.updateTask(tasks[0].id, {
     metadata: {
       test_requirements: {
