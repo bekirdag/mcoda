@@ -8,6 +8,7 @@ type CommandCapabilities = { required?: string[] };
 const FALLBACK_CAPABILITIES: Record<string, string[]> = {
   "create-tasks": ["plan"],
   "refine-tasks": ["plan"],
+  "add-tests": [],
   "work-on-tasks": ["code_write"],
   "code-review": ["code_review"],
   "qa-tasks": [],
@@ -23,6 +24,7 @@ const FALLBACK_CAPABILITIES: Record<string, string[]> = {
 const COMMAND_ALIASES: Record<string, string[]> = {
   "create-tasks": ["create_tasks", "create tasks"],
   "refine-tasks": ["refine_tasks", "refine tasks", "refine-task"],
+  "add-tests": ["add_tests", "add tests", "bootstrap-tests"],
   "work-on-tasks": ["work_on_tasks", "work on tasks"],
   "code-review": ["code_review", "code review"],
   "qa-tasks": ["qa_tasks", "qa tasks"],

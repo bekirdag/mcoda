@@ -67,6 +67,7 @@ mcoda backlog --workspace-root . --project WEB --order dependencies
 Run the implementation loop and follow with review/QA.
 
 ```sh
+mcoda add-tests --workspace-root . --project WEB --status not_started,in_progress
 mcoda work-on-tasks --workspace-root . --project WEB --status not_started,in_progress --limit 3
 mcoda gateway-trio --workspace-root . --project WEB --max-iterations 10 --max-cycles 10 --review-base mcoda-dev --qa-profile integration
 mcoda code-review --workspace-root . --project WEB --status ready_to_code_review --limit 5 --base mcoda-dev
@@ -330,8 +331,21 @@ mcoda work-on-tasks --workspace . --project WEB --status not_started,in_progress
 - Selection & ordering: dependency-aware (skips tasks with unmet dependencies or missing_context), topo + priority + SP + created_at, with in-progress tie-breaks. Skips are reported as warnings.
 - Orchestration: creates `jobs`, `command_runs`, `task_runs`, `task_logs`, and `token_usage` rows in `<workspace-dir>/mcoda.db`, stops tasks at `ready_to_code_review`, and streams agent output when `--agent-stream true` is set. Checkpoints live under `<workspace-dir>/jobs/<jobId>/work/state.json` for resume/debug.
 - Scope & safety: enforces allowed files/tests from task metadata; scope violations fail the task and are logged.
+- Tests: before task execution, `work-on-tasks` automatically bootstraps test harness metadata/files by running the same logic as `mcoda add-tests` when required tests are present but no runnable harness is found.
 - Tests: default missing-tests policy is `continue_task` (work proceeds with explicit warnings when no runnable harness exists). Use `--missing-tests-policy block_job` when you explicitly want strict preflight blocking, or `skip_task|fail_task` for per-task handling.
 - VCS: creates deterministic task branches (`mcoda/task/<TASK_KEY>`) from the base branch (workspace config branch or `mcoda-dev`), respects remotes when present, and skips commit/push on `--no-commit`, `--dry-run`, or the auto-merge/push flags.
+
+### Add tests (bootstrap harness + metadata)
+Generate/repair runnable test harness wiring for tasks that require tests.
+
+```sh
+mcoda add-tests --workspace . --project WEB --status not_started,in_progress
+```
+
+- Scopes: `--project <KEY>` (optional; defaults to workspace config project, then first workspace project), `--task <KEY>...`, `--epic <KEY>`, `--story <KEY>`, `--status <CSV>`, `--limit <N>`.
+- Behavior: discovers test commands from task metadata and repository tech stack, writes `metadata.tests`/`metadata.testCommands`, removes missing-harness QA blockers, and creates `tests/all.js` if no run-all harness exists.
+- VCS: by default stages/commits bootstrap changes on the base branch (`workspace.config.branch` or `mcoda-dev`). Use `--no-commit` to only apply workspace changes.
+- Flags: `--workspace-root <path>`, `--base-branch <name>`, `--dry-run`, `--json`.
 
 ### Use a remote Ollama agent (GPU offload)
 Point mcoda at a remote Ollama host (e.g., `sukunahikona` on your LAN/VPN):
