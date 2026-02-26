@@ -43,7 +43,7 @@ export interface TaskSelectionPlan {
 }
 
 const DEFAULT_IMPLEMENTATION_STATUSES = ["not_started", "in_progress", "changes_requested"];
-const DONE_DEPENDENCY_STATUSES = new Set(["completed", "cancelled"]);
+const READY_DEPENDENCY_STATUSES = new Set(["ready_to_code_review", "ready_to_qa", "completed", "cancelled"]);
 
 const normalizeStatusList = (statuses?: string[]): string[] => {
   if (!statuses || statuses.length === 0) return DEFAULT_IMPLEMENTATION_STATUSES;
@@ -458,9 +458,7 @@ export class TaskSelectionService {
         if (dep.dependsOnKey) keys.push(dep.dependsOnKey);
         const status = dep.dependsOnStatus?.toLowerCase();
         const depInSelection = taskMap.has(dep.dependsOnTaskId);
-        const clear = dep.dependsOnTaskId
-          ? DONE_DEPENDENCY_STATUSES.has(status ?? "")
-          : true;
+        const clear = dep.dependsOnTaskId ? READY_DEPENDENCY_STATUSES.has(status ?? "") : true;
         if (!clear) {
           if (!ignoreDependencies) dependencyNotReady = true;
           blocking.push(dep.dependsOnTaskId);
