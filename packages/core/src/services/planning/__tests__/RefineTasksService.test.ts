@@ -16,6 +16,26 @@ class StubRatingService {
   }
 }
 
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const removeWithRetries = async (target?: string): Promise<void> => {
+  if (!target) return;
+  const attempts = process.platform === "win32" ? 30 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (process.platform !== "win32") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(code) || attempt >= attempts - 1) {
+        throw error;
+      }
+      await wait(100 * (attempt + 1));
+    }
+  }
+};
+
 describe("RefineTasksService", () => {
   let workspaceDir: string;
   let repo: WorkspaceRepository;
@@ -74,12 +94,18 @@ describe("RefineTasksService", () => {
 
   afterEach(async () => {
     await service?.close();
-    await fs.rm(workspaceDir, { recursive: true, force: true });
-    if (tempHome) {
-      await fs.rm(tempHome, { recursive: true, force: true });
+    await removeWithRetries(workspaceDir);
+    await removeWithRetries(tempHome);
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
     }
-    process.env.HOME = originalHome;
-    process.env.USERPROFILE = originalProfile;
+    if (originalProfile === undefined) {
+      delete process.env.USERPROFILE;
+    } else {
+      process.env.USERPROFILE = originalProfile;
+    }
   });
 
   it("applies plan-in operations without invoking an agent", { concurrency: false }, async () => {
