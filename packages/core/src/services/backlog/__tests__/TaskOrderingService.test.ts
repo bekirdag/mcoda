@@ -732,6 +732,169 @@ test("skips inferred foundation dependencies that introduce cycles", { concurren
   });
 });
 
+test("injects scoped inferred foundation dependencies within the current story", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const [storyTwo] = await ctx.repo.insertStories(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            key: "proj-01-us-02",
+            title: "Story Two",
+            description: "",
+          },
+        ],
+        true,
+      );
+      const [foundationStoryOne, foundationStoryTwo, nonFoundationStoryOne] = await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T01",
+            title: "Setup scaffold story one",
+            description: "",
+            status: "not_started",
+            type: "chore",
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: storyTwo.id,
+            key: "PROJ-01-US-02-T01",
+            title: "Setup scaffold story two",
+            description: "",
+            status: "not_started",
+            type: "chore",
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T02",
+            title: "Implement API endpoint",
+            description: "",
+            status: "not_started",
+          },
+        ],
+        true,
+      );
+
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        await service.orderTasks({ projectKey: ctx.project.key });
+        const deps = await ctx.repo.getTaskDependencies([
+          foundationStoryOne.id,
+          foundationStoryTwo.id,
+          nonFoundationStoryOne.id,
+        ]);
+        const inferred = deps.filter(
+          (dep) => dep.taskId === nonFoundationStoryOne.id && dep.relationType === "inferred_foundation",
+        );
+        assert.equal(inferred.length, 1);
+        assert.equal(inferred[0].dependsOnTaskId, foundationStoryOne.id);
+        assert.ok(!inferred.some((dep) => dep.dependsOnTaskId === foundationStoryTwo.id));
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
+test("reconciles legacy inferred foundation fan-in dependencies", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const ctx = await setupWorkspace();
+    try {
+      const [storyTwo] = await ctx.repo.insertStories(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            key: "proj-01-us-02",
+            title: "Story Two",
+            description: "",
+          },
+        ],
+        true,
+      );
+      const [foundationStoryOne, foundationStoryTwo, nonFoundationStoryOne] = await ctx.repo.insertTasks(
+        [
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T01",
+            title: "Setup scaffold story one",
+            description: "",
+            status: "not_started",
+            type: "chore",
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: storyTwo.id,
+            key: "PROJ-01-US-02-T01",
+            title: "Setup scaffold story two",
+            description: "",
+            status: "not_started",
+            type: "chore",
+          },
+          {
+            projectId: ctx.project.id,
+            epicId: ctx.epic.id,
+            userStoryId: ctx.story.id,
+            key: "PROJ-01-US-01-T02",
+            title: "Implement API endpoint",
+            description: "",
+            status: "not_started",
+          },
+        ],
+        true,
+      );
+      await ctx.repo.insertTaskDependencies(
+        [
+          {
+            taskId: nonFoundationStoryOne.id,
+            dependsOnTaskId: foundationStoryOne.id,
+            relationType: "inferred_foundation",
+          },
+          {
+            taskId: nonFoundationStoryOne.id,
+            dependsOnTaskId: foundationStoryTwo.id,
+            relationType: "inferred_foundation",
+          },
+        ],
+        true,
+      );
+
+      const service = await TaskOrderingService.create(ctx.workspace, { recordTelemetry: false });
+      try {
+        const result = await service.orderTasks({ projectKey: ctx.project.key });
+        assert.ok(result.warnings.some((warning) => warning.includes("Reconciled")));
+        const deps = await ctx.repo.getTaskDependencies([
+          foundationStoryOne.id,
+          foundationStoryTwo.id,
+          nonFoundationStoryOne.id,
+        ]);
+        const inferred = deps.filter(
+          (dep) => dep.taskId === nonFoundationStoryOne.id && dep.relationType === "inferred_foundation",
+        );
+        assert.equal(inferred.length, 1);
+        assert.equal(inferred[0].dependsOnTaskId, foundationStoryOne.id);
+      } finally {
+        await service.close();
+      }
+    } finally {
+      await cleanupWorkspace(ctx.dir, ctx.repo);
+    }
+  });
+});
+
 test("applies inferred agent dependencies and reorders tasks", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const ctx = await setupWorkspace();
