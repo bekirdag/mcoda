@@ -104,33 +104,39 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          node -e "
-            const fs = require('fs');
-            const path = require('path');
-            const tag = process.env.TAG.replace(/^v/, '');
-            const packages = [
-              'packages/shared',
-              'packages/db',
-              'packages/agents',
-              'packages/generators',
-              'packages/integrations',
-              'packages/core',
-              'packages/cli'
-            ];
-            const mismatches = [];
-            for (const dir of packages) {
-              const pkgPath = path.join(dir, 'package.json');
-              const version = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
-              if (version !== tag) {
-                mismatches.push(`${dir}: ${version}`);
-              }
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const tag = process.env.TAG.replace(/^v/, '');
+          const packages = [
+            'packages/shared',
+            'packages/db',
+            'packages/agents',
+            'packages/generators',
+            'packages/integrations',
+            'packages/core',
+            'packages/cli'
+          ];
+
+          const mismatches = [];
+          for (const dir of packages) {
+            const pkgPath = path.join(dir, 'package.json');
+            const version = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version;
+            if (version !== tag) {
+              mismatches.push(`${dir}: ${version}`);
             }
-            if (mismatches.length) {
-              console.error(`Tag v${tag} does not match package versions:\n${mismatches.join('\n')}`);
-              process.exit(1);
-            }
-            console.log(`✓ Tag matches all package versions: ${tag}`);
-          "
+          }
+
+          if (mismatches.length) {
+            console.error(
+              `Tag v${tag} does not match package versions:\n${mismatches.join('\n')}`
+            );
+            process.exit(1);
+          }
+
+          console.log(`Tag matches all package versions: ${tag}`);
+          NODE
 
       - name: Update npm to latest
         run: npm install -g npm@latest
