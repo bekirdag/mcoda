@@ -62,14 +62,14 @@ describe("task-sufficiency-audit argument parsing", () => {
     assert.equal(result.projectKey, "configured");
   });
 
-  it("falls back to first workspace project when request/config are absent", () => {
+  it("falls back to latest workspace project when request/config are absent", () => {
     const result = pickTaskSufficiencyProjectKey({
       requestedKey: undefined,
       configuredKey: undefined,
       existing: [{ key: "first", createdAt: "2026-01-01T00:00:00.000Z" }],
     });
     assert.equal(result.projectKey, "first");
-    assert.ok(result.warnings.some((warning) => warning.includes("defaulting to first workspace project")));
+    assert.ok(result.warnings.some((warning) => warning.includes("defaulting to latest workspace project")));
   });
 });
 

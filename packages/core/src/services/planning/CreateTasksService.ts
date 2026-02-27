@@ -135,6 +135,16 @@ type QaPreflight = {
   blockers: string[];
 };
 
+type ProjectBuildPlanArtifact = {
+  projectKey: string;
+  generatedAt: string;
+  sourceDocs: string[];
+  startupWaves: Array<{ wave: number; services: string[] }>;
+  services: string[];
+  foundationalDependencies: string[];
+  buildMethod: string;
+};
+
 type PersistPlanOptions = {
   force?: boolean;
   resetKeys?: boolean;
@@ -540,6 +550,23 @@ const extractJsonObjects = (value: string): string[] => {
   return results;
 };
 
+const compactNarrative = (value: string | undefined, fallback: string, maxLines = 5): string => {
+  if (!value || value.trim().length === 0) return fallback;
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^[*-]\s+/, "")
+        .replace(/^#+\s+/, "")
+        .replace(/^\*+\s*\*\*(.+?)\*\*\s*$/, "$1")
+        .trim(),
+    )
+    .filter(Boolean)
+    .filter((line) => !/^(in scope|out of scope|key flows?|non-functional requirements|dependencies|risks|acceptance criteria|related docs?)\s*:/i.test(line))
+    .slice(0, maxLines);
+  return lines.length > 0 ? lines.join("\n") : fallback;
+};
+
 const buildEpicDescription = (
   epicKey: string,
   title: string,
@@ -547,30 +574,21 @@ const buildEpicDescription = (
   acceptance: string[] | undefined,
   relatedDocs: string[] | undefined,
 ): string => {
+  const context = compactNarrative(
+    description,
+    `Deliver ${title} with implementation-ready scope and sequencing aligned to SDS guidance.`,
+    6,
+  );
   return [
     `* **Epic Key**: ${epicKey}`,
     `* **Epic Title**: ${title}`,
     "* **Context / Problem**",
     "",
-    ensureNonEmpty(description, "Summarize the problem, users, and constraints for this epic."),
-    "* **Goals & Outcomes**",
-    formatBullets(acceptance, "List measurable outcomes for this epic."),
-    "* **In Scope**",
-    "- Clarify during refinement; derived from RFP/PDR/SDS.",
-    "* **Out of Scope**",
-    "- To be defined; exclude unrelated systems.",
-    "* **Key Flows / Scenarios**",
-    "- Outline primary user flows for this epic.",
-    "* **Non-functional Requirements**",
-    "- Performance, security, reliability expectations go here.",
-    "* **Dependencies & Constraints**",
-    "- Capture upstream/downstream systems and blockers.",
-    "* **Risks & Open Questions**",
-    "- Identify risks and unknowns to resolve.",
+    context,
     "* **Acceptance Criteria**",
-    formatBullets(acceptance, "Provide 5–10 testable acceptance criteria."),
+    formatBullets(acceptance, "Define measurable and testable outcomes for this epic."),
     "* **Related Documentation / References**",
-    formatBullets(relatedDocs, "Link relevant docdex entries and sections."),
+    formatBullets(relatedDocs, "Link SDS/PDR/OpenAPI references used by this epic."),
   ].join("\n");
 };
 
@@ -582,30 +600,20 @@ const buildStoryDescription = (
   acceptanceCriteria: string[] | undefined,
   relatedDocs: string[] | undefined,
 ): string => {
+  const userStoryText = compactNarrative(userStory, `As a user, I want ${title} so that it delivers clear product value.`, 3);
+  const contextText = compactNarrative(description, `Implement ${title} with concrete scope and dependency context.`, 5);
   return [
     `* **Story Key**: ${storyKey}`,
     "* **User Story**",
     "",
-    ensureNonEmpty(userStory, `As a user, I want ${title} so that it delivers value.`),
+    userStoryText,
     "* **Context**",
     "",
-    ensureNonEmpty(description, "Context for systems, dependencies, and scope."),
-    "* **Preconditions / Assumptions**",
-    "- Confirm required data, environments, and access.",
-    "* **Main Flow**",
-    "- Outline the happy path for this story.",
-    "* **Alternative / Error Flows**",
-    "- Capture error handling and non-happy paths.",
-    "* **UX / UI Notes**",
-    "- Enumerate screens/states if applicable.",
-    "* **Data & Integrations**",
-    "- Note key entities, APIs, queues, or third-party dependencies.",
+    contextText,
     "* **Acceptance Criteria**",
     formatBullets(acceptanceCriteria, "List testable outcomes for this story."),
-    "* **Non-functional Requirements**",
-    "- Add story-specific performance/reliability/security expectations.",
     "* **Related Documentation / References**",
-    formatBullets(relatedDocs, "Docdex handles, OpenAPI endpoints, code modules."),
+    formatBullets(relatedDocs, "Docdex handles, OpenAPI endpoints, and code modules."),
   ].join("\n");
 };
 
@@ -634,7 +642,7 @@ const buildTaskDescription = (
       })
       .join("\n");
   };
-  const objectiveText = ensureNonEmpty(description, `Deliver ${title} for story ${storyKey}.`);
+  const objectiveText = compactNarrative(description, `Deliver ${title} for story ${storyKey}.`, 3);
   const implementationLines = extractActionableLines(description, 4);
   const riskLines = extractRiskLines(description, 3);
   const testsDefined =
@@ -654,14 +662,14 @@ const buildTaskDescription = (
     qa?.blockers?.length ? "- Remaining QA blockers are explicit and actionable." : "- QA blockers are resolved or not present.",
   ];
   const defaultImplementationPlan = [
-    `- Implement ${title} with file/module-level changes aligned to the objective.`,
+    `Implement ${title} with concrete file/module-level changes aligned to the objective.`,
     dependencies.length
-      ? `- Respect dependency order before completion: ${dependencies.join(", ")}.`
-      : "- Validate assumptions and finalize concrete implementation steps before coding.",
+      ? `Respect dependency order before completion: ${dependencies.join(", ")}.`
+      : "Finalize concrete implementation steps before coding and keep scope bounded.",
   ];
   const defaultRisks = dependencies.length
-    ? [`- Delivery depends on upstream tasks: ${dependencies.join(", ")}.`]
-    : ["- Keep implementation aligned to SDS/OpenAPI contracts to avoid drift."];
+    ? [`Delivery depends on upstream tasks: ${dependencies.join(", ")}.`]
+    : ["Keep implementation aligned to SDS/OpenAPI contracts to avoid drift."];
   return [
     `* **Task Key**: ${taskKey}`,
     "* **Objective**",
@@ -672,7 +680,7 @@ const buildTaskDescription = (
     `- Epic: ${epicKey}`,
     `- Story: ${storyKey}`,
     "* **Inputs**",
-    formatBullets(relatedDocs, "Docdex excerpts, SDS/PDR/RFP sections, OpenAPI endpoints."),
+    formatBullets(relatedDocs, "No explicit external references."),
     "* **Implementation Plan**",
     formatBullets(implementationLines, defaultImplementationPlan.join(" ")),
     "* **Definition of Done**",
@@ -691,11 +699,11 @@ const buildTaskDescription = (
     "* **QA Blockers**",
     formatBullets(qa?.blockers, "None known."),
     "* **Dependencies**",
-    formatBullets(dependencies, "Enumerate prerequisite tasks by key."),
+    formatBullets(dependencies, "None."),
     "* **Risks & Gotchas**",
     formatBullets(riskLines, defaultRisks.join(" ")),
     "* **Related Documentation / References**",
-    formatBullets(relatedDocs, "Docdex handles or file paths to consult."),
+    formatBullets(relatedDocs, "None."),
   ].join("\n");
 };
 
@@ -1671,6 +1679,27 @@ export class CreateTasksService {
     ].join("\n");
   }
 
+  private buildProjectPlanArtifact(
+    projectKey: string,
+    docs: DocdexDocument[],
+    graph: ServiceDependencyGraph,
+    buildMethod: string,
+  ): ProjectBuildPlanArtifact {
+    const sourceDocs = docs
+      .map((doc) => doc.path ?? (doc.id ? `docdex:${doc.id}` : doc.title ?? "doc"))
+      .filter((value): value is string => Boolean(value))
+      .slice(0, 24);
+    return {
+      projectKey,
+      generatedAt: new Date().toISOString(),
+      sourceDocs,
+      startupWaves: graph.startupWaves.slice(0, 12),
+      services: graph.services.slice(0, 40),
+      foundationalDependencies: graph.foundationalDependencies.slice(0, 16),
+      buildMethod,
+    };
+  }
+
   private orderStoryTasksByDependencies(
     storyTasks: PlanTask[],
     serviceRank: Map<string, number>,
@@ -2390,17 +2419,18 @@ export class CreateTasksService {
       .join(" ");
 
     const prompt = [
-      `You are assisting in creating EPICS ONLY for project ${projectKey}.`,
-      "Follow mcoda SDS epic template:",
-      "- Context/Problem; Goals & Outcomes; In Scope; Out of Scope; Key Flows; Non-functional Requirements; Dependencies & Constraints; Risks & Open Questions; Acceptance Criteria; Related Documentation.",
+      `You are assisting in phase 1 of 3 for project ${projectKey}: generate epics only.`,
+      "Process is strict and direct: build plan -> epics -> stories -> tasks.",
+      "This step outputs only epics derived from the build plan and docs.",
       "Return strictly valid JSON (no prose) matching:",
       EPIC_SCHEMA_SNIPPET,
       "Rules:",
       "- Do NOT include final slugs; the system will assign keys.",
       "- Use docdex handles when referencing docs.",
       "- acceptanceCriteria must be an array of strings (5-10 items).",
-      "- Prefer dependency-first sequencing: foundational codebase/service setup epics should precede dependent feature epics.",
-      "- Keep output technology-agnostic and derived from docs; do not assume specific stacks unless docs state them.",
+      "- Keep epics actionable and implementation-oriented; avoid glossary/admin-only epics.",
+      "- Prefer dependency-first sequencing: foundational setup epics before dependent feature epics.",
+      "- Keep output derived from docs; do not assume stacks unless docs state them.",
       "Project construction method to follow:",
       projectBuildMethod,
       limits || "Use reasonable scope without over-generating epics.",
@@ -2678,14 +2708,15 @@ export class CreateTasksService {
     commandRunId: string,
   ): Promise<AgentStoryNode[]> {
     const prompt = [
-      `Generate user stories for epic "${epic.title}".`,
-      "Use the User Story template: User Story; Context; Preconditions; Main Flow; Alternative/Error Flows; UX/UI; Data & Integrations; Acceptance Criteria; NFR; Related Docs.",
+      `Generate user stories for epic "${epic.title}" (phase 2 of 3).`,
+      "This phase is stories-only. Do not generate tasks yet.",
       "Return JSON only matching:",
       STORY_SCHEMA_SNIPPET,
       "Rules:",
       "- No tasks in this step.",
       "- acceptanceCriteria must be an array of strings.",
       "- Use docdex handles when citing docs.",
+      "- Keep stories direct and implementation-oriented; avoid placeholder-only narrative sections.",
       "- Keep story sequencing aligned with the project construction method.",
       `Epic context (key=${epic.key ?? epic.localId ?? "TBD"}):`,
       epic.description ?? "(no description provided)",
@@ -2732,8 +2763,8 @@ export class CreateTasksService {
         .filter(Boolean);
     };
     const prompt = [
-      `Generate tasks for story "${story.title}" (Epic: ${epic.title}).`,
-      "Use the Task template: Objective; Context; Inputs; Implementation Plan; DoD; Testing & QA; Dependencies; Risks; References.",
+      `Generate tasks for story "${story.title}" (Epic: ${epic.title}, phase 3 of 3).`,
+      "This phase is tasks-only for the given story.",
       "Return JSON only matching:",
       TASK_SCHEMA_SNIPPET,
       "Rules:",
@@ -2751,6 +2782,7 @@ export class CreateTasksService {
       "- Keep dependencies strictly inside this story; never reference tasks from other stories/epics.",
       "- Order tasks from foundational prerequisites to dependents based on documented dependency direction and startup constraints.",
       "- Avoid placeholder wording (TBD, TODO, to be defined, generic follow-up phrases).",
+      "- Avoid documentation-only or glossary-only tasks unless story acceptance explicitly requires them.",
       "- Use docdex handles when citing docs.",
       "- If OPENAPI_HINTS are present in Docs, align tasks with hinted service/capability/stage/test_requirements.",
       "- If SDS_COVERAGE_HINTS are present in Docs, cover the relevant SDS sections in implementation tasks.",
@@ -3066,6 +3098,7 @@ export class CreateTasksService {
     plan: GeneratedPlan,
     docSummary: string,
     docs: DocdexDocument[],
+    buildPlan: ProjectBuildPlanArtifact,
   ): Promise<{ folder: string }> {
     const baseDir = path.join(this.workspace.mcodaDir, "tasks", projectKey);
     await fs.mkdir(baseDir, { recursive: true });
@@ -3073,7 +3106,8 @@ export class CreateTasksService {
       const target = path.join(baseDir, file);
       await fs.writeFile(target, JSON.stringify(data, null, 2), "utf8");
     };
-    await write("plan.json", { projectKey, generatedAt: new Date().toISOString(), docSummary, ...plan });
+    await write("plan.json", { projectKey, generatedAt: new Date().toISOString(), docSummary, buildPlan, ...plan });
+    await write("build-plan.json", buildPlan);
     await write("epics.json", plan.epics);
     await write("stories.json", plan.stories);
     await write("tasks.json", plan.tasks);
@@ -3397,6 +3431,7 @@ export class CreateTasksService {
         const { docSummary, warnings: docWarnings } = this.buildDocContext(docs);
         const discoveryGraph = this.buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
         const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
+        const projectBuildPlan = this.buildProjectPlanArtifact(options.projectKey, docs, discoveryGraph, projectBuildMethod);
         const { prompt } = this.buildPrompt(options.projectKey, docs, projectBuildMethod, options);
         const qaPreflight = await this.buildQaPreflight();
         const qaOverrides = this.buildQaOverrides(options);
@@ -3404,6 +3439,15 @@ export class CreateTasksService {
           stage: "docs_indexed",
           timestamp: new Date().toISOString(),
           details: { count: docs.length, warnings: docWarnings, startupWaves: discoveryGraph.startupWaves.slice(0, 8) },
+        });
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "build_plan_defined",
+          timestamp: new Date().toISOString(),
+          details: {
+            sourceDocs: projectBuildPlan.sourceDocs.length,
+            services: projectBuildPlan.services.length,
+            startupWaves: projectBuildPlan.startupWaves.length,
+          },
         });
         await this.jobService.writeCheckpoint(job.id, {
           stage: "qa_preflight",
@@ -3481,7 +3525,7 @@ export class CreateTasksService {
           details: { tasks: plan.tasks.length, source: planSource, fallbackReason },
         });
 
-        const { folder } = await this.writePlanArtifacts(options.projectKey, plan, docSummary, docs);
+        const { folder } = await this.writePlanArtifacts(options.projectKey, plan, docSummary, docs, projectBuildPlan);
         await this.jobService.writeCheckpoint(job.id, {
           stage: "plan_written",
           timestamp: new Date().toISOString(),
