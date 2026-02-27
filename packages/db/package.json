@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/db",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "SQLite-backed storage layer for mcoda.",
   "type": "module",
   "main": "dist/index.js",
