@@ -12,11 +12,42 @@ const DEFAULT_MIN_COVERAGE_RATIO = 0.96;
 const SDS_SCAN_MAX_FILES = 120;
 const SDS_HEADING_LIMIT = 200;
 const SDS_FOLDER_LIMIT = 240;
+const GAP_BUNDLE_SIZE = 4;
 const REPORT_FILE_NAME = "task-sufficiency-report.json";
 
 const ignoredDirs = new Set([".git", "node_modules", "dist", "build", ".mcoda", ".docdex"]);
 const sdsFilenamePattern = /(sds|software[-_ ]design|system[-_ ]design|design[-_ ]spec)/i;
 const sdsContentPattern = /(software design specification|system design specification|^#\s*sds\b)/im;
+const nonImplementationHeadingPattern =
+  /\b(revision history|table of contents|purpose|scope|definitions?|abbreviations?|glossary|references?|appendix|document control|authors?)\b/i;
+const likelyImplementationHeadingPattern =
+  /\b(architecture|entity|entities|service|services|module|modules|component|components|pipeline|workflow|api|endpoint|schema|model|feature|store|database|ingestion|training|inference|ui|frontend|backend|ops|observability|security|deployment|solver|integration|testing|validation|contract|index|mapping|registry|cache|queue|event|job|task|migration|controller|router|policy)\b/i;
+const repoRootSegments = new Set([
+  "apps",
+  "api",
+  "backend",
+  "config",
+  "configs",
+  "db",
+  "deployment",
+  "deployments",
+  "docs",
+  "frontend",
+  "implementation",
+  "infra",
+  "internal",
+  "packages",
+  "scripts",
+  "service",
+  "services",
+  "shared",
+  "src",
+  "test",
+  "tests",
+  "ui",
+  "web",
+]);
+const headingNoiseTokens = new Set(["and", "for", "from", "into", "the", "with"]);
 
 type CoverageSummary = {
   coverageRatio: number;
@@ -39,6 +70,14 @@ type GapItem = {
   kind: "section" | "folder";
   value: string;
   normalizedAnchor: string;
+  domain: string;
+};
+
+type GapBundle = {
+  kind: "section" | "folder" | "mixed";
+  domain: string;
+  values: string[];
+  normalizedAnchors: string[];
 };
 
 export interface TaskSufficiencyAuditRequest {
@@ -102,6 +141,72 @@ const normalizeAnchor = (kind: "section" | "folder", value: string): string =>
   `${kind}:${normalizeText(value).replace(/\s+/g, " ").trim()}`;
 
 const unique = (items: string[]): string[] => Array.from(new Set(items.filter(Boolean)));
+
+const stripDecorators = (value: string): string =>
+  value
+    .replace(/[`*_]/g, " ")
+    .replace(/^[\s>:\-[\]().]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeHeadingCandidate = (value: string): string => {
+  const cleaned = stripDecorators(value).replace(/^\d+(?:\.\d+)*\s+/, "").trim();
+  return cleaned.length > 0 ? cleaned : stripDecorators(value);
+};
+
+const headingLooksImplementationRelevant = (heading: string): boolean => {
+  const normalized = normalizeHeadingCandidate(heading).toLowerCase();
+  if (!normalized || normalized.length < 3) return false;
+  if (nonImplementationHeadingPattern.test(normalized)) return false;
+  if (likelyImplementationHeadingPattern.test(normalized)) return true;
+  const sectionMatch = heading.trim().match(/^(\d+)(?:\.\d+)*(?:\s+|$)/);
+  if (sectionMatch) {
+    const major = Number.parseInt(sectionMatch[1] ?? "", 10);
+    if (Number.isFinite(major) && major >= 3) return true;
+  }
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9.-]+/g, ""))
+    .filter((token) => token.length >= 4 && !headingNoiseTokens.has(token));
+  return tokens.length >= 2;
+};
+
+const normalizeFolderEntry = (entry: string): string | undefined => {
+  const trimmed = stripDecorators(entry)
+    .replace(/^\.?\//, "")
+    .replace(/\/+$/, "")
+    .replace(/\s+/g, "");
+  if (!trimmed.includes("/")) return undefined;
+  if (trimmed.includes("...") || trimmed.includes("*")) return undefined;
+  return trimmed;
+};
+
+const folderEntryLooksRepoRelevant = (entry: string): boolean => {
+  const normalized = normalizeFolderEntry(entry);
+  if (!normalized) return false;
+  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) return false;
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length < 2) return false;
+  const root = segments[0]!.toLowerCase();
+  return repoRootSegments.has(root);
+};
+
+const deriveSectionDomain = (heading: string): string => {
+  const normalized = normalizeHeadingCandidate(heading).toLowerCase();
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9.-]+/g, ""))
+    .filter((token) => token.length >= 3 && !headingNoiseTokens.has(token));
+  return tokens[0] ?? "coverage";
+};
+
+const deriveFolderDomain = (entry: string): string => {
+  const normalized = normalizeFolderEntry(entry)?.toLowerCase();
+  if (!normalized) return "structure";
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) return "structure";
+  return segments.length === 1 ? segments[0]! : `${segments[0]}-${segments[1]}`;
+};
 
 const extractMarkdownHeadings = (content: string, limit: number): string[] => {
   if (!content) return [];
@@ -335,9 +440,17 @@ export class TaskSufficiencyService {
     for (const task of tasks) {
       corpusChunks.push(`${task.title ?? ""} ${task.description ?? ""}`);
       const metadata = readJsonSafe<Record<string, unknown> | null>(task.metadata_json, null);
-      const rawAnchor = (metadata?.sufficiencyAudit as Record<string, unknown> | undefined)?.anchor;
+      const sufficiencyAudit = metadata?.sufficiencyAudit as Record<string, unknown> | undefined;
+      const rawAnchor = sufficiencyAudit?.anchor;
       if (typeof rawAnchor === "string" && rawAnchor.trim().length > 0) {
         existingAnchors.add(rawAnchor.trim());
+      }
+      const rawAnchors = sufficiencyAudit?.anchors;
+      if (Array.isArray(rawAnchors)) {
+        for (const anchor of rawAnchors) {
+          if (typeof anchor !== "string" || anchor.trim().length === 0) continue;
+          existingAnchors.add(anchor.trim());
+        }
       }
     }
 
@@ -388,54 +501,110 @@ export class TaskSufficiencyService {
     for (const heading of coverage.missingSectionHeadings) {
       const normalizedAnchor = normalizeAnchor("section", heading);
       if (existingAnchors.has(normalizedAnchor)) continue;
-      items.push({ kind: "section", value: heading, normalizedAnchor });
+      items.push({
+        kind: "section",
+        value: heading,
+        normalizedAnchor,
+        domain: deriveSectionDomain(heading),
+      });
       if (items.length >= limit) return items;
     }
     for (const entry of coverage.missingFolderEntries) {
       const normalizedAnchor = normalizeAnchor("folder", entry);
       if (existingAnchors.has(normalizedAnchor)) continue;
-      items.push({ kind: "folder", value: entry, normalizedAnchor });
+      items.push({
+        kind: "folder",
+        value: entry,
+        normalizedAnchor,
+        domain: deriveFolderDomain(entry),
+      });
       if (items.length >= limit) return items;
     }
     return items;
   }
 
+  private bundleGapItems(gapItems: GapItem[], limit: number): GapBundle[] {
+    const groups = new Map<string, GapItem[]>();
+    const orderedKeys: string[] = [];
+    for (const item of gapItems) {
+      const key = `${item.domain}:${item.kind}`;
+      if (!groups.has(key)) {
+        groups.set(key, []);
+        orderedKeys.push(key);
+      }
+      groups.get(key)?.push(item);
+    }
+
+    const bundles: GapBundle[] = [];
+    for (const key of orderedKeys) {
+      const group = groups.get(key) ?? [];
+      for (let index = 0; index < group.length; index += GAP_BUNDLE_SIZE) {
+        if (bundles.length >= limit) return bundles;
+        const chunk = group.slice(index, index + GAP_BUNDLE_SIZE);
+        const kinds = new Set(chunk.map((item) => item.kind));
+        bundles.push({
+          kind: kinds.size > 1 ? "mixed" : chunk[0]?.kind ?? "section",
+          domain: chunk[0]?.domain ?? "coverage",
+          values: chunk.map((item) => item.value),
+          normalizedAnchors: chunk.map((item) => item.normalizedAnchor),
+        });
+      }
+    }
+    return bundles;
+  }
+
   private async ensureTargetStory(project: ProjectRow): Promise<{ epicId: string; epicKey: string; storyId: string; storyKey: string }> {
     const db = this.workspaceRepo.getDb();
-    const existingStory = await db.get<{
-      story_id: string;
-      story_key: string;
-      epic_id: string;
-      epic_key: string;
-    }>(
-      `SELECT us.id AS story_id, us.key AS story_key, us.epic_id AS epic_id, e.key AS epic_key
+    const existingStories = await db.all<
+      {
+        story_id: string;
+        story_key: string;
+        story_metadata_json?: string | null;
+        epic_id: string;
+        epic_key: string;
+        epic_metadata_json?: string | null;
+      }[]
+    >(
+      `SELECT
+         us.id AS story_id,
+         us.key AS story_key,
+         us.metadata_json AS story_metadata_json,
+         us.epic_id AS epic_id,
+         e.key AS epic_key,
+         e.metadata_json AS epic_metadata_json
        FROM user_stories us
        JOIN epics e ON e.id = us.epic_id
        WHERE us.project_id = ?
-       ORDER BY COALESCE(us.priority, 2147483647), datetime(us.created_at), us.key
-       LIMIT 1`,
+       ORDER BY COALESCE(us.priority, 2147483647), datetime(us.created_at), us.key`,
       project.id,
     );
-    if (existingStory) {
-      return {
-        epicId: existingStory.epic_id,
-        epicKey: existingStory.epic_key,
-        storyId: existingStory.story_id,
-        storyKey: existingStory.story_key,
-      };
+    for (const row of existingStories) {
+      const storyMetadata = readJsonSafe<Record<string, unknown> | null>(row.story_metadata_json, null) ?? {};
+      const epicMetadata = readJsonSafe<Record<string, unknown> | null>(row.epic_metadata_json, null) ?? {};
+      const storySource = typeof storyMetadata.source === "string" ? storyMetadata.source : undefined;
+      const epicSource = typeof epicMetadata.source === "string" ? epicMetadata.source : undefined;
+      if (storySource === "task-sufficiency-audit" || epicSource === "task-sufficiency-audit") {
+        return {
+          epicId: row.epic_id,
+          epicKey: row.epic_key,
+          storyId: row.story_id,
+          storyKey: row.story_key,
+        };
+      }
     }
 
     let epicId = "";
     let epicKey = "";
-    const existingEpic = await db.get<{ id: string; key: string }>(
-      `SELECT id, key
+    const existingEpic = await db.get<{ id: string; key: string; metadata_json?: string | null }>(
+      `SELECT id, key, metadata_json
        FROM epics
        WHERE project_id = ?
-       ORDER BY COALESCE(priority, 2147483647), datetime(created_at), key
-       LIMIT 1`,
+       ORDER BY COALESCE(priority, 2147483647), datetime(created_at), key`,
       project.id,
     );
-    if (existingEpic) {
+    const existingEpicMetadata = readJsonSafe<Record<string, unknown> | null>(existingEpic?.metadata_json, null) ?? {};
+    const existingEpicSource = typeof existingEpicMetadata.source === "string" ? existingEpicMetadata.source : undefined;
+    if (existingEpic && existingEpicSource === "task-sufficiency-audit") {
       epicId = existingEpic.id;
       epicKey = existingEpic.key;
     } else {
@@ -495,7 +664,7 @@ export class TaskSufficiencyService {
     storyKey: string;
     epicId: string;
     maxPriority: number;
-    gapItems: GapItem[];
+    gapBundles: GapBundle[];
     iteration: number;
     jobId: string;
     commandRunId: string;
@@ -503,33 +672,47 @@ export class TaskSufficiencyService {
     const existingTaskKeys = await this.workspaceRepo.listTaskKeys(params.storyId);
     const taskKeyGen = createTaskKeyGenerator(params.storyKey, existingTaskKeys);
     const now = new Date().toISOString();
-    const taskInserts = params.gapItems.map((gap, index) => {
-      const titlePrefix = gap.kind === "section" ? "Cover SDS section" : "Materialize SDS folder entry";
-      const title = `${titlePrefix}: ${gap.value}`.slice(0, 180);
+    const taskInserts = params.gapBundles.map((bundle, index) => {
+      const domainLabel = bundle.domain.replace(/[-_]+/g, " ").trim();
+      const titlePrefix =
+        bundle.kind === "section"
+          ? "Close SDS section coverage"
+          : bundle.kind === "folder"
+            ? "Materialize SDS structure coverage"
+            : "Close SDS coverage bundle";
+      const title = `${titlePrefix}: ${domainLabel || "implementation scope"}`.slice(0, 180);
       const objective =
-        gap.kind === "section"
-          ? `Implement or update product code to satisfy the SDS section \"${gap.value}\".`
-          : `Create/update codebase artifacts required by SDS folder-tree entry \"${gap.value}\".`;
+        bundle.kind === "folder"
+          ? `Create or update implementation artifacts for ${bundle.values.length} SDS folder-tree requirement(s).`
+          : `Implement missing functionality for ${bundle.values.length} SDS section requirement(s).`;
+      const scopeLines = bundle.values.map((value) => `- ${value}`);
+      const anchorLines = bundle.normalizedAnchors.map((anchor) => `- ${anchor}`);
       const description = [
         `## Objective`,
         objective,
         ``,
         `## Context`,
         `- Generated by task-sufficiency-audit iteration ${params.iteration}.`,
-        `- Anchor: ${gap.normalizedAnchor}`,
+        `- Coverage domain: ${bundle.domain}`,
+        ``,
+        `## Anchor Scope`,
+        ...scopeLines,
+        ``,
+        `## Anchor Keys`,
+        ...anchorLines,
         ``,
         `## Implementation Plan`,
-        `- Inspect SDS and current implementation for this anchor.`,
-        `- Add or update production code and wiring to satisfy the requirement.`,
-        `- Update impacted docs/contracts if the implementation surface changes.`,
+        `- Implement production code for this bundle before adding follow-up docs-only changes.`,
+        `- Update module wiring/contracts touched by these anchors.`,
+        `- Ensure each anchor has deterministic evidence (tests or checks).`,
         ``,
         `## Testing`,
-        `- Add or update unit/component/integration tests for this anchor.`,
-        `- Ensure existing regression suites remain green.`,
+        `- Add or update tests that validate each listed anchor scope.`,
+        `- Keep regression suites green after applying this bundle.`,
         ``,
         `## Definition of Done`,
-        `- Anchor requirement is fully represented in code.`,
-        `- Tests covering this scope pass.`,
+        `- All anchor scope items in this bundle are represented in implementation code.`,
+        `- Validation evidence exists for every anchor key listed above.`,
       ].join("\n");
 
       return {
@@ -541,14 +724,16 @@ export class TaskSufficiencyService {
         description,
         type: "feature",
         status: "not_started",
-        storyPoints: 1,
+        storyPoints: Math.min(5, Math.max(2, bundle.normalizedAnchors.length)),
         priority: params.maxPriority + index + 1,
         metadata: {
           sufficiencyAudit: {
             source: "task-sufficiency-audit",
-            kind: gap.kind,
-            value: gap.value,
-            anchor: gap.normalizedAnchor,
+            kind: bundle.kind,
+            domain: bundle.domain,
+            values: bundle.values,
+            anchor: bundle.normalizedAnchors[0],
+            anchors: bundle.normalizedAnchors,
             iteration: params.iteration,
             generatedAt: now,
           },
@@ -636,12 +821,36 @@ export class TaskSufficiencyService {
         );
       }
 
-      const sectionHeadings = unique(
+      const warnings: string[] = [];
+      const rawSectionHeadings = unique(
         sdsDocs.flatMap((doc) => extractMarkdownHeadings(doc.content, SDS_HEADING_LIMIT)),
       ).slice(0, SDS_HEADING_LIMIT);
-      const folderEntries = unique(
+      const rawFolderEntries = unique(
         sdsDocs.flatMap((doc) => extractFolderEntries(doc.content, SDS_FOLDER_LIMIT)),
       ).slice(0, SDS_FOLDER_LIMIT);
+      const sectionHeadings = unique(
+        rawSectionHeadings
+          .map((heading) => normalizeHeadingCandidate(heading))
+          .filter((heading) => headingLooksImplementationRelevant(heading)),
+      ).slice(0, SDS_HEADING_LIMIT);
+      const folderEntries = unique(
+        rawFolderEntries
+          .map((entry) => normalizeFolderEntry(entry))
+          .filter((entry): entry is string => Boolean(entry))
+          .filter((entry) => folderEntryLooksRepoRelevant(entry)),
+      ).slice(0, SDS_FOLDER_LIMIT);
+      const skippedHeadingSignals = Math.max(0, rawSectionHeadings.length - sectionHeadings.length);
+      const skippedFolderSignals = Math.max(0, rawFolderEntries.length - folderEntries.length);
+      if (skippedHeadingSignals > 0 || skippedFolderSignals > 0) {
+        warnings.push(
+          `Filtered non-actionable SDS signals (headings=${skippedHeadingSignals}, folders=${skippedFolderSignals}) before remediation.`,
+        );
+      }
+      if (sectionHeadings.length === 0 && folderEntries.length === 0) {
+        warnings.push(
+          "No actionable implementation signals detected from SDS headings/folder tree after filtering; audit will report coverage only.",
+        );
+      }
 
       await this.jobService.writeCheckpoint(job.id, {
         stage: "sds_loaded",
@@ -650,11 +859,14 @@ export class TaskSufficiencyService {
           docCount: sdsDocs.length,
           headingSignals: sectionHeadings.length,
           folderSignals: folderEntries.length,
+          rawHeadingSignals: rawSectionHeadings.length,
+          rawFolderSignals: rawFolderEntries.length,
+          filteredHeadingSignals: skippedHeadingSignals,
+          filteredFolderSignals: skippedFolderSignals,
           docs: sdsDocs.map((doc) => path.relative(request.workspace.workspaceRoot, doc.path)),
         },
       });
 
-      const warnings: string[] = [];
       const iterations: TaskSufficiencyAuditIteration[] = [];
       let totalTasksAdded = 0;
       const totalTasksUpdated = 0;
@@ -697,8 +909,9 @@ export class TaskSufficiencyService {
           break;
         }
 
-        const gapItems = this.buildGapItems(coverage, snapshot.existingAnchors, maxTasksPerIteration);
-        if (gapItems.length === 0) {
+        const gapItems = this.buildGapItems(coverage, snapshot.existingAnchors, maxTasksPerIteration * GAP_BUNDLE_SIZE);
+        const gapBundles = this.bundleGapItems(gapItems, maxTasksPerIteration);
+        if (gapBundles.length === 0) {
           warnings.push(
             `Iteration ${iteration}: unresolved SDS gaps remain but no insertable gap items were identified.`,
           );
@@ -732,7 +945,11 @@ export class TaskSufficiencyService {
               missingSectionCount: coverage.missingSectionHeadings.length,
               missingFolderCount: coverage.missingFolderEntries.length,
               action: "dry_run",
-              proposedGapItems: gapItems.map((item) => ({ kind: item.kind, value: item.value })),
+              proposedGapItems: gapBundles.map((bundle) => ({
+                kind: bundle.kind,
+                domain: bundle.domain,
+                values: bundle.values,
+              })),
             },
           });
           break;
@@ -745,7 +962,7 @@ export class TaskSufficiencyService {
           storyKey: target.storyKey,
           epicId: target.epicId,
           maxPriority: snapshot.maxPriority,
-          gapItems,
+          gapBundles,
           iteration,
           jobId: job.id,
           commandRunId: commandRun.id,
@@ -775,7 +992,7 @@ export class TaskSufficiencyService {
         });
         await this.jobService.appendLog(
           job.id,
-          `Iteration ${iteration}: added ${createdTaskKeys.length} task(s): ${createdTaskKeys.join(", ")}\n`,
+          `Iteration ${iteration}: added ${createdTaskKeys.length} remediation task(s) from ${gapBundles.length} gap bundle(s): ${createdTaskKeys.join(", ")}\n`,
         );
       }
 
@@ -811,8 +1028,15 @@ export class TaskSufficiencyService {
         totalTasksUpdated,
         docs: sdsDocs.map((doc) => ({
           path: path.relative(request.workspace.workspaceRoot, doc.path),
-          headingSignals: extractMarkdownHeadings(doc.content, SDS_HEADING_LIMIT).length,
-          folderSignals: extractFolderEntries(doc.content, SDS_FOLDER_LIMIT).length,
+          headingSignals: extractMarkdownHeadings(doc.content, SDS_HEADING_LIMIT)
+            .map((heading) => normalizeHeadingCandidate(heading))
+            .filter((heading) => headingLooksImplementationRelevant(heading)).length,
+          folderSignals: extractFolderEntries(doc.content, SDS_FOLDER_LIMIT)
+            .map((entry) => normalizeFolderEntry(entry))
+            .filter((entry): entry is string => Boolean(entry))
+            .filter((entry) => folderEntryLooksRepoRelevant(entry)).length,
+          rawHeadingSignals: extractMarkdownHeadings(doc.content, SDS_HEADING_LIMIT).length,
+          rawFolderSignals: extractFolderEntries(doc.content, SDS_FOLDER_LIMIT).length,
         })),
         finalCoverage: {
           coverageRatio: finalCoverage.coverageRatio,

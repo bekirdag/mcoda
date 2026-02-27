@@ -772,6 +772,12 @@ test("createTasks writes SDS coverage report artifact", async () => {
   assert.ok(Array.isArray(coverage.matched));
   assert.ok(Array.isArray(coverage.unmatched));
   assert.equal(typeof coverage.coverageRatio, "number");
+
+  const buildPlanPath = path.join(workspace.mcodaDir, "tasks", "web", "build-plan.json");
+  const buildPlan = JSON.parse(await fs.readFile(buildPlanPath, "utf8"));
+  assert.equal(buildPlan.projectKey, "web");
+  assert.equal(typeof buildPlan.buildMethod, "string");
+  assert.ok(Array.isArray(buildPlan.startupWaves));
 });
 
 test("createTasks filters opaque local doc handles while preserving useful references", async () => {

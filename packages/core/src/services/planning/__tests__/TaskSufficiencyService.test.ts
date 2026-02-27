@@ -14,7 +14,7 @@ let tempHome: string | undefined;
 let originalHome: string | undefined;
 let originalProfile: string | undefined;
 
-const seedBacklog = async (projectKey: string): Promise<{ projectId: string }> => {
+const seedBacklog = async (projectKey: string): Promise<{ projectId: string; initialStoryId: string }> => {
   const repo = await WorkspaceRepository.create(workspaceRoot);
   try {
     const project = await repo.createProjectIfMissing({
@@ -59,7 +59,7 @@ const seedBacklog = async (projectKey: string): Promise<{ projectId: string }> =
     ]);
     await repo.updateStoryPointsTotal(story.id, 3);
     await repo.updateEpicStoryPointsTotal(epic.id, 3);
-    return { projectId: project.id };
+    return { projectId: project.id, initialStoryId: story.id };
   } finally {
     await repo.close();
   }
@@ -104,20 +104,25 @@ afterEach(async () => {
   }
 });
 
-test("task-sufficiency-audit adds backlog tasks for uncovered SDS signals and writes report", async () => {
+test("task-sufficiency-audit adds focused backlog tasks for uncovered SDS signals and writes report", async () => {
   await fs.writeFile(
     path.join(workspaceRoot, "docs", "sds.md"),
     [
       "# Software Design Specification",
+      "## Revision History",
+      "## Table of Contents",
+      "## 1.1 Purpose",
       "## Historical Dataset Ingestion",
       "## Realtime Explorer Playback",
       "Folder tree:",
       "- services/ingestion/src/index.ts",
       "- apps/explorer/src/main.tsx",
+      "- mnt/githubActions/piriatlas/object-store/runs/...",
+      "- BCE/CE",
     ].join("\n"),
     "utf8",
   );
-  const { projectId } = await seedBacklog("proj");
+  const { projectId, initialStoryId } = await seedBacklog("proj");
   const service = await TaskSufficiencyService.create(workspace);
   try {
     const result = await service.runAudit({
@@ -145,7 +150,7 @@ test("task-sufficiency-audit adds backlog tasks for uncovered SDS signals and wr
     const repo = await WorkspaceRepository.create(workspaceRoot);
     try {
       const rows = await repo.getDb().all<any[]>(
-        `SELECT key, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`,
+        `SELECT key, title, user_story_id, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`,
         projectId,
       );
       const sufficiencyRows = rows.filter((row) => {
@@ -157,6 +162,23 @@ test("task-sufficiency-audit adds backlog tasks for uncovered SDS signals and wr
         }
       });
       assert.ok(sufficiencyRows.length > 0);
+      assert.ok(
+        sufficiencyRows.every((row) => row.user_story_id !== initialStoryId),
+        "sufficiency tasks should not mutate the existing product story",
+      );
+      assert.ok(
+        sufficiencyRows.every(
+          (row) =>
+            typeof row.title === "string" &&
+            !row.title.includes("Cover SDS section") &&
+            !row.title.includes("Materialize SDS folder entry"),
+        ),
+        "sufficiency tasks should use focused remediation titles",
+      );
+      assert.ok(
+        sufficiencyRows.every((row) => !String(row.title).toLowerCase().includes("revision history")),
+        "non-implementation headings must be filtered out",
+      );
     } finally {
       await repo.close();
     }

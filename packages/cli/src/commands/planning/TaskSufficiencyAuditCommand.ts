@@ -23,7 +23,7 @@ const listWorkspaceProjects = async (workspaceRoot: string): Promise<ProjectKeyC
     const rows = await repo
       .getDb()
       .all<{ key: string; created_at?: string | null }[]>(
-        `SELECT key, created_at FROM projects ORDER BY created_at ASC, key ASC`,
+        `SELECT key, created_at FROM projects ORDER BY datetime(created_at) DESC, key ASC`,
       );
     return rows
       .map((row) => ({ key: String(row.key), createdAt: row.created_at ?? null }))
@@ -44,7 +44,7 @@ export const pickTaskSufficiencyProjectKey = (options: {
   const requestedKey = options.requestedKey?.trim() || undefined;
   const configuredKey = options.configuredKey?.trim() || undefined;
   const existing = options.existing ?? [];
-  const firstExisting = existing[0]?.key;
+  const latestExisting = existing[0]?.key;
 
   if (requestedKey) {
     if (configuredKey && configuredKey !== requestedKey) {
@@ -52,24 +52,24 @@ export const pickTaskSufficiencyProjectKey = (options: {
         `Using explicitly requested project key "${requestedKey}"; overriding configured project key "${configuredKey}".`,
       );
     }
-    if (firstExisting && requestedKey !== firstExisting) {
+    if (latestExisting && requestedKey !== latestExisting) {
       warnings.push(
-        `Using explicitly requested project key "${requestedKey}"; first workspace project is "${firstExisting}".`,
+        `Using explicitly requested project key "${requestedKey}"; latest workspace project is "${latestExisting}".`,
       );
     }
     return { projectKey: requestedKey, warnings };
   }
 
   if (configuredKey) {
-    if (firstExisting && configuredKey !== firstExisting) {
-      warnings.push(`Using configured project key "${configuredKey}" instead of first workspace project "${firstExisting}".`);
+    if (latestExisting && configuredKey !== latestExisting) {
+      warnings.push(`Using configured project key "${configuredKey}" instead of latest workspace project "${latestExisting}".`);
     }
     return { projectKey: configuredKey, warnings };
   }
 
-  if (firstExisting) {
-    warnings.push(`No --project provided; defaulting to first workspace project "${firstExisting}".`);
-    return { projectKey: firstExisting, warnings };
+  if (latestExisting) {
+    warnings.push(`No --project provided; defaulting to latest workspace project "${latestExisting}".`);
+    return { projectKey: latestExisting, warnings };
   }
 
   return { projectKey: undefined, warnings };
