@@ -3,7 +3,26 @@
   "include-v-in-tag": true,
   "include-component-in-tag": false,
   "pull-request-title-pattern": "chore: release ${version}",
-  "linked-versions": true,
+  "release-search-depth": 200,
+  "commit-search-depth": 400,
+  "commit-batch-size": 5,
+  "sequential-calls": true,
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "mcoda-packages",
+      "components": [
+        "mcoda",
+        "@mcoda/core",
+        "@mcoda/shared",
+        "@mcoda/db",
+        "@mcoda/integrations",
+        "@mcoda/agents",
+        "@mcoda/generators"
+      ],
+      "merge": true
+    }
+  ],
   "packages": {
     "packages/cli": {
       "component": "mcoda",
