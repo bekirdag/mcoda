@@ -455,6 +455,424 @@ test("ollama-remote marks health unreachable when model is missing", async () =>
   }
 });
 
+test("invoke switches to an equivalent available agent when usage limit is reached", async () => {
+  const primary = await repo.createAgent({
+    slug: "limit-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "limit-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        throw new Error("AUTH_ERROR: usage_limit_reached; try again in 2 hours");
+      }
+      return { output: `ok:${agent.slug}`, adapter: "local-model", model: agent.defaultModel };
+    },
+  });
+  const result = await service.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:limit-backup");
+  assert.deepEqual(calls, [primary.id, backup.id]);
+  const limits = await repo.listAgentUsageLimits(primary.id);
+  assert.ok(limits.some((entry) => entry.status === "exhausted"));
+  assert.ok(limits.some((entry) => (entry.details as any)?.resetAtSource === "relative"));
+});
+
+test("invoke sleeps until reset and retries base agent when no equivalent is available", async () => {
+  const primary = await repo.createAgent({
+    slug: "sleep-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+  let calls = 0;
+  // @ts-expect-error override for test
+  clockService.getAdapter = async () => ({
+    invoke: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("AUTH_ERROR: rate limit reached, retry after 30 seconds");
+      }
+      return { output: "ok:after-sleep", adapter: "local-model", model: "gpt-5.2-codex" };
+    },
+  });
+  const result = await clockService.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:after-sleep");
+  assert.equal(calls, 2);
+  assert.equal(sleeps.length, 1);
+  assert.equal(sleeps[0], 30000);
+});
+
+test("invoke falls back to window-based reset when usage limit has no explicit reset timestamp", async () => {
+  const primary = await repo.createAgent({
+    slug: "fallback-reset-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+  let calls = 0;
+  // @ts-expect-error override for test
+  clockService.getAdapter = async () => ({
+    invoke: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("AUTH_ERROR: usage_limit_reached for current 5h window");
+      }
+      return { output: "ok:after-fallback-reset", adapter: "local-model", model: "gpt-5.2-codex" };
+    },
+  });
+  const result = await clockService.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:after-fallback-reset");
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [
+    60 * 60 * 1000,
+    60 * 60 * 1000,
+    60 * 60 * 1000,
+    60 * 60 * 1000,
+    60 * 60 * 1000,
+  ]);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(failoverEvents.some((event) => event.type === "sleep_until_reset"));
+  const limits = await repo.listAgentUsageLimits(primary.id);
+  assert.equal(limits.length > 0, true);
+  assert.ok(limits.every((entry) => entry.resetAt !== null));
+  assert.ok(
+    limits.every(
+      (entry) => (entry.details as any)?.resetAtSource === "estimated_window_fallback",
+    ),
+  );
+});
+
+test("invoke does not failover on non-limit auth errors", async () => {
+  const primary = await repo.createAgent({
+    slug: "invalid-key-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  await repo.createAgent({
+    slug: "invalid-key-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  let backupCalled = false;
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      if (agent.id === primary.id) {
+        throw new Error("AUTH_ERROR: invalid api key");
+      }
+      backupCalled = true;
+      return { output: "should-not-run", adapter: "local-model", model: agent.defaultModel };
+    },
+  });
+  await assert.rejects(() => service.invoke(primary.id, { input: "ping" }), /invalid api key/i);
+  assert.equal(backupCalled, false);
+  const limits = await repo.listAgentUsageLimits(primary.id);
+  assert.equal(limits.length, 0);
+});
+
+test("invokeStream switches to equivalent available agent on usage limit", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "stream-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invokeStream: async function* () {
+      if (agent.id === primary.id) {
+        throw new Error("AUTH_ERROR: usage limit reached, retry after 10 minutes");
+      }
+      yield { output: "stream-ok", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+  const chunks: string[] = [];
+  let finalMetadata: Record<string, unknown> | undefined;
+  const generator = await service.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+    finalMetadata = chunk.metadata;
+  }
+  assert.deepEqual(chunks, ["stream-ok"]);
+  const failoverEvents = ((finalMetadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(failoverEvents.some((event) => event.type === "switch_agent"));
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" && event.fromAgentId === primary.id && event.toAgentId === backup.id,
+    ),
+  );
+  const limits = await repo.listAgentUsageLimits(primary.id);
+  assert.ok(limits.some((entry) => entry.status === "exhausted"));
+});
+
+test("invokeStream sleeps until reset and retries base agent when no equivalent is available", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-sleep-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+  let calls = 0;
+  // @ts-expect-error override for test
+  clockService.getAdapter = async () => ({
+    invokeStream: async function* () {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("AUTH_ERROR: rate limit reached, retry after 30 seconds");
+      }
+      yield { output: "stream-after-sleep", adapter: "local-model", model: "gpt-5.2-codex" };
+    },
+  });
+
+  const chunks: string[] = [];
+  let finalMetadata: Record<string, unknown> | undefined;
+  const generator = await clockService.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+    finalMetadata = chunk.metadata;
+  }
+  assert.deepEqual(chunks, ["stream-after-sleep"]);
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [30000]);
+  const failoverEvents = ((finalMetadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(failoverEvents.some((event) => event.type === "sleep_until_reset"));
+});
+
+test("invokeStream chunks long sleep windows while waiting for reset", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-long-sleep-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+  let calls = 0;
+  // @ts-expect-error override for test
+  clockService.getAdapter = async () => ({
+    invokeStream: async function* () {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("AUTH_ERROR: usage limit reached, retry after 3 hours");
+      }
+      yield { output: "stream-after-long-sleep", adapter: "local-model", model: "gpt-5.2-codex" };
+    },
+  });
+
+  const chunks: string[] = [];
+  const generator = await clockService.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+  }
+  assert.deepEqual(chunks, ["stream-after-long-sleep"]);
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [60 * 60 * 1000, 60 * 60 * 1000, 60 * 60 * 1000]);
+});
+
+test("invokeStream metadata includes wait and switch failover events", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-events-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "stream-events-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+  });
+  await repo.upsertAgentUsageLimit({
+    agentId: backup.id,
+    limitScope: "model",
+    limitKey: "sonnet",
+    windowType: "other",
+    status: "exhausted",
+    resetAt: new Date(nowMs + 30_000).toISOString(),
+    observedAt: new Date(nowMs).toISOString(),
+    source: "test",
+  });
+  let primaryAttempts = 0;
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  clockService.getAdapter = async (agent: any) => ({
+    invokeStream: async function* () {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        primaryAttempts += 1;
+        if (primaryAttempts === 1) {
+          throw new Error("AUTH_ERROR: usage limit reached, retry after 30 seconds");
+        }
+        throw new Error("AUTH_ERROR: usage limit reached, retry after 10 minutes");
+      }
+      yield { output: "stream-after-wait-and-switch", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+
+  const chunks: string[] = [];
+  let finalMetadata: Record<string, unknown> | undefined;
+  const generator = await clockService.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+    finalMetadata = chunk.metadata;
+  }
+  assert.deepEqual(chunks, ["stream-after-wait-and-switch"]);
+  assert.deepEqual(calls, [primary.id, primary.id, backup.id]);
+  assert.deepEqual(sleeps, [30000]);
+  const failoverEvents = ((finalMetadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    failoverEvents.map((event) => event.type),
+    ["sleep_until_reset", "switch_agent"],
+  );
+});
+
+test("invokeStream continues with an equivalent agent after partial output hits usage limit", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-partial-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "stream-partial-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invokeStream: async function* () {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        yield { output: "primary-first-chunk", adapter: "local-model", model: primary.defaultModel };
+        throw new Error("AUTH_ERROR: usage limit reached, retry after 10 minutes");
+      }
+      yield { output: "backup-resume-chunk", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+
+  const chunks: string[] = [];
+  let finalMetadata: Record<string, unknown> | undefined;
+  const generator = await service.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+    finalMetadata = chunk.metadata;
+  }
+
+  assert.deepEqual(calls, [primary.id, backup.id]);
+  assert.deepEqual(chunks, ["primary-first-chunk", "backup-resume-chunk"]);
+  const failoverEvents = ((finalMetadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(failoverEvents.some((event) => event.type === "stream_restart_after_limit"));
+  assert.ok(failoverEvents.some((event) => event.type === "switch_agent"));
+  const limits = await repo.listAgentUsageLimits(primary.id);
+  assert.ok(limits.some((entry) => entry.status === "exhausted"));
+});
+
 test("agent io output lines stay atomic when streams overlap", async () => {
   const agent = await repo.createAgent({
     slug: "io-lines",

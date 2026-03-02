@@ -103,3 +103,32 @@ test("GlobalMigrations ensures gateway-router capabilities", async () => {
     await db.close();
   }
 });
+
+test("GlobalMigrations creates agent_usage_limits table with required columns", async () => {
+  const db = await openDb();
+  try {
+    await GlobalMigrations.run(db);
+    const columns = await columnNames(db, "agent_usage_limits");
+    [
+      "id",
+      "agent_id",
+      "limit_scope",
+      "limit_key",
+      "window_type",
+      "status",
+      "reset_at",
+      "observed_at",
+      "source",
+      "details_json",
+      "created_at",
+      "updated_at",
+    ].forEach((col) => assert.ok(columns.includes(col), `missing column ${col}`));
+    const indexes = (await db.all("PRAGMA index_list(agent_usage_limits)")) as Array<{ name: string }>;
+    assert.ok(
+      indexes.some((entry) => entry.name === "idx_agent_usage_limits_agent_id"),
+      "missing idx_agent_usage_limits_agent_id",
+    );
+  } finally {
+    await db.close();
+  }
+});

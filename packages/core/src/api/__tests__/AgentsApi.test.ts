@@ -102,3 +102,55 @@ test("AgentsApi captures cached token usage from agent metadata", { concurrency:
     }
   });
 });
+
+test("AgentsApi.listAgentUsageLimits exposes reset precision metadata", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const api = await AgentsApi.create();
+    try {
+      await api.createAgent({ slug: "limit-api", adapter: "codex-cli", capabilities: ["chat"] });
+      const repo = await GlobalRepository.create();
+      const agent = await repo.getAgentBySlug("limit-api");
+      assert.ok(agent);
+      await repo.upsertAgentUsageLimit({
+        agentId: agent.id,
+        limitScope: "model",
+        limitKey: "codex-main",
+        windowType: "rolling_5h",
+        status: "exhausted",
+        resetAt: "2026-03-02T12:30:00.000Z",
+        observedAt: "2026-03-02T10:00:00.000Z",
+        source: "invoke_error_parse",
+        details: { resetAtSource: "relative" },
+      });
+      await repo.upsertAgentUsageLimit({
+        agentId: agent.id,
+        limitScope: "model",
+        limitKey: "codex-main",
+        windowType: "weekly",
+        status: "exhausted",
+        observedAt: "2026-03-02T10:00:00.000Z",
+        source: "invoke_error_parse",
+        details: {
+          resetAtSource: "estimated_window_fallback",
+          estimatedResetAt: "2026-03-09T10:00:00.000Z",
+        },
+      });
+      await repo.close();
+
+      const limits = await api.listAgentUsageLimits("limit-api");
+      assert.equal(limits.length, 2);
+      const exact = limits.find((entry) => entry.windowType === "rolling_5h");
+      assert.ok(exact);
+      assert.equal(exact.agentSlug, "limit-api");
+      assert.equal(exact.resetAtExact, true);
+      assert.equal(exact.effectiveResetAt, "2026-03-02T12:30:00.000Z");
+      const estimated = limits.find((entry) => entry.windowType === "weekly");
+      assert.ok(estimated);
+      assert.equal(estimated.resetAtExact, false);
+      assert.equal(estimated.effectiveResetAt, "2026-03-09T10:00:00.000Z");
+      assert.equal(estimated.resetAtSource, "estimated_window_fallback");
+    } finally {
+      await api.close();
+    }
+  });
+});

@@ -44,11 +44,13 @@ const readSecret = async (promptText: string): Promise<string> =>
   });
 
 const USAGE = `
-Usage: mcoda agent <list|details|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
+Usage: mcoda agent <list|details|limits|add|update|delete|remove|auth|auth-status|set-default|use|ratings> ...
 
 Subcommands:
   list                       List agents (supports --json)
   details <NAME>             Show agent details (supports --json)
+  limits                     Show tracked usage-limit windows/reset times
+    --agent <NAME>           Filter by agent slug/id
   add <NAME>                 Create a global agent
     --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|claude-cli|gemini-cli|local-model|qa-cli|ollama-remote)
     --model <MODEL>          Default model name
@@ -321,6 +323,8 @@ export class AgentsCommands {
         ? "set-default"
         : rawSubcommand === "remove"
           ? "delete"
+          : rawSubcommand === "usage-limits" || rawSubcommand === "usage-limit" || rawSubcommand === "limit"
+            ? "limits"
           : rawSubcommand === "detail" || rawSubcommand === "show"
             ? "details"
             : rawSubcommand;
@@ -445,6 +449,34 @@ export class AgentsCommands {
               ["Created", formatDate(agent.createdAt)],
               ["Updated", formatDate(agent.updatedAt)],
             ]);
+          }
+          break;
+        }
+        case "limits": {
+          const agentName = parsed.flags.agent ? String(parsed.flags.agent) : parsed.positionals[0];
+          const limits = await api.listAgentUsageLimits(agentName);
+          if (parsed.flags.json) {
+            // eslint-disable-next-line no-console
+            console.log(JSON.stringify(limits, null, 2));
+          } else if (limits.length === 0) {
+            // eslint-disable-next-line no-console
+            console.log(agentName ? `No usage-limit records found for ${agentName}.` : "No usage-limit records found.");
+          } else {
+            const headers = ["AGENT", "SCOPE", "KEY", "WINDOW", "STATUS", "RESET", "EXACT", "OBSERVED", "SOURCE"];
+            const maxWidths = [24, 8, 18, 10, 10, 16, 5, 16, 28];
+            const rows = limits.map((entry) => [
+              entry.agentSlug ?? entry.agentId,
+              entry.limitScope,
+              entry.limitKey,
+              entry.windowType,
+              entry.status,
+              formatDate(entry.effectiveResetAt ?? entry.resetAt),
+              entry.resetAtExact ? "yes" : "no",
+              formatDate(entry.observedAt),
+              entry.resetAtSource ?? entry.source ?? "-",
+            ]);
+            // eslint-disable-next-line no-console
+            console.log(formatBoxTable(headers, rows, maxWidths));
           }
           break;
         }

@@ -306,6 +306,98 @@ const normalizeSlugList = (input?: string[] | null): string[] => {
   return Array.from(cleaned);
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const normalizeFailoverEvents = (value: unknown): Array<Record<string, unknown>> => {
+  if (!Array.isArray(value)) return [];
+  const events: Array<Record<string, unknown>> = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.type !== "string" || entry.type.trim().length === 0) continue;
+    events.push({ ...entry });
+  }
+  return events;
+};
+
+const mergeFailoverEvents = (
+  left: Array<Record<string, unknown>>,
+  right: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> => {
+  if (!left.length) return right;
+  if (!right.length) return left;
+  const seen = new Set<string>();
+  const merged: Array<Record<string, unknown>> = [];
+  const signature = (event: Record<string, unknown>): string =>
+    [
+      event.type ?? "",
+      event.fromAgentId ?? "",
+      event.toAgentId ?? "",
+      event.at ?? "",
+      event.until ?? "",
+      event.durationMs ?? "",
+    ].join("|");
+  for (const event of [...left, ...right]) {
+    const key = signature(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+  return merged;
+};
+
+const mergeInvocationMetadata = (
+  current: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!current && !incoming) return undefined;
+  if (!incoming) return current;
+  if (!current) return { ...incoming };
+  const merged: Record<string, unknown> = { ...current, ...incoming };
+  const currentEvents = normalizeFailoverEvents(current.failoverEvents);
+  const incomingEvents = normalizeFailoverEvents(incoming.failoverEvents);
+  if (currentEvents.length > 0 || incomingEvents.length > 0) {
+    merged.failoverEvents = mergeFailoverEvents(currentEvents, incomingEvents);
+  }
+  return merged;
+};
+
+const summarizeFailoverEvent = (event: Record<string, unknown>): string => {
+  const type = String(event.type ?? "unknown");
+  if (type === "switch_agent") {
+    const from = typeof event.fromAgentId === "string" ? event.fromAgentId : "unknown";
+    const to = typeof event.toAgentId === "string" ? event.toAgentId : "unknown";
+    return `switch_agent ${from} -> ${to}`;
+  }
+  if (type === "sleep_until_reset") {
+    const duration =
+      typeof event.durationMs === "number" && Number.isFinite(event.durationMs)
+        ? `${Math.round(event.durationMs / 1000)}s`
+        : "unknown duration";
+    const until = typeof event.until === "string" ? event.until : "unknown";
+    return `sleep_until_reset ${duration} (until ${until})`;
+  }
+  if (type === "stream_restart_after_limit") {
+    const from = typeof event.fromAgentId === "string" ? event.fromAgentId : "unknown";
+    return `stream_restart_after_limit from ${from}`;
+  }
+  return type;
+};
+
+const resolveFailoverAgentId = (
+  events: Array<Record<string, unknown>>,
+  fallbackAgentId: string,
+): string => {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== "switch_agent") continue;
+    if (typeof event.toAgentId === "string" && event.toAgentId.trim().length > 0) {
+      return event.toAgentId;
+    }
+  }
+  return fallbackAgentId;
+};
+
 const normalizePath = (value: string): string =>
   value
     .replace(/\\/g, "/")
@@ -2341,7 +2433,7 @@ export class CodeReviewService {
           outputText: string,
           durationSeconds: number,
           tokenMeta?: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number; model?: string | null },
-          agentUsed: Agent = agent,
+          agentUsed: { id: string; defaultModel?: string } = agent,
           attempt = 1,
         ) => {
           const tokensPrompt = tokenMeta?.tokensPrompt ?? estimateTokens(promptText);
@@ -2365,6 +2457,46 @@ export class CodeReviewService {
             metadata: { commandName: "code-review", phase, action: phase, attempt },
           });
         };
+        const logFailoverEvents = async (events: Array<Record<string, unknown>>) => {
+          if (!events.length) return;
+          for (const event of events) {
+            await this.deps.workspaceRepo.insertTaskLog({
+              taskRunId: taskRun.id,
+              sequence: this.sequenceForTask(taskRun.id),
+              timestamp: new Date().toISOString(),
+              source: "agent_failover",
+              message: `Agent failover: ${summarizeFailoverEvent(event)}`,
+              details: event,
+            });
+          }
+        };
+        const resolveUsageAgent = async (
+          fallback: { id: string; defaultModel?: string },
+          events: Array<Record<string, unknown>>,
+        ): Promise<{ id: string; defaultModel?: string }> => {
+          const usageAgentId = resolveFailoverAgentId(events, fallback.id);
+          if (usageAgentId === fallback.id) return fallback;
+          const resolver = (this.deps.agentService as any)?.resolveAgent;
+          if (typeof resolver !== "function") return fallback;
+          try {
+            const resolved = await resolver.call(this.deps.agentService, usageAgentId);
+            return {
+              id: resolved.id,
+              defaultModel: typeof resolved.defaultModel === "string" ? resolved.defaultModel : fallback.defaultModel,
+            };
+          } catch (error) {
+            await this.deps.workspaceRepo.insertTaskLog({
+              taskRunId: taskRun.id,
+              sequence: this.sequenceForTask(taskRun.id),
+              timestamp: new Date().toISOString(),
+              source: "agent_failover",
+              message: `Unable to resolve failover agent (${usageAgentId}) for usage accounting: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            });
+            return fallback;
+          }
+        };
 
         agentOutput = "";
         let durationSeconds = 0;
@@ -2383,7 +2515,7 @@ export class CodeReviewService {
             const stream = await withAbort(
               this.deps.agentService.invokeStream(agentToUse.id, {
                 input: prompt,
-                metadata: { taskKey: task.key, retry: logSource === "agent_retry" },
+                metadata: { command: "code-review", taskKey: task.key, retry: logSource === "agent_retry" },
               }),
             );
             while (true) {
@@ -2392,7 +2524,10 @@ export class CodeReviewService {
               if (done) break;
               const chunk = value;
               output += chunk.output ?? "";
-              metadata = chunk.metadata ?? metadata;
+              metadata = mergeInvocationMetadata(
+                metadata,
+                chunk.metadata as Record<string, unknown> | undefined,
+              );
               await this.deps.workspaceRepo.insertTaskLog({
                 taskRunId: taskRun.id,
                 sequence: this.sequenceForTask(taskRun.id),
@@ -2405,11 +2540,14 @@ export class CodeReviewService {
             const response = await withAbort(
               this.deps.agentService.invoke(agentToUse.id, {
                 input: prompt,
-                metadata: { taskKey: task.key, retry: logSource === "agent_retry" },
+                metadata: { command: "code-review", taskKey: task.key, retry: logSource === "agent_retry" },
               }),
             );
             output = response.output ?? "";
-            metadata = response.metadata;
+            metadata = mergeInvocationMetadata(
+              metadata,
+              response.metadata as Record<string, unknown> | undefined,
+            );
             await this.deps.workspaceRepo.insertTaskLog({
               taskRunId: taskRun.id,
               sequence: this.sequenceForTask(taskRun.id),
@@ -2462,7 +2600,29 @@ export class CodeReviewService {
               model: (lastStreamMeta.model ?? lastStreamMeta.model_name ?? null) as string | null,
             }
           : undefined;
-        await recordUsage("review_main", prompt, agentOutput, durationSeconds, tokenMetaMain, agentUsedForOutput, outputAttempt);
+        const mainFailoverEvents = normalizeFailoverEvents(
+          (lastStreamMeta as Record<string, unknown> | undefined)?.failoverEvents,
+        );
+        await logFailoverEvents(mainFailoverEvents);
+        const usageAgentForOutput = await resolveUsageAgent(
+          {
+            id: agentUsedForOutput.id,
+            defaultModel:
+              typeof (agentUsedForOutput as any)?.defaultModel === "string"
+                ? ((agentUsedForOutput as any).defaultModel as string)
+                : undefined,
+          },
+          mainFailoverEvents,
+        );
+        await recordUsage(
+          "review_main",
+          prompt,
+          agentOutput,
+          durationSeconds,
+          tokenMetaMain,
+          usageAgentForOutput,
+          outputAttempt,
+        );
 
         const primaryOutput = agentOutput;
         let retryOutput: string | undefined;
@@ -2518,7 +2678,10 @@ export class CodeReviewService {
             });
           }
           const retryResp = await withAbort(
-            this.deps.agentService.invoke(retryAgentUsed.id, { input: retryPrompt, metadata: { taskKey: task.key, retry: true } }),
+            this.deps.agentService.invoke(retryAgentUsed.id, {
+              input: retryPrompt,
+              metadata: { command: "code-review", taskKey: task.key, retry: true },
+            }),
           );
           retryOutput = retryResp.output ?? "";
           const retryDuration = Math.round(((Date.now() - retryStarted) / 1000) * 1000) / 1000;
@@ -2543,10 +2706,32 @@ export class CodeReviewService {
                   typeof retryResp.metadata.tokensTotal === "number"
                     ? retryResp.metadata.tokensTotal
                     : (retryResp.metadata.tokens_total as number | undefined),
-                model: (retryResp.metadata.model ?? retryResp.metadata.model_name ?? null) as string | null,
-              }
-            : undefined;
-          await recordUsage("review_retry", retryPrompt, retryOutput, retryDuration, retryTokenMeta, retryAgentUsed, 2);
+              model: (retryResp.metadata.model ?? retryResp.metadata.model_name ?? null) as string | null,
+            }
+          : undefined;
+          const retryFailoverEvents = normalizeFailoverEvents(
+            (retryResp.metadata as Record<string, unknown> | undefined)?.failoverEvents,
+          );
+          await logFailoverEvents(retryFailoverEvents);
+          const retryUsageAgent = await resolveUsageAgent(
+            {
+              id: retryAgentUsed.id,
+              defaultModel:
+                typeof (retryAgentUsed as any)?.defaultModel === "string"
+                  ? ((retryAgentUsed as any).defaultModel as string)
+                  : undefined,
+            },
+            retryFailoverEvents,
+          );
+          await recordUsage(
+            "review_retry",
+            retryPrompt,
+            retryOutput,
+            retryDuration,
+            retryTokenMeta,
+            retryUsageAgent,
+            2,
+          );
           normalization = normalizeReviewOutput(retryOutput);
           parsed = normalization.result;
           validationError = validateReviewOutput(parsed, { requireCommentSlugs });

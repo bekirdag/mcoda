@@ -3,6 +3,8 @@ import {
   AgentAuthMetadata,
   AgentHealth,
   AgentPromptManifest,
+  AgentUsageLimitRecord,
+  AgentUsageLimitWindowType,
   CreateAgentInput,
   UpdateAgentInput,
   CryptoHelper,
@@ -18,6 +20,20 @@ export interface AgentResponse extends Agent {
   auth?: AgentAuthMetadata;
   models?: Agent["models"];
 }
+
+export interface AgentUsageLimitResponse extends AgentUsageLimitRecord {
+  agentSlug?: string;
+  effectiveResetAt?: string;
+  resetAtExact: boolean;
+  resetAtSource?: string;
+}
+
+const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
+  rolling_5h: 5 * 60 * 60 * 1000,
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+  other: 60 * 60 * 1000,
+};
 
 export class AgentsApi {
   constructor(private repo: GlobalRepository, private agentService: AgentService, private routingService: RoutingService) {}
@@ -94,6 +110,60 @@ export class AgentsApi {
   async listAgentRunRatings(idOrSlug: string, limit = 50): Promise<AgentRunRatingRow[]> {
     const agent = await this.resolveAgent(idOrSlug);
     return this.repo.listAgentRunRatings(agent.id, limit);
+  }
+
+  private deriveUsageLimitReset(
+    record: AgentUsageLimitRecord,
+  ): Pick<AgentUsageLimitResponse, "effectiveResetAt" | "resetAtExact" | "resetAtSource"> {
+    const details =
+      record.details && typeof record.details === "object"
+        ? (record.details as Record<string, unknown>)
+        : undefined;
+    const detailResetSource =
+      typeof details?.resetAtSource === "string" ? (details.resetAtSource as string) : undefined;
+    if (record.resetAt) {
+      return {
+        effectiveResetAt: record.resetAt,
+        resetAtExact: detailResetSource !== "estimated_window_fallback",
+        resetAtSource: detailResetSource,
+      };
+    }
+    const estimatedFromDetails =
+      typeof details?.estimatedResetAt === "string" ? (details.estimatedResetAt as string) : undefined;
+    if (estimatedFromDetails) {
+      return {
+        effectiveResetAt: estimatedFromDetails,
+        resetAtExact: false,
+        resetAtSource: detailResetSource ?? "estimated_from_details",
+      };
+    }
+    const observedAtMs = Date.parse(record.observedAt);
+    if (!Number.isFinite(observedAtMs)) {
+      return {
+        resetAtExact: false,
+        resetAtSource: detailResetSource,
+      };
+    }
+    const fallbackMs = WINDOW_RESET_FALLBACK_MS[record.windowType] ?? WINDOW_RESET_FALLBACK_MS.other;
+    return {
+      effectiveResetAt: new Date(observedAtMs + fallbackMs).toISOString(),
+      resetAtExact: false,
+      resetAtSource: detailResetSource ?? "estimated_from_observed_at",
+    };
+  }
+
+  async listAgentUsageLimits(idOrSlug?: string): Promise<AgentUsageLimitResponse[]> {
+    const filterAgent = idOrSlug ? await this.resolveAgent(idOrSlug) : undefined;
+    const [limits, agents] = await Promise.all([
+      this.repo.listAgentUsageLimits(filterAgent?.id),
+      this.repo.listAgents(),
+    ]);
+    const slugById = new Map(agents.map((agent) => [agent.id, agent.slug]));
+    return limits.map((record) => ({
+      ...record,
+      agentSlug: slugById.get(record.agentId),
+      ...this.deriveUsageLimitReset(record),
+    }));
   }
 
   async createAgent(input: CreateAgentInput): Promise<AgentResponse> {

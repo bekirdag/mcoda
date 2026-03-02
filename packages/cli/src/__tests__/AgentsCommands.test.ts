@@ -128,6 +128,61 @@ test("agent details supports JSON output", { concurrency: false }, async () => {
   });
 });
 
+test("agent limits shows reset precision and supports JSON output", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "limit-cli", "--adapter", "codex-cli", "--capability", "chat"]);
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("limit-cli");
+    assert.ok(agent);
+    await repo.upsertAgentUsageLimit({
+      agentId: agent.id,
+      limitScope: "model",
+      limitKey: "codex-main",
+      windowType: "daily",
+      status: "exhausted",
+      resetAt: "2026-03-03T00:00:00.000Z",
+      observedAt: "2026-03-02T10:00:00.000Z",
+      source: "invoke_error_parse",
+      details: { resetAtSource: "absolute" },
+    });
+    await repo.upsertAgentUsageLimit({
+      agentId: agent.id,
+      limitScope: "model",
+      limitKey: "codex-main",
+      windowType: "weekly",
+      status: "exhausted",
+      observedAt: "2026-03-02T10:00:00.000Z",
+      source: "invoke_error_parse",
+      details: {
+        resetAtSource: "estimated_window_fallback",
+        estimatedResetAt: "2026-03-09T10:00:00.000Z",
+      },
+    });
+    await repo.close();
+
+    const logs = await captureLogs(() => AgentsCommands.run(["limits", "--agent", "limit-cli"]));
+    const output = logs.join("\n");
+    assert.match(output, /AGENT/);
+    assert.match(output, /EXACT/);
+    assert.match(output, /limit-cli/);
+    assert.match(output, /estimated_window_fallback/);
+
+    const jsonLogs = await captureLogs(() =>
+      AgentsCommands.run(["limits", "--agent", "limit-cli", "--json"]),
+    );
+    const parsed = JSON.parse(jsonLogs.join("\n"));
+    assert.ok(Array.isArray(parsed));
+    assert.equal(parsed.length, 2);
+    const daily = parsed.find((entry: any) => entry.windowType === "daily");
+    assert.ok(daily);
+    assert.equal(daily.resetAtExact, true);
+    const weekly = parsed.find((entry: any) => entry.windowType === "weekly");
+    assert.ok(weekly);
+    assert.equal(weekly.resetAtExact, false);
+    assert.equal(weekly.effectiveResetAt, "2026-03-09T10:00:00.000Z");
+  });
+});
+
 test("agent details renders command prompts in text output", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await AgentsCommands.run(["add", "detail-prompts", "--adapter", "codex-cli", "--capability", "chat"]);

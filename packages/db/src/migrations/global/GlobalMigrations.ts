@@ -73,6 +73,22 @@ export class GlobalMigrations {
         PRIMARY KEY (agent_id, model_name)
       );
 
+      CREATE TABLE IF NOT EXISTS agent_usage_limits (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        limit_scope TEXT NOT NULL,
+        limit_key TEXT NOT NULL,
+        window_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reset_at TEXT,
+        observed_at TEXT NOT NULL,
+        source TEXT,
+        details_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(agent_id, limit_scope, limit_key, window_type)
+      );
+
       CREATE TABLE IF NOT EXISTS workspace_defaults (
         workspace_id TEXT NOT NULL,
         command_name TEXT NOT NULL,
@@ -142,10 +158,33 @@ export class GlobalMigrations {
         raw_review_json TEXT,
         created_at TEXT NOT NULL
       );
+
+      CREATE INDEX IF NOT EXISTS idx_agent_usage_limits_agent_id
+      ON agent_usage_limits(agent_id);
     `);
     };
 
     await createSchema();
+
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_usage_limits (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        limit_scope TEXT NOT NULL,
+        limit_key TEXT NOT NULL,
+        window_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reset_at TEXT,
+        observed_at TEXT NOT NULL,
+        source TEXT,
+        details_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(agent_id, limit_scope, limit_key, window_type)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_usage_limits_agent_id
+      ON agent_usage_limits(agent_id);
+    `);
 
     let agentsInfo = await db.all<any[]>("PRAGMA table_info(agents)");
     const hasAgentId = agentsInfo.some((col) => col.name === "id");
@@ -159,6 +198,7 @@ export class GlobalMigrations {
         DROP TABLE IF EXISTS agent_prompts;
         DROP TABLE IF EXISTS agent_health;
         DROP TABLE IF EXISTS agent_models;
+        DROP TABLE IF EXISTS agent_usage_limits;
         DROP TABLE IF EXISTS workspace_defaults;
         DROP TABLE IF EXISTS command_runs;
         DROP TABLE IF EXISTS token_usage;

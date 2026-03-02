@@ -14,7 +14,10 @@ let tempHome: string | undefined;
 let originalHome: string | undefined;
 let originalProfile: string | undefined;
 
-const seedBacklog = async (projectKey: string): Promise<{ projectId: string; initialStoryId: string }> => {
+const seedBacklog = async (
+  projectKey: string,
+  options: { taskTitle?: string; taskDescription?: string } = {},
+): Promise<{ projectId: string; initialStoryId: string }> => {
   const repo = await WorkspaceRepository.create(workspaceRoot);
   try {
     const project = await repo.createProjectIfMissing({
@@ -48,8 +51,9 @@ const seedBacklog = async (projectKey: string): Promise<{ projectId: string; ini
         epicId: epic.id,
         userStoryId: story.id,
         key: `${story.key}-t01`,
-        title: "Implement Historical Dataset Ingestion pipeline",
+        title: options.taskTitle ?? "Implement Historical Dataset Ingestion pipeline",
         description:
+          options.taskDescription ??
           "Build ingestion components for historical dataset processing under services/ingestion/src/index.ts.",
         type: "feature",
         status: "not_started",
@@ -229,6 +233,149 @@ test("task-sufficiency-audit dry-run does not mutate backlog", async () => {
     );
     await afterRepo.close();
     assert.equal(afterCount?.c, beforeCount?.c);
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit defaults minCoverageRatio to full coverage", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## 9.3 Uncertainty Visualisation",
+      "Folder tree:",
+      "- services/ingestion/src/index.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj");
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      dryRun: true,
+      maxIterations: 1,
+      maxTasksPerIteration: 2,
+    });
+    assert.equal(result.minCoverageRatio, 1);
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit fails when no actionable SDS signals can be extracted", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Revision History",
+      "## Table of Contents",
+      "## Glossary",
+      "## References",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj");
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    await assert.rejects(
+      () =>
+        service.runAudit({
+          workspace,
+          projectKey: "proj",
+          dryRun: true,
+          maxIterations: 1,
+          maxTasksPerIteration: 2,
+        }),
+      /could not derive actionable SDS implementation signals/i,
+    );
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit does not over-credit long headings from sparse token overlap", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Confidence Propagation Across Counterfactual Branches",
+      "Folder tree:",
+      "- services/inference/src/counterfactual/propagation.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj", {
+    taskTitle: "Implement confidence branch checks",
+    taskDescription: "Track confidence values across branch runs.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      dryRun: true,
+      maxIterations: 1,
+      maxTasksPerIteration: 2,
+    });
+    assert.equal(result.satisfied, false);
+    assert.ok(
+      result.remainingSectionHeadings.some((heading) =>
+        heading.toLowerCase().includes("confidence propagation across counterfactual branches"),
+      ),
+    );
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit bundles related gap anchors into a single remediation task", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Data Ingestion Validation Controls",
+      "## Data Ingestion Retry Strategy",
+      "## Data Ingestion Backfill Window",
+      "Folder tree:",
+      "- services/ingestion/src/pipeline.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  const { projectId } = await seedBacklog("proj");
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      maxIterations: 1,
+      maxTasksPerIteration: 10,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(result.totalTasksAdded > 0);
+    const repo = await WorkspaceRepository.create(workspaceRoot);
+    try {
+      const rows = await repo.getDb().all<{ metadata_json?: string | null }[]>(
+        `SELECT metadata_json FROM tasks WHERE project_id = ?`,
+        projectId,
+      );
+      const bundled = rows
+        .map((row) => {
+          try {
+            return row.metadata_json ? JSON.parse(row.metadata_json) : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter((metadata) => metadata?.sufficiencyAudit?.source === "task-sufficiency-audit")
+        .filter((metadata) => Array.isArray(metadata?.sufficiencyAudit?.anchors))
+        .filter((metadata) => metadata.sufficiencyAudit.anchors.length > 1);
+      assert.ok(bundled.length >= 1, "expected at least one bundled remediation task");
+    } finally {
+      await repo.close();
+    }
   } finally {
     await service.close();
   }

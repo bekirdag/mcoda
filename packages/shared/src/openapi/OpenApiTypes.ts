@@ -135,6 +135,37 @@ export interface AgentHealth {
   details?: Record<string, unknown>;
 }
 
+export type AgentUsageLimitScope = "model" | "agent" | "provider";
+export type AgentUsageLimitWindowType = "rolling_5h" | "daily" | "weekly" | "other";
+export type AgentUsageLimitStatus = "available" | "exhausted" | "unknown";
+
+export interface AgentUsageLimitRecord {
+  id: string;
+  agentId: string;
+  limitScope: AgentUsageLimitScope;
+  limitKey: string;
+  windowType: AgentUsageLimitWindowType;
+  status: AgentUsageLimitStatus;
+  resetAt?: string;
+  observedAt: string;
+  source?: string;
+  details?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpsertAgentUsageLimitInput {
+  agentId: string;
+  limitScope: AgentUsageLimitScope;
+  limitKey: string;
+  windowType: AgentUsageLimitWindowType;
+  status: AgentUsageLimitStatus;
+  resetAt?: string;
+  observedAt: string;
+  source?: string;
+  details?: Record<string, unknown>;
+}
+
 export interface WorkspaceDefault {
   workspaceId: string;
   commandName: string;

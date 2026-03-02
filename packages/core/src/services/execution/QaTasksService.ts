@@ -190,6 +190,98 @@ const normalizeLineNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value));
+
+const normalizeFailoverEvents = (value: unknown): Array<Record<string, unknown>> => {
+  if (!Array.isArray(value)) return [];
+  const events: Array<Record<string, unknown>> = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.type !== 'string' || entry.type.trim().length === 0) continue;
+    events.push({ ...entry });
+  }
+  return events;
+};
+
+const mergeFailoverEvents = (
+  left: Array<Record<string, unknown>>,
+  right: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> => {
+  if (!left.length) return right;
+  if (!right.length) return left;
+  const seen = new Set<string>();
+  const merged: Array<Record<string, unknown>> = [];
+  const signature = (event: Record<string, unknown>): string =>
+    [
+      event.type ?? '',
+      event.fromAgentId ?? '',
+      event.toAgentId ?? '',
+      event.at ?? '',
+      event.until ?? '',
+      event.durationMs ?? '',
+    ].join('|');
+  for (const event of [...left, ...right]) {
+    const key = signature(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+  return merged;
+};
+
+const mergeInvocationMetadata = (
+  current: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!current && !incoming) return undefined;
+  if (!incoming) return current;
+  if (!current) return { ...incoming };
+  const merged: Record<string, unknown> = { ...current, ...incoming };
+  const currentEvents = normalizeFailoverEvents(current.failoverEvents);
+  const incomingEvents = normalizeFailoverEvents(incoming.failoverEvents);
+  if (currentEvents.length > 0 || incomingEvents.length > 0) {
+    merged.failoverEvents = mergeFailoverEvents(currentEvents, incomingEvents);
+  }
+  return merged;
+};
+
+const summarizeFailoverEvent = (event: Record<string, unknown>): string => {
+  const type = String(event.type ?? 'unknown');
+  if (type === 'switch_agent') {
+    const from = typeof event.fromAgentId === 'string' ? event.fromAgentId : 'unknown';
+    const to = typeof event.toAgentId === 'string' ? event.toAgentId : 'unknown';
+    return `switch_agent ${from} -> ${to}`;
+  }
+  if (type === 'sleep_until_reset') {
+    const duration =
+      typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)
+        ? `${Math.round(event.durationMs / 1000)}s`
+        : 'unknown duration';
+    const until = typeof event.until === 'string' ? event.until : 'unknown';
+    return `sleep_until_reset ${duration} (until ${until})`;
+  }
+  if (type === 'stream_restart_after_limit') {
+    const from = typeof event.fromAgentId === 'string' ? event.fromAgentId : 'unknown';
+    return `stream_restart_after_limit from ${from}`;
+  }
+  return type;
+};
+
+const resolveFailoverAgentId = (
+  events: Array<Record<string, unknown>>,
+  fallbackAgentId: string,
+): string => {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== 'switch_agent') continue;
+    if (typeof event.toAgentId === 'string' && event.toAgentId.trim().length > 0) {
+      return event.toAgentId;
+    }
+  }
+  return fallbackAgentId;
+};
+
 const detectApiTask = (task: TaskRow & { metadata?: any }): boolean => {
   const metadata = (task.metadata as any) ?? {};
   const files: string[] = Array.isArray(metadata.files) ? metadata.files : [];
@@ -1387,6 +1479,52 @@ export class QaTasksService {
     return Math.min(10, Math.max(1, Math.round(candidate as number)));
   }
 
+  private async logInvocationFailoverEvents(
+    events: Array<Record<string, unknown>>,
+    options?: { taskRunId?: string; warnings?: string[] },
+  ): Promise<void> {
+    if (!events.length) return;
+    const taskRunId = options?.taskRunId;
+    if (taskRunId) {
+      for (const event of events) {
+        await this.logTask(taskRunId, `Agent failover: ${summarizeFailoverEvent(event)}`, 'agent_failover', event);
+      }
+      return;
+    }
+    if (options?.warnings) {
+      for (const event of events) {
+        options.warnings.push(`QA agent failover: ${summarizeFailoverEvent(event)}`);
+      }
+    }
+  }
+
+  private async resolveInvocationUsageAgent(
+    fallback: { id: string; defaultModel?: string },
+    events: Array<Record<string, unknown>>,
+    taskRunId?: string,
+  ): Promise<{ id: string; defaultModel?: string }> {
+    const usageAgentId = resolveFailoverAgentId(events, fallback.id);
+    if (usageAgentId === fallback.id) return fallback;
+    const resolver = (this.agentService as any)?.resolveAgent;
+    if (typeof resolver !== 'function') return fallback;
+    try {
+      const resolved = await resolver.call(this.agentService, usageAgentId);
+      return {
+        id: resolved.id,
+        defaultModel: typeof resolved.defaultModel === 'string' ? resolved.defaultModel : fallback.defaultModel,
+      };
+    } catch (error: any) {
+      if (taskRunId) {
+        await this.logTask(
+          taskRunId,
+          `Unable to resolve failover agent (${usageAgentId}) for usage accounting: ${error?.message ?? String(error)}`,
+          'agent_failover',
+        );
+      }
+      return fallback;
+    }
+  }
+
   private estimateTokens(text: string): number {
     return Math.max(1, Math.ceil((text?.length ?? 0) / 4));
   }
@@ -2099,14 +2237,24 @@ export class QaTasksService {
       input: prompt,
       metadata: { command: 'qa-tasks', action: 'qa-profile-plan' },
     });
+    const invocationMetadata = mergeInvocationMetadata(
+      undefined,
+      res.metadata as Record<string, unknown> | undefined,
+    );
+    const failoverEvents = normalizeFailoverEvents(invocationMetadata?.failoverEvents);
+    await this.logInvocationFailoverEvents(failoverEvents, { warnings: ctx.warnings });
+    const usageAgent = await this.resolveInvocationUsageAgent(
+      { id: agent.id, defaultModel: agent.defaultModel },
+      failoverEvents,
+    );
     const output = res.output ?? '';
     const tokensPrompt = this.estimateTokens(prompt);
     const tokensCompletion = this.estimateTokens(output);
     if (!this.dryRunGuard) {
       await this.jobService.recordTokenUsage({
         workspaceId: this.workspace.workspaceId,
-        agentId: agent.id,
-        modelName: agent.defaultModel,
+        agentId: usageAgent.id,
+        modelName: usageAgent.defaultModel,
         jobId: ctx.jobId ?? 'qa-profile-plan',
         commandRunId: ctx.commandRunId ?? 'qa-profile-plan',
         tokensPrompt,
@@ -2490,9 +2638,13 @@ export class QaTasksService {
       }
       let output = '';
       let chunkCount = 0;
+      let invocationMetadata: Record<string, unknown> | undefined;
       if (stream && this.agentService.invokeStream) {
         const gen = await withAbort(
-          this.agentService.invokeStream(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } }),
+          this.agentService.invokeStream(agent.id, {
+            input: prompt,
+            metadata: { command: 'qa-tasks', action: 'qa-interpret-results', taskKey: task.task.key },
+          }),
         );
         while (true) {
           abortIfSignaled();
@@ -2501,20 +2653,38 @@ export class QaTasksService {
           const chunk = value;
           output += chunk.output ?? '';
           chunkCount += 1;
+          invocationMetadata = mergeInvocationMetadata(
+            invocationMetadata,
+            chunk.metadata as Record<string, unknown> | undefined,
+          );
         }
       } else {
         const res = await withAbort(
-          this.agentService.invoke(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } }),
+          this.agentService.invoke(agent.id, {
+            input: prompt,
+            metadata: { command: 'qa-tasks', action: 'qa-interpret-results', taskKey: task.task.key },
+          }),
         );
         output = res.output ?? '';
+        invocationMetadata = mergeInvocationMetadata(
+          invocationMetadata,
+          res.metadata as Record<string, unknown> | undefined,
+        );
       }
+      const failoverEvents = normalizeFailoverEvents(invocationMetadata?.failoverEvents);
+      await this.logInvocationFailoverEvents(failoverEvents, { taskRunId });
+      const usageAgent = await this.resolveInvocationUsageAgent(
+        { id: agent.id, defaultModel: agent.defaultModel },
+        failoverEvents,
+        taskRunId,
+      );
       const tokensPrompt = this.estimateTokens(prompt);
       const tokensCompletion = this.estimateTokens(output);
       if (!this.dryRunGuard) {
         await this.jobService.recordTokenUsage({
           workspaceId: this.workspace.workspaceId,
-          agentId: agent.id,
-          modelName: agent.defaultModel,
+          agentId: usageAgent.id,
+          modelName: usageAgent.defaultModel,
           jobId,
           taskId: task.task.id,
           commandRunId,
@@ -2550,15 +2720,19 @@ export class QaTasksService {
           rawOutput: output,
           tokensPrompt,
           tokensCompletion,
-          agentId: agent.id,
-          modelName: agent.defaultModel,
+          agentId: usageAgent.id,
+          modelName: usageAgent.defaultModel,
         };
       }
       const retryPrompt = `${prompt}\n\nReturn STRICT JSON only. Do not include prose, markdown fences, or comments.`;
       let retryOutput = "";
+      let retryMetadata: Record<string, unknown> | undefined;
       if (stream && this.agentService.invokeStream) {
         const gen = await withAbort(
-          this.agentService.invokeStream(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } }),
+          this.agentService.invokeStream(agent.id, {
+            input: retryPrompt,
+            metadata: { command: 'qa-tasks', action: 'qa-interpret-retry', taskKey: task.task.key, retry: true },
+          }),
         );
         while (true) {
           abortIfSignaled();
@@ -2566,20 +2740,38 @@ export class QaTasksService {
           if (done) break;
           const chunk = value;
           retryOutput += chunk.output ?? '';
+          retryMetadata = mergeInvocationMetadata(
+            retryMetadata,
+            chunk.metadata as Record<string, unknown> | undefined,
+          );
         }
       } else {
         const res = await withAbort(
-          this.agentService.invoke(agent.id, { input: retryPrompt, metadata: { command: 'qa-tasks' } }),
+          this.agentService.invoke(agent.id, {
+            input: retryPrompt,
+            metadata: { command: 'qa-tasks', action: 'qa-interpret-retry', taskKey: task.task.key, retry: true },
+          }),
         );
         retryOutput = res.output ?? '';
+        retryMetadata = mergeInvocationMetadata(
+          retryMetadata,
+          res.metadata as Record<string, unknown> | undefined,
+        );
       }
+      const retryFailoverEvents = normalizeFailoverEvents(retryMetadata?.failoverEvents);
+      await this.logInvocationFailoverEvents(retryFailoverEvents, { taskRunId });
+      const retryUsageAgent = await this.resolveInvocationUsageAgent(
+        { id: agent.id, defaultModel: agent.defaultModel },
+        retryFailoverEvents,
+        taskRunId,
+      );
       const retryTokensPrompt = this.estimateTokens(retryPrompt);
       const retryTokensCompletion = this.estimateTokens(retryOutput);
       if (!this.dryRunGuard) {
         await this.jobService.recordTokenUsage({
           workspaceId: this.workspace.workspaceId,
-          agentId: agent.id,
-          modelName: agent.defaultModel,
+          agentId: retryUsageAgent.id,
+          modelName: retryUsageAgent.defaultModel,
           jobId,
           taskId: task.task.id,
           commandRunId,
@@ -2609,8 +2801,8 @@ export class QaTasksService {
           rawOutput: retryOutput,
           tokensPrompt: tokensPrompt + retryTokensPrompt,
           tokensCompletion: tokensCompletion + retryTokensCompletion,
-          agentId: agent.id,
-          modelName: agent.defaultModel,
+          agentId: retryUsageAgent.id,
+          modelName: retryUsageAgent.defaultModel,
         };
       }
       if (taskRunId) {
@@ -2624,8 +2816,8 @@ export class QaTasksService {
         rawOutput: retryOutput || output,
         tokensPrompt: tokensPrompt + retryTokensPrompt,
         tokensCompletion: tokensCompletion + retryTokensCompletion,
-        agentId: agent.id,
-        modelName: agent.defaultModel,
+        agentId: retryUsageAgent.id,
+        modelName: retryUsageAgent.defaultModel,
         invalidJson: true,
       };
     } catch (error: any) {
@@ -3032,17 +3224,32 @@ export class QaTasksService {
       .join('\n\n');
     let output = '';
     let chunkCount = 0;
+    let invocationMetadata: Record<string, unknown> | undefined;
     const useStream = agentStream && Boolean(this.agentService?.invokeStream);
     try {
       if (useStream && this.agentService.invokeStream) {
-        const gen = await this.agentService.invokeStream(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } });
+        const gen = await this.agentService.invokeStream(agent.id, {
+          input: prompt,
+          metadata: { command: 'qa-tasks', action: 'qa-manual-followups', taskKey: task.task.key },
+        });
         for await (const chunk of gen) {
           output += chunk.output ?? '';
           chunkCount += 1;
+          invocationMetadata = mergeInvocationMetadata(
+            invocationMetadata,
+            chunk.metadata as Record<string, unknown> | undefined,
+          );
         }
       } else {
-        const res = await this.agentService.invoke(agent.id, { input: prompt, metadata: { command: 'qa-tasks' } });
+        const res = await this.agentService.invoke(agent.id, {
+          input: prompt,
+          metadata: { command: 'qa-tasks', action: 'qa-manual-followups', taskKey: task.task.key },
+        });
         output = res.output ?? '';
+        invocationMetadata = mergeInvocationMetadata(
+          invocationMetadata,
+          res.metadata as Record<string, unknown> | undefined,
+        );
       }
     } catch (error: any) {
       const message = error?.message ?? String(error);
@@ -3051,13 +3258,20 @@ export class QaTasksService {
       }
       return [];
     }
+    const failoverEvents = normalizeFailoverEvents(invocationMetadata?.failoverEvents);
+    await this.logInvocationFailoverEvents(failoverEvents, { taskRunId });
+    const usageAgent = await this.resolveInvocationUsageAgent(
+      { id: agent.id, defaultModel: agent.defaultModel },
+      failoverEvents,
+      taskRunId,
+    );
     const tokensPrompt = this.estimateTokens(prompt);
     const tokensCompletion = this.estimateTokens(output);
     if (!this.dryRunGuard) {
       await this.jobService.recordTokenUsage({
         workspaceId: this.workspace.workspaceId,
-        agentId: agent.id,
-        modelName: agent.defaultModel,
+        agentId: usageAgent.id,
+        modelName: usageAgent.defaultModel,
         jobId,
         taskId: task.task.id,
         commandRunId,

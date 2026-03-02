@@ -171,6 +171,70 @@ class StubAgentService {
   }
 }
 
+class StubAgentServiceFailoverMetadata {
+  invokeCalls = 0;
+  streamCalls = 0;
+
+  async resolveAgent(identifier?: string) {
+    if (identifier === "agent-fallback") {
+      return { id: "agent-fallback", defaultModel: "sonnet" } as any;
+    }
+    return { id: "qa-agent", defaultModel: "stub" } as any;
+  }
+
+  async invoke(_id: string, req?: { input?: string }) {
+    this.invokeCalls += 1;
+    const input = req?.input ?? "";
+    if (input.includes("QA routing agent")) {
+      return {
+        output: '{"task_profiles":{}}',
+        metadata: {
+          failoverEvents: [
+            { type: "switch_agent", fromAgentId: "qa-agent", toAgentId: "agent-fallback" },
+          ],
+        },
+      };
+    }
+    return {
+      output:
+        '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+      metadata: {
+        failoverEvents: [
+          { type: "switch_agent", fromAgentId: "qa-agent", toAgentId: "agent-fallback" },
+        ],
+      },
+    };
+  }
+
+  async *invokeStream(_id: string, req?: { input?: string }) {
+    this.streamCalls += 1;
+    const input = req?.input ?? "";
+    if (input.includes("Return STRICT JSON only")) {
+      yield {
+        output:
+          '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+        metadata: {
+          failoverEvents: [
+            { type: "sleep_until_reset", durationMs: 60000, until: "2099-01-01T00:00:00.000Z" },
+            { type: "switch_agent", fromAgentId: "qa-agent", toAgentId: "agent-fallback" },
+          ],
+        },
+      } as any;
+      return;
+    }
+    yield {
+      output:
+        '{"recommendation":"pass","tested_scope":"unit","coverage_summary":"ok","failures":[],"follow_up_tasks":[],"resolvedSlugs":[],"unresolvedSlugs":[]}',
+      metadata: {
+        failoverEvents: [
+          { type: "sleep_until_reset", durationMs: 60000, until: "2099-01-01T00:00:00.000Z" },
+          { type: "switch_agent", fromAgentId: "qa-agent", toAgentId: "agent-fallback" },
+        ],
+      },
+    } as any;
+  }
+}
+
 class StubRoutingService {
   async resolveAgentForCommand() {
     return {
@@ -394,6 +458,149 @@ test("qa-tasks auto run records QA outcome, tokens, and state transitions", asyn
 
     const jobs = await db.all<{ state: string }[]>("SELECT state FROM jobs WHERE id = ?", result.jobId);
     assert.equal(jobs[0]?.state, "completed");
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks attributes invoke token usage to failover agent and logs failover events", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t02",
+        title: "Task QA failover invoke",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileServiceNoCommand() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentServiceFailoverMetadata() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: false,
+      taskKeys: [task.key],
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.outcome, "pass");
+
+    const db = repo.getDb();
+    const tokenUsage = await db.all<{ agent_id: string }[]>("SELECT agent_id FROM token_usage");
+    assert.ok(tokenUsage.some((entry) => entry.agent_id === "agent-fallback"));
+    const failoverLogs = await db.all<{ source: string; message: string }[]>(
+      "SELECT source, message FROM task_logs WHERE source = 'agent_failover'",
+    );
+    assert.ok(failoverLogs.some((entry) => entry.message.includes("switch_agent")));
+  } finally {
+    await service.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("qa-tasks attributes stream token usage to failover agent and logs stream failover events", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-qa-service-"));
+  const workspace = await WorkspaceResolver.resolveWorkspace({ cwd: dir, explicitWorkspace: dir });
+  const repo = await WorkspaceRepository.create(workspace.workspaceRoot);
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const project = await repo.createProjectIfMissing({ key: "proj", name: "Project" });
+  const [epic] = await repo.insertEpics(
+    [{ projectId: project.id, key: "proj-epic", title: "Epic", description: "", priority: 1 }],
+    false,
+  );
+  const [story] = await repo.insertStories(
+    [{ projectId: project.id, epicId: epic.id, key: "proj-epic-us-01", title: "Story", description: "" }],
+    false,
+  );
+  const [task] = await repo.insertTasks(
+    [
+      {
+        projectId: project.id,
+        epicId: epic.id,
+        userStoryId: story.id,
+        key: "proj-epic-us-01-t03",
+        title: "Task QA failover stream",
+        description: "",
+        status: "ready_to_qa",
+        storyPoints: 1,
+      },
+    ],
+    false,
+  );
+
+  const service = new QaTasksService(workspace, {
+    workspaceRepo: repo,
+    jobService,
+    selectionService,
+    stateService,
+    profileService: new StubProfileServiceNoCommand() as any,
+    followupService: { createFollowupTask: async () => ({}) } as any,
+    vcsClient: new StubVcs() as any,
+    agentService: new StubAgentServiceFailoverMetadata() as any,
+    docdex: new StubDocdex() as any,
+    routingService: new StubRoutingService() as any,
+  });
+  (service as any).adapterForProfile = () => new StubQaAdapter();
+
+  try {
+    const result = await service.run({
+      workspace,
+      projectKey: project.key,
+      statusFilter: ["ready_to_qa"],
+      mode: "auto",
+      agentStream: true,
+      taskKeys: [task.key],
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.outcome, "pass");
+
+    const db = repo.getDb();
+    const tokenUsage = await db.all<{ agent_id: string }[]>("SELECT agent_id FROM token_usage");
+    assert.ok(tokenUsage.some((entry) => entry.agent_id === "agent-fallback"));
+    const failoverLogs = await db.all<{ source: string; message: string }[]>(
+      "SELECT source, message FROM task_logs WHERE source = 'agent_failover'",
+    );
+    assert.ok(failoverLogs.some((entry) => entry.message.includes("sleep_until_reset")));
+    assert.ok(failoverLogs.some((entry) => entry.message.includes("switch_agent")));
   } finally {
     await service.close();
     await fs.rm(dir, { recursive: true, force: true });

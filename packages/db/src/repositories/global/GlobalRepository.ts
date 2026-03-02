@@ -5,9 +5,11 @@ import {
   AgentAuthMetadata,
   AgentAuthSecret,
   AgentHealth,
+  AgentUsageLimitRecord,
   AgentModel,
   AgentPromptManifest,
   CreateAgentInput,
+  UpsertAgentUsageLimitInput,
   UpdateAgentInput,
   WorkspaceDefault,
 } from "@mcoda/shared";
@@ -37,6 +39,21 @@ const mapAgentRow = (row: any): Agent => ({
   complexitySamples: row.complexity_samples ?? undefined,
   complexityUpdatedAt: row.complexity_updated_at ?? undefined,
   config: row.config_json ? (JSON.parse(row.config_json) as Record<string, unknown>) : undefined,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+const mapAgentUsageLimitRow = (row: any): AgentUsageLimitRecord => ({
+  id: row.id,
+  agentId: row.agent_id,
+  limitScope: row.limit_scope,
+  limitKey: row.limit_key,
+  windowType: row.window_type,
+  status: row.status,
+  resetAt: row.reset_at ?? undefined,
+  observedAt: row.observed_at,
+  source: row.source ?? undefined,
+  details: row.details_json ? JSON.parse(row.details_json) : undefined,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -456,6 +473,83 @@ export class GlobalRepository {
         details: row.details_json ? JSON.parse(row.details_json) : undefined,
       }),
     );
+  }
+
+  async upsertAgentUsageLimit(input: UpsertAgentUsageLimitInput): Promise<AgentUsageLimitRecord> {
+    const now = new Date().toISOString();
+    await this.db.run(
+      `INSERT INTO agent_usage_limits (
+         id,
+         agent_id,
+         limit_scope,
+         limit_key,
+         window_type,
+         status,
+         reset_at,
+         observed_at,
+         source,
+         details_json,
+         created_at,
+         updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(agent_id, limit_scope, limit_key, window_type) DO UPDATE SET
+         status = excluded.status,
+         reset_at = excluded.reset_at,
+         observed_at = excluded.observed_at,
+         source = excluded.source,
+         details_json = excluded.details_json,
+         updated_at = excluded.updated_at`,
+      randomUUID(),
+      input.agentId,
+      input.limitScope,
+      input.limitKey,
+      input.windowType,
+      input.status,
+      input.resetAt ?? null,
+      input.observedAt,
+      input.source ?? null,
+      input.details ? JSON.stringify(input.details) : null,
+      now,
+      now,
+    );
+    const row = await this.db.get(
+      `SELECT id, agent_id, limit_scope, limit_key, window_type, status, reset_at, observed_at, source, details_json, created_at, updated_at
+       FROM agent_usage_limits
+       WHERE agent_id = ? AND limit_scope = ? AND limit_key = ? AND window_type = ?`,
+      input.agentId,
+      input.limitScope,
+      input.limitKey,
+      input.windowType,
+    );
+    if (!row) {
+      throw new Error("Failed to upsert agent usage limit record");
+    }
+    return mapAgentUsageLimitRow(row);
+  }
+
+  async upsertAgentUsageLimits(inputs: UpsertAgentUsageLimitInput[]): Promise<AgentUsageLimitRecord[]> {
+    const records: AgentUsageLimitRecord[] = [];
+    for (const input of inputs) {
+      records.push(await this.upsertAgentUsageLimit(input));
+    }
+    return records;
+  }
+
+  async listAgentUsageLimits(agentId?: string): Promise<AgentUsageLimitRecord[]> {
+    const rows = agentId
+      ? await this.db.all(
+          `SELECT id, agent_id, limit_scope, limit_key, window_type, status, reset_at, observed_at, source, details_json, created_at, updated_at
+           FROM agent_usage_limits
+           WHERE agent_id = ?
+           ORDER BY datetime(observed_at) DESC`,
+          agentId,
+        )
+      : await this.db.all(
+          `SELECT id, agent_id, limit_scope, limit_key, window_type, status, reset_at, observed_at, source, details_json, created_at, updated_at
+           FROM agent_usage_limits
+           ORDER BY datetime(observed_at) DESC`,
+        );
+    return rows.map(mapAgentUsageLimitRow);
   }
 
   async setWorkspaceDefault(

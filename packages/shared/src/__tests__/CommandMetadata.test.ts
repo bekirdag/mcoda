@@ -7,6 +7,7 @@ describe("CommandMetadata", () => {
     assert.equal(canonicalizeCommandName("work on tasks"), "work-on-tasks");
     assert.equal(canonicalizeCommandName("QA Tasks"), "qa-tasks");
     assert.equal(canonicalizeCommandName("agent rating"), "agent-rating");
+    assert.equal(canonicalizeCommandName("sds preflight"), "sds-preflight");
   });
 
   it("returns fallback required capabilities", () => {

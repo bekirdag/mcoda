@@ -1,7 +1,16 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CryptoHelper, Agent, AgentAuthMetadata, AgentHealth, AgentPromptManifest } from "@mcoda/shared";
+import {
+  Agent,
+  AgentAuthMetadata,
+  AgentHealth,
+  AgentPromptManifest,
+  AgentUsageLimitRecord,
+  AgentUsageLimitWindowType,
+  CryptoHelper,
+  UpsertAgentUsageLimitInput,
+} from "@mcoda/shared";
 import { GlobalRepository } from "@mcoda/db";
 import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
 import { GeminiAdapter } from "../adapters/gemini/GeminiAdapter.js";
@@ -15,6 +24,7 @@ import { ZhipuApiAdapter } from "../adapters/zhipu/ZhipuApiAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
 import { ClaudeAdapter } from "../adapters/claude/ClaudeAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
+import { parseUsageLimitError } from "./UsageLimitParser.js";
 
 const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli", "codali-cli", "claude-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
@@ -48,6 +58,14 @@ let docdexGuidanceCache: string | undefined;
 let docdexGuidanceLoaded = false;
 const DOCDEX_JSON_ONLY_MARKERS = [/output json only/i, /return json only/i, /no prose, no analysis/i];
 const HANDOFF_END_MARKERS = [/^\s*END OF FILE\s*$/i, /^\s*\*\*\* End of File\s*$/i];
+const EQUIVALENCE_THRESHOLD = 1.5;
+const MAX_SLEEP_CHUNK_MS = 60 * 60 * 1000;
+const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
+  rolling_5h: 5 * 60 * 60 * 1000,
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+  other: 60 * 60 * 1000,
+};
 
 const isIoEnabled = (): boolean => {
   const raw = process.env[IO_ENV];
@@ -187,8 +205,16 @@ const normalizeDocdexGuidanceInput = (input: string, prefix: string): string => 
   return `${prefix}${remainder}`;
 };
 
+interface AgentServiceOptions {
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
 export class AgentService {
-  constructor(private repo: GlobalRepository) {}
+  constructor(
+    private repo: GlobalRepository,
+    private options: AgentServiceOptions = {},
+  ) {}
 
   static async create(): Promise<AgentService> {
     const repo = await GlobalRepository.create();
@@ -331,6 +357,182 @@ export class AgentService {
     throw new Error(`Unsupported adapter type: ${adapterType}`);
   }
 
+  private nowMs(): number {
+    return this.options.now ? this.options.now() : Date.now();
+  }
+
+  private async sleepMs(ms: number): Promise<void> {
+    if (ms <= 0) return;
+    if (this.options.sleep) {
+      await this.options.sleep(ms);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async sleepUntil(timestampMs: number): Promise<void> {
+    while (true) {
+      const remaining = timestampMs - this.nowMs();
+      if (remaining <= 0) return;
+      await this.sleepMs(Math.min(remaining, MAX_SLEEP_CHUNK_MS));
+    }
+  }
+
+  private metric(value: number | undefined, fallback = 5): number {
+    return Number.isFinite(value) ? Number(value) : fallback;
+  }
+
+  private estimateWindowResetMs(windowType: AgentUsageLimitWindowType, nowMs: number): number {
+    return nowMs + (WINDOW_RESET_FALLBACK_MS[windowType] ?? WINDOW_RESET_FALLBACK_MS.other);
+  }
+
+  private estimateResetMsFromWindowTypes(windowTypes: AgentUsageLimitWindowType[], nowMs: number): number {
+    const normalized: AgentUsageLimitWindowType[] = windowTypes.length ? windowTypes : ["other"];
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const windowType of normalized) {
+      earliest = Math.min(earliest, this.estimateWindowResetMs(windowType, nowMs));
+    }
+    return Number.isFinite(earliest) ? earliest : this.estimateWindowResetMs("other", nowMs);
+  }
+
+  private normalizeLimitKey(agent: Agent): string {
+    const model = (agent.defaultModel ?? "").trim().toLowerCase();
+    if (model.includes("codex-spark")) return "codex-spark";
+    if (model.includes("codex")) return "codex-main";
+    return model || (agent.slug ?? agent.id).trim().toLowerCase();
+  }
+
+  private async getAgentAvailability(
+    agent: Agent,
+    nowMs: number,
+  ): Promise<{ available: boolean; earliestResetMs?: number }> {
+    const limits = await this.repo.listAgentUsageLimits(agent.id);
+    if (!limits.length) return { available: true };
+    const limitKey = this.normalizeLimitKey(agent);
+    const relevant = limits.filter((entry) => {
+      if (entry.limitScope === "model") {
+        return entry.limitKey === limitKey;
+      }
+      return true;
+    });
+    if (!relevant.length) return { available: true };
+    let earliestResetMs: number | undefined;
+    for (const entry of relevant) {
+      if (entry.status !== "exhausted") continue;
+      let resetMs = entry.resetAt ? Date.parse(entry.resetAt) : Number.NaN;
+      if (!Number.isFinite(resetMs)) {
+        resetMs = this.estimateWindowResetMs(entry.windowType, nowMs);
+      }
+      if ((resetMs as number) > nowMs) {
+        earliestResetMs = earliestResetMs === undefined ? (resetMs as number) : Math.min(earliestResetMs, resetMs as number);
+      }
+    }
+    if (earliestResetMs !== undefined) return { available: false, earliestResetMs };
+    return { available: true };
+  }
+
+  private async listEquivalentAgents(baseAgent: Agent): Promise<Agent[]> {
+    const baseCapabilities = await this.repo.getAgentCapabilities(baseAgent.id);
+    const allAgents = await this.repo.listAgents();
+    const healthRows = await this.repo.listAgentHealthSummary();
+    const healthByAgentId = new Map(healthRows.map((entry) => [entry.agentId, entry]));
+    const baseRating = this.metric(baseAgent.rating);
+    const baseReasoning = this.metric(baseAgent.reasoningRating, baseRating);
+    const baseComplexity = this.metric(baseAgent.maxComplexity);
+    const candidates: Array<{ agent: Agent; distance: number }> = [];
+    for (const candidate of allAgents) {
+      if (candidate.id === baseAgent.id) continue;
+      const health = healthByAgentId.get(candidate.id);
+      if (health?.status === "unreachable") continue;
+      const candidateCapabilities = await this.repo.getAgentCapabilities(candidate.id);
+      const hasAllCapabilities = baseCapabilities.every((capability) => candidateCapabilities.includes(capability));
+      if (!hasAllCapabilities) continue;
+      const candidateRating = this.metric(candidate.rating);
+      const candidateReasoning = this.metric(candidate.reasoningRating, candidateRating);
+      const candidateComplexity = this.metric(candidate.maxComplexity);
+      const ratingDiff = Math.abs(candidateRating - baseRating);
+      const reasoningDiff = Math.abs(candidateReasoning - baseReasoning);
+      const complexityDiff = Math.abs(candidateComplexity - baseComplexity);
+      if (ratingDiff > EQUIVALENCE_THRESHOLD) continue;
+      if (reasoningDiff > EQUIVALENCE_THRESHOLD) continue;
+      if (complexityDiff > EQUIVALENCE_THRESHOLD) continue;
+      candidates.push({
+        agent: candidate,
+        distance: ratingDiff + reasoningDiff + complexityDiff,
+      });
+    }
+    candidates.sort((left, right) => {
+      if (left.distance !== right.distance) return left.distance - right.distance;
+      const leftRating = this.metric(left.agent.rating);
+      const rightRating = this.metric(right.agent.rating);
+      if (rightRating !== leftRating) return rightRating - leftRating;
+      const leftCost = Number.isFinite(left.agent.costPerMillion) ? Number(left.agent.costPerMillion) : Number.POSITIVE_INFINITY;
+      const rightCost = Number.isFinite(right.agent.costPerMillion)
+        ? Number(right.agent.costPerMillion)
+        : Number.POSITIVE_INFINITY;
+      if (leftCost !== rightCost) return leftCost - rightCost;
+      return (left.agent.slug ?? left.agent.id).localeCompare(right.agent.slug ?? right.agent.id);
+    });
+    return candidates.map((entry) => entry.agent);
+  }
+
+  private async findNextAvailableAgent(
+    candidates: Agent[],
+    attemptedAgentIds: Set<string>,
+    nowMs: number,
+  ): Promise<Agent | undefined> {
+    for (const candidate of candidates) {
+      if (attemptedAgentIds.has(candidate.id)) continue;
+      const availability = await this.getAgentAvailability(candidate, nowMs);
+      if (availability.available) return candidate;
+    }
+    return undefined;
+  }
+
+  private async findEarliestResetMs(candidates: Agent[], nowMs: number): Promise<number | undefined> {
+    let earliest: number | undefined;
+    for (const candidate of candidates) {
+      const availability = await this.getAgentAvailability(candidate, nowMs);
+      if (!availability.earliestResetMs) continue;
+      earliest = earliest === undefined ? availability.earliestResetMs : Math.min(earliest, availability.earliestResetMs);
+    }
+    return earliest;
+  }
+
+  private async persistUsageLimitObservation(
+    agent: Agent,
+    observation: ReturnType<typeof parseUsageLimitError> & { isUsageLimit: true },
+  ): Promise<AgentUsageLimitRecord[]> {
+    const observedAt = new Date(this.nowMs()).toISOString();
+    const limitKey = this.normalizeLimitKey(agent);
+    const windowTypes: AgentUsageLimitWindowType[] = observation.windowTypes.length
+      ? observation.windowTypes
+      : ["other"];
+    const fallbackResetMs = this.estimateResetMsFromWindowTypes(windowTypes, this.nowMs());
+    const resolvedResetAt = observation.resetAt ?? new Date(fallbackResetMs).toISOString();
+    const resetAtSource = observation.resetAt
+      ? observation.resetAtSource ?? "unknown"
+      : "estimated_window_fallback";
+    const records: UpsertAgentUsageLimitInput[] = windowTypes.map((windowType) => ({
+      agentId: agent.id,
+      limitScope: "model" as const,
+      limitKey,
+      windowType,
+      status: "exhausted" as const,
+      resetAt: resolvedResetAt,
+      observedAt,
+      source: "invoke_error_parse",
+      details: {
+        message: observation.message,
+        rawText: observation.rawText.slice(0, 4000),
+        resetAtSource,
+        resetAtProvided: Boolean(observation.resetAt),
+        estimatedResetAt: observation.resetAt ? undefined : resolvedResetAt,
+      },
+    }));
+    return this.repo.upsertAgentUsageLimits(records);
+  }
+
   async healthCheck(agentId: string): Promise<AgentHealth> {
     const agent = await this.resolveAgent(agentId);
     try {
@@ -351,69 +553,216 @@ export class AgentService {
   }
 
   async invoke(agentId: string, request: InvocationRequest): Promise<InvocationResult> {
-    const agent = await this.resolveAgent(agentId);
-    const adapter = await this.getAdapter(agent, request.adapterType);
-    if (!adapter.invoke) {
-      throw new Error("Adapter does not support invoke");
-    }
-    const withDocdex = await this.applyDocdexGuidance(request);
-    const enriched = await this.applyGatewayHandoff(withDocdex);
-    const ioEnabled = isIoEnabled();
-    if (ioEnabled) {
-      renderIoHeader(agent, enriched, "invoke");
-    }
-    try {
-      const result = await adapter.invoke(enriched);
-      if (ioEnabled) {
-        renderIoChunk(result);
-        renderIoEnd();
+    const baseAgent = await this.resolveAgent(agentId);
+    const equivalentAgents = await this.listEquivalentAgents(baseAgent);
+    const attemptedAgentIds = new Set<string>();
+    const failoverEvents: Array<Record<string, unknown>> = [];
+    let activeAgent = baseAgent;
+    for (;;) {
+      attemptedAgentIds.add(activeAgent.id);
+      const adapter = await this.getAdapter(activeAgent, request.adapterType);
+      if (!adapter.invoke) {
+        throw new Error("Adapter does not support invoke");
       }
-      return result;
-    } catch (error) {
-      await this.recordInvocationFailure(agent, error);
-      throw error;
+      const withDocdex = await this.applyDocdexGuidance(request);
+      const enriched = await this.applyGatewayHandoff(withDocdex);
+      const ioEnabled = isIoEnabled();
+      if (ioEnabled) {
+        renderIoHeader(activeAgent, enriched, "invoke");
+      }
+      try {
+        const result = await adapter.invoke(enriched);
+        if (ioEnabled) {
+          renderIoChunk(result);
+          renderIoEnd();
+        }
+        if (!failoverEvents.length) return result;
+        return {
+          ...result,
+          metadata: {
+            ...(result.metadata ?? {}),
+            failoverEvents,
+          },
+        };
+      } catch (error) {
+        await this.recordInvocationFailure(activeAgent, error);
+        const parsedLimit = parseUsageLimitError(error, this.nowMs());
+        if (!parsedLimit) {
+          throw error;
+        }
+        await this.persistUsageLimitObservation(activeAgent, parsedLimit);
+        const nowMs = this.nowMs();
+        const nextAgent = await this.findNextAvailableAgent(
+          [baseAgent, ...equivalentAgents],
+          attemptedAgentIds,
+          nowMs,
+        );
+        if (nextAgent) {
+          failoverEvents.push({
+            type: "switch_agent",
+            at: new Date(nowMs).toISOString(),
+            fromAgentId: activeAgent.id,
+            fromAgentSlug: activeAgent.slug,
+            toAgentId: nextAgent.id,
+            toAgentSlug: nextAgent.slug,
+          });
+          activeAgent = nextAgent;
+          continue;
+        }
+        const earliestResetMs = await this.findEarliestResetMs([baseAgent, ...equivalentAgents], nowMs);
+        const fallbackResetMs = this.estimateResetMsFromWindowTypes(parsedLimit.windowTypes, nowMs);
+        const waitUntilMs =
+          earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
+        const durationMs = waitUntilMs - nowMs;
+        failoverEvents.push({
+          type: "sleep_until_reset",
+          at: new Date(nowMs).toISOString(),
+          until: new Date(waitUntilMs).toISOString(),
+          durationMs,
+        });
+        await this.sleepUntil(waitUntilMs);
+        attemptedAgentIds.clear();
+        activeAgent = baseAgent;
+      }
     }
   }
 
   async invokeStream(agentId: string, request: InvocationRequest): Promise<AsyncGenerator<InvocationResult>> {
-    const agent = await this.resolveAgent(agentId);
-    const adapter = await this.getAdapter(agent, request.adapterType);
-    if (!adapter.invokeStream) {
-      throw new Error("Adapter does not support streaming");
-    }
-    const withDocdex = await this.applyDocdexGuidance(request);
-    const enriched = await this.applyGatewayHandoff(withDocdex);
-    const ioEnabled = isIoEnabled();
-    let generator: AsyncGenerator<InvocationResult, void, unknown>;
-    try {
-      generator = await adapter.invokeStream(enriched);
-    } catch (error) {
-      await this.recordInvocationFailure(agent, error);
-      throw error;
-    }
-    const recordFailure = (error: unknown) => this.recordInvocationFailure(agent, error);
-    async function* wrap(): AsyncGenerator<InvocationResult, void, unknown> {
-      const streamIo = ioEnabled ? createStreamIoRenderer() : undefined;
-      if (ioEnabled) {
-        renderIoHeader(agent, enriched, "stream");
-      }
-      try {
-        for await (const chunk of generator) {
-          if (ioEnabled) {
-            streamIo?.push(chunk);
-          }
-          yield chunk;
+    const baseAgent = await this.resolveAgent(agentId);
+    const equivalentAgents = await this.listEquivalentAgents(baseAgent);
+    const attemptedAgentIds = new Set<string>();
+    const self = this;
+    async function* run(): AsyncGenerator<InvocationResult, void, unknown> {
+      let activeAgent = baseAgent;
+      const failoverEvents: Array<Record<string, unknown>> = [];
+      for (;;) {
+        attemptedAgentIds.add(activeAgent.id);
+        const adapter = await self.getAdapter(activeAgent, request.adapterType);
+        if (!adapter.invokeStream) {
+          throw new Error("Adapter does not support streaming");
         }
-      } catch (error) {
-        await recordFailure(error);
-        throw error;
-      }
-      if (ioEnabled) {
-        streamIo?.flush();
-        renderIoEnd();
+        const withDocdex = await self.applyDocdexGuidance(request);
+        const enriched = await self.applyGatewayHandoff(withDocdex);
+        const ioEnabled = isIoEnabled();
+        let generator: AsyncGenerator<InvocationResult, void, unknown>;
+        try {
+          generator = await adapter.invokeStream(enriched);
+        } catch (error) {
+          await self.recordInvocationFailure(activeAgent, error);
+          const parsedLimit = parseUsageLimitError(error, self.nowMs());
+          if (!parsedLimit) throw error;
+          await self.persistUsageLimitObservation(activeAgent, parsedLimit);
+          const nowMs = self.nowMs();
+          const nextAgent = await self.findNextAvailableAgent(
+            [baseAgent, ...equivalentAgents],
+            attemptedAgentIds,
+            nowMs,
+          );
+          if (nextAgent) {
+            failoverEvents.push({
+              type: "switch_agent",
+              at: new Date(nowMs).toISOString(),
+              fromAgentId: activeAgent.id,
+              fromAgentSlug: activeAgent.slug,
+              toAgentId: nextAgent.id,
+              toAgentSlug: nextAgent.slug,
+            });
+            activeAgent = nextAgent;
+            continue;
+          }
+          const earliestResetMs = await self.findEarliestResetMs([baseAgent, ...equivalentAgents], nowMs);
+          const fallbackResetMs = self.estimateResetMsFromWindowTypes(parsedLimit.windowTypes, nowMs);
+          const waitUntilMs =
+            earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
+          const durationMs = waitUntilMs - nowMs;
+          failoverEvents.push({
+            type: "sleep_until_reset",
+            at: new Date(nowMs).toISOString(),
+            until: new Date(waitUntilMs).toISOString(),
+            durationMs,
+          });
+          await self.sleepUntil(waitUntilMs);
+          attemptedAgentIds.clear();
+          activeAgent = baseAgent;
+          continue;
+        }
+        const streamIo = ioEnabled ? createStreamIoRenderer() : undefined;
+        if (ioEnabled) {
+          renderIoHeader(activeAgent, enriched, "stream");
+        }
+        let emitted = false;
+        try {
+          for await (const chunk of generator) {
+            emitted = true;
+            const chunkWithMetadata =
+              failoverEvents.length > 0
+                ? {
+                    ...chunk,
+                    metadata: {
+                      ...(chunk.metadata ?? {}),
+                      failoverEvents: failoverEvents.map((event) => ({ ...event })),
+                    },
+                  }
+                : chunk;
+            if (ioEnabled) {
+              streamIo?.push(chunkWithMetadata);
+            }
+            yield chunkWithMetadata;
+          }
+          if (ioEnabled) {
+            streamIo?.flush();
+            renderIoEnd();
+          }
+          return;
+        } catch (error) {
+          await self.recordInvocationFailure(activeAgent, error);
+          const parsedLimit = parseUsageLimitError(error, self.nowMs());
+          if (!parsedLimit) throw error;
+          const nowMs = self.nowMs();
+          if (emitted) {
+            failoverEvents.push({
+              type: "stream_restart_after_limit",
+              at: new Date(nowMs).toISOString(),
+              fromAgentId: activeAgent.id,
+              fromAgentSlug: activeAgent.slug,
+            });
+          }
+          await self.persistUsageLimitObservation(activeAgent, parsedLimit);
+          const nextAgent = await self.findNextAvailableAgent(
+            [baseAgent, ...equivalentAgents],
+            attemptedAgentIds,
+            nowMs,
+          );
+          if (nextAgent) {
+            failoverEvents.push({
+              type: "switch_agent",
+              at: new Date(nowMs).toISOString(),
+              fromAgentId: activeAgent.id,
+              fromAgentSlug: activeAgent.slug,
+              toAgentId: nextAgent.id,
+              toAgentSlug: nextAgent.slug,
+            });
+            activeAgent = nextAgent;
+            continue;
+          }
+          const earliestResetMs = await self.findEarliestResetMs([baseAgent, ...equivalentAgents], nowMs);
+          const fallbackResetMs = self.estimateResetMsFromWindowTypes(parsedLimit.windowTypes, nowMs);
+          const waitUntilMs =
+            earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
+          const durationMs = waitUntilMs - nowMs;
+          failoverEvents.push({
+            type: "sleep_until_reset",
+            at: new Date(nowMs).toISOString(),
+            until: new Date(waitUntilMs).toISOString(),
+            durationMs,
+          });
+          await self.sleepUntil(waitUntilMs);
+          attemptedAgentIds.clear();
+          activeAgent = baseAgent;
+        }
       }
     }
-    return wrap();
+    return run();
   }
 
   private async applyGatewayHandoff(request: InvocationRequest): Promise<InvocationRequest> {
