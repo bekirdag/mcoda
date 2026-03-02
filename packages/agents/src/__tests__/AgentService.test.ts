@@ -618,6 +618,160 @@ test("invoke does not failover on non-limit auth errors", async () => {
   assert.equal(limits.length, 0);
 });
 
+test("invoke switches to equivalent available agent on technical failures", async () => {
+  const primary = await repo.createAgent({
+    slug: "tech-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "tech-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        throw new Error("503 service unavailable");
+      }
+      return { output: "ok:tech-backup", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+  const result = await service.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:tech-backup");
+  assert.deepEqual(calls, [primary.id, backup.id]);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" &&
+        event.fromAgentId === primary.id &&
+        event.toAgentId === backup.id &&
+        event.reason === "technical_issue",
+    ),
+  );
+});
+
+test("invoke waits for internet recovery when connectivity fails and all fallbacks are remote", async () => {
+  const primary = await repo.createAgent({
+    slug: "offline-primary",
+    adapter: "codex-cli",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  await repo.createAgent({
+    slug: "offline-remote-backup",
+    adapter: "codex-cli",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  let checks = 0;
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+    checkInternetReachable: async () => {
+      checks += 1;
+      return checks >= 3;
+    },
+    connectivityPollIntervalMs: 1000,
+  });
+  let calls = 0;
+  // @ts-expect-error override for test
+  clockService.getAdapter = async () => ({
+    invoke: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("network unreachable");
+      }
+      return { output: "ok:after-internet", adapter: "codex-cli", model: "gpt-5.2-codex" };
+    },
+  });
+  const result = await clockService.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:after-internet");
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [1000]);
+  assert.equal(checks, 3);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(failoverEvents.some((event) => event.type === "wait_for_internet"));
+});
+
+test("invoke uses offline-capable fallback on connectivity failure before waiting for internet", async () => {
+  const primary = await repo.createAgent({
+    slug: "offline-switch-primary",
+    adapter: "codex-cli",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "offline-switch-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  const sleeps: number[] = [];
+  const fallbackService = new AgentService(repo, {
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+    checkInternetReachable: async () => false,
+    connectivityPollIntervalMs: 1000,
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  fallbackService.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        throw new Error("fetch failed: network down");
+      }
+      return { output: "ok:local-fallback", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+  const result = await fallbackService.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:local-fallback");
+  assert.deepEqual(calls, [primary.id, backup.id]);
+  assert.deepEqual(sleeps, []);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" &&
+        event.fromAgentId === primary.id &&
+        event.toAgentId === backup.id &&
+        event.reason === "connectivity_issue",
+    ),
+  );
+  assert.ok(!failoverEvents.some((event) => event.type === "wait_for_internet"));
+});
+
 test("invokeStream switches to equivalent available agent on usage limit", async () => {
   const primary = await repo.createAgent({
     slug: "stream-primary",
@@ -871,6 +1025,115 @@ test("invokeStream continues with an equivalent agent after partial output hits 
   assert.ok(failoverEvents.some((event) => event.type === "switch_agent"));
   const limits = await repo.listAgentUsageLimits(primary.id);
   assert.ok(limits.some((entry) => entry.status === "exhausted"));
+});
+
+test("invokeStream switches to equivalent available agent on technical failures", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-tech-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "stream-tech-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invokeStream: async function* () {
+      if (agent.id === primary.id) {
+        throw new Error("temporary unavailable 503");
+      }
+      yield { output: "stream-tech-ok", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+  const chunks: string[] = [];
+  let finalMetadata: Record<string, unknown> | undefined;
+  const generator = await service.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+    finalMetadata = chunk.metadata;
+  }
+  assert.deepEqual(chunks, ["stream-tech-ok"]);
+  const failoverEvents = ((finalMetadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" &&
+        event.fromAgentId === primary.id &&
+        event.toAgentId === backup.id &&
+        event.reason === "technical_issue",
+    ),
+  );
+});
+
+test("invokeStream waits for internet recovery when connectivity fails and all fallbacks are remote", async () => {
+  const primary = await repo.createAgent({
+    slug: "stream-offline-primary",
+    adapter: "codex-cli",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  await repo.createAgent({
+    slug: "stream-offline-backup",
+    adapter: "codex-cli",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  let nowMs = Date.parse("2026-03-02T10:00:00.000Z");
+  const sleeps: number[] = [];
+  let checks = 0;
+  const clockService = new AgentService(repo, {
+    now: () => nowMs,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      nowMs += ms;
+    },
+    checkInternetReachable: async () => {
+      checks += 1;
+      return checks >= 3;
+    },
+    connectivityPollIntervalMs: 1000,
+  });
+  let calls = 0;
+  // @ts-expect-error override for test
+  clockService.getAdapter = async () => ({
+    invokeStream: async function* () {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("network unreachable");
+      }
+      yield { output: "stream-after-internet", adapter: "codex-cli", model: "gpt-5.2-codex" };
+    },
+  });
+
+  const chunks: string[] = [];
+  let finalMetadata: Record<string, unknown> | undefined;
+  const generator = await clockService.invokeStream(primary.id, { input: "ping" });
+  for await (const chunk of generator) {
+    chunks.push(chunk.output);
+    finalMetadata = chunk.metadata;
+  }
+  assert.deepEqual(chunks, ["stream-after-internet"]);
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [1000]);
+  assert.equal(checks, 3);
+  const failoverEvents = ((finalMetadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(failoverEvents.some((event) => event.type === "wait_for_internet"));
 });
 
 test("agent io output lines stay atomic when streams overlap", async () => {

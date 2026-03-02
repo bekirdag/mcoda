@@ -193,6 +193,11 @@ type TaskNode = TaskRow & {
 
 type AgentRanking = Map<string, number>;
 type ComplexityByTask = Map<string, number>;
+type CycleBreakCandidate = {
+  taskId: string;
+  dependsOnTaskId: string;
+  weight: number;
+};
 
 const extractJson = (raw: string): any | undefined => {
   if (!raw) return undefined;
@@ -844,6 +849,188 @@ export class TaskOrderingService {
       }
     }
     return false;
+  }
+
+  private buildDependentsFromGraph(graph: Map<string, Set<string>>): Map<string, string[]> {
+    const dependents = new Map<string, string[]>();
+    for (const [taskId, dependencies] of graph.entries()) {
+      for (const dependencyId of dependencies) {
+        const list = dependents.get(dependencyId) ?? [];
+        list.push(taskId);
+        dependents.set(dependencyId, list);
+      }
+    }
+    return dependents;
+  }
+
+  private findCyclicComponents(graph: Map<string, Set<string>>): string[][] {
+    const nodes = new Set<string>();
+    for (const [taskId, dependencies] of graph.entries()) {
+      nodes.add(taskId);
+      for (const dependencyId of dependencies) nodes.add(dependencyId);
+    }
+    const indexByNode = new Map<string, number>();
+    const lowLinkByNode = new Map<string, number>();
+    const stack: string[] = [];
+    const onStack = new Set<string>();
+    const components: string[][] = [];
+    let index = 0;
+    const visit = (nodeId: string) => {
+      indexByNode.set(nodeId, index);
+      lowLinkByNode.set(nodeId, index);
+      index += 1;
+      stack.push(nodeId);
+      onStack.add(nodeId);
+      const neighbors = graph.get(nodeId) ?? new Set<string>();
+      for (const neighbor of neighbors) {
+        if (!indexByNode.has(neighbor)) {
+          visit(neighbor);
+          const nextLow = Math.min(
+            lowLinkByNode.get(nodeId) ?? Number.MAX_SAFE_INTEGER,
+            lowLinkByNode.get(neighbor) ?? Number.MAX_SAFE_INTEGER,
+          );
+          lowLinkByNode.set(nodeId, nextLow);
+          continue;
+        }
+        if (!onStack.has(neighbor)) continue;
+        const nextLow = Math.min(
+          lowLinkByNode.get(nodeId) ?? Number.MAX_SAFE_INTEGER,
+          indexByNode.get(neighbor) ?? Number.MAX_SAFE_INTEGER,
+        );
+        lowLinkByNode.set(nodeId, nextLow);
+      }
+      if ((lowLinkByNode.get(nodeId) ?? -1) !== (indexByNode.get(nodeId) ?? -2)) return;
+      const component: string[] = [];
+      while (stack.length > 0) {
+        const popped = stack.pop() as string;
+        onStack.delete(popped);
+        component.push(popped);
+        if (popped === nodeId) break;
+      }
+      if (component.length > 1) {
+        components.push(component);
+        return;
+      }
+      const only = component[0];
+      if (only && graph.get(only)?.has(only)) {
+        components.push(component);
+      }
+    };
+    for (const nodeId of nodes) {
+      if (!indexByNode.has(nodeId)) visit(nodeId);
+    }
+    return components;
+  }
+
+  private chooseCycleBreakCandidate(
+    component: string[],
+    dependencyGraph: Map<string, Set<string>>,
+    impact: Map<string, DependencyImpact>,
+  ): CycleBreakCandidate | undefined {
+    const members = new Set(component);
+    const candidates: CycleBreakCandidate[] = [];
+    for (const taskId of component) {
+      const dependencies = dependencyGraph.get(taskId);
+      if (!dependencies || dependencies.size === 0) continue;
+      const weight = impact.get(taskId)?.total ?? 0;
+      for (const dependencyId of dependencies) {
+        if (!members.has(dependencyId)) continue;
+        candidates.push({ taskId, dependsOnTaskId: dependencyId, weight });
+      }
+    }
+    if (candidates.length === 0) return undefined;
+    const maxWeight = Math.max(...candidates.map((candidate) => candidate.weight));
+    const weighted = candidates.filter((candidate) => candidate.weight === maxWeight);
+    if (weighted.length === 1) return weighted[0];
+    const randomIndex = Math.floor(Math.random() * weighted.length);
+    return weighted[randomIndex];
+  }
+
+  private async removeDependencyEdge(
+    deps: Map<string, DependencyRow[]>,
+    taskId: string,
+    dependsOnTaskId: string,
+    persist: boolean,
+  ): Promise<boolean> {
+    const rows = deps.get(taskId) ?? [];
+    const rowIndex = rows.findIndex((row) => row.depends_on_task_id === dependsOnTaskId);
+    if (rowIndex < 0) return false;
+    if (persist) {
+      await this.db.run(
+        `DELETE FROM task_dependencies
+         WHERE id = (
+           SELECT id
+           FROM task_dependencies
+           WHERE task_id = ?
+             AND depends_on_task_id = ?
+           LIMIT 1
+         )`,
+        taskId,
+        dependsOnTaskId,
+      );
+    }
+    const nextRows = [...rows];
+    nextRows.splice(rowIndex, 1);
+    if (nextRows.length > 0) {
+      deps.set(taskId, nextRows);
+    } else {
+      deps.delete(taskId);
+    }
+    return true;
+  }
+
+  private async resolveDependencyCycles(
+    tasks: TaskRow[],
+    deps: Map<string, DependencyRow[]>,
+    warnings: string[],
+    persist: boolean,
+  ): Promise<{ removedEdges: number; unresolvedCycleMembers: Set<string> }> {
+    const taskById = new Map(tasks.map((task) => [task.id, task]));
+    const maxIterations = Math.max(1, tasks.length * tasks.length);
+    let removedEdges = 0;
+    let unresolvedCycleMembers = new Set<string>();
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      const dependencyGraph = this.buildDependencyGraph(tasks, deps);
+      const cyclicComponents = this.findCyclicComponents(dependencyGraph);
+      if (cyclicComponents.length === 0) {
+        return { removedEdges, unresolvedCycleMembers: new Set<string>() };
+      }
+      let removedThisIteration = false;
+      const dependents = this.buildDependentsFromGraph(dependencyGraph);
+      const impact = this.dependencyImpactMap(dependents);
+      for (const component of cyclicComponents) {
+        const candidate = this.chooseCycleBreakCandidate(component, dependencyGraph, impact);
+        if (!candidate) continue;
+        const removed = await this.removeDependencyEdge(
+          deps,
+          candidate.taskId,
+          candidate.dependsOnTaskId,
+          persist,
+        );
+        if (!removed) continue;
+        removedThisIteration = true;
+        removedEdges += 1;
+        const taskKey = taskById.get(candidate.taskId)?.key ?? candidate.taskId;
+        const dependencyKey = taskById.get(candidate.dependsOnTaskId)?.key ?? candidate.dependsOnTaskId;
+        warnings.push(
+          persist
+            ? `Resolved dependency cycle: removed ${taskKey} -> ${dependencyKey}.`
+            : `Dry run: would remove cyclic dependency ${taskKey} -> ${dependencyKey}.`,
+        );
+        break;
+      }
+      if (removedThisIteration) continue;
+      unresolvedCycleMembers = new Set(cyclicComponents.flat());
+      break;
+    }
+    if (unresolvedCycleMembers.size === 0) {
+      const dependencyGraph = this.buildDependencyGraph(tasks, deps);
+      const cyclicComponents = this.findCyclicComponents(dependencyGraph);
+      if (cyclicComponents.length > 0) {
+        unresolvedCycleMembers = new Set(cyclicComponents.flat());
+      }
+    }
+    return { removedEdges, unresolvedCycleMembers };
   }
 
   private async injectFoundationDependencies(
@@ -1502,6 +1689,12 @@ export class TaskOrderingService {
         warnings.push("Dependency inference skipped: no agent resolved.");
       }
 
+      const cycleResolution = await this.resolveDependencyCycles(tasks, deps, warnings, applyChanges);
+      if (cycleResolution.removedEdges > 0) {
+        warnings.push(`Cycle resolution removed ${cycleResolution.removedEdges} dependency edge(s).`);
+      }
+      ({ nodes, dependents, missingRefs } = this.buildNodes(tasks, deps));
+
       if (missingRefs.size > 0) {
         warnings.push(`Missing dependencies referenced: ${Array.from(missingRefs).join(", ")}`);
       }
@@ -1539,7 +1732,7 @@ export class TaskOrderingService {
         undefined,
         stageOrderMap,
       );
-      if (cycle) {
+      if (cycle || cycleResolution.unresolvedCycleMembers.size > 0) {
         warnings.push("Dependency cycle detected; ordering may be partial.");
       }
 
@@ -1628,7 +1821,11 @@ export class TaskOrderingService {
         agentRank,
         stageOrderMap,
       );
-      const finalCycleMembers = new Set<string>([...cycleMembers, ...agentCycleMembers]);
+      const finalCycleMembers = new Set<string>([
+        ...cycleMembers,
+        ...agentCycleMembers,
+        ...cycleResolution.unresolvedCycleMembers,
+      ]);
       if (cycleAfterAgent && !cycle) {
         warnings.push("Agent-influenced ordering encountered a cycle; used partial order.");
       }
