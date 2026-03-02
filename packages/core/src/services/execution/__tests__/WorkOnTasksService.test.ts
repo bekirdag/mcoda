@@ -4152,6 +4152,129 @@ test("workOnTasks skips dependency-blocked tasks during default selection", asyn
   }
 });
 
+test("workOnTasks falls back to a most-dependent task when loops block all candidates", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await repo.insertTaskDependencies(
+    [
+      {
+        taskId: tasks[0].id,
+        dependsOnTaskId: tasks[1].id,
+        relationType: "blocks",
+      },
+      {
+        taskId: tasks[1].id,
+        dependsOnTaskId: tasks[0].id,
+        relationType: "blocks",
+      },
+    ],
+    false,
+  );
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 1,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.selection.ordered.length, 1);
+    assert.ok(result.selection.warnings.some((warning) => warning.includes("dependencies not ready")));
+    assert.ok(result.selection.warnings.some((warning) => warning.includes("dependency-loop fallback")));
+    assert.ok([tasks[0].key, tasks[1].key].includes(result.selection.ordered[0]?.task.key ?? ""));
+    const updatedA = await repo.getTaskByKey(tasks[0].key);
+    const updatedB = await repo.getTaskByKey(tasks[1].key);
+    const reviewReadyCount = [updatedA, updatedB].filter((task) => task?.status === "ready_to_code_review").length;
+    assert.equal(reviewReadyCount, 1);
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks keeps selecting fallback tasks when loop-blocked tasks keep failing", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agent = new StubAgentServiceAlwaysFail();
+  const testCommand = await writeTestCheckScript(dir);
+  const failureMetadata = {
+    tests: [testCommand],
+    test_requirements: {
+      unit: ["pass.flag exists"],
+      component: [],
+      integration: [],
+      api: [],
+    },
+  };
+  await repo.updateTask(tasks[0].id, { metadata: failureMetadata });
+  await repo.updateTask(tasks[1].id, { metadata: failureMetadata });
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agent as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await repo.insertTaskDependencies(
+    [
+      {
+        taskId: tasks[0].id,
+        dependsOnTaskId: tasks[1].id,
+        relationType: "blocks",
+      },
+      {
+        taskId: tasks[1].id,
+        dependsOnTaskId: tasks[0].id,
+        relationType: "blocks",
+      },
+    ],
+    false,
+  );
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+      limit: 2,
+    });
+    assert.equal(result.results.length, 2);
+    assert.ok(result.results.every((entry) => entry.status === "failed"));
+    assert.ok(result.selection.warnings.some((warning) => warning.includes("dependency-loop fallback")));
+    const updatedA = await repo.getTaskByKey(tasks[0].key);
+    const updatedB = await repo.getTaskByKey(tasks[1].key);
+    assert.equal(updatedA?.status, "failed");
+    assert.equal(updatedB?.status, "failed");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
 test("workOnTasks refreshes dependency-blocked selection within the same run", async () => {
   const { dir, workspace, repo, tasks } = await setupWorkspace();
   const jobService = new JobService(workspace.workspaceRoot, repo);

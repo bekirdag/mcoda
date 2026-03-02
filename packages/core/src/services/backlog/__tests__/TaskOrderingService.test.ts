@@ -1061,7 +1061,8 @@ test("handles dependency cycles gracefully", { concurrency: false }, async () =>
           projectKey: ctx.project.key,
         });
         assert.equal(result.ordered.length, 2);
-        assert.ok(result.warnings.length > 0);
+        assert.ok(result.warnings.some((warning) => warning.includes("Cycle resolution removed")));
+        assert.ok(!result.warnings.some((warning) => warning.includes("ordering may be partial")));
         const priorities = await Promise.all(
           [t1, t2].map((task) => ctx.repo.getTaskByKey(task.key)),
         );
@@ -1069,6 +1070,8 @@ test("handles dependency cycles gracefully", { concurrency: false }, async () =>
           .map((t) => t?.priority ?? 0)
           .sort((a, b) => a - b);
         assert.deepEqual(sortedPriorities, [1, 2]);
+        const deps = await ctx.repo.getTaskDependencies([t1.id, t2.id]);
+        assert.equal(deps.length, 1);
       } finally {
         await service.close();
       }
@@ -1076,6 +1079,41 @@ test("handles dependency cycles gracefully", { concurrency: false }, async () =>
       await cleanupWorkspace(ctx.dir, ctx.repo);
     }
   });
+});
+
+test("uses random tie-breaker when cycle candidates have equal weight", () => {
+  const service = Object.create(TaskOrderingService.prototype) as TaskOrderingService;
+  const component = ["A", "B", "C"];
+  const dependencyGraph = new Map<string, Set<string>>([
+    ["A", new Set(["B"])],
+    ["B", new Set(["C"])],
+    ["C", new Set(["A"])],
+  ]);
+  const impact = new Map<string, { direct: number; total: number }>([
+    ["A", { direct: 1, total: 5 }],
+    ["B", { direct: 1, total: 5 }],
+    ["C", { direct: 1, total: 5 }],
+  ]);
+
+  const originalRandom = Math.random;
+  const mathObject = Math as unknown as { random: () => number };
+  let randomCalls = 0;
+  mathObject.random = () => {
+    randomCalls += 1;
+    return 0;
+  };
+  try {
+    const candidate = (service as any).chooseCycleBreakCandidate(component, dependencyGraph, impact) as
+      | { taskId: string; dependsOnTaskId: string; weight: number }
+      | undefined;
+    assert.ok(candidate);
+    assert.ok(randomCalls > 0);
+    assert.equal(candidate?.weight, 5);
+    assert.ok(component.includes(candidate?.taskId ?? ""));
+    assert.ok(component.includes(candidate?.dependsOnTaskId ?? ""));
+  } finally {
+    mathObject.random = originalRandom;
+  }
 });
 
 test("fails when planning context policy requires any context and none is available", { concurrency: false }, async () => {

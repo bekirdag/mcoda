@@ -25,9 +25,11 @@ import { QaAdapter } from "../adapters/qa/QaAdapter.js";
 import { ClaudeAdapter } from "../adapters/claude/ClaudeAdapter.js";
 import { AgentAdapter, InvocationRequest, InvocationResult } from "../adapters/AdapterTypes.js";
 import { parseUsageLimitError } from "./UsageLimitParser.js";
+import { parseInvocationFailure } from "./InvocationFailureParser.js";
 
 const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli", "codali-cli", "claude-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
+const OFFLINE_CAPABLE_ADAPTERS = new Set(["local-model", "ollama-cli", "qa-cli"]);
 const SUPPORTED_ADAPTERS = new Set([
   "openai-api",
   "codex-cli",
@@ -60,6 +62,9 @@ const DOCDEX_JSON_ONLY_MARKERS = [/output json only/i, /return json only/i, /no 
 const HANDOFF_END_MARKERS = [/^\s*END OF FILE\s*$/i, /^\s*\*\*\* End of File\s*$/i];
 const EQUIVALENCE_THRESHOLD = 1.5;
 const MAX_SLEEP_CHUNK_MS = 60 * 60 * 1000;
+const DEFAULT_CONNECTIVITY_POLL_INTERVAL_MS = 5_000;
+const INTERNET_CHECK_TIMEOUT_MS = 2_500;
+const INTERNET_CHECK_TARGETS = ["https://clients3.google.com/generate_204", "https://www.cloudflare.com/cdn-cgi/trace"];
 const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   rolling_5h: 5 * 60 * 60 * 1000,
   daily: 24 * 60 * 60 * 1000,
@@ -208,6 +213,8 @@ const normalizeDocdexGuidanceInput = (input: string, prefix: string): string => 
 interface AgentServiceOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  checkInternetReachable?: () => Promise<boolean>;
+  connectivityPollIntervalMs?: number;
 }
 
 export class AgentService {
@@ -378,6 +385,68 @@ export class AgentService {
     }
   }
 
+  private getConnectivityPollIntervalMs(): number {
+    const configured = this.options.connectivityPollIntervalMs;
+    if (!Number.isFinite(configured)) return DEFAULT_CONNECTIVITY_POLL_INTERVAL_MS;
+    const normalized = Math.floor(Number(configured));
+    return normalized > 0 ? normalized : DEFAULT_CONNECTIVITY_POLL_INTERVAL_MS;
+  }
+
+  private async isInternetReachable(): Promise<boolean> {
+    if (this.options.checkInternetReachable) {
+      try {
+        return Boolean(await this.options.checkInternetReachable());
+      } catch {
+        return false;
+      }
+    }
+
+    const globalFetch = globalThis.fetch;
+    if (typeof globalFetch !== "function") return false;
+    for (const target of INTERNET_CHECK_TARGETS) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), INTERNET_CHECK_TIMEOUT_MS);
+      try {
+        const response = await globalFetch(target, {
+          method: "HEAD",
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (response.status >= 200 && response.status < 500) {
+          return true;
+        }
+      } catch {
+        // keep probing next endpoint.
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    return false;
+  }
+
+  private async waitForInternetRecovery(): Promise<{ startedAtMs: number; recoveredAtMs: number; durationMs: number }> {
+    const pollMs = this.getConnectivityPollIntervalMs();
+    const startedAtMs = this.nowMs();
+    for (;;) {
+      const reachable = await this.isInternetReachable();
+      if (reachable) {
+        const recoveredAtMs = this.nowMs();
+        return {
+          startedAtMs,
+          recoveredAtMs,
+          durationMs: Math.max(0, recoveredAtMs - startedAtMs),
+        };
+      }
+      await this.sleepMs(pollMs);
+    }
+  }
+
+  private async isOfflineCapable(agent: Agent, adapterOverride?: string): Promise<boolean> {
+    const secret = await this.getDecryptedSecret(agent.id);
+    const adapterType = this.resolveAdapterType(agent, secret, adapterOverride);
+    return OFFLINE_CAPABLE_ADAPTERS.has(adapterType);
+  }
+
   private metric(value: number | undefined, fallback = 5): number {
     return Number.isFinite(value) ? Number(value) : fallback;
   }
@@ -480,9 +549,14 @@ export class AgentService {
     candidates: Agent[],
     attemptedAgentIds: Set<string>,
     nowMs: number,
+    options?: { offlineCapableOnly?: boolean; adapterOverride?: string },
   ): Promise<Agent | undefined> {
     for (const candidate of candidates) {
       if (attemptedAgentIds.has(candidate.id)) continue;
+      if (options?.offlineCapableOnly) {
+        const offlineCapable = await this.isOfflineCapable(candidate, options.adapterOverride);
+        if (!offlineCapable) continue;
+      }
       const availability = await this.getAgentAvailability(candidate, nowMs);
       if (availability.available) return candidate;
     }
@@ -586,43 +660,93 @@ export class AgentService {
         };
       } catch (error) {
         await this.recordInvocationFailure(activeAgent, error);
-        const parsedLimit = parseUsageLimitError(error, this.nowMs());
-        if (!parsedLimit) {
+        const nowMs = this.nowMs();
+        const parsedFailure = parseInvocationFailure(error, nowMs);
+        if (!parsedFailure) {
           throw error;
         }
-        await this.persistUsageLimitObservation(activeAgent, parsedLimit);
-        const nowMs = this.nowMs();
-        const nextAgent = await this.findNextAvailableAgent(
-          [baseAgent, ...equivalentAgents],
-          attemptedAgentIds,
-          nowMs,
-        );
-        if (nextAgent) {
+        const candidates = [baseAgent, ...equivalentAgents];
+        if (parsedFailure.kind === "usage_limit") {
+          await this.persistUsageLimitObservation(activeAgent, parsedFailure.usageLimit);
+          const nextAgent = await this.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs);
+          if (nextAgent) {
+            failoverEvents.push({
+              type: "switch_agent",
+              at: new Date(nowMs).toISOString(),
+              fromAgentId: activeAgent.id,
+              fromAgentSlug: activeAgent.slug,
+              toAgentId: nextAgent.id,
+              toAgentSlug: nextAgent.slug,
+              reason: parsedFailure.kind,
+            });
+            activeAgent = nextAgent;
+            continue;
+          }
+          const earliestResetMs = await this.findEarliestResetMs(candidates, nowMs);
+          const fallbackResetMs = this.estimateResetMsFromWindowTypes(parsedFailure.usageLimit.windowTypes, nowMs);
+          const waitUntilMs =
+            earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
+          const durationMs = waitUntilMs - nowMs;
           failoverEvents.push({
-            type: "switch_agent",
+            type: "sleep_until_reset",
             at: new Date(nowMs).toISOString(),
-            fromAgentId: activeAgent.id,
-            fromAgentSlug: activeAgent.slug,
-            toAgentId: nextAgent.id,
-            toAgentSlug: nextAgent.slug,
+            until: new Date(waitUntilMs).toISOString(),
+            durationMs,
           });
-          activeAgent = nextAgent;
+          await this.sleepUntil(waitUntilMs);
+          attemptedAgentIds.clear();
+          activeAgent = baseAgent;
           continue;
         }
-        const earliestResetMs = await this.findEarliestResetMs([baseAgent, ...equivalentAgents], nowMs);
-        const fallbackResetMs = this.estimateResetMsFromWindowTypes(parsedLimit.windowTypes, nowMs);
-        const waitUntilMs =
-          earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
-        const durationMs = waitUntilMs - nowMs;
+
+        if (parsedFailure.kind === "connectivity_issue") {
+          const internetReachable = await this.isInternetReachable();
+          if (!internetReachable) {
+            const localFallback = await this.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs, {
+              offlineCapableOnly: true,
+              adapterOverride: request.adapterType,
+            });
+            if (localFallback) {
+              failoverEvents.push({
+                type: "switch_agent",
+                at: new Date(nowMs).toISOString(),
+                fromAgentId: activeAgent.id,
+                fromAgentSlug: activeAgent.slug,
+                toAgentId: localFallback.id,
+                toAgentSlug: localFallback.slug,
+                reason: parsedFailure.kind,
+              });
+              activeAgent = localFallback;
+              continue;
+            }
+            const recovery = await this.waitForInternetRecovery();
+            failoverEvents.push({
+              type: "wait_for_internet",
+              at: new Date(recovery.startedAtMs).toISOString(),
+              until: new Date(recovery.recoveredAtMs).toISOString(),
+              durationMs: recovery.durationMs,
+              pollIntervalMs: this.getConnectivityPollIntervalMs(),
+            });
+            attemptedAgentIds.clear();
+            activeAgent = baseAgent;
+            continue;
+          }
+        }
+
+        const nextAgent = await this.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs);
+        if (!nextAgent) {
+          throw error;
+        }
         failoverEvents.push({
-          type: "sleep_until_reset",
+          type: "switch_agent",
           at: new Date(nowMs).toISOString(),
-          until: new Date(waitUntilMs).toISOString(),
-          durationMs,
+          fromAgentId: activeAgent.id,
+          fromAgentSlug: activeAgent.slug,
+          toAgentId: nextAgent.id,
+          toAgentSlug: nextAgent.slug,
+          reason: parsedFailure.kind,
         });
-        await this.sleepUntil(waitUntilMs);
-        attemptedAgentIds.clear();
-        activeAgent = baseAgent;
+        activeAgent = nextAgent;
       }
     }
   }
@@ -649,41 +773,91 @@ export class AgentService {
           generator = await adapter.invokeStream(enriched);
         } catch (error) {
           await self.recordInvocationFailure(activeAgent, error);
-          const parsedLimit = parseUsageLimitError(error, self.nowMs());
-          if (!parsedLimit) throw error;
-          await self.persistUsageLimitObservation(activeAgent, parsedLimit);
           const nowMs = self.nowMs();
-          const nextAgent = await self.findNextAvailableAgent(
-            [baseAgent, ...equivalentAgents],
-            attemptedAgentIds,
-            nowMs,
-          );
-          if (nextAgent) {
+          const parsedFailure = parseInvocationFailure(error, nowMs);
+          if (!parsedFailure) throw error;
+          const candidates = [baseAgent, ...equivalentAgents];
+          if (parsedFailure.kind === "usage_limit") {
+            await self.persistUsageLimitObservation(activeAgent, parsedFailure.usageLimit);
+            const nextAgent = await self.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs);
+            if (nextAgent) {
+              failoverEvents.push({
+                type: "switch_agent",
+                at: new Date(nowMs).toISOString(),
+                fromAgentId: activeAgent.id,
+                fromAgentSlug: activeAgent.slug,
+                toAgentId: nextAgent.id,
+                toAgentSlug: nextAgent.slug,
+                reason: parsedFailure.kind,
+              });
+              activeAgent = nextAgent;
+              continue;
+            }
+            const earliestResetMs = await self.findEarliestResetMs(candidates, nowMs);
+            const fallbackResetMs = self.estimateResetMsFromWindowTypes(parsedFailure.usageLimit.windowTypes, nowMs);
+            const waitUntilMs =
+              earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
+            const durationMs = waitUntilMs - nowMs;
             failoverEvents.push({
-              type: "switch_agent",
+              type: "sleep_until_reset",
               at: new Date(nowMs).toISOString(),
-              fromAgentId: activeAgent.id,
-              fromAgentSlug: activeAgent.slug,
-              toAgentId: nextAgent.id,
-              toAgentSlug: nextAgent.slug,
+              until: new Date(waitUntilMs).toISOString(),
+              durationMs,
             });
-            activeAgent = nextAgent;
+            await self.sleepUntil(waitUntilMs);
+            attemptedAgentIds.clear();
+            activeAgent = baseAgent;
             continue;
           }
-          const earliestResetMs = await self.findEarliestResetMs([baseAgent, ...equivalentAgents], nowMs);
-          const fallbackResetMs = self.estimateResetMsFromWindowTypes(parsedLimit.windowTypes, nowMs);
-          const waitUntilMs =
-            earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
-          const durationMs = waitUntilMs - nowMs;
+
+          if (parsedFailure.kind === "connectivity_issue") {
+            const internetReachable = await self.isInternetReachable();
+            if (!internetReachable) {
+              const localFallback = await self.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs, {
+                offlineCapableOnly: true,
+                adapterOverride: request.adapterType,
+              });
+              if (localFallback) {
+                failoverEvents.push({
+                  type: "switch_agent",
+                  at: new Date(nowMs).toISOString(),
+                  fromAgentId: activeAgent.id,
+                  fromAgentSlug: activeAgent.slug,
+                  toAgentId: localFallback.id,
+                  toAgentSlug: localFallback.slug,
+                  reason: parsedFailure.kind,
+                });
+                activeAgent = localFallback;
+                continue;
+              }
+              const recovery = await self.waitForInternetRecovery();
+              failoverEvents.push({
+                type: "wait_for_internet",
+                at: new Date(recovery.startedAtMs).toISOString(),
+                until: new Date(recovery.recoveredAtMs).toISOString(),
+                durationMs: recovery.durationMs,
+                pollIntervalMs: self.getConnectivityPollIntervalMs(),
+              });
+              attemptedAgentIds.clear();
+              activeAgent = baseAgent;
+              continue;
+            }
+          }
+
+          const nextAgent = await self.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs);
+          if (!nextAgent) {
+            throw error;
+          }
           failoverEvents.push({
-            type: "sleep_until_reset",
+            type: "switch_agent",
             at: new Date(nowMs).toISOString(),
-            until: new Date(waitUntilMs).toISOString(),
-            durationMs,
+            fromAgentId: activeAgent.id,
+            fromAgentSlug: activeAgent.slug,
+            toAgentId: nextAgent.id,
+            toAgentSlug: nextAgent.slug,
+            reason: parsedFailure.kind,
           });
-          await self.sleepUntil(waitUntilMs);
-          attemptedAgentIds.clear();
-          activeAgent = baseAgent;
+          activeAgent = nextAgent;
           continue;
         }
         const streamIo = ioEnabled ? createStreamIoRenderer() : undefined;
@@ -716,49 +890,109 @@ export class AgentService {
           return;
         } catch (error) {
           await self.recordInvocationFailure(activeAgent, error);
-          const parsedLimit = parseUsageLimitError(error, self.nowMs());
-          if (!parsedLimit) throw error;
           const nowMs = self.nowMs();
-          if (emitted) {
+          const parsedFailure = parseInvocationFailure(error, nowMs);
+          if (!parsedFailure) throw error;
+          const candidates = [baseAgent, ...equivalentAgents];
+          if (parsedFailure.kind === "usage_limit") {
+            if (emitted) {
+              failoverEvents.push({
+                type: "stream_restart_after_limit",
+                at: new Date(nowMs).toISOString(),
+                fromAgentId: activeAgent.id,
+                fromAgentSlug: activeAgent.slug,
+              });
+            }
+            await self.persistUsageLimitObservation(activeAgent, parsedFailure.usageLimit);
+            const nextAgent = await self.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs);
+            if (nextAgent) {
+              failoverEvents.push({
+                type: "switch_agent",
+                at: new Date(nowMs).toISOString(),
+                fromAgentId: activeAgent.id,
+                fromAgentSlug: activeAgent.slug,
+                toAgentId: nextAgent.id,
+                toAgentSlug: nextAgent.slug,
+                reason: parsedFailure.kind,
+              });
+              activeAgent = nextAgent;
+              continue;
+            }
+            const earliestResetMs = await self.findEarliestResetMs(candidates, nowMs);
+            const fallbackResetMs = self.estimateResetMsFromWindowTypes(parsedFailure.usageLimit.windowTypes, nowMs);
+            const waitUntilMs =
+              earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
+            const durationMs = waitUntilMs - nowMs;
             failoverEvents.push({
-              type: "stream_restart_after_limit",
+              type: "sleep_until_reset",
               at: new Date(nowMs).toISOString(),
-              fromAgentId: activeAgent.id,
-              fromAgentSlug: activeAgent.slug,
+              until: new Date(waitUntilMs).toISOString(),
+              durationMs,
             });
-          }
-          await self.persistUsageLimitObservation(activeAgent, parsedLimit);
-          const nextAgent = await self.findNextAvailableAgent(
-            [baseAgent, ...equivalentAgents],
-            attemptedAgentIds,
-            nowMs,
-          );
-          if (nextAgent) {
-            failoverEvents.push({
-              type: "switch_agent",
-              at: new Date(nowMs).toISOString(),
-              fromAgentId: activeAgent.id,
-              fromAgentSlug: activeAgent.slug,
-              toAgentId: nextAgent.id,
-              toAgentSlug: nextAgent.slug,
-            });
-            activeAgent = nextAgent;
+            await self.sleepUntil(waitUntilMs);
+            attemptedAgentIds.clear();
+            activeAgent = baseAgent;
             continue;
           }
-          const earliestResetMs = await self.findEarliestResetMs([baseAgent, ...equivalentAgents], nowMs);
-          const fallbackResetMs = self.estimateResetMsFromWindowTypes(parsedLimit.windowTypes, nowMs);
-          const waitUntilMs =
-            earliestResetMs && earliestResetMs > nowMs ? earliestResetMs : Math.max(fallbackResetMs, nowMs + 1000);
-          const durationMs = waitUntilMs - nowMs;
+
+          if (emitted) {
+            failoverEvents.push({
+              type: "stream_restart_after_failure",
+              at: new Date(nowMs).toISOString(),
+              fromAgentId: activeAgent.id,
+              fromAgentSlug: activeAgent.slug,
+              reason: parsedFailure.kind,
+            });
+          }
+
+          if (parsedFailure.kind === "connectivity_issue") {
+            const internetReachable = await self.isInternetReachable();
+            if (!internetReachable) {
+              const localFallback = await self.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs, {
+                offlineCapableOnly: true,
+                adapterOverride: request.adapterType,
+              });
+              if (localFallback) {
+                failoverEvents.push({
+                  type: "switch_agent",
+                  at: new Date(nowMs).toISOString(),
+                  fromAgentId: activeAgent.id,
+                  fromAgentSlug: activeAgent.slug,
+                  toAgentId: localFallback.id,
+                  toAgentSlug: localFallback.slug,
+                  reason: parsedFailure.kind,
+                });
+                activeAgent = localFallback;
+                continue;
+              }
+              const recovery = await self.waitForInternetRecovery();
+              failoverEvents.push({
+                type: "wait_for_internet",
+                at: new Date(recovery.startedAtMs).toISOString(),
+                until: new Date(recovery.recoveredAtMs).toISOString(),
+                durationMs: recovery.durationMs,
+                pollIntervalMs: self.getConnectivityPollIntervalMs(),
+              });
+              attemptedAgentIds.clear();
+              activeAgent = baseAgent;
+              continue;
+            }
+          }
+
+          const nextAgent = await self.findNextAvailableAgent(candidates, attemptedAgentIds, nowMs);
+          if (!nextAgent) {
+            throw error;
+          }
           failoverEvents.push({
-            type: "sleep_until_reset",
+            type: "switch_agent",
             at: new Date(nowMs).toISOString(),
-            until: new Date(waitUntilMs).toISOString(),
-            durationMs,
+            fromAgentId: activeAgent.id,
+            fromAgentSlug: activeAgent.slug,
+            toAgentId: nextAgent.id,
+            toAgentSlug: nextAgent.slug,
+            reason: parsedFailure.kind,
           });
-          await self.sleepUntil(waitUntilMs);
-          attemptedAgentIds.clear();
-          activeAgent = baseAgent;
+          activeAgent = nextAgent;
         }
       }
     }

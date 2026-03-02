@@ -3955,6 +3955,40 @@ export class WorkOnTasksService {
     return { ok: true, results };
   }
 
+  private selectMostDependedTask(
+    candidates: TaskSelectionPlan["ordered"],
+  ): TaskSelectionPlan["ordered"][number] | undefined {
+    if (candidates.length === 0) return undefined;
+    const candidateIds = new Set(candidates.map((candidate) => candidate.task.id));
+    const dependentCounts = new Map<string, number>();
+    for (const candidate of candidates) {
+      dependentCounts.set(candidate.task.id, 0);
+    }
+    for (const candidate of candidates) {
+      for (const dependencyId of candidate.dependencies.ids) {
+        if (!candidateIds.has(dependencyId)) continue;
+        dependentCounts.set(dependencyId, (dependentCounts.get(dependencyId) ?? 0) + 1);
+      }
+    }
+    const ranked = candidates
+      .map((candidate, index) => ({
+        candidate,
+        index,
+        dependentCount: dependentCounts.get(candidate.task.id) ?? 0,
+      }))
+      .sort((a, b) => {
+        if (a.dependentCount !== b.dependentCount) return b.dependentCount - a.dependentCount;
+        const priorityA = a.candidate.task.priority ?? Number.MAX_SAFE_INTEGER;
+        const priorityB = b.candidate.task.priority ?? Number.MAX_SAFE_INTEGER;
+        if (priorityA !== priorityB) return priorityA - priorityB;
+        const createdA = Date.parse(a.candidate.task.createdAt) || 0;
+        const createdB = Date.parse(b.candidate.task.createdAt) || 0;
+        if (createdA !== createdB) return createdA - createdB;
+        return a.index - b.index;
+      });
+    return ranked[0]?.candidate;
+  }
+
   async workOnTasks(request: WorkOnTasksRequest): Promise<WorkOnTasksResult> {
     await this.ensureMcoda();
     const commandName = "work-on-tasks";
@@ -4172,6 +4206,39 @@ export class WorkOnTasksService {
         limit: request.limit,
         parallel: request.parallel,
       });
+      if (selection.ordered.length === 0 && !ignoreDependencies && !explicitTaskSelection) {
+        const dependencyBlocked = selection.warnings.some((warning) =>
+          warning.toLowerCase().includes("dependencies not ready"),
+        );
+        if (dependencyBlocked) {
+          const fallbackSelection = await this.selectionService.selectTasks({
+            projectKey: request.projectKey,
+            epicKey: request.epicKey,
+            storyKey: request.storyKey,
+            taskKeys: request.taskKeys,
+            statusFilter,
+            ignoreStatusFilter,
+            includeTypes,
+            excludeTypes,
+            ignoreDependencies: true,
+            missingContextPolicy: request.missingContextPolicy ?? "block",
+            parallel: request.parallel,
+          });
+          pushSelectionWarnings(fallbackSelection.warnings);
+          const fallbackTask = this.selectMostDependedTask(fallbackSelection.ordered);
+          if (fallbackTask) {
+            selection = {
+              ...selection,
+              project: selection.project ?? fallbackSelection.project,
+              ordered: [fallbackTask],
+              warnings: [
+                ...selection.warnings,
+                `No dependency-ready tasks available; selected ${fallbackTask.task.key} from dependency-loop fallback.`,
+              ],
+            };
+          }
+        }
+      }
 
       await this.checkpoint(job.id, "selection", {
         ordered: selection.ordered.map((t) => t.task.key),
@@ -4498,6 +4565,41 @@ export class WorkOnTasksService {
           if (selectedTaskIds.has(entry.task.id)) continue;
           if (maxSelectedTasks !== undefined && selectedTaskIds.size + newlyEligible.length >= maxSelectedTasks) break;
           newlyEligible.push(entry);
+        }
+        if (newlyEligible.length === 0 && !ignoreDependencies && !explicitTaskSelection) {
+          const dependencyBlocked = refreshedSelection.warnings.some((warning) =>
+            warning.toLowerCase().includes("dependencies not ready"),
+          );
+          if (dependencyBlocked) {
+            const fallbackSelection = await this.selectionService.selectTasks({
+              projectKey: request.projectKey,
+              epicKey: request.epicKey,
+              storyKey: request.storyKey,
+              taskKeys: request.taskKeys,
+              statusFilter,
+              ignoreStatusFilter,
+              includeTypes,
+              excludeTypes,
+              ignoreDependencies: true,
+              missingContextPolicy: request.missingContextPolicy ?? "block",
+              limit: remainingBudget,
+              parallel: request.parallel,
+            });
+            pushSelectionWarnings(fallbackSelection.warnings);
+            const fallbackTask = this.selectMostDependedTask(
+              fallbackSelection.ordered.filter((entry) => !selectedTaskIds.has(entry.task.id)),
+            );
+            if (fallbackTask) {
+              const fallbackWarning = `No dependency-ready tasks available; selected ${fallbackTask.task.key} from dependency-loop fallback.`;
+              selection = {
+                ...selection,
+                project: selection.project ?? refreshedSelection.project ?? fallbackSelection.project,
+                warnings: [...selection.warnings, fallbackWarning],
+              };
+              pushSelectionWarnings([fallbackWarning]);
+              newlyEligible.push(fallbackTask);
+            }
+          }
         }
         if (newlyEligible.length === 0) return;
         selection = {
