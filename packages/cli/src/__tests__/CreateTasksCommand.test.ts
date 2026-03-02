@@ -60,6 +60,21 @@ describe("create-tasks argument parsing", () => {
     assert.deepEqual(parsed.qaRequires, ["db", "seed"]);
   });
 
+  it("parses SDS preflight commit flags", () => {
+    const parsed = parseCreateTasksArgs([
+      "--sds-preflight-commit",
+      "--sds-preflight-commit-message",
+      "mcoda: finalize sds decisions",
+    ]);
+    assert.equal(parsed.sdsPreflightCommit, true);
+    assert.equal(parsed.sdsPreflightCommitMessage, "mcoda: finalize sds decisions");
+  });
+
+  it("parses explicit false for SDS preflight commit flag", () => {
+    const parsed = parseCreateTasksArgs(["--sds-preflight-commit=false"]);
+    assert.equal(parsed.sdsPreflightCommit, false);
+  });
+
   it("honors explicit requested project key over configured defaults", () => {
     const result = pickCreateTasksProjectKey({
       requestedKey: "B",

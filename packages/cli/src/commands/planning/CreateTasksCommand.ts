@@ -18,12 +18,14 @@ interface ParsedArgs {
   qaEntryUrl?: string;
   qaStartCommand?: string;
   qaRequires?: string[];
+  sdsPreflightCommit: boolean;
+  sdsPreflightCommitMessage?: string;
   inputs: string[];
 }
 
 type ProjectKeyCandidate = { key: string; mtimeMs: number };
 
-const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--quiet]`;
+const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--sds-preflight-commit [true|false]] [--sds-preflight-commit-message <text>] [--quiet]`;
 
 const readWorkspaceConfig = async (mcodaDir: string): Promise<Record<string, unknown>> => {
   const configPath = path.join(mcodaDir, "config.json");
@@ -162,6 +164,8 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
   let qaEntryUrl: string | undefined;
   let qaStartCommand: string | undefined;
   let qaRequires: string[] | undefined;
+  let sdsPreflightCommit = false;
+  let sdsPreflightCommitMessage: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -169,6 +173,11 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
       if (arg.startsWith("--rate-agents=")) {
         const [, raw] = arg.split("=", 2);
         rateAgents = parseBooleanFlag(raw, true);
+        continue;
+      }
+      if (arg.startsWith("--sds-preflight-commit=")) {
+        const [, raw] = arg.split("=", 2);
+        sdsPreflightCommit = parseBooleanFlag(raw, true);
         continue;
       }
       switch (arg) {
@@ -243,6 +252,20 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
             : undefined;
           i += 1;
           break;
+        case "--sds-preflight-commit": {
+          const next = argv[i + 1];
+          if (next && !next.startsWith("--")) {
+            sdsPreflightCommit = parseBooleanFlag(next, true);
+            i += 1;
+          } else {
+            sdsPreflightCommit = true;
+          }
+          break;
+        }
+        case "--sds-preflight-commit-message":
+          sdsPreflightCommitMessage = argv[i + 1];
+          i += 1;
+          break;
         case "--quiet":
           quiet = true;
           break;
@@ -278,6 +301,8 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     qaEntryUrl,
     qaStartCommand,
     qaRequires,
+    sdsPreflightCommit,
+    sdsPreflightCommitMessage,
     inputs,
   };
 };
@@ -329,6 +354,8 @@ export class CreateTasksCommand {
         qaEntryUrl: parsed.qaEntryUrl,
         qaStartCommand: parsed.qaStartCommand,
         qaRequires: parsed.qaRequires,
+        sdsPreflightCommit: parsed.sdsPreflightCommit,
+        sdsPreflightCommitMessage: parsed.sdsPreflightCommitMessage,
       });
 
       const dbPath = PathHelper.getWorkspaceDbPath(workspace.workspaceRoot);

@@ -5,6 +5,7 @@ export * from "./services/jobs/JobService.js";
 export * from "./services/jobs/JobInsightsService.js";
 export * from "./services/jobs/JobResumeService.js";
 export * from "./services/planning/CreateTasksService.js";
+export * from "./services/planning/SdsPreflightService.js";
 export * from "./services/planning/RefineTasksService.js";
 export * from "./services/planning/TaskSufficiencyService.js";
 export * from "./services/planning/KeyHelpers.js";

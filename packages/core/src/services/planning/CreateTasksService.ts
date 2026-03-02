@@ -30,6 +30,7 @@ import {
   createTaskKeyGenerator,
 } from "./KeyHelpers.js";
 import { TaskSufficiencyService, type TaskSufficiencyAuditResult } from "./TaskSufficiencyService.js";
+import { SdsPreflightService, type SdsPreflightResult } from "./SdsPreflightService.js";
 
 export interface CreateTasksOptions {
   workspace: WorkspaceResolution;
@@ -46,6 +47,8 @@ export interface CreateTasksOptions {
   qaEntryUrl?: string;
   qaStartCommand?: string;
   qaRequires?: string[];
+  sdsPreflightCommit?: boolean;
+  sdsPreflightCommitMessage?: string;
 }
 
 export interface CreateTasksResult {
@@ -160,6 +163,8 @@ type TaskOrderingFactory = (
 
 type TaskSufficiencyClient = Pick<TaskSufficiencyService, "runAudit" | "close">;
 type TaskSufficiencyFactory = (workspace: WorkspaceResolution) => Promise<TaskSufficiencyClient>;
+type SdsPreflightClient = Pick<SdsPreflightService, "runPreflight" | "close">;
+type SdsPreflightFactory = (workspace: WorkspaceResolution) => Promise<SdsPreflightClient>;
 
 const formatBullets = (items: string[] | undefined, fallback: string): string => {
   if (!items || items.length === 0) return `- ${fallback}`;
@@ -412,6 +417,12 @@ const extractMarkdownHeadings = (value: string, limit: number): string[] => {
       !line.startsWith("*")
     ) {
       headings.push(line);
+    } else {
+      const numberedHeading = line.match(/^(\d+(?:\.\d+)+)\s+(.+)$/);
+      if (numberedHeading) {
+        const headingText = `${numberedHeading[1]} ${numberedHeading[2]}`.trim();
+        if (/[a-z]/i.test(headingText)) headings.push(headingText);
+      }
     }
     if (headings.length >= limit) break;
   }
@@ -548,6 +559,95 @@ const extractJsonObjects = (value: string): string[] => {
     }
   }
   return results;
+};
+
+const normalizeAgentFailoverEvents = (value: unknown): Array<Record<string, unknown>> => {
+  if (!Array.isArray(value)) return [];
+  const events: Array<Record<string, unknown>> = [];
+  for (const entry of value) {
+    if (!isPlainObject(entry)) continue;
+    if (typeof entry.type !== "string" || entry.type.trim().length === 0) continue;
+    events.push({ ...entry });
+  }
+  return events;
+};
+
+const mergeAgentFailoverEvents = (
+  left: Array<Record<string, unknown>>,
+  right: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> => {
+  if (!left.length) return right;
+  if (!right.length) return left;
+  const seen = new Set<string>();
+  const merged: Array<Record<string, unknown>> = [];
+  const signature = (event: Record<string, unknown>): string =>
+    [
+      event.type ?? "",
+      event.fromAgentId ?? "",
+      event.toAgentId ?? "",
+      event.at ?? "",
+      event.until ?? "",
+      event.durationMs ?? "",
+    ].join("|");
+  for (const event of [...left, ...right]) {
+    const key = signature(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+  return merged;
+};
+
+const mergeAgentInvocationMetadata = (
+  current: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!current && !incoming) return undefined;
+  if (!incoming) return current;
+  if (!current) return { ...incoming };
+  const merged: Record<string, unknown> = { ...current, ...incoming };
+  const currentEvents = normalizeAgentFailoverEvents(current.failoverEvents);
+  const incomingEvents = normalizeAgentFailoverEvents(incoming.failoverEvents);
+  if (currentEvents.length > 0 || incomingEvents.length > 0) {
+    merged.failoverEvents = mergeAgentFailoverEvents(currentEvents, incomingEvents);
+  }
+  return merged;
+};
+
+const summarizeAgentFailoverEvent = (event: Record<string, unknown>): string => {
+  const type = String(event.type ?? "unknown");
+  if (type === "switch_agent") {
+    const from = typeof event.fromAgentId === "string" ? event.fromAgentId : "unknown";
+    const to = typeof event.toAgentId === "string" ? event.toAgentId : "unknown";
+    return `switch_agent ${from} -> ${to}`;
+  }
+  if (type === "sleep_until_reset") {
+    const duration =
+      typeof event.durationMs === "number" && Number.isFinite(event.durationMs)
+        ? `${Math.round(event.durationMs / 1000)}s`
+        : "unknown duration";
+    const until = typeof event.until === "string" ? event.until : "unknown";
+    return `sleep_until_reset ${duration} (until ${until})`;
+  }
+  if (type === "stream_restart_after_limit") {
+    const from = typeof event.fromAgentId === "string" ? event.fromAgentId : "unknown";
+    return `stream_restart_after_limit from ${from}`;
+  }
+  return type;
+};
+
+const resolveTerminalFailoverAgentId = (
+  events: Array<Record<string, unknown>>,
+  fallbackAgentId: string,
+): string => {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== "switch_agent") continue;
+    if (typeof event.toAgentId === "string" && event.toAgentId.trim().length > 0) {
+      return event.toAgentId;
+    }
+  }
+  return fallbackAgentId;
 };
 
 const compactNarrative = (value: string | undefined, fallback: string, maxLines = 5): string => {
@@ -921,6 +1021,7 @@ export class CreateTasksService {
   private ratingService?: AgentRatingService;
   private taskOrderingFactory: TaskOrderingFactory;
   private taskSufficiencyFactory: TaskSufficiencyFactory;
+  private sdsPreflightFactory: SdsPreflightFactory;
 
   constructor(
     workspace: WorkspaceResolution,
@@ -934,6 +1035,7 @@ export class CreateTasksService {
       ratingService?: AgentRatingService;
       taskOrderingFactory?: TaskOrderingFactory;
       taskSufficiencyFactory?: TaskSufficiencyFactory;
+      sdsPreflightFactory?: SdsPreflightFactory;
     },
   ) {
     this.workspace = workspace;
@@ -946,6 +1048,7 @@ export class CreateTasksService {
     this.ratingService = deps.ratingService;
     this.taskOrderingFactory = deps.taskOrderingFactory ?? TaskOrderingService.create;
     this.taskSufficiencyFactory = deps.taskSufficiencyFactory ?? TaskSufficiencyService.create;
+    this.sdsPreflightFactory = deps.sdsPreflightFactory ?? SdsPreflightService.create;
   }
 
   static async create(workspace: WorkspaceResolution): Promise<CreateTasksService> {
@@ -969,6 +1072,7 @@ export class CreateTasksService {
       workspaceRepo,
       routingService,
       taskSufficiencyFactory: TaskSufficiencyService.create,
+      sdsPreflightFactory: SdsPreflightService.create,
     });
   }
 
@@ -1066,6 +1170,19 @@ export class CreateTasksService {
     if (input.startsWith("docdex:")) return input.trim().toLowerCase();
     const resolved = path.isAbsolute(input) ? input : path.join(this.workspace.workspaceRoot, input);
     return path.resolve(resolved).toLowerCase();
+  }
+
+  private mergeDocInputs(primary: string[], extras: string[]): string[] {
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const input of [...primary, ...extras]) {
+      if (!input?.trim()) continue;
+      const key = this.normalizeDocInputForSet(input);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(input);
+    }
+    return merged;
   }
 
   private docIdentity(doc: DocdexDocument): string {
@@ -2324,8 +2441,11 @@ export class CreateTasksService {
       const segmentHeadings = (doc.segments ?? [])
         .map((segment) => segment.heading?.trim())
         .filter((heading): heading is string => Boolean(heading));
+      const segmentContentHeadings = (doc.segments ?? [])
+        .flatMap((segment) => extractMarkdownHeadings(segment.content ?? "", Math.max(6, Math.ceil(limit / 4))))
+        .slice(0, limit);
       const contentHeadings = extractMarkdownHeadings(doc.content ?? "", limit);
-      for (const heading of [...segmentHeadings, ...contentHeadings]) {
+      for (const heading of [...segmentHeadings, ...segmentContentHeadings, ...contentHeadings]) {
         const normalized = heading.replace(/[`*_]/g, "").trim();
         if (!normalized) continue;
         sections.push(normalized);
@@ -2587,21 +2707,68 @@ export class CreateTasksService {
   ): Promise<{ output: string; promptTokens: number; completionTokens: number }> {
     const startedAt = Date.now();
     let output = "";
+    let invocationMetadata: Record<string, unknown> | undefined;
     const logChunk = async (chunk?: string) => {
       if (!chunk) return;
       await this.jobService.appendLog(jobId, chunk);
       if (stream) process.stdout.write(chunk);
     };
+    const baseInvocationMetadata = {
+      command: "create-tasks",
+      action,
+      phase: `create_tasks_${action}`,
+    };
+    const logFailoverEvents = async (events: Array<Record<string, unknown>>): Promise<void> => {
+      if (!events.length) return;
+      for (const event of events) {
+        await this.jobService.appendLog(
+          jobId,
+          `[create-tasks] agent failover (${action}): ${summarizeAgentFailoverEvent(event)}\n`,
+        );
+      }
+    };
+    const resolveUsageAgent = async (
+      events: Array<Record<string, unknown>>,
+    ): Promise<{ id: string; defaultModel?: string }> => {
+      const agentId = resolveTerminalFailoverAgentId(events, agent.id);
+      if (agentId === agent.id) {
+        return { id: agent.id, defaultModel: agent.defaultModel };
+      }
+      try {
+        const resolved = await this.agentService.resolveAgent(agentId);
+        return { id: resolved.id, defaultModel: resolved.defaultModel };
+      } catch (error) {
+        await this.jobService.appendLog(
+          jobId,
+          `[create-tasks] unable to resolve failover agent (${agentId}) for usage accounting: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return { id: agent.id, defaultModel: agent.defaultModel };
+      }
+    };
     try {
       if (stream) {
-        const gen = await this.agentService.invokeStream(agent.id, { input: prompt });
+        const gen = await this.agentService.invokeStream(agent.id, {
+          input: prompt,
+          metadata: baseInvocationMetadata,
+        });
         for await (const chunk of gen) {
           output += chunk.output ?? "";
+          invocationMetadata = mergeAgentInvocationMetadata(
+            invocationMetadata,
+            chunk.metadata as Record<string, unknown> | undefined,
+          );
           await logChunk(chunk.output);
         }
       } else {
-        const result = await this.agentService.invoke(agent.id, { input: prompt });
+        const result = await this.agentService.invoke(agent.id, {
+          input: prompt,
+          metadata: baseInvocationMetadata,
+        });
         output = result.output ?? "";
+        invocationMetadata = mergeAgentInvocationMetadata(
+          invocationMetadata,
+          result.metadata as Record<string, unknown> | undefined,
+        );
         await logChunk(output);
       }
     } catch (error) {
@@ -2617,10 +2784,25 @@ export class CreateTasksService {
         `Original content:\n${output}`,
       ].join("\n\n");
       try {
-        const fix = await this.agentService.invoke(agent.id, { input: fixPrompt });
+        let retryInvocationMetadata: Record<string, unknown> | undefined;
+        const fix = await this.agentService.invoke(agent.id, {
+          input: fixPrompt,
+          metadata: {
+            ...baseInvocationMetadata,
+            attempt: 2,
+            stage: "json_repair",
+          },
+        });
         output = fix.output ?? "";
+        retryInvocationMetadata = mergeAgentInvocationMetadata(
+          retryInvocationMetadata,
+          fix.metadata as Record<string, unknown> | undefined,
+        );
         parsed = extractJson(output);
         if (parsed) {
+          const failoverEvents = normalizeAgentFailoverEvents(retryInvocationMetadata?.failoverEvents);
+          await logFailoverEvents(failoverEvents);
+          const usageAgent = await resolveUsageAgent(failoverEvents);
           const promptTokens = estimateTokens(prompt);
           const completionTokens = estimateTokens(output);
           const durationSeconds = (Date.now() - startedAt) / 1000;
@@ -2629,8 +2811,8 @@ export class CreateTasksService {
             workspaceId: this.workspace.workspaceId,
             jobId,
             commandRunId,
-            agentId: agent.id,
-            modelName: agent.defaultModel,
+            agentId: usageAgent.id,
+            modelName: usageAgent.defaultModel,
             promptTokens,
             completionTokens,
             tokensPrompt: promptTokens,
@@ -2641,6 +2823,7 @@ export class CreateTasksService {
               action: `create_tasks_${action}`,
               phase: `create_tasks_${action}`,
               attempt,
+              failoverEvents: failoverEvents.length > 0 ? failoverEvents : undefined,
               ...(metadata ?? {}),
             },
           });
@@ -2653,6 +2836,9 @@ export class CreateTasksService {
     if (!parsed) {
       throw new Error(`Agent output was not valid JSON for ${action}`);
     }
+    const failoverEvents = normalizeAgentFailoverEvents(invocationMetadata?.failoverEvents);
+    await logFailoverEvents(failoverEvents);
+    const usageAgent = await resolveUsageAgent(failoverEvents);
     const promptTokens = estimateTokens(prompt);
     const completionTokens = estimateTokens(output);
     const durationSeconds = (Date.now() - startedAt) / 1000;
@@ -2661,8 +2847,8 @@ export class CreateTasksService {
       workspaceId: this.workspace.workspaceId,
       jobId,
       commandRunId,
-      agentId: agent.id,
-      modelName: agent.defaultModel,
+      agentId: usageAgent.id,
+      modelName: usageAgent.defaultModel,
       promptTokens,
       completionTokens,
       tokensPrompt: promptTokens,
@@ -2673,6 +2859,7 @@ export class CreateTasksService {
         action: `create_tasks_${action}`,
         phase: `create_tasks_${action}`,
         attempt: 1,
+        failoverEvents: failoverEvents.length > 0 ? failoverEvents : undefined,
         ...(metadata ?? {}),
       },
     });
@@ -3414,6 +3601,7 @@ export class CreateTasksService {
           inputs: options.inputs,
           agent: options.agentName,
           agentStream,
+          sdsPreflightCommit: options.sdsPreflightCommit === true,
         },
       },
     );
@@ -3427,8 +3615,120 @@ export class CreateTasksService {
           description: `Workspace project ${options.projectKey}`,
         });
 
-        const docs = await this.prepareDocs(options.inputs);
-        const { docSummary, warnings: docWarnings } = this.buildDocContext(docs);
+        let sdsPreflight: SdsPreflightResult | undefined;
+        let sdsPreflightError: string | undefined;
+        if (this.sdsPreflightFactory) {
+          let sdsPreflightCloseError: string | undefined;
+          try {
+            const preflightService = await this.sdsPreflightFactory(this.workspace);
+            try {
+              sdsPreflight = await preflightService.runPreflight({
+                workspace: options.workspace,
+                projectKey: options.projectKey,
+                inputPaths: options.inputs,
+                sdsPaths: options.inputs,
+                writeArtifacts: true,
+                applyToSds: true,
+                commitAppliedChanges: options.sdsPreflightCommit === true,
+                commitMessage: options.sdsPreflightCommitMessage,
+              });
+            } finally {
+              try {
+                await preflightService.close();
+              } catch (closeError) {
+                sdsPreflightCloseError = (closeError as Error)?.message ?? String(closeError);
+                await this.jobService.appendLog(
+                  job.id,
+                  `SDS preflight close warning: ${sdsPreflightCloseError}\n`,
+                );
+              }
+            }
+          } catch (error) {
+            sdsPreflightError = (error as Error)?.message ?? String(error);
+          }
+
+          if (!sdsPreflight) {
+            const message = `create-tasks blocked: SDS preflight failed before backlog generation (${sdsPreflightError ?? "unknown error"}).`;
+            await this.jobService.writeCheckpoint(job.id, {
+              stage: "sds_preflight",
+              timestamp: new Date().toISOString(),
+              details: {
+                status: "failed",
+                error: message,
+                readyForPlanning: false,
+                qualityStatus: undefined,
+                sourceSdsCount: 0,
+                issueCount: 0,
+                blockingIssueCount: 0,
+                questionCount: 0,
+                requiredQuestionCount: 0,
+                reportPath: undefined,
+                openQuestionsPath: undefined,
+                gapAddendumPath: undefined,
+                warnings: [],
+              },
+            });
+            throw new Error(message);
+          }
+
+          const preflightWarnings = uniqueStrings([
+            ...(sdsPreflight.warnings ?? []),
+            ...(sdsPreflightCloseError ? [`SDS preflight close warning: ${sdsPreflightCloseError}`] : []),
+          ]);
+          const blockingReasons: string[] = [];
+          if (sdsPreflight.qualityStatus === "fail") {
+            blockingReasons.push("SDS quality gates failed.");
+          }
+          if (sdsPreflight.blockingIssueCount > 0) {
+            blockingReasons.push(`Blocking SDS issues: ${sdsPreflight.blockingIssueCount}.`);
+          }
+          if (sdsPreflight.requiredQuestionCount > 0) {
+            blockingReasons.push(`Required open questions remaining: ${sdsPreflight.requiredQuestionCount}.`);
+          }
+          if (!sdsPreflight.readyForPlanning) {
+            blockingReasons.push("SDS preflight reported planning context is not ready.");
+          }
+          if (blockingReasons.length > 0) {
+            sdsPreflightError = blockingReasons.join(" ");
+          }
+
+          await this.jobService.writeCheckpoint(job.id, {
+            stage: "sds_preflight",
+            timestamp: new Date().toISOString(),
+            details: {
+              status: blockingReasons.length > 0 ? "blocked" : "succeeded",
+              error: sdsPreflightError,
+              readyForPlanning: sdsPreflight.readyForPlanning,
+              qualityStatus: sdsPreflight.qualityStatus,
+              sourceSdsCount: sdsPreflight.sourceSdsPaths.length,
+              issueCount: sdsPreflight.issueCount,
+              blockingIssueCount: sdsPreflight.blockingIssueCount,
+              questionCount: sdsPreflight.questionCount,
+              requiredQuestionCount: sdsPreflight.requiredQuestionCount,
+              reportPath: sdsPreflight.reportPath,
+              openQuestionsPath: sdsPreflight.openQuestionsPath,
+              gapAddendumPath: sdsPreflight.gapAddendumPath,
+              appliedToSds: sdsPreflight.appliedToSds,
+              appliedSdsCount: sdsPreflight.appliedSdsPaths.length,
+              commitHash: sdsPreflight.commitHash,
+              warnings: preflightWarnings,
+            },
+          });
+
+          if (blockingReasons.length > 0) {
+            throw new Error(
+              `create-tasks blocked by SDS preflight. ${blockingReasons.join(" ")} Report: ${sdsPreflight.reportPath}`,
+            );
+          }
+        }
+
+        const preflightDocInputs = this.mergeDocInputs(
+          options.inputs,
+          sdsPreflight ? [...sdsPreflight.sourceSdsPaths, ...sdsPreflight.generatedDocPaths] : [],
+        );
+        const docs = await this.prepareDocs(preflightDocInputs);
+        const { docSummary, warnings: indexedDocWarnings } = this.buildDocContext(docs);
+        const docWarnings = uniqueStrings([...(sdsPreflight?.warnings ?? []), ...indexedDocWarnings]);
         const discoveryGraph = this.buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
         const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
         const projectBuildPlan = this.buildProjectPlanArtifact(options.projectKey, docs, discoveryGraph, projectBuildMethod);
@@ -3543,59 +3843,88 @@ export class CreateTasksService {
         let sufficiencyAudit: TaskSufficiencyAuditResult | undefined;
         let sufficiencyAuditError: string | undefined;
         if (this.taskSufficiencyFactory) {
+          let sufficiencyCloseError: string | undefined;
           try {
             const sufficiencyService = await this.taskSufficiencyFactory(this.workspace);
             try {
-              try {
-                sufficiencyAudit = await sufficiencyService.runAudit({
-                  workspace: options.workspace,
-                  projectKey: options.projectKey,
-                  sourceCommand: "create-tasks",
-                });
-              } catch (error) {
-                sufficiencyAuditError = (error as Error)?.message ?? String(error);
-                await this.jobService.appendLog(
-                  job.id,
-                  `Task sufficiency audit failed; continuing with created backlog: ${sufficiencyAuditError}\n`,
-                );
-              }
+              sufficiencyAudit = await sufficiencyService.runAudit({
+                workspace: options.workspace,
+                projectKey: options.projectKey,
+                sourceCommand: "create-tasks",
+              });
             } finally {
               try {
                 await sufficiencyService.close();
               } catch (closeError) {
-                const closeMessage = (closeError as Error)?.message ?? String(closeError);
-                const details = `Task sufficiency audit close failed; continuing with created backlog: ${closeMessage}`;
-                sufficiencyAuditError = sufficiencyAuditError ? `${sufficiencyAuditError}; ${details}` : details;
-                await this.jobService.appendLog(job.id, `${details}\n`);
+                sufficiencyCloseError = (closeError as Error)?.message ?? String(closeError);
+                await this.jobService.appendLog(
+                  job.id,
+                  `Task sufficiency audit close warning: ${sufficiencyCloseError}\n`,
+                );
               }
             }
           } catch (error) {
             sufficiencyAuditError = (error as Error)?.message ?? String(error);
-            await this.jobService.appendLog(
-              job.id,
-              `Task sufficiency audit setup failed; continuing with created backlog: ${sufficiencyAuditError}\n`,
-            );
+          }
+
+          if (!sufficiencyAudit) {
+            const message = `create-tasks blocked: task sufficiency audit failed (${sufficiencyAuditError ?? "unknown error"}).`;
+            await this.jobService.writeCheckpoint(job.id, {
+              stage: "task_sufficiency_audit",
+              timestamp: new Date().toISOString(),
+              details: {
+                status: "failed",
+                error: message,
+                jobId: undefined,
+                commandRunId: undefined,
+                satisfied: false,
+                dryRun: undefined,
+                totalTasksAdded: undefined,
+                totalTasksUpdated: undefined,
+                finalCoverageRatio: undefined,
+                reportPath: undefined,
+                remainingSectionCount: undefined,
+                remainingFolderCount: undefined,
+                remainingGapCount: undefined,
+                warnings: [],
+              },
+            });
+            throw new Error(message);
+          }
+
+          const sufficiencyWarnings = uniqueStrings([
+            ...(sufficiencyAudit.warnings ?? []),
+            ...(sufficiencyCloseError ? [`Task sufficiency audit close warning: ${sufficiencyCloseError}`] : []),
+          ]);
+          if (!sufficiencyAudit.satisfied) {
+            sufficiencyAuditError = `SDS coverage target not reached (coverage=${sufficiencyAudit.finalCoverageRatio}, remaining gaps=${sufficiencyAudit.remainingGaps.total}).`;
           }
           await this.jobService.writeCheckpoint(job.id, {
             stage: "task_sufficiency_audit",
             timestamp: new Date().toISOString(),
             details: {
-              status: sufficiencyAudit ? "succeeded" : "failed",
+              status: sufficiencyAudit.satisfied ? "succeeded" : "blocked",
               error: sufficiencyAuditError,
-              jobId: sufficiencyAudit?.jobId,
-              commandRunId: sufficiencyAudit?.commandRunId,
-              satisfied: sufficiencyAudit?.satisfied,
-              dryRun: sufficiencyAudit?.dryRun,
-              totalTasksAdded: sufficiencyAudit?.totalTasksAdded,
-              totalTasksUpdated: sufficiencyAudit?.totalTasksUpdated,
-              finalCoverageRatio: sufficiencyAudit?.finalCoverageRatio,
-              reportPath: sufficiencyAudit?.reportPath,
-              remainingSectionCount: sufficiencyAudit?.remainingSectionHeadings.length,
-              remainingFolderCount: sufficiencyAudit?.remainingFolderEntries.length,
-              remainingGapCount: sufficiencyAudit?.remainingGaps.total,
-              warnings: sufficiencyAudit?.warnings,
+              jobId: sufficiencyAudit.jobId,
+              commandRunId: sufficiencyAudit.commandRunId,
+              satisfied: sufficiencyAudit.satisfied,
+              dryRun: sufficiencyAudit.dryRun,
+              totalTasksAdded: sufficiencyAudit.totalTasksAdded,
+              totalTasksUpdated: sufficiencyAudit.totalTasksUpdated,
+              finalCoverageRatio: sufficiencyAudit.finalCoverageRatio,
+              reportPath: sufficiencyAudit.reportPath,
+              remainingSectionCount: sufficiencyAudit.remainingSectionHeadings.length,
+              remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
+              remainingGapCount: sufficiencyAudit.remainingGaps.total,
+              warnings: sufficiencyWarnings,
             },
           });
+
+          if (!sufficiencyAudit.satisfied) {
+            throw new Error(
+              `create-tasks blocked: task sufficiency audit did not reach full coverage. Report: ${sufficiencyAudit.reportPath}`,
+            );
+          }
         }
 
         await this.jobService.updateJobStatus(job.id, "completed", {
@@ -3608,6 +3937,25 @@ export class CreateTasksService {
             planFolder: folder,
             planSource,
             fallbackReason,
+            sdsPreflight: sdsPreflight
+              ? {
+                  readyForPlanning: sdsPreflight.readyForPlanning,
+                  qualityStatus: sdsPreflight.qualityStatus,
+                  sourceSdsCount: sdsPreflight.sourceSdsPaths.length,
+                  issueCount: sdsPreflight.issueCount,
+                  blockingIssueCount: sdsPreflight.blockingIssueCount,
+                  questionCount: sdsPreflight.questionCount,
+                  requiredQuestionCount: sdsPreflight.requiredQuestionCount,
+                  appliedToSds: sdsPreflight.appliedToSds,
+                  appliedSdsPaths: sdsPreflight.appliedSdsPaths,
+                  commitHash: sdsPreflight.commitHash,
+                  reportPath: sdsPreflight.reportPath,
+                  openQuestionsPath: sdsPreflight.openQuestionsPath,
+                  gapAddendumPath: sdsPreflight.gapAddendumPath,
+                  warnings: sdsPreflight.warnings,
+                }
+              : undefined,
+            sdsPreflightError,
             sufficiencyAudit: sufficiencyAudit
               ? {
                   jobId: sufficiencyAudit.jobId,

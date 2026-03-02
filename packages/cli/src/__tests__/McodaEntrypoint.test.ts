@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import packageJson from "../../package.json" with { type: "json" };
 import { McodaEntrypoint } from "../bin/McodaEntrypoint.js";
+import { SdsPreflightCommand } from "../commands/planning/SdsPreflightCommand.js";
 
 const captureLogs = async (fn: () => Promise<void> | void): Promise<string[]> => {
   const logs: string[] = [];
@@ -52,4 +53,19 @@ test("McodaEntrypoint project-guidance help prints usage", { concurrency: false 
 
 test("McodaEntrypoint rejects unknown commands", { concurrency: false }, async () => {
   await assert.rejects(() => McodaEntrypoint.run(["totally-unknown"]), /Unknown command/);
+});
+
+test("McodaEntrypoint routes sds-preflight command", { concurrency: false }, async () => {
+  const originalRun = SdsPreflightCommand.run;
+  let called = false;
+  (SdsPreflightCommand as any).run = async (argv: string[]) => {
+    called = true;
+    assert.deepEqual(argv, ["--json"]);
+  };
+  try {
+    await McodaEntrypoint.run(["sds-preflight", "--json"]);
+    assert.equal(called, true);
+  } finally {
+    (SdsPreflightCommand as any).run = originalRun;
+  }
 });

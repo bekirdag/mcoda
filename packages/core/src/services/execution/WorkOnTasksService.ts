@@ -242,6 +242,98 @@ const deriveParentDirs = (paths: string[]): string[] => {
   return Array.from(dirs);
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const normalizeFailoverEvents = (value: unknown): Array<Record<string, unknown>> => {
+  if (!Array.isArray(value)) return [];
+  const events: Array<Record<string, unknown>> = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.type !== "string" || entry.type.trim().length === 0) continue;
+    events.push({ ...entry });
+  }
+  return events;
+};
+
+const mergeFailoverEvents = (
+  left: Array<Record<string, unknown>>,
+  right: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> => {
+  if (!left.length) return right;
+  if (!right.length) return left;
+  const seen = new Set<string>();
+  const merged: Array<Record<string, unknown>> = [];
+  const signature = (event: Record<string, unknown>): string =>
+    [
+      event.type ?? "",
+      event.fromAgentId ?? "",
+      event.toAgentId ?? "",
+      event.at ?? "",
+      event.until ?? "",
+      event.durationMs ?? "",
+    ].join("|");
+  for (const event of [...left, ...right]) {
+    const key = signature(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+  return merged;
+};
+
+const mergeInvocationMetadata = (
+  current: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!current && !incoming) return undefined;
+  if (!incoming) return current;
+  if (!current) return { ...incoming };
+  const merged: Record<string, unknown> = { ...current, ...incoming };
+  const currentEvents = normalizeFailoverEvents(current.failoverEvents);
+  const incomingEvents = normalizeFailoverEvents(incoming.failoverEvents);
+  if (currentEvents.length > 0 || incomingEvents.length > 0) {
+    merged.failoverEvents = mergeFailoverEvents(currentEvents, incomingEvents);
+  }
+  return merged;
+};
+
+const describeFailoverEvent = (event: Record<string, unknown>): string => {
+  const type = String(event.type ?? "unknown");
+  if (type === "switch_agent") {
+    const from = typeof event.fromAgentId === "string" ? event.fromAgentId : "unknown";
+    const to = typeof event.toAgentId === "string" ? event.toAgentId : "unknown";
+    return `switch_agent ${from} -> ${to}`;
+  }
+  if (type === "sleep_until_reset") {
+    const duration =
+      typeof event.durationMs === "number" && Number.isFinite(event.durationMs)
+        ? `${Math.round(event.durationMs / 1000)}s`
+        : "unknown duration";
+    const until = typeof event.until === "string" ? event.until : "unknown";
+    return `sleep_until_reset ${duration} (until ${until})`;
+  }
+  if (type === "stream_restart_after_limit") {
+    const from = typeof event.fromAgentId === "string" ? event.fromAgentId : "unknown";
+    return `stream_restart_after_limit from ${from}`;
+  }
+  return type;
+};
+
+const resolveFailoverAgentId = (
+  events: Array<Record<string, unknown>>,
+  fallbackAgentId: string,
+): string => {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== "switch_agent") continue;
+    if (typeof event.toAgentId === "string" && event.toAgentId.trim().length > 0) {
+      return event.toAgentId;
+    }
+  }
+  return fallbackAgentId;
+};
+
 type GatewayHandoffSummary = {
   planSteps: string[];
   filesLikelyTouched: string[];
@@ -4032,6 +4124,15 @@ export class WorkOnTasksService {
     };
     try {
       const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings];
+      const selectionWarningSet = new Set<string>();
+      const pushSelectionWarnings = (entries: string[]) => {
+        for (const warning of entries) {
+          const normalized = warning.trim();
+          if (!normalized || selectionWarningSet.has(normalized)) continue;
+          selectionWarningSet.add(normalized);
+          warnings.push(warning);
+        }
+      };
       try {
         const guidance = await ensureProjectGuidance(this.workspace.workspaceRoot, {
           mcodaDir: this.workspace.mcodaDir,
@@ -4085,7 +4186,7 @@ export class WorkOnTasksService {
         processedItems: 0,
       });
 
-      warnings.push(...selection.warnings);
+      pushSelectionWarnings(selection.warnings);
 
       type WorkOnTasksTaskSummary = {
         taskKey: string;
@@ -4367,8 +4468,63 @@ export class WorkOnTasksService {
         emitBlank();
       };
 
+      const maxSelectedTasks = typeof request.limit === "number" && request.limit > 0 ? request.limit : undefined;
+      const selectedTaskIds = new Set(selection.ordered.map((entry) => entry.task.id));
+      const refreshSelectionQueue = async (processedCount: number) => {
+        if (maxSelectedTasks !== undefined && selectedTaskIds.size >= maxSelectedTasks) return;
+        const remainingBudget =
+          maxSelectedTasks === undefined ? undefined : Math.max(0, maxSelectedTasks - selectedTaskIds.size);
+        if (remainingBudget === 0) return;
+        const refreshedSelection = await this.selectionService.selectTasks({
+          projectKey: request.projectKey,
+          epicKey: request.epicKey,
+          storyKey: request.storyKey,
+          taskKeys: request.taskKeys,
+          statusFilter,
+          ignoreStatusFilter,
+          includeTypes,
+          excludeTypes,
+          ignoreDependencies,
+          missingContextPolicy: request.missingContextPolicy ?? "block",
+          limit: remainingBudget,
+          parallel: request.parallel,
+        });
+        pushSelectionWarnings(refreshedSelection.warnings);
+        if (refreshedSelection.project && !selection.project) {
+          selection = { ...selection, project: refreshedSelection.project };
+        }
+        const newlyEligible: typeof selection.ordered = [];
+        for (const entry of refreshedSelection.ordered) {
+          if (selectedTaskIds.has(entry.task.id)) continue;
+          if (maxSelectedTasks !== undefined && selectedTaskIds.size + newlyEligible.length >= maxSelectedTasks) break;
+          newlyEligible.push(entry);
+        }
+        if (newlyEligible.length === 0) return;
+        selection = {
+          ...selection,
+          ordered: [...selection.ordered, ...newlyEligible],
+        };
+        for (const entry of newlyEligible) {
+          selectedTaskIds.add(entry.task.id);
+        }
+        await this.checkpoint(job.id, "selection_refresh", {
+          appended: newlyEligible.map((entry) => entry.task.key),
+          totalSelected: selection.ordered.length,
+          processedItems: processedCount,
+        });
+        await this.deps.jobService.updateJobStatus(job.id, "running", {
+          payload: {
+            selection: selection.ordered.map((entry) => entry.task.key),
+          },
+          totalItems: selection.ordered.length,
+          processedItems: processedCount,
+        });
+      };
+
       let abortRemainingReason: string | null = null;
-      taskLoop: for (const [index, task] of selection.ordered.entries()) {
+      taskLoop: for (let index = 0; index < selection.ordered.length; index += 1) {
+        const task = selection.ordered[index];
+        if (!task) continue;
         if (abortRemainingReason) break taskLoop;
         abortIfSignaled();
         const startedAt = new Date().toISOString();
@@ -5415,9 +5571,10 @@ export class WorkOnTasksService {
                     if (aborted) {
                       throw new Error(resolveAbortReason());
                     }
-                    if (!invocationMetadata && chunk.metadata) {
-                      invocationMetadata = chunk.metadata as Record<string, unknown>;
-                    }
+                    invocationMetadata = mergeInvocationMetadata(
+                      invocationMetadata,
+                      chunk.metadata as Record<string, unknown> | undefined,
+                    );
                     if (!invocationAdapter && typeof chunk.adapter === "string") {
                       invocationAdapter = chunk.adapter;
                     }
@@ -5470,7 +5627,10 @@ export class WorkOnTasksService {
                   const result = await Promise.race([invokePromise, lockLostPromise]);
                   if (result) {
                     output = result.output ?? "";
-                    invocationMetadata = (result.metadata as Record<string, unknown> | undefined) ?? invocationMetadata;
+                    invocationMetadata = mergeInvocationMetadata(
+                      invocationMetadata,
+                      result.metadata as Record<string, unknown> | undefined,
+                    );
                     invocationAdapter = result.adapter ?? invocationAdapter;
                     invocationModel = result.model ?? invocationModel;
                   }
@@ -5618,9 +5778,29 @@ export class WorkOnTasksService {
             if (!agentInvocation) {
               throw new Error("Agent invocation did not return a response.");
             }
-            await recordUsage("agent", agentInvocation.output ?? "", agentDuration, agentInput, agentInvocation.agentUsed, attempt);
-
             const invocationMeta = (agentInvocation.metadata ?? {}) as Record<string, unknown>;
+            const failoverEvents = normalizeFailoverEvents(invocationMeta.failoverEvents);
+            if (failoverEvents.length > 0) {
+              for (const event of failoverEvents) {
+                await this.logTask(taskRun.id, `Agent failover: ${describeFailoverEvent(event)}`, "agent_failover", event);
+              }
+            }
+            const usageAgentId = resolveFailoverAgentId(failoverEvents, agentInvocation.agentUsed.id);
+            let usageAgent = agentInvocation.agentUsed;
+            if (usageAgentId !== agentInvocation.agentUsed.id) {
+              try {
+                const resolvedUsageAgent = await this.deps.agentService.resolveAgent(usageAgentId);
+                usageAgent = { id: resolvedUsageAgent.id, defaultModel: resolvedUsageAgent.defaultModel };
+              } catch (error) {
+                await this.logTask(
+                  taskRun.id,
+                  `Unable to resolve failover agent (${usageAgentId}) for usage accounting: ${error instanceof Error ? error.message : String(error)}`,
+                  "agent_failover",
+                );
+              }
+            }
+            await recordUsage("agent", agentInvocation.output ?? "", agentDuration, agentInput, usageAgent, attempt);
+
             const rawTouched = Array.isArray(invocationMeta.touchedFiles) ? invocationMeta.touchedFiles : [];
             const touchedFiles = rawTouched.filter(
               (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
@@ -6986,6 +7166,15 @@ export class WorkOnTasksService {
         }
         } finally {
           await emitTaskEndOnce();
+          if (!abortRemainingReason) {
+            try {
+              await refreshSelectionQueue(index + 1);
+            } catch (error) {
+              warnings.push(
+                `selection_refresh_failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
         }
     }
 

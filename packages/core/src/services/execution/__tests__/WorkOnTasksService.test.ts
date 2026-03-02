@@ -251,6 +251,60 @@ class StubAgentServiceStreamable {
   }
 }
 
+class StubAgentServiceFailoverMetadata {
+  streamCalls = 0;
+  invokeCalls = 0;
+  async resolveAgent(identifier?: string) {
+    if (identifier === "agent-fallback") {
+      return {
+        id: "agent-fallback",
+        slug: "agent-fallback",
+        adapter: "claude-cli",
+        defaultModel: "sonnet",
+      } as any;
+    }
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke(_id: string, _req: any) {
+    this.invokeCalls += 1;
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    return {
+      output: patch,
+      adapter: "local-model",
+      metadata: {
+        failoverEvents: [
+          {
+            type: "switch_agent",
+            fromAgentId: "agent-primary",
+            toAgentId: "agent-fallback",
+          },
+        ],
+      },
+    };
+  }
+  async *invokeStream(_id: string, _req: any) {
+    this.streamCalls += 1;
+    const patch = "```patch\n--- a/tmp.txt\n+++ b/tmp.txt\n@@\n-foo\n+bar\n```";
+    yield {
+      output: patch,
+      adapter: "local-model",
+      metadata: {
+        failoverEvents: [
+          { type: "sleep_until_reset", durationMs: 30000 },
+          { type: "switch_agent", fromAgentId: "agent-primary", toAgentId: "agent-fallback" },
+        ],
+      },
+    } as any;
+  }
+  async getPrompts() {
+    return {
+      jobPrompt: "You are a worker.",
+      characterPrompt: "Be concise.",
+      commandPrompts: { "work-on-tasks": "Apply patches carefully." },
+    };
+  }
+}
+
 class StubAgentServiceCodaliAdapter {
   lastRequest: any | null = null;
   private adapter: CodaliAdapter;
@@ -1568,6 +1622,95 @@ test("workOnTasks streams when codali is required", async () => {
     } else {
       process.env.MCODA_CLI_STUB = originalStub;
     }
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks accepts failover metadata on invoke responses", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceFailoverMetadata();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      taskKeys: [tasks[0].key],
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.equal(agentService.invokeCalls > 0, true);
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_code_review");
+    const db = repo.getDb();
+    const tokenUsage = await db.all<{ agent_id: string }[]>("SELECT agent_id FROM token_usage");
+    assert.ok(tokenUsage.some((entry) => entry.agent_id === "agent-fallback"));
+    const failoverLogs = await db.all<{ source: string; message: string }[]>(
+      "SELECT source, message FROM task_logs WHERE source = 'agent_failover'",
+    );
+    assert.ok(failoverLogs.some((entry) => entry.message.includes("switch_agent")));
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks accepts failover metadata on stream responses", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const agentService = new StubAgentServiceFailoverMetadata();
+  const service = new WorkOnTasksService(workspace, {
+    agentService: agentService as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: true,
+      dryRun: false,
+      taskKeys: [tasks[0].key],
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.equal(agentService.streamCalls > 0, true);
+    const updated = await repo.getTaskByKey(tasks[0].key);
+    assert.equal(updated?.status, "ready_to_code_review");
+    const db = repo.getDb();
+    const tokenUsage = await db.all<{ agent_id: string }[]>("SELECT agent_id FROM token_usage");
+    assert.ok(tokenUsage.some((entry) => entry.agent_id === "agent-fallback"));
+    const failoverLogs = await db.all<{ source: string; message: string }[]>(
+      "SELECT source, message FROM task_logs WHERE source = 'agent_failover'",
+    );
+    assert.ok(failoverLogs.some((entry) => entry.message.includes("sleep_until_reset")));
+    assert.ok(failoverLogs.some((entry) => entry.message.includes("switch_agent")));
+  } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
   }
@@ -4003,6 +4146,57 @@ test("workOnTasks skips dependency-blocked tasks during default selection", asyn
     const updatedSelected = await repo.getTaskByKey(tasks[1].key);
     assert.equal(updatedBlocked?.status, "not_started");
     assert.equal(updatedSelected?.status, "ready_to_code_review");
+  } finally {
+    await service.close();
+    await cleanupWorkspace(dir, repo);
+  }
+});
+
+test("workOnTasks refreshes dependency-blocked selection within the same run", async () => {
+  const { dir, workspace, repo, tasks } = await setupWorkspace();
+  const jobService = new JobService(workspace.workspaceRoot, repo);
+  const selectionService = new TaskSelectionService(workspace, repo);
+  const stateService = new TaskStateService(repo);
+  const service = new WorkOnTasksService(workspace, {
+    agentService: new StubAgentServiceNoChange() as any,
+    docdex: new StubDocdex() as any,
+    jobService,
+    workspaceRepo: repo,
+    selectionService,
+    stateService,
+    repo: new StubRepo() as any,
+    routingService: new StubRoutingService() as any,
+    vcsClient: new StubVcs() as any,
+  });
+  await repo.insertTaskDependencies(
+    [
+      {
+        taskId: tasks[0].id,
+        dependsOnTaskId: tasks[1].id,
+        relationType: "blocks",
+      },
+    ],
+    false,
+  );
+
+  try {
+    const result = await service.workOnTasks({
+      workspace,
+      projectKey: "proj",
+      agentStream: false,
+      dryRun: false,
+      noCommit: true,
+    });
+    assert.equal(result.results.length, 2);
+    assert.equal(result.results[0]?.taskKey, tasks[1].key);
+    assert.equal(result.results[1]?.taskKey, tasks[0].key);
+    assert.equal(result.results[0]?.status, "succeeded");
+    assert.equal(result.results[1]?.status, "succeeded");
+    assert.ok(result.selection.warnings.some((warning) => warning.includes("dependencies not ready")));
+    const updatedDependent = await repo.getTaskByKey(tasks[0].key);
+    const updatedDependency = await repo.getTaskByKey(tasks[1].key);
+    assert.equal(updatedDependent?.status, "ready_to_code_review");
+    assert.equal(updatedDependency?.status, "ready_to_code_review");
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);

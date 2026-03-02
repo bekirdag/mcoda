@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import { CreateTasksService } from "../CreateTasksService.js";
+import { SdsPreflightService } from "../SdsPreflightService.js";
+import { TaskSufficiencyService } from "../TaskSufficiencyService.js";
 import { WorkspaceResolution } from "../../../workspace/WorkspaceManager.js";
 import { createEpicKeyGenerator, createStoryKeyGenerator, createTaskKeyGenerator } from "../KeyHelpers.js";
 import { PathHelper } from "@mcoda/shared";
@@ -13,6 +15,30 @@ let workspace: WorkspaceResolution;
 let tempHome: string | undefined;
 let originalHome: string | undefined;
 let originalProfile: string | undefined;
+let originalSdsPreflightCreate: typeof SdsPreflightService.create;
+let originalTaskSufficiencyCreate: typeof TaskSufficiencyService.create;
+
+const buildPassingPreflightResult = (sourceSdsPaths: string[]) => ({
+  projectKey: "web",
+  generatedAt: new Date().toISOString(),
+  readyForPlanning: true,
+  qualityStatus: "pass",
+  sourceSdsPaths,
+  reportPath: path.join(workspace.mcodaDir, "tasks", "web", "sds-preflight-report.json"),
+  openQuestionsPath: undefined,
+  gapAddendumPath: undefined,
+  generatedDocPaths: [] as string[],
+  questionCount: 0,
+  requiredQuestionCount: 0,
+  issueCount: 0,
+  blockingIssueCount: 0,
+  issues: [],
+  questions: [],
+  warnings: [] as string[],
+  appliedToSds: false,
+  appliedSdsPaths: [] as string[],
+  commitHash: undefined as string | undefined,
+});
 
 beforeEach(async () => {
   originalHome = process.env.HOME;
@@ -33,9 +59,54 @@ beforeEach(async () => {
   await fs.mkdir(path.join(workspaceRoot, "docs"), { recursive: true });
   await fs.writeFile(
     path.join(workspaceRoot, "docs", "sds.md"),
-    ["# Software Design Specification", "Folder tree:", "- src/main.ts"].join("\n"),
+    [
+      "# Software Design Specification",
+      "## Folder Tree",
+      "```text",
+      ".",
+      "├── docs/                  # documentation and runbooks",
+      "├── apps/web/              # web interface",
+      "├── services/api/          # HTTP API service",
+      "├── services/worker/       # background workflows",
+      "├── packages/shared/       # shared contracts and types",
+      "├── db/migrations/         # database migrations",
+      "├── tests/unit/            # unit tests",
+      "└── scripts/               # build and release scripts",
+      "```",
+      "## Technology Stack",
+      "Chosen stack: Node.js runtime, TypeScript language, PostgreSQL persistence, pnpm tooling.",
+      "Alternatives considered: Python + FastAPI for backend orchestration.",
+      "Rationale and trade-off: we prioritize unified TypeScript contracts over polyglot flexibility because it reduces integration drift.",
+      "## Policy and Cache Consent",
+      "Cache key policy: tenant_id + project_key + route + role.",
+      "TTL tiers: hot=5m, warm=30m, cold=24h.",
+      "Consent matrix: anonymous telemetry for usage counts, identified telemetry only with explicit opt-in.",
+      "## Telemetry",
+      "Telemetry schema includes anonymous event_name + timestamp and identified actor_id + request_id envelopes.",
+      "## Metering and Usage",
+      "Usage meter tracks request units and compute units.",
+      "Rate limit and limit enforcement block requests and return deterministic retry windows.",
+      "## Operations and Deployment",
+      "Environment matrix: local, staging, production.",
+      "Secrets strategy uses environment-scoped secret stores.",
+      "Deployment workflow runs immutable build artifacts with migration checks.",
+      "## Observability",
+      "SLO: 99.9% availability target with p95 latency threshold of 300ms.",
+      "Alert thresholds trigger paging on error-rate and saturation breaches.",
+      "## Testing Gates",
+      "Test gates require unit, integration, and validation coverage before release promotion.",
+      "## Failure Recovery and Rollback",
+      "Failure modes are documented with recovery runbooks and rollback steps per deployment wave.",
+    ].join("\n"),
     "utf8",
   );
+
+  originalSdsPreflightCreate = SdsPreflightService.create;
+  (SdsPreflightService as any).create = async () =>
+    new StubSdsPreflightService(buildPassingPreflightResult([path.join(workspaceRoot, "docs", "sds.md")])) as any;
+
+  originalTaskSufficiencyCreate = TaskSufficiencyService.create;
+  (TaskSufficiencyService as any).create = async () => new StubTaskSufficiencyService() as any;
 });
 
 afterEach(async () => {
@@ -55,6 +126,8 @@ afterEach(async () => {
   } else {
     process.env.USERPROFILE = originalProfile;
   }
+  (SdsPreflightService as any).create = originalSdsPreflightCreate;
+  (TaskSufficiencyService as any).create = originalTaskSufficiencyCreate;
 });
 
 const fakeDoc = {
@@ -105,6 +178,34 @@ class StubAgentService {
   }
   async invoke() {
     return { output: this.queue.shift() ?? "" };
+  }
+}
+
+class StubAgentServiceFailoverMetadata {
+  private queue: string[];
+  constructor(outputs: string[]) {
+    this.queue = [...outputs];
+  }
+  async resolveAgent(identifier?: string) {
+    if (identifier === "agent-fallback") {
+      return {
+        id: "agent-fallback",
+        slug: "agent-fallback",
+        adapter: "claude-cli",
+        defaultModel: "sonnet",
+      } as any;
+    }
+    return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
+  }
+  async invoke() {
+    return {
+      output: this.queue.shift() ?? "",
+      metadata: {
+        failoverEvents: [
+          { type: "switch_agent", fromAgentId: "agent-1", toAgentId: "agent-fallback" },
+        ],
+      },
+    };
   }
 }
 
@@ -226,6 +327,8 @@ class StubJobService {
   commandRuns: any[] = [];
   jobs: any[] = [];
   checkpoints: any[] = [];
+  logs: string[] = [];
+  tokenUsage: any[] = [];
   async startCommandRun() {
     const rec = {
       id: `cmd-${this.commandRuns.length + 1}`,
@@ -253,8 +356,12 @@ class StubJobService {
   async writeCheckpoint(jobId: string, ckpt: any) {
     this.checkpoints.push({ jobId, ...ckpt });
   }
-  async appendLog() {}
-  async recordTokenUsage() {}
+  async appendLog(_jobId: string, chunk: string) {
+    this.logs.push(chunk);
+  }
+  async recordTokenUsage(entry: any) {
+    this.tokenUsage.push(entry);
+  }
   async updateJobStatus(jobId: string, state: string, meta?: any) {
     const idx = this.jobs.findIndex((j) => j.id === jobId);
     if (idx >= 0) this.jobs[idx] = { ...this.jobs[idx], state, meta };
@@ -289,8 +396,8 @@ class StubTaskSufficiencyService {
       maxIterations: 3,
       minCoverageRatio: 0.95,
       finalCoverageRatio: 1,
-      remainingSectionHeadings: [],
-      remainingFolderEntries: [],
+      remainingSectionHeadings: [] as string[],
+      remainingFolderEntries: [] as string[],
       remainingGaps: {
         sections: 0,
         folders: 0,
@@ -310,6 +417,19 @@ class StubTaskSufficiencyService {
       reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
       warnings: [],
     };
+  }
+  async close() {}
+}
+
+class StubSdsPreflightService {
+  calls: any[] = [];
+  private readonly result: any;
+  constructor(result: any) {
+    this.result = result;
+  }
+  async runPreflight(request: any) {
+    this.calls.push(request);
+    return this.result;
   }
   async close() {}
 }
@@ -416,6 +536,56 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.ok(!task.description.includes("Highlight edge cases or risky areas."));
 });
 
+test("createTasks records failover metadata and usage against the switched agent", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentServiceFailoverMetadata(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.ok(jobService.tokenUsage.length > 0);
+  assert.ok(jobService.tokenUsage.every((entry) => entry.agentId === "agent-fallback"));
+  assert.ok(jobService.logs.some((line) => line.includes("agent failover (epics): switch_agent")));
+});
+
 test("createTasks auto-runs task sufficiency audit and records summary checkpoint", async () => {
   const outputs = [
     JSON.stringify({
@@ -469,6 +639,220 @@ test("createTasks auto-runs task sufficiency audit and records summary checkpoin
   const completedJob = jobService.jobs[0];
   assert.ok(completedJob?.meta?.payload?.sufficiencyAudit);
   assert.equal(completedJob.meta.payload.sufficiencyAudit.satisfied, true);
+});
+
+test("createTasks runs SDS preflight, records checkpoint, and merges generated preflight docs", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const generatedQaPath = path.join(workspace.mcodaDir, "tasks", "web", "sds-open-questions-answers.md");
+  const generatedGapPath = path.join(workspace.mcodaDir, "tasks", "web", "sds-gap-remediation-addendum.md");
+  await fs.mkdir(path.dirname(generatedQaPath), { recursive: true });
+  await fs.writeFile(generatedQaPath, "# SDS Open Questions Q&A\n\nNo open questions were detected.\n", "utf8");
+  await fs.writeFile(generatedGapPath, "# SDS Gap Remediation Addendum\n\nNo unresolved SDS gaps were detected.\n", "utf8");
+
+  const preflightService = new StubSdsPreflightService({
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    readyForPlanning: true,
+    qualityStatus: "pass",
+    sourceSdsPaths: [path.join(workspaceRoot, "docs", "sds.md")],
+    reportPath: path.join(workspace.mcodaDir, "tasks", "web", "sds-preflight-report.json"),
+    openQuestionsPath: generatedQaPath,
+    gapAddendumPath: generatedGapPath,
+    generatedDocPaths: [generatedQaPath, generatedGapPath],
+    questionCount: 0,
+    requiredQuestionCount: 0,
+    issueCount: 0,
+    blockingIssueCount: 0,
+    appliedToSds: true,
+    appliedSdsPaths: [path.join(workspaceRoot, "docs", "sds.md")],
+    commitHash: "abc123def456",
+    issues: [],
+    questions: [],
+    warnings: [],
+  });
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const docdex = new StubDocdexTyped();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async () => preflightService as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+    sdsPreflightCommit: true,
+    sdsPreflightCommitMessage: "mcoda: commit sds preflight output",
+  });
+
+  assert.equal(preflightService.calls.length, 1);
+  assert.equal(preflightService.calls[0]?.applyToSds, true);
+  assert.equal(preflightService.calls[0]?.commitAppliedChanges, true);
+  assert.equal(preflightService.calls[0]?.commitMessage, "mcoda: commit sds preflight output");
+  const preflightCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "sds_preflight");
+  assert.ok(preflightCheckpoint);
+  assert.equal(preflightCheckpoint.details.status, "succeeded");
+  assert.equal(preflightCheckpoint.details.commitHash, "abc123def456");
+  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedQaPath));
+  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedGapPath));
+  const completedJob = jobService.jobs[0];
+  assert.equal(completedJob?.meta?.payload?.sdsPreflight?.qualityStatus, "pass");
+});
+
+test("createTasks blocks when SDS preflight fails", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async () =>
+      ({
+        runPreflight: async () => {
+          throw new Error("preflight unavailable");
+        },
+        close: async () => {},
+      }) as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [],
+        agentStream: false,
+      }),
+    /create-tasks blocked: SDS preflight failed/i,
+  );
+  const preflightCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "sds_preflight");
+  assert.ok(preflightCheckpoint);
+  assert.equal(preflightCheckpoint.details.status, "failed");
+});
+
+test("createTasks blocks when task sufficiency audit is unsatisfied", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = new StubTaskSufficiencyService();
+  sufficiencyService.runAudit = async (request: any) => ({
+    ...(await StubTaskSufficiencyService.prototype.runAudit.call(sufficiencyService, request)),
+    satisfied: false,
+    finalCoverageRatio: 0.94,
+    remainingGaps: { sections: 3, folders: 0, total: 3 },
+    remainingSectionHeadings: ["Missing"],
+    remainingFolderEntries: [],
+  });
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [],
+        agentStream: false,
+      }),
+    /task sufficiency audit did not reach full coverage/i,
+  );
+
+  const sufficiencyCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "task_sufficiency_audit");
+  assert.ok(sufficiencyCheckpoint);
+  assert.equal(sufficiencyCheckpoint.details.status, "blocked");
 });
 
 test("buildDocContext appends OpenAPI hint summary", () => {
@@ -1516,8 +1900,9 @@ test("createTasks fails fast on duplicate scoped task local ids", async () => {
 });
 
 test("createTasks fuzzy-discovers SDS-like docs and injects structure bootstrap tasks", async () => {
+  const externalSdsPath = path.join(workspaceRoot, "software-design-outline.md");
   await fs.writeFile(
-    path.join(workspaceRoot, "software-design-outline.md"),
+    externalSdsPath,
     [
       "# Software Design",
       "Folder tree:",
@@ -1569,6 +1954,7 @@ test("createTasks fuzzy-discovers SDS-like docs and injects structure bootstrap 
   ];
   const docdex = new StubDocdex();
   const workspaceRepo = new StubWorkspaceRepo();
+  const preflightService = new StubSdsPreflightService(buildPassingPreflightResult([externalSdsPath]));
   const service = new CreateTasksService(workspace, {
     docdex: docdex as any,
     jobService: new StubJobService() as any,
@@ -1577,6 +1963,7 @@ test("createTasks fuzzy-discovers SDS-like docs and injects structure bootstrap 
     repo: new StubRepo() as any,
     workspaceRepo: workspaceRepo as any,
     taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async () => preflightService as any,
   });
 
   const result = await service.createTasks({
@@ -1650,6 +2037,7 @@ test("createTasks includes fuzzy SDS docs outside default docs paths when docs d
   ];
   const docdex = new StubDocdex();
   const workspaceRepo = new StubWorkspaceRepo();
+  const preflightService = new StubSdsPreflightService(buildPassingPreflightResult([externalSdsPath]));
   const service = new CreateTasksService(workspace, {
     docdex: docdex as any,
     jobService: new StubJobService() as any,
@@ -1658,6 +2046,7 @@ test("createTasks includes fuzzy SDS docs outside default docs paths when docs d
     repo: new StubRepo() as any,
     workspaceRepo: workspaceRepo as any,
     taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async () => preflightService as any,
   });
 
   const result = await service.createTasks({
@@ -1750,6 +2139,7 @@ test("createTasks blocks when no SDS document is discoverable", async () => {
     repo: new StubRepo() as any,
     workspaceRepo: workspaceRepo as any,
     taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async (resolvedWorkspace) => originalSdsPreflightCreate(resolvedWorkspace),
   });
 
   await assert.rejects(
@@ -1760,7 +2150,7 @@ test("createTasks blocks when no SDS document is discoverable", async () => {
         inputs: [path.join(workspaceRoot, "requirements.md")],
         agentStream: false,
       }),
-    /requires at least one SDS document/i,
+    /requires an SDS document/i,
   );
 });
 

@@ -215,3 +215,63 @@ test("stores agent run ratings", async () => {
   assert.equal(rows[0]?.runScore, 7.9);
   assert.deepEqual(rows[0]?.rawReview, { quality_score: 8.5 });
 });
+
+test("stores and updates agent usage limits", async () => {
+  const created = await repo.createAgent({ slug: "limit-agent", adapter: "codex-cli" });
+  const first = await repo.upsertAgentUsageLimit({
+    agentId: created.id,
+    limitScope: "model",
+    limitKey: "gpt-5.2-codex",
+    windowType: "rolling_5h",
+    status: "exhausted",
+    resetAt: "2026-03-03T00:00:00.000Z",
+    observedAt: "2026-03-02T20:00:00.000Z",
+    source: "invoke_error_parse",
+    details: { retryAfterSeconds: 14400 },
+  });
+  assert.equal(first.agentId, created.id);
+  assert.equal(first.status, "exhausted");
+  assert.equal(first.windowType, "rolling_5h");
+  assert.equal(first.resetAt, "2026-03-03T00:00:00.000Z");
+  assert.deepEqual(first.details, { retryAfterSeconds: 14400 });
+
+  const second = await repo.upsertAgentUsageLimit({
+    agentId: created.id,
+    limitScope: "model",
+    limitKey: "gpt-5.2-codex",
+    windowType: "rolling_5h",
+    status: "available",
+    observedAt: "2026-03-03T00:00:10.000Z",
+    source: "invoke_success",
+  });
+  assert.equal(second.id, first.id);
+  assert.equal(second.status, "available");
+  assert.equal(second.resetAt, undefined);
+
+  await repo.upsertAgentUsageLimits([
+    {
+      agentId: created.id,
+      limitScope: "model",
+      limitKey: "gpt-5.2-codex",
+      windowType: "daily",
+      status: "exhausted",
+      resetAt: "2026-03-04T00:00:00.000Z",
+      observedAt: "2026-03-03T08:00:00.000Z",
+      source: "invoke_error_parse",
+    },
+    {
+      agentId: created.id,
+      limitScope: "model",
+      limitKey: "gpt-5.2-codex",
+      windowType: "weekly",
+      status: "unknown",
+      observedAt: "2026-03-03T08:00:00.000Z",
+      source: "invoke_error_parse",
+    },
+  ]);
+
+  const limits = await repo.listAgentUsageLimits(created.id);
+  assert.equal(limits.length, 3);
+  assert.ok(limits.some((entry) => entry.windowType === "daily" && entry.status === "exhausted"));
+  assert.ok(limits.some((entry) => entry.windowType === "weekly" && entry.status === "unknown"));
+});
