@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -13,10 +17,29 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Run release-please
+      - name: Run release-please (attempt 1)
+        id: release_please_attempt_1
+        continue-on-error: true
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Run release-please (attempt 2)
+        id: release_please_attempt_2
+        if: steps.release_please_attempt_1.outcome == 'failure'
+        continue-on-error: true
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Fail if release-please failed twice
+        if: steps.release_please_attempt_1.outcome == 'failure' && steps.release_please_attempt_2.outcome == 'failure'
+        run: |
+          echo "::error::release-please failed on both attempts. Check token permissions and repo PR-creation policy."
+          exit 1
