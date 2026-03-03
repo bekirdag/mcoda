@@ -51,6 +51,16 @@ describe("estimate argument parsing", () => {
     assert.equal(parsed.velocityWindow, 10);
   });
 
+  it("accepts larger positive velocity windows", () => {
+    const parsed = parseEstimateArgs(["--velocity-window", "200"]);
+    assert.equal(parsed.velocityWindow, 200);
+  });
+
+  it("ignores invalid velocity windows", () => {
+    const parsed = parseEstimateArgs(["--velocity-window", "0", "--window", "3.5"]);
+    assert.equal(parsed.velocityWindow, 50);
+  });
+
   it("parses sp-per-hour overrides", () => {
     const parsed = parseEstimateArgs([
       "--sp-per-hour",
@@ -238,7 +248,7 @@ describe("estimate output rendering", { concurrency: false }, () => {
     assert.ok(output.includes("Total"));
     assert.ok(output.includes("Total tasks"));
     assert.ok(output.includes("Work on tasks"));
-    assert.ok(output.includes("Ready to qa"));
+    assert.ok(output.includes("Ready to QA"));
     assert.ok(output.includes("impl=0, review=0, qa=0"));
     assert.ok(!output.includes("│ 🧮 Effort by Lane"));
     assert.ok(!output.includes("│ ⏱️ ETAs"));

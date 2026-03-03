@@ -21,7 +21,7 @@ interface ParsedArgs {
   spPerHourReview?: number;
   spPerHourQa?: number;
   velocityMode?: VelocitySource;
-  velocityWindow?: 10 | 20 | 50;
+  velocityWindow?: number;
   json: boolean;
   debug: boolean;
 }
@@ -37,7 +37,7 @@ const usage = `mcoda estimate \\
   [--sp-per-hour-review <FLOAT>] \\
   [--sp-per-hour-qa <FLOAT>] \\
   [--velocity-mode config|empirical|mixed] \\
-  [--velocity-window 10|20|50] \\
+  [--velocity-window <POSITIVE_INT>] \\
   [--quiet] [--no-color] [--no-telemetry] \\
   [--json]`;
 
@@ -45,6 +45,12 @@ const parseNumber = (value: string | undefined): number | undefined => {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const parsePositiveInteger = (value: string | undefined): number | undefined => {
+  const parsed = parseNumber(value);
+  if (parsed === undefined || !Number.isInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
 };
 
 const parseVelocityMode = (value: string | undefined): VelocitySource | undefined => {
@@ -124,8 +130,8 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
         break;
       case "--velocity-window":
       case "--window": {
-        const value = parseNumber(argv[i + 1]);
-        if (value === 10 || value === 20 || value === 50) {
+        const value = parsePositiveInteger(argv[i + 1]);
+        if (value !== undefined) {
           parsed.velocityWindow = value;
         }
         i += 1;
@@ -160,8 +166,8 @@ export const parseEstimateArgs = (argv: string[]): ParsedArgs => {
             parsed.velocityMode = mode;
           }
         } else if (arg.startsWith("--velocity-window=") || arg.startsWith("--window=")) {
-          const value = parseNumber(arg.split("=")[1]);
-          if (value === 10 || value === 20 || value === 50) {
+          const value = parsePositiveInteger(arg.split("=")[1]);
+          if (value !== undefined) {
             parsed.velocityWindow = value;
           }
         } else if (arg.startsWith("--sp-per-hour=")) {
@@ -190,6 +196,11 @@ const padVisible = (value: string, width: number): string => {
   return diff > 0 ? `${value}${" ".repeat(diff)}` : value;
 };
 
+const padVisibleStart = (value: string, width: number): string => {
+  const diff = width - visibleLength(value);
+  return diff > 0 ? `${" ".repeat(diff)}${value}` : value;
+};
+
 const colorize = (enabled: boolean, code: number, value: string): string =>
   enabled ? `\x1b[${code}m${value}\x1b[0m` : value;
 
@@ -214,18 +225,27 @@ const formatPanel = (lines: string[]): string => {
 
 type BoxTableOptions = {
   lineStyle?: (value: string) => string;
+  align?: ("left" | "right")[];
 };
 
 const formatBoxTable = (headers: string[], rows: string[][], options?: BoxTableOptions): string => {
   const widths = headers.map((header, idx) => Math.max(visibleLength(header), ...rows.map((row) => visibleLength(row[idx] ?? ""))));
   const lineStyle = options?.lineStyle ?? ((value: string) => value);
+  const align = options?.align ?? [];
   const border = (left: string, join: string, right: string): string =>
     lineStyle(`${left}${widths.map((width) => "─".repeat(width + 2)).join(join)}${right}`);
   const verticalLine = lineStyle("│");
   const headerLine = `${verticalLine}${headers.map((header, idx) => ` ${padVisible(header, widths[idx])} `).join(verticalLine)}${verticalLine}`;
-  const rowLines = rows.map(
-    (row) => `${verticalLine}${row.map((cell, idx) => ` ${padVisible(cell ?? "", widths[idx])} `).join(verticalLine)}${verticalLine}`,
-  );
+  const rowLines = rows.map((row) => {
+    const cells = row.map((cell, idx) => {
+      const value = cell ?? "";
+      if (align[idx] === "right") {
+        return ` ${padVisibleStart(value, widths[idx])} `;
+      }
+      return ` ${padVisible(value, widths[idx])} `;
+    });
+    return `${verticalLine}${cells.join(verticalLine)}${verticalLine}`;
+  });
   return [
     border("╭", "┬", "╮"),
     headerLine,
@@ -338,7 +358,7 @@ const renderProgressSection = (result: EstimateResult, colorEnabled: boolean): s
   const done = result.completion.done;
   const labels = [
     "🛠️ Work on tasks",
-    "🧪 Ready to qa",
+    "🧪 Ready to QA",
     "✅ Done",
   ];
   const maxLabel = Math.max(...labels.map((label) => visibleLength(label)));
@@ -358,7 +378,7 @@ const renderProgressSection = (result: EstimateResult, colorEnabled: boolean): s
       partial: (value) => style.blue(colorEnabled, value),
       empty: (value) => style.dim(colorEnabled, value),
     }),
-    formatLine("🧪 Ready to qa", qa, {
+    formatLine("🧪 Ready to QA", qa, {
       full: (value) => style.yellow(colorEnabled, value),
       partial: (value) => style.magenta(colorEnabled, value),
       empty: (value) => style.dim(colorEnabled, value),
@@ -369,6 +389,11 @@ const renderProgressSection = (result: EstimateResult, colorEnabled: boolean): s
       empty: (value) => style.dim(colorEnabled, value),
     }),
   ]);
+};
+
+const formatKeyValueLines = (entries: Array<{ label: string; value: string }>): string[] => {
+  const maxLabel = Math.max(0, ...entries.map((entry) => visibleLength(entry.label)));
+  return entries.map((entry) => `${padVisible(entry.label, maxLabel)} : ${entry.value}`);
 };
 
 const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }): void => {
@@ -426,20 +451,23 @@ const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }
         style.bold(colorEnabled, "TIME LEFT"),
       ],
       rows,
-      { lineStyle: purpleTableLines },
+      { lineStyle: purpleTableLines, align: ["left", "right", "right", "right"] },
     ),
   );
   const counts = result.statusCounts;
+  const statusLines = formatKeyValueLines([
+    { label: style.bold(colorEnabled, "Total tasks"), value: `${counts.total}` },
+    { label: style.cyan(colorEnabled, "Ready to code review"), value: `${counts.readyToCodeReview}` },
+    { label: style.yellow(colorEnabled, "Ready to QA"), value: `${counts.readyToQa}` },
+    { label: style.blue(colorEnabled, "In progress"), value: `${counts.inProgress}` },
+    { label: style.red(colorEnabled, "Failed"), value: `${counts.failed}` },
+    { label: style.green(colorEnabled, "Completed"), value: `${counts.completed}` },
+  ]);
   // eslint-disable-next-line no-console
   console.log(
     formatPanel([
       style.bold(colorEnabled, "📌 Task Status"),
-      `${style.bold(colorEnabled, "Total tasks")}           : ${counts.total}`,
-      `${style.cyan(colorEnabled, "Ready to code review")} : ${counts.readyToCodeReview}`,
-      `${style.yellow(colorEnabled, "Ready to qa")}         : ${counts.readyToQa}`,
-      `${style.blue(colorEnabled, "In progress")}          : ${counts.inProgress}`,
-      `${style.red(colorEnabled, "Failed")}               : ${counts.failed}`,
-      `${style.green(colorEnabled, "Completed")}            : ${counts.completed}`,
+      ...statusLines,
     ]),
   );
   // eslint-disable-next-line no-console
@@ -450,12 +478,18 @@ const renderResult = (result: EstimateResult, options: { colorEnabled: boolean }
     velocity.requestedMode && velocity.requestedMode !== velocity.source
       ? ` (requested ${velocity.requestedMode}; no empirical samples, using config)`
       : "";
+  const velocityLines = formatKeyValueLines([
+    { label: style.bold(colorEnabled, "Velocity source"), value: `${velocity.source}${fallbackNote}` },
+    {
+      label: `${style.bold(colorEnabled, "Samples")}${windowLabel}`,
+      value: `impl=${samples.implementation ?? 0}, review=${samples.review ?? 0}, qa=${samples.qa ?? 0}`,
+    },
+  ]);
   // eslint-disable-next-line no-console
   console.log(
     formatPanel([
       style.bold(colorEnabled, "📈 Velocity"),
-      `${style.bold(colorEnabled, "Velocity source")} : ${velocity.source}${fallbackNote}`,
-      `${style.bold(colorEnabled, "Samples")}${windowLabel}        : impl=${samples.implementation ?? 0}, review=${samples.review ?? 0}, qa=${samples.qa ?? 0}`,
+      ...velocityLines,
     ]),
   );
   // eslint-disable-next-line no-console

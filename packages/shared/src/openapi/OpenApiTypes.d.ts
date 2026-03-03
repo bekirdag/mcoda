@@ -185,7 +185,7 @@ export interface EffectiveVelocity {
     qaSpPerHour: number;
     source: VelocitySource;
     requestedMode?: VelocitySource;
-    windowTasks?: 10 | 20 | 50;
+    windowTasks?: number;
     samples?: {
         implementation?: number;
         review?: number;
