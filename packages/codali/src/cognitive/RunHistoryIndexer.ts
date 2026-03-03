@@ -1,4 +1,5 @@
 import type { DocdexClient } from "../docdex/DocdexClient.js";
+import { adaptRunSummaryForReport } from "../eval/ReportInputAdapter.js";
 
 export interface RunHistoryHit {
   intent: string;
@@ -14,6 +15,8 @@ type SearchHit = {
   intent?: unknown;
   plan?: unknown;
   diff?: unknown;
+  data?: unknown;
+  run_summary?: unknown;
   snippet?: unknown;
   summary?: unknown;
   text?: unknown;
@@ -27,6 +30,11 @@ const asString = (value: unknown): string | undefined => {
 
 const asNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+};
 
 const extractTextFromHit = (hit: SearchHit): string => {
   const direct = asString(hit.text) ?? asString(hit.summary);
@@ -67,12 +75,35 @@ const extractHistoryHit = (entry: SearchHit): RunHistoryHit | undefined => {
 
   const score = asNumber(entry.score) ?? 0.5;
   const text = extractTextFromHit(entry);
+  const dataRecord = asRecord(entry.data);
+  const runSummaryRecord = asRecord(entry.run_summary) ?? asRecord(dataRecord?.run_summary);
+  const normalizedRun = runSummaryRecord
+    ? adaptRunSummaryForReport({ runSummary: runSummaryRecord })
+    : undefined;
   const intent =
     asString(entry.intent) ??
     asString(entry.request) ??
-    extractIntentFromText(text);
-  const plan = asString(entry.plan) ?? extractPlanFromText(text) ?? "";
-  const diff = asString(entry.diff) ?? extractDiffFromText(text) ?? "";
+    extractIntentFromText(text) ??
+    (normalizedRun?.task_id ? `task ${normalizedRun.task_id}` : undefined) ??
+    (normalizedRun?.run_id ? `run ${normalizedRun.run_id}` : undefined);
+  const planFromNormalized = normalizedRun
+    ? [
+      `plan=${normalizedRun.phase_outcomes.find((entry) => entry.phase === "plan")?.status ?? "missing"}`,
+      `retrieve=${normalizedRun.phase_outcomes.find((entry) => entry.phase === "retrieve")?.status ?? "missing"}`,
+      `act=${normalizedRun.phase_outcomes.find((entry) => entry.phase === "act")?.status ?? "missing"}`,
+      `verify=${normalizedRun.phase_outcomes.find((entry) => entry.phase === "verify")?.status ?? "missing"}`,
+    ].join(";")
+    : undefined;
+  const diffFromNormalized = normalizedRun
+    ? [
+      `status=${normalizedRun.final_status}`,
+      `failure_class=${normalizedRun.failure_class ?? "none"}`,
+      `verification=${normalizedRun.verification_outcome ?? "none"}`,
+      `missing=${normalizedRun.missing_data_markers.join("|") || "none"}`,
+    ].join(";")
+    : undefined;
+  const plan = asString(entry.plan) ?? extractPlanFromText(text) ?? planFromNormalized ?? "";
+  const diff = asString(entry.diff) ?? extractDiffFromText(text) ?? diffFromNormalized ?? "";
 
   if (!intent) return undefined;
   if (!plan && !diff) return undefined;

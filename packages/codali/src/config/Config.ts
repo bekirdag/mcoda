@@ -9,6 +9,7 @@ export interface ToolConfig {
   allowShell?: boolean;
   shellAllowlist?: string[];
   allowOutsideWorkspace?: boolean;
+  allowDestructiveOperations?: boolean;
 }
 
 export interface LimitsConfig {
@@ -98,6 +99,40 @@ export interface BuilderConfig {
   fallbackToInterpreter?: boolean;
 }
 
+export const WORKFLOW_PROFILE_NAMES = ["run", "fix", "review", "explain", "test"] as const;
+export type WorkflowProfileName = (typeof WORKFLOW_PROFILE_NAMES)[number];
+export type WorkflowProfileSource = "command" | "cli" | "env" | "config" | "default";
+export type WorkflowOutputContract =
+  | "general"
+  | "patch_summary"
+  | "review_findings"
+  | "explanation"
+  | "verification_summary";
+
+export interface WorkflowProfile {
+  name: WorkflowProfileName;
+  description: string;
+  smart: boolean;
+  builderMode: BuilderConfig["mode"];
+  fallbackToInterpreter: boolean;
+  retryBudget: number;
+  verificationPolicy: string;
+  verificationMinimumChecks: number;
+  verificationEnforceHighConfidence: boolean;
+  outputContract: WorkflowOutputContract;
+  allowWrites: boolean;
+}
+
+export interface WorkflowConfig {
+  profile?: WorkflowProfileName;
+  profiles?: Partial<Record<WorkflowProfileName, Partial<WorkflowProfile>>>;
+}
+
+export interface ResolvedWorkflowProfile extends WorkflowProfile {
+  source: WorkflowProfileSource;
+  command: string;
+}
+
 export interface InterpreterConfig {
   provider: string;
   model: string;
@@ -157,6 +192,26 @@ export interface LoggingConfig {
   directory: string;
 }
 
+export interface EvalGateConfig {
+  patch_apply_drop_max: number;
+  verification_pass_rate_min: number;
+  hallucination_rate_max: number;
+  scope_violation_rate_max: number;
+}
+
+export interface EvalConfig {
+  report_dir: string;
+  gates: EvalGateConfig;
+}
+
+export interface LearningConfig {
+  persistence_min_confidence: number;
+  enforcement_min_confidence: number;
+  require_confirmation_for_low_confidence: boolean;
+  auto_enforce_high_confidence: boolean;
+  candidate_store_file: string;
+}
+
 export interface CodaliConfig {
   workspaceRoot: string;
   project?: string;
@@ -174,6 +229,8 @@ export interface CodaliConfig {
   model: string;
   apiKey?: string;
   baseUrl?: string;
+  workflow?: WorkflowConfig;
+  resolvedWorkflowProfile?: ResolvedWorkflowProfile;
   docdex: DocdexConfig;
   tools: ToolConfig;
   limits: LimitsConfig;
@@ -189,12 +246,82 @@ export interface CodaliConfig {
   streaming: StreamingConfig;
   cost: CostConfig;
   localContext: LocalContextConfig;
+  eval: EvalConfig;
+  learning: LearningConfig;
   logging: LoggingConfig;
   routing?: RoutingConfig;
 }
 
 export const DEFAULT_DOCDEX_BASE_URL = "http://127.0.0.1:28491";
 export const DEFAULT_LOG_DIR = "logs/codali";
+export const DEFAULT_WORKFLOW_PROFILE: WorkflowProfileName = "run";
+export const DEFAULT_WORKFLOW_PROFILES: Record<WorkflowProfileName, WorkflowProfile> = {
+  run: {
+    name: "run",
+    description: "General-purpose workflow profile for advanced usage.",
+    smart: true,
+    builderMode: "patch_json",
+    fallbackToInterpreter: true,
+    retryBudget: 3,
+    verificationPolicy: "general",
+    verificationMinimumChecks: 0,
+    verificationEnforceHighConfidence: false,
+    outputContract: "general",
+    allowWrites: true,
+  },
+  fix: {
+    name: "fix",
+    description: "Apply code changes and emit a patch-oriented summary.",
+    smart: true,
+    builderMode: "patch_json",
+    fallbackToInterpreter: true,
+    retryBudget: 3,
+    verificationPolicy: "fix",
+    verificationMinimumChecks: 0,
+    verificationEnforceHighConfidence: false,
+    outputContract: "patch_summary",
+    allowWrites: true,
+  },
+  review: {
+    name: "review",
+    description: "Analyze risks/findings without applying write-oriented changes by default.",
+    smart: false,
+    builderMode: "patch_json",
+    fallbackToInterpreter: true,
+    retryBudget: 2,
+    verificationPolicy: "review",
+    verificationMinimumChecks: 0,
+    verificationEnforceHighConfidence: false,
+    outputContract: "review_findings",
+    allowWrites: false,
+  },
+  explain: {
+    name: "explain",
+    description: "Produce explanation-first output without applying write-oriented changes by default.",
+    smart: false,
+    builderMode: "patch_json",
+    fallbackToInterpreter: true,
+    retryBudget: 2,
+    verificationPolicy: "explain",
+    verificationMinimumChecks: 0,
+    verificationEnforceHighConfidence: false,
+    outputContract: "explanation",
+    allowWrites: false,
+  },
+  test: {
+    name: "test",
+    description: "Produce verification-first output without applying write-oriented changes by default.",
+    smart: false,
+    builderMode: "patch_json",
+    fallbackToInterpreter: true,
+    retryBudget: 2,
+    verificationPolicy: "test",
+    verificationMinimumChecks: 1,
+    verificationEnforceHighConfidence: true,
+    outputContract: "verification_summary",
+    allowWrites: false,
+  },
+};
 
 export const DEFAULT_LIMITS: LimitsConfig = {
   maxSteps: 12,
@@ -315,6 +442,27 @@ export const DEFAULT_TOOL_CONFIG: ToolConfig = {
   allowShell: false,
   shellAllowlist: [],
   allowOutsideWorkspace: false,
+  allowDestructiveOperations: false,
+};
+
+export const DEFAULT_EVAL_GATES: EvalGateConfig = {
+  patch_apply_drop_max: 0.02,
+  verification_pass_rate_min: 0.9,
+  hallucination_rate_max: 0.02,
+  scope_violation_rate_max: 0,
+};
+
+export const DEFAULT_EVAL: EvalConfig = {
+  report_dir: `${DEFAULT_LOG_DIR}/eval`,
+  gates: DEFAULT_EVAL_GATES,
+};
+
+export const DEFAULT_LEARNING: LearningConfig = {
+  persistence_min_confidence: 0.45,
+  enforcement_min_confidence: 0.85,
+  require_confirmation_for_low_confidence: true,
+  auto_enforce_high_confidence: true,
+  candidate_store_file: `${DEFAULT_LOG_DIR}/learning-rules.json`,
 };
 
 export const DEFAULT_LOGGING: LoggingConfig = {

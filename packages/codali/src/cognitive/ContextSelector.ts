@@ -1,4 +1,11 @@
-import type { ContextImpactSummary, ContextSelection } from "./Types.js";
+import type {
+  ContextImpactSummary,
+  ContextSelection,
+  ContextSelectionDroppedEntry,
+  ContextSelectionEntry,
+  ContextSelectionReasonSummary,
+  RetrievalReasonCode,
+} from "./Types.js";
 import type { IntentSignals } from "./IntentSignals.js";
 
 type Hit = { path?: string; score?: number };
@@ -150,6 +157,35 @@ const buildImpactMap = (impact: ContextImpactSummary[]): ImpactMap => {
   return map;
 };
 
+const addReason = (
+  reasonMap: Map<string, Set<RetrievalReasonCode>>,
+  path: string,
+  reason: RetrievalReasonCode,
+): void => {
+  const normalized = path.trim();
+  if (!normalized) return;
+  const existing = reasonMap.get(normalized);
+  if (existing) {
+    existing.add(reason);
+    return;
+  }
+  reasonMap.set(normalized, new Set<RetrievalReasonCode>([reason]));
+};
+
+const buildReasonSummary = (
+  entries: ContextSelectionEntry[],
+): ContextSelectionReasonSummary[] => {
+  const counts = new Map<RetrievalReasonCode, number>();
+  for (const entry of entries) {
+    for (const reason of entry.inclusion_reasons) {
+      counts.set(reason, (counts.get(reason) ?? 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([code, count]) => ({ code, count }));
+};
+
 type RankedCandidate = {
   path: string;
   score: number;
@@ -204,13 +240,18 @@ export const selectContextFiles = (
   input: ContextSelectorInput,
   options: ContextSelectorOptions,
 ): ContextSelection => {
+  const reasonMap = new Map<string, Set<RetrievalReasonCode>>();
+  const dropped: ContextSelectionDroppedEntry[] = [];
   const maxFiles = Math.max(1, options.maxFiles);
   const focusCount = Math.max(1, options.focusCount ?? 2);
   const uiIntent = input.intent?.intents.includes("ui") ?? false;
   const preferred = unique(input.preferredFiles ?? []);
+  for (const path of preferred) addReason(reasonMap, path, "preferred_file");
+  for (const path of input.recentFiles ?? []) addReason(reasonMap, path, "recent_file");
   const hitScores = new Map<string, number>();
   for (const hit of input.hits) {
     if (typeof hit.path !== "string" || hit.path.length === 0) continue;
+    addReason(reasonMap, hit.path, "search_hit");
     if (typeof hit.score === "number" && Number.isFinite(hit.score)) {
       const existing = hitScores.get(hit.path);
       hitScores.set(hit.path, existing === undefined ? hit.score : Math.max(existing, hit.score));
@@ -232,6 +273,7 @@ export const selectContextFiles = (
       const nonDocCandidate = hitPaths.find((entry) => !isDocPath(entry));
       if (nonDocCandidate) {
         focus = unique([nonDocCandidate, ...focus]).slice(0, Math.min(focusCount, maxFiles));
+        addReason(reasonMap, nonDocCandidate, "fallback_inserted_candidate");
       }
     }
   }
@@ -243,6 +285,7 @@ export const selectContextFiles = (
     ]).find((entry) => isFrontendFile(entry));
     if (frontendCandidate) {
       focus = unique([frontendCandidate, ...focus]).slice(0, Math.min(focusCount, maxFiles));
+      addReason(reasonMap, frontendCandidate, "ui_scaffold");
     }
   }
 
@@ -259,6 +302,7 @@ export const selectContextFiles = (
     const injectFocusCandidate = (candidate?: string): void => {
       if (!candidate) return;
       if (focus.includes(candidate)) return;
+      addReason(reasonMap, candidate, "ui_scaffold");
       if (focus.length < focusCount) {
         focus = unique([candidate, ...focus]).slice(0, Math.min(focusCount, maxFiles));
         return;
@@ -281,12 +325,20 @@ export const selectContextFiles = (
     }
   }
 
+  for (const entry of focus) {
+    if (!reasonMap.has(entry)) addReason(reasonMap, entry, "fallback_inserted_candidate");
+  }
+
   const impactMap = buildImpactMap(input.impact);
   const peripheryCandidates: string[] = [];
   for (const focusFile of focus) {
     const impact = impactMap.get(focusFile);
     if (!impact) continue;
-    peripheryCandidates.push(...impact.outbound, ...impact.inbound);
+    const neighbors = [...impact.outbound, ...impact.inbound];
+    for (const neighbor of neighbors) {
+      addReason(reasonMap, neighbor, "impact_neighbor");
+    }
+    peripheryCandidates.push(...neighbors);
   }
   const periphery = unique(peripheryCandidates).filter((path) => !focus.includes(path));
 
@@ -298,13 +350,19 @@ export const selectContextFiles = (
   if (combined.length < maxFiles) {
     for (const candidate of hitPaths) {
       if (combined.length >= maxFiles) break;
-      if (!combined.includes(candidate)) combined.push(candidate);
+      if (!combined.includes(candidate)) {
+        combined.push(candidate);
+        addReason(reasonMap, candidate, "fallback_inserted_candidate");
+      }
     }
   }
   if (input.recentFiles && combined.length < maxFiles) {
     for (const candidate of input.recentFiles) {
       if (combined.length >= maxFiles) break;
-      if (!combined.includes(candidate)) combined.push(candidate);
+      if (!combined.includes(candidate)) {
+        combined.push(candidate);
+        addReason(reasonMap, candidate, "recent_file");
+      }
     }
   }
 
@@ -321,13 +379,24 @@ export const selectContextFiles = (
       if (crossSurfaceCandidate && !combined.includes(crossSurfaceCandidate)) {
         if (combined.length < maxFiles) {
           combined.push(crossSurfaceCandidate);
+          addReason(reasonMap, crossSurfaceCandidate, "fallback_inserted_candidate");
         } else {
           const replaceIndex = [...combined]
             .reverse()
             .findIndex((entry) => isDocPath(entry) || isTestPath(entry));
           if (replaceIndex >= 0) {
             const targetIndex = combined.length - 1 - replaceIndex;
+            const displaced = combined[targetIndex];
+            if (displaced) {
+              dropped.push({
+                path: displaced,
+                category: isDocPath(displaced) ? "doc_heavy_demotion" : "low_signal_candidate",
+                reason_code: isDocPath(displaced) ? "doc_heavy_demotion" : "low_signal_candidate",
+                detail: "replaced_for_cross_surface_coverage",
+              });
+            }
             combined[targetIndex] = crossSurfaceCandidate;
+            addReason(reasonMap, crossSurfaceCandidate, "fallback_inserted_candidate");
           }
         }
       }
@@ -356,11 +425,27 @@ export const selectContextFiles = (
       });
     for (const candidate of rankedRemainder) {
       if (isDocPath(candidate)) {
-        if (docCount >= maxDocPeriphery) continue;
+        if (docCount >= maxDocPeriphery) {
+          dropped.push({
+            path: candidate,
+            category: "doc_heavy_demotion",
+            reason_code: "doc_heavy_demotion",
+            detail: "non_doc_task_doc_cap",
+          });
+          continue;
+        }
         docCount += 1;
       }
       if (isTestPath(candidate)) {
-        if (testCount >= maxTestPeriphery) continue;
+        if (testCount >= maxTestPeriphery) {
+          dropped.push({
+            path: candidate,
+            category: "test_doc_cap",
+            reason_code: "test_doc_cap",
+            detail: "non_doc_task_test_cap",
+          });
+          continue;
+        }
         testCount += 1;
       }
       filtered.push(candidate);
@@ -369,10 +454,33 @@ export const selectContextFiles = (
     combined.splice(0, combined.length, ...filtered.slice(0, maxFiles));
   }
 
+  for (const candidate of hitPaths) {
+    if (!combined.includes(candidate)) {
+      dropped.push({
+        path: candidate,
+        category: "low_signal_candidate",
+        reason_code: "low_signal_candidate",
+      });
+    }
+  }
+
+  const entries: ContextSelectionEntry[] = combined.map((path) => {
+    const inclusion_reasons = Array.from(reasonMap.get(path) ?? new Set<RetrievalReasonCode>());
+    if (inclusion_reasons.length === 0) inclusion_reasons.push("fallback_inserted_candidate");
+    return {
+      path,
+      role: focus.includes(path) ? "focus" : "periphery",
+      inclusion_reasons,
+    };
+  });
+
   return {
     focus,
     periphery: combined.filter((path) => !focus.includes(path)),
     all: combined,
     low_confidence: lowConfidence,
+    entries,
+    dropped,
+    reason_summary: buildReasonSummary(entries),
   };
 };

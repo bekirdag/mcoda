@@ -34,13 +34,22 @@ import type {
   ContextFileEntry,
   ContextImpactSummary,
   ContextImpactDiagnostics,
+  ContextSearchHit,
+  ContextSelectionEntry,
+  ContextSelectionDroppedEntry,
+  ContextSelectionReasonSummary,
   ContextSnippet,
   ContextSymbolSummary,
   ContextAstSummary,
   ContextProjectInfo,
   ContextSearchResult,
   ContextSelection,
+  DocdexCapabilitySnapshot,
   LaneScope,
+  RetrievalDisposition,
+  RetrievalPreflightCheck,
+  RetrievalReasonCode,
+  RetrievalToolExecution,
 } from "./Types.js";
 
 export interface ContextAssemblerOptions {
@@ -334,18 +343,135 @@ const compactAstNodes = (payload: unknown): unknown[] => {
 
 const execFileAsync = promisify(execFile);
 
+const normalizeHitScoreBreakdown = (
+  value: unknown,
+): ContextSearchHit["score_breakdown"] | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const queryRelevance = typeof record.query_relevance === "number" ? record.query_relevance : undefined;
+  const structuralRelevance = typeof record.structural_relevance === "number" ? record.structural_relevance : undefined;
+  const recencyDiffRelevance = typeof record.recency_diff_relevance === "number"
+    ? record.recency_diff_relevance
+    : undefined;
+  const total = typeof record.total === "number" ? record.total : undefined;
+  if (
+    queryRelevance === undefined &&
+    structuralRelevance === undefined &&
+    recencyDiffRelevance === undefined &&
+    total === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    query_relevance: queryRelevance,
+    structural_relevance: structuralRelevance,
+    recency_diff_relevance: recencyDiffRelevance,
+    total,
+  };
+};
+
+const normalizeHitProvenance = (
+  value: unknown,
+): ContextSearchHit["provenance"] | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const provenance = {
+    doc_id: typeof record.doc_id === "string" ? record.doc_id : undefined,
+    rel_path: typeof record.rel_path === "string" ? record.rel_path : undefined,
+    path: typeof record.path === "string" ? record.path : undefined,
+    line_start: typeof record.line_start === "number" ? record.line_start : undefined,
+    line_end: typeof record.line_end === "number" ? record.line_end : undefined,
+    anchor_kind: typeof record.anchor_kind === "string" ? record.anchor_kind : undefined,
+  };
+  if (
+    provenance.doc_id === undefined &&
+    provenance.rel_path === undefined &&
+    provenance.path === undefined &&
+    provenance.line_start === undefined &&
+    provenance.line_end === undefined &&
+    provenance.anchor_kind === undefined
+  ) {
+    return undefined;
+  }
+  return provenance;
+};
+
+const normalizeHitRetrievalExplanation = (
+  value: unknown,
+): ContextSearchHit["retrieval_explanation"] | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const summary = typeof record.summary === "string" ? record.summary : undefined;
+  const signals = Array.isArray(record.signals)
+    ? record.signals.filter((entry): entry is string => typeof entry === "string")
+    : undefined;
+  if (summary === undefined && (!signals || signals.length === 0)) return undefined;
+  return { summary, signals };
+};
+
+const normalizeSearchHit = (value: unknown): ContextSearchHit | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const hit = value as Record<string, unknown>;
+  const docId = typeof hit.doc_id === "string" ? hit.doc_id : undefined;
+  const pathValue = typeof hit.path === "string"
+    ? hit.path
+    : (typeof hit.rel_path === "string" ? hit.rel_path : undefined);
+  const score = typeof hit.score === "number" ? hit.score : undefined;
+  return {
+    doc_id: docId,
+    path: pathValue,
+    score,
+    snippet_origin: typeof hit.snippet_origin === "string" ? hit.snippet_origin : undefined,
+    snippet_truncated: typeof hit.snippet_truncated === "boolean" ? hit.snippet_truncated : undefined,
+    line_start: typeof hit.line_start === "number" ? hit.line_start : undefined,
+    line_end: typeof hit.line_end === "number" ? hit.line_end : undefined,
+    score_breakdown: normalizeHitScoreBreakdown(hit.score_breakdown),
+    provenance: normalizeHitProvenance(hit.provenance),
+    retrieval_explanation: normalizeHitRetrievalExplanation(hit.retrieval_explanation),
+  };
+};
+
 const collectHits = (
   result: unknown,
-): Array<{ doc_id?: string; path?: string; score?: number }> => {
+): ContextSearchHit[] => {
   if (!result || typeof result !== "object") return [];
   const hits = (
-    result as { hits?: Array<{ doc_id?: string; path?: string; score?: number }> }
+    result as { hits?: unknown[] }
   ).hits;
   if (!Array.isArray(hits)) return [];
-  return hits.map((hit) => ({
-    doc_id: hit.doc_id,
-    path: hit.path,
-    score: typeof hit.score === "number" ? hit.score : undefined,
+  return hits
+    .map((hit) => normalizeSearchHit(hit))
+    .filter((hit): hit is ContextSearchHit => Boolean(hit));
+};
+
+const collectBatchSearchResults = (
+  result: unknown,
+  expectedQueries: string[],
+): ContextSearchResult[] => {
+  if (!result || typeof result !== "object") {
+    return expectedQueries.map((query) => ({ query, hits: [] }));
+  }
+  const record = result as {
+    results?: Array<{ query?: unknown; hits?: unknown[] }>;
+    queries?: Array<{ query?: unknown; hits?: unknown[] }>;
+  };
+  const rawResults = Array.isArray(record.results)
+    ? record.results
+    : (Array.isArray(record.queries) ? record.queries : []);
+  if (rawResults.length === 0) {
+    return expectedQueries.map((query) => ({ query, hits: [] }));
+  }
+  const normalized = rawResults.map((entry) => {
+    const query = typeof entry.query === "string" ? entry.query : "";
+    const hits = Array.isArray(entry.hits)
+      ? collectHits({ hits: entry.hits })
+      : [];
+    return { query, hits };
+  });
+  const fallbackQueue = [...expectedQueries];
+  return normalized.map((entry) => ({
+    query: entry.query || fallbackQueue.shift() || "",
+    hits: entry.hits,
   }));
 };
 
@@ -766,9 +892,12 @@ const applyForcedFocusSelection = (
   maxFiles: number,
 ): ContextSelection => {
   if (!forcedFocusFiles.length) return selection;
+  const normalizedForced = uniqueValues(
+    forcedFocusFiles.map((entry) => normalizePath(entry)),
+  );
   const limit = Math.max(1, maxFiles);
   const combined = uniqueValues([
-    ...forcedFocusFiles.map((entry) => normalizePath(entry)),
+    ...normalizedForced,
     ...selection.focus.map((entry) => normalizePath(entry)),
     ...selection.periphery.map((entry) => normalizePath(entry)),
     ...selection.all.map((entry) => normalizePath(entry)),
@@ -778,7 +907,7 @@ const applyForcedFocusSelection = (
     Math.max(selection.focus.length, forcedFocusFiles.length, 1),
   );
   const focusSeed = uniqueValues([
-    ...forcedFocusFiles.map((entry) => normalizePath(entry)),
+    ...normalizedForced,
     ...selection.focus.map((entry) => normalizePath(entry)),
   ]);
   const focus: string[] = [];
@@ -795,11 +924,57 @@ const applyForcedFocusSelection = (
     }
   }
   const periphery = combined.filter((entry) => !focus.includes(entry));
+  const previousPaths = new Set(
+    uniqueValues([
+      ...selection.focus,
+      ...selection.periphery,
+      ...selection.all,
+      ...(selection.entries ?? []).map((entry) => entry.path),
+    ]),
+  );
+  const kept = new Set(combined);
+  const dropped = dedupeDroppedEntries([
+    ...(selection.dropped ?? []),
+    ...Array.from(previousPaths)
+      .filter((entry) => !kept.has(entry))
+      .map((entry): ContextSelectionDroppedEntry => ({
+        path: entry,
+        category: "low_signal_candidate",
+        reason_code: "low_signal_candidate",
+        detail: "removed_for_forced_focus",
+      })),
+  ]);
+  const previousEntryMap = new Map(
+    (selection.entries ?? []).map((entry) => [entry.path, entry]),
+  );
+  const entries: ContextSelectionEntry[] = combined.map((path) => {
+    const existing = previousEntryMap.get(path);
+    const role: ContextSelectionEntry["role"] = focus.includes(path)
+      ? "focus"
+      : "periphery";
+    const reasonSet = new Set<RetrievalReasonCode>(
+      existing?.inclusion_reasons?.length
+        ? existing.inclusion_reasons
+        : ["fallback_inserted_candidate"],
+    );
+    if (normalizedForced.includes(path)) {
+      reasonSet.add("forced_focus");
+    }
+    return {
+      path,
+      role,
+      inclusion_reasons: Array.from(reasonSet),
+    };
+  });
+  const reason_summary = buildSelectionReasonSummary(entries);
   return {
     ...selection,
     focus,
     periphery,
     all: combined,
+    entries,
+    dropped,
+    reason_summary,
   };
 };
 
@@ -1044,8 +1219,8 @@ const loadReadmeSummary = async (
 };
 
 const reorderHits = (
-  hits: Array<{ doc_id?: string; path?: string }>,
-): Array<{ doc_id?: string; path?: string }> => {
+  hits: ContextSearchHit[],
+): ContextSearchHit[] => {
   const hasNonDoc = hits.some(
     (hit) => hit.path && !isDocPath(hit.path),
   );
@@ -1788,6 +1963,464 @@ const filterRelevantMemoryFacts = (
   };
 };
 
+const warningMatchesCode = (warning: string, code: string): boolean =>
+  warning === code || warning.startsWith(`${code}:`);
+
+const buildSelectionEntries = (
+  selection?: ContextSelection,
+): ContextSelectionEntry[] => {
+  if (!selection) return [];
+  const focusSet = new Set(selection.focus);
+  const byPath = new Map(
+    (selection.entries ?? []).map((entry) => [entry.path, entry]),
+  );
+  return selection.all.map((path) => {
+    const role: ContextSelectionEntry["role"] = focusSet.has(path)
+      ? "focus"
+      : "periphery";
+    const existing = byPath.get(path);
+    if (existing) {
+      const inclusion_reasons = uniqueValues(
+        existing.inclusion_reasons?.length
+          ? existing.inclusion_reasons
+          : ["fallback_inserted_candidate"],
+      ) as RetrievalReasonCode[];
+      return {
+        path,
+        role,
+        inclusion_reasons,
+      };
+    }
+    return {
+      path,
+      role,
+      inclusion_reasons: ["fallback_inserted_candidate"],
+    };
+  });
+};
+
+const buildSelectionReasonSummary = (
+  entries: ContextSelectionEntry[],
+): ContextSelectionReasonSummary[] => {
+  const counts = new Map<RetrievalReasonCode, number>();
+  for (const entry of entries) {
+    for (const reason of entry.inclusion_reasons) {
+      counts.set(reason, (counts.get(reason) ?? 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([code, count]) => ({ code, count }));
+};
+
+const dedupeDroppedEntries = (
+  entries: ContextSelectionDroppedEntry[],
+): ContextSelectionDroppedEntry[] => {
+  const byKey = new Map<string, ContextSelectionDroppedEntry>();
+  for (const entry of entries) {
+    const key = `${entry.path ?? ""}|${entry.category}|${entry.reason_code}|${entry.detail ?? ""}`;
+    if (!byKey.has(key)) byKey.set(key, entry);
+  }
+  return Array.from(byKey.values());
+};
+
+const buildMissingContentDroppedEntries = (
+  missing: string[],
+): ContextSelectionDroppedEntry[] => {
+  const dropped: ContextSelectionDroppedEntry[] = [];
+  for (const entry of missing) {
+    if (entry.startsWith("focus_content_missing:")) {
+      dropped.push({
+        path: entry.slice("focus_content_missing:".length),
+        category: "missing_content",
+        reason_code: "missing_content",
+        detail: "focus_content_missing",
+      });
+      continue;
+    }
+    if (entry.startsWith("periphery_content_missing:")) {
+      dropped.push({
+        path: entry.slice("periphery_content_missing:".length),
+        category: "missing_content",
+        reason_code: "missing_content",
+        detail: "periphery_content_missing",
+      });
+    }
+  }
+  return dropped;
+};
+
+const buildTruncatedEntries = (
+  files?: ContextBundle["files"],
+): Array<{ path: string; reason_code: RetrievalReasonCode; detail?: string }> => {
+  if (!files || files.length === 0) return [];
+  const entries: Array<{ path: string; reason_code: RetrievalReasonCode; detail?: string }> = [];
+  for (const file of files) {
+    if (!file.truncated) continue;
+    const detail = file.warnings?.includes("budget_trim")
+      ? "budget_trim"
+      : file.sliceStrategy;
+    entries.push({
+      path: file.path,
+      reason_code: "budget_trimmed",
+      detail,
+    });
+  }
+  const byPath = new Map<string, { path: string; reason_code: RetrievalReasonCode; detail?: string }>();
+  for (const entry of entries) {
+    if (!byPath.has(entry.path)) byPath.set(entry.path, entry);
+  }
+  return Array.from(byPath.values());
+};
+
+const hasWarningCode = (warnings: string[], code: string): boolean =>
+  warnings.some((warning) => warningMatchesCode(warning, code));
+
+const buildRetrievalToolExecution = (options: {
+  preflight: RetrievalPreflightCheck[];
+  warnings: string[];
+  searchAttempted: boolean;
+  searchSkipped: boolean;
+  includeSnippets: boolean;
+  includeImpact: boolean;
+  includeRepoMap: boolean;
+  analysisPathCount: number;
+  impactCapablePathCount: number;
+  snippets: ContextSnippet[];
+  symbols: ContextSymbolSummary[];
+  ast: ContextAstSummary[];
+  impact: ContextImpactSummary[];
+  memoryAttempted: boolean;
+  memoryCount: number;
+  profileAttempted: boolean;
+  profileCount: number;
+  repoMapAvailable: boolean;
+  dagAttempted: boolean;
+  dagSummaryAvailable: boolean;
+  capabilities?: DocdexCapabilitySnapshot;
+}): RetrievalToolExecution[] => {
+  const docdexUnavailable = options.preflight.some(
+    (entry) => entry.check === "docdex_health" && entry.status === "failed",
+  );
+  const markUnavailable = (
+    tool: string,
+    category: RetrievalToolExecution["category"],
+    notes?: string,
+  ): RetrievalToolExecution => ({
+    tool,
+    category,
+    disposition: "unavailable",
+    notes,
+  });
+  if (docdexUnavailable) {
+    return [
+      markUnavailable("docdex.search", "search", "docdex_unavailable"),
+      markUnavailable("docdex.open_or_snippet", "open_or_snippet", "docdex_unavailable"),
+      markUnavailable("docdex.symbols_or_ast", "symbols_or_ast", "docdex_unavailable"),
+      markUnavailable("docdex.impact", "impact", "docdex_unavailable"),
+      markUnavailable("docdex.memory_recall", "memory", "docdex_unavailable"),
+      markUnavailable("docdex.get_profile", "profile", "docdex_unavailable"),
+      markUnavailable("docdex.tree", "tree", "docdex_unavailable"),
+      markUnavailable("docdex.dag_export", "dag_export", "docdex_unavailable"),
+      markUnavailable("docdex.capabilities", "capability_probe", "docdex_unavailable"),
+    ];
+  }
+
+  const openOrSnippetFailed = hasWarningCode(options.warnings, "docdex_snippet_failed")
+    || hasWarningCode(options.warnings, "docdex_open_failed");
+  const symbolsOrAstFailed = hasWarningCode(options.warnings, "docdex_symbols_failed")
+    || hasWarningCode(options.warnings, "docdex_ast_failed");
+  const impactFailed = hasWarningCode(options.warnings, "docdex_impact_failed")
+    || hasWarningCode(options.warnings, "impact_diagnostics_failed");
+  const treeFailed = hasWarningCode(options.warnings, "docdex_tree_failed");
+
+  const result: RetrievalToolExecution[] = [];
+  if (options.searchSkipped) {
+    result.push({
+      tool: "docdex.search",
+      category: "search",
+      disposition: "skipped",
+      notes: "search_skipped_with_preferred_files",
+    });
+  } else if (options.searchAttempted) {
+    result.push({
+      tool: "docdex.search",
+      category: "search",
+      disposition: hasWarningCode(options.warnings, "docdex_search_failed")
+        ? "failed"
+        : "executed",
+      notes: "search_queries_executed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.search",
+      category: "search",
+      disposition: "skipped",
+      notes: "no_queries",
+    });
+  }
+
+  if (!options.includeSnippets) {
+    result.push({
+      tool: "docdex.open_or_snippet",
+      category: "open_or_snippet",
+      disposition: "skipped",
+      notes: "snippets_disabled",
+    });
+  } else if (options.snippets.length > 0) {
+    result.push({
+      tool: "docdex.open_or_snippet",
+      category: "open_or_snippet",
+      disposition: "executed",
+      notes: `snippets:${options.snippets.length}`,
+    });
+  } else if (openOrSnippetFailed) {
+    result.push({
+      tool: "docdex.open_or_snippet",
+      category: "open_or_snippet",
+      disposition: "failed",
+      notes: "snippet_or_open_failed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.open_or_snippet",
+      category: "open_or_snippet",
+      disposition: "skipped",
+      notes: "no_matching_hits",
+    });
+  }
+
+  if (options.analysisPathCount <= 0) {
+    result.push({
+      tool: "docdex.symbols_or_ast",
+      category: "symbols_or_ast",
+      disposition: "skipped",
+      notes: "no_analysis_paths",
+    });
+  } else if (options.symbols.length > 0 || options.ast.length > 0) {
+    result.push({
+      tool: "docdex.symbols_or_ast",
+      category: "symbols_or_ast",
+      disposition: "executed",
+      notes: `symbols:${options.symbols.length} ast:${options.ast.length}`,
+    });
+  } else if (symbolsOrAstFailed) {
+    result.push({
+      tool: "docdex.symbols_or_ast",
+      category: "symbols_or_ast",
+      disposition: "failed",
+      notes: "symbols_or_ast_failed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.symbols_or_ast",
+      category: "symbols_or_ast",
+      disposition: "skipped",
+      notes: "analysis_not_applicable",
+    });
+  }
+
+  if (!options.includeImpact || options.impactCapablePathCount <= 0) {
+    result.push({
+      tool: "docdex.impact",
+      category: "impact",
+      disposition: "skipped",
+      notes: "impact_not_requested_or_applicable",
+    });
+  } else if (options.impact.length > 0) {
+    result.push({
+      tool: "docdex.impact",
+      category: "impact",
+      disposition: "executed",
+      notes: `impact_files:${options.impact.length}`,
+    });
+  } else if (impactFailed) {
+    result.push({
+      tool: "docdex.impact",
+      category: "impact",
+      disposition: "failed",
+      notes: "impact_failed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.impact",
+      category: "impact",
+      disposition: "skipped",
+      notes: "no_impact_edges",
+    });
+  }
+
+  if (!options.memoryAttempted) {
+    result.push({
+      tool: "docdex.memory_recall",
+      category: "memory",
+      disposition: "skipped",
+      notes: "memory_not_requested",
+    });
+  } else if (hasWarningCode(options.warnings, "docdex_memory_recall_failed")) {
+    result.push({
+      tool: "docdex.memory_recall",
+      category: "memory",
+      disposition: "failed",
+      notes: "memory_recall_failed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.memory_recall",
+      category: "memory",
+      disposition: "executed",
+      notes: `items:${options.memoryCount}`,
+    });
+  }
+
+  if (!options.profileAttempted) {
+    result.push({
+      tool: "docdex.get_profile",
+      category: "profile",
+      disposition: "skipped",
+      notes: "profile_not_requested",
+    });
+  } else if (hasWarningCode(options.warnings, "docdex_profile_failed")) {
+    result.push({
+      tool: "docdex.get_profile",
+      category: "profile",
+      disposition: "failed",
+      notes: "profile_failed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.get_profile",
+      category: "profile",
+      disposition: "executed",
+      notes: `items:${options.profileCount}`,
+    });
+  }
+
+  if (!options.includeRepoMap) {
+    result.push({
+      tool: "docdex.tree",
+      category: "tree",
+      disposition: "skipped",
+      notes: "repo_map_disabled",
+    });
+  } else if (options.repoMapAvailable) {
+    result.push({
+      tool: "docdex.tree",
+      category: "tree",
+      disposition: "executed",
+      notes: "repo_map_available",
+    });
+  } else if (treeFailed) {
+    result.push({
+      tool: "docdex.tree",
+      category: "tree",
+      disposition: "failed",
+      notes: "tree_failed",
+    });
+  } else {
+    result.push({
+      tool: "docdex.tree",
+      category: "tree",
+      disposition: "skipped",
+      notes: "repo_map_not_available",
+    });
+  }
+
+  if (!options.dagAttempted) {
+    result.push({
+      tool: "docdex.dag_export",
+      category: "dag_export",
+      disposition: "skipped",
+      notes: "dag_export_not_attempted",
+    });
+  } else if (options.dagSummaryAvailable) {
+    result.push({
+      tool: "docdex.dag_export",
+      category: "dag_export",
+      disposition: "executed",
+      notes: "dag_summary_available",
+    });
+  } else {
+    result.push({
+      tool: "docdex.dag_export",
+      category: "dag_export",
+      disposition: "failed",
+      notes: "dag_export_failed",
+    });
+  }
+
+  if (!options.capabilities) {
+    result.push({
+      tool: "docdex.capabilities",
+      category: "capability_probe",
+      disposition: "unavailable",
+      notes: "capability_probe_unavailable",
+    });
+  } else if (options.capabilities.source === "mcp_probe") {
+    result.push({
+      tool: "docdex.capabilities",
+      category: "capability_probe",
+      disposition: "executed",
+      notes: options.capabilities.cached ? "capability_probe_cached" : "capability_probe_fresh",
+    });
+  } else {
+    result.push({
+      tool: "docdex.capabilities",
+      category: "capability_probe",
+      disposition: "failed",
+      notes: "capability_probe_fallback",
+    });
+  }
+  return result;
+};
+
+const buildRetrievalDisposition = (options: {
+  selection?: ContextSelection;
+  missing: string[];
+  warnings: string[];
+  preflight: RetrievalPreflightCheck[];
+  capabilities?: DocdexCapabilitySnapshot;
+}): RetrievalDisposition => {
+  const unresolvedHardFailures = options.missing.some((entry) =>
+    entry === "no_focus_files_selected"
+    || entry === "no_context_files_loaded"
+    || entry.startsWith("focus_content_missing:")
+    || entry.startsWith("periphery_content_missing:")
+  );
+  if (unresolvedHardFailures) return "unresolved";
+
+  const failedPreflight = options.preflight.some(
+    (entry) => entry.check === "docdex_health" && entry.status === "failed",
+  );
+  if (failedPreflight) return "unresolved";
+
+  const degradedWarnings = [
+    "docdex_low_confidence",
+    "docdex_no_hits",
+    "docdex_search_failed",
+    "docdex_rerank_failed",
+    "docdex_batch_search_failed",
+    "context_budget_pruned",
+    "context_budget_trimmed",
+    "docdex_capabilities_fallback",
+    "docdex_capabilities_failed",
+  ];
+  const degradedMissing = options.missing.some((entry) => entry === "low_confidence_selection");
+  const degradedByWarnings = options.warnings.some((warning) =>
+    degradedWarnings.some((code) => warningMatchesCode(warning, code))
+  );
+  const degradedByCapabilities = options.capabilities?.source === "fallback";
+  if (
+    options.selection?.low_confidence
+    || degradedMissing
+    || degradedByWarnings
+    || degradedByCapabilities
+  ) {
+    return "degraded";
+  }
+  return "resolved";
+};
+
 const reconcileWarnings = (
   warnings: string[],
   context: {
@@ -2031,11 +2664,11 @@ const filterRecentFilesForRequest = (
 };
 
 const filterSelectionHits = (
-  hits: Array<{ doc_id?: string; path?: string; score?: number }>,
+  hits: ContextSearchHit[],
   request: string,
   intent: IntentSignals,
   docTask: boolean,
-): Array<{ doc_id?: string; path?: string; score?: number }> => {
+): ContextSearchHit[] => {
   if (!hits.length) return hits;
   const tokens = tokenizeRequest(request);
   const requestLower = request.toLowerCase();
@@ -2489,7 +3122,7 @@ export class ContextAssembler {
       pushWarning("research_no_queries");
     }
 
-    const hitList: Array<{ doc_id?: string; path?: string; score?: number }> = [];
+    const hitList: ContextSearchHit[] = [];
     const searchResults: ContextSearchResult[] = [];
     for (const query of queries) {
       const args = {
@@ -2574,6 +3207,14 @@ export class ContextAssembler {
             doc_id: hit.doc_id,
             path: hit.path,
             content: extractSnippetContent(snippetResult),
+            score: hit.score,
+            snippet_origin: hit.snippet_origin,
+            snippet_truncated: hit.snippet_truncated,
+            line_start: hit.line_start,
+            line_end: hit.line_end,
+            score_breakdown: hit.score_breakdown,
+            provenance: hit.provenance,
+            retrieval_explanation: hit.retrieval_explanation,
           });
           emitToolResult("docdex.snippet", "ok", true);
           recordToolRun("docdex.snippet", true, {
@@ -2618,6 +3259,8 @@ export class ContextAssembler {
             outputs.snippets.push({
               path: focusPath,
               content: extractSnippetContent(openResult),
+              snippet_origin: "summary",
+              provenance: { path: focusPath, anchor_kind: "file_level_fallback" },
             });
             snippetPathSet.add(normalizedFocus);
             emitToolResult("docdex.open", "ok", true);
@@ -2870,9 +3513,65 @@ export class ContextAssembler {
     const pushWarning = (warning: string): void => {
       if (!warnings.includes(warning)) warnings.push(warning);
     };
+    const preflight = new Map<
+      RetrievalPreflightCheck["check"],
+      RetrievalPreflightCheck
+    >();
+    const setPreflight = (
+      check: RetrievalPreflightCheck["check"],
+      status: RetrievalPreflightCheck["status"],
+      detail?: string,
+    ): void => {
+      preflight.set(check, { check, status, detail });
+    };
+    const preflightOrder: RetrievalPreflightCheck["check"][] = [
+      "docdex_health",
+      "docdex_initialize",
+      "docdex_stats",
+      "docdex_files",
+    ];
+    const getPreflight = (): RetrievalPreflightCheck[] => preflightOrder.map(
+      (check) => preflight.get(check) ?? { check, status: "skipped" },
+    );
     if (this.deepScanPresetApplied) {
       pushWarning("deep_scan_preset_applied");
     }
+    let capabilitySnapshot: DocdexCapabilitySnapshot | undefined;
+    const probeCapabilities = async (): Promise<DocdexCapabilitySnapshot | undefined> => {
+      const clientWithCapabilities = this.client as unknown as {
+        getCapabilities?: (forceRefresh?: boolean) => Promise<DocdexCapabilitySnapshot>;
+      };
+      if (typeof clientWithCapabilities.getCapabilities !== "function") return undefined;
+      try {
+        const snapshot = await clientWithCapabilities.getCapabilities();
+        if (snapshot.source === "fallback") {
+          pushWarning("docdex_capabilities_fallback");
+        }
+        for (const warning of snapshot.warnings ?? []) {
+          pushWarning(`docdex_capabilities_warning:${warning}`);
+        }
+        return snapshot;
+      } catch (error) {
+        pushWarning(
+          `docdex_capabilities_failed:${error instanceof Error ? error.message : String(error)}`,
+        );
+        return {
+          cached: false,
+          source: "fallback",
+          probed_at_ms: Date.now(),
+          capabilities: {
+            score_breakdown: "unavailable",
+            rerank: "unavailable",
+            snippet_provenance: "unavailable",
+            retrieval_explanation: "unavailable",
+            batch_search: "unavailable",
+          },
+          warnings: [
+            `probe_failed:${error instanceof Error ? error.message : String(error)}`,
+          ],
+        };
+      }
+    };
     let searchResults: ContextSearchResult[] = [];
     const emit = this.onEvent;
     const emitStatus = (phase: AgentStatusPhase, message?: string) => {
@@ -2919,6 +3618,12 @@ export class ContextAssembler {
     );
     const contextManager = this.contextManager;
     const laneScope = this.laneScope;
+    let searchAttempted = false;
+    let memoryAttempted = false;
+    let profileAttempted = false;
+    let dagAttempted = false;
+    let analysisPathCount = 0;
+    let impactCapablePathCount = 0;
 
     let healthOk = false;
     emitToolCall("docdex.health", {});
@@ -2926,10 +3631,13 @@ export class ContextAssembler {
       await this.client.healthCheck();
       emitToolResult("docdex.health", "ok", true);
       healthOk = true;
+      setPreflight("docdex_health", "ok");
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setPreflight("docdex_health", "failed", errorMessage);
       emitToolResult(
         "docdex.health",
-        error instanceof Error ? error.message : String(error),
+        errorMessage,
         false,
       );
       if (this.options.deepMode) {
@@ -2946,6 +3654,9 @@ export class ContextAssembler {
         });
         throw buildDeepModeDocdexError(missing, remediation);
       }
+      setPreflight("docdex_initialize", "skipped", "docdex_unavailable");
+      setPreflight("docdex_stats", "skipped", "docdex_unavailable");
+      setPreflight("docdex_files", "skipped", "docdex_unavailable");
       pushWarning("docdex_unavailable");
       const maxFiles = Math.max(1, this.options.maxFiles);
       let fallbackFocus = filterExcludedPaths(
@@ -2984,7 +3695,7 @@ export class ContextAssembler {
         }
       }
       const focusPaths = contextFiles.map((entry) => entry.path);
-      const selection = focusPaths.length > 0
+      const selection: ContextSelection | undefined = focusPaths.length > 0
         ? {
             focus: focusPaths,
             periphery: [] as string[],
@@ -2995,6 +3706,46 @@ export class ContextAssembler {
       const missing: string[] = ["docdex_unavailable"];
       if (contextFiles.length === 0) missing.push("no_context_files_loaded");
       if (!selection || selection.focus.length === 0) missing.push("no_focus_files_selected");
+      const normalizedMissing = uniqueValues(missing);
+      capabilitySnapshot = capabilitySnapshot ?? (await probeCapabilities());
+      const selectionEntries = buildSelectionEntries(selection);
+      const selectionReasonSummary = buildSelectionReasonSummary(selectionEntries);
+      const normalizedSelection = selection
+        ? {
+            ...selection,
+            entries: selectionEntries,
+            dropped: dedupeDroppedEntries([
+              ...(selection.dropped ?? []),
+              ...buildMissingContentDroppedEntries(normalizedMissing),
+            ]),
+            reason_summary: selectionReasonSummary,
+          }
+        : undefined;
+      const preflightChecks = getPreflight();
+      const finalWarnings = uniqueValues(warnings);
+      const toolExecution = buildRetrievalToolExecution({
+        preflight: preflightChecks,
+        warnings: finalWarnings,
+        searchAttempted: false,
+        searchSkipped: false,
+        includeSnippets: this.options.includeSnippets,
+        includeImpact: this.options.includeImpact,
+        includeRepoMap: this.options.includeRepoMap,
+        analysisPathCount: 0,
+        impactCapablePathCount: 0,
+        snippets: [],
+        symbols: [],
+        ast: [],
+        impact: [],
+        memoryAttempted: false,
+        memoryCount: 0,
+        profileAttempted: false,
+        profileCount: 0,
+        repoMapAvailable: false,
+        dagAttempted: false,
+        dagSummaryAvailable: false,
+        capabilities: capabilitySnapshot,
+      });
       const readmeSummary = await loadReadmeSummary(this.options.workspaceRoot);
       const projectInfo: ContextProjectInfo | undefined = this.options.workspaceRoot
         ? {
@@ -3018,19 +3769,44 @@ export class ContextAssembler {
         profile: [],
         files: contextFiles.length > 0 ? contextFiles : undefined,
         project_info: projectInfo,
-        selection,
+        selection: normalizedSelection,
+        retrieval_disposition: "unresolved",
         index: { last_updated_epoch_ms: 0, num_docs: 0 },
-        warnings,
-        missing,
+        warnings: finalWarnings,
+        missing: normalizedMissing,
       };
       bundle.request_digest = buildRequestDigest({
         request,
         intent,
         querySignals,
-        selection,
+        selection: normalizedSelection,
         searchResults: [],
-        warnings,
+        warnings: finalWarnings,
       });
+      const fallbackConfidence = bundle.request_digest?.confidence ?? "low";
+      const fallbackReport: NonNullable<ContextBundle["retrieval_report"]> = {
+        schema_version: 1,
+        mode: this.options.deepMode ? "deep" : "normal",
+        created_at_ms: Date.now(),
+        confidence: fallbackConfidence,
+        disposition: "unresolved",
+        preflight: preflightChecks,
+        selection: {
+          focus: normalizedSelection?.focus ?? [],
+          periphery: normalizedSelection?.periphery ?? [],
+          all: normalizedSelection?.all ?? [],
+          low_confidence: normalizedSelection?.low_confidence ?? true,
+          entries: normalizedSelection?.entries ?? [],
+          reason_summary: normalizedSelection?.reason_summary ?? [],
+        },
+        dropped: normalizedSelection?.dropped ?? [],
+        truncated: buildTruncatedEntries(contextFiles),
+        unresolved_gaps: normalizedMissing,
+        tool_execution: toolExecution,
+        capabilities: capabilitySnapshot,
+        warnings: finalWarnings,
+      };
+      bundle.retrieval_report = fallbackReport;
       const sanitizedBundle = sanitizeContextBundleForOutput(bundle);
       bundle.serialized = serializeContext(sanitizedBundle, {
         mode: this.options.serializationMode ?? "bundle_text",
@@ -3046,11 +3822,17 @@ export class ContextAssembler {
           emitToolCall("docdex.initialize", { rootUri });
           await this.client.initialize(rootUri);
           emitToolResult("docdex.initialize", "ok", true);
+          setPreflight("docdex_initialize", "ok");
         } catch {
           emitToolResult("docdex.initialize", "failed", false);
           pushWarning("docdex_initialize_failed");
+          setPreflight("docdex_initialize", "failed", "initialize_failed");
         }
+      } else {
+        setPreflight("docdex_initialize", "skipped", "repo_root_unavailable");
       }
+    } else {
+      setPreflight("docdex_initialize", "skipped", "repo_id_already_bound");
     }
     let stats: unknown = { last_updated_epoch_ms: 0, num_docs: 0 };
     let statsSucceeded = false;
@@ -3060,18 +3842,21 @@ export class ContextAssembler {
       stats = statsResult.value;
       statsSucceeded = true;
       emitToolResult("docdex.stats", "ok", true);
+      setPreflight("docdex_stats", "ok");
     } else {
+      const statsErrorMessage = statsResult.error instanceof Error
+        ? statsResult.error.message
+        : String(statsResult.error);
       emitToolResult(
         "docdex.stats",
-        statsResult.error instanceof Error
-          ? statsResult.error.message
-          : String(statsResult.error),
+        statsErrorMessage,
         false,
       );
       pushWarning("docdex_stats_failed");
       if (statsResult.backoff) {
         pushWarning("docdex_stats_backoff");
       }
+      setPreflight("docdex_stats", "failed", statsErrorMessage);
     }
     let fileHints: string[] = [];
     let filesSucceeded = false;
@@ -3081,18 +3866,21 @@ export class ContextAssembler {
       fileHints = filterExcludedPaths(extractFileHints(filesResult.value));
       filesSucceeded = true;
       emitToolResult("docdex.files", "ok", true);
+      setPreflight("docdex_files", "ok");
     } else {
+      const filesErrorMessage = filesResult.error instanceof Error
+        ? filesResult.error.message
+        : String(filesResult.error);
       emitToolResult(
         "docdex.files",
-        filesResult.error instanceof Error
-          ? filesResult.error.message
-          : String(filesResult.error),
+        filesErrorMessage,
         false,
       );
       pushWarning("docdex_files_failed");
       if (filesResult.backoff) {
         pushWarning("docdex_files_backoff");
       }
+      setPreflight("docdex_files", "failed", filesErrorMessage);
     }
 
     if (this.options.deepMode) {
@@ -3118,6 +3906,7 @@ export class ContextAssembler {
         throw buildDeepModeDocdexError(missing, remediation);
       }
     }
+    capabilitySnapshot = capabilitySnapshot ?? (await probeCapabilities());
 
     let inferredPreferred = filterExcludedPaths(
       inferPreferredFiles(request, fileHints, intent, docTask),
@@ -3198,10 +3987,50 @@ export class ContextAssembler {
       this.options.skipSearchWhenPreferred && preferredFiles.length > 0;
 
     const runSearch = async (queriesToUse: string[]) => {
-      const hitList: Array<{ doc_id?: string; path?: string; score?: number }> = [];
+      const hitList: ContextSearchHit[] = [];
       const results: ContextSearchResult[] = [];
       let searchSucceeded = false;
+      const clientWithBatch = this.client as unknown as {
+        batchSearch?: (
+          queries: string[],
+          options?: { limit?: number; includeLibs?: boolean },
+        ) => Promise<unknown>;
+      };
+      const canBatchSearch =
+        capabilitySnapshot?.capabilities.batch_search === "available" &&
+        typeof clientWithBatch.batchSearch === "function" &&
+        queriesToUse.length > 1;
+
+      if (canBatchSearch) {
+        searchAttempted = true;
+        try {
+          emitToolCall("docdex.batch_search", {
+            queries: queriesToUse,
+            limit: this.options.maxHitsPerQuery,
+            dagSessionId: laneScope?.runId,
+          });
+          const batchResult = await clientWithBatch.batchSearch!(queriesToUse, {
+            limit: this.options.maxHitsPerQuery,
+            includeLibs: true,
+          });
+          const batchResults = collectBatchSearchResults(batchResult, queriesToUse);
+          for (const batch of batchResults) {
+            const filteredHits = batch.hits.filter((hit) => !hit.path || !isExcludedPath(hit.path));
+            hitList.push(...filteredHits);
+            results.push({ query: batch.query, hits: filteredHits });
+          }
+          searchSucceeded = batchResults.some((entry) => entry.hits.length > 0);
+          emitToolResult("docdex.batch_search", "ok", true);
+          pushWarning("docdex_batch_search_applied");
+        } catch {
+          emitToolResult("docdex.batch_search", "failed", false);
+          pushWarning("docdex_batch_search_failed");
+        }
+      }
+
+      if (results.length === 0) {
       for (const query of queriesToUse) {
+        searchAttempted = true;
         try {
           emitToolCall("docdex.search", {
             query,
@@ -3225,14 +4054,49 @@ export class ContextAssembler {
           pushWarning("docdex_search_failed");
         }
       }
-      return { hitList, searchSucceeded, searchResults: results };
+      }
+
+      let rerankedHits = hitList;
+      const clientWithRerank = this.client as unknown as {
+        rerank?: (query: string, candidates: unknown[], limit?: number) => Promise<unknown>;
+      };
+      const canRerank =
+        capabilitySnapshot?.capabilities.rerank === "available" &&
+        typeof clientWithRerank.rerank === "function" &&
+        hitList.length > 1;
+      if (canRerank) {
+        try {
+          emitToolCall("docdex.rerank", {
+            query: requestQuery || request,
+            candidates: hitList.length,
+            limit: hitList.length,
+          });
+          const rerankResult = await clientWithRerank.rerank!(
+            requestQuery || request,
+            hitList,
+            hitList.length,
+          );
+          const normalized = collectHits(rerankResult).filter((hit) => !hit.path || !isExcludedPath(hit.path));
+          if (normalized.length > 0) {
+            rerankedHits = normalized;
+            searchSucceeded = true;
+            pushWarning("docdex_rerank_applied");
+          }
+          emitToolResult("docdex.rerank", "ok", true);
+        } catch {
+          emitToolResult("docdex.rerank", "failed", false);
+          pushWarning("docdex_rerank_failed");
+        }
+      }
+
+      return { hitList: rerankedHits, searchSucceeded, searchResults: results };
     };
 
-    let hitList: Array<{ doc_id?: string; path?: string }> = [];
+    let hitList: ContextSearchHit[] = [];
     let searchSucceeded = false;
     if (skipSearchWhenPreferred) {
       searchSucceeded = true;
-      warnings.push("docdex_search_skipped");
+      pushWarning("docdex_search_skipped");
     } else {
       emitStatus("thinking", "librarian: search");
       const initialSearch = await runSearch(searchExecutionQueries);
@@ -3328,7 +4192,7 @@ export class ContextAssembler {
             { role: "librarian", persisted: false },
           );
         }
-        warnings.push("query_expansion_failed");
+        pushWarning("query_expansion_failed");
       }
     }
 
@@ -3615,6 +4479,8 @@ export class ContextAssembler {
       focus: selection.focus,
       maxPaths: Math.min(this.options.maxFiles, 6),
     });
+    analysisPathCount = analysisPaths.length;
+    impactCapablePathCount = analysisPaths.filter((entry) => supportsImpactGraph(entry)).length;
     const analysisPathSet = new Set(analysisPaths.map((entry) => normalizePath(entry)));
 
     const snippets: ContextSnippet[] = [];
@@ -3630,6 +4496,14 @@ export class ContextAssembler {
             doc_id: hit.doc_id,
             path: hit.path,
             content: extractSnippetContent(snippetResult),
+            score: hit.score,
+            snippet_origin: hit.snippet_origin,
+            snippet_truncated: hit.snippet_truncated,
+            line_start: hit.line_start,
+            line_end: hit.line_end,
+            score_breakdown: hit.score_breakdown,
+            provenance: hit.provenance,
+            retrieval_explanation: hit.retrieval_explanation,
           });
           emitToolResult("docdex.snippet", "ok", true);
         } catch {
@@ -3657,6 +4531,8 @@ export class ContextAssembler {
             snippets.push({
               path: focusPath,
               content: extractSnippetContent(openResult),
+              snippet_origin: "summary",
+              provenance: { path: focusPath, anchor_kind: "file_level_fallback" },
             });
             snippetPathSet.add(normalizedFocus);
             emitToolResult("docdex.open", "ok", true);
@@ -3750,6 +4626,7 @@ export class ContextAssembler {
         dagExport?: (sessionId: string, options?: { format?: "json" | "text" | "dot"; maxNodes?: number }) => Promise<unknown>;
       };
       if (typeof clientWithDag.dagExport === "function") {
+        dagAttempted = true;
         try {
           const dagOptions = { format: "text" as const, maxNodes: 160 };
           emitToolCall("docdex.dag_export", { sessionId: laneScope.runId, ...dagOptions });
@@ -3839,16 +4716,33 @@ export class ContextAssembler {
       contextFiles = budgetResult.files;
       if (budgetResult.droppedPaths.length > 0 && selection) {
         const included = new Set(contextFiles.map((entry) => entry.path));
+        const nextEntries = buildSelectionEntries(selection).filter((entry) =>
+          included.has(entry.path)
+        );
+        const droppedByBudget = budgetResult.droppedPaths.map(
+          (entry): ContextSelectionDroppedEntry => ({
+            path: entry,
+            category: "budget_pruned",
+            reason_code: "budget_pruned",
+            detail: "context_budget_pruned",
+          }),
+        );
         selection = {
           ...selection,
           focus: selection.focus.filter((path) => included.has(path)),
           periphery: selection.periphery.filter((path) => included.has(path)),
           all: selection.all.filter((path) => included.has(path)),
+          entries: nextEntries,
+          dropped: dedupeDroppedEntries([
+            ...(selection.dropped ?? []),
+            ...droppedByBudget,
+          ]),
+          reason_summary: buildSelectionReasonSummary(nextEntries),
         };
-        warnings.push("context_budget_pruned");
+        pushWarning("context_budget_pruned");
       }
       if (budgetResult.trimmed) {
-        warnings.push("context_budget_trimmed");
+        pushWarning("context_budget_trimmed");
       }
       if (loader.redactionCount > 0 || loader.ignoredPaths.length > 0) {
         redactionInfo = {
@@ -3860,6 +4754,7 @@ export class ContextAssembler {
 
     let memoryItems: Array<{ content?: string; score?: number }> = [];
     try {
+      memoryAttempted = true;
       emitToolCall("docdex.memory_recall", { query: request, top_k: 5 });
       const memoryResult = await this.client.memoryRecall(request, 5);
       memoryItems = (memoryResult as { results?: Array<{ content?: string; score?: number }> } | undefined)?.results ?? [];
@@ -3884,6 +4779,7 @@ export class ContextAssembler {
 
     let profileEntries: Array<{ content?: string }> = [];
     try {
+      profileAttempted = true;
       emitToolCall("docdex.profile", { agentId: this.agentId });
       const profileResult = await this.client.getProfile(this.agentId);
       profileEntries =
@@ -3999,6 +4895,21 @@ export class ContextAssembler {
         }
       }
     }
+    const normalizedMissing = uniqueValues(missing);
+    const selectionEntries = buildSelectionEntries(selection);
+    const selectionReasonSummary = buildSelectionReasonSummary(selectionEntries);
+    const selectionDropped = dedupeDroppedEntries([
+      ...(selection?.dropped ?? []),
+      ...buildMissingContentDroppedEntries(normalizedMissing),
+    ]);
+    const normalizedSelection = selection
+      ? {
+          ...selection,
+          entries: selectionEntries,
+          dropped: selectionDropped,
+          reason_summary: selectionReasonSummary,
+        }
+      : undefined;
 
     const manifestFiles = await detectManifests(this.options.workspaceRoot);
     const readmeSummary = await loadReadmeSummary(this.options.workspaceRoot);
@@ -4014,25 +4925,81 @@ export class ContextAssembler {
       readme_summary: readmeSummary?.summary,
       docs: supportDocs.length > 0 ? supportDocs : undefined,
       manifests: manifestFiles.length > 0 ? manifestFiles : undefined,
-      file_types: fileTypeInputs.length > 0 ? extractFileTypes(fileTypeInputs) : undefined,
+      file_types: fileTypeInputs.length > 0
+        ? extractFileTypes(fileTypeInputs)
+        : undefined,
     };
     const finalWarnings = reconcileWarnings(warnings, {
       intent,
-      selection,
+      selection: normalizedSelection,
       index: indexInfo,
       filesSucceeded,
       statsSucceeded,
       snippets,
       files: contextFiles,
     });
+    const preflightChecks = getPreflight();
+    const retrievalDisposition = buildRetrievalDisposition({
+      selection: normalizedSelection,
+      missing: normalizedMissing,
+      warnings: finalWarnings,
+      preflight: preflightChecks,
+      capabilities: capabilitySnapshot,
+    });
+    const retrievalToolExecution = buildRetrievalToolExecution({
+      preflight: preflightChecks,
+      warnings: finalWarnings,
+      searchAttempted,
+      searchSkipped: skipSearchWhenPreferred,
+      includeSnippets: this.options.includeSnippets,
+      includeImpact: this.options.includeImpact,
+      includeRepoMap: this.options.includeRepoMap,
+      analysisPathCount,
+      impactCapablePathCount,
+      snippets,
+      symbols,
+      ast,
+      impact,
+      memoryAttempted,
+      memoryCount: memory.length,
+      profileAttempted,
+      profileCount: profile.length,
+      repoMapAvailable: Boolean(repoMap || repoMapRaw),
+      dagAttempted,
+      dagSummaryAvailable: Boolean(dagSummary),
+      capabilities: capabilitySnapshot,
+    });
+    const truncatedEntries = buildTruncatedEntries(contextFiles);
     const requestDigest = buildRequestDigest({
       request,
       intent,
       querySignals,
-      selection,
+      selection: normalizedSelection,
       searchResults,
       warnings: finalWarnings,
     });
+    const retrievalReport: NonNullable<ContextBundle["retrieval_report"]> = {
+      schema_version: 1 as const,
+      mode: this.options.deepMode ? "deep" : "normal",
+      created_at_ms: Date.now(),
+      confidence: requestDigest.confidence,
+      disposition: retrievalDisposition,
+      preflight: preflightChecks,
+      selection: {
+        focus: normalizedSelection?.focus ?? [],
+        periphery: normalizedSelection?.periphery ?? [],
+        all: normalizedSelection?.all ?? [],
+        low_confidence: normalizedSelection?.low_confidence ?? true,
+        entries: normalizedSelection?.entries ?? [],
+        reason_summary: normalizedSelection?.reason_summary ?? [],
+      },
+      dropped: normalizedSelection?.dropped ?? [],
+      truncated: truncatedEntries,
+      unresolved_gaps: normalizedMissing,
+      tool_execution: retrievalToolExecution,
+      capabilities: capabilitySnapshot,
+      warnings: finalWarnings,
+    };
 
     const bundle: ContextBundle = {
       request,
@@ -4050,7 +5017,9 @@ export class ContextAssembler {
       repo_map: repoMap,
       repo_map_raw: repoMapRaw,
       project_info: projectInfo,
-      selection,
+      selection: normalizedSelection,
+      retrieval_disposition: retrievalDisposition,
+      retrieval_report: retrievalReport,
       files: contextFiles,
       redaction: redactionInfo,
       memory,
@@ -4060,7 +5029,7 @@ export class ContextAssembler {
       profile,
       index: indexInfo,
       warnings: finalWarnings,
-      missing,
+      missing: normalizedMissing,
     };
     const sanitizedBundle = sanitizeContextBundleForOutput(bundle);
     bundle.serialized = serializeContext(sanitizedBundle, {

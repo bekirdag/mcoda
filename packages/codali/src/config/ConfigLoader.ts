@@ -2,6 +2,11 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  DEFAULT_WORKFLOW_PROFILE,
+  DEFAULT_WORKFLOW_PROFILES,
+  WORKFLOW_PROFILE_NAMES,
+  DEFAULT_EVAL,
+  DEFAULT_LEARNING,
   DEFAULT_DOCDEX_BASE_URL,
   DEFAULT_BUILDER,
   DEFAULT_CONTEXT,
@@ -22,6 +27,9 @@ import {
   type DeepInvestigationEvidenceConfig,
   type DeepInvestigationToolQuotaConfig,
   type DocdexConfig,
+  type EvalConfig,
+  type EvalGateConfig,
+  type LearningConfig,
   type LimitsConfig,
   type LocalContextConfig,
   type LoggingConfig,
@@ -32,6 +40,11 @@ import {
   type SecurityConfig,
   type StreamingConfig,
   type ToolConfig,
+  type WorkflowConfig,
+  type WorkflowOutputContract,
+  type WorkflowProfile,
+  type WorkflowProfileName,
+  type WorkflowProfileSource,
 } from "./Config.js";
 
 type DeepInvestigationConfigSource = Partial<
@@ -40,6 +53,31 @@ type DeepInvestigationConfigSource = Partial<
   toolQuota?: Partial<DeepInvestigationToolQuotaConfig>;
   investigationBudget?: Partial<DeepInvestigationBudgetConfig>;
   evidenceGate?: Partial<DeepInvestigationEvidenceConfig>;
+};
+
+type WorkflowConfigSource = Partial<WorkflowConfig> & {
+  profiles?: Partial<Record<WorkflowProfileName, Partial<WorkflowProfile>>>;
+};
+
+type EvalConfigSource = Partial<Omit<EvalConfig, "gates">> & {
+  gates?: Partial<EvalGateConfig>;
+};
+
+type LearningConfigSource = Partial<LearningConfig>;
+
+const WORKFLOW_OUTPUT_CONTRACTS: WorkflowOutputContract[] = [
+  "general",
+  "patch_summary",
+  "review_findings",
+  "explanation",
+  "verification_summary",
+];
+
+const COMMAND_PROFILE_MAP: Partial<Record<string, WorkflowProfileName>> = {
+  fix: "fix",
+  review: "review",
+  explain: "explain",
+  test: "test",
 };
 
 export interface ConfigSource {
@@ -59,6 +97,7 @@ export interface ConfigSource {
   model?: string;
   apiKey?: string;
   baseUrl?: string;
+  workflow?: WorkflowConfigSource;
   docdex?: Partial<DocdexConfig>;
   tools?: Partial<ToolConfig>;
   limits?: Partial<LimitsConfig>;
@@ -70,6 +109,8 @@ export interface ConfigSource {
   streaming?: Partial<StreamingConfig>;
   cost?: Partial<CostConfig>;
   localContext?: Partial<LocalContextConfig>;
+  eval?: EvalConfigSource;
+  learning?: LearningConfigSource;
   logging?: Partial<LoggingConfig>;
   routing?: Partial<RoutingConfig>;
 }
@@ -130,6 +171,36 @@ const parseJson = <T>(value: string | undefined): T | undefined => {
   }
 };
 
+const isWorkflowProfileName = (value: string): value is WorkflowProfileName =>
+  (WORKFLOW_PROFILE_NAMES as readonly string[]).includes(value);
+
+const normalizeStringField = (value: unknown, label: string): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`Invalid ${label}: expected string.`);
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`Invalid ${label}: expected non-empty string.`);
+  }
+  return normalized;
+};
+
+const normalizeWorkflowProfileName = (
+  value: unknown,
+  label: string,
+): WorkflowProfileName | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`Invalid ${label}: expected workflow profile name.`);
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!isWorkflowProfileName(normalized)) {
+    throw new Error(`Invalid ${label}: unsupported workflow profile "${value}".`);
+  }
+  return normalized;
+};
+
 const normalizeNumberField = (value: unknown, label: string): number | undefined => {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -144,6 +215,118 @@ const normalizeBooleanField = (value: unknown, label: string): boolean | undefin
     throw new Error(`Invalid ${label}: expected boolean.`);
   }
   return value;
+};
+
+const normalizeWorkflowProfileOverride = (
+  value: unknown,
+  label: string,
+): Partial<WorkflowProfile> | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const source = value as Record<string, unknown>;
+  const normalized: Partial<WorkflowProfile> = {};
+  const name = normalizeWorkflowProfileName(source.name, `${label}.name`);
+  if (name !== undefined) normalized.name = name;
+  const description = normalizeStringField(source.description, `${label}.description`);
+  if (description !== undefined) normalized.description = description;
+  const smart = normalizeBooleanField(source.smart, `${label}.smart`);
+  if (smart !== undefined) normalized.smart = smart;
+  const builderMode = source.builderMode;
+  if (builderMode !== undefined) {
+    if (
+      builderMode !== "tool_calls"
+      && builderMode !== "patch_json"
+      && builderMode !== "freeform"
+    ) {
+      throw new Error(`Invalid ${label}.builderMode: expected tool_calls|patch_json|freeform.`);
+    }
+    normalized.builderMode = builderMode;
+  }
+  const fallbackToInterpreter = normalizeBooleanField(
+    source.fallbackToInterpreter,
+    `${label}.fallbackToInterpreter`,
+  );
+  if (fallbackToInterpreter !== undefined) {
+    normalized.fallbackToInterpreter = fallbackToInterpreter;
+  }
+  const retryBudget = normalizeNumberField(source.retryBudget, `${label}.retryBudget`);
+  if (retryBudget !== undefined) normalized.retryBudget = retryBudget;
+  const verificationPolicy = normalizeStringField(
+    source.verificationPolicy,
+    `${label}.verificationPolicy`,
+  );
+  if (verificationPolicy !== undefined) normalized.verificationPolicy = verificationPolicy;
+  const verificationMinimumChecks = normalizeNumberField(
+    source.verificationMinimumChecks,
+    `${label}.verificationMinimumChecks`,
+  );
+  if (verificationMinimumChecks !== undefined) {
+    normalized.verificationMinimumChecks = verificationMinimumChecks;
+  }
+  const verificationEnforceHighConfidence = normalizeBooleanField(
+    source.verificationEnforceHighConfidence,
+    `${label}.verificationEnforceHighConfidence`,
+  );
+  if (verificationEnforceHighConfidence !== undefined) {
+    normalized.verificationEnforceHighConfidence = verificationEnforceHighConfidence;
+  }
+  const outputContract = source.outputContract;
+  if (outputContract !== undefined) {
+    if (
+      typeof outputContract !== "string"
+      || !WORKFLOW_OUTPUT_CONTRACTS.includes(outputContract as WorkflowOutputContract)
+    ) {
+      throw new Error(
+        `Invalid ${label}.outputContract: expected ${WORKFLOW_OUTPUT_CONTRACTS.join("|")}.`,
+      );
+    }
+    normalized.outputContract = outputContract as WorkflowOutputContract;
+  }
+  const allowWrites = normalizeBooleanField(source.allowWrites, `${label}.allowWrites`);
+  if (allowWrites !== undefined) normalized.allowWrites = allowWrites;
+  return Object.keys(normalized).length ? normalized : undefined;
+};
+
+const normalizeWorkflowConfig = (
+  value: unknown,
+  label: string,
+): WorkflowConfigSource | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const config = value as Record<string, unknown>;
+  const normalized: WorkflowConfigSource = {};
+  const profile = normalizeWorkflowProfileName(config.profile, `${label}.profile`);
+  if (profile !== undefined) normalized.profile = profile;
+  const profilesValue = config.profiles;
+  if (profilesValue !== undefined) {
+    if (!profilesValue || typeof profilesValue !== "object" || Array.isArray(profilesValue)) {
+      throw new Error(`Invalid ${label}.profiles: expected object.`);
+    }
+    const entries = profilesValue as Record<string, unknown>;
+    const profiles: Partial<Record<WorkflowProfileName, Partial<WorkflowProfile>>> = {};
+    for (const [profileName, override] of Object.entries(entries)) {
+      const normalizedName = normalizeWorkflowProfileName(
+        profileName,
+        `${label}.profiles.${profileName}`,
+      );
+      if (!normalizedName) continue;
+      const normalizedOverride = normalizeWorkflowProfileOverride(
+        override,
+        `${label}.profiles.${profileName}`,
+      );
+      if (normalizedOverride) {
+        profiles[normalizedName] = normalizedOverride;
+      }
+    }
+    if (Object.keys(profiles).length) {
+      normalized.profiles = profiles;
+    }
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
 };
 
 const normalizeToolQuota = (
@@ -248,6 +431,102 @@ const normalizeDeepInvestigationConfig = (
   return Object.keys(normalized).length ? normalized : undefined;
 };
 
+const normalizeEvalConfig = (
+  value: unknown,
+  label: string,
+): EvalConfigSource | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const source = value as Record<string, unknown>;
+  const normalized: EvalConfigSource = {};
+  const reportDir = normalizeStringField(source.report_dir ?? source.reportDir, `${label}.report_dir`);
+  if (reportDir !== undefined) normalized.report_dir = reportDir;
+  const gatesValue = source.gates;
+  if (gatesValue !== undefined) {
+    if (!gatesValue || typeof gatesValue !== "object" || Array.isArray(gatesValue)) {
+      throw new Error(`Invalid ${label}.gates: expected object.`);
+    }
+    const gatesSource = gatesValue as Record<string, unknown>;
+    const gates: Partial<EvalGateConfig> = {};
+    const patchApplyDropMax = normalizeNumberField(
+      gatesSource.patch_apply_drop_max ?? gatesSource.patchApplyDropMax,
+      `${label}.gates.patch_apply_drop_max`,
+    );
+    if (patchApplyDropMax !== undefined) gates.patch_apply_drop_max = patchApplyDropMax;
+    const verificationPassRateMin = normalizeNumberField(
+      gatesSource.verification_pass_rate_min ?? gatesSource.verificationPassRateMin,
+      `${label}.gates.verification_pass_rate_min`,
+    );
+    if (verificationPassRateMin !== undefined) {
+      gates.verification_pass_rate_min = verificationPassRateMin;
+    }
+    const hallucinationRateMax = normalizeNumberField(
+      gatesSource.hallucination_rate_max ?? gatesSource.hallucinationRateMax,
+      `${label}.gates.hallucination_rate_max`,
+    );
+    if (hallucinationRateMax !== undefined) gates.hallucination_rate_max = hallucinationRateMax;
+    const scopeViolationRateMax = normalizeNumberField(
+      gatesSource.scope_violation_rate_max ?? gatesSource.scopeViolationRateMax,
+      `${label}.gates.scope_violation_rate_max`,
+    );
+    if (scopeViolationRateMax !== undefined) {
+      gates.scope_violation_rate_max = scopeViolationRateMax;
+    }
+    if (Object.keys(gates).length) normalized.gates = gates;
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+};
+
+const normalizeLearningConfig = (
+  value: unknown,
+  label: string,
+): LearningConfigSource | undefined => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid ${label}: expected object.`);
+  }
+  const source = value as Record<string, unknown>;
+  const normalized: LearningConfigSource = {};
+  const persistenceMinConfidence = normalizeNumberField(
+    source.persistence_min_confidence ?? source.persistenceMinConfidence,
+    `${label}.persistence_min_confidence`,
+  );
+  if (persistenceMinConfidence !== undefined) {
+    normalized.persistence_min_confidence = persistenceMinConfidence;
+  }
+  const enforcementMinConfidence = normalizeNumberField(
+    source.enforcement_min_confidence ?? source.enforcementMinConfidence,
+    `${label}.enforcement_min_confidence`,
+  );
+  if (enforcementMinConfidence !== undefined) {
+    normalized.enforcement_min_confidence = enforcementMinConfidence;
+  }
+  const requireConfirmation = normalizeBooleanField(
+    source.require_confirmation_for_low_confidence ?? source.requireConfirmationForLowConfidence,
+    `${label}.require_confirmation_for_low_confidence`,
+  );
+  if (requireConfirmation !== undefined) {
+    normalized.require_confirmation_for_low_confidence = requireConfirmation;
+  }
+  const autoEnforceHigh = normalizeBooleanField(
+    source.auto_enforce_high_confidence ?? source.autoEnforceHighConfidence,
+    `${label}.auto_enforce_high_confidence`,
+  );
+  if (autoEnforceHigh !== undefined) {
+    normalized.auto_enforce_high_confidence = autoEnforceHigh;
+  }
+  const candidateStoreFile = normalizeStringField(
+    source.candidate_store_file ?? source.candidateStoreFile,
+    `${label}.candidate_store_file`,
+  );
+  if (candidateStoreFile !== undefined) {
+    normalized.candidate_store_file = candidateStoreFile;
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+};
+
 const findConfigFile = (cwd: string): string | undefined => {
   const candidates = ["codali.config.json", ".codalirc"];
   for (const candidate of candidates) {
@@ -328,6 +607,12 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   if (shellAllowlist) tools.shellAllowlist = shellAllowlist;
   const allowOutsideWorkspace = parseBoolean(env.CODALI_ALLOW_OUTSIDE_WORKSPACE);
   if (allowOutsideWorkspace !== undefined) tools.allowOutsideWorkspace = allowOutsideWorkspace;
+  const allowDestructiveOperations =
+    parseBoolean(env.CODALI_ALLOW_DESTRUCTIVE_OPERATIONS) ??
+    parseBoolean(env.CODALI_ALLOW_DESTRUCTIVE_ACTIONS);
+  if (allowDestructiveOperations !== undefined) {
+    tools.allowDestructiveOperations = allowDestructiveOperations;
+  }
 
   const docdex: Partial<DocdexConfig> = {};
   const docdexBaseUrl = env.CODALI_DOCDEX_BASE_URL ?? env.DOCDEX_HTTP_BASE_URL;
@@ -561,6 +846,77 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
     localContext.summarize = summarize as LocalContextConfig["summarize"];
   }
 
+  const workflow: WorkflowConfigSource = {};
+  if (env.CODALI_WORKFLOW_PROFILE || env.CODALI_PROFILE) {
+    workflow.profile = (env.CODALI_WORKFLOW_PROFILE ?? env.CODALI_PROFILE)?.trim().toLowerCase() as
+      | WorkflowProfileName
+      | undefined;
+  }
+  const workflowProfiles = parseJson<WorkflowConfigSource["profiles"]>(
+    env.CODALI_WORKFLOW_PROFILES,
+  );
+  if (workflowProfiles) {
+    workflow.profiles = workflowProfiles;
+  }
+
+  const evalConfig: EvalConfigSource = {};
+  if (env.CODALI_EVAL_REPORT_DIR) evalConfig.report_dir = env.CODALI_EVAL_REPORT_DIR;
+  const evalGates: Partial<EvalGateConfig> = {};
+  const patchApplyDropMax = parseNumberStrict(
+    env.CODALI_EVAL_GATE_PATCH_APPLY_DROP_MAX,
+    "CODALI_EVAL_GATE_PATCH_APPLY_DROP_MAX",
+  );
+  if (patchApplyDropMax !== undefined) evalGates.patch_apply_drop_max = patchApplyDropMax;
+  const verificationPassRateMin = parseNumberStrict(
+    env.CODALI_EVAL_GATE_VERIFICATION_PASS_RATE_MIN,
+    "CODALI_EVAL_GATE_VERIFICATION_PASS_RATE_MIN",
+  );
+  if (verificationPassRateMin !== undefined) {
+    evalGates.verification_pass_rate_min = verificationPassRateMin;
+  }
+  const hallucinationRateMax = parseNumberStrict(
+    env.CODALI_EVAL_GATE_HALLUCINATION_RATE_MAX,
+    "CODALI_EVAL_GATE_HALLUCINATION_RATE_MAX",
+  );
+  if (hallucinationRateMax !== undefined) evalGates.hallucination_rate_max = hallucinationRateMax;
+  const scopeViolationRateMax = parseNumberStrict(
+    env.CODALI_EVAL_GATE_SCOPE_VIOLATION_RATE_MAX,
+    "CODALI_EVAL_GATE_SCOPE_VIOLATION_RATE_MAX",
+  );
+  if (scopeViolationRateMax !== undefined) {
+    evalGates.scope_violation_rate_max = scopeViolationRateMax;
+  }
+  if (Object.keys(evalGates).length) evalConfig.gates = evalGates;
+
+  const learning: LearningConfigSource = {};
+  const persistenceMinConfidence = parseNumberStrict(
+    env.CODALI_LEARNING_PERSISTENCE_MIN_CONFIDENCE,
+    "CODALI_LEARNING_PERSISTENCE_MIN_CONFIDENCE",
+  );
+  if (persistenceMinConfidence !== undefined) {
+    learning.persistence_min_confidence = persistenceMinConfidence;
+  }
+  const enforcementMinConfidence = parseNumberStrict(
+    env.CODALI_LEARNING_ENFORCEMENT_MIN_CONFIDENCE,
+    "CODALI_LEARNING_ENFORCEMENT_MIN_CONFIDENCE",
+  );
+  if (enforcementMinConfidence !== undefined) {
+    learning.enforcement_min_confidence = enforcementMinConfidence;
+  }
+  const requireConfirmation = parseBoolean(
+    env.CODALI_LEARNING_REQUIRE_CONFIRMATION_FOR_LOW_CONFIDENCE,
+  );
+  if (requireConfirmation !== undefined) {
+    learning.require_confirmation_for_low_confidence = requireConfirmation;
+  }
+  const autoEnforceHigh = parseBoolean(env.CODALI_LEARNING_AUTO_ENFORCE_HIGH_CONFIDENCE);
+  if (autoEnforceHigh !== undefined) {
+    learning.auto_enforce_high_confidence = autoEnforceHigh;
+  }
+  if (env.CODALI_LEARNING_CANDIDATE_STORE_FILE) {
+    learning.candidate_store_file = env.CODALI_LEARNING_CANDIDATE_STORE_FILE;
+  }
+
   const hasDeepInvestigation = Object.values(deepInvestigation).some(
     (value) => value !== undefined,
   );
@@ -577,6 +933,9 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
     streaming,
     cost,
     localContext,
+    eval: Object.keys(evalConfig).length ? evalConfig : undefined,
+    learning: Object.keys(learning).length ? learning : undefined,
+    workflow: Object.keys(workflow).length ? workflow : undefined,
     routing: Object.keys(routing).length ? routing : undefined,
   };
 
@@ -629,17 +988,160 @@ const mergeDeepInvestigationConfigs = (
   return merged;
 };
 
+const mergeWorkflowConfig = (
+  defaults: WorkflowConfig | undefined,
+  ...sources: Array<WorkflowConfigSource | undefined>
+): WorkflowConfig => {
+  const profiles = Object.fromEntries(
+    WORKFLOW_PROFILE_NAMES.map((profileName) => [
+      profileName,
+      {
+        ...DEFAULT_WORKFLOW_PROFILES[profileName],
+        ...(defaults?.profiles?.[profileName] ?? {}),
+      },
+    ]),
+  ) as Record<WorkflowProfileName, WorkflowProfile>;
+
+  for (const source of sources) {
+    if (!source?.profiles) continue;
+    for (const profileName of WORKFLOW_PROFILE_NAMES) {
+      const override = source.profiles[profileName];
+      if (!override) continue;
+      profiles[profileName] = {
+        ...profiles[profileName],
+        ...override,
+        name: profileName,
+      };
+    }
+  }
+
+  let profile = defaults?.profile;
+  for (const source of sources) {
+    if (source?.profile) {
+      profile = source.profile;
+    }
+  }
+  return { profile: profile ?? DEFAULT_WORKFLOW_PROFILE, profiles };
+};
+
+const mergeEvalConfig = (
+  defaults: EvalConfig,
+  ...sources: Array<EvalConfigSource | undefined>
+): EvalConfig => {
+  const merged: EvalConfig = {
+    ...defaults,
+    report_dir: defaults.report_dir,
+    gates: {
+      ...defaults.gates,
+    },
+  };
+  for (const source of sources) {
+    if (!source) continue;
+    if (source.report_dir !== undefined) merged.report_dir = source.report_dir;
+    if (source.gates) {
+      merged.gates = {
+        ...merged.gates,
+        ...source.gates,
+      };
+    }
+  }
+  return merged;
+};
+
+const mergeLearningConfig = (
+  defaults: LearningConfig,
+  ...sources: Array<LearningConfigSource | undefined>
+): LearningConfig => {
+  const merged: LearningConfig = {
+    ...defaults,
+  };
+  for (const source of sources) {
+    if (!source) continue;
+    if (source.persistence_min_confidence !== undefined) {
+      merged.persistence_min_confidence = source.persistence_min_confidence;
+    }
+    if (source.enforcement_min_confidence !== undefined) {
+      merged.enforcement_min_confidence = source.enforcement_min_confidence;
+    }
+    if (source.require_confirmation_for_low_confidence !== undefined) {
+      merged.require_confirmation_for_low_confidence =
+        source.require_confirmation_for_low_confidence;
+    }
+    if (source.auto_enforce_high_confidence !== undefined) {
+      merged.auto_enforce_high_confidence = source.auto_enforce_high_confidence;
+    }
+    if (source.candidate_store_file !== undefined) {
+      merged.candidate_store_file = source.candidate_store_file;
+    }
+  }
+  return merged;
+};
+
+const resolveCommandProfileName = (command: string | undefined): WorkflowProfileName | undefined => {
+  if (!command) return undefined;
+  const normalized = command.trim().toLowerCase();
+  if (!normalized || normalized === "run") return undefined;
+  return COMMAND_PROFILE_MAP[normalized];
+};
+
+const resolveWorkflowProfile = (params: {
+  command?: string;
+  mergedWorkflow: WorkflowConfig | undefined;
+  fileWorkflow?: WorkflowConfigSource;
+  envWorkflow?: WorkflowConfigSource;
+  cliWorkflow?: WorkflowConfigSource;
+}): { profile: WorkflowProfile; source: WorkflowProfileSource } => {
+  const profiles = params.mergedWorkflow?.profiles as Record<WorkflowProfileName, WorkflowProfile> | undefined;
+  const availableProfiles = profiles ?? DEFAULT_WORKFLOW_PROFILES;
+  const commandProfile = resolveCommandProfileName(params.command);
+  if (commandProfile) {
+    return { profile: availableProfiles[commandProfile], source: "command" };
+  }
+  const selectedProfile =
+    params.cliWorkflow?.profile
+    ?? params.envWorkflow?.profile
+    ?? params.fileWorkflow?.profile
+    ?? params.mergedWorkflow?.profile
+    ?? DEFAULT_WORKFLOW_PROFILE;
+  const source: WorkflowProfileSource =
+    params.cliWorkflow?.profile ? "cli"
+      : params.envWorkflow?.profile ? "env"
+        : params.fileWorkflow?.profile ? "config"
+          : "default";
+  return {
+    profile: availableProfiles[selectedProfile],
+    source,
+  };
+};
+
 const mergeConfigs = (
   defaults: CodaliConfig,
   fileConfig?: ConfigSource,
   envConfig?: ConfigSource,
   cliConfig?: ConfigSource,
 ): CodaliConfig => {
+  const fileWorkflow = normalizeWorkflowConfig(fileConfig?.workflow, "config.workflow");
+  const envWorkflow = normalizeWorkflowConfig(envConfig?.workflow, "env.workflow");
+  const cliWorkflow = normalizeWorkflowConfig(cliConfig?.workflow, "cli.workflow");
+  const fileEval = normalizeEvalConfig(fileConfig?.eval, "config.eval");
+  const envEval = normalizeEvalConfig(envConfig?.eval, "env.eval");
+  const cliEval = normalizeEvalConfig(cliConfig?.eval, "cli.eval");
+  const fileLearning = normalizeLearningConfig(fileConfig?.learning, "config.learning");
+  const envLearning = normalizeLearningConfig(envConfig?.learning, "env.learning");
+  const cliLearning = normalizeLearningConfig(cliConfig?.learning, "cli.learning");
   const deepInvestigation = mergeDeepInvestigationConfigs(
     defaults.deepInvestigation,
     normalizeDeepInvestigationConfig(fileConfig?.deepInvestigation, "config.deepInvestigation"),
     normalizeDeepInvestigationConfig(envConfig?.deepInvestigation, "env.deepInvestigation"),
     normalizeDeepInvestigationConfig(cliConfig?.deepInvestigation, "cli.deepInvestigation"),
+  );
+  const workflow = mergeWorkflowConfig(defaults.workflow, fileWorkflow, envWorkflow, cliWorkflow);
+  const evalConfig = mergeEvalConfig(defaults.eval, fileEval, envEval, cliEval);
+  const learningConfig = mergeLearningConfig(
+    defaults.learning,
+    fileLearning,
+    envLearning,
+    cliLearning,
   );
   const docdex = {
     ...defaults.docdex,
@@ -742,6 +1244,9 @@ const mergeConfigs = (
     streaming,
     cost,
     localContext,
+    eval: evalConfig,
+    learning: learningConfig,
+    workflow,
     logging,
     routing,
   };
@@ -817,6 +1322,19 @@ const assertValid = (config: CodaliConfig): void => {
   for (const [key, value] of Object.entries(localContext.modelTokenLimits)) {
     if (value <= 0) errors.push(`localContext.modelTokenLimits.${key}`);
   }
+  const workflowProfile = config.resolvedWorkflowProfile;
+  if (workflowProfile) {
+    if (workflowProfile.retryBudget < 0) errors.push("resolvedWorkflowProfile.retryBudget");
+    if (!workflowProfile.verificationPolicy.trim()) {
+      errors.push("resolvedWorkflowProfile.verificationPolicy");
+    }
+    if (workflowProfile.verificationMinimumChecks < 0) {
+      errors.push("resolvedWorkflowProfile.verificationMinimumChecks");
+    }
+    if (!workflowProfile.description.trim()) {
+      errors.push("resolvedWorkflowProfile.description");
+    }
+  }
   const deepInvestigation = config.deepInvestigation;
   if (deepInvestigation) {
     const nonNegative = (value: number | undefined, label: string): void => {
@@ -854,6 +1372,31 @@ const assertValid = (config: CodaliConfig): void => {
       nonNegative(evidenceGate.maxWarnings, "deepInvestigation.evidenceGate.maxWarnings");
     }
   }
+  const evalGates = config.eval.gates;
+  const validateRate = (value: number, label: string): void => {
+    if (!Number.isFinite(value) || value < 0 || value > 1) errors.push(label);
+  };
+  validateRate(evalGates.patch_apply_drop_max, "eval.gates.patch_apply_drop_max");
+  validateRate(evalGates.verification_pass_rate_min, "eval.gates.verification_pass_rate_min");
+  validateRate(evalGates.hallucination_rate_max, "eval.gates.hallucination_rate_max");
+  validateRate(evalGates.scope_violation_rate_max, "eval.gates.scope_violation_rate_max");
+  if (!config.eval.report_dir.trim()) errors.push("eval.report_dir");
+  validateRate(
+    config.learning.persistence_min_confidence,
+    "learning.persistence_min_confidence",
+  );
+  validateRate(
+    config.learning.enforcement_min_confidence,
+    "learning.enforcement_min_confidence",
+  );
+  if (
+    config.learning.enforcement_min_confidence < config.learning.persistence_min_confidence
+  ) {
+    errors.push("learning.enforcement_min_confidence");
+  }
+  if (!config.learning.candidate_store_file.trim()) {
+    errors.push("learning.candidate_store_file");
+  }
   if (errors.length) {
     throw new Error(`Invalid config values: ${errors.join(", ")}`);
   }
@@ -865,6 +1408,9 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Codal
   const configPath = options.configPath ?? findConfigFile(cwd);
   const fileConfig = await readConfigFile(configPath);
   const envConfig = loadEnvConfig(env);
+  const fileWorkflow = normalizeWorkflowConfig(fileConfig?.workflow, "config.workflow");
+  const envWorkflow = normalizeWorkflowConfig(envConfig?.workflow, "env.workflow");
+  const cliWorkflow = normalizeWorkflowConfig(options.cli?.workflow, "cli.workflow");
 
   const defaults: CodaliConfig = {
     workspaceRoot: ".",
@@ -888,11 +1434,61 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Codal
     streaming: DEFAULT_STREAMING,
     cost: DEFAULT_COST,
     localContext: DEFAULT_LOCAL_CONTEXT,
+    eval: DEFAULT_EVAL,
+    learning: DEFAULT_LEARNING,
+    workflow: {
+      profile: DEFAULT_WORKFLOW_PROFILE,
+      profiles: DEFAULT_WORKFLOW_PROFILES,
+    },
     logging: DEFAULT_LOGGING,
     routing: undefined,
   };
 
   const merged = mergeConfigs(defaults, fileConfig, envConfig, options.cli);
+  const hasExplicitSmart =
+    fileConfig?.smart !== undefined
+    || envConfig.smart !== undefined
+    || options.cli?.smart !== undefined;
+  const hasExplicitBuilderMode =
+    fileConfig?.builder?.mode !== undefined
+    || envConfig.builder?.mode !== undefined
+    || options.cli?.builder?.mode !== undefined;
+  const hasExplicitBuilderFallback =
+    fileConfig?.builder?.fallbackToInterpreter !== undefined
+    || envConfig.builder?.fallbackToInterpreter !== undefined
+    || options.cli?.builder?.fallbackToInterpreter !== undefined;
+  const hasExplicitRetryBudget =
+    fileConfig?.limits?.maxRetries !== undefined
+    || envConfig.limits?.maxRetries !== undefined
+    || options.cli?.limits?.maxRetries !== undefined;
+  const workflowResolution = resolveWorkflowProfile({
+    command: merged.command,
+    mergedWorkflow: merged.workflow,
+    fileWorkflow,
+    envWorkflow,
+    cliWorkflow,
+  });
+  merged.resolvedWorkflowProfile = {
+    ...workflowResolution.profile,
+    source: workflowResolution.source,
+    command: (merged.command ?? "run").trim().toLowerCase() || "run",
+  };
+  merged.workflow = {
+    profile: merged.resolvedWorkflowProfile.name,
+    profiles: merged.workflow?.profiles ?? DEFAULT_WORKFLOW_PROFILES,
+  };
+  if (!hasExplicitSmart) {
+    merged.smart = merged.resolvedWorkflowProfile.smart;
+  }
+  if (!hasExplicitBuilderMode) {
+    merged.builder.mode = merged.resolvedWorkflowProfile.builderMode;
+  }
+  if (!hasExplicitBuilderFallback) {
+    merged.builder.fallbackToInterpreter = merged.resolvedWorkflowProfile.fallbackToInterpreter;
+  }
+  if (!hasExplicitRetryBudget) {
+    merged.limits.maxRetries = merged.resolvedWorkflowProfile.retryBudget;
+  }
   const finalized = finalizeConfig(cwd, merged);
   assertRequired(finalized);
   assertValid(finalized);

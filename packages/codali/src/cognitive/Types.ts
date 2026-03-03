@@ -30,6 +30,48 @@ export interface ContextSnippet {
   doc_id?: string;
   path?: string;
   content: string;
+  score?: number;
+  snippet_origin?: string;
+  snippet_truncated?: boolean;
+  line_start?: number;
+  line_end?: number;
+  score_breakdown?: DocdexHitScoreBreakdown;
+  provenance?: DocdexHitProvenance;
+  retrieval_explanation?: DocdexRetrievalExplanation;
+}
+
+export interface DocdexHitScoreBreakdown {
+  query_relevance?: number;
+  structural_relevance?: number;
+  recency_diff_relevance?: number;
+  total?: number;
+}
+
+export interface DocdexHitProvenance {
+  doc_id?: string;
+  rel_path?: string;
+  path?: string;
+  line_start?: number;
+  line_end?: number;
+  anchor_kind?: string;
+}
+
+export interface DocdexRetrievalExplanation {
+  summary?: string;
+  signals?: string[];
+}
+
+export interface ContextSearchHit {
+  doc_id?: string;
+  path?: string;
+  score?: number;
+  snippet_origin?: string;
+  snippet_truncated?: boolean;
+  line_start?: number;
+  line_end?: number;
+  score_breakdown?: DocdexHitScoreBreakdown;
+  provenance?: DocdexHitProvenance;
+  retrieval_explanation?: DocdexRetrievalExplanation;
 }
 
 export interface ContextSymbolSummary {
@@ -55,7 +97,7 @@ export interface ContextImpactDiagnostics {
 
 export interface ContextSearchResult {
   query: string;
-  hits: Array<{ doc_id?: string; path?: string; score?: number }>;
+  hits: ContextSearchHit[];
 }
 
 export interface ContextProjectInfo {
@@ -67,11 +109,66 @@ export interface ContextProjectInfo {
   file_types?: string[];
 }
 
+export type RetrievalDisposition = "resolved" | "degraded" | "unresolved";
+
+export type RetrievalReasonCode =
+  | "search_hit"
+  | "preferred_file"
+  | "recent_file"
+  | "forced_focus"
+  | "impact_neighbor"
+  | "ui_scaffold"
+  | "testing_candidate"
+  | "infra_candidate"
+  | "security_candidate"
+  | "observability_candidate"
+  | "performance_candidate"
+  | "backend_candidate"
+  | "code_candidate"
+  | "fallback_inserted_candidate"
+  | "doc_heavy_demotion"
+  | "test_doc_cap"
+  | "low_signal_candidate"
+  | "budget_pruned"
+  | "budget_trimmed"
+  | "missing_content"
+  | "tool_output_skipped";
+
+export type RetrievalDroppedCategory =
+  | "doc_heavy_demotion"
+  | "test_doc_cap"
+  | "budget_pruned"
+  | "budget_trimmed"
+  | "low_signal_candidate"
+  | "missing_content"
+  | "skipped_tool_output";
+
+export interface ContextSelectionEntry {
+  path: string;
+  role: "focus" | "periphery";
+  inclusion_reasons: RetrievalReasonCode[];
+}
+
+export interface ContextSelectionDroppedEntry {
+  path?: string;
+  category: RetrievalDroppedCategory;
+  reason_code: RetrievalReasonCode;
+  detail?: string;
+}
+
+export interface ContextSelectionReasonSummary {
+  code: RetrievalReasonCode;
+  count: number;
+}
+
 export interface ContextSelection {
   focus: string[];
   periphery: string[];
   all: string[];
   low_confidence: boolean;
+  entries?: ContextSelectionEntry[];
+  dropped?: ContextSelectionDroppedEntry[];
+  reason_summary?: ContextSelectionReasonSummary[];
 }
 
 export type ContextFileRole = "focus" | "periphery";
@@ -99,6 +196,11 @@ export interface ContextMemoryEntry {
 export interface ContextPreferenceDetected {
   category: string;
   content: string;
+  source?: string;
+  scope?: "repo_memory" | "profile_memory";
+  confidence_score?: number;
+  confidence_band?: "low" | "medium" | "high";
+  confidence_reasons?: string[];
 }
 
 export interface ContextProfileEntry {
@@ -181,6 +283,72 @@ export interface ContextRequestDigest {
   candidate_files?: string[];
 }
 
+export interface RetrievalPreflightCheck {
+  check: "docdex_health" | "docdex_initialize" | "docdex_stats" | "docdex_files";
+  status: "ok" | "failed" | "skipped";
+  detail?: string;
+}
+
+export type RetrievalExecutionDisposition = "executed" | "failed" | "skipped" | "unavailable";
+
+export interface RetrievalToolExecution {
+  tool: string;
+  category:
+    | "search"
+    | "open_or_snippet"
+    | "symbols_or_ast"
+    | "impact"
+    | "memory"
+    | "profile"
+    | "tree"
+    | "dag_export"
+    | "capability_probe";
+  disposition: RetrievalExecutionDisposition;
+  notes?: string;
+  error?: string;
+}
+
+export type DocdexCapabilityStatus = "available" | "unavailable" | "unknown";
+
+export interface DocdexCapabilityMap {
+  score_breakdown: DocdexCapabilityStatus;
+  rerank: DocdexCapabilityStatus;
+  snippet_provenance: DocdexCapabilityStatus;
+  retrieval_explanation: DocdexCapabilityStatus;
+  batch_search: DocdexCapabilityStatus;
+}
+
+export interface DocdexCapabilitySnapshot {
+  cached: boolean;
+  source: "mcp_probe" | "fallback";
+  probed_at_ms: number;
+  capabilities: DocdexCapabilityMap;
+  warnings?: string[];
+}
+
+export interface RetrievalReportV1 {
+  schema_version: 1;
+  mode: "normal" | "deep";
+  created_at_ms: number;
+  confidence: "high" | "medium" | "low";
+  disposition: RetrievalDisposition;
+  preflight: RetrievalPreflightCheck[];
+  selection: {
+    focus: string[];
+    periphery: string[];
+    all: string[];
+    low_confidence: boolean;
+    entries: ContextSelectionEntry[];
+    reason_summary: ContextSelectionReasonSummary[];
+  };
+  dropped: ContextSelectionDroppedEntry[];
+  truncated: Array<{ path: string; reason_code: RetrievalReasonCode; detail?: string }>;
+  unresolved_gaps: string[];
+  tool_execution: RetrievalToolExecution[];
+  capabilities?: DocdexCapabilitySnapshot;
+  warnings: string[];
+}
+
 export interface SerializedContext {
   mode: "bundle_text" | "json";
   audience?: "librarian" | "builder";
@@ -217,6 +385,8 @@ export interface ContextBundle {
   files?: ContextFileEntry[];
   serialized?: SerializedContext;
   selection?: ContextSelection;
+  retrieval_disposition?: RetrievalDisposition;
+  retrieval_report?: RetrievalReportV1;
   allow_write_paths?: string[];
   read_only_paths?: string[];
   redaction?: { count: number; ignored: string[] };
@@ -245,11 +415,168 @@ export interface Plan {
   verification: string[];
 }
 
+export type VerificationOutcome =
+  | "verified_passed"
+  | "verified_failed"
+  | "unverified_with_reason";
+
+export type VerificationReasonCode =
+  | "verification_not_executed"
+  | "verification_no_steps"
+  | "verification_no_runnable_checks"
+  | "verification_policy_minimum_unmet"
+  | "verification_shell_disabled"
+  | "verification_command_not_allowlisted"
+  | "verification_command_failed"
+  | "verification_command_timeout"
+  | "verification_tool_unavailable"
+  | "verification_step_empty"
+  | "verification_docdex_unavailable"
+  | "verification_hooks_failed";
+
+export type VerificationCheckType = "shell" | "docdex_hooks" | "unknown";
+export type VerificationCheckStatus = "passed" | "failed" | "unverified" | "skipped";
+
+export interface VerificationPolicySummary {
+  policy_name: string;
+  minimum_checks: number;
+  enforce_high_confidence: boolean;
+}
+
+export interface VerificationCheckResult {
+  step: string;
+  check_type: VerificationCheckType;
+  status: VerificationCheckStatus;
+  targeted: boolean;
+  reason_code?: VerificationReasonCode;
+  message?: string;
+  evidence?: string;
+  duration_ms?: number;
+}
+
+export interface VerificationReport {
+  schema_version: 1;
+  outcome: VerificationOutcome;
+  reason_codes: VerificationReasonCode[];
+  policy: VerificationPolicySummary;
+  checks: VerificationCheckResult[];
+  totals: {
+    configured: number;
+    runnable: number;
+    attempted: number;
+    passed: number;
+    failed: number;
+    unverified: number;
+  };
+  touched_files?: string[];
+  language_signals?: string[];
+}
+
+export const RUNTIME_PHASE_SEQUENCE = [
+  "retrieve",
+  "plan",
+  "act",
+  "verify",
+  "answer",
+] as const;
+
+export type RuntimePhase = (typeof RUNTIME_PHASE_SEQUENCE)[number];
+
+export interface RuntimePhaseTransitionErrorMetadata {
+  code: "CODALI_INVALID_PHASE_TRANSITION";
+  from_phase: RuntimePhase | "start";
+  to_phase: RuntimePhase;
+  requested_phase: string;
+  allowed_next_phases: RuntimePhase[];
+  phase_trace: RuntimePhase[];
+}
+
+export type RetryDisposition = "retry" | "terminate";
+
+export type RetryReasonCode =
+  | "critic_retryable_failure"
+  | "critic_non_retryable_failure"
+  | "builder_patch_apply_retry"
+  | "builder_patch_apply_deterministic_no_repair"
+  | "builder_context_refresh_retry"
+  | "builder_context_refresh_terminated"
+  | "architect_review_retry"
+  | "architect_review_retry_exhausted"
+  | "semantic_guard_retry"
+  | "semantic_guard_retry_exhausted"
+  | "phase_provider_fallback_retry";
+
+export interface RetryDecision {
+  phase: RuntimePhase;
+  reason_code: RetryReasonCode;
+  disposition: RetryDisposition;
+  attempt: number;
+  max_attempts: number;
+  details?: string[];
+}
+
+export type PatchFailureClass =
+  | "schema"
+  | "scope"
+  | "search_match"
+  | "filesystem"
+  | "rollback"
+  | "guardrail";
+
+export interface PatchFailureClassification {
+  failure_class: PatchFailureClass;
+  failure_code: string;
+  remediation_key: string;
+  retryable: boolean;
+}
+
+export type ContextRefreshTerminationReason =
+  | "refresh_budget_exhausted"
+  | "no_new_context"
+  | "phase_timeout"
+  | "evidence_gate_failed";
+
+export interface PhaseArtifactError {
+  class: string;
+  message: string;
+  code?: string;
+}
+
+export interface PhaseArtifactUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface PhaseArtifactV1 {
+  schema_version: 1;
+  phase: string;
+  kind: "input" | "output" | "summary" | "error" | string;
+  run_id?: string;
+  started_at_ms?: number;
+  ended_at_ms?: number;
+  duration_ms?: number;
+  warnings?: string[];
+  usage?: PhaseArtifactUsage;
+  error?: PhaseArtifactError;
+  payload?: unknown;
+}
+
+export interface RunContractFingerprint {
+  algorithm: "sha256";
+  value: string;
+}
+
 export type GuardrailDisposition = "retryable" | "non_retryable";
+export type GuardrailReasonCode =
+  | "scope_violation"
+  | "doc_edit_guard"
+  | "merge_conflict"
+  | "destructive_operation_guard";
 
 export interface GuardrailClassification {
   disposition: GuardrailDisposition;
-  reason_code: string;
+  reason_code: GuardrailReasonCode;
 }
 
 export interface CriticResult {
@@ -257,6 +584,8 @@ export interface CriticResult {
   reasons: string[];
   retryable: boolean;
   guardrail?: GuardrailClassification;
+  high_confidence?: boolean;
+  verification?: VerificationReport;
   report?: CriticReport;
   request?: AgentRequest;
 }
@@ -267,7 +596,16 @@ export interface CriticReport {
   suggested_fixes: string[];
   touched_files?: string[];
   plan_targets?: string[];
+  alignment_evidence?: {
+    touched_files: string[];
+    plan_targets: string[];
+    matched_targets: string[];
+    unmatched_targets: string[];
+    unrelated_touched_files: string[];
+  };
   guardrail?: GuardrailClassification;
+  high_confidence?: boolean;
+  verification?: VerificationReport;
 }
 
 export interface PhaseUsage {

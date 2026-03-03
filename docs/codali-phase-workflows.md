@@ -31,6 +31,11 @@ Source of truth in code:
 - Writes `phase_input` and `phase_output` artifacts per phase under `~/.mcoda/.../logs/codali/phase/`.
 - Logs `architect_output`, `plan_json`, `builder_input`, `builder_output`, `critic_output`.
 - Passes `allow_write_paths` and `read_only_paths` to Critic for enforcement.
+- Passes builder-touched files directly to Critic alignment checks (not only run-context deltas).
+- Persists verification classification artifacts:
+  - `verify/verification_report` phase artifact
+  - `verification_report` event payload in run logs
+- Applies a final high-confidence verification gate: PASS is converted to FAIL when verification policy enforces high confidence and classification is not `verified_passed`.
 - Appends Critic results into local context lanes (if enabled).
 - Preserves gateway handoff context sections (for example QA failure summaries and revert learning notes) when present.
 - Deep investigation disables fast-path/plan-hint shortcuts and fails closed on missing Docdex health/index, quota, budget, or evidence gate requirements.
@@ -74,7 +79,8 @@ Source of truth in code:
 **Output:** `ContextBundle`
 - `files` (focus + periphery)
 - `snippets`, `symbols`, `ast`, `impact`, `impact_diagnostics`
-- `selection`, `allow_write_paths`, `read_only_paths`
+- `selection` (entries/reason summary/dropped metadata), `allow_write_paths`, `read_only_paths`
+- `retrieval_disposition` + `retrieval_report` (preflight checks, confidence, dropped/truncated rationale, unresolved gaps, tool execution, Docdex capability snapshot)
 - `memory`, `profile`, `golden_examples`, `preferences_detected`, `warnings`, `index`
 - `serialized` (when available)
 
@@ -132,8 +138,10 @@ Source of truth in code:
    - **tool_calls**: uses tool registry directly.
    - **patch_json**:
      - Parse JSON patches with `parsePatchOutput`.
+     - Enforce strict schema/content gate before apply (empty arrays and schema-echo payloads fail closed).
      - Validate target files against write policy.
      - Apply with `PatchApplier`.
+     - Classify failures as `schema|scope|search_match|filesystem|rollback|guardrail` with deterministic remediation metadata.
      - Retry invalid output with schema-only prompt.
      - Fallback from `file_writes` → `search_replace` when needed.
      - Optionally use **Interpreter** as precheck or fallback.
@@ -144,6 +152,13 @@ Source of truth in code:
 **Write Policy Enforcement:**
 - Rejects patches targeting read-only paths.
 - If `allow_write_paths` is present, patches must be in the allow-list.
+- Delete actions are blocked unless the plan includes explicit delete intent.
+
+**Failure Handling:**
+- Retry/fallback is deterministic and bounded by failure class.
+- Partial apply failures trigger rollback attempts.
+- Rollback failures are emitted as explicit rollback-class failures.
+- Patch-processing failures persist attempt-history metadata for diagnostics.
 
 **Output:**
 - `BuilderRunResult` with `finalMessage`, optional `contextRequest`, and `usage`.
@@ -193,13 +208,17 @@ Source of truth in code:
    - Fail if touched files are read-only.
    - Fail if touched files fall outside `allow_write_paths`.
 4. Enforce plan:
+   - Fail if the plan has no concrete targets (`alignment_missing_plan_targets`).
    - Fail if no files touched for planned targets.
    - Fail if touched files do not intersect plan targets.
-5. Run verification steps via `ValidationRunner`.
-6. Append critic summary into local context lane.
+5. Run verification steps via `ValidationRunner` and classify outcomes as `verified_passed`, `verified_failed`, or `unverified_with_reason`.
+6. Apply workflow verification policy (minimum checks + high-confidence enforcement) before final PASS.
+7. Append critic summary into local context lane.
 
 **Output:** `CriticResult`
 - `PASS` or `FAIL` with `reasons` and `retryable` flag.
+- Includes typed `alignment_evidence` (`touched_files`, `plan_targets`, `matched_targets`, `unmatched_targets`, `unrelated_touched_files`).
+- Includes `verification` report with deterministic reason codes and per-check evidence metadata.
 
 ---
 

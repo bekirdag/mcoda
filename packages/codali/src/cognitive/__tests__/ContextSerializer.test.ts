@@ -134,6 +134,131 @@ test("ContextSerializer includes research summary section when present", { concu
   assert.ok(serialized.content.includes("Unresolved gaps: missing_dag_export"));
 });
 
+test("ContextSerializer includes retrieval report section when present", { concurrency: false }, () => {
+  const bundle: ContextBundle = {
+    ...baseBundle,
+    retrieval_disposition: "degraded",
+    retrieval_report: {
+      schema_version: 1,
+      mode: "normal",
+      created_at_ms: 10,
+      confidence: "medium",
+      disposition: "degraded",
+      preflight: [
+        { check: "docdex_health", status: "ok" },
+        { check: "docdex_initialize", status: "ok" },
+        { check: "docdex_stats", status: "ok" },
+        { check: "docdex_files", status: "ok" },
+      ],
+      selection: {
+        focus: ["src/auth.ts"],
+        periphery: ["src/user.ts"],
+        all: ["src/auth.ts", "src/user.ts"],
+        low_confidence: false,
+        entries: [
+          { path: "src/auth.ts", role: "focus", inclusion_reasons: ["search_hit"] },
+          { path: "src/user.ts", role: "periphery", inclusion_reasons: ["impact_neighbor"] },
+        ],
+        reason_summary: [
+          { code: "search_hit", count: 1 },
+          { code: "impact_neighbor", count: 1 },
+        ],
+      },
+      dropped: [
+        {
+          path: "docs/rfp.md",
+          category: "doc_heavy_demotion",
+          reason_code: "doc_heavy_demotion",
+        },
+      ],
+      truncated: [
+        { path: "src/auth.ts", reason_code: "budget_trimmed", detail: "budget_trim" },
+      ],
+      unresolved_gaps: ["low_confidence_selection"],
+      tool_execution: [
+        { tool: "docdex.search", category: "search", disposition: "executed" },
+        {
+          tool: "docdex.capabilities",
+          category: "capability_probe",
+          disposition: "failed",
+          notes: "capability_probe_fallback",
+        },
+      ],
+      capabilities: {
+        cached: false,
+        source: "fallback",
+        probed_at_ms: 10,
+        capabilities: {
+          score_breakdown: "unavailable",
+          rerank: "unavailable",
+          snippet_provenance: "unavailable",
+          retrieval_explanation: "unavailable",
+          batch_search: "unavailable",
+        },
+      },
+      warnings: ["docdex_capabilities_fallback"],
+    },
+  };
+  const serialized = serializeContext(bundle, { mode: "bundle_text", audience: "librarian" });
+  assert.ok(serialized.content.includes("RETRIEVAL REPORT:"));
+  assert.ok(serialized.content.includes("disposition=degraded"));
+  assert.ok(serialized.content.includes("Reason summary: search_hit=1, impact_neighbor=1"));
+  assert.ok(serialized.content.includes("Dropped: docs/rfp.md:doc_heavy_demotion"));
+  assert.ok(serialized.content.includes("Capabilities: source=fallback"));
+});
+
+test("ContextSerializer renders score/provenance/explanation metadata", { concurrency: false }, () => {
+  const serialized = serializeContext(
+    {
+      ...baseBundle,
+      search_results: [
+        {
+          query: "login",
+          hits: [
+            {
+              path: "src/auth.ts",
+              score: 12,
+              score_breakdown: {
+                query_relevance: 9,
+                structural_relevance: 2,
+                recency_diff_relevance: 1,
+                total: 12,
+              },
+              provenance: {
+                path: "src/auth.ts",
+                line_start: 4,
+                line_end: 9,
+                anchor_kind: "exact_line_window",
+              },
+              retrieval_explanation: {
+                summary: "Hit chosen by lexical and structural match.",
+                signals: ["query_match", "symbol_match_boost"],
+              },
+            },
+          ],
+        },
+      ],
+      snippets: [
+        {
+          path: "src/auth.ts",
+          content: "export const login = async () => {};",
+          score: 12,
+          snippet_origin: "query",
+          line_start: 4,
+          line_end: 9,
+          provenance: { path: "src/auth.ts", anchor_kind: "exact_line_window" },
+          retrieval_explanation: { summary: "Snippet from strongest query-matched window." },
+        },
+      ],
+    },
+    { mode: "bundle_text", audience: "builder" },
+  );
+  assert.ok(serialized.content.includes("score_breakdown: query=9, structural=2, recency=1, total=12"));
+  assert.ok(serialized.content.includes("provenance: src/auth.ts:4-9 (exact_line_window)"));
+  assert.ok(serialized.content.includes("[meta] score=12, origin=query, line_window=4-9, anchor_kind=exact_line_window"));
+  assert.ok(serialized.content.includes("[why] Snippet from strongest query-matched window."));
+});
+
 test("ContextSerializer expands known warnings and preserves unknown warnings", { concurrency: false }, () => {
   const serialized = serializeContext(
     {

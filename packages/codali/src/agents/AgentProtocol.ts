@@ -54,6 +54,28 @@ export type CodaliResponseResult =
         disposition: "retryable" | "non_retryable";
         reason_code: string;
       };
+      high_confidence?: boolean;
+      verification?: {
+        schema_version: 1;
+        outcome: "verified_passed" | "verified_failed" | "unverified_with_reason";
+        reason_codes: string[];
+        policy: {
+          policy_name: string;
+          minimum_checks: number;
+          enforce_high_confidence: boolean;
+        };
+        checks: unknown[];
+        totals: {
+          configured: number;
+          runnable: number;
+          attempted: number;
+          passed: number;
+          failed: number;
+          unverified: number;
+        };
+        touched_files?: string[];
+        language_signals?: string[];
+      };
     };
 
 export type CodaliResponse = {

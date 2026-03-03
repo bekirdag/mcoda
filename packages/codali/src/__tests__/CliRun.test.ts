@@ -49,6 +49,17 @@ const formatCliFailure = (result: SpawnSyncReturns<string>): string => {
   ].join("\n");
 };
 
+const extractRunMeta = (result: SpawnSyncReturns<string>): Record<string, unknown> | undefined => {
+  const stderr = (result.stderr ?? "").toString();
+  const match = stderr.match(/CODALI_RUN_META\s+({.*})/);
+  if (!match) return undefined;
+  try {
+    return JSON.parse(match[1]) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+};
+
 const runCodali = (
   args: string[],
   env: NodeJS.ProcessEnv,
@@ -112,6 +123,126 @@ test("codali run executes with stub provider", { concurrency: false }, () => {
   assert.equal(result.status, 0, formatCliFailure(result));
   assert.match(result.stdout ?? "", /(stub:|"patches")/);
   assert.match(result.stderr ?? "", /Preflight/);
+  const meta = extractRunMeta(result);
+  assert.equal((meta?.workflow as { name?: string } | undefined)?.name, "run");
+});
+
+test("codali fix command resolves fix workflow profile", { concurrency: false }, () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-fix-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));
+  const taskFile = path.join(workspaceRoot, "task.txt");
+  const srcDir = path.join(workspaceRoot, "src");
+  writeFileSync(taskFile, "fix the value", "utf8");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(path.join(srcDir, "index.ts"), "const value = 1;\n", "utf8");
+
+  const result = runCodali(
+    [
+      "fix",
+      "--no-deep-investigation",
+      "--workspace-root",
+      workspaceRoot,
+      "--provider",
+      "stub",
+      "--model",
+      "stub-model",
+      "--interpreter-provider",
+      "stub",
+      "--interpreter-model",
+      "stub-model",
+      "--task",
+      taskFile,
+    ],
+    buildEnv(homeDir, { CODALI_SMART: "0" }),
+    2,
+  );
+
+  assert.equal(result.status, 0, formatCliFailure(result));
+  const meta = extractRunMeta(result);
+  const workflow = meta?.workflow as { name?: string; source?: string } | undefined;
+  assert.equal(workflow?.name, "fix");
+  assert.equal(workflow?.source, "command");
+});
+
+test("codali run --profile explain uses no-write workflow profile", { concurrency: false }, () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-run-profile-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));
+  const taskFile = path.join(workspaceRoot, "task.txt");
+  const srcDir = path.join(workspaceRoot, "src");
+  const targetFile = path.join(srcDir, "index.ts");
+  writeFileSync(taskFile, "explain what this file does", "utf8");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(targetFile, "const value = 1;\n", "utf8");
+
+  const result = runCodali(
+    [
+      "run",
+      "--profile",
+      "explain",
+      "--no-deep-investigation",
+      "--workspace-root",
+      workspaceRoot,
+      "--provider",
+      "stub",
+      "--model",
+      "stub-model",
+      "--interpreter-provider",
+      "stub",
+      "--interpreter-model",
+      "stub-model",
+      "--task",
+      taskFile,
+    ],
+    buildEnv(homeDir, { CODALI_SMART: "0" }),
+    2,
+  );
+
+  assert.equal(result.status, 0, formatCliFailure(result));
+  assert.equal(readFileSync(targetFile, "utf8"), "const value = 1;\n");
+  const meta = extractRunMeta(result);
+  const workflow = meta?.workflow as { name?: string; source?: string; allowWrites?: boolean } | undefined;
+  assert.equal(workflow?.name, "explain");
+  assert.equal(workflow?.source, "cli");
+  assert.equal(workflow?.allowWrites, false);
+});
+
+test("command-derived profile wins over --profile override", { concurrency: false }, () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-profile-precedence-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));
+  const taskFile = path.join(workspaceRoot, "task.txt");
+  const srcDir = path.join(workspaceRoot, "src");
+  writeFileSync(taskFile, "fix the value", "utf8");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(path.join(srcDir, "index.ts"), "const value = 1;\n", "utf8");
+
+  const result = runCodali(
+    [
+      "fix",
+      "--profile",
+      "explain",
+      "--no-deep-investigation",
+      "--workspace-root",
+      workspaceRoot,
+      "--provider",
+      "stub",
+      "--model",
+      "stub-model",
+      "--interpreter-provider",
+      "stub",
+      "--interpreter-model",
+      "stub-model",
+      "--task",
+      taskFile,
+    ],
+    buildEnv(homeDir, { CODALI_SMART: "0" }),
+    2,
+  );
+
+  assert.equal(result.status, 0, formatCliFailure(result));
+  const meta = extractRunMeta(result);
+  const workflow = meta?.workflow as { name?: string; source?: string } | undefined;
+  assert.equal(workflow?.name, "fix");
+  assert.equal(workflow?.source, "command");
 });
 
 test("codali run emits status events", { concurrency: false }, () => {
@@ -331,4 +462,117 @@ test("codali run --smart persists local context when enabled", { concurrency: fa
   process.env.HOME = originalHome;
   const files = existsSync(contextDir) ? readdirSync(contextDir) : [];
   assert.ok(files.some((file) => file.endsWith(".jsonl")));
+});
+
+test("codali eval executes suite and emits metrics", { concurrency: false }, () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-eval-run-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));
+  const srcDir = path.join(workspaceRoot, "src");
+  const taskFile = path.join(workspaceRoot, "task.txt");
+  const suitePath = path.join(workspaceRoot, "suite.json");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(path.join(srcDir, "index.ts"), "const value = 1;\n", "utf8");
+  writeFileSync(taskFile, "update the value", "utf8");
+  writeFileSync(
+    suitePath,
+    JSON.stringify({
+      schema_version: 1,
+      suite_id: "cli-eval-pass",
+      thresholds: {
+        verification_pass_rate_min: 0,
+        hallucination_rate_max: 1,
+        scope_violation_rate_max: 1,
+      },
+      tasks: [
+        {
+          id: "task-1",
+          task_file: taskFile,
+          command: "run",
+          assertions: {
+            expect_success: true,
+          },
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  const result = runCodali(
+    [
+      "eval",
+      "--suite",
+      suitePath,
+      "--workspace-root",
+      workspaceRoot,
+      "--provider",
+      "stub",
+      "--model",
+      "stub-model",
+      "--smart",
+      "--no-deep-investigation",
+      "--output",
+      "json",
+    ],
+    buildSmartEnv(homeDir, { CODALI_LOCAL_CONTEXT_ENABLED: "0" }),
+    2,
+  );
+
+  assert.equal(result.status, 0, formatCliFailure(result));
+  assert.match(result.stdout ?? "", /"m001_task_success_rate"/);
+  assert.match(result.stdout ?? "", /"gates"/);
+});
+
+test("codali eval returns deterministic non-zero on gate failures", { concurrency: false }, () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-eval-gate-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "codali-home-"));
+  const srcDir = path.join(workspaceRoot, "src");
+  const taskFile = path.join(workspaceRoot, "task.txt");
+  const suitePath = path.join(workspaceRoot, "suite-gate.json");
+  mkdirSync(srcDir, { recursive: true });
+  writeFileSync(path.join(srcDir, "index.ts"), "const value = 1;\n", "utf8");
+  writeFileSync(taskFile, "update the value", "utf8");
+  writeFileSync(
+    suitePath,
+    JSON.stringify({
+      schema_version: 1,
+      suite_id: "cli-eval-gate-fail",
+      thresholds: {
+        verification_pass_rate_min: 1,
+      },
+      tasks: [
+        {
+          id: "task-1",
+          task_file: taskFile,
+          command: "run",
+          assertions: {
+            expect_success: true,
+          },
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  const result = runCodali(
+    [
+      "eval",
+      "--suite",
+      suitePath,
+      "--workspace-root",
+      workspaceRoot,
+      "--provider",
+      "stub",
+      "--model",
+      "stub-model",
+      "--smart",
+      "--no-deep-investigation",
+      "--output",
+      "json",
+    ],
+    buildSmartEnv(homeDir, { CODALI_LOCAL_CONTEXT_ENABLED: "0" }),
+    2,
+  );
+
+  assert.equal(result.status, 5, formatCliFailure(result));
+  assert.match(result.stderr ?? "", /Eval regression gates failed/i);
 });

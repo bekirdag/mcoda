@@ -8,7 +8,12 @@ import type { ToolContext } from "../tools/ToolTypes.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { RunLogger } from "../runtime/RunLogger.js";
 import { Runner, type RunnerResult } from "../runtime/Runner.js";
-import type { ContextBundle, ContextRequest, Plan } from "./Types.js";
+import type {
+  ContextBundle,
+  ContextRequest,
+  PatchFailureClassification,
+  Plan,
+} from "./Types.js";
 import {
   buildBuilderPrompt,
   BUILDER_PATCH_GBNF_FILE_WRITES,
@@ -27,7 +32,7 @@ import {
   type PatchFormat,
   type PatchPayload,
 } from "./BuilderOutputParser.js";
-import { PatchApplier } from "./PatchApplier.js";
+import { PatchApplier, PatchPolicyError } from "./PatchApplier.js";
 import type { ContextManager } from "./ContextManager.js";
 import type { PatchInterpreterClient } from "./PatchInterpreter.js";
 
@@ -39,6 +44,10 @@ export interface BuilderRunResult extends RunnerResult {
 export interface PatchApplyFailure {
   source: string;
   error: string;
+  reasonCode?: string;
+  diagnostics?: Record<string, unknown>;
+  classification?: PatchFailureClassification;
+  attemptHistory?: string[];
   patches: PatchAction[];
   rollback: { attempted: boolean; ok: boolean; error?: string };
   rawOutput: string;
@@ -69,6 +78,7 @@ export interface BuilderRunnerOptions {
   patchApplier?: PatchApplier;
   interpreter?: PatchInterpreterClient;
   fallbackToInterpreter?: boolean;
+  allowDestructiveOperations?: boolean;
   contextManager?: ContextManager;
   laneId?: string;
   model?: string;
@@ -154,9 +164,11 @@ const shouldRetrySchemaRepair = (message: string): boolean => {
     normalized.includes("enoent")
     || normalized.includes("no such file or directory")
     || normalized.includes("disallowed files")
+    || normalized.includes("outside allowed scope")
     || normalized.includes("outside architect plan targets")
     || normalized.includes("search block not found")
     || normalized.includes("read-only")
+    || normalized.includes("destructive-operation policy")
   ) {
     return false;
   }
@@ -175,13 +187,186 @@ const NON_RETRYABLE_PATCH_APPLY_PATTERNS = [
   "enoent",
   "no such file or directory",
   "disallowed files",
+  "outside allowed scope",
   "delete action without delete intent",
   "read-only",
   "outside architect plan targets",
+  "destructive_operation_blocked",
+  "writes_disabled_by_profile",
+  "patch_outside_allowed_scope",
+  "patch_read_only_path",
+  "patch_outside_workspace",
+  "destructive-operation policy",
+  "write actions are disabled for the active workflow profile",
   "search block not found",
 ];
 
+const isSchemaLikePatchError = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return (
+    isSchemaDefinitionError(message)
+    || normalized.includes("patch output is not valid json")
+    || normalized.includes("patch output is empty")
+    || normalized.includes("patch action must be")
+    || normalized.includes("patch field")
+    || normalized.includes("patch entry must be an object")
+    || normalized.includes("patch file entry must be an object")
+  );
+};
+
+const buildPatchFailureClassification = (options: {
+  source: string;
+  error: string;
+  reasonCode?: string;
+  rollback: { attempted: boolean; ok: boolean; error?: string };
+}): PatchFailureClassification => {
+  if (options.rollback.attempted && !options.rollback.ok) {
+    return {
+      failure_class: "rollback",
+      failure_code: "patch_rollback_failed",
+      remediation_key: "manual_workspace_reconciliation",
+      retryable: false,
+    };
+  }
+  switch (options.reasonCode) {
+    case "patch_outside_workspace":
+      return {
+        failure_class: "scope",
+        failure_code: "patch_outside_workspace",
+        remediation_key: "restrict_patch_to_workspace",
+        retryable: false,
+      };
+    case "patch_outside_allowed_scope":
+      return {
+        failure_class: "scope",
+        failure_code: "patch_outside_allowed_scope",
+        remediation_key: "restrict_patch_to_allowed_paths",
+        retryable: false,
+      };
+    case "patch_read_only_path":
+      return {
+        failure_class: "guardrail",
+        failure_code: "patch_read_only_path",
+        remediation_key: "exclude_read_only_paths",
+        retryable: false,
+      };
+    case "destructive_operation_blocked":
+      return {
+        failure_class: "guardrail",
+        failure_code: "destructive_operation_blocked",
+        remediation_key: "remove_delete_or_enable_destructive_policy",
+        retryable: false,
+      };
+    case "writes_disabled_by_profile":
+      return {
+        failure_class: "guardrail",
+        failure_code: "writes_disabled_by_profile",
+        remediation_key: "switch_workflow_profile_or_remove_writes",
+        retryable: false,
+      };
+    default:
+      break;
+  }
+
+  const normalized = `${options.error} ${options.source}`.toLowerCase();
+  if (normalized.includes("delete action without delete intent")) {
+    return {
+      failure_class: "guardrail",
+      failure_code: "patch_delete_without_plan_intent",
+      remediation_key: "declare_delete_intent_or_remove_delete_actions",
+      retryable: false,
+    };
+  }
+  if (normalized.includes("search block not found")) {
+    return {
+      failure_class: "search_match",
+      failure_code: "patch_search_block_not_found",
+      remediation_key: "refresh_file_context_and_retry_exact_match",
+      retryable: true,
+    };
+  }
+  if (normalized.includes("ambiguous search block")) {
+    return {
+      failure_class: "search_match",
+      failure_code: "patch_search_block_ambiguous",
+      remediation_key: "narrow_search_block_context",
+      retryable: true,
+    };
+  }
+  if (normalized.includes("placeholder")) {
+    return {
+      failure_class: "schema",
+      failure_code: "patch_placeholder_payload",
+      remediation_key: "replace_placeholders_with_concrete_payload",
+      retryable: true,
+    };
+  }
+  if (normalized.includes("enoent") || normalized.includes("no such file or directory")) {
+    return {
+      failure_class: "filesystem",
+      failure_code: "patch_file_not_found",
+      remediation_key: "use_existing_path_or_plan_create_file",
+      retryable: false,
+    };
+  }
+  if (
+    normalized.includes("outside allowed scope")
+    || normalized.includes("disallowed files")
+    || normalized.includes("outside architect plan targets")
+  ) {
+    return {
+      failure_class: "scope",
+      failure_code: "patch_scope_violation",
+      remediation_key: "restrict_patch_to_plan_targets",
+      retryable: false,
+    };
+  }
+  if (
+    normalized.includes("read-only")
+    || normalized.includes("destructive-operation policy")
+    || normalized.includes("write actions are disabled")
+  ) {
+    return {
+      failure_class: "guardrail",
+      failure_code: "patch_guardrail_violation",
+      remediation_key: "respect_patch_policies",
+      retryable: false,
+    };
+  }
+  if (isSchemaLikePatchError(options.error) || normalized.includes("patch parsing failed")) {
+    return {
+      failure_class: "schema",
+      failure_code: "patch_schema_invalid",
+      remediation_key: "emit_schema_valid_patch_payload",
+      retryable: true,
+    };
+  }
+  return {
+    failure_class: "filesystem",
+    failure_code: "patch_apply_failed",
+    remediation_key: "rebuild_patch_against_current_workspace",
+    retryable: false,
+  };
+};
+
 const shouldRetrySchemaRepairFromPatchApplyError = (error: PatchApplyError): boolean => {
+  const classification =
+    error.details.classification
+    ?? buildPatchFailureClassification({
+      source: error.details.source,
+      error: error.details.error ?? error.message,
+      reasonCode: error.details.reasonCode,
+      rollback: error.details.rollback,
+    });
+  if (classification.failure_class === "search_match") return false;
+  if (!classification.retryable) return false;
+  if (classification.failure_class === "schema") return true;
+  if (
+    error.details.reasonCode
+    && NON_RETRYABLE_PATCH_APPLY_PATTERNS.includes(error.details.reasonCode)
+  ) {
+    return false;
+  }
   const message = (error.details.error ?? error.message ?? "").toLowerCase();
   if (!message) return false;
   if (NON_RETRYABLE_PATCH_APPLY_PATTERNS.some((pattern) => message.includes(pattern))) return false;
@@ -213,7 +398,7 @@ const planAllowsDeleteAction = (plan: Plan): boolean => {
 
 const validatePatchPayloadQuality = (
   patches: PatchAction[],
-  options: { allowDelete: boolean },
+  options: { allowDeleteIntent: boolean },
 ): string | undefined => {
   for (const patch of patches) {
     if (patch.action === "replace") {
@@ -228,7 +413,7 @@ const validatePatchPayloadQuality = (
       }
       continue;
     }
-    if (patch.action === "delete" && !options.allowDelete) {
+    if (patch.action === "delete" && !options.allowDeleteIntent) {
       return "Patch contains delete action without delete intent in plan";
     }
   }
@@ -414,16 +599,18 @@ export class BuilderRunner {
       const invalid = paths.filter((path) => {
         if (!path.trim()) return true;
         if (looksLikePlaceholderPath(path)) return true;
-        const normalized = normalizePath(path);
-        if (isReadOnlyPath(normalized)) return true;
-        if (allowedPaths.size === 0) return false;
-        return !allowedPaths.has(normalized);
+        return false;
       });
       if (invalid.length) {
-        throw new Error(`Patch references disallowed files: ${invalid.join(", ")}`);
+        throw new Error(`Patch references invalid files: ${invalid.join(", ")}`);
       }
     };
-    const allowDeleteActions = planAllowsDeleteAction(plan);
+    const allowDeleteIntent = planAllowsDeleteAction(plan);
+    const patchPolicy = {
+      allowWritePaths: allowedPathValues,
+      readOnlyPaths,
+      allowDestructiveOperations: this.options.allowDestructiveOperations === true,
+    };
     const touchedFiles = new Set<string>();
     const logPatchPayload = async (payload: { patches: Array<{ file: string }> }, source: string) => {
       if (!this.options.logger) return;
@@ -444,12 +631,18 @@ export class BuilderRunner {
         throw new Error("PatchApplier is required to apply patches");
       }
       const patchQualityError = validatePatchPayloadQuality(payload.patches, {
-        allowDelete: allowDeleteActions,
+        allowDeleteIntent,
       });
       if (patchQualityError) {
+        const classification = buildPatchFailureClassification({
+          source,
+          error: patchQualityError,
+          rollback: { attempted: false, ok: true },
+        });
         throw new PatchApplyError({
           source,
           error: patchQualityError,
+          classification,
           patches: payload.patches,
           rollback: { attempted: false, ok: true },
           rawOutput,
@@ -457,9 +650,12 @@ export class BuilderRunner {
       }
       validatePatchTargets(payload.patches.map((patch) => patch.file));
       emitPatchStatus("applying patches");
-      const rollbackPlan = await patchApplier.createRollback(payload.patches);
+      let rollbackPlan:
+        | Awaited<ReturnType<PatchApplier["createRollback"]>>
+        | undefined;
       try {
-        const applyResult = await patchApplier.apply(payload.patches);
+        rollbackPlan = await patchApplier.createRollback(payload.patches, patchPolicy);
+        const applyResult = await patchApplier.apply(payload.patches, patchPolicy);
         if (this.options.logger) {
           await this.options.logger.log("patch_applied", {
             patches: payload.patches.length,
@@ -471,12 +667,14 @@ export class BuilderRunner {
       } catch (error) {
         let rollbackOk = false;
         let rollbackError: string | undefined;
-        try {
-          await patchApplier.rollback(rollbackPlan);
-          rollbackOk = true;
-        } catch (rollbackErr) {
-          rollbackError =
-            rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+        if (rollbackPlan) {
+          try {
+            await patchApplier.rollback(rollbackPlan);
+            rollbackOk = true;
+          } catch (rollbackErr) {
+            rollbackError =
+              rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+          }
         }
         if (this.options.logger) {
           await this.options.logger.log("patch_rollback", {
@@ -486,11 +684,42 @@ export class BuilderRunner {
           });
         }
         const message = error instanceof Error ? error.message : String(error);
+        const reasonCode =
+          error instanceof PatchPolicyError ? error.metadata.reason_code : undefined;
+        const diagnostics =
+          error instanceof PatchPolicyError
+            ? (error.metadata as unknown as Record<string, unknown>)
+            : undefined;
+        const rollback = { attempted: true, ok: rollbackOk, error: rollbackError };
+        const classification = buildPatchFailureClassification({
+          source,
+          error: message,
+          reasonCode,
+          rollback,
+        });
+        if (this.options.logger?.logSafetyEvent) {
+          await this.options.logger.logSafetyEvent({
+            phase: "act",
+            category: "patch",
+            code: classification.failure_code,
+            disposition: classification.retryable ? "retryable" : "non_retryable",
+            source,
+            message,
+            details: {
+              reason_code: reasonCode,
+              ...(diagnostics ?? {}),
+              patch_failure: classification,
+            },
+          });
+        }
         throw new PatchApplyError({
           source,
           error: message,
+          reasonCode,
+          diagnostics,
+          classification,
           patches: payload.patches,
-          rollback: { attempted: true, ok: rollbackOk, error: rollbackError },
+          rollback,
           rawOutput,
         });
       }
@@ -530,9 +759,15 @@ export class BuilderRunner {
     };
     const parseDisallowed = (message: string): string | undefined => {
       const match = message.match(/disallowed files:\\s*(.+)$/i);
-      return match ? match[1]?.trim() : undefined;
+      if (match) return match[1]?.trim();
+      const outsideAllowed = message.match(/outside allowed scope:\s*(.+)$/i);
+      if (outsideAllowed) return outsideAllowed[1]?.trim();
+      const readOnly = message.match(/read-only:\s*(.+)$/i);
+      return readOnly ? readOnly[1]?.trim() : undefined;
     };
-    const isDisallowedError = (message: string): boolean => /disallowed files/i.test(message);
+    const isDisallowedError = (message: string): boolean =>
+      /disallowed files|outside allowed scope|read-only|patch_outside_allowed_scope|patch_read_only_path/i
+        .test(message);
     const buildDisallowedNote = (message: string) => {
       const disallowed = parseDisallowed(message) ?? "unknown";
       const preferred = concreteRetryPaths.length > 0
@@ -750,6 +985,12 @@ export class BuilderRunner {
     if (mode === "patch_json") {
       const interpreter = this.options.interpreter;
       const fallbackToInterpreter = this.options.fallbackToInterpreter === true;
+      const attemptHistory: string[] = [];
+      const recordAttempt = (stage: string, message: string): void => {
+        const normalized = message.trim();
+        if (!normalized) return;
+        attemptHistory.push(`${stage}:${normalized}`);
+      };
       const parseAndApply = async (
         content: string,
         format: PatchFormat,
@@ -763,9 +1004,15 @@ export class BuilderRunner {
           || normalized.includes("path/to/new.")
           || normalized.includes("path/to/old.")
         ) {
+          const classification = buildPatchFailureClassification({
+            source,
+            error: "Patch output used placeholder file paths",
+            rollback: { attempted: false, ok: true },
+          });
           throw new PatchApplyError({
             source,
             error: "Patch output used placeholder file paths",
+            classification,
             patches: [],
             rollback: { attempted: false, ok: true },
             rawOutput: content,
@@ -872,6 +1119,7 @@ export class BuilderRunner {
         return finalizeResult(result);
       } catch (error) {
         if (error instanceof PatchApplyError) {
+          recordAttempt("primary", error.details.error);
           if (!shouldRetrySchemaRepairFromPatchApplyError(error)) {
             if (patchFormat === "search_replace" && isSearchBlockNotFoundError(error.details.error)) {
               return attemptFileWritesRecovery(
@@ -883,6 +1131,7 @@ export class BuilderRunner {
           }
           processingError = new Error(error.details.error);
         } else {
+          recordAttempt("primary", error instanceof Error ? error.message : String(error));
           processingError = error instanceof Error ? error : new Error(String(error));
         }
       }
@@ -940,10 +1189,12 @@ export class BuilderRunner {
           return finalizeResult(result);
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
+            recordAttempt("retry", retryError.details.error);
             throw retryError;
           }
           const retryMessage =
             retryError instanceof Error ? retryError.message : String(retryError);
+          recordAttempt("retry", retryMessage);
           if (this.options.logger) {
             await this.options.logger.log("patch_retry_failed", { format: "file_writes", error: retryMessage });
           }
@@ -982,10 +1233,12 @@ export class BuilderRunner {
             return finalizeResult(result);
           } catch (fallbackError) {
             if (fallbackError instanceof PatchApplyError) {
+              recordAttempt("fallback", fallbackError.details.error);
               throw fallbackError;
             }
             const fallbackMessage =
               fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            recordAttempt("fallback", fallbackMessage);
             if (isDisallowedError(fallbackMessage)) {
               const guardSystem: ProviderMessage = {
                 role: "system",
@@ -1008,10 +1261,12 @@ export class BuilderRunner {
                 return finalizeResult(result);
               } catch (guardError) {
                 if (guardError instanceof PatchApplyError) {
+                  recordAttempt("guard", guardError.details.error);
                   throw guardError;
                 }
                 const guardMessage =
                   guardError instanceof Error ? guardError.message : String(guardError);
+                recordAttempt("guard", guardMessage);
                 processingError = new Error(
                   `Patch parsing failed. initial=${processingError.message}; retry=${retryMessage}; fallback=${fallbackMessage}; guard=${guardMessage}`,
                 );
@@ -1057,6 +1312,7 @@ export class BuilderRunner {
           return finalizeResult(result);
         } catch (retryError) {
           if (retryError instanceof PatchApplyError) {
+            recordAttempt("retry", retryError.details.error);
             if (isSearchBlockNotFoundError(retryError.details.error)) {
               return attemptFileWritesRecovery(
                 `Search-replace retry failed: ${retryError.details.error}`,
@@ -1067,6 +1323,7 @@ export class BuilderRunner {
           }
           const retryMessage =
             retryError instanceof Error ? retryError.message : String(retryError);
+          recordAttempt("retry", retryMessage);
           if (this.options.logger) {
             await this.options.logger.log("patch_retry_failed", {
               format: "search_replace",
@@ -1080,9 +1337,16 @@ export class BuilderRunner {
       }
 
       if (processingError) {
+        const classification = buildPatchFailureClassification({
+          source: "builder_patch_processing",
+          error: processingError.message,
+          rollback: { attempted: false, ok: true },
+        });
         throw new PatchApplyError({
           source: "builder_patch_processing",
           error: processingError.message,
+          classification,
+          attemptHistory: attemptHistory.length > 0 ? [...attemptHistory] : undefined,
           patches: [],
           rollback: { attempted: false, ok: true },
           rawOutput: result.finalMessage.content,

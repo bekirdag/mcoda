@@ -316,3 +316,23 @@ test("ContextSelector supports combined intent coverage", { concurrency: false }
   assert.ok(selection.all.includes("src/security/policy.ts"));
   assert.ok(selection.all.includes("src/observability/metrics.ts"));
 });
+
+test("ContextSelector emits selection reason codes and dropped categories", { concurrency: false }, () => {
+  const selection = selectContextFiles(
+    {
+      hits: [
+        { path: "src/app.ts", score: 20 },
+        { path: "src/dep.ts", score: 10 },
+        { path: "docs/rfp.md", score: 9 },
+        { path: "docs/sds/app.md", score: 8 },
+      ],
+      impact: [{ file: "src/app.ts", inbound: [], outbound: ["src/dep.ts"] }],
+      docTask: false,
+    },
+    { maxFiles: 4, focusCount: 1 },
+  );
+
+  assert.ok((selection.entries ?? []).every((entry) => entry.inclusion_reasons.length > 0));
+  assert.ok((selection.reason_summary ?? []).length > 0);
+  assert.ok((selection.dropped ?? []).some((entry) => entry.category === "doc_heavy_demotion"));
+});

@@ -6,13 +6,61 @@ import path from "node:path";
 import { CriticEvaluator } from "../CriticEvaluator.js";
 import { ContextManager } from "../ContextManager.js";
 import { ContextStore } from "../ContextStore.js";
-import type { LocalContextConfig, Plan } from "../Types.js";
+import type { LocalContextConfig, Plan, VerificationReport } from "../Types.js";
 
 class StubValidator {
-  constructor(private result: { ok: boolean; errors: string[] }) {}
+  constructor(
+    private result: Partial<{
+      ok: boolean;
+      errors: string[];
+      outcome: VerificationReport["outcome"];
+      reason_codes: VerificationReport["reason_codes"];
+      report: VerificationReport;
+    }>,
+  ) {}
 
-  async run(): Promise<{ ok: boolean; errors: string[] }> {
-    return this.result;
+  async run(): Promise<{
+    ok: boolean;
+    errors: string[];
+    outcome: VerificationReport["outcome"];
+    reason_codes: VerificationReport["reason_codes"];
+    report: VerificationReport;
+  }> {
+    const ok = this.result.ok ?? true;
+    const errors = this.result.errors ?? [];
+    const inferredOutcome =
+      this.result.outcome
+      ?? ((!ok || errors.length > 0) ? "verified_failed" : "verified_passed");
+    const inferredReasonCodes = this.result.reason_codes
+      ?? (inferredOutcome === "verified_failed" ? ["verification_command_failed"] : []);
+    const report = this.result.report ?? {
+      schema_version: 1,
+      outcome: inferredOutcome,
+      reason_codes: inferredReasonCodes,
+      policy: {
+        policy_name: "general",
+        minimum_checks: 0,
+        enforce_high_confidence: false,
+      },
+      checks: [],
+      totals: {
+        configured: 1,
+        runnable: 1,
+        attempted: 1,
+        passed: inferredOutcome === "verified_passed" ? 1 : 0,
+        failed: inferredOutcome === "verified_failed" ? 1 : 0,
+        unverified: 0,
+      },
+      touched_files: ["file.ts"],
+      language_signals: ["typescript"],
+    } satisfies VerificationReport;
+    return {
+      ok,
+      errors,
+      outcome: inferredOutcome,
+      reason_codes: inferredReasonCodes,
+      report,
+    };
   }
 }
 
@@ -48,15 +96,86 @@ test("CriticEvaluator fails on empty output", { concurrency: false }, async () =
 
 test("CriticEvaluator fails when validation errors", { concurrency: false }, async () => {
   const evaluator = new CriticEvaluator(new StubValidator({ ok: false, errors: ["bad"] }) as any);
-  const result = await evaluator.evaluate(plan, "output");
+  const result = await evaluator.evaluate(plan, "output", ["file.ts"]);
   assert.equal(result.status, "FAIL");
   assert.ok(result.reasons.includes("bad"));
 });
 
 test("CriticEvaluator passes when validation ok", { concurrency: false }, async () => {
   const evaluator = new CriticEvaluator(new StubValidator({ ok: true, errors: [] }) as any);
-  const result = await evaluator.evaluate(plan, "output");
+  const result = await evaluator.evaluate(plan, "output", ["file.ts"]);
   assert.equal(result.status, "PASS");
+  assert.equal(result.report?.verification?.outcome, "verified_passed");
+  assert.equal(result.report?.high_confidence, true);
+  assert.deepEqual(result.report?.alignment_evidence?.matched_targets, ["file.ts"]);
+});
+
+test("CriticEvaluator includes unverified classification when high confidence is not enforced", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(
+    new StubValidator({
+      outcome: "unverified_with_reason",
+      reason_codes: ["verification_shell_disabled"],
+      report: {
+        schema_version: 1,
+        outcome: "unverified_with_reason",
+        reason_codes: ["verification_shell_disabled"],
+        policy: {
+          policy_name: "general",
+          minimum_checks: 0,
+          enforce_high_confidence: false,
+        },
+        checks: [],
+        totals: {
+          configured: 1,
+          runnable: 0,
+          attempted: 0,
+          passed: 0,
+          failed: 0,
+          unverified: 1,
+        },
+      },
+    }) as any,
+  );
+  const result = await evaluator.evaluate(plan, "output", ["file.ts"]);
+  assert.equal(result.status, "PASS");
+  assert.equal(result.report?.verification?.outcome, "unverified_with_reason");
+  assert.equal(result.report?.high_confidence, false);
+});
+
+test("CriticEvaluator blocks unverified outcomes when high confidence is required", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(
+    new StubValidator({
+      outcome: "unverified_with_reason",
+      reason_codes: ["verification_policy_minimum_unmet"],
+      report: {
+        schema_version: 1,
+        outcome: "unverified_with_reason",
+        reason_codes: ["verification_policy_minimum_unmet"],
+        policy: {
+          policy_name: "test",
+          minimum_checks: 1,
+          enforce_high_confidence: true,
+        },
+        checks: [],
+        totals: {
+          configured: 1,
+          runnable: 0,
+          attempted: 0,
+          passed: 0,
+          failed: 0,
+          unverified: 1,
+        },
+      },
+    }) as any,
+  );
+  const result = await evaluator.evaluate(plan, "output", ["file.ts"], {
+    enforceHighConfidence: true,
+    minimumVerificationChecks: 1,
+    verificationPolicyName: "test",
+  });
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.ok(result.reasons.some((reason) => reason.includes("verification_")));
 });
 
 test("CriticEvaluator fails when touched files miss plan targets", { concurrency: false }, async () => {
@@ -124,11 +243,37 @@ test("CriticEvaluator fails when inferred patch targets miss plan", { concurrenc
 
 test("CriticEvaluator classifies guardrails from validation errors", { concurrency: false }, async () => {
   const evaluator = new CriticEvaluator(new StubValidator({ ok: false, errors: ["merge_conflict"] }) as any);
-  const result = await evaluator.evaluate(plan, "output");
+  const result = await evaluator.evaluate(plan, "output", ["file.ts"]);
   assert.equal(result.status, "FAIL");
   assert.equal(result.retryable, false);
   assert.equal(result.guardrail?.reason_code, "merge_conflict");
   assert.equal(result.guardrail?.disposition, "non_retryable");
+});
+
+test("CriticEvaluator classifies destructive operation guardrails", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(
+    new StubValidator({ ok: false, errors: ["destructive_operation_blocked"] }) as any,
+  );
+  const result = await evaluator.evaluate(plan, "output", ["file.ts"]);
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.equal(result.guardrail?.reason_code, "destructive_operation_guard");
+  assert.equal(result.guardrail?.disposition, "non_retryable");
+});
+
+test("CriticEvaluator fails when plan has no concrete targets", { concurrency: false }, async () => {
+  const evaluator = new CriticEvaluator(new StubValidator({ ok: true, errors: [] }) as any);
+  const noTargetsPlan: Plan = {
+    steps: ["step"],
+    target_files: [],
+    risk_assessment: "low",
+    verification: ["echo ok"],
+  };
+  const result = await evaluator.evaluate(noTargetsPlan, "output", ["src/index.ts"]);
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.retryable, false);
+  assert.equal(result.guardrail?.reason_code, "scope_violation");
+  assert.ok(result.reasons.includes("alignment_missing_plan_targets"));
 });
 
 test("CriticEvaluator appends summary to context manager", { concurrency: false }, async () => {

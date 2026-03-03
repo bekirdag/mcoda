@@ -6,7 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 import { loadConfig } from "../config/ConfigLoader.js";
-import type { ToolConfig } from "../config/Config.js";
+import type { ResolvedWorkflowProfile, ToolConfig } from "../config/Config.js";
 import { createProvider } from "../providers/ProviderRegistry.js";
 import type {
   AgentEvent,
@@ -15,6 +15,7 @@ import type {
   ProviderConfig,
   ProviderRequest,
   ProviderResponse,
+  ProviderUsage,
   ProviderResponseFormat,
 } from "../providers/ProviderTypes.js";
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
@@ -31,6 +32,7 @@ import { RunContext } from "../runtime/RunContext.js";
 import { WorkspaceLock } from "../runtime/WorkspaceLock.js";
 import { Runner } from "../runtime/Runner.js";
 import { RunLogger } from "../runtime/RunLogger.js";
+import { RunLogReader } from "../runtime/RunLogReader.js";
 import { registerProvider } from "../providers/ProviderRegistry.js";
 import type { ToolDefinition } from "../tools/ToolTypes.js";
 import { ContextAssembler } from "../cognitive/ContextAssembler.js";
@@ -43,15 +45,26 @@ import { PatchApplier } from "../cognitive/PatchApplier.js";
 import { PatchInterpreter } from "../cognitive/PatchInterpreter.js";
 import { SmartPipeline } from "../cognitive/SmartPipeline.js";
 import { buildRoutedProvider, type PipelinePhase } from "../cognitive/ProviderRouting.js";
-import type { ContextBundle, LaneScope } from "../cognitive/Types.js";
+import type { ContextBundle, LaneScope, PhaseArtifactV1, VerificationReport } from "../cognitive/Types.js";
 import { ContextManager } from "../cognitive/ContextManager.js";
 import { ContextStore } from "../cognitive/ContextStore.js";
 import { ContextSummarizer } from "../cognitive/ContextSummarizer.js";
 import { ContextRedactor } from "../cognitive/ContextRedactor.js";
-import { estimateCostFromChars, estimateCostFromUsage, resolvePricing } from "../cognitive/CostEstimator.js";
+import {
+  estimateCostFromChars,
+  estimateCostFromUsage,
+  estimateUsageCostTelemetry,
+  resolvePricing,
+} from "../cognitive/CostEstimator.js";
 import { getGlobalWorkspaceDir } from "../runtime/StoragePaths.js";
 import { resolveAgentConfig } from "../agents/AgentResolver.js";
 import { selectPhaseAgents, type PhaseAgentSelection } from "../agents/PhaseAgentSelector.js";
+import type {
+  PhaseTelemetryInput,
+  RunArtifactReference,
+  RunDisposition,
+  RunFailureClass,
+} from "../runtime/RunTelemetryTypes.js";
 
 interface ParsedArgs {
   workspaceRoot?: string;
@@ -77,6 +90,7 @@ interface ParsedArgs {
   model?: string;
   apiKey?: string;
   baseUrl?: string;
+  workflowProfile?: string;
   taskFile?: string;
   configPath?: string;
   docdexBaseUrl?: string;
@@ -249,6 +263,11 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg === "--base-url" && next) {
       parsed.baseUrl = next;
+      i += 1;
+      continue;
+    }
+    if ((arg === "--workflow-profile" || arg === "--profile") && next) {
+      parsed.workflowProfile = next;
       i += 1;
       continue;
     }
@@ -469,6 +488,40 @@ const formatCost = (cost?: number): string => {
   return `$${cost.toFixed(4)}`;
 };
 
+type SummaryPhase = "retrieve" | "plan" | "act" | "verify";
+
+const toSummaryPhase = (phase: string): SummaryPhase | undefined => {
+  if (phase === "librarian" || phase === "retrieve") return "retrieve";
+  if (phase === "architect" || phase === "plan") return "plan";
+  if (phase === "builder" || phase === "act") return "act";
+  if (phase === "critic" || phase === "verify" || phase === "architect_review") return "verify";
+  return undefined;
+};
+
+const uniqueStrings = (values: string[]): string[] =>
+  Array.from(
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)),
+  ).sort((left, right) => left.localeCompare(right));
+
+const inferFailureClass = (
+  stage: string | undefined,
+  reasons: string[],
+  errorMessage?: string,
+): RunFailureClass => {
+  const haystack = [stage ?? "", ...reasons, errorMessage ?? ""].join(" ").toLowerCase();
+  if (haystack.includes("verification")) return "verification_failure";
+  if (haystack.includes("policy") || haystack.includes("guardrail")) return "policy_failure";
+  if (haystack.includes("safety")) return "safety_failure";
+  if (haystack.includes("patch")) return "patch_failure";
+  if (haystack.includes("provider") || haystack.includes("rate limit") || haystack.includes("auth")) {
+    return "provider_failure";
+  }
+  if (haystack.includes("execution") || haystack.includes("runner") || haystack.includes("timeout")) {
+    return "execution_failure";
+  }
+  return "unknown_failure";
+};
+
 const summarizeContext = (context: ContextBundle | undefined, fallbackContent?: string) => {
   const files = context?.files ?? [];
   const focusCount = files.filter((file) => file.role === "focus").length;
@@ -552,7 +605,11 @@ const createStreamState = (flushEveryMs: number, outputStream?: NodeJS.WritableS
     }
     if (event.type === "tool_result") {
       const outcome = event.ok === false ? errTag() : okTag();
-      writeStatus(`${indent}${toolTag(event.name)} ${outcome}`);
+      const suffix =
+        event.ok === false && event.errorCode
+          ? ` ${colorize("31", `(${event.errorCode}${event.retryable ? ",retryable" : ""})`)}`
+          : "";
+      writeStatus(`${indent}${toolTag(event.name)} ${outcome}${suffix}`);
       return;
     }
     if (event.type === "error") {
@@ -776,6 +833,189 @@ const isTrivialRequest = (request: string): boolean => {
   return shortEnough && signals.some((signal) => normalized.includes(signal));
 };
 
+const buildWorkflowTaskInput = (
+  request: string,
+  profile: ResolvedWorkflowProfile | undefined,
+): string => {
+  if (!profile || profile.name === "run") {
+    return request;
+  }
+  const outputInstruction =
+    profile.outputContract === "patch_summary"
+      ? "Return a patch/change-focused summary with changed files and verification notes."
+      : profile.outputContract === "review_findings"
+        ? "Return risk/findings-oriented review output. Do not propose write-oriented changes."
+        : profile.outputContract === "verification_summary"
+          ? "Return verification-first output with test/validation summary."
+          : "Return explanation-first output. Do not propose write-oriented changes.";
+  const writePolicy = profile.allowWrites ? "writes_allowed" : "no_writes";
+  return [
+    `WORKFLOW PROFILE: ${profile.name}`,
+    `OUTPUT CONTRACT: ${profile.outputContract}`,
+    `VERIFICATION POLICY: ${profile.verificationPolicy}`,
+    `VERIFICATION MIN CHECKS: ${profile.verificationMinimumChecks}`,
+    `VERIFICATION HIGH-CONFIDENCE ENFORCEMENT: ${profile.verificationEnforceHighConfidence ? "strict" : "off"}`,
+    `WRITE POLICY: ${writePolicy}`,
+    outputInstruction,
+    "",
+    "USER TASK:",
+    request,
+  ].join("\n");
+};
+
+const collectPhaseDurations = (artifacts: PhaseArtifactV1[]): Partial<Record<SummaryPhase, number>> => {
+  const durations: Partial<Record<SummaryPhase, number>> = {};
+  for (const artifact of artifacts) {
+    if (artifact.kind !== "summary") continue;
+    const phase = toSummaryPhase(artifact.phase);
+    if (!phase) continue;
+    if (typeof artifact.duration_ms !== "number" || !Number.isFinite(artifact.duration_ms)) continue;
+    durations[phase] = artifact.duration_ms;
+  }
+  return durations;
+};
+
+const buildArtifactReferences = (
+  phaseArtifactEvents: Array<{ phase?: string; kind?: string; path?: string }>,
+  requiredArtifacts: string[],
+): { references: RunArtifactReference[]; missing: string[] } => {
+  const references: RunArtifactReference[] = [];
+  for (const event of phaseArtifactEvents) {
+    if (!event.phase || !event.kind) continue;
+    const phase = toSummaryPhase(event.phase) ?? event.phase;
+    references.push({
+      phase,
+      kind: event.kind,
+      path: event.path ?? null,
+      status: "present",
+    });
+  }
+  const seen = new Set(references.map((entry) => `${entry.phase}:${entry.kind}`));
+  const missing: string[] = [];
+  for (const required of requiredArtifacts) {
+    if (seen.has(required)) continue;
+    missing.push(required);
+    const [phase, kind] = required.split(":");
+    references.push({
+      phase: phase ?? "unknown",
+      kind: kind ?? "unknown",
+      status: "missing",
+      reason_code: "artifact_not_emitted",
+    });
+  }
+  references.sort((left, right) =>
+    `${left.phase}:${left.kind}:${left.status}`.localeCompare(
+      `${right.phase}:${right.kind}:${right.status}`,
+    ));
+  return { references, missing: uniqueStrings(missing) };
+};
+
+const buildQualityDimensions = (
+  artifactReferences: RunArtifactReference[],
+  disposition: RunDisposition,
+): {
+  plan: "available" | "missing" | "degraded";
+  retrieval: "available" | "missing" | "degraded";
+  patch: "available" | "missing" | "degraded";
+  verification: "available" | "missing" | "degraded";
+  final_disposition: "available";
+} => {
+  const hasPresent = (phase: SummaryPhase) =>
+    artifactReferences.some((entry) => entry.phase === phase && entry.status === "present");
+  const retrieval = hasPresent("retrieve")
+    ? "available"
+    : disposition === "pass"
+      ? "degraded"
+      : "missing";
+  const plan = hasPresent("plan")
+    ? "available"
+    : disposition === "pass"
+      ? "degraded"
+      : "missing";
+  const patch = hasPresent("act")
+    ? "available"
+    : disposition === "pass"
+      ? "degraded"
+      : "missing";
+  const verification = hasPresent("verify")
+    ? "available"
+    : disposition === "pass"
+      ? "degraded"
+      : "missing";
+  return {
+    plan,
+    retrieval,
+    patch,
+    verification,
+    final_disposition: "available",
+  };
+};
+
+const buildPhaseTelemetry = (params: {
+  runId: string;
+  phaseProviders: Partial<Record<SummaryPhase, { provider?: string; model?: string }>>;
+  phaseDurations: Partial<Record<SummaryPhase, number>>;
+  usage?: ProviderUsage;
+  pricingSpec?: ReturnType<typeof resolvePricing>["pricing"];
+  pricingSource?: string;
+}): PhaseTelemetryInput[] => {
+  const phaseOrder: SummaryPhase[] = ["retrieve", "plan", "act", "verify"];
+  const usage = params.usage;
+  const usageTotals = usage
+    ? {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        total_tokens:
+          usage.totalTokens
+          ?? ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) || undefined),
+      }
+    : undefined;
+  const costTelemetry = estimateUsageCostTelemetry(usage, params.pricingSpec);
+  return phaseOrder
+    .filter((phase) => {
+      const providerInfo = params.phaseProviders[phase];
+      return Boolean(providerInfo?.provider || providerInfo?.model || params.phaseDurations[phase] !== undefined);
+    })
+    .map((phase) => {
+      const providerInfo = params.phaseProviders[phase] ?? {};
+      if (phase === "act") {
+        return {
+          run_id: params.runId,
+          phase,
+          provider: providerInfo.provider,
+          model: providerInfo.model,
+          duration_ms: params.phaseDurations[phase],
+          usage: usageTotals,
+          cost:
+            costTelemetry.costUsd !== undefined
+              ? {
+                  usd: costTelemetry.costUsd,
+                  source: costTelemetry.source,
+                  pricing_source: params.pricingSource,
+                }
+              : undefined,
+          missing_usage_reason:
+            usageTotals === undefined
+              ? "usage_missing"
+              : undefined,
+          missing_cost_reason:
+            costTelemetry.costUsd === undefined
+              ? costTelemetry.reasonCode ?? "cost_missing"
+              : undefined,
+        };
+      }
+      return {
+        run_id: params.runId,
+        phase,
+        provider: providerInfo.provider,
+        model: providerInfo.model,
+        duration_ms: params.phaseDurations[phase],
+        missing_usage_reason: "provider_usage_not_exposed",
+        missing_cost_reason: "usage_missing",
+      };
+    });
+};
+
 class StubProvider implements Provider {
   name = "stub";
 
@@ -826,7 +1066,7 @@ class StubProvider implements Provider {
             "- Update src/index.ts to implement the requested behavior change.",
             "RISK: low scoped single-file update.",
             "VERIFY:",
-            "- Run unit/integration tests that cover src/index.ts behavior.",
+            "- echo ok",
           ].join("\n"),
         },
       };
@@ -970,6 +1210,9 @@ export class RunCommand {
     if (model) cliConfig.model = model;
     if (apiKey) cliConfig.apiKey = apiKey;
     if (baseUrl) cliConfig.baseUrl = baseUrl;
+    if (parsed.workflowProfile) {
+      cliConfig.workflow = { profile: parsed.workflowProfile };
+    }
 
     const docdexOverrides: Record<string, string> = {};
     if (parsed.docdexBaseUrl) docdexOverrides.baseUrl = parsed.docdexBaseUrl;
@@ -1099,9 +1342,26 @@ export class RunCommand {
     if (!taskInput.trim()) {
       throw new Error("Task input is empty; provide --task <file>, inline text, or pass text via stdin.");
     }
+    const workflowProfile = config.resolvedWorkflowProfile;
+    const writesAllowed = workflowProfile?.allowWrites !== false;
+    const workflowTaskInput = buildWorkflowTaskInput(taskInput, workflowProfile);
 
     const runId = config.runId ?? randomUUID();
-    const runContext = new RunContext(runId, config.workspaceRoot);
+    const runContext = new RunContext(runId, config.workspaceRoot, {
+      request: workflowTaskInput,
+      command: config.command,
+      workspaceRoot: config.workspaceRoot,
+      smart: config.smart,
+      provider: config.provider,
+      model: config.model,
+      builderMode: config.builder.mode,
+      maxRetries: config.limits.maxRetries,
+      maxContextRefreshes: config.context.maxContextRefreshes,
+      maxSteps: config.limits.maxSteps,
+      maxToolCalls: config.limits.maxToolCalls,
+      maxTokens: config.limits.maxTokens,
+      timeoutMs: config.limits.timeoutMs,
+    });
     const storageRoot = getGlobalWorkspaceDir(config.workspaceRoot);
     const lock = new WorkspaceLock(storageRoot, runId);
     await lock.acquire();
@@ -1129,6 +1389,7 @@ export class RunCommand {
     });
     await logger.log("run_start", {
       runId,
+      fingerprint: runContext.fingerprint ?? null,
       command: config.command,
       commandRunId: config.commandRunId,
       jobId: config.jobId,
@@ -1139,11 +1400,170 @@ export class RunCommand {
       agentSlug: config.agentSlug,
       provider: config.provider,
       model: config.model,
+      workflow: workflowProfile
+        ? {
+            name: workflowProfile.name,
+            source: workflowProfile.source,
+            command: workflowProfile.command,
+            outputContract: workflowProfile.outputContract,
+            verificationPolicy: workflowProfile.verificationPolicy,
+            verificationMinimumChecks: workflowProfile.verificationMinimumChecks,
+            verificationEnforceHighConfidence: workflowProfile.verificationEnforceHighConfidence,
+            allowWrites: workflowProfile.allowWrites,
+          }
+        : null,
+      policy: {
+        allowShell: config.tools.allowShell ?? false,
+        allowDestructiveOperations: config.tools.allowDestructiveOperations ?? false,
+        allowWrites: writesAllowed,
+      },
     });
+
+    let finalMessageContent = "";
+    let usage: ProviderUsage | undefined;
+    let toolCallsExecuted = 0;
+    let pricingSpec: ReturnType<typeof resolvePricing>["pricing"];
+    let pricingSource: string | undefined;
+    let estimatedCost: number | undefined;
+    let estimatedTokens: number | undefined;
+    let estimatedChars: number | undefined;
+    let estimatedFocus = 0;
+    let estimatedPeriphery = 0;
+    let smartRuntimeSummary: Record<string, unknown> | undefined;
+    let summaryDisposition: RunDisposition = "pass";
+    let summaryFailureClass: RunFailureClass | undefined;
+    let summaryReasonCodes: string[] = [];
+    let summaryFailureStage: string | undefined;
+    let summaryRetryable: boolean | null | undefined;
+    let summaryVerification: VerificationReport | undefined;
+    const phaseProviders: Partial<Record<SummaryPhase, { provider?: string; model?: string }>> = {};
+    let summaryEmitted = false;
+
+    const emitRunSummary = async (): Promise<void> => {
+      const reader = new RunLogReader(config.workspaceRoot, config.logging.directory);
+      const phaseArtifacts = await reader.getPhaseArtifacts(runId);
+      const phaseArtifactQuery = await reader.queryEvents({
+        filters: { run_id: runId, event_type: "phase_artifact" },
+        limit: 2000,
+        sort: "asc",
+      });
+      const phaseArtifactEvents = phaseArtifactQuery.events
+        .map((event) => {
+          const data = event.data as Record<string, unknown>;
+          return {
+            phase: typeof data.phase === "string" ? data.phase : undefined,
+            kind: typeof data.kind === "string" ? data.kind : undefined,
+            path: typeof data.path === "string" ? data.path : undefined,
+          };
+        });
+      const requiredArtifacts = config.smart
+        ? ["retrieve:summary", "plan:summary", "act:summary", "verify:verification_report"]
+        : [];
+      const { references: artifactReferences, missing } = buildArtifactReferences(
+        phaseArtifactEvents,
+        requiredArtifacts,
+      );
+      const phaseDurations = collectPhaseDurations(phaseArtifacts);
+      const phaseTelemetry = buildPhaseTelemetry({
+        runId,
+        phaseProviders,
+        phaseDurations,
+        usage,
+        pricingSpec,
+        pricingSource,
+      });
+      for (const telemetry of phaseTelemetry) {
+        await logger.logPhaseTelemetry(telemetry);
+      }
+      const actualCost = estimateCostFromUsage(usage, pricingSpec);
+      const finalReasonCodes = uniqueStrings(summaryReasonCodes);
+      const finalFailureClass =
+        summaryDisposition === "pass"
+          ? undefined
+          : summaryFailureClass
+            ?? inferFailureClass(summaryFailureStage, finalReasonCodes);
+      const verificationSummary =
+        summaryVerification
+          ? {
+              outcome: summaryVerification.outcome,
+              reasonCodes: summaryVerification.reason_codes,
+              policy: summaryVerification.policy,
+              totals: summaryVerification.totals,
+            }
+          : (smartRuntimeSummary as { verification?: Record<string, unknown> } | undefined)?.verification
+            ?? null;
+      await logger.logRunSummary({
+        run_id: runId,
+        runId,
+        fingerprint: runContext.fingerprint ?? null,
+        toolCallsExecuted,
+        touchedFiles: runContext.getTouchedFiles(),
+        durationMs: Date.now() - runContext.startedAt,
+        usage,
+        costEstimate: {
+          charCount: estimatedChars,
+          estimatedTokens,
+          estimatedCost,
+          pricingSource,
+        },
+        actualCost,
+        budget: {
+          maxSteps: config.limits.maxSteps,
+          maxToolCalls: config.limits.maxToolCalls,
+          maxTokens: config.limits.maxTokens ?? null,
+          timeoutMs: config.limits.timeoutMs ?? null,
+          consumedDurationMs: Date.now() - runContext.startedAt,
+          consumedToolCalls: toolCallsExecuted,
+        },
+        quality_dimensions: buildQualityDimensions(artifactReferences, summaryDisposition),
+        final_disposition: {
+          status: summaryDisposition,
+          failure_class: finalFailureClass,
+          reason_codes: finalReasonCodes,
+          stage: summaryFailureStage,
+          retryable: summaryRetryable ?? null,
+        },
+        artifact_references: artifactReferences,
+        phase_telemetry: phaseTelemetry,
+        missing_artifacts: missing,
+        smartRuntime: smartRuntimeSummary ?? null,
+        verification: verificationSummary,
+        workflow: workflowProfile
+          ? {
+              name: workflowProfile.name,
+              source: workflowProfile.source,
+              command: workflowProfile.command,
+              outputContract: workflowProfile.outputContract,
+              verificationPolicy: workflowProfile.verificationPolicy,
+              verificationMinimumChecks: workflowProfile.verificationMinimumChecks,
+              verificationEnforceHighConfidence: workflowProfile.verificationEnforceHighConfidence,
+              allowWrites: workflowProfile.allowWrites,
+            }
+          : null,
+        policy: {
+          allowShell: config.tools.allowShell ?? false,
+          allowDestructiveOperations: config.tools.allowDestructiveOperations ?? false,
+          allowWrites: writesAllowed,
+        },
+        command: config.command,
+        commandRunId: config.commandRunId,
+        jobId: config.jobId,
+        project: config.project,
+        taskId: config.taskId,
+        task_id: config.taskId,
+        taskKey: config.taskKey,
+        agentId: config.agentId,
+        agentSlug: config.agentSlug,
+        smart: config.smart ?? false,
+      });
+    };
 
     try {
       const registry = new ToolRegistry();
       const registerIfEnabled = (tool: ToolDefinition) => {
+        if (!writesAllowed && tool.name === "write_file") {
+          return;
+        }
         if (isToolEnabled(tool.name, config.tools)) {
           registry.register(tool);
         }
@@ -1166,20 +1586,10 @@ export class RunCommand {
         recordTouchedFile: (filePath: string) => runContext.recordTouchedFile(filePath),
         allowOutsideWorkspace: config.tools.allowOutsideWorkspace,
         allowShell: config.tools.allowShell,
+        allowDestructiveOperations: config.tools.allowDestructiveOperations,
         shellAllowlist: config.tools.shellAllowlist,
       };
       const streamState = createStreamState(config.streaming.flushEveryMs, outputStream);
-
-      let finalMessageContent = "";
-      let usage;
-      let toolCallsExecuted = 0;
-      let pricingSpec: ReturnType<typeof resolvePricing>["pricing"];
-      let pricingSource: string | undefined;
-      let estimatedCost: number | undefined;
-      let estimatedTokens: number | undefined;
-      let estimatedChars: number | undefined;
-      let estimatedFocus = 0;
-      let estimatedPeriphery = 0;
 
       if (config.smart) {
         const hasRoutingAgent = Object.values(config.routing ?? {}).some((phase) =>
@@ -1385,6 +1795,22 @@ export class RunCommand {
           critic: criticRoute,
           interpreter: interpreterPhaseRoute,
         };
+        phaseProviders.retrieve = {
+          provider: librarianRoute.provider,
+          model: librarianRoute.config.model,
+        };
+        phaseProviders.plan = {
+          provider: architectRoute.provider,
+          model: architectRoute.config.model,
+        };
+        phaseProviders.act = {
+          provider: builderRoute.provider,
+          model: builderRoute.config.model,
+        };
+        phaseProviders.verify = {
+          provider: criticRoute.provider,
+          model: criticRoute.config.model,
+        };
 
         const librarianProvider = createProvider(librarianRoute.provider, librarianRoute.config);
         const architectProvider = createProvider(architectRoute.provider, architectRoute.config);
@@ -1490,7 +1916,7 @@ export class RunCommand {
         if (deepScanPreset) {
           contextAssembler.applyDeepScanPreset();
         }
-        const preflightContext = await contextAssembler.assemble(taskInput);
+        const preflightContext = await contextAssembler.assemble(workflowTaskInput);
         const pricingResolution = resolvePricing(
           config.cost.pricingOverrides,
           builderRoute.provider,
@@ -1498,7 +1924,7 @@ export class RunCommand {
         );
         pricingSpec = pricingResolution.pricing;
         pricingSource = pricingResolution.source;
-        const summary = summarizeContext(preflightContext, taskInput);
+        const summary = summarizeContext(preflightContext, workflowTaskInput);
         estimatedFocus = summary.focusCount;
         estimatedPeriphery = summary.peripheryCount;
         const estimate = estimateCostFromChars(
@@ -1552,7 +1978,14 @@ export class RunCommand {
         const needsPatchApplier =
           config.builder.mode === "patch_json" || config.builder.mode === "freeform" || config.builder.mode === "tool_calls";
         const patchApplier = needsPatchApplier
-          ? new PatchApplier({ workspaceRoot: config.workspaceRoot, validateFile: patchValidator })
+          ? new PatchApplier({
+              workspaceRoot: config.workspaceRoot,
+              validateFile: patchValidator,
+              policy: {
+                allowDestructiveOperations: config.tools.allowDestructiveOperations ?? false,
+                allowWrites: writesAllowed,
+              },
+            })
           : undefined;
         const wantsInterpreter =
           config.builder.mode === "freeform" || config.builder.fallbackToInterpreter === true;
@@ -1602,6 +2035,7 @@ export class RunCommand {
           patchApplier,
           interpreter: patchInterpreter,
           fallbackToInterpreter: config.builder.fallbackToInterpreter ?? false,
+          allowDestructiveOperations: config.tools.allowDestructiveOperations ?? false,
           stream: config.streaming.enabled,
           onEvent: streamState.onEvent,
           onToken: streamState.onToken,
@@ -1614,9 +2048,20 @@ export class RunCommand {
           shellAllowlist: config.tools.shellAllowlist ?? [],
           workspaceRoot: config.workspaceRoot,
           docdexClient,
+          defaultPolicyName: workflowProfile?.verificationPolicy,
+          defaultMinimumChecks: workflowProfile?.verificationMinimumChecks,
+          defaultEnforceHighConfidence: workflowProfile?.verificationEnforceHighConfidence,
         });
-        const criticEvaluator = new CriticEvaluator(validator, { model: criticRoute.config.model });
-        const memoryWriteback = new MemoryWriteback(docdexClient, { agentId: profileAgentId });
+        const criticEvaluator = new CriticEvaluator(validator, {
+          model: criticRoute.config.model,
+          logger,
+        });
+        const memoryWriteback = new MemoryWriteback(docdexClient, {
+          agentId: profileAgentId,
+          workspaceRoot: config.workspaceRoot,
+          learning: config.learning,
+          logger,
+        });
         const phaseFallbackCounts: Partial<Record<PipelinePhase, number>> = {};
         const maxPhaseFallbacks = 3;
         const recoverPhaseProvider = async (
@@ -1737,6 +2182,13 @@ export class RunCommand {
             config.routing,
             true,
           );
+          const mappedPhase = toSummaryPhase(phase);
+          if (mappedPhase) {
+            phaseProviders[mappedPhase] = {
+              provider: nextRoute.provider,
+              model: nextRoute.config.model,
+            };
+          }
           if (phase === "builder") {
             const priorBuilderMode = config.builder.mode;
             if (selectedBuilderMode !== priorBuilderMode) {
@@ -1800,25 +2252,62 @@ export class RunCommand {
           logger,
           contextManager,
           laneScope,
+          verificationPolicyName: workflowProfile?.verificationPolicy,
+          minimumVerificationChecks: workflowProfile?.verificationMinimumChecks,
+          enforceVerificationHighConfidence: workflowProfile?.verificationEnforceHighConfidence,
           onEvent: streamState.onEvent,
           onPhaseProviderFailure: recoverPhaseProvider,
         });
 
-        const result = await pipeline.run(taskInput);
+        const result = await pipeline.run(workflowTaskInput);
         for (const file of result.builderResult.touchedFiles ?? []) {
           runContext.recordTouchedFile(file);
         }
+        smartRuntimeSummary = {
+          attempts: result.attempts,
+          maxRetries: config.limits.maxRetries,
+          maxContextRefreshes: config.context.maxContextRefreshes,
+          contextRefreshTerminationReason: result.contextRefreshTerminationReason ?? null,
+          phaseTrace: result.phaseTrace,
+          verification: result.verification
+            ? {
+                outcome: result.verification.outcome,
+                reasonCodes: result.verification.reason_codes,
+                highConfidence:
+                  result.criticResult.report?.high_confidence
+                  ?? result.criticResult.high_confidence
+                  ?? false,
+                policy: result.verification.policy,
+                totals: result.verification.totals,
+              }
+            : null,
+        };
+        summaryVerification = result.verification;
         if (result.criticResult.status !== "PASS") {
           const failureReasons = result.criticResult.reasons?.length
             ? result.criticResult.reasons
             : ["smart_pipeline_failed"];
+          summaryDisposition = "fail";
+          summaryFailureStage = "smart_pipeline";
+          summaryRetryable = result.criticResult.retryable ?? null;
+          summaryReasonCodes = uniqueStrings(failureReasons);
+          summaryFailureClass = inferFailureClass(summaryFailureStage, summaryReasonCodes);
           await logger.log("run_failed", {
             stage: "smart_pipeline",
             reasons: failureReasons,
+            failure_class: summaryFailureClass,
             retryable: result.criticResult.retryable ?? null,
             report: result.criticResult.report ?? null,
           });
           throw new Error(`Smart pipeline failed: ${failureReasons.join("; ")}`);
+        }
+        if (result.verification && result.verification.outcome !== "verified_passed") {
+          summaryDisposition = "degraded";
+          summaryFailureStage = "verify";
+          summaryReasonCodes = uniqueStrings(
+            result.verification.reason_codes.map((code) => `verification_${code}`),
+          );
+          summaryFailureClass = "verification_failure";
         }
         finalMessageContent = result.builderResult.finalMessage.content;
         usage = result.builderResult.usage;
@@ -1831,7 +2320,11 @@ export class RunCommand {
         );
         pricingSpec = pricingResolution.pricing;
         pricingSource = pricingResolution.source;
-        const summary = summarizeContext(undefined, taskInput);
+        phaseProviders.act = {
+          provider: config.provider,
+          model: config.model,
+        };
+        const summary = summarizeContext(undefined, workflowTaskInput);
         estimatedFocus = summary.focusCount;
         estimatedPeriphery = summary.peripheryCount;
         const estimate = estimateCostFromChars(
@@ -1887,7 +2380,7 @@ export class RunCommand {
           logger,
         });
 
-        const result = await runner.run([{ role: "user", content: taskInput }]);
+        const result = await runner.run([{ role: "user", content: workflowTaskInput }]);
         finalMessageContent = result.finalMessage.content;
         usage = result.usage;
         toolCallsExecuted = result.toolCallsExecuted;
@@ -1904,31 +2397,11 @@ export class RunCommand {
         console.log(finalMessageContent);
         streamState.writeOutput(`${finalMessageContent}\n`);
       }
-      const actualCost = estimateCostFromUsage(usage, pricingSpec);
-      await logger.log("run_summary", {
-        toolCallsExecuted,
-        touchedFiles: runContext.getTouchedFiles(),
-        durationMs: Date.now() - runContext.startedAt,
-        usage,
-        costEstimate: {
-          charCount: estimatedChars,
-          estimatedTokens,
-          estimatedCost,
-          pricingSource,
-        },
-        actualCost,
-        command: config.command,
-        commandRunId: config.commandRunId,
-        jobId: config.jobId,
-        project: config.project,
-        taskId: config.taskId,
-        taskKey: config.taskKey,
-        agentId: config.agentId,
-        agentSlug: config.agentSlug,
-        smart: config.smart ?? false,
-      });
+      await emitRunSummary();
+      summaryEmitted = true;
       const meta = {
         runId,
+        fingerprint: runContext.fingerprint ?? null,
         logPath: logger.logPath,
         outputLogPath,
         touchedFiles: runContext.getTouchedFiles(),
@@ -1940,12 +2413,46 @@ export class RunCommand {
         taskKey: config.taskKey,
         agentId: config.agentId,
         agentSlug: config.agentSlug,
+        workflow: workflowProfile
+          ? {
+              name: workflowProfile.name,
+              source: workflowProfile.source,
+              outputContract: workflowProfile.outputContract,
+              allowWrites: workflowProfile.allowWrites,
+            }
+          : null,
       };
       try {
         process.stderr.write(`CODALI_RUN_META ${JSON.stringify(meta)}\n`);
       } catch {
         // ignore stderr write failures
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      summaryDisposition = "fail";
+      summaryFailureStage = summaryFailureStage ?? "run_command";
+      summaryReasonCodes = summaryReasonCodes.length > 0 ? summaryReasonCodes : uniqueStrings([message]);
+      summaryFailureClass = summaryFailureClass ?? inferFailureClass(
+        summaryFailureStage,
+        summaryReasonCodes,
+        message,
+      );
+      try {
+        await logger.log("run_failed", {
+          stage: summaryFailureStage,
+          reasons: summaryReasonCodes,
+          failure_class: summaryFailureClass,
+          retryable: summaryRetryable ?? null,
+          error: message,
+        });
+        if (!summaryEmitted) {
+          await emitRunSummary();
+          summaryEmitted = true;
+        }
+      } catch {
+        // Ignore secondary logging failures.
+      }
+      throw error;
     } finally {
       outputStream.end();
       unregisterSignals();

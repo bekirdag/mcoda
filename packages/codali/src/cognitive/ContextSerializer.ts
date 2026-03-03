@@ -64,6 +64,22 @@ const WARNING_GLOSSARY: Record<
     severity: "warn",
     message: "Docdex stats failed; index status may be unknown.",
   },
+  docdex_batch_search_failed: {
+    severity: "warn",
+    message: "Docdex batch search failed; sequential fallback was used.",
+  },
+  docdex_rerank_failed: {
+    severity: "warn",
+    message: "Docdex rerank failed; baseline ranking was used.",
+  },
+  docdex_batch_search_applied: {
+    severity: "info",
+    message: "Docdex batch search path was applied.",
+  },
+  docdex_rerank_applied: {
+    severity: "info",
+    message: "Docdex rerank path was applied.",
+  },
   docdex_tree_failed: {
     severity: "warn",
     message: "Repo tree could not be retrieved; repo map may be missing.",
@@ -228,6 +244,87 @@ const formatResearchSummary = (bundle: ContextBundle): string[] => {
     ...(research.evidence?.warnings ?? []),
   ];
   lines.push(`- Warnings: ${formatSummaryList(warnings)}`);
+  lines.push("");
+  return lines;
+};
+
+const formatRetrievalReport = (bundle: ContextBundle): string[] => {
+  const report = bundle.retrieval_report;
+  if (!report) return [];
+  const lines: string[] = [];
+  lines.push("RETRIEVAL REPORT:");
+  lines.push(
+    `- Schema: v${report.schema_version}, mode=${report.mode}, confidence=${report.confidence}, disposition=${report.disposition}`,
+  );
+  if (report.preflight.length > 0) {
+    const preflight = report.preflight
+      .map((entry) =>
+        `${entry.check}=${entry.status}${entry.detail ? `(${truncateSummary(entry.detail, 80)})` : ""}`
+      )
+      .join(", ");
+    lines.push(`- Preflight: ${preflight}`);
+  } else {
+    lines.push("- Preflight: none");
+  }
+  lines.push(
+    `- Selection: focus=${report.selection.focus.length}, periphery=${report.selection.periphery.length}, total=${report.selection.all.length}, low_confidence=${report.selection.low_confidence ? "yes" : "no"}`,
+  );
+  if (report.selection.reason_summary.length > 0) {
+    const reasonSummary = report.selection.reason_summary
+      .map((entry) => `${entry.code}=${entry.count}`)
+      .join(", ");
+    lines.push(`- Reason summary: ${reasonSummary}`);
+  } else {
+    lines.push("- Reason summary: none");
+  }
+  if (report.dropped.length > 0) {
+    const dropped = report.dropped
+      .slice(0, SECTION_LIMITS.maxResearchItems)
+      .map((entry) =>
+        `${entry.path ?? "<none>"}:${entry.reason_code}${entry.detail ? `(${truncateSummary(entry.detail, 80)})` : ""}`
+      );
+    const remaining = report.dropped.length - dropped.length;
+    lines.push(
+      `- Dropped: ${dropped.join(" | ")}${remaining > 0 ? ` (+${remaining} more)` : ""}`,
+    );
+  } else {
+    lines.push("- Dropped: none");
+  }
+  if (report.truncated.length > 0) {
+    const truncated = report.truncated
+      .slice(0, SECTION_LIMITS.maxResearchItems)
+      .map((entry) =>
+        `${entry.path}:${entry.reason_code}${entry.detail ? `(${truncateSummary(entry.detail, 80)})` : ""}`
+      );
+    const remaining = report.truncated.length - truncated.length;
+    lines.push(
+      `- Truncated: ${truncated.join(" | ")}${remaining > 0 ? ` (+${remaining} more)` : ""}`,
+    );
+  } else {
+    lines.push("- Truncated: none");
+  }
+  lines.push(`- Unresolved gaps: ${formatSummaryList(report.unresolved_gaps)}`);
+  if (report.tool_execution.length > 0) {
+    const toolSummary = report.tool_execution
+      .map((entry) =>
+        `${entry.tool}=${entry.disposition}${entry.notes ? `(${truncateSummary(entry.notes, 80)})` : ""}`
+      )
+      .join(" | ");
+    lines.push(`- Tool execution: ${toolSummary}`);
+  } else {
+    lines.push("- Tool execution: none");
+  }
+  if (report.capabilities) {
+    const capabilitySummary = Object.entries(report.capabilities.capabilities)
+      .map(([name, status]) => `${name}=${status}`)
+      .join(", ");
+    lines.push(
+      `- Capabilities: source=${report.capabilities.source}, cached=${report.capabilities.cached ? "yes" : "no"}, ${capabilitySummary}`,
+    );
+  } else {
+    lines.push("- Capabilities: unavailable");
+  }
+  lines.push(`- Warnings: ${formatSummaryList(report.warnings)}`);
   lines.push("");
   return lines;
 };
@@ -410,6 +507,35 @@ const formatSearchResults = (bundle: ContextBundle): string[] => {
       const label = hit.path ?? hit.doc_id ?? "hit";
       const score = typeof hit.score === "number" ? ` (score: ${hit.score})` : "";
       lines.push(`  - ${label}${score}`);
+      if (hit.score_breakdown) {
+        const breakdown: string[] = [];
+        if (typeof hit.score_breakdown.query_relevance === "number") {
+          breakdown.push(`query=${hit.score_breakdown.query_relevance}`);
+        }
+        if (typeof hit.score_breakdown.structural_relevance === "number") {
+          breakdown.push(`structural=${hit.score_breakdown.structural_relevance}`);
+        }
+        if (typeof hit.score_breakdown.recency_diff_relevance === "number") {
+          breakdown.push(`recency=${hit.score_breakdown.recency_diff_relevance}`);
+        }
+        if (typeof hit.score_breakdown.total === "number") {
+          breakdown.push(`total=${hit.score_breakdown.total}`);
+        }
+        if (breakdown.length) {
+          lines.push(`    - score_breakdown: ${breakdown.join(", ")}`);
+        }
+      }
+      if (hit.retrieval_explanation?.summary) {
+        lines.push(`    - explanation: ${truncateSummary(hit.retrieval_explanation.summary, 160)}`);
+      }
+      if (hit.provenance) {
+        const anchor = hit.provenance.anchor_kind ?? "unknown";
+        const path = hit.provenance.path ?? hit.provenance.rel_path ?? label;
+        const range = typeof hit.provenance.line_start === "number" && typeof hit.provenance.line_end === "number"
+          ? `:${hit.provenance.line_start}-${hit.provenance.line_end}`
+          : "";
+        lines.push(`    - provenance: ${path}${range} (${anchor})`);
+      }
     }
   }
   lines.push("");
@@ -688,6 +814,7 @@ export const serializeContext = (
   lines.push(...formatProjectSummary(bundle));
   lines.push(...formatRunSummary(bundle));
   lines.push(...formatResearchSummary(bundle));
+  lines.push(...formatRetrievalReport(bundle));
   lines.push("USER REQUEST:");
   lines.push(bundle.request);
   lines.push("");
@@ -737,6 +864,25 @@ export const serializeContext = (
       for (const snippet of bundle.snippets.slice(0, SECTION_LIMITS.maxSnippetEntries)) {
         const label = snippet.path ?? snippet.doc_id ?? "snippet";
         lines.push(`--- ${label} ---`);
+        const metadata: string[] = [];
+        if (typeof snippet.score === "number") metadata.push(`score=${snippet.score}`);
+        if (snippet.snippet_origin) metadata.push(`origin=${snippet.snippet_origin}`);
+        if (snippet.snippet_truncated) metadata.push("snippet_truncated");
+        if (
+          typeof snippet.line_start === "number" &&
+          typeof snippet.line_end === "number"
+        ) {
+          metadata.push(`line_window=${snippet.line_start}-${snippet.line_end}`);
+        }
+        if (snippet.provenance?.anchor_kind) {
+          metadata.push(`anchor_kind=${snippet.provenance.anchor_kind}`);
+        }
+        if (metadata.length) {
+          lines.push(`[meta] ${metadata.join(", ")}`);
+        }
+        if (snippet.retrieval_explanation?.summary) {
+          lines.push(`[why] ${truncateSummary(snippet.retrieval_explanation.summary, 180)}`);
+        }
         lines.push(truncateText(snippet.content, SECTION_LIMITS.maxSnippetChars));
         lines.push("");
       }
