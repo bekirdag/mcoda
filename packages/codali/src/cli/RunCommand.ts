@@ -491,8 +491,8 @@ const formatCost = (cost?: number): string => {
 type SummaryPhase = "retrieve" | "plan" | "act" | "verify";
 
 const toSummaryPhase = (phase: string): SummaryPhase | undefined => {
-  if (phase === "librarian" || phase === "retrieve") return "retrieve";
-  if (phase === "architect" || phase === "plan") return "plan";
+  if (phase === "librarian" || phase === "plan") return "plan";
+  if (phase === "architect" || phase === "retrieve") return "retrieve";
   if (phase === "builder" || phase === "act") return "act";
   if (phase === "critic" || phase === "verify" || phase === "architect_review") return "verify";
   return undefined;
@@ -959,7 +959,7 @@ const buildPhaseTelemetry = (params: {
   pricingSpec?: ReturnType<typeof resolvePricing>["pricing"];
   pricingSource?: string;
 }): PhaseTelemetryInput[] => {
-  const phaseOrder: SummaryPhase[] = ["retrieve", "plan", "act", "verify"];
+  const phaseOrder: SummaryPhase[] = ["plan", "retrieve", "act", "verify"];
   const usage = params.usage;
   const usageTotals = usage
     ? {
@@ -1457,7 +1457,14 @@ export class RunCommand {
           };
         });
       const requiredArtifacts = config.smart
-        ? ["retrieve:summary", "plan:summary", "act:summary", "verify:verification_report"]
+        ? [
+            "retrieve:summary",
+            "retrieve:retrieval_report",
+            "plan:summary",
+            "act:summary",
+            "verify:plan",
+            "verify:verification_report",
+          ]
         : [];
       const { references: artifactReferences, missing } = buildArtifactReferences(
         phaseArtifactEvents,

@@ -9,20 +9,20 @@ import {
 } from "../Types.js";
 
 test("Runtime phase sequence is canonical and stable", { concurrency: false }, () => {
-  assert.deepEqual(RUNTIME_PHASE_SEQUENCE, ["retrieve", "plan", "act", "verify", "answer"]);
+  assert.deepEqual(RUNTIME_PHASE_SEQUENCE, ["plan", "retrieve", "act", "verify", "answer"]);
 });
 
 test("Runtime phase transition metadata carries deterministic fields", { concurrency: false }, () => {
   const metadata: RuntimePhaseTransitionErrorMetadata = {
     code: "CODALI_INVALID_PHASE_TRANSITION",
-    from_phase: "plan",
+    from_phase: "retrieve",
     to_phase: "verify",
     requested_phase: "critic",
-    allowed_next_phases: ["retrieve", "plan", "act"],
-    phase_trace: ["retrieve", "plan"],
+    allowed_next_phases: ["plan", "retrieve", "act"],
+    phase_trace: ["plan", "retrieve"],
   };
   assert.equal(metadata.code, "CODALI_INVALID_PHASE_TRANSITION");
-  assert.deepEqual(metadata.allowed_next_phases, ["retrieve", "plan", "act"]);
+  assert.deepEqual(metadata.allowed_next_phases, ["plan", "retrieve", "act"]);
 });
 
 test("Retry decision contract is machine-readable", { concurrency: false }, () => {

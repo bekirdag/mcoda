@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DocdexClient } from "../docdex/DocdexClient.js";
 import type {
@@ -26,9 +27,36 @@ export interface ValidationRunOptions {
   minimumChecks?: number;
   enforceHighConfidence?: boolean;
   touchedFiles?: string[];
+  onResolvedPlan?: (plan: VerificationResolvedPlan) => Promise<void> | void;
 }
 
 type ValidationTotals = VerificationReport["totals"];
+
+export type VerificationCheckCategory =
+  | "test"
+  | "lint"
+  | "build"
+  | "hook"
+  | "unknown";
+
+export interface VerificationResolvedCheck {
+  step: string;
+  check_type: VerificationCheckType;
+  category: VerificationCheckCategory;
+  targeted: boolean;
+  source: "explicit" | "derived";
+  rationale: string;
+}
+
+export interface VerificationResolvedPlan {
+  schema_version: 1;
+  policy_name: string;
+  source: "explicit" | "derived" | "mixed";
+  touched_files: string[];
+  language_signals: string[];
+  project_signals: string[];
+  checks: VerificationResolvedCheck[];
+}
 
 export interface ValidationResult {
   ok: boolean;
@@ -97,6 +125,213 @@ const detectLanguageSignals = (touchedFiles: string[]): string[] => {
   return [...signals].sort();
 };
 
+const detectProjectSignals = (workspaceRoot: string): string[] => {
+  const has = (file: string): boolean => existsSync(path.join(workspaceRoot, file));
+  const signals = new Set<string>();
+  if (has(".git")) signals.add("git_repo");
+  if (has("package.json")) signals.add("package_json");
+  if (has("pnpm-lock.yaml") || has("pnpm-workspace.yaml")) signals.add("pnpm");
+  if (has("yarn.lock")) signals.add("yarn");
+  if (has("package-lock.json")) signals.add("npm_lock");
+  if (has("pyproject.toml")) signals.add("pyproject");
+  if (has("requirements.txt")) signals.add("requirements_txt");
+  if (has("go.mod")) signals.add("go_mod");
+  if (has("Cargo.toml")) signals.add("cargo_toml");
+  if (has("pom.xml")) signals.add("maven");
+  if (has("build.gradle") || has("build.gradle.kts")) signals.add("gradle");
+  if (has(".pre-commit-config.yaml")) signals.add("pre_commit");
+  return [...signals].sort();
+};
+
+const detectCategoryFromStep = (step: string): VerificationCheckCategory => {
+  if (step.startsWith("docdex:hooks") || step.startsWith("hooks:")) return "hook";
+  if (/\b(test|jest|vitest|pytest|go test|cargo test)\b/i.test(step)) return "test";
+  if (/\b(lint|ruff|eslint)\b/i.test(step)) return "lint";
+  if (/\b(build|tsc|webpack|vite build|cargo build|go build)\b/i.test(step)) return "build";
+  return "unknown";
+};
+
+const normalizeExplicitChecks = (steps: string[]): VerificationResolvedCheck[] =>
+  [...(Array.isArray(steps) ? steps : [])]
+    .map((entry) => entry.trim())
+    .filter((entry, index, all) => entry.length > 0 && all.indexOf(entry) === index)
+    .map((step) => ({
+      step,
+      check_type: detectCheckType(step),
+      category: detectCategoryFromStep(step),
+      targeted: detectTargetedStep(step),
+      source: "explicit" as const,
+      rationale: "plan_verification_step",
+    }));
+
+const chooseNodePackageManager = (projectSignals: string[]): "pnpm" | "yarn" | "npm" => {
+  if (projectSignals.includes("pnpm")) return "pnpm";
+  if (projectSignals.includes("yarn")) return "yarn";
+  return "npm";
+};
+
+const deriveVerificationChecks = (input: {
+  touchedFiles: string[];
+  languageSignals: string[];
+  projectSignals: string[];
+  policyName: string;
+  includeShellChecks: boolean;
+}): VerificationResolvedCheck[] => {
+  const checks: VerificationResolvedCheck[] = [];
+  const touchedFiles = input.touchedFiles.slice(0, 12);
+  const projectSignals = new Set(input.projectSignals);
+  const canRunDocdexHooks = projectSignals.has("git_repo");
+  if (touchedFiles.length > 0 && canRunDocdexHooks) {
+    checks.push({
+      step: `docdex:hooks:${touchedFiles.join(",")}`,
+      check_type: "docdex_hooks",
+      category: "hook",
+      targeted: true,
+      source: "derived",
+      rationale: "touched_files_hook_validation",
+    });
+  }
+
+  const languageSignals = new Set(input.languageSignals);
+  const nodeTouched = input.touchedFiles
+    .filter((file) => /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file))
+    .slice(0, 6);
+  const pythonTouched = input.touchedFiles.filter((file) => /\.py$/i.test(file)).slice(0, 6);
+
+  if (
+    input.includeShellChecks
+    && (
+    languageSignals.has("typescript")
+    || languageSignals.has("javascript")
+    || projectSignals.has("package_json")
+    )
+  ) {
+    const manager = chooseNodePackageManager(input.projectSignals);
+    const testStep = manager === "pnpm"
+      ? nodeTouched.length > 0
+        ? `pnpm test -- --findRelatedTests ${nodeTouched.join(" ")}`
+        : "pnpm test"
+      : manager === "yarn"
+        ? nodeTouched.length > 0
+          ? `yarn test ${nodeTouched.join(" ")}`
+          : "yarn test"
+        : nodeTouched.length > 0
+          ? `npm test -- ${nodeTouched.join(" ")}`
+          : "npm test";
+    checks.push({
+      step: testStep,
+      check_type: "shell",
+      category: "test",
+      targeted: nodeTouched.length > 0,
+      source: "derived",
+      rationale: "language_or_project_signal_node",
+    });
+    checks.push({
+      step: manager === "pnpm" ? "pnpm lint" : manager === "yarn" ? "yarn lint" : "npm run lint",
+      check_type: "shell",
+      category: "lint",
+      targeted: false,
+      source: "derived",
+      rationale: "language_or_project_signal_node",
+    });
+    checks.push({
+      step: manager === "pnpm" ? "pnpm build" : manager === "yarn" ? "yarn build" : "npm run build",
+      check_type: "shell",
+      category: "build",
+      targeted: false,
+      source: "derived",
+      rationale: "language_or_project_signal_node",
+    });
+  }
+
+  if (input.includeShellChecks && (languageSignals.has("python") || projectSignals.has("pyproject"))) {
+    checks.push({
+      step: pythonTouched.length > 0 ? `pytest ${pythonTouched.join(" ")}` : "pytest",
+      check_type: "shell",
+      category: "test",
+      targeted: pythonTouched.length > 0,
+      source: "derived",
+      rationale: "language_or_project_signal_python",
+    });
+    checks.push({
+      step: pythonTouched.length > 0 ? `ruff check ${pythonTouched.join(" ")}` : "ruff check .",
+      check_type: "shell",
+      category: "lint",
+      targeted: pythonTouched.length > 0,
+      source: "derived",
+      rationale: "language_or_project_signal_python",
+    });
+  }
+
+  if (input.includeShellChecks && (languageSignals.has("go") || projectSignals.has("go_mod"))) {
+    checks.push({
+      step: "go test ./...",
+      check_type: "shell",
+      category: "test",
+      targeted: false,
+      source: "derived",
+      rationale: "language_or_project_signal_go",
+    });
+    checks.push({
+      step: "go build ./...",
+      check_type: "shell",
+      category: "build",
+      targeted: false,
+      source: "derived",
+      rationale: "language_or_project_signal_go",
+    });
+  }
+
+  if (input.includeShellChecks && (languageSignals.has("rust") || projectSignals.has("cargo_toml"))) {
+    checks.push({
+      step: "cargo test",
+      check_type: "shell",
+      category: "test",
+      targeted: false,
+      source: "derived",
+      rationale: "language_or_project_signal_rust",
+    });
+    checks.push({
+      step: "cargo build",
+      check_type: "shell",
+      category: "build",
+      targeted: false,
+      source: "derived",
+      rationale: "language_or_project_signal_rust",
+    });
+  }
+
+  if (
+    checks.length === 0
+    && input.policyName.toLowerCase().includes("test")
+    && canRunDocdexHooks
+  ) {
+    checks.push({
+      step: "docdex:hooks",
+      check_type: "docdex_hooks",
+      category: "hook",
+      targeted: false,
+      source: "derived",
+      rationale: "policy_fallback_test_profile",
+    });
+  }
+
+  return checks;
+};
+
+const mergeResolvedChecks = (
+  explicitChecks: VerificationResolvedCheck[],
+  derivedChecks: VerificationResolvedCheck[],
+): VerificationResolvedCheck[] => {
+  const merged = new Map<string, VerificationResolvedCheck>();
+  for (const check of [...explicitChecks, ...derivedChecks]) {
+    if (!merged.has(check.step)) {
+      merged.set(check.step, check);
+    }
+  }
+  return Array.from(merged.values());
+};
+
 export class ValidationRunner {
   private options: ValidationRunnerOptions;
 
@@ -106,24 +341,9 @@ export class ValidationRunner {
 
   async run(steps: string[], runOptions: ValidationRunOptions = {}): Promise<ValidationResult> {
     const errors: string[] = [];
-    const rawSteps = Array.isArray(steps) ? steps : [];
-    const normalizedSteps = [...rawSteps]
-      .map((entry) => entry.trim())
-      .filter((entry, index, all) => all.indexOf(entry) === index);
-    const checks = normalizedSteps
-      .map((step) => ({
-        step,
-        check_type: detectCheckType(step),
-        targeted: detectTargetedStep(step),
-      }))
-      .sort((left, right) =>
-        Number(right.targeted) - Number(left.targeted)
-        || checkTypeOrder(left.check_type) - checkTypeOrder(right.check_type)
-        || left.step.localeCompare(right.step),
-      );
-    const checkResults: VerificationCheckResult[] = [];
     const touchedFiles = (runOptions.touchedFiles ?? []).map((entry) => entry.trim()).filter(Boolean);
     const languageSignals = detectLanguageSignals(touchedFiles);
+    const projectSignals = detectProjectSignals(this.options.workspaceRoot);
     const minimumChecks = Math.max(
       0,
       Math.floor(
@@ -140,6 +360,52 @@ export class ValidationRunner {
         ?? this.options.defaultEnforceHighConfidence
         ?? false,
     };
+    const rawSteps = Array.isArray(steps) ? steps : [];
+    const explicitChecks = normalizeExplicitChecks(rawSteps);
+    const derivedChecks = deriveVerificationChecks({
+      touchedFiles,
+      languageSignals,
+      projectSignals,
+      policyName: policy.policy_name,
+      includeShellChecks: explicitChecks.length === 0,
+    });
+    const mergedChecks = mergeResolvedChecks(explicitChecks, derivedChecks);
+    const checks = mergedChecks
+      .map((entry) => ({
+        ...entry,
+        check_type: detectCheckType(entry.step),
+        targeted: detectTargetedStep(entry.step) || entry.targeted,
+      }))
+      .sort((left, right) =>
+        Number(right.targeted) - Number(left.targeted)
+        || checkTypeOrder(left.check_type) - checkTypeOrder(right.check_type)
+        || left.step.localeCompare(right.step),
+      );
+    const resolvedPlan: VerificationResolvedPlan = {
+      schema_version: 1,
+      policy_name: policy.policy_name,
+      source:
+        explicitChecks.length > 0 && derivedChecks.length > 0
+          ? "mixed"
+          : explicitChecks.length > 0
+            ? "explicit"
+            : "derived",
+      touched_files: touchedFiles,
+      language_signals: languageSignals,
+      project_signals: projectSignals,
+      checks: checks.map((entry) => ({
+        step: entry.step,
+        check_type: entry.check_type,
+        category: entry.category,
+        targeted: entry.targeted,
+        source: entry.source,
+        rationale: entry.rationale,
+      })),
+    };
+    if (runOptions.onResolvedPlan) {
+      await runOptions.onResolvedPlan(resolvedPlan);
+    }
+    const checkResults: VerificationCheckResult[] = [];
 
     const pushResult = (entry: VerificationCheckResult): void => {
       checkResults.push(entry);
@@ -318,6 +584,8 @@ export class ValidationRunner {
       totals,
       touched_files: touchedFiles,
       language_signals: languageSignals,
+      project_signals: projectSignals,
+      resolved_checks_source: resolvedPlan.source,
     };
 
     return {

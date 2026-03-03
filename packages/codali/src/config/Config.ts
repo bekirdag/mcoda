@@ -285,7 +285,7 @@ export const DEFAULT_WORKFLOW_PROFILES: Record<WorkflowProfileName, WorkflowProf
   review: {
     name: "review",
     description: "Analyze risks/findings without applying write-oriented changes by default.",
-    smart: false,
+    smart: true,
     builderMode: "patch_json",
     fallbackToInterpreter: true,
     retryBudget: 2,
@@ -298,7 +298,7 @@ export const DEFAULT_WORKFLOW_PROFILES: Record<WorkflowProfileName, WorkflowProf
   explain: {
     name: "explain",
     description: "Produce explanation-first output without applying write-oriented changes by default.",
-    smart: false,
+    smart: true,
     builderMode: "patch_json",
     fallbackToInterpreter: true,
     retryBudget: 2,
@@ -311,7 +311,7 @@ export const DEFAULT_WORKFLOW_PROFILES: Record<WorkflowProfileName, WorkflowProf
   test: {
     name: "test",
     description: "Produce verification-first output without applying write-oriented changes by default.",
-    smart: false,
+    smart: true,
     builderMode: "patch_json",
     fallbackToInterpreter: true,
     retryBudget: 2,

@@ -324,7 +324,7 @@ test("loadConfig allows run command workflow override from CLI", { concurrency: 
 
   assert.equal(config.resolvedWorkflowProfile?.name, "explain");
   assert.equal(config.resolvedWorkflowProfile?.source, "cli");
-  assert.equal(config.smart, false);
+  assert.equal(config.smart, true);
 });
 
 test("loadConfig supports verification policy minimum/high-confidence profile overrides", { concurrency: false }, async () => {
