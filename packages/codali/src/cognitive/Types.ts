@@ -470,11 +470,13 @@ export interface VerificationReport {
   };
   touched_files?: string[];
   language_signals?: string[];
+  project_signals?: string[];
+  resolved_checks_source?: "explicit" | "derived" | "mixed";
 }
 
 export const RUNTIME_PHASE_SEQUENCE = [
-  "retrieve",
   "plan",
+  "retrieve",
   "act",
   "verify",
   "answer",

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { ValidationRunner } from "../ValidationRunner.js";
 
 test("ValidationRunner skips shell steps when shell validation is disabled", { concurrency: false }, async () => {
@@ -103,4 +106,58 @@ test("ValidationRunner classifies timed-out checks", { concurrency: false }, asy
   });
   assert.equal(result.outcome, "verified_failed");
   assert.ok(result.reason_codes.includes("verification_command_timeout"));
+});
+
+test("ValidationRunner resolves deterministic derived verification plans", { concurrency: false }, async () => {
+  const runner = new ValidationRunner({
+    allowShell: false,
+    shellAllowlist: [],
+    workspaceRoot: process.cwd(),
+  });
+  let firstPlan: unknown;
+  let secondPlan: unknown;
+  const first = await runner.run([], {
+    policyName: "test",
+    touchedFiles: ["src/index.ts"],
+    onResolvedPlan: (plan) => {
+      firstPlan = plan;
+    },
+  });
+  const second = await runner.run([], {
+    policyName: "test",
+    touchedFiles: ["src/index.ts"],
+    onResolvedPlan: (plan) => {
+      secondPlan = plan;
+    },
+  });
+
+  assert.deepEqual(firstPlan, secondPlan);
+  assert.equal(first.report.resolved_checks_source, "derived");
+  assert.ok(first.report.project_signals?.includes("package_json"));
+  assert.equal(second.report.resolved_checks_source, "derived");
+});
+
+test("ValidationRunner skips derived docdex hooks outside git repos", { concurrency: false }, async () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-validation-nogit-"));
+  mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+  writeFileSync(path.join(workspaceRoot, "package.json"), JSON.stringify({ name: "tmp" }), "utf8");
+
+  const runner = new ValidationRunner({
+    allowShell: false,
+    shellAllowlist: [],
+    workspaceRoot,
+  });
+  let resolvedPlan: unknown;
+  await runner.run([], {
+    policyName: "test",
+    touchedFiles: ["src/index.ts"],
+    onResolvedPlan: (plan) => {
+      resolvedPlan = plan;
+    },
+  });
+
+  const checks = Array.isArray((resolvedPlan as { checks?: unknown[] } | undefined)?.checks)
+    ? ((resolvedPlan as { checks: Array<{ check_type?: string }> }).checks)
+    : [];
+  assert.equal(checks.some((check) => check.check_type === "docdex_hooks"), false);
 });

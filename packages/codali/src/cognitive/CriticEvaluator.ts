@@ -131,6 +131,16 @@ export class CriticEvaluator {
     };
     const targetFiles = (plan.target_files ?? []).filter((file) => file !== "unknown");
     const normalizedTargetFiles = dedupe(targetFiles.map(normalizePath).filter(Boolean));
+    if (this.logger?.writePhaseArtifact) {
+      await this.logger.writePhaseArtifact("verify", "plan", {
+        schema_version: 1,
+        policy_name: verification.policy.policy_name,
+        source: "pre_validation",
+        touched_files: touchedFiles ?? [],
+        plan_targets: normalizedTargetFiles,
+        configured_steps: plan.verification ?? [],
+      });
+    }
     const buildAlignmentEvidence = (
       touched?: string[],
     ): NonNullable<CriticReport["alignment_evidence"]> => {
@@ -331,6 +341,13 @@ export class CriticEvaluator {
       minimumChecks: minimumVerificationChecks,
       enforceHighConfidence,
       touchedFiles: effectiveTouched,
+      onResolvedPlan: async (resolvedPlan) => {
+        if (!this.logger?.writePhaseArtifact) return;
+        await this.logger.writePhaseArtifact("verify", "plan", {
+          ...resolvedPlan,
+          plan_targets: normalizedTargetFiles,
+        });
+      },
     });
     verification = validation.report;
     if (verification.outcome === "verified_failed") {

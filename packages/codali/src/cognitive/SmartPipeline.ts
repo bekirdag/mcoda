@@ -174,8 +174,8 @@ class RuntimePhaseTransitionError extends Error {
 }
 
 const PIPELINE_PHASE_TO_RUNTIME_PHASE: Record<string, RuntimePhase> = {
-  librarian: "retrieve",
-  architect: "plan",
+  librarian: "plan",
+  architect: "retrieve",
   architect_review: "verify",
   builder: "act",
   critic: "verify",
@@ -183,11 +183,11 @@ const PIPELINE_PHASE_TO_RUNTIME_PHASE: Record<string, RuntimePhase> = {
 };
 
 const RUNTIME_PHASE_TRANSITIONS: Record<RuntimePhase | "start", RuntimePhase[]> = {
-  start: ["retrieve", "plan"],
-  retrieve: ["retrieve", "plan", "act"],
-  plan: ["retrieve", "plan", "act"],
-  act: ["retrieve", "plan", "act", "verify"],
-  verify: ["retrieve", "plan", "act", "verify", "answer"],
+  start: ["plan"],
+  plan: ["plan", "retrieve"],
+  retrieve: ["plan", "retrieve", "act"],
+  act: ["plan", "retrieve", "act", "verify"],
+  verify: ["plan", "retrieve", "act", "verify", "answer"],
   answer: [],
 };
 
@@ -195,6 +195,56 @@ const createRuntimePhaseTracker = (): RuntimePhaseTracker => ({
   current: "start",
   trace: [],
 });
+
+const asObject = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+
+const asStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter(Boolean),
+  ));
+};
+
+const extractPhaseWarnings = (phase: string, result: unknown): string[] => {
+  const record = asObject(result);
+  if (!record) return [];
+  const warnings = asStringArray(record.warnings);
+  if (warnings.length > 0) return warnings;
+  if (phase === "critic") {
+    return asStringArray(record.reasons);
+  }
+  return [];
+};
+
+const extractPhaseUsage = (
+  result: unknown,
+): { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined => {
+  const record = asObject(result);
+  if (!record) return undefined;
+  const usageRecord = asObject(record.usage);
+  if (!usageRecord) return undefined;
+  const inputTokens =
+    typeof usageRecord.inputTokens === "number" ? usageRecord.inputTokens : undefined;
+  const outputTokens =
+    typeof usageRecord.outputTokens === "number" ? usageRecord.outputTokens : undefined;
+  const totalTokens =
+    typeof usageRecord.totalTokens === "number" ? usageRecord.totalTokens : undefined;
+  if (
+    inputTokens === undefined
+    && outputTokens === undefined
+    && totalTokens === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+  };
+};
 
 const ARCHITECT_NON_DSL_WARNING = ARCHITECT_WARNING_NON_DSL;
 
@@ -2951,13 +3001,9 @@ export class SmartPipeline {
     let context: ContextBundle;
     if (this.options.initialContext) {
       await logPhaseArtifact("librarian", "input", { request });
-      this.transitionPhase("librarian");
-      context = this.options.initialContext;
+      const preflightContext = this.options.initialContext;
+      context = await this.runPhase("librarian", async () => preflightContext);
       await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
-      if (this.options.logger) {
-        await this.options.logger.log("phase_start", { phase: "librarian" });
-        await this.options.logger.log("phase_end", { phase: "librarian", duration_ms: 0 });
-      }
       this.emitStatus("thinking", "librarian: using preflight context");
     } else {
       await logPhaseArtifact("librarian", "input", { request });
@@ -2997,6 +3043,7 @@ export class SmartPipeline {
           capabilities: retrievalReport.capabilities ?? null,
           warnings: retrievalReport.warnings,
         });
+        await logPhaseArtifact("retrieve", "retrieval_report", retrievalReport);
       }
     }
     let researchPhase: ResearchPhaseResult | undefined = {
@@ -3135,13 +3182,18 @@ export class SmartPipeline {
 
     let plan: Plan;
     if (useFastPath) {
-      plan = buildFastPlan(context);
+      const fastPathResult = await this.runPhase("architect", async () => ({
+        plan: buildFastPlan(context),
+        raw: "",
+        warnings: [],
+      }));
+      plan = fastPathResult.plan;
       await logPhaseArtifact("architect", "output", {
         pass: 0,
         source: "fast_path",
-        raw_output: "",
+        raw_output: fastPathResult.raw,
         normalized_output: plan,
-        warnings: [],
+        warnings: fastPathResult.warnings ?? [],
       });
     } else {
       let pass = 1;
@@ -5511,6 +5563,8 @@ export class SmartPipeline {
     try {
       const result = await fn();
       const endedAt = Date.now();
+      const warnings = extractPhaseWarnings(phase, result);
+      const usage = extractPhaseUsage(result);
       if (this.options.logger) {
         await this.options.logger.log("phase_end", { phase, duration_ms: endedAt - startedAt });
         await this.options.logger.writePhaseArtifact(phase, "summary", {
@@ -5519,12 +5573,15 @@ export class SmartPipeline {
           started_at_ms: startedAt,
           ended_at_ms: endedAt,
           duration_ms: endedAt - startedAt,
+          warnings,
+          usage,
         });
       }
       this.emitStatus("done", `${phase}: done`);
       return result;
     } catch (error) {
       const endedAt = Date.now();
+      const errorWarnings = asStringArray(asObject(error)?.warnings);
       if (this.options.logger) {
         await this.options.logger.log("phase_end", {
           phase,
@@ -5543,6 +5600,7 @@ export class SmartPipeline {
           error_message: error instanceof Error ? error.message : String(error),
           reason_code:
             error instanceof RuntimePhaseTransitionError ? error.metadata.code : "phase_execution_error",
+          warnings: errorWarnings,
         });
       }
       this.emitStatus("done", `${phase}: failed`);

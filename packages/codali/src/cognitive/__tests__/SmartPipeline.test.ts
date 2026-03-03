@@ -742,6 +742,11 @@ test("SmartPipeline logs retrieval report metadata in context summary", { concur
   const retrievalEvent = logger.events.find((entry) => entry.type === "retrieval_report");
   assert.ok(retrievalEvent);
   assert.equal(retrievalEvent?.data.disposition, "degraded");
+  assert.ok(
+    logger.artifacts.some(
+      (artifact) => artifact.phase === "retrieve" && artifact.kind === "retrieval_report",
+    ),
+  );
 });
 
 test("SmartPipeline runs research phase before architect in deep mode", { concurrency: false }, async () => {
@@ -3635,7 +3640,7 @@ test(
         assert.equal(error?.metadata?.from_phase, "start");
         assert.equal(error?.metadata?.to_phase, "answer");
         assert.equal(error?.metadata?.requested_phase, "answer");
-        assert.deepEqual(error?.metadata?.allowed_next_phases, ["retrieve", "plan"]);
+        assert.deepEqual(error?.metadata?.allowed_next_phases, ["plan"]);
         assert.deepEqual(error?.metadata?.phase_trace, []);
         return true;
       },
@@ -3816,7 +3821,7 @@ test("SmartPipeline returns deterministic phase trace for identical successful r
 
   const firstTrace = await runOnce();
   const secondTrace = await runOnce();
-  assert.deepEqual(firstTrace, ["retrieve", "plan", "act", "verify", "answer"]);
+  assert.deepEqual(firstTrace, ["plan", "retrieve", "act", "verify", "answer"]);
   assert.deepEqual(firstTrace, secondTrace);
 });
 
