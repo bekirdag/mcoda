@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ReportStore } from "../ReportStore.js";
@@ -82,8 +83,13 @@ test("ReportStore saves and resolves latest report per suite", { concurrency: fa
   const store = new ReportStore(workspaceRoot, "logs/codali/eval-test");
   const first = buildReport({ report_id: "report-1" });
   const second = buildReport({ report_id: "report-2" });
-  await store.save(first);
-  await store.save(second);
+  const firstPath = await store.save(first);
+  const secondPath = await store.save(second);
+  const sameMtime = new Date("2024-01-01T00:00:00.000Z");
+  await Promise.all([
+    utimes(firstPath, sameMtime, sameMtime),
+    utimes(secondPath, sameMtime, sameMtime),
+  ]);
   const latest = await store.findLatestForSuite({ suite_fingerprint: "fingerprint-1" });
   assert.ok(latest);
   assert.equal(latest?.report.suite.suite_fingerprint, "fingerprint-1");
