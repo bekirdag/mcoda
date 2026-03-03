@@ -17,7 +17,14 @@ export type AgentStatusPhase = "thinking" | "executing" | "patching" | "done";
 export type AgentEvent =
   | { type: "token"; content: string }
   | { type: "tool_call"; name: string; args: unknown }
-  | { type: "tool_result"; name: string; output: string; ok?: boolean }
+  | {
+      type: "tool_result";
+      name: string;
+      output: string;
+      ok?: boolean;
+      errorCode?: string;
+      retryable?: boolean;
+    }
   | { type: "status"; phase: AgentStatusPhase; message?: string }
   | { type: "error"; message: string };
 

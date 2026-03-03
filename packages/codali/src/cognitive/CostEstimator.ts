@@ -22,6 +22,16 @@ export interface CostEstimate {
   pricingSource?: string;
 }
 
+export type UsageCostSource = "actual_usage" | "unknown";
+
+export type UsageCostReasonCode = "usage_missing" | "pricing_unavailable";
+
+export interface UsageCostTelemetry {
+  costUsd?: number;
+  source: UsageCostSource;
+  reasonCode?: UsageCostReasonCode;
+}
+
 const DEFAULT_OUTPUT_RATIO = 0.25;
 
 export const resolvePricing = (
@@ -93,4 +103,21 @@ export const estimateCostFromUsage = (
   const inputTokens = usage.inputTokens ?? 0;
   const outputTokens = usage.outputTokens ?? Math.max((usage.totalTokens ?? 0) - inputTokens, 0);
   return computeCost(inputTokens, outputTokens, pricing);
+};
+
+export const estimateUsageCostTelemetry = (
+  usage: ProviderUsage | undefined,
+  pricing?: PricingSpec,
+): UsageCostTelemetry => {
+  if (!usage) {
+    return { source: "unknown", reasonCode: "usage_missing" };
+  }
+  if (!pricing) {
+    return { source: "unknown", reasonCode: "pricing_unavailable" };
+  }
+  const costUsd = estimateCostFromUsage(usage, pricing);
+  if (costUsd === undefined) {
+    return { source: "unknown", reasonCode: "pricing_unavailable" };
+  }
+  return { source: "actual_usage", costUsd };
 };

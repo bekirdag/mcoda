@@ -24,3 +24,19 @@ test("normalizePatchOutput returns undefined when no JSON present", () => {
   const raw = "No structured output here.";
   assert.equal(normalizePatchOutput(raw), undefined);
 });
+
+test("normalizePatchOutput returns schema-echo JSON deterministically for downstream rejection", () => {
+  const raw = [
+    "Patch schema:",
+    "```json",
+    JSON.stringify({ type: "object", properties: { patches: { type: "array" } } }),
+    "```",
+  ].join("\n");
+  const normalized = normalizePatchOutput(raw);
+  assert.ok(normalized?.includes('"properties"'));
+});
+
+test("normalizePatchOutput rejects malformed embedded candidates", () => {
+  const raw = "prefix {\"patches\": [} suffix";
+  assert.equal(normalizePatchOutput(raw), undefined);
+});

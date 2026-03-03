@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { estimateCostFromChars, estimateCostFromUsage, resolvePricing } from "../CostEstimator.js";
+import {
+  estimateCostFromChars,
+  estimateCostFromUsage,
+  estimateUsageCostTelemetry,
+  resolvePricing,
+} from "../CostEstimator.js";
 
 test("resolvePricing prefers provider:model then model then provider", () => {
   const overrides = {
@@ -30,4 +35,20 @@ test("estimateCostFromUsage uses input/output rates", () => {
   );
   assert.ok(cost !== undefined);
   assert.ok(Math.abs(cost - (0.005 + 0.005)) < 1e-9);
+});
+
+test("estimateUsageCostTelemetry returns explicit missing usage reason", () => {
+  const telemetry = estimateUsageCostTelemetry(undefined, { per1K: 0.01 });
+  assert.equal(telemetry.source, "unknown");
+  assert.equal(telemetry.reasonCode, "usage_missing");
+});
+
+test("estimateUsageCostTelemetry computes actual usage cost", () => {
+  const telemetry = estimateUsageCostTelemetry(
+    { inputTokens: 1000, outputTokens: 500 },
+    { inputPer1K: 0.01, outputPer1K: 0.02 },
+  );
+  assert.equal(telemetry.source, "actual_usage");
+  assert.ok(telemetry.costUsd !== undefined);
+  assert.ok(Math.abs((telemetry.costUsd ?? 0) - 0.02) < 1e-9);
 });

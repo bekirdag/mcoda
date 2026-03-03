@@ -13,6 +13,12 @@ import type {
   Plan,
   CriticResult,
   LaneScope,
+  ContextRefreshTerminationReason,
+  RetryDecision,
+  RetryReasonCode,
+  RuntimePhase,
+  RuntimePhaseTransitionErrorMetadata,
+  VerificationReport,
 } from "./Types.js";
 import { ContextAssembler, type ResearchToolExecution } from "./ContextAssembler.js";
 import {
@@ -72,6 +78,7 @@ export interface SmartPipelineOptions {
   memoryWriteback: MemoryWriteback;
   maxRetries: number;
   maxContextRefreshes?: number;
+  maxContextRefreshMs?: number;
   initialContext?: ContextBundle;
   fastPath?: (request: string) => boolean;
   deepMode?: boolean;
@@ -85,6 +92,9 @@ export interface SmartPipelineOptions {
   logger?: RunLogger;
   contextManager?: ContextManager;
   laneScope?: Omit<LaneScope, "role" | "ephemeral">;
+  verificationPolicyName?: string;
+  minimumVerificationChecks?: number;
+  enforceVerificationHighConfidence?: boolean;
   onEvent?: (event: AgentEvent) => void;
   onPhaseProviderFailure?: (
     context: PhaseProviderFailureContext,
@@ -139,8 +149,52 @@ export interface SmartPipelineResult {
   plan: Plan;
   builderResult: BuilderRunResult;
   criticResult: CriticResult;
+  verification?: VerificationReport;
   attempts: number;
+  contextRefreshTerminationReason?: ContextRefreshTerminationReason;
+  phaseTrace: RuntimePhase[];
 }
+
+type RuntimePhaseTracker = {
+  current: RuntimePhase | "start";
+  trace: RuntimePhase[];
+};
+
+class RuntimePhaseTransitionError extends Error {
+  readonly code = "CODALI_INVALID_PHASE_TRANSITION";
+  readonly metadata: RuntimePhaseTransitionErrorMetadata;
+
+  constructor(metadata: RuntimePhaseTransitionErrorMetadata) {
+    super(
+      `Invalid runtime phase transition ${metadata.from_phase} -> ${metadata.to_phase} (${metadata.requested_phase})`,
+    );
+    this.name = "RuntimePhaseTransitionError";
+    this.metadata = metadata;
+  }
+}
+
+const PIPELINE_PHASE_TO_RUNTIME_PHASE: Record<string, RuntimePhase> = {
+  librarian: "retrieve",
+  architect: "plan",
+  architect_review: "verify",
+  builder: "act",
+  critic: "verify",
+  answer: "answer",
+};
+
+const RUNTIME_PHASE_TRANSITIONS: Record<RuntimePhase | "start", RuntimePhase[]> = {
+  start: ["retrieve", "plan"],
+  retrieve: ["retrieve", "plan", "act"],
+  plan: ["retrieve", "plan", "act"],
+  act: ["retrieve", "plan", "act", "verify"],
+  verify: ["retrieve", "plan", "act", "verify", "answer"],
+  answer: [],
+};
+
+const createRuntimePhaseTracker = (): RuntimePhaseTracker => ({
+  current: "start",
+  trace: [],
+});
 
 const ARCHITECT_NON_DSL_WARNING = ARCHITECT_WARNING_NON_DSL;
 
@@ -730,6 +784,23 @@ const buildContextSignature = (context: ContextBundle): string => {
           ),
           all: normalizeContextSignatureList(context.selection.all, 24),
           low_confidence: context.selection.low_confidence ?? false,
+          reason_summary: (context.selection.reason_summary ?? [])
+            .map((entry) => `${entry.code}:${entry.count}`)
+            .sort()
+            .slice(0, 24),
+        }
+      : null,
+    retrieval: context.retrieval_report
+      ? {
+          disposition: context.retrieval_disposition ?? context.retrieval_report.disposition,
+          confidence: context.retrieval_report.confidence,
+          preflight: context.retrieval_report.preflight
+            .map((entry) => `${entry.check}:${entry.status}`)
+            .sort(),
+          unresolved_gaps: normalizeContextSignatureList(
+            context.retrieval_report.unresolved_gaps,
+            24,
+          ),
         }
       : null,
     search_results: (context.search_results ?? []).map((result) => ({
@@ -1384,6 +1455,24 @@ type DeterministicPatchApplyFailureKind =
 const classifyDeterministicPatchApplyFailure = (
   failure: PatchApplyFailure,
 ): DeterministicPatchApplyFailureKind | null => {
+  const classified = failure.classification;
+  if (classified) {
+    if (classified.failure_class === "search_match") return "search_block";
+    if (classified.failure_class === "scope") return "disallowed_files";
+    if (classified.failure_class === "filesystem" && classified.failure_code === "patch_file_not_found") {
+      return "missing_path";
+    }
+    if (classified.failure_class === "schema") {
+      if (classified.failure_code === "patch_placeholder_payload") return "placeholder_payload";
+      return "patch_parse";
+    }
+    if (
+      classified.failure_class === "guardrail"
+      && classified.failure_code === "patch_delete_without_plan_intent"
+    ) {
+      return "placeholder_payload";
+    }
+  }
   const message = `${failure.error} ${failure.source}`.toLowerCase();
   if (message.includes("enoent") || message.includes("no such file or directory")) return "missing_path";
   if (message.includes("search block not found")) return "search_block";
@@ -2036,12 +2125,38 @@ const buildFastPlan = (context: ContextBundle): Plan => {
 
 export class SmartPipeline {
   private options: SmartPipelineOptions;
+  private phaseTracker: RuntimePhaseTracker = createRuntimePhaseTracker();
 
   constructor(options: SmartPipelineOptions) {
     this.options = options;
   }
 
+  private resetPhaseTracker(): void {
+    this.phaseTracker = createRuntimePhaseTracker();
+  }
+
+  private transitionPhase(phase: string): RuntimePhase | undefined {
+    const canonical = PIPELINE_PHASE_TO_RUNTIME_PHASE[phase];
+    if (!canonical) return undefined;
+    const allowedNext = RUNTIME_PHASE_TRANSITIONS[this.phaseTracker.current];
+    if (!allowedNext.includes(canonical)) {
+      const metadata: RuntimePhaseTransitionErrorMetadata = {
+        code: "CODALI_INVALID_PHASE_TRANSITION",
+        from_phase: this.phaseTracker.current,
+        to_phase: canonical,
+        requested_phase: phase,
+        allowed_next_phases: [...allowedNext],
+        phase_trace: [...this.phaseTracker.trace],
+      };
+      throw new RuntimePhaseTransitionError(metadata);
+    }
+    this.phaseTracker.current = canonical;
+    this.phaseTracker.trace.push(canonical);
+    return canonical;
+  }
+
   async run(request: string): Promise<SmartPipelineResult> {
+    this.resetPhaseTracker();
     if (this.options.deepScanPreset) {
       this.options.contextAssembler.applyDeepScanPreset();
     }
@@ -2082,6 +2197,12 @@ export class SmartPipeline {
       const path = await this.options.logger.writePhaseArtifact(phase, kind, payload);
       await this.options.logger.log(`phase_${kind}`, { phase, path });
       return path;
+    };
+    const toRuntimePhase = (phase: string): RuntimePhase =>
+      PIPELINE_PHASE_TO_RUNTIME_PHASE[phase] ?? "act";
+    const logRetryDecision = async (decision: RetryDecision): Promise<void> => {
+      if (!this.options.logger) return;
+      await this.options.logger.log("retry_decision", { ...decision });
     };
     const sanitizeForOutput = (bundle: ContextBundle): ContextBundle => {
       const sanitized = sanitizeContextBundleForOutput(bundle);
@@ -2358,6 +2479,8 @@ export class SmartPipeline {
           touched_files: critic.report?.touched_files,
           plan_targets: critic.report?.plan_targets,
           guardrail: critic.report?.guardrail ?? critic.guardrail,
+          high_confidence: critic.report?.high_confidence ?? critic.high_confidence ?? false,
+          verification: critic.report?.verification ?? critic.verification,
         },
       ],
       meta: {
@@ -2828,6 +2951,7 @@ export class SmartPipeline {
     let context: ContextBundle;
     if (this.options.initialContext) {
       await logPhaseArtifact("librarian", "input", { request });
+      this.transitionPhase("librarian");
       context = this.options.initialContext;
       await logPhaseArtifact("librarian", "output", sanitizeForOutput(context));
       if (this.options.logger) {
@@ -2844,6 +2968,7 @@ export class SmartPipeline {
       const files = context.files ?? [];
       const focusCount = files.filter((file) => file.role === "focus").length;
       const peripheryCount = files.filter((file) => file.role === "periphery").length;
+      const retrievalReport = context.retrieval_report;
       await this.options.logger.log("context_summary", {
         focusCount,
         peripheryCount,
@@ -2852,7 +2977,27 @@ export class SmartPipeline {
         warnings: context.warnings.length,
         redactionCount: context.redaction?.count ?? 0,
         ignoredFiles: context.redaction?.ignored ?? [],
+        retrievalDisposition: context.retrieval_disposition ?? null,
+        retrievalConfidence: retrievalReport?.confidence ?? null,
+        retrievalUnresolvedGaps: retrievalReport?.unresolved_gaps ?? [],
+        retrievalToolExecution: retrievalReport?.tool_execution ?? [],
       });
+      if (retrievalReport) {
+        await this.options.logger.log("retrieval_report", {
+          schema_version: retrievalReport.schema_version,
+          mode: retrievalReport.mode,
+          confidence: retrievalReport.confidence,
+          disposition: retrievalReport.disposition,
+          preflight: retrievalReport.preflight,
+          selection: retrievalReport.selection,
+          dropped: retrievalReport.dropped,
+          truncated: retrievalReport.truncated,
+          unresolved_gaps: retrievalReport.unresolved_gaps,
+          tool_execution: retrievalReport.tool_execution,
+          capabilities: retrievalReport.capabilities ?? null,
+          warnings: retrievalReport.warnings,
+        });
+      }
     }
     let researchPhase: ResearchPhaseResult | undefined = {
       status: "skipped",
@@ -4262,9 +4407,11 @@ export class SmartPipeline {
     let criticResult: CriticResult | undefined;
     let refreshes = 0;
     const maxContextRefreshes = this.options.maxContextRefreshes ?? 0;
+    const refreshStartedAtMs = Date.now();
     let builderNote: string | undefined;
     let lastContextRequestFingerprint: string | undefined;
     let forcedNoContextAttemptUsed = false;
+    let contextRefreshTerminationReason: ContextRefreshTerminationReason | undefined;
     const deterministicApplyRepairKinds = new Set<DeterministicPatchApplyFailureKind>();
     let builderAttemptOrdinal = 0;
 
@@ -4318,6 +4465,8 @@ export class SmartPipeline {
             await this.options.logger.log("builder_apply_failed", {
               error: failure.error,
               source: failure.source,
+              classification: failure.classification ?? null,
+              attempt_history: failure.attemptHistory ?? [],
               rollback: failure.rollback,
               path: failurePath ?? null,
             });
@@ -4525,6 +4674,14 @@ export class SmartPipeline {
                   noteFromRecovery && noteFromRecovery.trim().length > 0
                     ? noteFromRecovery
                     : `Deterministic patch parsing failure (${failure.error}). Continue with replacement builder agent and return schema-valid patch output.`;
+                await logRetryDecision({
+                  phase: toRuntimePhase("builder"),
+                  reason_code: "phase_provider_fallback_retry",
+                  disposition: "retry",
+                  attempt: attempts + 1,
+                  max_attempts: this.options.maxRetries + 1,
+                  details: [failure.error],
+                });
                 continue;
               }
             }
@@ -4549,10 +4706,52 @@ export class SmartPipeline {
                 ],
               },
             };
+            await logRetryDecision({
+              phase: toRuntimePhase("builder"),
+              reason_code: "builder_patch_apply_deterministic_no_repair",
+              disposition: "terminate",
+              attempt: attempts,
+              max_attempts: this.options.maxRetries + 1,
+              details: [failure.error, deterministicFailureKind].filter(
+                (detail): detail is string => typeof detail === "string" && detail.length > 0,
+              ),
+            });
             break;
           }
           if (!deterministicApplyFailure && attempts <= this.options.maxRetries) {
+            const patchRetryable = failure.classification?.retryable ?? true;
+            if (!patchRetryable) {
+              criticResult = {
+                status: "FAIL",
+                reasons: [
+                  `patch_apply_failed_non_retryable:${failure.classification?.failure_code ?? failure.error}`,
+                  `patch_apply_failed: ${failure.error}`,
+                ],
+                retryable: false,
+                report: {
+                  status: "FAIL",
+                  reasons: [
+                    `patch_apply_failed_non_retryable:${failure.classification?.failure_code ?? failure.error}`,
+                    `patch_apply_failed: ${failure.error}`,
+                  ],
+                  suggested_fixes: [
+                    failure.classification?.remediation_key
+                      ? `Apply remediation: ${failure.classification.remediation_key}`
+                      : "Provide a corrected patch that applies cleanly.",
+                  ],
+                },
+              };
+              break;
+            }
             builderNote = `Patch apply failed: ${failure.error}. Rollback ok=${failure.rollback.ok}. Fix the patch output and avoid disallowed paths.`;
+            await logRetryDecision({
+              phase: toRuntimePhase("builder"),
+              reason_code: "builder_patch_apply_retry",
+              disposition: "retry",
+              attempt: attempts,
+              max_attempts: this.options.maxRetries + 1,
+              details: [failure.error],
+            });
             continue;
           }
           criticResult = {
@@ -4596,6 +4795,14 @@ export class SmartPipeline {
               noteFromRecovery && noteFromRecovery.trim().length > 0
                 ? noteFromRecovery
                 : `Provider failure encountered (${providerFailureError.message}). Continue with replacement builder agent and keep patch output schema-compliant.`;
+            await logRetryDecision({
+              phase: toRuntimePhase("builder"),
+              reason_code: "phase_provider_fallback_retry",
+              disposition: "retry",
+              attempt: attempts + 1,
+              max_attempts: this.options.maxRetries + 1,
+              details: [providerFailureError.message],
+            });
             continue;
           }
         }
@@ -4622,11 +4829,50 @@ export class SmartPipeline {
           files: uniqueStrings((contextRequest.files ?? []).map((entry) => entry.trim()).filter(Boolean)),
         });
         const repeatedContextRequest = contextRequestFingerprint === lastContextRequestFingerprint;
+        const refreshTimeoutExceeded =
+          this.options.maxContextRefreshMs !== undefined
+          && Date.now() - refreshStartedAtMs >= this.options.maxContextRefreshMs;
+        if (refreshTimeoutExceeded) {
+          contextRefreshTerminationReason = "phase_timeout";
+          criticResult = {
+            status: "FAIL",
+            reasons: ["context_refresh_terminated:phase_timeout"],
+            retryable: false,
+          };
+          await logRetryDecision({
+            phase: toRuntimePhase("builder"),
+            reason_code: "builder_context_refresh_terminated",
+            disposition: "terminate",
+            attempt: attempts,
+            max_attempts: this.options.maxRetries + 1,
+            details: ["phase_timeout"],
+          });
+          if (this.options.logger) {
+            await this.options.logger.log("context_refresh_terminated", {
+              reason: contextRefreshTerminationReason,
+              refreshes,
+              max_refreshes: maxContextRefreshes,
+              elapsed_ms: Date.now() - refreshStartedAtMs,
+            });
+          }
+          break;
+        }
         if (refreshes < maxContextRefreshes && !repeatedContextRequest) {
           lastContextRequestFingerprint = contextRequestFingerprint;
           forcedNoContextAttemptUsed = false;
           refreshes += 1;
           attempts -= 1;
+          await logRetryDecision({
+            phase: toRuntimePhase("builder"),
+            reason_code: "builder_context_refresh_retry",
+            disposition: "retry",
+            attempt: attempts + 1,
+            max_attempts: this.options.maxRetries + 1,
+            details: [
+              contextRequest.reason ?? "builder_needs_context",
+              `refresh=${refreshes}/${maxContextRefreshes}`,
+            ],
+          });
           if (this.options.logger) {
             await this.options.logger.log("context_refresh", {
               refresh: refreshes,
@@ -4766,6 +5012,7 @@ export class SmartPipeline {
           forcedNoContextAttemptUsed = true;
           lastContextRequestFingerprint = contextRequestFingerprint;
           attempts -= 1;
+          contextRefreshTerminationReason = "no_new_context";
           if (this.options.logger) {
             await this.options.logger.log("context_request_repeated_forced_builder_attempt", {
               reason: contextRequest.reason ?? null,
@@ -4776,16 +5023,43 @@ export class SmartPipeline {
               max_refreshes: maxContextRefreshes,
             });
           }
+          await logRetryDecision({
+            phase: toRuntimePhase("builder"),
+            reason_code: "builder_context_refresh_retry",
+            disposition: "retry",
+            attempt: attempts + 1,
+            max_attempts: this.options.maxRetries + 1,
+            details: ["no_new_context", contextRequest.reason ?? "builder_needs_context"],
+          });
           builderNote =
             "Context was already refreshed for this request. Do not emit needs_context again. " +
             "Proceed with a best-effort patch using current context, plan targets, and focus files only.";
           continue;
         }
+        contextRefreshTerminationReason = repeatedContextRequest
+          ? "no_new_context"
+          : "refresh_budget_exhausted";
         criticResult = {
           status: "FAIL",
-          reasons: ["context request limit reached"],
+          reasons: [`context_refresh_terminated:${contextRefreshTerminationReason}`],
           retryable: false,
         };
+        await logRetryDecision({
+          phase: toRuntimePhase("builder"),
+          reason_code: "builder_context_refresh_terminated",
+          disposition: "terminate",
+          attempt: attempts,
+          max_attempts: this.options.maxRetries + 1,
+          details: [contextRefreshTerminationReason],
+        });
+        if (this.options.logger) {
+          await this.options.logger.log("context_refresh_terminated", {
+            reason: contextRefreshTerminationReason,
+            repeated_request: repeatedContextRequest,
+            refreshes,
+            max_refreshes: maxContextRefreshes,
+          });
+        }
         break;
       }
       if (built.usage) {
@@ -4930,6 +5204,14 @@ export class SmartPipeline {
               builderNote = reviewFixes.length > 0
                 ? `Architect review requested fixes: ${reviewFixes.join("; ")}`
                 : "Architect review requested changes. Provide a corrected output.";
+              await logRetryDecision({
+                phase: toRuntimePhase("architect_review"),
+                reason_code: "architect_review_retry",
+                disposition: "retry",
+                attempt: attempts,
+                max_attempts: this.options.maxRetries + 1,
+                details: reviewFixes,
+              });
               continue;
             }
             if (revisedBlocking.length > 0) {
@@ -4947,6 +5229,14 @@ export class SmartPipeline {
             builderNote = reviewFixes.length > 0
               ? `Architect review requested fixes: ${reviewFixes.join("; ")}`
               : "Architect review requested changes. Provide a corrected output.";
+            await logRetryDecision({
+              phase: toRuntimePhase("architect_review"),
+              reason_code: "architect_review_retry",
+              disposition: "retry",
+              attempt: attempts,
+              max_attempts: this.options.maxRetries + 1,
+              details: reviewFixes,
+            });
             continue;
           }
           if (reviewRetryActionable) {
@@ -4955,6 +5245,14 @@ export class SmartPipeline {
               reasons: ["architect_review_failed", ...review.feedback],
               retryable: false,
             };
+            await logRetryDecision({
+              phase: toRuntimePhase("architect_review"),
+              reason_code: "architect_review_retry_exhausted",
+              disposition: "terminate",
+              attempt: attempts,
+              max_attempts: this.options.maxRetries + 1,
+              details: review.feedback,
+            });
             break;
           }
         }
@@ -4980,6 +5278,14 @@ export class SmartPipeline {
               `Semantic guard requested fixes: ${builderSemantic.reasons.join("; ")}. ` +
               `Ensure output directly addresses request anchors (${builderSemantic.anchors.slice(0, 6).join(", ")}) ` +
               `and concrete plan targets (${plan.target_files.join(", ")}).`;
+            await logRetryDecision({
+              phase: toRuntimePhase("architect_review"),
+              reason_code: "semantic_guard_retry",
+              disposition: "retry",
+              attempt: attempts,
+              max_attempts: this.options.maxRetries + 1,
+              details: builderSemantic.reasons,
+            });
             continue;
           }
           criticResult = {
@@ -4987,27 +5293,45 @@ export class SmartPipeline {
             reasons: ["architect_review_semantic_guard_failed", ...builderSemantic.reasons],
             retryable: false,
           };
+          await logRetryDecision({
+            phase: toRuntimePhase("architect_review"),
+            reason_code: "semantic_guard_retry_exhausted",
+            disposition: "terminate",
+            attempt: attempts,
+            max_attempts: this.options.maxRetries + 1,
+            details: builderSemantic.reasons,
+          });
           break;
         }
       }
       const touchedAfter = this.options.getTouchedFiles?.() ?? touchedBefore;
       const touchedBeforeSet = new Set(touchedBefore);
       const touchedDelta = touchedAfter.filter((file) => !touchedBeforeSet.has(file));
-      const touchedFiles = touchedDelta.length ? touchedDelta : undefined;
+      const touchedFromBuilder = built.touchedFiles ?? [];
+      const touchedFiles = uniqueStrings([...touchedFromBuilder, ...touchedDelta]);
+      const effectiveTouchedFiles = touchedFiles.length > 0 ? touchedFiles : undefined;
       await logPhaseArtifact("critic", "input", {
         plan,
         builder_output: built.finalMessage.content,
-        touched_files: touchedFiles ?? [],
+        touched_files: effectiveTouchedFiles ?? [],
       });
       let criticRefreshes = 0;
       while (true) {
-        const criticAllowedPaths = Array.from(new Set([...(plan.target_files ?? [])]));
+        const criticAllowedPaths = Array.from(
+          new Set([...(plan.target_files ?? []), ...(plan.create_files ?? [])]),
+        );
+        const criticReadOnlyPaths = context.read_only_paths ?? [];
         criticResult = await this.runPhase("critic", () =>
-          this.options.criticEvaluator.evaluate(plan, built.finalMessage.content, touchedFiles, {
+          this.options.criticEvaluator.evaluate(plan, built.finalMessage.content, effectiveTouchedFiles, {
             contextManager: this.options.contextManager,
             laneId: criticLaneId,
             allowedPaths: criticAllowedPaths,
+            readOnlyPaths: criticReadOnlyPaths,
             allowProtocolRequest: true,
+            logger: this.options.logger,
+            verificationPolicyName: this.options.verificationPolicyName,
+            minimumVerificationChecks: this.options.minimumVerificationChecks,
+            enforceHighConfidence: this.options.enforceVerificationHighConfidence,
           }),
         );
         if (criticResult.request && criticRefreshes < maxContextRefreshes) {
@@ -5029,10 +5353,66 @@ export class SmartPipeline {
       }
       await logPhaseArtifact("critic", "output", criticResult);
       if (this.options.logger) {
+        const verificationReport = criticResult.report?.verification ?? criticResult.verification;
+        if (verificationReport) {
+          await this.options.logger.writePhaseArtifact("verify", "verification_report", verificationReport);
+          if (typeof this.options.logger.logVerificationReport === "function") {
+            await this.options.logger.logVerificationReport(verificationReport);
+          }
+        }
         await this.options.logger.log("critic_output", {
           status: criticResult.status,
           guardrail: criticResult.report?.guardrail ?? criticResult.guardrail ?? null,
+          verification: verificationReport
+            ? {
+                outcome: verificationReport.outcome,
+                reason_codes: verificationReport.reason_codes,
+                high_confidence:
+                  criticResult.report?.high_confidence
+                  ?? criticResult.high_confidence
+                  ?? false,
+              }
+            : null,
         });
+      }
+      const verificationReport = criticResult.report?.verification ?? criticResult.verification;
+      if (
+        criticResult.status === "PASS"
+        && verificationReport?.policy.enforce_high_confidence
+        && verificationReport.outcome !== "verified_passed"
+      ) {
+        const gateReasons = [
+          "verification_high_confidence_gate_blocked",
+          ...verificationReport.reason_codes.map((code) => `verification_${code}`),
+        ];
+        criticResult = {
+          ...criticResult,
+          status: "FAIL",
+          reasons: uniqueStrings(gateReasons),
+          retryable: false,
+          high_confidence: false,
+          report: {
+            status: "FAIL",
+            reasons: uniqueStrings(gateReasons),
+            suggested_fixes: [
+              "Run at least one concrete verification check that passes before accepting high-confidence completion.",
+            ],
+            touched_files: criticResult.report?.touched_files,
+            plan_targets: criticResult.report?.plan_targets,
+            alignment_evidence: criticResult.report?.alignment_evidence,
+            guardrail: criticResult.report?.guardrail ?? criticResult.guardrail,
+            high_confidence: false,
+            verification: verificationReport,
+          },
+        };
+        if (this.options.logger) {
+          await this.options.logger.log("verification_high_confidence_gate", {
+            status: "blocked",
+            outcome: verificationReport.outcome,
+            reason_codes: verificationReport.reason_codes,
+            policy: verificationReport.policy,
+          });
+        }
       }
       this.emitStatus("done", `critic result: ${criticResult.status}`);
       await logLaneSummary("critic", criticLaneId);
@@ -5042,9 +5422,27 @@ export class SmartPipeline {
         builderNote = criticResult.reasons.length
           ? `Critic failed: ${criticResult.reasons.join("; ")}`
           : "Critic failed. Provide a corrected output.";
+        await logRetryDecision({
+          phase: toRuntimePhase("critic"),
+          reason_code: "critic_retryable_failure",
+          disposition: "retry",
+          attempt: attempts,
+          max_attempts: this.options.maxRetries + 1,
+          details: criticResult.reasons,
+        });
         continue;
       }
-      if (!criticResult.retryable) break;
+      if (!criticResult.retryable) {
+        await logRetryDecision({
+          phase: toRuntimePhase("critic"),
+          reason_code: "critic_non_retryable_failure",
+          disposition: "terminate",
+          attempt: attempts,
+          max_attempts: this.options.maxRetries + 1,
+          details: criticResult.reasons,
+        });
+        break;
+      }
     }
 
     if (!builderResult || !criticResult) {
@@ -5068,10 +5466,43 @@ export class SmartPipeline {
       });
     }
 
-    return { context, research: researchPhase, plan, builderResult, criticResult, attempts };
+    if (this.phaseTracker.current === "verify" || this.phaseTracker.current === "answer") {
+      await this.runPhase("answer", async () => undefined);
+    }
+
+    return {
+      context,
+      research: researchPhase,
+      plan,
+      builderResult,
+      criticResult,
+      verification: criticResult.report?.verification ?? criticResult.verification,
+      attempts,
+      contextRefreshTerminationReason,
+      phaseTrace: [...this.phaseTracker.trace],
+    };
   }
 
   private async runPhase<T>(phase: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      this.transitionPhase(phase);
+    } catch (error) {
+      if (this.options.logger && error instanceof RuntimePhaseTransitionError) {
+        await this.options.logger.log("phase_transition_error", { ...error.metadata });
+        await this.options.logger.writePhaseArtifact(phase, "summary", {
+          status: "failed",
+          reason_code: error.metadata.code,
+          phase,
+          started_at_ms: Date.now(),
+          ended_at_ms: Date.now(),
+          duration_ms: 0,
+          error_class: error.name,
+          error_message: error.message,
+          phase_trace: error.metadata.phase_trace,
+        });
+      }
+      throw error;
+    }
     const startedAt = Date.now();
     this.emitStatus(this.phaseStatus(phase), `${phase}: start`);
     if (this.options.logger) {
@@ -5079,17 +5510,39 @@ export class SmartPipeline {
     }
     try {
       const result = await fn();
+      const endedAt = Date.now();
       if (this.options.logger) {
-        await this.options.logger.log("phase_end", { phase, duration_ms: Date.now() - startedAt });
+        await this.options.logger.log("phase_end", { phase, duration_ms: endedAt - startedAt });
+        await this.options.logger.writePhaseArtifact(phase, "summary", {
+          status: "completed",
+          phase,
+          started_at_ms: startedAt,
+          ended_at_ms: endedAt,
+          duration_ms: endedAt - startedAt,
+        });
       }
       this.emitStatus("done", `${phase}: done`);
       return result;
     } catch (error) {
+      const endedAt = Date.now();
       if (this.options.logger) {
         await this.options.logger.log("phase_end", {
           phase,
-          duration_ms: Date.now() - startedAt,
+          duration_ms: endedAt - startedAt,
           error: error instanceof Error ? error.message : String(error),
+          reason_code:
+            error instanceof RuntimePhaseTransitionError ? error.metadata.code : undefined,
+        });
+        await this.options.logger.writePhaseArtifact(phase, "summary", {
+          status: "failed",
+          phase,
+          started_at_ms: startedAt,
+          ended_at_ms: endedAt,
+          duration_ms: endedAt - startedAt,
+          error_class: error instanceof Error ? error.name : "UnknownError",
+          error_message: error instanceof Error ? error.message : String(error),
+          reason_code:
+            error instanceof RuntimePhaseTransitionError ? error.metadata.code : "phase_execution_error",
         });
       }
       this.emitStatus("done", `${phase}: failed`);

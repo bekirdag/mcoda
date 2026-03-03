@@ -8,7 +8,7 @@ import { ContextManager } from "../ContextManager.js";
 import { ContextStore } from "../ContextStore.js";
 import type { DocdexClient } from "../../docdex/DocdexClient.js";
 import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
-import type { LocalContextConfig } from "../Types.js";
+import type { LocalContextConfig, VerificationReport } from "../Types.js";
 import type { RunLogger } from "../../runtime/RunLogger.js";
 
 class FakeDocdexClient {
@@ -21,7 +21,21 @@ class FakeDocdexClient {
   searchCalls: string[] = [];
   openSnippetCalls: string[] = [];
   openFileCalls: string[] = [];
-  constructor(private impactDiagnosticsPayload: unknown = { diagnostics: [] }) {}
+  constructor(
+    private impactDiagnosticsPayload: unknown = { diagnostics: [] },
+    private capabilityPayload: unknown = {
+      cached: false,
+      source: "mcp_probe",
+      probed_at_ms: 1,
+      capabilities: {
+        score_breakdown: "available",
+        rerank: "available",
+        snippet_provenance: "available",
+        retrieval_explanation: "available",
+        batch_search: "available",
+      },
+    },
+  ) {}
   getRepoId(): string | undefined {
     return undefined;
   }
@@ -96,6 +110,10 @@ class FakeDocdexClient {
     this.lastProfileAgentId = agentId;
     return { preferences: [{ content: "use async/await" }] };
   }
+
+  async getCapabilities(): Promise<unknown> {
+    return this.capabilityPayload;
+  }
 }
 
 class EmptySearchDocdexClient extends FakeDocdexClient {
@@ -159,6 +177,18 @@ const makeLogger = (): { logger: RunLogger; entries: Array<{ type: string; data:
     log: async (type: string, data: Record<string, unknown>): Promise<void> => {
       entries.push({ type, data });
     },
+    logSafetyEvent: async (data: Record<string, unknown>): Promise<void> => {
+      entries.push({ type: "safety_event", data });
+    },
+    logPhaseTelemetry: async (data: Record<string, unknown>): Promise<void> => {
+      entries.push({ type: "phase_telemetry", data });
+    },
+    logRunSummary: async (data: Record<string, unknown>): Promise<void> => {
+      entries.push({ type: "run_summary", data });
+    },
+    logVerificationReport: async (report: VerificationReport): Promise<void> => {
+      entries.push({ type: "verification_report", data: report as unknown as Record<string, unknown> });
+    },
     writePhaseArtifact: async (): Promise<string> => "artifact",
   } as RunLogger;
   return { logger, entries };
@@ -191,6 +221,12 @@ test("ContextAssembler builds a complete context bundle", { concurrency: false }
   assert.equal(bundle.preferences_detected.length, 0);
   assert.equal(bundle.memory[0]?.text, "src/index.ts is the primary file for formatting changes.");
   assert.equal(bundle.profile[0]?.content, "use async/await");
+  assert.ok(["resolved", "degraded"].includes(bundle.retrieval_disposition ?? ""));
+  assert.equal(bundle.retrieval_report?.schema_version, 1);
+  assert.equal(bundle.retrieval_report?.disposition, bundle.retrieval_disposition);
+  assert.ok((bundle.retrieval_report?.preflight ?? []).some((entry) => entry.check === "docdex_health"));
+  assert.ok((bundle.retrieval_report?.selection.entries ?? []).length > 0);
+  assert.ok((bundle.retrieval_report?.tool_execution ?? []).length > 0);
 });
 
 test("ContextAssembler force-focuses requested files into focus selection", { concurrency: false }, async () => {
@@ -1429,6 +1465,158 @@ test("ContextAssembler reports missing data when no files are selected", { concu
   assert.ok(bundle.missing?.includes("low_confidence_selection"));
 });
 
+test("ContextAssembler marks retrieval unresolved when docdex health fails", { concurrency: false }, async () => {
+  class HealthFallbackClient extends FakeDocdexClient {
+    async healthCheck(): Promise<boolean> {
+      throw new Error("offline");
+    }
+    async getCapabilities(): Promise<unknown> {
+      return {
+        cached: false,
+        source: "fallback",
+        probed_at_ms: 1,
+        capabilities: {
+          score_breakdown: "unavailable",
+          rerank: "unavailable",
+          snippet_provenance: "unavailable",
+          retrieval_explanation: "unavailable",
+          batch_search: "unavailable",
+        },
+      };
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-unresolved-"));
+  const client = new HealthFallbackClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, { maxQueries: 1, workspaceRoot: tmpDir, readStrategy: "fs" });
+  const bundle = await assembler.assemble("Fix the failing endpoint");
+
+  assert.equal(bundle.retrieval_disposition, "unresolved");
+  const report = bundle.retrieval_report;
+  assert.ok(report);
+  assert.equal(report?.disposition, "unresolved");
+  assert.ok(report?.preflight.some((entry) => entry.check === "docdex_health" && entry.status === "failed"));
+  assert.ok(
+    report?.tool_execution.some(
+      (entry) => entry.category === "search" && entry.disposition === "unavailable",
+    ),
+  );
+});
+
+test("ContextAssembler degrades retrieval when capability probe falls back", { concurrency: false }, async () => {
+  class CapabilityFallbackClient extends FakeDocdexClient {
+    async getCapabilities(): Promise<unknown> {
+      return {
+        cached: false,
+        source: "fallback",
+        probed_at_ms: 1,
+        capabilities: {
+          score_breakdown: "unavailable",
+          rerank: "unavailable",
+          snippet_provenance: "unavailable",
+          retrieval_explanation: "unavailable",
+          batch_search: "unavailable",
+        },
+      };
+    }
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-capability-fallback-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/index.ts"), "export const ok = true;\n", "utf8");
+  const client = new CapabilityFallbackClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, { maxQueries: 1, workspaceRoot: tmpDir, readStrategy: "fs" });
+  const bundle = await assembler.assemble("Update src/index.ts");
+
+  assert.equal(bundle.retrieval_disposition, "degraded");
+  assert.ok(bundle.warnings.includes("docdex_capabilities_fallback"));
+  assert.equal(bundle.retrieval_report?.capabilities?.source, "fallback");
+});
+
+test("ContextAssembler uses batch search and rerank when capabilities are available", { concurrency: false }, async () => {
+  class BatchRerankClient extends FakeDocdexClient {
+    batchSearchCalls = 0;
+    rerankCalls = 0;
+
+    async files(): Promise<unknown> {
+      return {
+        results: [
+          { rel_path: "src/file-1.ts" },
+          { rel_path: "src/file-2.ts" },
+        ],
+      };
+    }
+
+    async batchSearch(queries: string[]): Promise<unknown> {
+      this.batchSearchCalls += 1;
+      return {
+        results: queries.map((query, index) => ({
+          query,
+          hits: [
+            {
+              doc_id: `doc-${index + 1}`,
+              path: `src/file-${index + 1}.ts`,
+              score: 10 - index,
+              snippet_origin: "query",
+              snippet_truncated: false,
+              line_start: 1,
+              line_end: 5,
+              score_breakdown: {
+                query_relevance: 9 - index,
+                structural_relevance: 1,
+                recency_diff_relevance: 0,
+                total: 10 - index,
+              },
+              provenance: {
+                doc_id: `doc-${index + 1}`,
+                path: `src/file-${index + 1}.ts`,
+                rel_path: `src/file-${index + 1}.ts`,
+                line_start: 1,
+                line_end: 5,
+                anchor_kind: "exact_line_window",
+              },
+              retrieval_explanation: {
+                summary: `Ranked for query ${query}`,
+                signals: ["query_match"],
+              },
+            },
+          ],
+        })),
+      };
+    }
+
+    async rerank(_query: string, candidates: unknown[]): Promise<unknown> {
+      this.rerankCalls += 1;
+      return { hits: [...candidates].reverse() };
+    }
+  }
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-batch-rerank-"));
+  mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+  writeFileSync(path.join(tmpDir, "src/file-1.ts"), "export const one = 1;\n", "utf8");
+  writeFileSync(path.join(tmpDir, "src/file-2.ts"), "export const two = 2;\n", "utf8");
+
+  const client = new BatchRerankClient() as unknown as DocdexClient;
+  const assembler = new ContextAssembler(client, {
+    maxQueries: 2,
+    workspaceRoot: tmpDir,
+    readStrategy: "fs",
+  });
+  const bundle = await assembler.assemble("Improve auth handling", {
+    additionalQueries: ["session refresh"],
+  });
+
+  const typedClient = client as unknown as BatchRerankClient;
+  assert.equal(typedClient.batchSearchCalls, 1);
+  assert.equal(typedClient.rerankCalls, 1);
+  assert.ok(typedClient.searchCalls.length <= 1);
+  assert.ok(bundle.warnings.includes("docdex_batch_search_applied"));
+  assert.ok(bundle.warnings.includes("docdex_rerank_applied"));
+  const firstHit = bundle.search_results?.[0]?.hits?.[0];
+  assert.equal(firstHit?.score_breakdown?.query_relevance, 9);
+  assert.equal(firstHit?.provenance?.anchor_kind, "exact_line_window");
+  assert.match(firstHit?.retrieval_explanation?.summary ?? "", /Ranked for query/);
+  assert.equal(bundle.snippets[0]?.provenance?.anchor_kind, "exact_line_window");
+});
+
 test("ContextAssembler trims context to fit budget", { concurrency: false }, async () => {
   class BudgetClient extends FakeDocdexClient {
     async search(): Promise<unknown> {
@@ -1457,4 +1645,9 @@ test("ContextAssembler trims context to fit budget", { concurrency: false }, asy
   const periphery = (bundle.files ?? []).filter((file) => file.role === "periphery");
   assert.equal(periphery.length, 0);
   assert.ok(bundle.warnings.includes("context_budget_pruned"));
+  assert.ok(
+    (bundle.retrieval_report?.dropped ?? []).some(
+      (entry) => entry.reason_code === "budget_pruned",
+    ),
+  );
 });

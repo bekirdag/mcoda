@@ -633,6 +633,9 @@ class StubLogger {
   async log(type: string, data: Record<string, unknown>): Promise<void> {
     this.events.push({ type, data });
   }
+  async logVerificationReport(data: Record<string, unknown>): Promise<void> {
+    this.events.push({ type: "verification_report", data });
+  }
   async writePhaseArtifact(phase: string, kind: string, payload: unknown): Promise<string> {
     const path = `${phase}-${kind}.json`;
     this.artifacts.push({ phase, kind, payload, path });
@@ -657,6 +660,88 @@ test("SmartPipeline runs architect and passes", { concurrency: false }, async ()
   assert.equal(architect.called, true);
   assert.equal(architect.calls, 1);
   assert.equal(memory.calls.length, 0);
+});
+
+test("SmartPipeline logs retrieval report metadata in context summary", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const architect = {
+    async plan(): Promise<Plan> {
+      return {
+        ...basePlan,
+        target_files: ["src/app.ts"],
+      };
+    },
+  };
+  const context: ContextBundle = {
+    ...baseContext,
+    selection: {
+      focus: ["src/app.ts"],
+      periphery: ["src/dep.ts"],
+      all: ["src/app.ts", "src/dep.ts"],
+      low_confidence: false,
+      entries: [
+        { path: "src/app.ts", role: "focus", inclusion_reasons: ["search_hit"] },
+        { path: "src/dep.ts", role: "periphery", inclusion_reasons: ["impact_neighbor"] },
+      ],
+      reason_summary: [
+        { code: "search_hit", count: 1 },
+        { code: "impact_neighbor", count: 1 },
+      ],
+    },
+    retrieval_disposition: "degraded",
+    retrieval_report: {
+      schema_version: 1,
+      mode: "normal",
+      created_at_ms: 1,
+      confidence: "medium",
+      disposition: "degraded",
+      preflight: [
+        { check: "docdex_health", status: "ok" },
+        { check: "docdex_initialize", status: "ok" },
+        { check: "docdex_stats", status: "ok" },
+        { check: "docdex_files", status: "ok" },
+      ],
+      selection: {
+        focus: ["src/app.ts"],
+        periphery: ["src/dep.ts"],
+        all: ["src/app.ts", "src/dep.ts"],
+        low_confidence: false,
+        entries: [
+          { path: "src/app.ts", role: "focus", inclusion_reasons: ["search_hit"] },
+          { path: "src/dep.ts", role: "periphery", inclusion_reasons: ["impact_neighbor"] },
+        ],
+        reason_summary: [
+          { code: "search_hit", count: 1 },
+          { code: "impact_neighbor", count: 1 },
+        ],
+      },
+      dropped: [],
+      truncated: [],
+      unresolved_gaps: ["low_confidence_selection"],
+      tool_execution: [
+        { tool: "docdex.search", category: "search", disposition: "executed" },
+      ],
+      warnings: [],
+    },
+  };
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler(context) as any,
+    architectPlanner: architect as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  await pipeline.run("do thing");
+  const contextSummary = logger.events.find((entry) => entry.type === "context_summary");
+  assert.ok(contextSummary);
+  assert.equal(contextSummary?.data.retrievalDisposition, "degraded");
+  assert.equal(contextSummary?.data.retrievalConfidence, "medium");
+  const retrievalEvent = logger.events.find((entry) => entry.type === "retrieval_report");
+  assert.ok(retrievalEvent);
+  assert.equal(retrievalEvent?.data.disposition, "degraded");
 });
 
 test("SmartPipeline runs research phase before architect in deep mode", { concurrency: false }, async () => {
@@ -3510,6 +3595,10 @@ test("SmartPipeline logs phase events", { concurrency: false }, async () => {
   assert.ok(phases.includes("architect"));
   assert.ok(phases.includes("builder"));
   assert.ok(phases.includes("critic"));
+  assert.ok(phases.includes("answer"));
+  const answerStartIndex = phases.indexOf("answer");
+  const criticStartIndex = phases.lastIndexOf("critic");
+  assert.ok(answerStartIndex > criticStartIndex);
   const inputPhases = logger.events
     .filter((event) => event.type === "phase_input")
     .map((event) => event.data.phase);
@@ -3525,6 +3614,34 @@ test("SmartPipeline logs phase events", { concurrency: false }, async () => {
   assert.ok(outputPhases.includes("builder"));
   assert.ok(outputPhases.includes("critic"));
 });
+
+test(
+  "SmartPipeline rejects answer phase before verify with deterministic metadata",
+  { concurrency: false },
+  async () => {
+    const pipeline = new SmartPipeline({
+      contextAssembler: new StubContextAssembler() as any,
+      architectPlanner: new StubArchitectPlanner() as any,
+      builderRunner: new StubBuilderRunner() as any,
+      criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+      memoryWriteback: new StubMemoryWriteback() as any,
+      maxRetries: 1,
+    });
+
+    await assert.rejects(
+      () => (pipeline as any).runPhase("answer", async () => undefined),
+      (error: any) => {
+        assert.equal(error?.code, "CODALI_INVALID_PHASE_TRANSITION");
+        assert.equal(error?.metadata?.from_phase, "start");
+        assert.equal(error?.metadata?.to_phase, "answer");
+        assert.equal(error?.metadata?.requested_phase, "answer");
+        assert.deepEqual(error?.metadata?.allowed_next_phases, ["retrieve", "plan"]);
+        assert.deepEqual(error?.metadata?.phase_trace, []);
+        return true;
+      },
+    );
+  },
+);
 
 test("SmartPipeline passes lane ids to phases when context manager configured", { concurrency: false }, async () => {
   const architect = new StubArchitectPlanner();
@@ -3681,4 +3798,256 @@ test("SmartPipeline refreshes context when builder requests it", { concurrency: 
     architect.instructionHints.some((hint) => hint.includes("builder_needs_context")),
   );
   assert.deepEqual(assembler.lastAssembleOptions?.forceFocusFiles, ["src/auth.ts"]);
+});
+
+test("SmartPipeline returns deterministic phase trace for identical successful runs", { concurrency: false }, async () => {
+  const runOnce = async (): Promise<string[]> => {
+    const pipeline = new SmartPipeline({
+      contextAssembler: new StubContextAssembler() as any,
+      architectPlanner: new StubArchitectPlanner() as any,
+      builderRunner: new StubBuilderRunner() as any,
+      criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+      memoryWriteback: new StubMemoryWriteback() as any,
+      maxRetries: 1,
+    });
+    const result = await pipeline.run("deterministic run");
+    return result.phaseTrace;
+  };
+
+  const firstTrace = await runOnce();
+  const secondTrace = await runOnce();
+  assert.deepEqual(firstTrace, ["retrieve", "plan", "act", "verify", "answer"]);
+  assert.deepEqual(firstTrace, secondTrace);
+});
+
+test("SmartPipeline logs retry decisions for non-deterministic patch apply retries", { concurrency: false }, async () => {
+  class RetryOnceBuilder extends StubBuilderRunner {
+    async run(): Promise<BuilderRunResult> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        const failure: PatchApplyFailure = {
+          source: "apply_patch",
+          error: "transient apply conflict",
+          patches: [],
+          rollback: { attempted: true, ok: true },
+          rawOutput: "invalid patch output",
+        };
+        throw new PatchApplyError(failure);
+      }
+      return {
+        finalMessage: { role: "assistant", content: "done" },
+        messages: [],
+        toolCallsExecuted: 0,
+      };
+    }
+  }
+
+  const logger = new StubLogger();
+  const builder = new RetryOnceBuilder();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: builder as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 2,
+  });
+
+  const result = await pipeline.run("do thing");
+  assert.equal(result.criticResult.status, "PASS");
+  const retryEvent = logger.events.find(
+    (event) =>
+      event.type === "retry_decision"
+      && event.data.reason_code === "builder_patch_apply_retry",
+  );
+  assert.ok(retryEvent);
+  assert.equal(retryEvent?.data.disposition, "retry");
+  assert.equal(retryEvent?.data.phase, "act");
+});
+
+test("SmartPipeline logs terminate retry decision for non-retryable critic failures", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({
+      status: "FAIL",
+      reasons: ["validation_failed"],
+      retryable: false,
+    }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("fail closed");
+  assert.equal(result.criticResult.status, "FAIL");
+  const retryEvent = logger.events.find(
+    (event) =>
+      event.type === "retry_decision"
+      && event.data.reason_code === "critic_non_retryable_failure",
+  );
+  assert.ok(retryEvent);
+  assert.equal(retryEvent?.data.disposition, "terminate");
+  assert.equal(retryEvent?.data.phase, "verify");
+});
+
+test("SmartPipeline persists verification report artifacts for verified passes", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({
+      status: "PASS",
+      reasons: [],
+      retryable: false,
+      high_confidence: true,
+      verification: {
+        schema_version: 1,
+        outcome: "verified_passed",
+        reason_codes: [],
+        policy: {
+          policy_name: "test",
+          minimum_checks: 1,
+          enforce_high_confidence: true,
+        },
+        checks: [
+          {
+            step: "pnpm test --filter codali",
+            check_type: "shell",
+            targeted: true,
+            status: "passed",
+            duration_ms: 15,
+          },
+        ],
+        totals: {
+          configured: 1,
+          runnable: 1,
+          attempted: 1,
+          passed: 1,
+          failed: 0,
+          unverified: 0,
+        },
+      },
+      report: {
+        status: "PASS",
+        reasons: [],
+        suggested_fixes: [],
+        high_confidence: true,
+      },
+    }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("verify changes");
+  assert.equal(result.criticResult.status, "PASS");
+  assert.equal(result.verification?.outcome, "verified_passed");
+  assert.ok(
+    logger.artifacts.some(
+      (artifact) => artifact.phase === "verify" && artifact.kind === "verification_report",
+    ),
+  );
+  assert.ok(logger.events.some((event) => event.type === "verification_report"));
+});
+
+test("SmartPipeline blocks high-confidence pass when verification remains unverified", { concurrency: false }, async () => {
+  const logger = new StubLogger();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: new StubBuilderRunner() as any,
+    criticEvaluator: new StubCriticEvaluator({
+      status: "PASS",
+      reasons: [],
+      retryable: false,
+      high_confidence: false,
+      verification: {
+        schema_version: 1,
+        outcome: "unverified_with_reason",
+        reason_codes: ["verification_policy_minimum_unmet"],
+        policy: {
+          policy_name: "test",
+          minimum_checks: 1,
+          enforce_high_confidence: true,
+        },
+        checks: [],
+        totals: {
+          configured: 1,
+          runnable: 0,
+          attempted: 0,
+          passed: 0,
+          failed: 0,
+          unverified: 1,
+        },
+      },
+      report: {
+        status: "PASS",
+        reasons: [],
+        suggested_fixes: [],
+        high_confidence: false,
+      },
+    }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+  });
+
+  const result = await pipeline.run("do thing");
+  assert.equal(result.criticResult.status, "FAIL");
+  assert.equal(result.criticResult.retryable, false);
+  assert.ok(result.criticResult.reasons.includes("verification_high_confidence_gate_blocked"));
+  assert.ok(
+    result.criticResult.reasons.includes("verification_verification_policy_minimum_unmet"),
+  );
+  assert.equal(result.verification?.outcome, "unverified_with_reason");
+  const gateEvent = logger.events.find((event) => event.type === "verification_high_confidence_gate");
+  assert.ok(gateEvent);
+  assert.equal(gateEvent?.data.status, "blocked");
+});
+
+test("SmartPipeline terminates context refresh on phase timeout with explicit reason", { concurrency: false }, async () => {
+  class AlwaysNeedsContextBuilder extends StubBuilderRunner {
+    async run(): Promise<BuilderRunResult> {
+      this.calls += 1;
+      return {
+        finalMessage: {
+          role: "assistant",
+          content: JSON.stringify({ needs_context: true, queries: ["auth"], files: ["src/auth.ts"] }),
+        },
+        messages: [],
+        toolCallsExecuted: 0,
+        contextRequest: { queries: ["auth"], files: ["src/auth.ts"] },
+      };
+    }
+  }
+
+  const logger = new StubLogger();
+  const pipeline = new SmartPipeline({
+    contextAssembler: new StubContextAssembler() as any,
+    architectPlanner: new StubArchitectPlanner() as any,
+    builderRunner: new AlwaysNeedsContextBuilder() as any,
+    criticEvaluator: new StubCriticEvaluator({ status: "PASS", reasons: [], retryable: false }) as any,
+    memoryWriteback: new StubMemoryWriteback() as any,
+    logger: logger as any,
+    maxRetries: 1,
+    maxContextRefreshes: 2,
+    maxContextRefreshMs: 0,
+  });
+
+  const result = await pipeline.run("needs context timeout");
+  assert.equal(result.criticResult.status, "FAIL");
+  assert.equal(result.contextRefreshTerminationReason, "phase_timeout");
+  const terminated = logger.events.find(
+    (event) =>
+      event.type === "retry_decision"
+      && event.data.reason_code === "builder_context_refresh_terminated",
+  );
+  assert.ok(terminated);
+  assert.equal(terminated?.data.disposition, "terminate");
+  assert.deepEqual(terminated?.data.details, ["phase_timeout"]);
 });

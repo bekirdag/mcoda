@@ -327,6 +327,65 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
     },
   },
   {
+    name: "docdex_rerank",
+    description: "Rerank candidate hits using docdex optional rerank flow.",
+    inputSchema: {
+      type: "object",
+      required: ["query", "candidates"],
+      properties: {
+        query: { type: "string" },
+        candidates: { type: "array", items: { type: "object" } },
+        limit: { type: "number" },
+      },
+    },
+    handler: async (args) => {
+      const { query, candidates, limit } = args as {
+        query: string;
+        candidates: unknown[];
+        limit?: number;
+      };
+      const result = await client.rerank(query, candidates, limit);
+      return toOutput(result);
+    },
+  },
+  {
+    name: "docdex_batch_search",
+    description: "Run batched docdex search queries via optional batch endpoint/tool.",
+    inputSchema: {
+      type: "object",
+      required: ["queries"],
+      properties: {
+        queries: { type: "array", items: { type: "string" } },
+        limit: { type: "number" },
+        includeLibs: { type: "boolean" },
+      },
+    },
+    handler: async (args) => {
+      const { queries, limit, includeLibs } = args as {
+        queries: string[];
+        limit?: number;
+        includeLibs?: boolean;
+      };
+      const result = await client.batchSearch(queries, { limit, includeLibs });
+      return toOutput(result);
+    },
+  },
+  {
+    name: "docdex_capabilities",
+    description: "Probe optional docdex retrieval capability support and cache per run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        forceRefresh: { type: "boolean" },
+      },
+    },
+    handler: async (args) => {
+      const { forceRefresh } = (args as { forceRefresh?: boolean }) ?? {};
+      const result = await client.getCapabilities(forceRefresh ?? false);
+      return toOutput(result);
+    },
+  },
+  {
     name: "docdex_stats",
     description: "Fetch docdex index stats.",
     inputSchema: { type: "object", properties: {} },

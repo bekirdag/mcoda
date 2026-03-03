@@ -37,6 +37,48 @@ export interface RunnerResult {
   usage?: ProviderUsage;
 }
 
+export type RunnerBudgetReasonCode =
+  | "runner_timeout_exceeded"
+  | "runner_tool_call_limit_exceeded"
+  | "runner_step_limit_exceeded";
+
+export class RunnerBudgetError extends Error {
+  readonly code: RunnerBudgetReasonCode;
+  readonly metadata: {
+    reason_code: RunnerBudgetReasonCode;
+    step: number;
+    tool_calls_executed: number;
+    max_steps: number;
+    max_tool_calls: number;
+    timeout_ms?: number;
+  };
+
+  constructor(
+    code: RunnerBudgetReasonCode,
+    metadata: {
+      step: number;
+      tool_calls_executed: number;
+      max_steps: number;
+      max_tool_calls: number;
+      timeout_ms?: number;
+    },
+  ) {
+    super(
+      code === "runner_timeout_exceeded"
+        ? "Runner timeout exceeded"
+        : code === "runner_tool_call_limit_exceeded"
+          ? "Tool call limit exceeded"
+          : "Runner step limit exceeded",
+    );
+    this.name = "RunnerBudgetError";
+    this.code = code;
+    this.metadata = {
+      reason_code: code,
+      ...metadata,
+    };
+  }
+}
+
 const buildToolMessage = (call: ProviderToolCall, content: string): ProviderMessage => ({
   role: "tool",
   content,
@@ -115,12 +157,28 @@ export class Runner {
       if (!deadline) return undefined;
       return deadline - Date.now();
     };
+    const throwBudgetError = async (
+      code: RunnerBudgetReasonCode,
+      step: number,
+    ): Promise<never> => {
+      const error = new RunnerBudgetError(code, {
+        step,
+        tool_calls_executed: toolCallsExecuted,
+        max_steps: this.maxSteps,
+        max_tool_calls: this.maxToolCalls,
+        timeout_ms: this.timeoutMs,
+      });
+      if (this.logger) {
+        await this.logger.log("runner_budget_failure", error.metadata);
+      }
+      throw error;
+    };
 
     const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
       const remaining = timeRemaining();
       if (remaining === undefined) return promise;
       if (remaining <= 0) {
-        throw new Error("Runner timeout exceeded");
+        await throwBudgetError("runner_timeout_exceeded", -1);
       }
       let timeoutId: NodeJS.Timeout | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
@@ -128,6 +186,11 @@ export class Runner {
       });
       try {
         return await Promise.race([promise, timeoutPromise]);
+      } catch (error) {
+        if (error instanceof Error && /Runner timeout exceeded/i.test(error.message)) {
+          await throwBudgetError("runner_timeout_exceeded", -1);
+        }
+        throw error;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
       }
@@ -135,7 +198,7 @@ export class Runner {
 
     for (let step = 0; step < this.maxSteps; step += 1) {
       if (deadline && timeRemaining()! <= 0) {
-        throw new Error("Runner timeout exceeded");
+        await throwBudgetError("runner_timeout_exceeded", step);
       }
       const toolSpecs = this.tools.describe().map((tool) => ({
         name: tool.name,
@@ -193,7 +256,7 @@ export class Runner {
 
       for (const call of response.toolCalls) {
         if (toolCallsExecuted >= this.maxToolCalls) {
-          throw new Error("Tool call limit exceeded");
+          await throwBudgetError("runner_tool_call_limit_exceeded", step);
         }
         toolCallsExecuted += 1;
         emitStatus("executing", call.name);
@@ -202,19 +265,45 @@ export class Runner {
           this.tools.execute(call.name, call.args, this.context),
           "tool",
         );
-        const content = result.ok ? result.output : `ERROR: ${result.error ?? "tool failed"}`;
+        const toolError = result.error;
+        const content = result.ok
+          ? result.output
+          : `ERROR[${toolError?.code ?? "tool_execution_failed"}]: ${toolError?.message ?? "tool failed"}`;
         messages.push(buildToolMessage(call, content));
-        this.onEvent?.({ type: "tool_result", name: call.name, output: content, ok: result.ok });
+        this.onEvent?.({
+          type: "tool_result",
+          name: call.name,
+          output: content,
+          ok: result.ok,
+          errorCode: toolError?.code,
+          retryable: toolError?.retryable,
+        });
         if (this.logger) {
           await this.logger.log("tool_call", {
             name: call.name,
             ok: result.ok,
-            error: result.error,
+            error: toolError?.message,
+            error_code: toolError?.code,
+            error_category: toolError?.category,
+            error_retryable: toolError?.retryable,
+            error_details: toolError?.details,
           });
+          if (toolError) {
+            await this.logger.logSafetyEvent({
+              phase: "act",
+              category: "tool",
+              code: toolError.code,
+              disposition: toolError.retryable ? "retryable" : "non_retryable",
+              tool: call.name,
+              message: toolError.message,
+              details: toolError.details,
+            });
+          }
         }
       }
     }
 
-    throw new Error("Runner step limit exceeded");
+    await throwBudgetError("runner_step_limit_exceeded", this.maxSteps);
+    throw new Error("unreachable_runner_budget_path");
   }
 }

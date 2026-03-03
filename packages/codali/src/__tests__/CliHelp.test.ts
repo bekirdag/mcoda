@@ -18,6 +18,15 @@ test("codali --help prints usage", { concurrency: false }, () => {
   assert.equal(result.status, 0);
   const output = typeof result.stdout === "string" ? result.stdout : result.stdout?.toString() ?? "";
   assert.match(output, /Usage: codali/);
+  assert.match(output, /fix\|review\|explain\|test/);
+  assert.match(output, /codali eval --suite <path>/);
+  assert.match(output, /codali learn --file <path\/to\/file>/);
+  assert.match(output, /--confirm <dedupe_key>/);
+  assert.match(output, /\n  eval\s+/);
+  assert.match(output, /\n  fix\s+/);
+  assert.match(output, /\n  review\s+/);
+  assert.match(output, /\n  explain\s+/);
+  assert.match(output, /\n  test\s+/);
   assert.match(output, /--smart/);
 });
 

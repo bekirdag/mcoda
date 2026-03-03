@@ -125,3 +125,45 @@ test("PatchInterpreter logs request/response and retry events", async () => {
   assert.ok(types.includes("interpreter_response"));
   assert.ok(types.includes("interpreter_retry"));
 });
+
+test("PatchInterpreter preserves deterministic schema failure messages", async () => {
+  const provider = new StubProvider([
+    { message: { role: "assistant", content: "{\"files\":[]}" } },
+  ]);
+  const interpreter = new PatchInterpreter({
+    provider,
+    patchFormat: "file_writes",
+    maxRetries: 0,
+  });
+
+  await assert.rejects(
+    () => interpreter.interpret("freeform output"),
+    /empty files array/i,
+  );
+});
+
+test("PatchInterpreter direct-parse path remains deterministic for equivalent invalid raw payloads", async () => {
+  const provider = new StubProvider([
+    { message: { role: "assistant", content: "still invalid" } },
+    { message: { role: "assistant", content: "still invalid" } },
+  ]);
+  const interpreter = new PatchInterpreter({
+    provider,
+    patchFormat: "search_replace",
+    maxRetries: 0,
+  });
+
+  const run = async (raw: string): Promise<string> => {
+    try {
+      await interpreter.interpret(raw);
+      return "ok";
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+
+  const first = await run("{");
+  const second = await run("not-json");
+  assert.equal(first, second);
+  assert.equal(first, "Patch output is not valid JSON");
+});

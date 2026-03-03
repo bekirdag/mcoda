@@ -1,83 +1,164 @@
 import { readFile } from "node:fs/promises";
-import type { DocdexClient } from "../docdex/DocdexClient.js";
 import type { Provider } from "../providers/ProviderTypes.js";
 import { RunLogReader } from "../runtime/RunLogReader.js";
+import {
+  scoreLearningConfidence,
+  type LearningEvidenceReference,
+  type LearningRuleProposal,
+} from "./LearningGovernance.js";
+
+export interface PostMortemAnalysisResult {
+  runId: string;
+  status: "rule_extracted" | "no_change";
+  message: string;
+  rule?: string;
+  rules: LearningRuleProposal[];
+  evidence: LearningEvidenceReference[];
+}
+
+const normalizeRuleText = (value: string): string =>
+  value.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+
+const inferRuleCategory = (rule: string): "preference" | "constraint" => {
+  const normalized = rule.trim().toLowerCase();
+  if (
+    normalized.startsWith("prefer")
+    || normalized.startsWith("use ")
+    || normalized.startsWith("always use")
+  ) {
+    return "preference";
+  }
+  if (
+    normalized.startsWith("avoid")
+    || normalized.startsWith("do not ")
+    || normalized.startsWith("don't ")
+    || normalized.startsWith("never ")
+    || normalized.includes("do not ")
+    || normalized.includes("don't ")
+    || normalized.includes("avoid ")
+  ) {
+    return "constraint";
+  }
+  return "constraint";
+};
+
+const inferExplicitDirective = (rule: string): boolean =>
+  /^(prefer|avoid|do not|don't|never|must|always)\b/i.test(rule.trim());
 
 export class PostMortemAnalyzer {
   constructor(
-    private docdex: DocdexClient,
     private provider: Provider,
-    private workspaceRoot: string
+    private workspaceRoot: string,
   ) {}
 
-  async analyze(filePath: string): Promise<string | undefined> {
+  async analyze(filePath: string): Promise<PostMortemAnalysisResult> {
     const reader = new RunLogReader(this.workspaceRoot);
     const runId = await reader.findLastRunForFile(filePath);
-
     if (!runId) {
       throw new Error(`No recent Codali run found for ${filePath}`);
     }
 
-    // 1. Get what Codali did (Builder Patch)
     const patchContent = await reader.getRunArtifact(runId, "builder-patch");
     if (!patchContent) {
-        throw new Error(`Could not find builder patch for run ${runId}`);
+      throw new Error(`Could not find builder patch for run ${runId}`);
     }
 
-    // 2. Get current state (User's Fix)
     let currentContent = "";
     try {
-        currentContent = await readFile(filePath, "utf8");
+      currentContent = await readFile(filePath, "utf8");
     } catch {
-        throw new Error(`Could not read current file ${filePath}`);
+      throw new Error(`Could not read current file ${filePath}`);
     }
 
-    // 3. Ask LLM to compare and extract a rule
+    const intent = await reader.getRunIntent(runId);
+    const evidence: LearningEvidenceReference[] = [
+      { kind: "run", ref: runId, note: "post_mortem_comparison" },
+      { kind: "file", ref: filePath },
+      { kind: "artifact", ref: `phase/builder-patch:${runId}` },
+    ];
+    if (intent?.trim()) {
+      evidence.push({ kind: "request", ref: intent.trim() });
+    }
+
     const prompt = `
 ROLE: Post-Mortem Analyst
-TASK: Compare the "CODALI PATCH" (what the agent tried to do) vs "CURRENT FILE" (what the user fixed/kept).
-GOAL: Extract a specific preference or rule that the agent violated.
+TASK: Compare the "CODALI PATCH" (what the agent attempted) against "CURRENT FILE" (user-adjusted result).
+GOAL: Extract one concise, durable coding rule that prevents this mismatch in future runs.
 
-CODALI PATCH (JSON):
+RUN ID:
+${runId}
+
+CODALI PATCH ARTIFACT:
 ${patchContent}
 
 CURRENT FILE CONTENT:
 ${currentContent}
 
 INSTRUCTIONS:
-1. Identify the difference between the patch and the current file.
-2. Did the user revert the change? Or did they modify it?
-3. Formulate a concise "Constraint Rule" to prevent this mistake in the future.
-   - Example: "Prefer using 'axios' over 'fetch'."
-   - Example: "Do not remove the 'export' keyword from helper functions."
-4. If the changes are identical (no revert), output "NO_CHANGE".
+1. Determine whether the user materially changed/reverted the proposed patch.
+2. If yes, return one concise rule string.
+3. If no meaningful difference exists, return exactly: NO_CHANGE
 
 OUTPUT FORMAT:
-Return ONLY the rule string.
+Return ONLY a single line rule string or NO_CHANGE.
 `;
 
     const response = await this.provider.generate({
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.1,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
     });
 
-    const rule = response.message.content?.trim();
-
-    if (!rule || rule === "NO_CHANGE") {
-        // Success case! The user kept the changes.
-        // We should promote this as a Golden Example.
-        const intent = await reader.getRunIntent(runId);
-        if (intent && patchContent) {
-            const memoryContent = `GOLDEN_EXAMPLE\nINTENT: ${intent}\nPATCH: ${patchContent}`;
-            await this.docdex.memorySave(memoryContent);
-            return "NO_CHANGE: Promoted to Golden Example.";
-        }
-        return undefined;
+    const rawRule = response.message.content?.trim() ?? "";
+    if (!rawRule || rawRule.toUpperCase() === "NO_CHANGE") {
+      return {
+        runId,
+        status: "no_change",
+        message: "No meaningful user deviation detected; no rule persisted.",
+        rules: [],
+        evidence,
+      };
     }
 
-    // 4. Save to Docdex Profile
-    await this.docdex.savePreference("codali", "constraint", rule);
-    
-    return rule;
+    const rule = normalizeRuleText(rawRule);
+    if (!rule) {
+      return {
+        runId,
+        status: "no_change",
+        message: "Analyzer did not produce a valid rule.",
+        rules: [],
+        evidence,
+      };
+    }
+
+    const category = inferRuleCategory(rule);
+    const explicit = inferExplicitDirective(rule);
+    const confidence = scoreLearningConfidence({
+      source: "post_mortem_inferred_rule",
+      content: rule,
+      explicit,
+      evidence_count: evidence.length,
+      has_revert_signal: true,
+    });
+
+    return {
+      runId,
+      status: "rule_extracted",
+      message: "Extracted post-mortem learning rule.",
+      rule,
+      evidence,
+      rules: [
+        {
+          category,
+          content: rule,
+          source: "post_mortem_inferred_rule",
+          scope: "profile_memory",
+          confidence_score: confidence.score,
+          confidence_band: confidence.band,
+          confidence_reasons: confidence.reasons,
+          evidence,
+          explicit_confirmation: false,
+        },
+      ],
+    };
   }
 }

@@ -8,6 +8,204 @@ codali is a standalone tool runner that edits the repo directly. It supports opt
 codali run --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
 ```
 
+## Workflow commands
+Codali exposes first-class workflow commands that map to internal run profiles:
+
+- `codali fix`: patch/change-focused output (`patch_summary` contract).
+- `codali review`: findings/risk-focused output (`review_findings` contract).
+- `codali explain`: explanation-first output (`explanation` contract).
+- `codali test`: verification-first output (`verification_summary` contract).
+
+Examples:
+
+```sh
+codali fix --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
+codali review --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
+codali explain --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
+codali test --workspace-root . --provider openai-compatible --model gpt-4o-mini --task tasks/work.txt
+```
+
+`codali run` remains the advanced/general entrypoint. You can still override the run profile explicitly:
+
+- `--workflow-profile <run|fix|review|explain|test>` (alias: `--profile`)
+- `CODALI_WORKFLOW_PROFILE=<run|fix|review|explain|test>`
+
+Precedence for active profile resolution:
+- Command-derived profile for `fix|review|explain|test`
+- CLI override (`--workflow-profile` / `--profile`)
+- Environment (`CODALI_WORKFLOW_PROFILE` / `CODALI_PROFILE`)
+- Config file (`workflow.profile`)
+- Built-in default (`run`)
+
+## Learn command (Epic-8)
+Use `codali learn` to persist governed learning rules from post-mortem history and to promote candidates.
+
+Analyze a file/run history and write governed outcomes:
+
+```sh
+codali learn --file src/index.ts
+```
+
+Promote candidate rules explicitly:
+
+```sh
+codali learn --confirm profile_memory::constraint::do not use moment.js
+```
+
+You can combine both:
+
+```sh
+codali learn --file src/index.ts --confirm profile_memory::constraint::do not use moment.js
+```
+
+Learning lifecycle behavior:
+- Rules are scored with confidence metadata and persisted only if policy thresholds pass.
+- Accepted rules are written as `candidate` or `enforced` with deterministic dedupe keys.
+- Low-confidence paths are deferred unless explicit confirmation/promotion policy is satisfied.
+- Scope-aware routing is enforced (`repo_memory` vs `profile_memory`).
+
+Deterministic `codali learn` exit codes:
+- `0`: success (including no-change analysis)
+- `2`: usage error (`--file` or `--confirm` required)
+- `3`: promotion failure (`--confirm` rejected)
+- `4`: writeback rejection during learned-rule persistence
+
+Learning config in `codali.config.json`:
+
+```json
+{
+  "learning": {
+    "persistence_min_confidence": 0.45,
+    "enforcement_min_confidence": 0.85,
+    "require_confirmation_for_low_confidence": true,
+    "auto_enforce_high_confidence": true,
+    "candidate_store_file": "logs/codali/learning-rules.json"
+  }
+}
+```
+
+Learning env overrides:
+- `CODALI_LEARNING_PERSISTENCE_MIN_CONFIDENCE`
+- `CODALI_LEARNING_ENFORCEMENT_MIN_CONFIDENCE`
+- `CODALI_LEARNING_REQUIRE_CONFIRMATION_FOR_LOW_CONFIDENCE`
+- `CODALI_LEARNING_AUTO_ENFORCE_HIGH_CONFIDENCE`
+- `CODALI_LEARNING_CANDIDATE_STORE_FILE`
+
+## Eval command (Epic-7)
+Run deterministic eval suites and regression gates:
+
+```sh
+codali eval --suite eval/smoke.json --workspace-root . --provider openai-compatible --model gpt-4o-mini
+```
+
+Useful options:
+- `--output <text|json>` (default `text`)
+- `--baseline <path>` (optional baseline report override)
+- `--report-dir <path>` (override eval report directory)
+- run overrides: `--provider`, `--model`, `--api-key`, `--base-url`, `--agent`, `--agent-id`, `--agent-slug`, `--profile`, `--smart`, `--no-deep-investigation`
+
+`codali eval` emits required quality metrics:
+- `M-001` task success rate
+- `M-002` first-pass success rate
+- `M-003` patch apply success rate
+- `M-004` verification pass rate
+- `M-005` hallucination rate
+- `M-006` scope violation rate
+- `M-007` latency median/p95
+- `M-008` success tokens/cost median/p95
+
+Deterministic exit codes:
+- `0`: pass (run + gates)
+- `2`: CLI usage error
+- `3`: suite validation error
+- `4`: run failure (task failure/execution error)
+- `5`: regression gate failure
+
+Report storage:
+- Default: `<workspace-root>/logs/codali/eval`
+- Reports include suite fingerprint, run artifacts, metrics, baseline deltas, and gate results.
+
+Eval gate config (`codali.config.json`):
+
+```json
+{
+  "eval": {
+    "report_dir": "logs/codali/eval",
+    "gates": {
+      "patch_apply_drop_max": 0.02,
+      "verification_pass_rate_min": 0.9,
+      "hallucination_rate_max": 0.02,
+      "scope_violation_rate_max": 0
+    }
+  }
+}
+```
+
+Eval env overrides:
+- `CODALI_EVAL_REPORT_DIR`
+- `CODALI_EVAL_GATE_PATCH_APPLY_DROP_MAX`
+- `CODALI_EVAL_GATE_VERIFICATION_PASS_RATE_MIN`
+- `CODALI_EVAL_GATE_HALLUCINATION_RATE_MAX`
+- `CODALI_EVAL_GATE_SCOPE_VIOLATION_RATE_MAX`
+
+## Verification policy behavior (Epic-6)
+Verification is always classified explicitly in smart pipeline runs:
+
+- `verified_passed`
+- `verified_failed`
+- `unverified_with_reason`
+
+Default workflow profile verification policy:
+- `run`: `verificationPolicy=general`, `verificationMinimumChecks=0`, `verificationEnforceHighConfidence=false`
+- `fix`: `verificationPolicy=fix`, `verificationMinimumChecks=0`, `verificationEnforceHighConfidence=false`
+- `review`: `verificationPolicy=review`, `verificationMinimumChecks=0`, `verificationEnforceHighConfidence=false`
+- `explain`: `verificationPolicy=explain`, `verificationMinimumChecks=0`, `verificationEnforceHighConfidence=false`
+- `test`: `verificationPolicy=test`, `verificationMinimumChecks=1`, `verificationEnforceHighConfidence=true`
+
+When high-confidence enforcement is active, Codali blocks PASS if verification is not `verified_passed`.
+
+Profile overrides are configured in `codali.config.json` under `workflow.profiles.<profile>`:
+
+```json
+{
+  "workflow": {
+    "profiles": {
+      "test": {
+        "verificationPolicy": "test",
+        "verificationMinimumChecks": 2,
+        "verificationEnforceHighConfidence": true
+      }
+    }
+  }
+}
+```
+
+Run logs include verification evidence:
+- `verification_report` event in `logs/codali/<runId>.jsonl`
+- `verify/verification_report` phase artifact in `logs/codali/phase/<runId>/`
+
+## Run observability and query contracts (Epic-9)
+Codali emits versioned run telemetry for each execution:
+
+- `run_summary` (`schema_version=1`) includes:
+  - `quality_dimensions` (`plan`, `retrieval`, `patch`, `verification`, `final_disposition`)
+  - `final_disposition` (`status`, `failure_class`, `reason_codes`, `stage`, `retryable`)
+  - `artifact_references`, `phase_telemetry`, and explicit `missing_artifacts`
+- `phase_telemetry` (`schema_version=1`) includes:
+  - `phase`, `provider`, `model`, `duration_ms`
+  - usage/cost fields when available
+  - `missing_usage_reason` / `missing_cost_reason` when unavailable
+
+For programmatic log access, `RunLogReader.queryEvents(...)` supports deterministic filters:
+- `run_id`
+- `task_id`
+- `phase`
+- `event_type`
+- `failure_class`
+- `limit`, `offset`, `sort` (`asc|desc`)
+
+Eval output now carries a normalized run-consumer payload per task (`normalized_run`) so report/history processors can consume run identity, phase outcomes, failure lineage, and telemetry without custom parsing.
+
 ## Smart pipeline
 Enable the multi-phase pipeline (librarian/architect/builder/critic) for better results on small models:
 
@@ -47,6 +245,9 @@ Key env flags:
 Notes:
 - Deep mode disables plan-hint/fast-path shortcuts.
 - Runs fail closed if Docdex health/index checks, quotas, budgets, or evidence gates are unmet.
+- Every librarian pass now emits retrieval accountability metadata:
+  - `retrieval_disposition` (`resolved|degraded|unresolved`)
+  - `retrieval_report` (preflight, selection reason codes, dropped/truncated rationale, unresolved gaps, tool execution, capability snapshot)
 
 Stdin input:
 
@@ -113,6 +314,20 @@ converts it into patch JSON for Codali to apply.
 - `CODALI_INTERPRETER_TIMEOUT_MS` (default `120000`)
 - `--agent-interpreter <agent-slug>` (CLI override, resolves provider/model via mcoda agent DB)
 - `CODALI_AGENT_INTERPRETER` (env override for interpreter agent selection)
+
+## Patch resilience behavior (Epic-5)
+Codali enforces deterministic patch behavior before and during apply:
+
+- strict schema/content gate before apply (malformed JSON, schema-echo payloads, and empty top-level arrays fail closed)
+- deterministic patch failure classes: `schema`, `scope`, `search_match`, `filesystem`, `rollback`, `guardrail`
+- bounded retry/fallback ladder with class-aware retryability (non-retryable classes short-circuit)
+- rollback attempt on partial apply failure, with rollback failure surfaced as its own class
+- final patch failures carry attempt-history metadata in run artifacts/logs
+
+Critic PASS gate is also stricter:
+- PASS is blocked without concrete plan-target evidence
+- touched files must align with plan targets
+- critic report includes `alignment_evidence` fields for auditability
 
 ## Docdex configuration
 codali uses docdex for search, snippets, impact graphs, and memory tools.

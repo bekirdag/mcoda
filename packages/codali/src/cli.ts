@@ -4,15 +4,24 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RunCommand } from "./cli/RunCommand.js";
 import { FeedbackCommand } from "./cli/FeedbackCommand.js";
+import { EvalCommand } from "./cli/EvalCommand.js";
 
 const HELP_TEXT =
   "Usage: codali run [--workspace-root <path>] --agent <slug> [--task <file>]\n" +
   "   or: codali run [--workspace-root <path>] --provider <name> --model <model> [--task <file>]\n" +
-  "   or: codali learn --file <path/to/file>\n" +
+  "   or: codali <fix|review|explain|test> [run options] [--task <file>]\n" +
+  "   or: codali eval --suite <path> [eval options]\n" +
+  "   or: codali learn --file <path/to/file> [--confirm <dedupe_key> ...]\n" +
+  "   or: codali learn --confirm <dedupe_key> [--confirm <dedupe_key> ...]\n" +
   "\n" +
   "Commands:\n" +
-  "  run      Run a single task (supports streaming output).\n" +
-  "  learn    Analyze a file to learn from user edits/reverts.\n" +
+  "  run      Run a single task (advanced/general profile).\n" +
+  "  fix      Apply fix workflow profile (patch-focused output).\n" +
+  "  review   Apply review workflow profile (findings-focused output).\n" +
+  "  explain  Apply explain workflow profile (explanation-first output).\n" +
+  "  test     Apply test workflow profile (verification-first output).\n" +
+  "  eval     Run deterministic local evaluation suites and regression gates.\n" +
+  "  learn    Analyze user edits/reverts and govern candidate->enforced learning.\n" +
   "  doctor   Print environment and install paths.\n" +
   "\n" +
   "Options:\n" +
@@ -75,8 +84,13 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
     return;
   }
 
-  if (command === "run") {
-    await RunCommand.run(rest);
+  if (["run", "fix", "review", "explain", "test"].includes(command)) {
+    await RunCommand.run(["--command", command, ...rest]);
+    return;
+  }
+
+  if (command === "eval") {
+    await EvalCommand.run(rest);
     return;
   }
 
@@ -99,6 +113,10 @@ if (isMain) {
   runCli().catch((error) => {
     // eslint-disable-next-line no-console
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    const maybeWithCode = error as { exitCode?: unknown };
+    process.exitCode =
+      typeof maybeWithCode.exitCode === "number" && Number.isInteger(maybeWithCode.exitCode)
+        ? maybeWithCode.exitCode
+        : 1;
   });
 }

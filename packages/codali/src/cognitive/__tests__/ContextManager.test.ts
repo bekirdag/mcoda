@@ -8,7 +8,7 @@ import { ContextManager } from "../ContextManager.js";
 import { ContextStore } from "../ContextStore.js";
 import { ContextRedactor } from "../ContextRedactor.js";
 import { ContextSummarizer } from "../ContextSummarizer.js";
-import type { LocalContextConfig } from "../Types.js";
+import type { LocalContextConfig, VerificationReport } from "../Types.js";
 
 class StubProvider implements Provider {
   name = "stub";
@@ -31,6 +31,22 @@ class StubLogger {
 
   async writePhaseArtifact(_phase: string, _kind: string, _payload: unknown): Promise<string> {
     return "artifact.json";
+  }
+
+  async logSafetyEvent(_data: Record<string, unknown>): Promise<void> {
+    // no-op for tests
+  }
+
+  async logPhaseTelemetry(_data: Record<string, unknown>): Promise<void> {
+    // no-op for tests
+  }
+
+  async logRunSummary(_data: Record<string, unknown>): Promise<void> {
+    // no-op for tests
+  }
+
+  async logVerificationReport(_report: VerificationReport): Promise<void> {
+    // no-op for tests
   }
 }
 

@@ -24,6 +24,8 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
     "secret",
     "--base-url",
     "https://api.example.com",
+    "--workflow-profile",
+    "explain",
     "--task",
     "tasks/work.txt",
     "--config",
@@ -78,6 +80,7 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
   assert.equal(parsed.model, "gpt-4o-mini");
   assert.equal(parsed.apiKey, "secret");
   assert.equal(parsed.baseUrl, "https://api.example.com");
+  assert.equal(parsed.workflowProfile, "explain");
   assert.equal(parsed.taskFile, "tasks/work.txt");
   assert.equal(parsed.configPath, "codali.config.json");
   assert.equal(parsed.docdexBaseUrl, "http://127.0.0.1:28491");
@@ -102,6 +105,11 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
   assert.equal(parsed.interpreterMaxRetries, 2);
   assert.equal(parsed.interpreterTimeoutMs, 90000);
   assert.equal(parsed.costMaxPerRun, 0.75);
+});
+
+test("parseArgs supports --profile alias for workflow profile", { concurrency: false }, () => {
+  const parsed = parseArgs(["--profile", "review"]);
+  assert.equal(parsed.workflowProfile, "review");
 });
 
 test("isToolEnabled respects enabled list and allowShell", { concurrency: false }, () => {

@@ -205,7 +205,7 @@ test("DocdexClient hits new HTTP endpoints", { concurrency: false }, async () =>
   assert.ok(calls.some((url) => url.includes("/v1/dag/export")));
 });
 
-test("DocdexClient uses MCP for tree/open/profile/web", { concurrency: false }, async () => {
+test("DocdexClient uses MCP for tree/open/profile/web/capabilities", { concurrency: false }, async () => {
   const seen: Array<{ method?: string; params?: Record<string, unknown> }> = [];
   await withStubbedFetch((url, init) => {
     if (url.endsWith("/healthz")) {
@@ -225,6 +225,9 @@ test("DocdexClient uses MCP for tree/open/profile/web", { concurrency: false }, 
     await client.getProfile("agent-1");
     await client.savePreference("agent-1", "constraint", "Use date-fns");
     await client.webResearch("docdex web search", { forceWeb: true, webLimit: 2 });
+    await client.getCapabilities();
+    await client.getCapabilities(); // cached path
+    await client.getCapabilities(true); // force refresh path
   });
 
   const methods = seen.map((entry) => entry.method);
@@ -233,6 +236,7 @@ test("DocdexClient uses MCP for tree/open/profile/web", { concurrency: false }, 
   assert.ok(methods.includes("docdex_get_profile"));
   assert.ok(methods.includes("docdex_save_preference"));
   assert.ok(methods.includes("docdex_web_research"));
+  assert.ok(methods.includes("docdex_capabilities"));
 
   const treeCall = seen.find((entry) => entry.method === "docdex_tree");
   assert.equal(treeCall?.params?.project_root, process.cwd());
@@ -242,6 +246,8 @@ test("DocdexClient uses MCP for tree/open/profile/web", { concurrency: false }, 
   assert.ok(profileCall?.params && !("project_root" in profileCall.params));
   const webCall = seen.find((entry) => entry.method === "docdex_web_research");
   assert.equal(webCall?.params?.project_root, process.cwd());
+  const capabilitiesCalls = seen.filter((entry) => entry.method === "docdex_capabilities");
+  assert.equal(capabilitiesCalls.length, 2);
 });
 
 test("DocdexClient unwraps MCP text payloads", { concurrency: false }, async () => {
@@ -348,6 +354,13 @@ test("DocdexTools expose expanded docdex toolset", { concurrency: false }, async
       .get("docdex_save_preference")
       ?.handler({ agentId: "agent-1", category: "constraint", content: "Use date-fns" }, { workspaceRoot: process.cwd() });
     await byName.get("docdex_web_research")?.handler({ query: "docdex web", webLimit: 1 }, { workspaceRoot: process.cwd() });
+    await byName
+      .get("docdex_rerank")
+      ?.handler({ query: "auth login", candidates: [{ doc_id: "doc-1", path: "src/auth.ts", score: 1 }] }, { workspaceRoot: process.cwd() });
+    await byName
+      .get("docdex_batch_search")
+      ?.handler({ queries: ["auth login", "session timeout"], limit: 2 }, { workspaceRoot: process.cwd() });
+    await byName.get("docdex_capabilities")?.handler({}, { workspaceRoot: process.cwd() });
     await byName.get("docdex_index_rebuild")?.handler({}, { workspaceRoot: process.cwd() });
     await byName.get("docdex_index_ingest")?.handler({ file: "src/index.ts" }, { workspaceRoot: process.cwd() });
     await byName
@@ -361,6 +374,9 @@ test("DocdexTools expose expanded docdex toolset", { concurrency: false }, async
   assert.ok(mcpMethods.includes("docdex_get_profile"));
   assert.ok(mcpMethods.includes("docdex_save_preference"));
   assert.ok(mcpMethods.includes("docdex_web_research"));
+  assert.ok(mcpMethods.includes("docdex_rerank"));
+  assert.ok(mcpMethods.includes("docdex_batch_search"));
+  assert.ok(mcpMethods.includes("docdex_capabilities"));
   assert.ok(calls.some((url) => url.includes("/v1/graph/impact/diagnostics")));
   assert.ok(calls.some((url) => url.endsWith("/v1/index/rebuild")));
   assert.ok(calls.some((url) => url.endsWith("/v1/index/ingest")));

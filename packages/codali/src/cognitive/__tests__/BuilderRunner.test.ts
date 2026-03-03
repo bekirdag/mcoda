@@ -1047,6 +1047,10 @@ test("BuilderRunner fails closed on empty patches array after one schema retry",
     (error) => {
       assert.ok(error instanceof PatchApplyError);
       assert.match(error.details.error, /empty patches array/i);
+      assert.equal(error.details.classification?.failure_class, "schema");
+      assert.equal(error.details.classification?.failure_code, "patch_schema_invalid");
+      assert.equal(error.details.classification?.retryable, true);
+      assert.ok((error.details.attemptHistory ?? []).length >= 2);
       return true;
     },
   );
@@ -1225,7 +1229,7 @@ test("BuilderRunner rejects patches that target read-only paths", { concurrency:
     read_only_paths: ["docs/sds"],
   };
 
-  await assert.rejects(() => builder.run(plan, bundle), /disallowed files/i);
+  await assert.rejects(() => builder.run(plan, bundle), /read-only/i);
 });
 
 test("BuilderRunner rejects edits outside architect plan targets when allow list is empty", { concurrency: false }, async () => {
@@ -1253,7 +1257,7 @@ test("BuilderRunner rejects edits outside architect plan targets when allow list
     read_only_paths: ["docs/sds"],
   };
 
-  await assert.rejects(() => builder.run(plan, bundle), /disallowed files/i);
+  await assert.rejects(() => builder.run(plan, bundle), /outside allowed scope/i);
   assert.equal(provider.calls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });
@@ -1448,10 +1452,82 @@ test("BuilderRunner surfaces ENOENT apply failures as PatchApplyError without re
     (error) => {
       assert.ok(error instanceof PatchApplyError);
       assert.match(error.details.error, /(enoent|no such file|missing)/i);
+      assert.equal(error.details.classification?.failure_class, "filesystem");
+      assert.equal(error.details.classification?.failure_code, "patch_file_not_found");
+      assert.equal(error.details.classification?.retryable, false);
       return true;
     },
   );
   assert.equal(provider.calls, 1);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner classifies rollback failures as rollback/non-retryable", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-rollback-fail-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  let providerCalls = 0;
+  const provider: Provider = {
+    name: "rollback-fail-provider",
+    async generate(): Promise<ProviderResponse> {
+      providerCalls += 1;
+      return {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            patches: [
+              {
+                action: "replace",
+                file: "src/example.ts",
+                search_block: "const value = 1;",
+                replace_block: "const value = 2;",
+              },
+            ],
+          }),
+        },
+      };
+    },
+  };
+  const patchApplier = {
+    async createRollback() {
+      return { entries: [{ file: "src/example.ts", resolved: "src/example.ts", existed: true }] };
+    },
+    async apply() {
+      throw new Error("synthetic apply failure");
+    },
+    async rollback() {
+      throw new Error("rollback failed: permission denied");
+    },
+  } as unknown as PatchApplier;
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier,
+    interpreter: new PassThroughInterpreter(),
+  });
+
+  await assert.rejects(
+    () => builder.run(plan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.equal(error.details.rollback.attempted, true);
+      assert.equal(error.details.rollback.ok, false);
+      assert.equal(error.details.classification?.failure_class, "rollback");
+      assert.equal(error.details.classification?.failure_code, "patch_rollback_failed");
+      assert.equal(error.details.classification?.retryable, false);
+      return true;
+    },
+  );
+  assert.equal(providerCalls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -1481,6 +1557,9 @@ test("BuilderRunner surfaces placeholder patch outputs as PatchApplyError", { co
     (error) => {
       assert.ok(error instanceof PatchApplyError);
       assert.match(error.details.error, /placeholder file paths/i);
+      assert.equal(error.details.classification?.failure_class, "schema");
+      assert.equal(error.details.classification?.failure_code, "patch_placeholder_payload");
+      assert.equal(error.details.classification?.retryable, true);
       return true;
     },
   );
@@ -1516,6 +1595,8 @@ test("BuilderRunner rejects placeholder patch blocks without interpreter fallbac
     (error) => {
       assert.ok(error instanceof PatchApplyError);
       assert.match(error.details.error, /placeholder replace blocks/i);
+      assert.equal(error.details.classification?.failure_class, "schema");
+      assert.equal(error.details.classification?.failure_code, "patch_placeholder_payload");
       return true;
     },
   );
@@ -1617,9 +1698,87 @@ test("BuilderRunner rejects delete actions when plan has no delete intent", { co
     (error) => {
       assert.ok(error instanceof PatchApplyError);
       assert.match(error.details.error, /delete action without delete intent/i);
+      assert.equal(error.details.classification?.failure_class, "guardrail");
+      assert.equal(error.details.classification?.failure_code, "patch_delete_without_plan_intent");
+      assert.equal(error.details.classification?.retryable, false);
       return true;
     },
   );
+  assert.equal(provider.calls, 1);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner blocks delete actions when destructive policy is disabled", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-delete-policy-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new DeletePatchProvider();
+  const deletePlan: Plan = {
+    ...plan,
+    steps: ["Delete src/example.ts as cleanup"],
+    verification: ["confirm removal"],
+  };
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({ workspaceRoot }),
+    interpreter: new PassThroughInterpreter(),
+    allowDestructiveOperations: false,
+  });
+
+  await assert.rejects(
+    () => builder.run(deletePlan, contextBundle),
+    (error) => {
+      assert.ok(error instanceof PatchApplyError);
+      assert.equal(error.details.reasonCode, "destructive_operation_blocked");
+      return true;
+    },
+  );
+  assert.equal(provider.calls, 1);
+
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test("BuilderRunner allows delete actions when destructive policy is enabled", { concurrency: false }, async () => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "codali-builder-delete-policy-allow-"));
+  await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "src/example.ts"), "const value = 1;\n", "utf8");
+
+  const registry = new ToolRegistry();
+  const toolContext: ToolContext = { workspaceRoot };
+  const provider = new DeletePatchProvider();
+  const deletePlan: Plan = {
+    ...plan,
+    steps: ["Delete src/example.ts as cleanup"],
+    verification: ["confirm removal"],
+  };
+  const builder = new BuilderRunner({
+    provider,
+    tools: registry,
+    context: toolContext,
+    maxSteps: 1,
+    maxToolCalls: 0,
+    mode: "patch_json",
+    patchFormat: "search_replace",
+    patchApplier: new PatchApplier({
+      workspaceRoot,
+      policy: { allowDestructiveOperations: true },
+    }),
+    interpreter: new PassThroughInterpreter(),
+    allowDestructiveOperations: true,
+  });
+
+  await builder.run(deletePlan, contextBundle);
+  await assert.rejects(() => readFile(path.join(workspaceRoot, "src/example.ts"), "utf8"));
   assert.equal(provider.calls, 1);
 
   await rm(workspaceRoot, { recursive: true, force: true });

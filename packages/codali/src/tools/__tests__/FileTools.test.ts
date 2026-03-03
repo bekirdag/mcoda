@@ -41,5 +41,6 @@ test("FileTools blocks paths outside workspace", { concurrency: false }, async (
   writeFileSync(path.join(workspaceRoot, "safe.txt"), "ok");
   const result = await registry.execute("read_file", { path: "../outside.txt" }, context);
   assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /outside the workspace/);
+  assert.equal(result.error?.code, "tool_permission_denied");
+  assert.match(result.error?.message ?? "", /outside the workspace/);
 });

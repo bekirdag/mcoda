@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import type {
+  DocdexCapabilityMap,
+  DocdexCapabilitySnapshot,
+  DocdexCapabilityStatus,
+} from "../cognitive/Types.js";
 
 export interface DocdexClientOptions {
   baseUrl: string;
@@ -58,10 +63,23 @@ export interface DocdexWebResearchOptions {
   noCache?: boolean;
 }
 
+export interface DocdexWriteMetadata {
+  [key: string]: unknown;
+}
+
+const CAPABILITY_KEYS = [
+  "score_breakdown",
+  "rerank",
+  "snippet_provenance",
+  "retrieval_explanation",
+  "batch_search",
+] as const;
+
 export class DocdexClient {
   private repoId?: string;
   private dagSessionId?: string;
   private healthChecked = false;
+  private capabilitySnapshot?: DocdexCapabilitySnapshot;
 
   constructor(private options: DocdexClientOptions) {
     this.repoId = options.repoId;
@@ -86,6 +104,10 @@ export class DocdexClient {
 
   getDagSessionId(): string | undefined {
     return this.dagSessionId;
+  }
+
+  clearCapabilityCache(): void {
+    this.capabilitySnapshot = undefined;
   }
 
   private resolveBaseUrl(): string {
@@ -369,6 +391,67 @@ export class DocdexClient {
     };
   }
 
+  private defaultCapabilityMap(status: DocdexCapabilityStatus): DocdexCapabilityMap {
+    return {
+      score_breakdown: status,
+      rerank: status,
+      snippet_provenance: status,
+      retrieval_explanation: status,
+      batch_search: status,
+    };
+  }
+
+  private toCapabilityStatus(value: unknown): DocdexCapabilityStatus {
+    if (value === true) return "available";
+    if (value === false) return "unavailable";
+    if (typeof value === "number") return value > 0 ? "available" : "unavailable";
+    if (typeof value !== "string") return "unknown";
+    const normalized = value.trim().toLowerCase();
+    if (["available", "enabled", "supported", "ok", "true", "yes"].includes(normalized)) {
+      return "available";
+    }
+    if (["unavailable", "disabled", "unsupported", "none", "false", "no"].includes(normalized)) {
+      return "unavailable";
+    }
+    return "unknown";
+  }
+
+  private normalizeCapabilityPayload(payload: unknown): DocdexCapabilityMap | undefined {
+    if (!payload || typeof payload !== "object") return undefined;
+    const record = payload as Record<string, unknown>;
+    const source = (
+      (record.capabilities && typeof record.capabilities === "object"
+        ? record.capabilities
+        : undefined) ??
+      (record.retrieval && typeof record.retrieval === "object"
+        ? record.retrieval
+        : undefined) ??
+      record
+    ) as Record<string, unknown>;
+    const scopedSource = (
+      source.retrieval && typeof source.retrieval === "object"
+        ? source.retrieval
+        : source
+    ) as Record<string, unknown>;
+    const aliases: Record<(typeof CAPABILITY_KEYS)[number], string[]> = {
+      score_breakdown: ["score_breakdown", "structured_scoring", "scoring"],
+      rerank: ["rerank", "re_rank"],
+      snippet_provenance: ["snippet_provenance", "stable_provenance", "provenance"],
+      retrieval_explanation: ["retrieval_explanation", "hit_explanations", "explanations", "retrieval_explanations"],
+      batch_search: ["batch_search", "batch_retrieval", "batch", "multi_fetch"],
+    };
+    const result = this.defaultCapabilityMap("unknown");
+    let found = false;
+    for (const key of CAPABILITY_KEYS) {
+      const aliasKeys = aliases[key];
+      const raw = aliasKeys.map((alias) => scopedSource[alias]).find((entry) => entry !== undefined);
+      if (raw === undefined) continue;
+      found = true;
+      result[key] = this.toCapabilityStatus(raw);
+    }
+    return found ? result : undefined;
+  }
+
   symbols(pathValue: string): Promise<unknown> {
     return this.callMcp("docdex_symbols", this.buildProjectParams({ path: pathValue }));
   }
@@ -389,8 +472,11 @@ export class DocdexClient {
     return this.callMcp("docdex_repo_inspect", this.buildProjectParams({}));
   }
 
-  memorySave(text: string): Promise<unknown> {
-    return this.callMcp("docdex_memory_save", this.buildProjectParams({ text }));
+  memorySave(text: string, metadata?: DocdexWriteMetadata): Promise<unknown> {
+    return this.callMcp(
+      "docdex_memory_save",
+      this.buildProjectParams({ text, metadata }),
+    );
   }
 
   memoryRecall(query: string, topK?: number): Promise<unknown> {
@@ -429,8 +515,18 @@ export class DocdexClient {
     return this.callMcp("docdex_get_profile", params);
   }
 
-  savePreference(agentId: string, category: string, content: string): Promise<unknown> {
-    return this.callMcp("docdex_save_preference", { agent_id: agentId, category, content });
+  savePreference(
+    agentId: string,
+    category: string,
+    content: string,
+    metadata?: DocdexWriteMetadata,
+  ): Promise<unknown> {
+    return this.callMcp("docdex_save_preference", {
+      agent_id: agentId,
+      category,
+      content,
+      metadata,
+    });
   }
 
   webResearch(query: string, options: DocdexWebResearchOptions = {}): Promise<unknown> {
@@ -444,5 +540,66 @@ export class DocdexClient {
         no_cache: options.noCache,
       }),
     );
+  }
+
+  rerank(query: string, candidates: unknown[], limit?: number): Promise<unknown> {
+    return this.callMcp(
+      "docdex_rerank",
+      this.buildProjectParams({
+        query,
+        candidates,
+        limit,
+      }),
+    );
+  }
+
+  batchSearch(
+    queries: string[],
+    options: { limit?: number; includeLibs?: boolean } = {},
+  ): Promise<unknown> {
+    return this.callMcp(
+      "docdex_batch_search",
+      this.buildProjectParams({
+        queries,
+        limit: options.limit,
+        include_libs: options.includeLibs,
+      }),
+    );
+  }
+
+  async getCapabilities(forceRefresh = false): Promise<DocdexCapabilitySnapshot> {
+    if (this.capabilitySnapshot && !forceRefresh) {
+      return { ...this.capabilitySnapshot, cached: true };
+    }
+    try {
+      const payload = await this.callMcp<unknown>(
+        "docdex_capabilities",
+        this.buildProjectParams({}),
+      );
+      const normalizedCapabilities = this.normalizeCapabilityPayload(payload);
+      const capabilities = normalizedCapabilities ?? this.defaultCapabilityMap("unknown");
+      const warnings = normalizedCapabilities ? undefined : ["probe_missing_capability_fields"];
+      const snapshot: DocdexCapabilitySnapshot = {
+        cached: false,
+        source: "mcp_probe",
+        probed_at_ms: Date.now(),
+        capabilities,
+        warnings,
+      };
+      this.capabilitySnapshot = snapshot;
+      return snapshot;
+    } catch (error) {
+      const snapshot: DocdexCapabilitySnapshot = {
+        cached: false,
+        source: "fallback",
+        probed_at_ms: Date.now(),
+        capabilities: this.defaultCapabilityMap("unavailable"),
+        warnings: [
+          `probe_failed:${error instanceof Error ? error.message : String(error)}`,
+        ],
+      };
+      this.capabilitySnapshot = snapshot;
+      return snapshot;
+    }
   }
 }

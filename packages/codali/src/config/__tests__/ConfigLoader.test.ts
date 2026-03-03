@@ -80,6 +80,7 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
   assert.ok(config.security.readOnlyPaths.includes("docs/sds"));
   assert.equal(config.builder.mode, "patch_json");
   assert.equal(config.builder.fallbackToInterpreter, true);
+  assert.equal(config.tools.allowDestructiveOperations, false);
   assert.equal(config.interpreter.provider, "auto");
   assert.equal(config.interpreter.model, "auto");
   assert.equal(config.interpreter.format, "json");
@@ -95,6 +96,18 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
   assert.equal(config.deepInvestigation?.enabled, true);
   assert.equal(config.deepInvestigation?.deepScanPreset, false);
   assert.equal(config.deepInvestigation?.toolQuota.search, 3);
+  assert.equal(config.workflow?.profile, "run");
+  assert.equal(config.resolvedWorkflowProfile?.name, "run");
+  assert.equal(config.resolvedWorkflowProfile?.source, "default");
+  assert.equal(config.workflow?.profiles?.fix?.outputContract, "patch_summary");
+  assert.equal(config.workflow?.profiles?.explain?.allowWrites, false);
+  assert.equal(config.workflow?.profiles?.test?.verificationMinimumChecks, 1);
+  assert.equal(config.workflow?.profiles?.test?.verificationEnforceHighConfidence, true);
+  assert.equal(config.eval.report_dir, "logs/codali/eval");
+  assert.equal(config.eval.gates.patch_apply_drop_max, 0.02);
+  assert.equal(config.eval.gates.verification_pass_rate_min, 0.9);
+  assert.equal(config.eval.gates.hallucination_rate_max, 0.02);
+  assert.equal(config.eval.gates.scope_violation_rate_max, 0);
 });
 
 test("loadConfig uses DOCDEX_HTTP_BASE_URL when set", { concurrency: false }, async () => {
@@ -147,6 +160,7 @@ test("loadConfig applies context/builder/streaming/cost/localContext overrides f
       CODALI_LOCAL_CONTEXT_ENABLED: "true",
       CODALI_LOCAL_CONTEXT_MAX_MESSAGES: "150",
       CODALI_LOCAL_CONTEXT_SUMMARIZE_ENABLED: "false",
+      CODALI_ALLOW_DESTRUCTIVE_OPERATIONS: "true",
     },
   });
 
@@ -163,6 +177,46 @@ test("loadConfig applies context/builder/streaming/cost/localContext overrides f
   assert.equal(config.localContext.enabled, true);
   assert.equal(config.localContext.maxMessages, 150);
   assert.equal(config.localContext.summarize.enabled, false);
+  assert.equal(config.tools.allowDestructiveOperations, true);
+  assert.equal(config.eval.report_dir, "logs/codali/eval");
+});
+
+test("loadConfig applies eval gate/report overrides from env", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_EVAL_REPORT_DIR: "logs/custom-eval",
+      CODALI_EVAL_GATE_PATCH_APPLY_DROP_MAX: "0.05",
+      CODALI_EVAL_GATE_VERIFICATION_PASS_RATE_MIN: "0.8",
+      CODALI_EVAL_GATE_HALLUCINATION_RATE_MAX: "0.1",
+      CODALI_EVAL_GATE_SCOPE_VIOLATION_RATE_MAX: "0.2",
+    },
+  });
+
+  assert.equal(config.eval.report_dir, "logs/custom-eval");
+  assert.equal(config.eval.gates.patch_apply_drop_max, 0.05);
+  assert.equal(config.eval.gates.verification_pass_rate_min, 0.8);
+  assert.equal(config.eval.gates.hallucination_rate_max, 0.1);
+  assert.equal(config.eval.gates.scope_violation_rate_max, 0.2);
+});
+
+test("loadConfig supports destructive policy alias env", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_ALLOW_DESTRUCTIVE_ACTIONS: "true",
+    },
+  });
+
+  assert.equal(config.tools.allowDestructiveOperations, true);
 });
 
 test("loadConfig accepts CODALI_SECURITY_READ_ONLY_PATHS alias", { concurrency: false }, async () => {
@@ -208,6 +262,146 @@ test("loadConfig captures CODALI_PLAN_HINT from env", { concurrency: false }, as
   });
 
   assert.equal(config.planHint, "{\"steps\":[\"Do it\"],\"target_files\":[\"src/index.ts\"]}");
+});
+
+test("loadConfig applies command-derived workflow profile precedence", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const configPath = path.join(tmpDir, "codali.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        workspaceRoot: tmpDir,
+        provider: "openai",
+        model: "gpt-test",
+        workflow: {
+          profile: "review",
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_WORKFLOW_PROFILE: "explain",
+    },
+    cli: {
+      command: "fix",
+      workflow: {
+        profile: "test",
+      },
+    },
+  });
+
+  assert.equal(config.resolvedWorkflowProfile?.name, "fix");
+  assert.equal(config.resolvedWorkflowProfile?.source, "command");
+  assert.equal(config.workflow?.profile, "fix");
+});
+
+test("loadConfig allows run command workflow override from CLI", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_WORKFLOW_PROFILE: "review",
+    },
+    cli: {
+      command: "run",
+      workflow: {
+        profile: "explain",
+      },
+    },
+  });
+
+  assert.equal(config.resolvedWorkflowProfile?.name, "explain");
+  assert.equal(config.resolvedWorkflowProfile?.source, "cli");
+  assert.equal(config.smart, false);
+});
+
+test("loadConfig supports verification policy minimum/high-confidence profile overrides", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const configPath = path.join(tmpDir, "codali.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        workspaceRoot: tmpDir,
+        provider: "openai",
+        model: "gpt-test",
+        workflow: {
+          profile: "fix",
+          profiles: {
+            fix: {
+              verificationPolicy: "strict-fix",
+              verificationMinimumChecks: 2,
+              verificationEnforceHighConfidence: true,
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+    },
+  });
+  assert.equal(config.resolvedWorkflowProfile?.name, "fix");
+  assert.equal(config.resolvedWorkflowProfile?.verificationPolicy, "strict-fix");
+  assert.equal(config.resolvedWorkflowProfile?.verificationMinimumChecks, 2);
+  assert.equal(config.resolvedWorkflowProfile?.verificationEnforceHighConfidence, true);
+});
+
+test("loadConfig rejects negative verification minimum checks", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  await assert.rejects(async () => {
+    await loadConfig({
+      cwd: tmpDir,
+      env: {
+        CODALI_WORKSPACE_ROOT: tmpDir,
+        CODALI_PROVIDER: "openai",
+        CODALI_MODEL: "gpt-test",
+      },
+      cli: {
+        workflow: {
+          profiles: {
+            run: {
+              verificationMinimumChecks: -1,
+            },
+          },
+        },
+      },
+    });
+  }, /verificationMinimumChecks/i);
+});
+
+test("loadConfig rejects invalid workflow profile env value", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  await assert.rejects(async () => {
+    await loadConfig({
+      cwd: tmpDir,
+      env: {
+        CODALI_WORKSPACE_ROOT: tmpDir,
+        CODALI_PROVIDER: "openai",
+        CODALI_MODEL: "gpt-test",
+        CODALI_WORKFLOW_PROFILE: "unknown",
+      },
+    });
+  }, /unsupported workflow profile/i);
 });
 
 test("loadConfig applies interpreter overrides from env", { concurrency: false }, async () => {
@@ -536,4 +730,68 @@ test("loadConfig rejects invalid deep investigation config values", { concurrenc
       },
     });
   }, /Invalid config\.deepInvestigation\.toolQuota\.search/);
+});
+
+test("loadConfig rejects invalid eval gate ranges", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  await assert.rejects(async () => {
+    await loadConfig({
+      cwd: tmpDir,
+      env: {
+        CODALI_WORKSPACE_ROOT: tmpDir,
+        CODALI_PROVIDER: "openai",
+        CODALI_MODEL: "gpt-test",
+      },
+      cli: {
+        eval: {
+          gates: {
+            verification_pass_rate_min: 2,
+          },
+        },
+      },
+    });
+  }, /Invalid config values: eval\.gates\.verification_pass_rate_min/);
+});
+
+test("loadConfig applies learning governance overrides from env", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai",
+      CODALI_MODEL: "gpt-test",
+      CODALI_LEARNING_PERSISTENCE_MIN_CONFIDENCE: "0.5",
+      CODALI_LEARNING_ENFORCEMENT_MIN_CONFIDENCE: "0.9",
+      CODALI_LEARNING_REQUIRE_CONFIRMATION_FOR_LOW_CONFIDENCE: "false",
+      CODALI_LEARNING_AUTO_ENFORCE_HIGH_CONFIDENCE: "false",
+      CODALI_LEARNING_CANDIDATE_STORE_FILE: "logs/codali/custom-learning.json",
+    },
+  });
+
+  assert.equal(config.learning.persistence_min_confidence, 0.5);
+  assert.equal(config.learning.enforcement_min_confidence, 0.9);
+  assert.equal(config.learning.require_confirmation_for_low_confidence, false);
+  assert.equal(config.learning.auto_enforce_high_confidence, false);
+  assert.equal(config.learning.candidate_store_file, "logs/codali/custom-learning.json");
+});
+
+test("loadConfig rejects invalid learning threshold ordering", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  await assert.rejects(async () => {
+    await loadConfig({
+      cwd: tmpDir,
+      env: {
+        CODALI_WORKSPACE_ROOT: tmpDir,
+        CODALI_PROVIDER: "openai",
+        CODALI_MODEL: "gpt-test",
+      },
+      cli: {
+        learning: {
+          persistence_min_confidence: 0.8,
+          enforcement_min_confidence: 0.6,
+        },
+      },
+    });
+  }, /learning\.enforcement_min_confidence/);
 });
