@@ -12,13 +12,33 @@ const sanitize = (value: string): string =>
     .replace(/^-|-$/g, "")
     .toLowerCase() || "suite";
 
-const reportSortKey = async (filePath: string): Promise<number> => {
+type ReportSortKey = {
+  timestamp: number;
+  mtimeMs: number;
+  fileName: string;
+};
+
+const fileTimestamp = (filePath: string): number | undefined => {
+  const match = /-(\d{13})-[a-z0-9._-]+\.json$/i.exec(path.basename(filePath));
+  if (!match) return undefined;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const reportSortKey = async (filePath: string): Promise<ReportSortKey> => {
+  let mtimeMs = 0;
   try {
     const info = await stat(filePath);
-    return info.mtimeMs;
+    mtimeMs = info.mtimeMs;
   } catch {
-    return 0;
+    mtimeMs = 0;
   }
+  return {
+    // Prefer timestamp encoded in the report filename to avoid OS-specific mtime granularity.
+    timestamp: fileTimestamp(filePath) ?? Math.floor(mtimeMs),
+    mtimeMs,
+    fileName: path.basename(filePath).toLowerCase(),
+  };
 };
 
 export class ReportStore {
@@ -62,7 +82,13 @@ export class ReportStore {
     const withKeys = await Promise.all(
       jsonEntries.map(async (entry) => ({ entry, key: await reportSortKey(entry) })),
     );
-    withKeys.sort((left, right) => right.key - left.key);
+    withKeys.sort((left, right) => {
+      const byTimestamp = right.key.timestamp - left.key.timestamp;
+      if (byTimestamp !== 0) return byTimestamp;
+      const byMtime = right.key.mtimeMs - left.key.mtimeMs;
+      if (byMtime !== 0) return byMtime;
+      return right.key.fileName.localeCompare(left.key.fileName);
+    });
     return withKeys.map((entry) => entry.entry);
   }
 
