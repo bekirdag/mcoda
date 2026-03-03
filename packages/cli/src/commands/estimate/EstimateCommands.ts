@@ -189,7 +189,46 @@ const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
 
 const stripAnsi = (value: string): string => value.replace(ANSI_REGEX, "");
 
-const visibleLength = (value: string): number => stripAnsi(value).length;
+// Mirrors common wcwidth full-width ranges so CJK/emoji cells align in terminal output.
+const isFullWidthCodePoint = (codePoint: number): boolean => {
+  if (codePoint >= 0x1100 && codePoint <= 0x115f) return true;
+  if (codePoint >= 0x2329 && codePoint <= 0x232a) return true;
+  if (codePoint >= 0x2e80 && codePoint <= 0x303e) return true;
+  if (codePoint >= 0x3040 && codePoint <= 0xa4cf) return true;
+  if (codePoint >= 0xac00 && codePoint <= 0xd7a3) return true;
+  if (codePoint >= 0xf900 && codePoint <= 0xfaff) return true;
+  if (codePoint >= 0xfe10 && codePoint <= 0xfe19) return true;
+  if (codePoint >= 0xfe30 && codePoint <= 0xfe6f) return true;
+  if (codePoint >= 0xff00 && codePoint <= 0xff60) return true;
+  if (codePoint >= 0xffe0 && codePoint <= 0xffe6) return true;
+  if (codePoint >= 0x1f300 && codePoint <= 0x1f64f) return true;
+  if (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) return true;
+  if (codePoint >= 0x20000 && codePoint <= 0x3fffd) return true;
+  return false;
+};
+
+const isCombiningCodePoint = (codePoint: number): boolean => {
+  if (codePoint >= 0x0300 && codePoint <= 0x036f) return true;
+  if (codePoint >= 0x1ab0 && codePoint <= 0x1aff) return true;
+  if (codePoint >= 0x1dc0 && codePoint <= 0x1dff) return true;
+  if (codePoint >= 0x20d0 && codePoint <= 0x20ff) return true;
+  if (codePoint >= 0xfe20 && codePoint <= 0xfe2f) return true;
+  return false;
+};
+
+const visibleLength = (value: string): number => {
+  const plain = stripAnsi(value);
+  if (!plain) return 0;
+  let width = 0;
+  for (const ch of plain) {
+    // Zero-width shaping/selectors.
+    if (ch === "\u200d" || ch === "\ufe0e" || ch === "\ufe0f") continue;
+    const codePoint = ch.codePointAt(0);
+    if (codePoint === undefined || isCombiningCodePoint(codePoint)) continue;
+    width += isFullWidthCodePoint(codePoint) ? 2 : 1;
+  }
+  return width;
+};
 
 const padVisible = (value: string, width: number): string => {
   const diff = width - visibleLength(value);
