@@ -21,7 +21,7 @@ export interface VelocityOptions {
   storyKey?: string;
   assignee?: string;
   mode?: VelocitySource;
-  windowTasks?: 10 | 20 | 50;
+  windowTasks?: number;
   spPerHourAll?: number;
   spPerHourImplementation?: number;
   spPerHourReview?: number;
