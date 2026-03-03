@@ -23,7 +23,6 @@ import {
   loadProjectGuidance,
   normalizeDocType,
 } from "../shared/ProjectGuidance.js";
-import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
@@ -75,6 +74,9 @@ const QA_PROMPT_MARKERS = [
   "qa plan output schema",
 ];
 const QA_ADAPTERS = new Set(["qa-cli"]);
+const ANSI_WARNING_REGEX = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+const CONTROL_WARNING_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+const DEPENDENCY_WARNING_REGEX = /^Skipped \d+ task\(s\) due to dependencies not ready\.$/i;
 
 const sanitizeNonGatewayPrompt = (value?: string): string | undefined => {
   if (!value) return undefined;
@@ -185,6 +187,13 @@ const mergeUnique = (values: string[]): string[] => {
   }
   return result;
 };
+
+const sanitizeWarningText = (value: string): string =>
+  value
+    .replace(ANSI_WARNING_REGEX, "")
+    .replace(CONTROL_WARNING_REGEX, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const buildCodaliEnvOverrides = (
   options: CodaliEnvOverrideOptions | string[] = [],
@@ -3977,10 +3986,13 @@ export class WorkOnTasksService {
         dependentCount: dependentCounts.get(candidate.task.id) ?? 0,
       }))
       .sort((a, b) => {
-        if (a.dependentCount !== b.dependentCount) return b.dependentCount - a.dependentCount;
         const priorityA = a.candidate.task.priority ?? Number.MAX_SAFE_INTEGER;
         const priorityB = b.candidate.task.priority ?? Number.MAX_SAFE_INTEGER;
         if (priorityA !== priorityB) return priorityA - priorityB;
+        if (a.dependentCount !== b.dependentCount) return b.dependentCount - a.dependentCount;
+        const storyPointsA = a.candidate.task.storyPoints ?? Number.POSITIVE_INFINITY;
+        const storyPointsB = b.candidate.task.storyPoints ?? Number.POSITIVE_INFINITY;
+        if (storyPointsA !== storyPointsB) return storyPointsA - storyPointsB;
         const createdA = Date.parse(a.candidate.task.createdAt) || 0;
         const createdB = Date.parse(b.candidate.task.createdAt) || 0;
         if (createdA !== createdB) return createdA - createdB;
@@ -4159,12 +4171,22 @@ export class WorkOnTasksService {
     try {
       const warnings: string[] = [...baseBranchWarnings, ...statusWarnings, ...runnerWarnings];
       const selectionWarningSet = new Set<string>();
+      let dependencyWarningIndex: number | null = null;
       const pushSelectionWarnings = (entries: string[]) => {
-        for (const warning of entries) {
-          const normalized = warning.trim();
+        for (const rawWarning of entries) {
+          const normalized = sanitizeWarningText(rawWarning);
           if (!normalized || selectionWarningSet.has(normalized)) continue;
+          if (DEPENDENCY_WARNING_REGEX.test(normalized)) {
+            if (dependencyWarningIndex === null) {
+              warnings.push(normalized);
+              dependencyWarningIndex = warnings.length - 1;
+            } else {
+              warnings[dependencyWarningIndex] = normalized;
+            }
+            continue;
+          }
           selectionWarningSet.add(normalized);
-          warnings.push(warning);
+          warnings.push(normalized);
         }
       };
       try {
@@ -4211,7 +4233,7 @@ export class WorkOnTasksService {
           warning.toLowerCase().includes("dependencies not ready"),
         );
         if (dependencyBlocked) {
-          const fallbackSelection = await this.selectionService.selectTasks({
+          const refreshedSelection = await this.selectionService.selectTasks({
             projectKey: request.projectKey,
             epicKey: request.epicKey,
             storyKey: request.storyKey,
@@ -4220,22 +4242,41 @@ export class WorkOnTasksService {
             ignoreStatusFilter,
             includeTypes,
             excludeTypes,
-            ignoreDependencies: true,
+            ignoreDependencies,
             missingContextPolicy: request.missingContextPolicy ?? "block",
+            limit: request.limit,
             parallel: request.parallel,
           });
-          pushSelectionWarnings(fallbackSelection.warnings);
-          const fallbackTask = this.selectMostDependedTask(fallbackSelection.ordered);
-          if (fallbackTask) {
-            selection = {
-              ...selection,
-              project: selection.project ?? fallbackSelection.project,
-              ordered: [fallbackTask],
-              warnings: [
-                ...selection.warnings,
-                `No dependency-ready tasks available; selected ${fallbackTask.task.key} from dependency-loop fallback.`,
-              ],
-            };
+          pushSelectionWarnings(refreshedSelection.warnings);
+          if (refreshedSelection.ordered.length > 0) {
+            selection = refreshedSelection;
+          } else {
+            const fallbackSelection = await this.selectionService.selectTasks({
+              projectKey: request.projectKey,
+              epicKey: request.epicKey,
+              storyKey: request.storyKey,
+              taskKeys: request.taskKeys,
+              statusFilter,
+              ignoreStatusFilter,
+              includeTypes,
+              excludeTypes,
+              ignoreDependencies: true,
+              missingContextPolicy: request.missingContextPolicy ?? "block",
+              parallel: request.parallel,
+            });
+            pushSelectionWarnings(fallbackSelection.warnings);
+            const fallbackTask = this.selectMostDependedTask(fallbackSelection.ordered);
+            if (fallbackTask) {
+              selection = {
+                ...selection,
+                project: selection.project ?? fallbackSelection.project,
+                ordered: [fallbackTask],
+                warnings: [
+                  ...selection.warnings,
+                  `No dependency-ready tasks available; selected ${fallbackTask.task.key} from dependency-loop fallback.`,
+                ],
+              };
+            }
           }
         }
       }
@@ -4537,6 +4578,11 @@ export class WorkOnTasksService {
 
       const maxSelectedTasks = typeof request.limit === "number" && request.limit > 0 ? request.limit : undefined;
       const selectedTaskIds = new Set(selection.ordered.map((entry) => entry.task.id));
+      const seenDocWarnings = new Set(
+        warnings
+          .map((warning) => sanitizeWarningText(warning))
+          .filter((warning) => warning.length > 0),
+      );
       const refreshSelectionQueue = async (processedCount: number) => {
         if (maxSelectedTasks !== undefined && selectedTaskIds.size >= maxSelectedTasks) return;
         const remainingBudget =
@@ -4623,11 +4669,9 @@ export class WorkOnTasksService {
         });
       };
 
-      let abortRemainingReason: string | null = null;
       taskLoop: for (let index = 0; index < selection.ordered.length; index += 1) {
         const task = selection.ordered[index];
         if (!task) continue;
-        if (abortRemainingReason) break taskLoop;
         abortIfSignaled();
         const startedAt = new Date().toISOString();
         const taskRun = await this.deps.workspaceRepo.createTaskRun({
@@ -5427,8 +5471,17 @@ export class WorkOnTasksService {
             docdexUnavailable = docContext.docdexUnavailable;
           }
           if (docWarnings.length) {
-            warnings.push(...docWarnings);
-            await this.logTask(taskRun.id, docWarnings.join("; "), "docdex");
+            const uniqueDocWarnings: string[] = [];
+            for (const warning of docWarnings) {
+              const normalized = sanitizeWarningText(warning);
+              if (!normalized || seenDocWarnings.has(normalized)) continue;
+              seenDocWarnings.add(normalized);
+              uniqueDocWarnings.push(normalized);
+            }
+            if (uniqueDocWarnings.length > 0) {
+              warnings.push(...uniqueDocWarnings);
+              await this.logTask(taskRun.id, uniqueDocWarnings.join("; "), "docdex");
+            }
           }
           if (docdexUnavailable) {
             const message = "Docdex unavailable; missing required context for this task.";
@@ -5865,13 +5918,9 @@ export class WorkOnTasksService {
               });
               const codaliReason = resolveCodaliFailureReason(message);
               const failureNote = codaliReason ?? message;
+              await this.stateService.markFailed(task.task, failureNote, statusContext);
               setFailureReason(failureNote);
               results.push({ taskKey: task.task.key, status: "failed", notes: failureNote });
-              if (isAuthErrorMessage(message)) {
-                abortRemainingReason = message;
-                setFailureReason(AUTH_ERROR_REASON);
-                warnings.push(`Auth/rate limit error detected; stopping after ${task.task.key}. ${message}`);
-              }
               taskStatus = "failed";
               await this.deps.jobService.updateJobStatus(job.id, "running", { processedItems: index + 1 });
               continue taskLoop;
@@ -7228,7 +7277,7 @@ export class WorkOnTasksService {
           }
           throw error;
         } finally {
-          if (runVcsPhase && !vcsFinalized) {
+          if (runVcsPhase && !vcsFinalized && taskStatus === "succeeded") {
             try {
               await runVcsPhase({ allowResultUpdate: false, reason: "finalize" });
             } catch (error) {
@@ -7268,30 +7317,24 @@ export class WorkOnTasksService {
         }
         } finally {
           await emitTaskEndOnce();
-          if (!abortRemainingReason) {
-            try {
-              await refreshSelectionQueue(index + 1);
-            } catch (error) {
-              warnings.push(
-                `selection_refresh_failed: ${error instanceof Error ? error.message : String(error)}`,
-              );
-            }
+          try {
+            await refreshSelectionQueue(index + 1);
+          } catch (error) {
+            warnings.push(
+              `selection_refresh_failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         }
     }
 
-    if (abortRemainingReason) {
-      warnings.push(`Stopped remaining tasks due to auth/rate limit: ${abortRemainingReason}`);
-    }
     const failureCount = results.filter((r) => r.status === "failed").length;
-    const state: JobState = abortRemainingReason
-      ? "failed"
-      : failureCount === 0
+    const state: JobState =
+      failureCount === 0
         ? "completed"
         : failureCount === results.length
           ? "failed"
           : ("partial" as JobState);
-    const errorSummary = abortRemainingReason ?? (failureCount ? `${failureCount} task(s) failed` : undefined);
+    const errorSummary = failureCount ? `${failureCount} task(s) failed` : undefined;
     const summaryTasks = results.map((result) => {
       const existing = taskSummaries.get(result.taskKey);
       if (existing) return existing;

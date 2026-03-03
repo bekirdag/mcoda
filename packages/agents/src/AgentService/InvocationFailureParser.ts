@@ -39,6 +39,7 @@ const TECHNICAL_PATTERNS = [
   /\boverload(?:ed)?\b/i,
   /\bupstream .*?(?:error|failed|timeout)\b/i,
   /\bretry later\b/i,
+  /\bauth_error\b/i,
 ];
 
 const normalizeSpace = (value: string): string => value.replace(/\s+/g, " ").trim();

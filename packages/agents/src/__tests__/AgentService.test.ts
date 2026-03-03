@@ -663,6 +663,51 @@ test("invoke switches to equivalent available agent on technical failures", asyn
   );
 });
 
+test("invoke treats generic AUTH_ERROR failures as technical and switches to equivalent agent", async () => {
+  const primary = await repo.createAgent({
+    slug: "auth-generic-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "auth-generic-backup",
+    adapter: "local-model",
+    defaultModel: "sonnet",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        throw new Error("AUTH_ERROR: codex CLI failed (exit 1): no output");
+      }
+      return { output: "ok:auth-backup", adapter: "local-model", model: backup.defaultModel };
+    },
+  });
+  const result = await service.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:auth-backup");
+  assert.deepEqual(calls, [primary.id, backup.id]);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" &&
+        event.fromAgentId === primary.id &&
+        event.toAgentId === backup.id &&
+        event.reason === "technical_issue",
+    ),
+  );
+});
+
 test("invoke waits for internet recovery when connectivity fails and all fallbacks are remote", async () => {
   const primary = await repo.createAgent({
     slug: "offline-primary",

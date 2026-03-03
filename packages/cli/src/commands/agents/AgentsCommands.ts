@@ -1,4 +1,4 @@
-import { AgentsApi, AgentResponse, WorkspaceResolver } from "@mcoda/core";
+import { AgentsApi, AgentResponse, AgentUsageLimitResponse, WorkspaceResolver } from "@mcoda/core";
 import readline from "node:readline";
 
 interface ParsedArgs {
@@ -308,6 +308,51 @@ const formatLatency = (value?: number | null): string => {
   return `${Math.round(value)}ms`;
 };
 
+const LIMIT_WINDOW_ORDER: Record<string, number> = {
+  rolling_5h: 0,
+  daily: 1,
+  weekly: 2,
+  other: 3,
+};
+
+const LIMIT_WINDOW_LABEL: Record<string, string> = {
+  rolling_5h: "5h",
+  daily: "daily",
+  weekly: "weekly",
+  other: "other",
+};
+
+const summarizeUsageLimits = (entries: AgentUsageLimitResponse[] | undefined): string => {
+  if (!entries || entries.length === 0) return "-";
+  const latestByWindow = new Map<string, AgentUsageLimitResponse>();
+  const sortedByObserved = [...entries].sort((left, right) => {
+    const leftMs = Date.parse(left.observedAt ?? "");
+    const rightMs = Date.parse(right.observedAt ?? "");
+    return (Number.isFinite(rightMs) ? rightMs : 0) - (Number.isFinite(leftMs) ? leftMs : 0);
+  });
+  for (const entry of sortedByObserved) {
+    if (!latestByWindow.has(entry.windowType)) {
+      latestByWindow.set(entry.windowType, entry);
+    }
+  }
+  const windows = Array.from(latestByWindow.values()).sort((left, right) => {
+    const leftOrder = LIMIT_WINDOW_ORDER[left.windowType] ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = LIMIT_WINDOW_ORDER[right.windowType] ?? Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.windowType.localeCompare(right.windowType);
+  });
+  const parts = windows.map((entry) => {
+    const label = LIMIT_WINDOW_LABEL[entry.windowType] ?? entry.windowType;
+    const status =
+      entry.status === "exhausted" ? "exh" : entry.status === "available" ? "ok" : entry.status ?? "?";
+    const resetAt = entry.effectiveResetAt ?? entry.resetAt;
+    if (!resetAt) return `${label}:${status}`;
+    const approx = entry.resetAtExact ? "" : "~";
+    return `${label}:${status}@${approx}${formatDate(resetAt)}`;
+  });
+  return parts.join("; ");
+};
+
 const renderKeyValues = (entries: Array<[string, string]>): void => {
   const width = entries.reduce((max, [label]) => Math.max(max, label.length), 0);
   const lines = entries.map(([label, value]) => `${pad(label, width)} : ${value}`);
@@ -351,6 +396,17 @@ export class AgentsCommands {
               // eslint-disable-next-line no-console
               console.log("No agents found.");
             } else {
+              const usageLimits = await api.listAgentUsageLimits();
+              const limitsByAgent = new Map<string, AgentUsageLimitResponse[]>();
+              for (const entry of usageLimits) {
+                const key = entry.agentSlug ?? entry.agentId;
+                const group = limitsByAgent.get(key);
+                if (group) {
+                  group.push(entry);
+                } else {
+                  limitsByAgent.set(key, [entry]);
+                }
+              }
               const headers = [
                 "SLUG",
                 "ADAPTER",
@@ -364,6 +420,7 @@ export class AgentsCommands {
                 "TOOLS",
                 "USAGE",
                 "COST/1M",
+                "LIMITS",
                 "HEALTH",
                 "LAST CHECK",
                 "CAPABILITIES",
@@ -381,6 +438,7 @@ export class AgentsCommands {
                 6,
                 10,
                 12,
+                64,
                 10,
                 16,
                 36,
@@ -398,6 +456,9 @@ export class AgentsCommands {
                 agent.supportsTools === undefined ? "-" : agent.supportsTools ? "yes" : "no",
                 agent.bestUsage ?? "-",
                 formatCost(agent.costPerMillion),
+                summarizeUsageLimits(
+                  limitsByAgent.get(agent.slug) ?? (agent.id ? limitsByAgent.get(agent.id) : undefined),
+                ),
                 agent.health?.status ?? "unknown",
                 formatDate(agent.health?.lastCheckedAt),
                 formatCapabilities(agent.capabilities),

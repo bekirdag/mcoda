@@ -183,6 +183,46 @@ test("agent limits shows reset precision and supports JSON output", { concurrenc
   });
 });
 
+test("agent list includes usage-limit window summaries", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "limit-list", "--adapter", "codex-cli", "--capability", "chat"]);
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("limit-list");
+    assert.ok(agent);
+    await repo.upsertAgentUsageLimit({
+      agentId: agent.id,
+      limitScope: "model",
+      limitKey: "codex-main",
+      windowType: "rolling_5h",
+      status: "exhausted",
+      resetAt: "2026-03-02T15:00:00.000Z",
+      observedAt: "2026-03-02T10:00:00.000Z",
+      source: "invoke_error_parse",
+      details: { resetAtSource: "absolute" },
+    });
+    await repo.upsertAgentUsageLimit({
+      agentId: agent.id,
+      limitScope: "model",
+      limitKey: "codex-main",
+      windowType: "daily",
+      status: "exhausted",
+      observedAt: "2026-03-02T10:00:00.000Z",
+      source: "invoke_error_parse",
+      details: {
+        resetAtSource: "estimated_window_fallback",
+        estimatedResetAt: "2026-03-03T10:00:00.000Z",
+      },
+    });
+    await repo.close();
+
+    const logs = await captureLogs(() => AgentsCommands.run(["list"]));
+    const output = logs.join("\n");
+    assert.match(output, /LIMITS/);
+    assert.match(output, /5h:exh@2026-03-02 15:00/);
+    assert.match(output, /daily:exh@~2026-03-03 10:00/);
+  });
+});
+
 test("agent details renders command prompts in text output", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await AgentsCommands.run(["add", "detail-prompts", "--adapter", "codex-cli", "--capability", "chat"]);
