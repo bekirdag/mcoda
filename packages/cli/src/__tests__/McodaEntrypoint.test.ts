@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import packageJson from "../../package.json" with { type: "json" };
 import { McodaEntrypoint } from "../bin/McodaEntrypoint.js";
 import { SdsPreflightCommand } from "../commands/planning/SdsPreflightCommand.js";
+import { DocsCommands } from "../commands/docs/DocsCommands.js";
 
 const captureLogs = async (fn: () => Promise<void> | void): Promise<string[]> => {
   const logs: string[] = [];
@@ -67,5 +68,35 @@ test("McodaEntrypoint routes sds-preflight command", { concurrency: false }, asy
     assert.equal(called, true);
   } finally {
     (SdsPreflightCommand as any).run = originalRun;
+  }
+});
+
+test("McodaEntrypoint routes sds suggestions subcommand", { concurrency: false }, async () => {
+  const originalRun = DocsCommands.run;
+  let called = false;
+  (DocsCommands as any).run = async (argv: string[]) => {
+    called = true;
+    assert.deepEqual(argv, ["sds", "suggestions", "--project", "ABC"]);
+  };
+  try {
+    await McodaEntrypoint.run(["sds", "suggestions", "--project", "ABC"]);
+    assert.equal(called, true);
+  } finally {
+    (DocsCommands as any).run = originalRun;
+  }
+});
+
+test("McodaEntrypoint keeps default sds generate routing", { concurrency: false }, async () => {
+  const originalRun = DocsCommands.run;
+  let called = false;
+  (DocsCommands as any).run = async (argv: string[]) => {
+    called = true;
+    assert.deepEqual(argv, ["sds", "generate", "--project", "ABC"]);
+  };
+  try {
+    await McodaEntrypoint.run(["sds", "--project", "ABC"]);
+    assert.equal(called, true);
+  } finally {
+    (DocsCommands as any).run = originalRun;
   }
 });

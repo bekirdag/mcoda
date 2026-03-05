@@ -146,6 +146,33 @@ export interface GenerateSdsResult {
   warnings: string[];
 }
 
+export interface GenerateSdsSuggestionsOptions {
+  workspace: WorkspaceResolution;
+  projectKey?: string;
+  sdsPath?: string;
+  reviewAgentName?: string;
+  fixAgentName?: string;
+  agentStream?: boolean;
+  rateAgents?: boolean;
+  maxIterations?: number;
+  dryRun?: boolean;
+  json?: boolean;
+  onToken?: (token: string) => void;
+}
+
+export interface GenerateSdsSuggestionsResult {
+  jobId: string;
+  commandRunId: string;
+  sdsPath: string;
+  suggestionsDir: string;
+  suggestionFiles: string[];
+  reviewerAgentId: string;
+  fixerAgentId: string;
+  iterations: number;
+  finalStatus: "pass" | "max_iterations_reached" | "dry_run";
+  warnings: string[];
+}
+
 interface ContextBuildInput {
   rfpId?: string;
   rfpPath?: string;
@@ -183,6 +210,20 @@ interface SdsContext {
   blocks: DocContextBlock[];
   docdexAvailable: boolean;
   summary: string;
+  warnings: string[];
+}
+
+interface SdsSuggestionReviewResult {
+  result: "PASS" | "FAIL";
+  issueCount: number;
+  summary: string;
+  markdown: string;
+  raw: string;
+}
+
+interface SdsSuggestionAgentSelection {
+  reviewer: Agent;
+  fixer: Agent;
   warnings: string[];
 }
 
@@ -316,6 +357,33 @@ const slugify = (value: string): string =>
     .replace(/-{2,}/g, "-") || "draft";
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
+
+const extractJsonObject = (raw: string): Record<string, unknown> | undefined => {
+  if (!raw) return undefined;
+  const fenced = raw.match(/```json([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : raw;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return undefined;
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+};
+
+const extractMarkdownFromOutput = (raw: string): string => {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const fenced = [...trimmed.matchAll(/```(?:markdown|md)?\s*([\s\S]*?)```/gi)];
+  if (fenced.length === 0) return trimmed;
+  const best = fenced
+    .map((match) => (match[1] ?? "").trim())
+    .sort((a, b) => b.length - a.length)[0];
+  return best || trimmed;
+};
+
+const nowIso = (): string => new Date().toISOString();
 
 const SDS_CONTEXT_TOKEN_BUDGET = 8000;
 
@@ -1890,6 +1958,321 @@ export class DocsService {
   private defaultSdsOutputPath(projectKey?: string): string {
     const slug = slugify(projectKey ?? "sds");
     return path.join(this.workspace.mcodaDir, "docs", "sds", `${slug}.md`);
+  }
+
+  private normalizeMaxIterations(value: number | undefined): number {
+    if (!Number.isFinite(value)) return 100;
+    const floored = Math.floor(value as number);
+    if (floored < 1) return 1;
+    if (floored > 100) return 100;
+    return floored;
+  }
+
+  private async listSdsSuggestionPathCandidates(projectKey?: string): Promise<string[]> {
+    const projectSlug = slugify(projectKey ?? "sds");
+    const prioritized = [
+      path.join(this.workspace.workspaceRoot, "docs", "sds", "sds.md"),
+      path.join(this.workspace.workspaceRoot, "docs", "sds.md"),
+    ];
+    const dynamicDir = path.join(this.workspace.workspaceRoot, "docs", "sds");
+    const dynamicCandidates: string[] = [];
+    try {
+      const entries = await fs.readdir(dynamicDir, { withFileTypes: true });
+      const markdown = entries
+        .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"))
+        .map((entry) => path.join(dynamicDir, entry.name));
+      const statRows = await Promise.all(
+        markdown.map(async (candidatePath) => ({
+          candidatePath,
+          stat: await fs.stat(candidatePath),
+        })),
+      );
+      statRows
+        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
+        .forEach((row) => dynamicCandidates.push(row.candidatePath));
+    } catch {
+      // Directory may not exist.
+    }
+    const fallback = [
+      path.join(this.workspace.mcodaDir, "docs", "sds", `${projectSlug}.md`),
+      path.join(this.workspace.mcodaDir, "docs", "sds", "sds.md"),
+    ];
+    return Array.from(new Set([...prioritized, ...dynamicCandidates, ...fallback]));
+  }
+
+  private async resolveSdsSuggestionsPath(
+    projectKey?: string,
+    explicitSdsPath?: string,
+  ): Promise<{ path: string; attempted: string[] }> {
+    if (explicitSdsPath) {
+      const resolved = path.isAbsolute(explicitSdsPath)
+        ? explicitSdsPath
+        : path.resolve(this.workspace.workspaceRoot, explicitSdsPath);
+      try {
+        await fs.access(resolved);
+      } catch {
+        throw new Error(`Unable to locate SDS file at --sds-path: ${resolved}`);
+      }
+      return { path: resolved, attempted: [resolved] };
+    }
+    const attempted = await this.listSdsSuggestionPathCandidates(projectKey);
+    for (const candidate of attempted) {
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile()) {
+          return { path: candidate, attempted };
+        }
+      } catch {
+        // keep trying
+      }
+    }
+    throw new Error(
+      `Unable to locate an SDS file. Checked: ${attempted.join(", ")}. ` +
+        `Pass --sds-path <FILE> to specify the SDS explicitly.`,
+    );
+  }
+
+  private async ensureSuggestionsDir(): Promise<string> {
+    const suggestionsDir = path.join(this.workspace.workspaceRoot, "docs", "suggestions");
+    await fs.mkdir(suggestionsDir, { recursive: true });
+    return suggestionsDir;
+  }
+
+  private async nextSuggestionsFilePath(suggestionsDir: string): Promise<string> {
+    const entries = await fs.readdir(suggestionsDir).catch(() => []);
+    const numbers = entries
+      .map((entry) => /^sds_suggestions(\d+)\.md$/i.exec(entry))
+      .filter((match): match is RegExpExecArray => Boolean(match))
+      .map((match) => Number.parseInt(match[1], 10))
+      .filter((value) => Number.isFinite(value));
+    const next = (numbers.length > 0 ? Math.max(...numbers) : 0) + 1;
+    return path.join(suggestionsDir, `sds_suggestions${next}.md`);
+  }
+
+  private rankSdsSuggestionCandidates(
+    candidates: AgentCapabilityCandidate[],
+    required: string[],
+    preferred: string[],
+  ): AgentCapabilityCandidate[] {
+    const requiredCaps = Array.from(new Set(required));
+    const preferredCaps = Array.from(new Set(preferred));
+    const scored = candidates
+      .filter((candidate) => candidate.healthStatus !== "unreachable")
+      .map((candidate) => {
+        const caps = Array.from(new Set(candidate.capabilities ?? []));
+        const requiredMatches = requiredCaps.filter((cap) => caps.includes(cap)).length;
+        const preferredMatches = preferredCaps.filter((cap) => caps.includes(cap)).length;
+        const hasRequired = requiredCaps.length === 0 || requiredMatches === requiredCaps.length;
+        const rating = Number(candidate.agent.rating ?? 0);
+        const reasoning = Number(candidate.agent.reasoningRating ?? rating);
+        const cost = Number.isFinite(candidate.agent.costPerMillion)
+          ? Number(candidate.agent.costPerMillion)
+          : Number.POSITIVE_INFINITY;
+        return { candidate, requiredMatches, preferredMatches, hasRequired, rating, reasoning, cost };
+      });
+    scored.sort((a, b) => {
+      if (a.hasRequired !== b.hasRequired) return a.hasRequired ? -1 : 1;
+      if (a.requiredMatches !== b.requiredMatches) return b.requiredMatches - a.requiredMatches;
+      if (a.preferredMatches !== b.preferredMatches) return b.preferredMatches - a.preferredMatches;
+      if (a.rating !== b.rating) return b.rating - a.rating;
+      if (a.reasoning !== b.reasoning) return b.reasoning - a.reasoning;
+      if (a.cost !== b.cost) return a.cost - b.cost;
+      return (a.candidate.agent.slug ?? a.candidate.agent.id).localeCompare(
+        b.candidate.agent.slug ?? b.candidate.agent.id,
+      );
+    });
+    return scored.map((row) => row.candidate);
+  }
+
+  private async selectSdsSuggestionAgents(input: {
+    reviewAgentName?: string;
+    fixAgentName?: string;
+  }): Promise<SdsSuggestionAgentSelection> {
+    const required = ["doc_generation", "docdex_query"];
+    const preferred = ["sds_writing", "spec_generation", "code_review", "multiple_draft_generation"];
+    const warnings: string[] = [];
+    const candidates = this.rankSdsSuggestionCandidates(
+      await this.collectDocgenCandidates(),
+      required,
+      preferred,
+    );
+    if (candidates.length === 0) {
+      throw new Error("No healthy agents are available for SDS suggestions.");
+    }
+    const findByName = async (name: string): Promise<Agent> => {
+      try {
+        return await this.agentService.resolveAgent(name);
+      } catch {
+        throw new Error(`Unable to resolve agent: ${name}`);
+      }
+    };
+    const rankedIds = new Set(candidates.map((candidate) => candidate.agent.id));
+    const rankedSlugs = new Set(candidates.map((candidate) => candidate.agent.slug).filter(Boolean) as string[]);
+    const isRankedCandidate = (agent: Agent): boolean =>
+      rankedIds.has(agent.id) || (typeof agent.slug === "string" && rankedSlugs.has(agent.slug));
+    const reviewer = input.reviewAgentName
+      ? await findByName(input.reviewAgentName)
+      : candidates[0].agent;
+    const fixer = input.fixAgentName
+      ? await findByName(input.fixAgentName)
+      : candidates.find((candidate) => candidate.agent.id !== reviewer.id)?.agent ?? reviewer;
+    if (input.reviewAgentName && !isRankedCandidate(reviewer)) {
+      warnings.push(
+        `Review agent override ${reviewer.slug ?? reviewer.id} is not in the healthy ranked candidate set; proceeding due explicit override.`,
+      );
+    }
+    if (input.fixAgentName && !isRankedCandidate(fixer)) {
+      warnings.push(
+        `Fix agent override ${fixer.slug ?? fixer.id} is not in the healthy ranked candidate set; proceeding due explicit override.`,
+      );
+    }
+    if (reviewer.id === fixer.id) {
+      warnings.push(
+        `Reviewer and fixer resolved to the same agent (${reviewer.slug ?? reviewer.id}); continuing with single-agent loop.`,
+      );
+    }
+    return { reviewer, fixer, warnings };
+  }
+
+  private buildSdsSuggestionsReviewPrompt(input: {
+    iteration: number;
+    projectKey?: string;
+    sdsPath: string;
+    sdsContent: string;
+    context: SdsContext;
+  }): string {
+    const contextBlocks = input.context.blocks
+      .slice(0, 5)
+      .map((block) => `- ${block.summary}`)
+      .join("\n");
+    return [
+      "You are the SDS reviewer agent.",
+      "Review the SDS against surrounding project documentation and produce strict remediation guidance.",
+      "Focus on:",
+      "- open questions and optimum answers aligned to the rest of documentation,",
+      "- inconsistencies,",
+      "- issues/risks,",
+      "- possible enhancements.",
+      "",
+      "Return output in two parts:",
+      "1) A JSON object inside a ```json code block with schema:",
+      '{ "result": "PASS|FAIL", "issueCount": number, "summary": "short summary" }',
+      "2) Markdown sections:",
+      "## Open Questions and Optimum Answers",
+      "## Inconsistencies",
+      "## Issues",
+      "## Enhancements",
+      "## Suggested Fixes",
+      "",
+      "Set result=PASS and issueCount=0 only when there are no remaining issues.",
+      "",
+      `Iteration: ${input.iteration}`,
+      `Project: ${input.projectKey ?? "n/a"}`,
+      `SDS Path: ${input.sdsPath}`,
+      "",
+      `Context Summary: ${input.context.summary}`,
+      contextBlocks ? `Context Blocks:\n${contextBlocks}` : "Context Blocks: none",
+      "",
+      "SDS Content:",
+      input.sdsContent,
+    ].join("\n");
+  }
+
+  private parseSdsSuggestionsReviewResult(raw: string): SdsSuggestionReviewResult {
+    const parsed = extractJsonObject(raw);
+    const parsedResult = String(parsed?.result ?? parsed?.status ?? parsed?.outcome ?? "")
+      .trim()
+      .toUpperCase();
+    const parsedIssueCount = Number(parsed?.issueCount ?? parsed?.issues ?? parsed?.issue_count ?? NaN);
+    const summary = String(parsed?.summary ?? "").trim();
+    const normalized = raw.trim();
+    const hasNoIssuesSignal =
+      /\bRESULT\s*:\s*PASS\b/i.test(normalized) ||
+      /\bno (remaining )?(issues|inconsistencies|open questions)\b/i.test(normalized) ||
+      /\ball clear\b/i.test(normalized);
+    const preliminaryResult: "PASS" | "FAIL" =
+      parsedResult === "PASS"
+        ? "PASS"
+        : parsedResult === "FAIL"
+          ? "FAIL"
+          : hasNoIssuesSignal
+            ? "PASS"
+            : "FAIL";
+    const issueCount = Number.isFinite(parsedIssueCount)
+      ? Math.max(0, Math.floor(parsedIssueCount))
+      : preliminaryResult === "PASS"
+        ? 0
+        : 1;
+    const result: "PASS" | "FAIL" = preliminaryResult === "PASS" && issueCount === 0 ? "PASS" : "FAIL";
+    return {
+      result,
+      issueCount,
+      summary: summary || (result === "PASS" ? "No issues found." : "Issues detected."),
+      markdown: normalized,
+      raw,
+    };
+  }
+
+  private buildSdsSuggestionsFixPrompt(input: {
+    projectKey?: string;
+    sdsPath: string;
+    currentSds: string;
+    suggestions: string;
+  }): string {
+    return [
+      "You are the SDS fixer agent.",
+      "Apply all valid review suggestions to the SDS.",
+      "Integrate optimum answers for open questions and resolve inconsistencies/issues.",
+      "Preserve valid existing sections and improve structure where needed.",
+      "Return ONLY the full revised SDS markdown (no prose wrapper, no JSON).",
+      "",
+      `Project: ${input.projectKey ?? "n/a"}`,
+      `SDS Path: ${input.sdsPath}`,
+      "",
+      "Review Suggestions:",
+      input.suggestions,
+      "",
+      "Current SDS:",
+      input.currentSds,
+    ].join("\n");
+  }
+
+  private renderSdsSuggestionArtifact(input: {
+    timestamp: string;
+    iteration: number;
+    reviewer: Agent;
+    fixer: Agent;
+    sdsPath: string;
+    review: SdsSuggestionReviewResult;
+    fixApplied: boolean;
+    fixSummary: string;
+    jobId: string;
+    commandRunId: string;
+  }): string {
+    return [
+      `# SDS Suggestions ${input.iteration}`,
+      "",
+      `- Timestamp: ${input.timestamp}`,
+      `- Iteration: ${input.iteration}`,
+      `- Reviewer Agent: ${input.reviewer.slug ?? input.reviewer.id}`,
+      `- Fixer Agent: ${input.fixer.slug ?? input.fixer.id}`,
+      `- SDS Path: ${input.sdsPath}`,
+      `- Result: ${input.review.result}`,
+      `- Issue Count: ${input.review.issueCount}`,
+      `- Job ID: ${input.jobId}`,
+      `- Command Run ID: ${input.commandRunId}`,
+      "",
+      "## Review Summary",
+      input.review.summary,
+      "",
+      "## Reviewer Output",
+      input.review.markdown || "(empty reviewer output)",
+      "",
+      "## Fix Application",
+      `- Applied: ${input.fixApplied ? "yes" : "no"}`,
+      `- Summary: ${input.fixSummary}`,
+      "",
+    ].join("\n");
   }
 
   private async loadSdsTemplate(templateName?: string): Promise<{ name: string; content: string }> {
@@ -4557,6 +4940,251 @@ export class DocsService {
         draft,
         docdexId,
         warnings: runContext.warnings,
+      };
+    } catch (error) {
+      await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });
+      await this.jobService.finishCommandRun(commandRun.id, "failed", (error as Error).message);
+      throw error;
+    }
+  }
+
+  async generateSdsSuggestions(
+    options: GenerateSdsSuggestionsOptions,
+  ): Promise<GenerateSdsSuggestionsResult> {
+    const warnings: string[] = [];
+    await this.checkSdsDocdexProfile(warnings);
+    const assembler = new DocContextAssembler(this.docdex, this.workspace);
+    const stream = options.agentStream === true;
+    const maxIterations = this.normalizeMaxIterations(options.maxIterations);
+    const commandRun = await this.jobService.startCommandRun("docs-sds-suggestions", options.projectKey);
+    const job = await this.jobService.startJob("sds_suggestions", commandRun.id, options.projectKey, {
+      commandName: commandRun.commandName,
+      payload: {
+        projectKey: options.projectKey,
+        sdsPath: options.sdsPath,
+        reviewAgentName: options.reviewAgentName,
+        fixAgentName: options.fixAgentName,
+        maxIterations,
+      },
+    });
+    try {
+      const context = await assembler.buildSdsContext({ projectKey: options.projectKey });
+      warnings.push(...context.warnings);
+      const pathResolution = await this.resolveSdsSuggestionsPath(options.projectKey, options.sdsPath);
+      const sdsPath = pathResolution.path;
+      let sdsContent = await fs.readFile(sdsPath, "utf8");
+      const suggestionsDir = await this.ensureSuggestionsDir();
+      const agentSelection = await this.selectSdsSuggestionAgents({
+        reviewAgentName: options.reviewAgentName,
+        fixAgentName: options.fixAgentName,
+      });
+      warnings.push(...agentSelection.warnings);
+      const reviewer = agentSelection.reviewer;
+      const fixer = agentSelection.fixer;
+      const suggestionFiles: string[] = [];
+      let iterations = 0;
+      let finalStatus: GenerateSdsSuggestionsResult["finalStatus"] = "max_iterations_reached";
+      await this.jobService.writeCheckpoint(job.id, {
+        stage: "sds_loaded",
+        timestamp: nowIso(),
+        details: {
+          sdsPath,
+          attemptedPaths: pathResolution.attempted,
+          maxIterations,
+        },
+      });
+      await this.jobService.writeCheckpoint(job.id, {
+        stage: "agents_selected",
+        timestamp: nowIso(),
+        details: {
+          reviewerAgent: reviewer.slug ?? reviewer.id,
+          fixerAgent: fixer.slug ?? fixer.id,
+        },
+      });
+
+      for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+        iterations = iteration;
+        const reviewPrompt = this.buildSdsSuggestionsReviewPrompt({
+          iteration,
+          projectKey: options.projectKey,
+          sdsPath,
+          sdsContent,
+          context,
+        });
+        const reviewInvoke = await this.invokeAgent(reviewer, reviewPrompt, stream, job.id, options.onToken);
+        const reviewResult = this.parseSdsSuggestionsReviewResult(reviewInvoke.output);
+        const suggestionPath = await this.nextSuggestionsFilePath(suggestionsDir);
+        let fixApplied = false;
+        let fixSummary = "Fix pending.";
+        const preliminaryArtifact = this.renderSdsSuggestionArtifact({
+          timestamp: nowIso(),
+          iteration,
+          reviewer,
+          fixer,
+          sdsPath,
+          review: reviewResult,
+          fixApplied,
+          fixSummary,
+          jobId: job.id,
+          commandRunId: commandRun.id,
+        });
+        await fs.writeFile(suggestionPath, preliminaryArtifact, "utf8");
+        suggestionFiles.push(suggestionPath);
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "iteration_reviewed",
+          timestamp: nowIso(),
+          details: {
+            iteration,
+            result: reviewResult.result,
+            issueCount: reviewResult.issueCount,
+            suggestionPath,
+          },
+        });
+
+        if (reviewResult.result === "PASS" && reviewResult.issueCount === 0) {
+          finalStatus = "pass";
+          fixSummary = "Reviewer found no issues.";
+          const artifact = this.renderSdsSuggestionArtifact({
+            timestamp: nowIso(),
+            iteration,
+            reviewer,
+            fixer,
+            sdsPath,
+            review: reviewResult,
+            fixApplied,
+            fixSummary,
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+          await fs.writeFile(suggestionPath, artifact, "utf8");
+          break;
+        }
+
+        if (options.dryRun) {
+          finalStatus = "dry_run";
+          fixSummary = "Dry-run enabled; no SDS changes applied.";
+          const artifact = this.renderSdsSuggestionArtifact({
+            timestamp: nowIso(),
+            iteration,
+            reviewer,
+            fixer,
+            sdsPath,
+            review: reviewResult,
+            fixApplied,
+            fixSummary,
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+          await fs.writeFile(suggestionPath, artifact, "utf8");
+          break;
+        }
+
+        const suggestionsArtifact = await fs.readFile(suggestionPath, "utf8");
+
+        const fixPrompt = this.buildSdsSuggestionsFixPrompt({
+          projectKey: options.projectKey,
+          sdsPath,
+          currentSds: sdsContent,
+          suggestions: suggestionsArtifact,
+        });
+        const fixInvoke = await this.invokeAgent(fixer, fixPrompt, stream, job.id, options.onToken);
+        const candidateSds = extractMarkdownFromOutput(fixInvoke.output).trim();
+        if (candidateSds.length < 80) {
+          fixSummary = "Fixer output was too short; previous SDS kept.";
+          warnings.push(`Iteration ${iteration}: fixer output too short; no SDS write performed.`);
+        } else if (candidateSds === sdsContent.trim()) {
+          fixSummary = "Fixer returned unchanged SDS content.";
+        } else {
+          await fs.writeFile(sdsPath, candidateSds, "utf8");
+          sdsContent = candidateSds;
+          fixApplied = true;
+          fixSummary = "SDS updated from fixer output.";
+          if (context.docdexAvailable) {
+            try {
+              await this.registerSds(sdsPath, sdsContent, options.projectKey);
+            } catch (error) {
+              warnings.push(`Iteration ${iteration}: docdex register skipped: ${(error as Error).message}`);
+            }
+          }
+        }
+        const artifact = this.renderSdsSuggestionArtifact({
+          timestamp: nowIso(),
+          iteration,
+          reviewer,
+          fixer,
+          sdsPath,
+          review: reviewResult,
+          fixApplied,
+          fixSummary,
+          jobId: job.id,
+          commandRunId: commandRun.id,
+        });
+        await fs.writeFile(suggestionPath, artifact, "utf8");
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "iteration_fixed",
+          timestamp: nowIso(),
+          details: {
+            iteration,
+            result: reviewResult.result,
+            issueCount: reviewResult.issueCount,
+            fixApplied,
+            suggestionPath,
+          },
+        });
+      }
+
+      if (finalStatus === "max_iterations_reached") {
+        warnings.push(
+          `SDS suggestions stopped at max iterations (${maxIterations}) before reviewer returned PASS.`,
+        );
+      }
+
+      await this.jobService.updateJobStatus(job.id, "completed", {
+        payload: {
+          sdsPath,
+          suggestionsDir,
+          suggestionFiles,
+          reviewerAgentId: reviewer.id,
+          fixerAgentId: fixer.id,
+          iterations,
+          finalStatus,
+        },
+      });
+      await this.jobService.finishCommandRun(commandRun.id, "succeeded");
+      if (options.rateAgents) {
+        try {
+          const ratingService = await this.ensureRatingService();
+          await ratingService.rate({
+            workspace: this.workspace,
+            agentId: reviewer.id,
+            commandName: "docs-sds-suggestions-review",
+            jobId: job.id,
+            commandRunId: commandRun.id,
+          });
+          if (fixer.id !== reviewer.id) {
+            await ratingService.rate({
+              workspace: this.workspace,
+              agentId: fixer.id,
+              commandName: "docs-sds-suggestions-fix",
+              jobId: job.id,
+              commandRunId: commandRun.id,
+            });
+          }
+        } catch (error) {
+          warnings.push(`Agent rating failed: ${(error as Error).message ?? String(error)}`);
+        }
+      }
+      return {
+        jobId: job.id,
+        commandRunId: commandRun.id,
+        sdsPath,
+        suggestionsDir,
+        suggestionFiles,
+        reviewerAgentId: reviewer.id,
+        fixerAgentId: fixer.id,
+        iterations,
+        finalStatus,
+        warnings,
       };
     } catch (error) {
       await this.jobService.updateJobStatus(job.id, "failed", { errorSummary: (error as Error).message });

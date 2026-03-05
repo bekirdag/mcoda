@@ -166,7 +166,25 @@ mcoda docs sds generate \
 - Default output: `<workspace-dir>/docs/sds/<project>.md` (override with `--out <FILE>`). Use `--force` to overwrite an existing SDS.
 - Context comes from docdex (RFP + PDR + any existing SDS + OpenAPI); if docdex is down the command falls back to local docs and warns.
 - Flags: `--template <NAME>`, `--agent <NAME>`, `--workspace-root <path>`, `--project <KEY>`, `--agent-stream <true|false>`, `--rate-agents`, `--fast`, `--iterate`, `--quality <build-ready>`, `--resolve-open-questions`, `--no-placeholders`, `--no-maybes`, `--cross-align <true|false>`, `--force`, `--resume <JOB_ID>`, `--dry-run`, `--json`, `--debug`, `--no-color`, `--quiet`.
-- Alias: `mcoda sds ...` forwards to `mcoda docs sds generate`.
+- Alias:
+  - `mcoda sds ...` (without subcommand) forwards to `mcoda docs sds generate`.
+  - `mcoda sds suggestions ...` forwards to `mcoda docs sds suggestions`.
+
+### Iterate SDS suggestions (review + fix loop)
+
+```sh
+mcoda sds suggestions \
+  --workspace-root ~/Documents/apps/test1 \
+  --project TEST1 \
+  --review-agent codex \
+  --fix-agent claude \
+  --max-iterations 100
+```
+
+- Workflow: reviewer agent inspects the SDS for open questions/optimum answers, inconsistencies, issues, and enhancements; fixer agent applies remediation to the SDS; loop repeats until reviewer returns no issues or the iteration cap is reached.
+- Suggestions artifacts: `<workspace-dir>/docs/suggestions/sds_suggestions<N>.md` (directory is auto-created).
+- SDS target resolution (when `--sds-path` is omitted): `docs/sds/sds.md` -> `docs/sds.md` -> latest `*.md` under `docs/sds/` -> `<workspace>/.mcoda/docs/sds/<project>.md` -> `<workspace>/.mcoda/docs/sds/sds.md`.
+- Flags: `--sds-path <FILE>`, `--review-agent <NAME>`, `--fix-agent <NAME>`, `--agent-stream <true|false>`, `--rate-agents`, `--max-iterations <N>` (clamped to `1..100`), `--dry-run`, `--json`, `--workspace-root <path>`, `--project <KEY>`, `--debug`, `--no-color`, `--quiet`, `--no-telemetry`.
 
 ### Generate the OpenAPI spec from docs
 Produce or refresh the canonical `openapi/mcoda.yaml` from SDS/PDR context, docdex, and the existing spec:
