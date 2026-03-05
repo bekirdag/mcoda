@@ -616,7 +616,7 @@ test("createTasks auto-runs task sufficiency audit and records summary checkpoin
   const jobService = new StubJobService();
   const sufficiencyService = new StubTaskSufficiencyService();
   const service = new CreateTasksService(workspace, {
-    docdex: new StubDocdex() as any,
+    docdex: new StubDocdexTyped() as any,
     jobService: jobService as any,
     agentService: new StubAgentService(outputs) as any,
     routingService: new StubRoutingService() as any,
@@ -760,7 +760,7 @@ test("createTasks blocks when SDS preflight fails", async () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const jobService = new StubJobService();
   const service = new CreateTasksService(workspace, {
-    docdex: new StubDocdex() as any,
+    docdex: new StubDocdexTyped() as any,
     jobService: jobService as any,
     agentService: new StubAgentService(outputs) as any,
     routingService: new StubRoutingService() as any,
@@ -1162,6 +1162,12 @@ test("createTasks writes SDS coverage report artifact", async () => {
   assert.equal(buildPlan.projectKey, "web");
   assert.equal(typeof buildPlan.buildMethod, "string");
   assert.ok(Array.isArray(buildPlan.startupWaves));
+
+  const servicesPath = path.join(workspace.mcodaDir, "tasks", "web", "services.json");
+  const services = JSON.parse(await fs.readFile(servicesPath, "utf8"));
+  assert.equal(services.projectKey, "web");
+  assert.ok(Array.isArray(services.services));
+  assert.ok(services.services.length > 0);
 });
 
 test("createTasks filters opaque local doc handles while preserving useful references", async () => {
@@ -1238,6 +1244,553 @@ test("createTasks filters opaque local doc handles while preserving useful refer
   assert.ok(links.includes("https://example.com/spec"));
   assert.ok(!links.some((entry) => entry.startsWith("docdex:local")));
   assert.equal(links.filter((entry) => entry === "docs/sds.md").length, 1);
+});
+
+test("createTasks auto-remediates epic service ids and tags multi-service epics as cross_service", async () => {
+  const architecturePath = path.join(workspaceRoot, "architecture-overview.md");
+  await fs.writeFile(
+    architecturePath,
+    [
+      "# Architecture Overview",
+      "Service dependency baseline:",
+      "- worker-ingest depends on svc-api-gateway",
+      "- svc-api-gateway depends on svc-auth",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Cross-service delivery",
+          description: "Coordinate API and worker rollout.",
+          acceptanceCriteria: ["ac1"],
+          serviceIds: ["svc-api-gateway", "worker-ingest", "unknown-surface"],
+          tags: ["platform"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [architecturePath],
+    agentStream: false,
+  });
+
+  const servicesPath = path.join(workspace.mcodaDir, "tasks", "web", "services.json");
+  const serviceCatalog = JSON.parse(await fs.readFile(servicesPath, "utf8"));
+  const knownServiceIds = new Set((serviceCatalog.services ?? []).map((entry: any) => entry.id));
+  assert.ok(knownServiceIds.size > 0);
+
+  const epic = workspaceRepo.epics.find((entry) => entry.title === "Cross-service delivery");
+  const metadata = (epic?.metadata ?? {}) as Record<string, unknown>;
+  const serviceIds = Array.isArray(metadata.service_ids) ? (metadata.service_ids as string[]) : [];
+  const tags = Array.isArray(metadata.tags) ? (metadata.tags as string[]) : [];
+  assert.ok(serviceIds.length >= 2, `expected multi-service epic metadata, got: ${JSON.stringify(metadata)}`);
+  serviceIds.forEach((serviceId) => assert.ok(knownServiceIds.has(serviceId), `unknown service id persisted: ${serviceId}`));
+  assert.ok(tags.includes("cross_service"), `expected cross_service tag in metadata: ${JSON.stringify(metadata)}`);
+  assert.ok(
+    jobService.logs.some((line) => line.includes("unknown-surface") && line.includes("Auto-remediated")),
+    `expected remediation warning in job logs, got: ${jobService.logs.join(" | ")}`,
+  );
+});
+
+test("createTasks keeps explicit cross_service tag on single-service epics and logs warning", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Platform-wide concern",
+          description: "Scope intentionally marked cross-service.",
+          acceptanceCriteria: ["ac1"],
+          serviceIds: ["http-api-service"],
+          tags: ["cross_service"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const epic = workspaceRepo.epics.find((entry) => entry.title === "Platform-wide concern");
+  const metadata = (epic?.metadata ?? {}) as Record<string, unknown>;
+  const serviceIds = Array.isArray(metadata.service_ids) ? (metadata.service_ids as string[]) : [];
+  const tags = Array.isArray(metadata.tags) ? (metadata.tags as string[]) : [];
+  assert.equal(serviceIds.length, 1);
+  assert.ok(tags.includes("cross_service"), `expected cross_service tag in metadata: ${JSON.stringify(metadata)}`);
+  assert.ok(
+    jobService.logs.some((line) => line.includes("cross_service") && line.includes("only one service id")),
+    `expected single-service cross_service warning in logs, got: ${jobService.logs.join(" | ")}`,
+  );
+});
+
+test("createTasks fails when unknown epic service ids are present and policy is fail", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Failing epic",
+          description: "Contains one valid and one invalid service id.",
+          acceptanceCriteria: ["ac1"],
+          serviceIds: ["http-api-service", "unknown-service"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Story One",
+          description: "Story desc",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [],
+        agentStream: false,
+        unknownEpicServicePolicy: "fail",
+      }),
+    /unknown service ids|phase-0 service references/i,
+  );
+});
+
+test("alignEpicsToServiceCatalog recovers unresolved service ids from epic text when some explicit ids are valid", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const catalog = {
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: [],
+    services: [
+      {
+        id: "auth-service",
+        name: "auth service",
+        aliases: ["authentication service"],
+        dependsOnServiceIds: [],
+        isFoundational: true,
+      },
+      {
+        id: "billing-service",
+        name: "billing service",
+        aliases: ["billing"],
+        dependsOnServiceIds: ["auth-service"],
+        isFoundational: false,
+      },
+    ],
+  };
+  const aligned = (service as any).alignEpicsToServiceCatalog(
+    [
+      {
+        localId: "e1",
+        title: "Billing rollout",
+        description: "Integrate billing service for invoice pipelines.",
+        acceptanceCriteria: ["billing service is connected"],
+        serviceIds: ["auth-service", "unknown-billing"],
+        stories: [],
+      },
+    ],
+    catalog,
+    "auto-remediate",
+  );
+  assert.deepEqual(aligned.epics[0]?.serviceIds, ["auth-service", "billing-service"]);
+  assert.ok(aligned.warnings.some((message: string) => message.includes("unknown-billing")));
+});
+
+test("alignEpicsToServiceCatalog avoids short-token substring matches and prefers foundational fallback", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const catalog = {
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: [],
+    services: [
+      {
+        id: "ui-service",
+        name: "ui service",
+        aliases: ["ui"],
+        startupWave: 2,
+        dependsOnServiceIds: ["core-service"],
+        isFoundational: false,
+      },
+      {
+        id: "core-service",
+        name: "core service",
+        aliases: ["core"],
+        startupWave: 0,
+        dependsOnServiceIds: [],
+        isFoundational: true,
+      },
+    ],
+  };
+  const aligned = (service as any).alignEpicsToServiceCatalog(
+    [
+      {
+        localId: "e1",
+        title: "Audit logging reliability",
+        description: "Increase resilience for audit trails.",
+        acceptanceCriteria: ["audit events persist"],
+        serviceIds: [],
+        stories: [],
+      },
+    ],
+    catalog,
+    "auto-remediate",
+  );
+  assert.deepEqual(aligned.epics[0]?.serviceIds, ["core-service"]);
+});
+
+test("alignEpicsToServiceCatalog surfaces alias collisions as ambiguous mappings", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const catalog = {
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: [],
+    services: [
+      {
+        id: "billing-api",
+        name: "billing api",
+        aliases: ["billing service"],
+        startupWave: 1,
+        dependsOnServiceIds: [],
+        isFoundational: true,
+      },
+      {
+        id: "billing-worker",
+        name: "billing worker",
+        aliases: ["billing service"],
+        startupWave: 1,
+        dependsOnServiceIds: ["billing-api"],
+        isFoundational: false,
+      },
+    ],
+  };
+  const aligned = (service as any).alignEpicsToServiceCatalog(
+    [
+      {
+        localId: "e1",
+        title: "Billing worker queue sync",
+        description: "Ensure billing worker catches up on retries.",
+        acceptanceCriteria: ["billing worker queue drains"],
+        serviceIds: ["billing service"],
+        stories: [],
+      },
+    ],
+    catalog,
+    "auto-remediate",
+  );
+  assert.deepEqual(aligned.epics[0]?.serviceIds, ["billing-worker"]);
+  assert.ok(aligned.warnings.some((message: string) => message.includes("Ambiguous mappings")));
+});
+
+test("buildServiceCatalogPromptSummary includes all service ids even when detail lines are truncated", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const catalog = {
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: [],
+    services: Array.from({ length: 30 }, (_, index) => ({
+      id: `svc-${index + 1}`,
+      name: `service ${index + 1}`,
+      aliases: [`service-${index + 1}`],
+      dependsOnServiceIds: [],
+      isFoundational: index === 0,
+    })),
+  };
+  const summary = (service as any).buildServiceCatalogPromptSummary(catalog);
+  assert.ok(summary.includes("Allowed serviceIds (30)"));
+  assert.ok(summary.includes("svc-30"));
+});
+
+test("applyServiceDependencySequencing uses epic serviceIds when task text is generic", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const plan = {
+    epics: [
+      {
+        localId: "e-api",
+        area: "web",
+        title: "API Surface",
+        description: "Public API implementation",
+        acceptanceCriteria: [],
+        serviceIds: ["backend-api"],
+        tags: [],
+        stories: [],
+        priorityHint: 1,
+      },
+      {
+        localId: "e-auth",
+        area: "web",
+        title: "Auth Core",
+        description: "Authentication foundation",
+        acceptanceCriteria: [],
+        serviceIds: ["auth-service"],
+        tags: [],
+        stories: [],
+        priorityHint: 2,
+      },
+    ],
+    stories: [
+      {
+        localId: "us-api",
+        epicLocalId: "e-api",
+        title: "API story",
+        description: "Implement endpoints",
+        acceptanceCriteria: [],
+        tasks: [],
+        priorityHint: 1,
+      },
+      {
+        localId: "us-auth",
+        epicLocalId: "e-auth",
+        title: "Auth story",
+        description: "Implement auth layer",
+        acceptanceCriteria: [],
+        tasks: [],
+        priorityHint: 1,
+      },
+    ],
+    tasks: [
+      {
+        localId: "t-api",
+        epicLocalId: "e-api",
+        storyLocalId: "us-api",
+        title: "Implement module",
+        description: "Generic implementation task.",
+        type: "feature",
+        estimatedStoryPoints: 3,
+        dependsOnKeys: [],
+        priorityHint: 1,
+      },
+      {
+        localId: "t-auth",
+        epicLocalId: "e-auth",
+        storyLocalId: "us-auth",
+        title: "Implement module",
+        description: "Generic implementation task.",
+        type: "feature",
+        estimatedStoryPoints: 3,
+        dependsOnKeys: [],
+        priorityHint: 1,
+      },
+    ],
+  };
+  const docs = [
+    {
+      id: "doc-1",
+      docType: "SDS",
+      title: "sds",
+      content: "backend api depends on auth service",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      segments: [],
+    },
+  ];
+  const sequenced = (service as any).applyServiceDependencySequencing(plan, docs);
+  assert.equal(sequenced.epics[0]?.localId, "e-auth");
+  assert.equal(sequenced.stories[0]?.epicLocalId, "e-auth");
+});
+
+test("acquirePlanArtifactLock prevents concurrent writes and releases lock file", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const lockDir = path.join(workspace.mcodaDir, "tasks", "web-lock-test");
+  await fs.mkdir(lockDir, { recursive: true });
+  const lockPath = path.join(lockDir, ".plan-artifacts.lock");
+  const releaseLock = await (service as any).acquirePlanArtifactLock(lockDir, {
+    timeoutMs: 250,
+    pollIntervalMs: 20,
+    staleLockMs: 5_000,
+  });
+  await assert.rejects(
+    () =>
+      (service as any).acquirePlanArtifactLock(lockDir, {
+        timeoutMs: 120,
+        pollIntervalMs: 20,
+        staleLockMs: 5_000,
+      }),
+    /Timed out acquiring plan artifact lock/i,
+  );
+  await releaseLock();
+  const releaseAgain = await (service as any).acquirePlanArtifactLock(lockDir, {
+    timeoutMs: 250,
+    pollIntervalMs: 20,
+    staleLockMs: 5_000,
+  });
+  await releaseAgain();
+  await assert.rejects(() => fs.access(lockPath));
 });
 
 test("createTasks merges qa overrides into task metadata", async () => {

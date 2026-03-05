@@ -49,6 +49,7 @@ export interface CreateTasksOptions {
   qaRequires?: string[];
   sdsPreflightCommit?: boolean;
   sdsPreflightCommitMessage?: string;
+  unknownEpicServicePolicy?: EpicServiceValidationPolicy;
 }
 
 export interface CreateTasksResult {
@@ -95,6 +96,8 @@ interface AgentEpicNode {
   acceptanceCriteria?: string[];
   relatedDocs?: string[];
   priorityHint?: number;
+  serviceIds?: string[];
+  tags?: string[];
   stories: AgentStoryNode[];
 }
 
@@ -132,6 +135,24 @@ type ServiceDependencyGraph = {
   foundationalDependencies: string[];
 };
 
+type ServiceCatalogEntry = {
+  id: string;
+  name: string;
+  aliases: string[];
+  startupWave?: number;
+  dependsOnServiceIds: string[];
+  isFoundational: boolean;
+};
+
+type ServiceCatalogArtifact = {
+  projectKey: string;
+  generatedAt: string;
+  sourceDocs: string[];
+  services: ServiceCatalogEntry[];
+};
+
+type EpicServiceValidationPolicy = "auto-remediate" | "fail";
+
 type QaPreflight = {
   scripts: Record<string, string>;
   entrypoints: QaEntrypoint[];
@@ -144,6 +165,7 @@ type ProjectBuildPlanArtifact = {
   sourceDocs: string[];
   startupWaves: Array<{ wave: number; services: string[] }>;
   services: string[];
+  serviceIds: string[];
   foundationalDependencies: string[];
   buildMethod: string;
 };
@@ -340,6 +362,8 @@ const DEPENDENCY_SCAN_LINE_LIMIT = 1400;
 const STARTUP_WAVE_SCAN_LINE_LIMIT = 4000;
 const VALID_AREAS = new Set(["web", "adm", "bck", "ops", "infra", "mobile"]);
 const VALID_TASK_TYPES = new Set(["feature", "bug", "chore", "spike"]);
+const VALID_EPIC_SERVICE_POLICIES = new Set<EpicServiceValidationPolicy>(["auto-remediate", "fail"]);
+const CROSS_SERVICE_TAG = "cross_service";
 
 const inferDocType = (filePath: string): string => {
   const name = path.basename(filePath).toLowerCase();
@@ -375,6 +399,20 @@ const normalizeTaskType = (value: unknown): string | undefined => {
   }
   return undefined;
 };
+
+const normalizeEpicServicePolicy = (value: unknown): EpicServiceValidationPolicy | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase() as EpicServiceValidationPolicy;
+  if (!VALID_EPIC_SERVICE_POLICIES.has(normalized)) return undefined;
+  return normalized;
+};
+
+const normalizeEpicTags = (value: unknown): string[] =>
+  uniqueStrings(
+    normalizeStringArray(value)
+      .map((item) => item.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, ""))
+      .filter(Boolean),
+  );
 
 const normalizeRelatedDocs = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
@@ -963,7 +1001,9 @@ const EPIC_SCHEMA_SNIPPET = `{
       "description": "Epic description using the epic template",
       "acceptanceCriteria": ["criterion"],
       "relatedDocs": ["docdex:..."],
-      "priorityHint": 50
+      "priorityHint": 50,
+      "serviceIds": ["backend-api"],
+      "tags": ["cross_service"]
     }
   ]
 }`;
@@ -1723,6 +1763,11 @@ export class CreateTasksService {
       ...plan.stories.map((story) => `${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`),
       ...plan.tasks.map((task) => `${task.title}\n${task.description ?? ""}`),
     ].join("\n");
+    for (const epic of plan.epics) {
+      for (const serviceId of normalizeStringArray(epic.serviceIds)) {
+        register(serviceId);
+      }
+    }
     const structureTargets = this.extractStructureTargets(docs);
     for (const token of [...structureTargets.directories, ...structureTargets.files]) {
       register(this.deriveServiceFromPathToken(token));
@@ -1753,6 +1798,341 @@ export class CreateTasksService {
       startupWaves: waveHints.startupWaves,
       foundationalDependencies: waveHints.foundationalDependencies,
     };
+  }
+
+  private normalizeServiceId(value: string): string | undefined {
+    const normalizedName = this.normalizeServiceName(value);
+    if (!normalizedName) return undefined;
+    const slug = normalizedName
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!slug) return undefined;
+    return /^[a-z]/.test(slug) ? slug : `svc-${slug}`;
+  }
+
+  private normalizeServiceLookupKey(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/[`"'()[\]{}]/g, " ")
+      .replace(/[._/-]+/g, " ")
+      .replace(/[^a-z0-9\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  private createUniqueServiceId(baseId: string, used: Set<string>): string {
+    if (!used.has(baseId)) {
+      used.add(baseId);
+      return baseId;
+    }
+    let suffix = 2;
+    while (used.has(`${baseId}-${suffix}`)) suffix += 1;
+    const next = `${baseId}-${suffix}`;
+    used.add(next);
+    return next;
+  }
+
+  private buildServiceCatalogArtifact(
+    projectKey: string,
+    docs: DocdexDocument[],
+    graph: ServiceDependencyGraph,
+  ): ServiceCatalogArtifact {
+    const serviceNames = new Set<string>(graph.services);
+    for (const [dependent, dependencies] of graph.dependencies.entries()) {
+      serviceNames.add(dependent);
+      for (const dependency of dependencies) serviceNames.add(dependency);
+    }
+    for (const foundation of graph.foundationalDependencies) {
+      const normalized = this.normalizeServiceName(foundation);
+      if (normalized) serviceNames.add(normalized);
+    }
+    const orderedNames = [
+      ...graph.services,
+      ...Array.from(serviceNames)
+        .filter((name) => !graph.services.includes(name))
+        .sort((a, b) => a.localeCompare(b)),
+    ];
+    const usedServiceIds = new Set<string>();
+    const serviceIdByName = new Map<string, string>();
+    for (const name of orderedNames) {
+      const baseId = this.normalizeServiceId(name);
+      if (!baseId) continue;
+      serviceIdByName.set(name, this.createUniqueServiceId(baseId, usedServiceIds));
+    }
+
+    const services: ServiceCatalogEntry[] = [];
+    for (const name of orderedNames) {
+      const id = serviceIdByName.get(name);
+      if (!id) continue;
+      const aliases = uniqueStrings([
+        name,
+        ...(graph.aliases.get(name) ? Array.from(graph.aliases.get(name) ?? []) : []),
+      ]).sort((a, b) => a.localeCompare(b));
+      const dependencyNames = Array.from(graph.dependencies.get(name) ?? []);
+      const dependsOnServiceIds = uniqueStrings(
+        dependencyNames
+          .map((dependency) => serviceIdByName.get(dependency))
+          .filter((value): value is string => Boolean(value)),
+      );
+      const startupWave = graph.waveRank.get(name);
+      const wave = typeof startupWave === "number" && Number.isFinite(startupWave) ? startupWave : undefined;
+      services.push({
+        id,
+        name,
+        aliases,
+        startupWave: wave,
+        dependsOnServiceIds,
+        isFoundational:
+          graph.foundationalDependencies.some(
+            (foundation) => this.normalizeServiceName(foundation) === name || this.normalizeServiceId(foundation) === id,
+          ) || dependsOnServiceIds.length === 0,
+      });
+    }
+
+    if (services.length === 0) {
+      const fallbackServiceId = this.normalizeServiceId(`${projectKey} core`) ?? `${projectKey}-core`;
+      services.push({
+        id: fallbackServiceId,
+        name: `${projectKey} core`,
+        aliases: uniqueStrings([`${projectKey} core`, projectKey, "core"]),
+        dependsOnServiceIds: [],
+        isFoundational: true,
+      });
+    }
+
+    const sourceDocs = docs
+      .map((doc) => doc.path ?? (doc.id ? `docdex:${doc.id}` : doc.title ?? "doc"))
+      .filter((value): value is string => Boolean(value))
+      .slice(0, 24);
+
+    return {
+      projectKey,
+      generatedAt: new Date().toISOString(),
+      sourceDocs,
+      services,
+    };
+  }
+
+  private buildServiceCatalogPromptSummary(catalog: ServiceCatalogArtifact): string {
+    if (!catalog.services.length) {
+      return "- No services detected. Infer services from SDS and ensure every epic includes at least one service id.";
+    }
+    const allIds = catalog.services.map((service) => service.id);
+    const idChunks: string[] = [];
+    for (let index = 0; index < allIds.length; index += 12) {
+      idChunks.push(allIds.slice(index, index + 12).join(", "));
+    }
+    const detailLimit = Math.min(catalog.services.length, 40);
+    const detailLines = catalog.services.slice(0, detailLimit).map((service) => {
+      const deps = service.dependsOnServiceIds.length > 0 ? service.dependsOnServiceIds.join(", ") : "none";
+      const wave = typeof service.startupWave === "number" ? `wave=${service.startupWave}` : "wave=unspecified";
+      return `- ${service.id} (${wave}; deps: ${deps}; aliases: ${service.aliases.slice(0, 5).join(", ")})`;
+    });
+    if (catalog.services.length > detailLimit) {
+      detailLines.push(
+        `- ${catalog.services.length - detailLimit} additional services omitted from detailed lines (still listed in allowed serviceIds).`,
+      );
+    }
+    return [`- Allowed serviceIds (${allIds.length}):`, ...idChunks.map((chunk) => `  ${chunk}`), "- Service details:", ...detailLines].join(
+      "\n",
+    );
+  }
+
+  private alignEpicsToServiceCatalog(
+    epics: AgentEpicNode[],
+    catalog: ServiceCatalogArtifact,
+    policy: EpicServiceValidationPolicy,
+  ): { epics: AgentEpicNode[]; warnings: string[] } {
+    const warnings: string[] = [];
+    const validServiceIds = new Set(catalog.services.map((service) => service.id));
+    const serviceOrder = new Map(catalog.services.map((service, index) => [service.id, index]));
+    const aliasToIds = new Map<string, Set<string>>();
+    const idLookup = new Map<string, string>();
+    const registerAlias = (rawValue: string, serviceId: string) => {
+      const normalized = this.normalizeServiceLookupKey(rawValue);
+      if (!normalized) return;
+      const bucket = aliasToIds.get(normalized) ?? new Set<string>();
+      bucket.add(serviceId);
+      aliasToIds.set(normalized, bucket);
+    };
+    for (const service of catalog.services) {
+      const normalizedId = this.normalizeServiceLookupKey(service.id);
+      if (normalizedId) idLookup.set(normalizedId, service.id);
+      registerAlias(service.id, service.id);
+      registerAlias(service.name, service.id);
+      for (const alias of service.aliases) {
+        registerAlias(alias, service.id);
+      }
+    }
+    const containsLookupPhrase = (haystack: string, phrase: string): boolean => {
+      if (!haystack || !phrase) return false;
+      if (!phrase.includes(" ") && phrase.length < 4) return false;
+      return ` ${haystack} `.includes(` ${phrase} `);
+    };
+    const mapCandidateToServiceId = (
+      value: string,
+    ): { resolvedId?: string; ambiguousIds?: string[] } => {
+      const normalized = this.normalizeServiceLookupKey(value);
+      if (!normalized) return {};
+      const directId = idLookup.get(normalized);
+      if (directId) return { resolvedId: directId };
+      const aliasMatches = aliasToIds.get(normalized);
+      if (aliasMatches && aliasMatches.size === 1) {
+        return { resolvedId: Array.from(aliasMatches)[0] };
+      }
+      if (aliasMatches && aliasMatches.size > 1) {
+        return {
+          ambiguousIds: Array.from(aliasMatches).sort(
+            (a, b) =>
+              (serviceOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (serviceOrder.get(b) ?? Number.MAX_SAFE_INTEGER),
+          ),
+        };
+      }
+      const idFromName = this.normalizeServiceId(normalized);
+      if (!idFromName) return {};
+      if (validServiceIds.has(idFromName)) return { resolvedId: idFromName };
+      const candidates = Array.from(validServiceIds)
+        .filter((id) => id === idFromName || id.startsWith(`${idFromName}-`))
+        .sort(
+          (a, b) => (serviceOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (serviceOrder.get(b) ?? Number.MAX_SAFE_INTEGER),
+        );
+      if (candidates.length === 1) return { resolvedId: candidates[0] };
+      if (candidates.length > 1) return { ambiguousIds: candidates };
+      return {};
+    };
+    const inferServiceIdsFromEpicText = (epic: AgentEpicNode): string[] => {
+      const text = this.normalizeServiceLookupKey(
+        [epic.title, epic.description ?? "", ...(epic.acceptanceCriteria ?? [])]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      if (!text) return [];
+      const scored = new Map<string, number>();
+      for (const service of catalog.services) {
+        let score = 0;
+        const idToken = this.normalizeServiceLookupKey(service.id);
+        if (idToken && containsLookupPhrase(text, idToken)) {
+          score = Math.max(score, 120 + idToken.length);
+        }
+        const nameToken = this.normalizeServiceLookupKey(service.name);
+        if (nameToken && containsLookupPhrase(text, nameToken)) {
+          score = Math.max(score, 90 + nameToken.length);
+        }
+        for (const alias of service.aliases) {
+          const aliasToken = this.normalizeServiceLookupKey(alias);
+          if (!aliasToken || aliasToken === idToken || aliasToken === nameToken) continue;
+          if (containsLookupPhrase(text, aliasToken)) {
+            score = Math.max(score, 60 + aliasToken.length);
+          }
+        }
+        if (score > 0) scored.set(service.id, score);
+      }
+      return Array.from(scored.entries())
+        .sort((a, b) => b[1] - a[1] || (serviceOrder.get(a[0]) ?? 0) - (serviceOrder.get(b[0]) ?? 0))
+        .map(([id]) => id)
+        .slice(0, 4);
+    };
+    const pickFallbackServiceIds = (epic: AgentEpicNode, count: number): string[] => {
+      const text = this.normalizeServiceLookupKey(
+        [epic.title, epic.description ?? "", ...(epic.acceptanceCriteria ?? [])]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      const ranked = catalog.services
+        .map((service) => {
+          let score = 0;
+          if (service.isFoundational) score += 100;
+          if (typeof service.startupWave === "number") score += Math.max(0, 40 - service.startupWave * 2);
+          if (service.dependsOnServiceIds.length === 0) score += 20;
+          const tokens = uniqueStrings([service.id, service.name, ...service.aliases])
+            .map((value) => this.normalizeServiceLookupKey(value))
+            .filter(Boolean);
+          for (const token of tokens) {
+            if (containsLookupPhrase(text, token)) {
+              score += 25 + token.length;
+            }
+          }
+          return { id: service.id, score };
+        })
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            (serviceOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (serviceOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+        );
+      return ranked.slice(0, Math.max(1, count)).map((entry) => entry.id);
+    };
+
+    const normalizedEpics = epics.map((epic, index) => {
+      const explicitServiceIds = normalizeStringArray(epic.serviceIds);
+      const resolvedServiceIds: string[] = [];
+      const unresolvedServiceIds: string[] = [];
+      const ambiguousServiceIds: Array<{ candidate: string; options: string[] }> = [];
+      for (const candidate of explicitServiceIds) {
+        const mapped = mapCandidateToServiceId(candidate);
+        if (mapped.resolvedId) {
+          resolvedServiceIds.push(mapped.resolvedId);
+        } else if ((mapped.ambiguousIds?.length ?? 0) > 1) {
+          ambiguousServiceIds.push({ candidate, options: mapped.ambiguousIds ?? [] });
+          unresolvedServiceIds.push(candidate);
+        } else {
+          unresolvedServiceIds.push(candidate);
+        }
+      }
+      const inferredServiceIds = inferServiceIdsFromEpicText(epic);
+      const targetServiceCount = Math.max(1, Math.min(3, explicitServiceIds.length || 1));
+      if (policy === "auto-remediate") {
+        for (const inferred of inferredServiceIds) {
+          if (resolvedServiceIds.includes(inferred)) continue;
+          resolvedServiceIds.push(inferred);
+          if (resolvedServiceIds.length >= targetServiceCount) break;
+        }
+        if (resolvedServiceIds.length === 0 && catalog.services.length > 0) {
+          resolvedServiceIds.push(...pickFallbackServiceIds(epic, 1));
+        }
+      } else if (resolvedServiceIds.length === 0 && inferredServiceIds.length > 0) {
+        resolvedServiceIds.push(...inferredServiceIds.slice(0, Math.max(1, targetServiceCount)));
+      }
+      const dedupedServiceIds = uniqueStrings(resolvedServiceIds)
+        .filter((serviceId) => validServiceIds.has(serviceId))
+        .sort((a, b) => (serviceOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (serviceOrder.get(b) ?? Number.MAX_SAFE_INTEGER));
+      if (dedupedServiceIds.length === 0) {
+        throw new Error(
+          `Epic ${epic.localId ?? index + 1} (${epic.title}) has no valid phase-0 service references. Allowed service ids: ${Array.from(validServiceIds).join(", ")}`,
+        );
+      }
+      if (unresolvedServiceIds.length > 0 || ambiguousServiceIds.length > 0) {
+        const unresolvedLabel = unresolvedServiceIds.length > 0 ? unresolvedServiceIds.join(", ") : "(none)";
+        const issueLabel = unresolvedServiceIds.length > 0 ? "unknown service ids" : "ambiguous service ids";
+        const ambiguity =
+          ambiguousServiceIds.length > 0
+            ? ` Ambiguous mappings: ${ambiguousServiceIds
+                .map((item) => `${item.candidate} -> [${item.options.join(", ")}]`)
+                .join("; ")}.`
+            : "";
+        const message = `Epic ${epic.localId ?? index + 1} (${epic.title}) referenced ${issueLabel}: ${unresolvedLabel}.${ambiguity}`;
+        if (policy === "fail") {
+          throw new Error(`${message} Allowed service ids: ${Array.from(validServiceIds).join(", ")}`);
+        }
+        warnings.push(`${message} Auto-remediated to: ${dedupedServiceIds.join(", ")}`);
+      }
+      const tags = normalizeEpicTags(epic.tags);
+      if (dedupedServiceIds.length > 1 && !tags.includes(CROSS_SERVICE_TAG)) {
+        tags.push(CROSS_SERVICE_TAG);
+      }
+      if (dedupedServiceIds.length <= 1 && tags.includes(CROSS_SERVICE_TAG)) {
+        warnings.push(
+          `Epic ${epic.localId ?? index + 1} (${epic.title}) has tag ${CROSS_SERVICE_TAG} but only one service id (${dedupedServiceIds.join(", ")}). Keeping tag as explicit cross-cutting marker.`,
+        );
+      }
+      return {
+        ...epic,
+        serviceIds: dedupedServiceIds,
+        tags: uniqueStrings(tags),
+      };
+    });
+    return { epics: normalizedEpics, warnings };
   }
 
   private buildProjectConstructionMethod(docs: DocdexDocument[], graph: ServiceDependencyGraph): string {
@@ -1812,6 +2192,7 @@ export class CreateTasksService {
       sourceDocs,
       startupWaves: graph.startupWaves.slice(0, 12),
       services: graph.services.slice(0, 40),
+      serviceIds: graph.services.map((service) => this.normalizeServiceId(service) ?? service.replace(/\s+/g, "-")).slice(0, 40),
       foundationalDependencies: graph.foundationalDependencies.slice(0, 16),
       buildMethod,
     };
@@ -1888,15 +2269,38 @@ export class CreateTasksService {
       }),
     );
     const resolveEntityService = (text: string): string | undefined => this.resolveServiceMentionFromPhrase(text, graph.aliases);
+    const resolveServiceFromIds = (serviceIds: string[] | undefined): string | undefined => {
+      for (const serviceId of normalizeStringArray(serviceIds)) {
+        const resolved = resolveEntityService(serviceId) ?? this.addServiceAlias(graph.aliases, serviceId);
+        if (resolved) return resolved;
+      }
+      return undefined;
+    };
     const epics = plan.epics.map((epic) => ({ ...epic }));
     const stories = plan.stories.map((story) => ({ ...story }));
     const tasks = plan.tasks.map((task) => ({ ...task, dependsOnKeys: uniqueStrings(task.dependsOnKeys ?? []) }));
     const storyByScope = new Map(stories.map((story) => [this.scopeStory(story), story]));
+    const epicServiceByLocalId = new Map<string, string | undefined>();
+    const storyServiceByScope = new Map<string, string | undefined>();
     const taskServiceByScope = new Map<string, string | undefined>();
 
+    for (const epic of epics) {
+      const serviceFromIds = resolveServiceFromIds(epic.serviceIds);
+      const serviceFromText = resolveEntityService(`${epic.title}\n${epic.description ?? ""}`);
+      epicServiceByLocalId.set(epic.localId, serviceFromIds ?? serviceFromText);
+    }
+
+    for (const story of stories) {
+      const storyScope = this.scopeStory(story);
+      const inherited = epicServiceByLocalId.get(story.epicLocalId);
+      const serviceFromText = resolveEntityService(`${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`);
+      storyServiceByScope.set(storyScope, serviceFromText ?? inherited);
+    }
+
     for (const task of tasks) {
+      const storyScope = this.storyScopeKey(task.epicLocalId, task.storyLocalId);
       const text = `${task.title ?? ""}\n${task.description ?? ""}`;
-      taskServiceByScope.set(this.scopeTask(task), resolveEntityService(text));
+      taskServiceByScope.set(this.scopeTask(task), resolveEntityService(text) ?? storyServiceByScope.get(storyScope));
     }
 
     const tasksByStory = new Map<string, PlanTask[]>();
@@ -1941,7 +2345,7 @@ export class CreateTasksService {
       const taskRanks = storyTasks
         .map((task) => serviceRank.get(taskServiceByScope.get(this.scopeTask(task)) ?? ""))
         .filter((value): value is number => typeof value === "number");
-      const storyTextRank = serviceRank.get(resolveEntityService(`${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`) ?? "");
+      const storyTextRank = serviceRank.get(storyServiceByScope.get(storyScope) ?? "");
       const rank = taskRanks.length > 0 ? Math.min(...taskRanks) : storyTextRank ?? Number.MAX_SAFE_INTEGER;
       storyRankByScope.set(storyScope, rank);
     }
@@ -1952,7 +2356,7 @@ export class CreateTasksService {
       const storyRanks = epicStories
         .map((story) => storyRankByScope.get(this.scopeStory(story)))
         .filter((value): value is number => typeof value === "number");
-      const epicTextRank = serviceRank.get(resolveEntityService(`${epic.title}\n${epic.description ?? ""}`) ?? "");
+      const epicTextRank = serviceRank.get(epicServiceByLocalId.get(epic.localId) ?? "");
       const rank = storyRanks.length > 0 ? Math.min(...storyRanks) : epicTextRank ?? Number.MAX_SAFE_INTEGER;
       epicRankByLocalId.set(epic.localId, rank);
     }
@@ -2527,9 +2931,11 @@ export class CreateTasksService {
     projectKey: string,
     docs: DocdexDocument[],
     projectBuildMethod: string,
+    serviceCatalog: ServiceCatalogArtifact,
     options: { maxEpics?: number; maxStoriesPerEpic?: number; maxTasksPerStory?: number },
   ): { prompt: string; docSummary: string } {
     const docSummary = docs.map((doc, idx) => describeDoc(doc, idx)).join("\n");
+    const serviceCatalogSummary = this.buildServiceCatalogPromptSummary(serviceCatalog);
     const limits = [
       options.maxEpics ? `Limit epics to ${options.maxEpics}.` : "",
       options.maxStoriesPerEpic ? `Limit stories per epic to ${options.maxStoriesPerEpic}.` : "",
@@ -2551,8 +2957,12 @@ export class CreateTasksService {
       "- Keep epics actionable and implementation-oriented; avoid glossary/admin-only epics.",
       "- Prefer dependency-first sequencing: foundational setup epics before dependent feature epics.",
       "- Keep output derived from docs; do not assume stacks unless docs state them.",
+      "- serviceIds is required and must contain one or more ids from the phase-0 service catalog below.",
+      `- If an epic spans multiple services, include tag \"${CROSS_SERVICE_TAG}\" in tags.`,
       "Project construction method to follow:",
       projectBuildMethod,
+      "Phase 0 service catalog (allowed serviceIds):",
+      serviceCatalogSummary,
       limits || "Use reasonable scope without over-generating epics.",
       "Docs available:",
       docSummary || "- (no docs provided; propose sensible epics).",
@@ -2880,6 +3290,8 @@ export class CreateTasksService {
         acceptanceCriteria: Array.isArray(epic.acceptanceCriteria) ? epic.acceptanceCriteria : [],
         relatedDocs: normalizeRelatedDocs(epic.relatedDocs),
         priorityHint: typeof epic.priorityHint === "number" ? epic.priorityHint : undefined,
+        serviceIds: normalizeStringArray(epic.serviceIds),
+        tags: normalizeEpicTags(epic.tags),
         stories: [],
       }))
       .filter((e) => e.title);
@@ -2907,6 +3319,8 @@ export class CreateTasksService {
       "- Keep story sequencing aligned with the project construction method.",
       `Epic context (key=${epic.key ?? epic.localId ?? "TBD"}):`,
       epic.description ?? "(no description provided)",
+      `Epic serviceIds: ${(epic.serviceIds ?? []).join(", ") || "(not provided)"}`,
+      `Epic tags: ${(epic.tags ?? []).join(", ") || "(none)"}`,
       "Project construction method:",
       projectBuildMethod,
       `Docs: ${docSummary || "none"}`,
@@ -3280,25 +3694,99 @@ export class CreateTasksService {
     };
   }
 
+  private async acquirePlanArtifactLock(
+    baseDir: string,
+    options?: { timeoutMs?: number; pollIntervalMs?: number; staleLockMs?: number },
+  ): Promise<() => Promise<void>> {
+    const timeoutMs = options?.timeoutMs ?? 10_000;
+    const pollIntervalMs = options?.pollIntervalMs ?? 80;
+    const staleLockMs = options?.staleLockMs ?? 120_000;
+    const lockPath = path.join(baseDir, ".plan-artifacts.lock");
+    const startedAtMs = Date.now();
+    while (true) {
+      try {
+        const handle = await fs.open(lockPath, "wx");
+        await handle.writeFile(
+          JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }),
+          "utf8",
+        );
+        return async () => {
+          try {
+            await handle.close();
+          } catch {}
+          await fs.rm(lockPath, { force: true });
+        };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") throw error;
+        try {
+          const stat = await fs.stat(lockPath);
+          if (Date.now() - stat.mtimeMs > staleLockMs) {
+            await fs.rm(lockPath, { force: true });
+            continue;
+          }
+        } catch {
+          continue;
+        }
+        if (Date.now() - startedAtMs >= timeoutMs) {
+          throw new Error(`Timed out acquiring plan artifact lock for ${baseDir}`);
+        }
+        await delay(pollIntervalMs);
+      }
+    }
+  }
+
+  private async writeJsonArtifactAtomic(targetPath: string, data: unknown): Promise<void> {
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+    const payload = JSON.stringify(data, null, 2);
+    await fs.writeFile(tempPath, payload, "utf8");
+    try {
+      await fs.rename(tempPath, targetPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EEXIST" || code === "EPERM") {
+        await fs.rm(targetPath, { force: true });
+        await fs.rename(tempPath, targetPath);
+      } else {
+        await fs.rm(tempPath, { force: true });
+        throw error;
+      }
+    }
+  }
+
   private async writePlanArtifacts(
     projectKey: string,
     plan: GeneratedPlan,
     docSummary: string,
     docs: DocdexDocument[],
     buildPlan: ProjectBuildPlanArtifact,
+    serviceCatalog: ServiceCatalogArtifact,
   ): Promise<{ folder: string }> {
     const baseDir = path.join(this.workspace.mcodaDir, "tasks", projectKey);
     await fs.mkdir(baseDir, { recursive: true });
-    const write = async (file: string, data: unknown) => {
-      const target = path.join(baseDir, file);
-      await fs.writeFile(target, JSON.stringify(data, null, 2), "utf8");
-    };
-    await write("plan.json", { projectKey, generatedAt: new Date().toISOString(), docSummary, buildPlan, ...plan });
-    await write("build-plan.json", buildPlan);
-    await write("epics.json", plan.epics);
-    await write("stories.json", plan.stories);
-    await write("tasks.json", plan.tasks);
-    await write("coverage-report.json", this.buildSdsCoverageReport(projectKey, docs, plan));
+    const releaseLock = await this.acquirePlanArtifactLock(baseDir);
+    try {
+      const write = async (file: string, data: unknown) => {
+        const target = path.join(baseDir, file);
+        await this.writeJsonArtifactAtomic(target, data);
+      };
+      await write("plan.json", {
+        projectKey,
+        generatedAt: new Date().toISOString(),
+        docSummary,
+        buildPlan,
+        serviceCatalog,
+        ...plan,
+      });
+      await write("build-plan.json", buildPlan);
+      await write("services.json", serviceCatalog);
+      await write("epics.json", plan.epics);
+      await write("stories.json", plan.stories);
+      await write("tasks.json", plan.tasks);
+      await write("coverage-report.json", this.buildSdsCoverageReport(projectKey, docs, plan));
+    } finally {
+      await releaseLock();
+    }
     return { folder: baseDir };
   }
 
@@ -3332,7 +3820,14 @@ export class CreateTasksService {
         ),
         storyPointsTotal: null,
         priority: epic.priorityHint ?? (epicInserts.length + 1),
-        metadata: epic.relatedDocs ? { doc_links: epic.relatedDocs } : undefined,
+        metadata:
+          epic.relatedDocs || (epic.serviceIds?.length ?? 0) > 0 || (epic.tags?.length ?? 0) > 0
+            ? {
+                ...(epic.relatedDocs ? { doc_links: epic.relatedDocs } : {}),
+                ...(epic.serviceIds && epic.serviceIds.length > 0 ? { service_ids: epic.serviceIds } : {}),
+                ...(epic.tags && epic.tags.length > 0 ? { tags: epic.tags } : {}),
+              }
+            : undefined,
       });
       epicMeta.push({ key, node: epic });
     }
@@ -3589,6 +4084,7 @@ export class CreateTasksService {
 
   async createTasks(options: CreateTasksOptions): Promise<CreateTasksResult> {
     const agentStream = options.agentStream !== false;
+    const unknownEpicServicePolicy = normalizeEpicServicePolicy(options.unknownEpicServicePolicy) ?? "auto-remediate";
     const commandRun = await this.jobService.startCommandRun("create-tasks", options.projectKey);
     const job = await this.jobService.startJob(
       "create_tasks",
@@ -3602,6 +4098,7 @@ export class CreateTasksService {
           agent: options.agentName,
           agentStream,
           sdsPreflightCommit: options.sdsPreflightCommit === true,
+          unknownEpicServicePolicy,
         },
       },
     );
@@ -3730,9 +4227,10 @@ export class CreateTasksService {
         const { docSummary, warnings: indexedDocWarnings } = this.buildDocContext(docs);
         const docWarnings = uniqueStrings([...(sdsPreflight?.warnings ?? []), ...indexedDocWarnings]);
         const discoveryGraph = this.buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+        const serviceCatalog = this.buildServiceCatalogArtifact(options.projectKey, docs, discoveryGraph);
         const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
         const projectBuildPlan = this.buildProjectPlanArtifact(options.projectKey, docs, discoveryGraph, projectBuildMethod);
-        const { prompt } = this.buildPrompt(options.projectKey, docs, projectBuildMethod, options);
+        const { prompt } = this.buildPrompt(options.projectKey, docs, projectBuildMethod, serviceCatalog, options);
         const qaPreflight = await this.buildQaPreflight();
         const qaOverrides = this.buildQaOverrides(options);
         await this.jobService.writeCheckpoint(job.id, {
@@ -3747,6 +4245,20 @@ export class CreateTasksService {
             sourceDocs: projectBuildPlan.sourceDocs.length,
             services: projectBuildPlan.services.length,
             startupWaves: projectBuildPlan.startupWaves.length,
+          },
+        });
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "phase0_services_defined",
+          timestamp: new Date().toISOString(),
+          details: {
+            services: serviceCatalog.services.length,
+            foundational: serviceCatalog.services.filter((service) => service.isFoundational).length,
+            startupWaves: uniqueStrings(
+              serviceCatalog.services
+                .map((service) => (typeof service.startupWave === "number" ? String(service.startupWave) : ""))
+                .filter(Boolean),
+            ).length,
+            sourceDocs: serviceCatalog.sourceDocs.length,
           },
         });
         await this.jobService.writeCheckpoint(job.id, {
@@ -3770,10 +4282,15 @@ export class CreateTasksService {
             commandRun.id,
             { docWarnings },
           );
-          const epics = this.parseEpics(epicOutput, docs, options.projectKey).slice(
+          const parsedEpics = this.parseEpics(epicOutput, docs, options.projectKey).slice(
             0,
             options.maxEpics ?? Number.MAX_SAFE_INTEGER,
           );
+          const normalizedEpics = this.alignEpicsToServiceCatalog(parsedEpics, serviceCatalog, unknownEpicServicePolicy);
+          for (const warning of normalizedEpics.warnings) {
+            await this.jobService.appendLog(job.id, `[create-tasks] ${warning}\n`);
+          }
+          const epics = normalizedEpics.epics;
           await this.jobService.writeCheckpoint(job.id, {
             stage: "epics_generated",
             timestamp: new Date().toISOString(),
@@ -3789,6 +4306,12 @@ export class CreateTasksService {
           });
         } catch (error) {
           fallbackReason = (error as Error).message ?? String(error);
+          if (
+            unknownEpicServicePolicy === "fail" &&
+            /unknown service ids|phase-0 service references/i.test(fallbackReason)
+          ) {
+            throw error;
+          }
           planSource = "fallback";
           await this.jobService.appendLog(
             job.id,
@@ -3806,6 +4329,18 @@ export class CreateTasksService {
           });
         }
 
+        const normalizedPlanEpics = this.alignEpicsToServiceCatalog(plan.epics, serviceCatalog, unknownEpicServicePolicy);
+        for (const warning of normalizedPlanEpics.warnings) {
+          await this.jobService.appendLog(job.id, `[create-tasks] ${warning}\n`);
+        }
+        plan = {
+          ...plan,
+          epics: normalizedPlanEpics.epics.map((epic, index) => ({
+            ...epic,
+            localId: epic.localId ?? `e${index + 1}`,
+            stories: [],
+          })),
+        };
         plan = this.enforceStoryScopedDependencies(plan);
         plan = this.injectStructureBootstrapPlan(plan, docs, options.projectKey);
         plan = this.enforceStoryScopedDependencies(plan);
@@ -3825,7 +4360,14 @@ export class CreateTasksService {
           details: { tasks: plan.tasks.length, source: planSource, fallbackReason },
         });
 
-        const { folder } = await this.writePlanArtifacts(options.projectKey, plan, docSummary, docs, projectBuildPlan);
+        const { folder } = await this.writePlanArtifacts(
+          options.projectKey,
+          plan,
+          docSummary,
+          docs,
+          projectBuildPlan,
+          serviceCatalog,
+        );
         await this.jobService.writeCheckpoint(job.id, {
           stage: "plan_written",
           timestamp: new Date().toISOString(),
