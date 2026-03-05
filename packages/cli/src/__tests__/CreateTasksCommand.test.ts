@@ -75,6 +75,23 @@ describe("create-tasks argument parsing", () => {
     assert.equal(parsed.sdsPreflightCommit, false);
   });
 
+  it("parses unknown epic service policy flag", () => {
+    const parsed = parseCreateTasksArgs(["--unknown-epic-service-policy", "fail"]);
+    assert.equal(parsed.unknownEpicServicePolicy, "fail");
+  });
+
+  it("parses unknown epic service policy with equals syntax", () => {
+    const parsed = parseCreateTasksArgs(["--unknown-epic-service-policy=auto-remediate"]);
+    assert.equal(parsed.unknownEpicServicePolicy, "auto-remediate");
+  });
+
+  it("rejects invalid unknown epic service policy flag values", () => {
+    assert.throws(
+      () => parseCreateTasksArgs(["--unknown-epic-service-policy", "invalid"]),
+      /Invalid --unknown-epic-service-policy value/i,
+    );
+  });
+
   it("honors explicit requested project key over configured defaults", () => {
     const result = pickCreateTasksProjectKey({
       requestedKey: "B",
@@ -108,5 +125,19 @@ describe("create-tasks argument parsing", () => {
       existing: [{ key: "old", mtimeMs: 5 }],
     });
     assert.equal(result.projectKey, "cfg");
+  });
+
+  it("uses derived project key by default even when latest existing task plan differs", () => {
+    const result = pickCreateTasksProjectKey({
+      requestedKey: undefined,
+      configuredKey: undefined,
+      derivedKey: "derived",
+      existing: [
+        { key: "other", mtimeMs: 100 },
+        { key: "older", mtimeMs: 10 },
+      ],
+    });
+    assert.equal(result.projectKey, "derived");
+    assert.ok(result.warnings.some((message) => message.includes("avoid accidental cross-project reuse")));
   });
 });

@@ -20,12 +20,13 @@ interface ParsedArgs {
   qaRequires?: string[];
   sdsPreflightCommit: boolean;
   sdsPreflightCommitMessage?: string;
+  unknownEpicServicePolicy?: "auto-remediate" | "fail";
   inputs: string[];
 }
 
 type ProjectKeyCandidate = { key: string; mtimeMs: number };
 
-const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--sds-preflight-commit [true|false]] [--sds-preflight-commit-message <text>] [--quiet]`;
+const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--sds-preflight-commit [true|false]] [--sds-preflight-commit-message <text>] [--unknown-epic-service-policy <auto-remediate|fail>] [--quiet]`;
 
 const readWorkspaceConfig = async (mcodaDir: string): Promise<Record<string, unknown>> => {
   const configPath = path.join(mcodaDir, "config.json");
@@ -124,20 +125,18 @@ export const pickCreateTasksProjectKey = (options: {
     return { projectKey: configuredKey, warnings };
   }
 
-  if (latestExisting) {
-    const selected = latestExisting;
-    if (!options.requestedKey && selected !== derivedKey) {
-      warnings.push(`Reusing existing project key "${selected}" from workspace task plans.`);
-    }
-    if (existing.length > 1) {
-      warnings.push(
-        `Multiple task plan folders detected (${existing.map((item) => item.key).join(", ")}); using "${selected}".`,
-      );
-    }
-    return { projectKey: selected, warnings };
+  if (latestExisting && latestExisting !== derivedKey) {
+    warnings.push(
+      `Existing task plans were found for "${latestExisting}", but using derived project key "${derivedKey}" to avoid accidental cross-project reuse. Pass --project-key to reuse an existing project.`,
+    );
+  }
+  if (existing.length > 1) {
+    warnings.push(
+      `Multiple task plan folders detected (${existing.map((item) => item.key).join(", ")}); using derived project key "${derivedKey}".`,
+    );
   }
 
-  return { projectKey: options.requestedKey ?? derivedKey, warnings };
+  return { projectKey: derivedKey, warnings };
 };
 
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
@@ -166,6 +165,13 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
   let qaRequires: string[] | undefined;
   let sdsPreflightCommit = false;
   let sdsPreflightCommitMessage: string | undefined;
+  let unknownEpicServicePolicy: "auto-remediate" | "fail" | undefined;
+  const normalizePolicy = (value: string | undefined): "auto-remediate" | "fail" | undefined => {
+    if (!value) return undefined;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "auto-remediate" || normalized === "fail") return normalized;
+    return undefined;
+  };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -178,6 +184,15 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
       if (arg.startsWith("--sds-preflight-commit=")) {
         const [, raw] = arg.split("=", 2);
         sdsPreflightCommit = parseBooleanFlag(raw, true);
+        continue;
+      }
+      if (arg.startsWith("--unknown-epic-service-policy=")) {
+        const [, raw] = arg.split("=", 2);
+        const normalizedPolicy = normalizePolicy(raw);
+        if (!normalizedPolicy) {
+          throw new Error(`Invalid --unknown-epic-service-policy value: ${raw}. Expected auto-remediate or fail.`);
+        }
+        unknownEpicServicePolicy = normalizedPolicy;
         continue;
       }
       switch (arg) {
@@ -266,6 +281,18 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
           sdsPreflightCommitMessage = argv[i + 1];
           i += 1;
           break;
+        case "--unknown-epic-service-policy": {
+          const value = argv[i + 1];
+          const normalizedPolicy = normalizePolicy(value);
+          if (!normalizedPolicy) {
+            throw new Error(
+              `Invalid --unknown-epic-service-policy value: ${value ?? "(missing)"}. Expected auto-remediate or fail.`,
+            );
+          }
+          unknownEpicServicePolicy = normalizedPolicy;
+          i += 1;
+          break;
+        }
         case "--quiet":
           quiet = true;
           break;
@@ -303,6 +330,7 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     qaRequires,
     sdsPreflightCommit,
     sdsPreflightCommitMessage,
+    unknownEpicServicePolicy,
     inputs,
   };
 };
@@ -356,6 +384,7 @@ export class CreateTasksCommand {
         qaRequires: parsed.qaRequires,
         sdsPreflightCommit: parsed.sdsPreflightCommit,
         sdsPreflightCommitMessage: parsed.sdsPreflightCommitMessage,
+        unknownEpicServicePolicy: parsed.unknownEpicServicePolicy,
       });
 
       const dbPath = PathHelper.getWorkspaceDbPath(workspace.workspaceRoot);
