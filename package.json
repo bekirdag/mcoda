@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
@@ -44,7 +44,7 @@
   },
   "pnpm": {
     "overrides": {
-      "tar": "7.5.8",
+      "tar": "7.5.10",
       "minimatch": "10.2.3",
       "basic-ftp": "5.2.0",
       "axios": "1.13.5",

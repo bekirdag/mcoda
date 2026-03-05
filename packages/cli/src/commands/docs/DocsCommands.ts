@@ -3,6 +3,7 @@ import { DocsService, WorkspaceResolver } from "@mcoda/core";
 
 const pdrUsage = `mcoda docs pdr generate --rfp-path <FILE> [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--rfp-id <ID>] [--fast] [--iterate] [--quality <build-ready>] [--resolve-open-questions] [--no-placeholders] [--no-maybes] [--cross-align] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
 const sdsUsage = `mcoda docs sds generate [--workspace-root <PATH>] [--project <KEY>] [--out <FILE>] [--agent <NAME>] [--template <NAME>] [--agent-stream <true|false>] [--rate-agents] [--fast] [--iterate] [--quality <build-ready>] [--resolve-open-questions] [--no-placeholders] [--no-maybes] [--cross-align] [--force] [--resume <JOB_ID>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
+const sdsSuggestionsUsage = `mcoda docs sds suggestions [--workspace-root <PATH>] [--project <KEY>] [--sds-path <FILE>] [--review-agent <NAME>] [--fix-agent <NAME>] [--agent-stream <true|false>] [--rate-agents] [--max-iterations <N>] [--json] [--dry-run] [--debug] [--no-color] [--quiet] [--no-telemetry]`;
 
 export interface ParsedPdrArgs {
   workspaceRoot?: string;
@@ -55,12 +56,36 @@ export interface ParsedSdsArgs {
   noTelemetry: boolean;
 }
 
+export interface ParsedSdsSuggestionsArgs {
+  workspaceRoot?: string;
+  projectKey?: string;
+  sdsPath?: string;
+  reviewAgentName?: string;
+  fixAgentName?: string;
+  agentStream: boolean;
+  rateAgents: boolean;
+  maxIterations: number;
+  dryRun: boolean;
+  json: boolean;
+  quiet: boolean;
+  debug: boolean;
+  noColor: boolean;
+  noTelemetry: boolean;
+}
+
 const parseBooleanFlag = (value: string | undefined, defaultValue: boolean): boolean => {
   if (value === undefined) return defaultValue;
   const normalized = value.toLowerCase();
   if (["false", "0", "no"].includes(normalized)) return false;
   if (["true", "1", "yes"].includes(normalized)) return true;
   return defaultValue;
+};
+
+const clampIterations = (value: number): number => {
+  if (!Number.isFinite(value)) return 100;
+  if (value < 1) return 1;
+  if (value > 100) return 100;
+  return Math.floor(value);
 };
 
 export const parsePdrArgs = (argv: string[]): ParsedPdrArgs => {
@@ -517,6 +542,132 @@ export const parseSdsArgs = (argv: string[]): ParsedSdsArgs => {
   };
 };
 
+export const parseSdsSuggestionsArgs = (argv: string[]): ParsedSdsSuggestionsArgs => {
+  let workspaceRoot: string | undefined;
+  let projectKey: string | undefined;
+  let sdsPath: string | undefined;
+  let reviewAgentName: string | undefined;
+  let fixAgentName: string | undefined;
+  let agentStream: boolean | undefined;
+  let rateAgents = false;
+  let maxIterations = 100;
+  let dryRun = false;
+  let json = false;
+  let quiet = false;
+  let debug = false;
+  let noColor = false;
+  let noTelemetry = false;
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg.startsWith("--rate-agents=")) {
+      const [, raw] = arg.split("=", 2);
+      rateAgents = parseBooleanFlag(raw, true);
+      continue;
+    }
+    if (arg.startsWith("--max-iterations=")) {
+      const [, raw] = arg.split("=", 2);
+      const parsed = Number.parseInt(raw ?? "", 10);
+      maxIterations = clampIterations(parsed);
+      continue;
+    }
+    switch (arg) {
+      case "--workspace-root":
+        workspaceRoot = argv[i + 1] ? path.resolve(argv[i + 1]) : undefined;
+        i += 1;
+        break;
+      case "--project":
+        projectKey = argv[i + 1];
+        i += 1;
+        break;
+      case "--sds-path":
+        sdsPath = argv[i + 1];
+        i += 1;
+        break;
+      case "--agent":
+      case "--review-agent":
+        reviewAgentName = argv[i + 1];
+        i += 1;
+        break;
+      case "--fix-agent":
+        fixAgentName = argv[i + 1];
+        i += 1;
+        break;
+      case "--agent-stream": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          agentStream = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          agentStream = true;
+        }
+        break;
+      }
+      case "--rate-agents": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          rateAgents = parseBooleanFlag(next, true);
+          i += 1;
+        } else {
+          rateAgents = true;
+        }
+        break;
+      }
+      case "--max-iterations": {
+        const next = argv[i + 1];
+        if (next && !next.startsWith("--")) {
+          const parsed = Number.parseInt(next, 10);
+          maxIterations = clampIterations(parsed);
+          i += 1;
+        }
+        break;
+      }
+      case "--json":
+        json = true;
+        break;
+      case "--dry-run":
+        dryRun = true;
+        break;
+      case "--quiet":
+        quiet = true;
+        break;
+      case "--debug":
+        debug = true;
+        break;
+      case "--no-color":
+        noColor = true;
+        break;
+      case "--no-telemetry":
+        noTelemetry = true;
+        break;
+      case "--help":
+      case "-h":
+        // eslint-disable-next-line no-console
+        console.log(sdsSuggestionsUsage);
+        process.exit(0);
+      default:
+        break;
+    }
+  }
+
+  return {
+    workspaceRoot,
+    projectKey,
+    sdsPath,
+    reviewAgentName,
+    fixAgentName,
+    agentStream: agentStream ?? false,
+    rateAgents,
+    maxIterations,
+    dryRun,
+    json,
+    quiet,
+    debug,
+    noColor,
+    noTelemetry,
+  };
+};
+
 const printWarnings = (warnings: string[]): void => {
   if (warnings.length === 0) return;
   const banner = warnings.map((w) => `! ${w}`).join("\n");
@@ -542,6 +693,81 @@ export class DocsCommands {
       let args = [...argv];
       if (args[0] === "sds") {
         args = args.slice(1);
+        const subcommand = args[0];
+        if (subcommand === "suggestions") {
+          args = args.slice(1);
+          const parsed = parseSdsSuggestionsArgs(args);
+          const workspace = await WorkspaceResolver.resolveWorkspace({
+            cwd: process.cwd(),
+            explicitWorkspace: parsed.workspaceRoot,
+          });
+          if (parsed.debug) {
+            // eslint-disable-next-line no-console
+            console.error(`[debug] workspace resolved: ${workspace.workspaceRoot}`);
+          }
+          service = await DocsService.create(workspace, { noTelemetry: parsed.noTelemetry });
+          const shouldStream = parsed.agentStream && !parsed.json && !parsed.quiet;
+          const onToken = shouldStream ? (token: string) => process.stdout.write(token) : undefined;
+          const result = await service.generateSdsSuggestions({
+            workspace,
+            projectKey: parsed.projectKey,
+            sdsPath: parsed.sdsPath,
+            reviewAgentName: parsed.reviewAgentName,
+            fixAgentName: parsed.fixAgentName,
+            agentStream: parsed.agentStream,
+            rateAgents: parsed.rateAgents,
+            maxIterations: parsed.maxIterations,
+            dryRun: parsed.dryRun,
+            json: parsed.json,
+            onToken,
+          });
+          if (parsed.json) {
+            // eslint-disable-next-line no-console
+            console.log(
+              JSON.stringify(
+                {
+                  jobId: result.jobId,
+                  commandRunId: result.commandRunId,
+                  sdsPath: result.sdsPath,
+                  suggestionsDir: result.suggestionsDir,
+                  suggestionFiles: result.suggestionFiles,
+                  reviewerAgentId: result.reviewerAgentId,
+                  fixerAgentId: result.fixerAgentId,
+                  iterations: result.iterations,
+                  finalStatus: result.finalStatus,
+                  warnings: result.warnings,
+                },
+                null,
+                2,
+              ),
+            );
+            return;
+          }
+          if (shouldStream) {
+            // eslint-disable-next-line no-console
+            console.log("\n");
+          }
+          // eslint-disable-next-line no-console
+          console.log(`SDS suggestions job ${result.jobId} completed.`);
+          // eslint-disable-next-line no-console
+          console.log(`Final status: ${result.finalStatus}`);
+          // eslint-disable-next-line no-console
+          console.log(`Iterations: ${result.iterations}`);
+          // eslint-disable-next-line no-console
+          console.log(`SDS: ${result.sdsPath}${parsed.dryRun ? " (dry run, not modified)" : ""}`);
+          // eslint-disable-next-line no-console
+          console.log(`Suggestions directory: ${result.suggestionsDir}`);
+          if (result.suggestionFiles.length > 0) {
+            // eslint-disable-next-line no-console
+            console.log(`Suggestions files: ${result.suggestionFiles.join(", ")}`);
+          }
+          printWarnings(result.warnings);
+          if (parsed.debug) {
+            // eslint-disable-next-line no-console
+            console.error("[debug] Completed docs:sds suggestions");
+          }
+          return;
+        }
         if (args[0] === "generate") args = args.slice(1);
         const parsed = parseSdsArgs(args);
         const buildReady = resolveBuildReady(parsed.quality, sdsUsage);

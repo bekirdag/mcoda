@@ -179,8 +179,63 @@ class FakeAgentService {
   }
 }
 
+class SdsSuggestionsAgentService {
+  private reviewIndex = 0;
+  private fixIndex = 0;
+  readonly reviewPrompts: string[] = [];
+  readonly fixPrompts: string[] = [];
+
+  constructor(
+    private reviewer: Agent,
+    private fixer: Agent,
+    private reviewOutputs: string[],
+    private fixOutputs: string[],
+  ) {}
+
+  async close(): Promise<void> {
+    // no-op
+  }
+
+  async resolveAgent(input: string): Promise<Agent> {
+    if (input === this.reviewer.id || input === this.reviewer.slug) return this.reviewer;
+    if (input === this.fixer.id || input === this.fixer.slug) return this.fixer;
+    throw new Error(`unknown agent ${input}`);
+  }
+
+  async invoke(agentId: string, request: any) {
+    const prompt = String(request?.input ?? "");
+    if (prompt.includes("You are the SDS reviewer agent.")) {
+      this.reviewPrompts.push(prompt);
+      const output =
+        this.reviewOutputs[Math.min(this.reviewIndex, this.reviewOutputs.length - 1)] ??
+        "```json\n{\"result\":\"PASS\",\"issueCount\":0,\"summary\":\"no issues\"}\n```\n";
+      this.reviewIndex += 1;
+      return { output, adapter: "fake", metadata: { agentId } };
+    }
+    if (prompt.includes("You are the SDS fixer agent.")) {
+      this.fixPrompts.push(prompt);
+      const output =
+        this.fixOutputs[Math.min(this.fixIndex, this.fixOutputs.length - 1)] ?? request?.input ?? "";
+      this.fixIndex += 1;
+      return { output, adapter: "fake", metadata: { agentId } };
+    }
+    return { output: "", adapter: "fake", metadata: { agentId } };
+  }
+
+  async invokeStream(agentId: string, request: any) {
+    const response = await this.invoke(agentId, request);
+    async function* generator() {
+      yield { output: response.output, adapter: "fake", metadata: response.metadata };
+    }
+    return generator();
+  }
+}
+
 class FakeRepo {
-  constructor(private agent: Agent) {}
+  private agents: Agent[];
+  constructor(agent: Agent | Agent[]) {
+    this.agents = Array.isArray(agent) ? agent : [agent];
+  }
 
   async close(): Promise<void> {
     // no-op
@@ -191,7 +246,7 @@ class FakeRepo {
   }
 
   async listAgents(): Promise<Agent[]> {
-    return [this.agent];
+    return this.agents;
   }
 
   async getAgentCapabilities(): Promise<string[]> {
@@ -821,6 +876,481 @@ describe("DocsService.generatePdr", () => {
     assert.ok(tokenUsage.some((entry: any) => entry.commandName === "docs-sds-generate"));
 
     await service.close();
+  });
+
+  it("iterates SDS suggestions until reviewer returns PASS", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const sdsPath = path.join(workspaceRoot, "docs", "sds", "sds.md");
+    await fs.mkdir(path.dirname(sdsPath), { recursive: true });
+    await fs.writeFile(sdsPath, "# SDS\n## Open Questions\n- Q1?\n", "utf8");
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    const reviewer: Agent = {
+      id: "reviewer",
+      slug: "reviewer",
+      adapter: "codex-api",
+      rating: 9.2,
+      reasoningRating: 9.1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const fixer: Agent = {
+      id: "fixer",
+      slug: "fixer",
+      adapter: "codex-api",
+      rating: 8.8,
+      reasoningRating: 8.7,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const reviewOutputs = [
+      [
+        "```json",
+        '{"result":"FAIL","issueCount":2,"summary":"open questions unresolved"}',
+        "```",
+        "## Open Questions and Optimum Answers",
+        "- Q1 -> Use explicit requirement answer.",
+        "## Inconsistencies",
+        "- Missing alignment with PDR assumptions.",
+        "## Issues",
+        "- Unresolved decision.",
+        "## Enhancements",
+        "- Add acceptance checks.",
+        "## Suggested Fixes",
+        "- Resolve open question in SDS.",
+      ].join("\n"),
+      "```json\n{\"result\":\"PASS\",\"issueCount\":0,\"summary\":\"clean\"}\n```\nNo remaining issues.",
+    ];
+    const fixOutputs = [
+      "# SDS\n## Open Questions\n- Resolved: Use explicit requirement answer.\n## Acceptance Criteria\n- Added checks.\n",
+    ];
+    const agentService = new SdsSuggestionsAgentService(reviewer, fixer, reviewOutputs, fixOutputs);
+    const repo = new FakeRepo([reviewer, fixer]);
+    const routingService = new FakeRoutingService(reviewer);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      const result = await service.generateSdsSuggestions({
+        workspace,
+        projectKey: "SDS",
+        sdsPath,
+        reviewAgentName: "reviewer",
+        fixAgentName: "fixer",
+        maxIterations: 5,
+      });
+      assert.equal(result.finalStatus, "pass");
+      assert.equal(result.iterations, 2);
+      assert.equal(result.suggestionFiles.length, 2);
+      const updated = await fs.readFile(sdsPath, "utf8");
+      assert.match(updated, /Resolved:/);
+      const suggestionArtifact = await fs.readFile(result.suggestionFiles[0], "utf8");
+      assert.match(suggestionArtifact, /Issue Count: 2/);
+      assert.match(suggestionArtifact, /Applied: yes/);
+      assert.equal(agentService.fixPrompts.length > 0, true);
+      assert.match(agentService.fixPrompts[0] ?? "", /# SDS Suggestions 1/);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("stops SDS suggestions at max iteration hard limit", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-max-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const sdsPath = path.join(workspaceRoot, "docs", "sds", "sds.md");
+    await fs.mkdir(path.dirname(sdsPath), { recursive: true });
+    await fs.writeFile(sdsPath, "# SDS\n## Open Questions\n- Q1?\n", "utf8");
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    const reviewer: Agent = {
+      id: "reviewer-max",
+      slug: "reviewer-max",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const agentService = new SdsSuggestionsAgentService(
+      reviewer,
+      reviewer,
+      [
+        "```json\n{\"result\":\"FAIL\",\"issueCount\":1,\"summary\":\"still failing\"}\n```",
+        "```json\n{\"result\":\"FAIL\",\"issueCount\":1,\"summary\":\"still failing\"}\n```",
+      ],
+      ["# SDS\n## Open Questions\n- Q1?\n", "# SDS\n## Open Questions\n- Q1?\n"],
+    );
+    const repo = new FakeRepo(reviewer);
+    const routingService = new FakeRoutingService(reviewer);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      const result = await service.generateSdsSuggestions({
+        workspace,
+        projectKey: "SDS",
+        sdsPath,
+        reviewAgentName: "reviewer-max",
+        maxIterations: 2,
+      });
+      assert.equal(result.finalStatus, "max_iterations_reached");
+      assert.equal(result.iterations, 2);
+      assert.equal(result.suggestionFiles.length, 2);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("honors dry-run mode for SDS suggestions", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-dry-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const sdsPath = path.join(workspaceRoot, "docs", "sds", "sds.md");
+    await fs.mkdir(path.dirname(sdsPath), { recursive: true });
+    const initial = "# SDS\n## Open Questions\n- unresolved\n";
+    await fs.writeFile(sdsPath, initial, "utf8");
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    const reviewer: Agent = {
+      id: "reviewer-dry",
+      slug: "reviewer-dry",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const agentService = new SdsSuggestionsAgentService(
+      reviewer,
+      reviewer,
+      ["```json\n{\"result\":\"FAIL\",\"issueCount\":1,\"summary\":\"dry run finding\"}\n```"],
+      ["# SDS\n## Open Questions\n- resolved\n"],
+    );
+    const repo = new FakeRepo(reviewer);
+    const routingService = new FakeRoutingService(reviewer);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      const result = await service.generateSdsSuggestions({
+        workspace,
+        projectKey: "SDS",
+        sdsPath,
+        reviewAgentName: "reviewer-dry",
+        dryRun: true,
+      });
+      assert.equal(result.finalStatus, "dry_run");
+      assert.equal(result.iterations, 1);
+      assert.equal(result.suggestionFiles.length, 1);
+      const after = await fs.readFile(sdsPath, "utf8");
+      assert.equal(after, initial);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers latest workspace docs/sds markdown before mcoda fallback paths", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-order-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const workspaceSdsDir = path.join(workspaceRoot, "docs", "sds");
+    await fs.mkdir(workspaceSdsDir, { recursive: true });
+    const olderPath = path.join(workspaceSdsDir, "older.md");
+    const newerPath = path.join(workspaceSdsDir, "newer.md");
+    await fs.writeFile(olderPath, "# Older SDS\n", "utf8");
+    await fs.writeFile(newerPath, "# Newer SDS\n", "utf8");
+    const now = Date.now() / 1000;
+    await fs.utimes(olderPath, now - 60, now - 60);
+    await fs.utimes(newerPath, now, now);
+    const localFallback = path.join(workspace.mcodaDir, "docs", "sds", "sds.md");
+    await fs.mkdir(path.dirname(localFallback), { recursive: true });
+    await fs.writeFile(localFallback, "# Local fallback SDS\n", "utf8");
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+
+    const reviewer: Agent = {
+      id: "reviewer-order",
+      slug: "reviewer-order",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const agentService = new SdsSuggestionsAgentService(
+      reviewer,
+      reviewer,
+      ["```json\n{\"result\":\"FAIL\",\"issueCount\":1,\"summary\":\"ordering check\"}\n```"],
+      ["# SDS\n- unchanged\n"],
+    );
+    const repo = new FakeRepo(reviewer);
+    const routingService = new FakeRoutingService(reviewer);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      const result = await service.generateSdsSuggestions({
+        workspace,
+        projectKey: "SDS",
+        reviewAgentName: "reviewer-order",
+        maxIterations: 1,
+        dryRun: true,
+      });
+      assert.equal(result.finalStatus, "dry_run");
+      assert.equal(path.resolve(result.sdsPath), path.resolve(newerPath));
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when review/fix overrides are outside ranked healthy candidates", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-override-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const sdsPath = path.join(workspaceRoot, "docs", "sds", "sds.md");
+    await fs.mkdir(path.dirname(sdsPath), { recursive: true });
+    await fs.writeFile(sdsPath, "# SDS\n## Open Questions\n- Q1?\n", "utf8");
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    const ranked: Agent = {
+      id: "ranked",
+      slug: "ranked",
+      adapter: "codex-api",
+      rating: 9.9,
+      reasoningRating: 9.5,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const overrideReviewer: Agent = {
+      id: "override-reviewer",
+      slug: "override-reviewer",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const overrideFixer: Agent = {
+      id: "override-fixer",
+      slug: "override-fixer",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const agentService = new SdsSuggestionsAgentService(
+      overrideReviewer,
+      overrideFixer,
+      ["```json\n{\"result\":\"FAIL\",\"issueCount\":1,\"summary\":\"override check\"}\n```"],
+      ["# SDS\n## Updated\n- value\n"],
+    );
+    const repo = new FakeRepo(ranked);
+    const routingService = new FakeRoutingService(ranked);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      const result = await service.generateSdsSuggestions({
+        workspace,
+        projectKey: "SDS",
+        sdsPath,
+        reviewAgentName: "override-reviewer",
+        fixAgentName: "override-fixer",
+        dryRun: true,
+        maxIterations: 1,
+      });
+      assert.equal(result.finalStatus, "dry_run");
+      assert.equal(result.warnings.some((warning) => warning.includes("Review agent override")), true);
+      assert.equal(result.warnings.some((warning) => warning.includes("Fix agent override")), true);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes PASS with non-zero issueCount into FAIL summary output", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-normalize-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const sdsPath = path.join(workspaceRoot, "docs", "sds", "sds.md");
+    await fs.mkdir(path.dirname(sdsPath), { recursive: true });
+    await fs.writeFile(sdsPath, "# SDS\n## Open Questions\n- Q1?\n", "utf8");
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    const reviewer: Agent = {
+      id: "reviewer-normalize",
+      slug: "reviewer-normalize",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const agentService = new SdsSuggestionsAgentService(
+      reviewer,
+      reviewer,
+      ["```json\n{\"result\":\"PASS\",\"issueCount\":2}\n```"],
+      ["# SDS\n## Open Questions\n- still unresolved\n"],
+    );
+    const repo = new FakeRepo(reviewer);
+    const routingService = new FakeRoutingService(reviewer);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      const result = await service.generateSdsSuggestions({
+        workspace,
+        projectKey: "SDS",
+        sdsPath,
+        reviewAgentName: "reviewer-normalize",
+        dryRun: true,
+        maxIterations: 1,
+      });
+      assert.equal(result.finalStatus, "dry_run");
+      const suggestionArtifact = await fs.readFile(result.suggestionFiles[0] ?? "", "utf8");
+      assert.match(suggestionArtifact, /- Result: FAIL/);
+      assert.match(suggestionArtifact, /## Review Summary\nIssues detected\./);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces actionable error for missing explicit sds-path", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-missing-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const localPdrDir = path.join(workspace.mcodaDir, "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    const reviewer: Agent = {
+      id: "reviewer-missing",
+      slug: "reviewer-missing",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const missingPath = path.join(workspaceRoot, "docs", "sds", "missing.md");
+    const agentService = new SdsSuggestionsAgentService(
+      reviewer,
+      reviewer,
+      ["```json\n{\"result\":\"PASS\",\"issueCount\":0,\"summary\":\"n/a\"}\n```"],
+      ["# SDS\n"],
+    );
+    const repo = new FakeRepo(reviewer);
+    const routingService = new FakeRoutingService(reviewer);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+    try {
+      await assert.rejects(
+        async () =>
+          service.generateSdsSuggestions({
+            workspace,
+            projectKey: "SDS",
+            sdsPath: missingPath,
+            reviewAgentName: "reviewer-missing",
+            maxIterations: 1,
+          }),
+        /Unable to locate SDS file at --sds-path:/,
+      );
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 });
 

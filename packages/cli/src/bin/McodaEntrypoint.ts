@@ -137,7 +137,12 @@ export class McodaEntrypoint {
       return;
     }
     if (command === "sds" || command === "mcoda:sds") {
-      await DocsCommands.run(["sds", "generate", ...rest]);
+      const [subcommand, ...tail] = rest;
+      if (subcommand === "generate" || subcommand === "suggestions") {
+        await DocsCommands.run(["sds", subcommand, ...tail]);
+      } else {
+        await DocsCommands.run(["sds", "generate", ...rest]);
+      }
       return;
     }
     if (command === "create-tasks") {
