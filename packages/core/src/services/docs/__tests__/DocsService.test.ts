@@ -878,6 +878,85 @@ describe("DocsService.generatePdr", () => {
     await service.close();
   });
 
+  it("uses a generic SDS OpenAPI fallback without domain contamination", async () => {
+    process.env.MCODA_SKIP_SDS_VALIDATION = "1";
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-openapi-fallback-"));
+    const workspace: WorkspaceResolution = {
+      workspaceRoot,
+      workspaceId: workspaceRoot,
+      mcodaDir: PathHelper.getWorkspaceDir(workspaceRoot),
+      id: workspaceRoot,
+      legacyWorkspaceIds: [],
+      workspaceDbPath: PathHelper.getWorkspaceDbPath(workspaceRoot),
+      globalDbPath: PathHelper.getGlobalDbPath(),
+    };
+    const agent: Agent = {
+      id: "agent-sds-openapi-fallback",
+      slug: "fake-sds",
+      adapter: "codex-api",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const sdsDraft = [
+      "# Software Design Specification",
+      "## Introduction",
+      "intro",
+      "## Eventing, APIs, and Interface Contracts",
+      "POST /restaurant/suggestions",
+      "GET /analytics/results",
+    ].join("\n");
+    const agentService = new FakeAgentService(agent, sdsDraft);
+    const repo = new FakeRepo(agent);
+    const routingService = new FakeRoutingService(agent);
+    const jobService = new JobService(workspace);
+    const docdex = new DocdexClient({ workspaceRoot, baseUrl: "" });
+    const docdexDir = path.join(PathHelper.getWorkspaceDir(workspaceRoot), "docdex");
+    await fs.mkdir(docdexDir, { recursive: true });
+    await fs.writeFile(path.join(docdexDir, "documents.json"), "[]", "utf8");
+    const localPdrDir = path.join(PathHelper.getWorkspaceDir(workspaceRoot), "docs", "pdr");
+    await fs.mkdir(localPdrDir, { recursive: true });
+    await fs.writeFile(path.join(localPdrDir, "pdr.md"), "# PDR\n- baseline context", "utf8");
+    await docdex.registerDocument({
+      docType: "PDR",
+      path: path.join(workspaceRoot, "pdr.md"),
+      content: "- baseline context",
+      metadata: { projectKey: "SDS" },
+    });
+    const service = new DocsService(workspace, {
+      agentService: agentService as any,
+      repo: repo as any,
+      routingService: routingService as any,
+      jobService,
+      docdex,
+    });
+
+    try {
+      const result = await service.generateSds({
+        workspace,
+        projectKey: "SDS",
+        agentName: "fake-sds",
+        agentStream: false,
+        dryRun: true,
+        json: false,
+        force: true,
+      });
+
+      const content = result.draft ?? "";
+      assert.match(content, /Eventing, APIs, and Interface Contracts/i);
+      assert.doesNotMatch(content, /POST \/restaurant\/suggestions/i);
+      assert.doesNotMatch(content, /GET \/analytics\/results/i);
+      assert.doesNotMatch(content, /restaurant/i);
+      assert.doesNotMatch(content, /voting cycles/i);
+      assert.doesNotMatch(content, /results\/analytics/i);
+      const serviceArchitectureSection =
+        content.match(/## 5\. Service Architecture and Dependency Contracts([\s\S]*?)## 6\./i)?.[1] ?? "";
+      assert.doesNotMatch(serviceArchitectureSection, /No OpenAPI excerpts available/i);
+    } finally {
+      await service.close();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("iterates SDS suggestions until reviewer returns PASS", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-suggestions-"));
     const workspace: WorkspaceResolution = {
@@ -2608,6 +2687,62 @@ describe("OpenQuestionsGate", () => {
       assert.equal(result.status, "warn");
       assert.equal((result.metadata as any)?.requiredCount, 0);
       assert.ok((result.metadata as any)?.optionalCount >= 1);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores resolved bullet entries inside open questions sections", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-open-questions-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "## Open Questions",
+      "- Resolved: Confidence is always included in API responses.",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runOpenQuestionsGate({ artifacts });
+      assert.equal(result.status, "pass");
+      assert.equal((result.metadata as any)?.questionCount, 0);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores managed mcoda preflight blocks", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-open-questions-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "<!-- mcoda:sds-preflight:start -->",
+      "## Open Questions (Resolved)",
+      "- Resolved: No unresolved questions remain for this SDS file in this preflight run.",
+      "## Gap Remediation Summary (mcoda preflight)",
+      "- Gate: gate-sds-no-unresolved-items",
+      "- Convert unresolved items into explicit resolved decisions.",
+      "<!-- mcoda:sds-preflight:end -->",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runOpenQuestionsGate({ artifacts });
+      assert.equal(result.status, "pass");
+      assert.equal((result.metadata as any)?.questionCount, 0);
+      assert.equal((result.metadata as any)?.requiredCount, 0);
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }

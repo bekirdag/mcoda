@@ -28,6 +28,10 @@ export interface AgentUsageLimitResponse extends AgentUsageLimitRecord {
   resetAtSource?: string;
 }
 
+export interface ListAgentsOptions {
+  refreshHealth?: boolean;
+}
+
 const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   rolling_5h: 5 * 60 * 60 * 1000,
   daily: 24 * 60 * 60 * 1000,
@@ -87,8 +91,11 @@ export class AgentsApi {
     }
   }
 
-  async listAgents(): Promise<AgentResponse[]> {
+  async listAgents(options: ListAgentsOptions = {}): Promise<AgentResponse[]> {
     const agents = await this.repo.listAgents();
+    if (options.refreshHealth) {
+      await Promise.all(agents.map((agent) => this.agentService.healthCheck(agent.id)));
+    }
     const health = await this.repo.listAgentHealthSummary();
     const healthById = new Map(health.map((h) => [h.agentId, h]));
     const results: AgentResponse[] = [];

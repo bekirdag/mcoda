@@ -296,6 +296,130 @@ test("task-sufficiency-audit fails when no actionable SDS signals can be extract
   }
 });
 
+test("task-sufficiency-audit ignores managed mcoda preflight blocks in SDS sources", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "<!-- mcoda:sds-preflight:start -->",
+      "## Open Questions (Resolved)",
+      "- Resolved: No unresolved questions remain for this SDS file in this preflight run.",
+      "## Resolved Decisions (mcoda preflight)",
+      "- Planning rule: each resolved decision must map to implementation and QA verification work.",
+      "## Folder Tree",
+      "```text",
+      ".",
+      "└── apps/admin",
+      "```",
+      "<!-- mcoda:sds-preflight:end -->",
+      "## Gatekeeper Runtime",
+      "Folder tree:",
+      "- packages/gatekeeper/src/worker.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj", {
+    taskTitle: "Document deployment plan",
+    taskDescription: "Capture notes for future runtime work.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      dryRun: true,
+      maxIterations: 1,
+      maxTasksPerIteration: 4,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(
+      !result.remainingSectionHeadings.some((heading) => /open questions|resolved decisions|folder tree/i.test(heading)),
+      `managed preflight headings leaked into sufficiency audit: ${JSON.stringify(result.remainingSectionHeadings)}`,
+    );
+    assert.ok(result.remainingSectionHeadings.some((heading) => /gatekeeper runtime/i.test(heading)));
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit ignores negated non-goal path mentions", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Gatekeeper Runtime",
+      "No `apps/web`, `apps/admin`, or `services/api` subtree is part of the v1 target layout.",
+      "Folder tree:",
+      "- packages/gatekeeper/src/worker.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj", {
+    taskTitle: "Document gatekeeper notes",
+    taskDescription: "Capture gatekeeper runtime notes only.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      dryRun: true,
+      maxIterations: 1,
+      maxTasksPerIteration: 4,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(
+      !result.remainingFolderEntries.some((entry) => /apps\/admin|apps\/web|services\/api/i.test(entry)),
+      `negated non-goal paths leaked into sufficiency audit: ${JSON.stringify(result.remainingFolderEntries)}`,
+    );
+    assert.ok(result.remainingFolderEntries.some((entry) => /packages\/gatekeeper\/src\/worker\.ts/i.test(entry)));
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit ignores source-doc references when runtime tree paths exist", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "Source hierarchy:",
+      "- docs/rfp.md",
+      "- docs/pdr/ep.md",
+      "## Contract Runtime",
+      "Folder tree:",
+      "contracts/",
+      "├── src/",
+      "│   └── ListingRegistry.sol",
+      "└── script/",
+      "    └── DeployContracts.s.sol",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj", {
+    taskTitle: "Document runtime notes",
+    taskDescription: "Capture contract runtime notes only.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      dryRun: true,
+      maxIterations: 1,
+      maxTasksPerIteration: 4,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(
+      !result.remainingFolderEntries.some((entry) => /docs\/rfp\.md|docs\/pdr\/ep\.md/i.test(entry)),
+      `source-doc references leaked into folder coverage: ${JSON.stringify(result.remainingFolderEntries)}`,
+    );
+    assert.ok(result.remainingFolderEntries.some((entry) => /contracts\/src|contracts\/script/i.test(entry)));
+  } finally {
+    await service.close();
+  }
+});
+
 test("task-sufficiency-audit does not over-credit long headings from sparse token overlap", async () => {
   await fs.writeFile(
     path.join(workspaceRoot, "docs", "sds.md"),
@@ -326,6 +450,102 @@ test("task-sufficiency-audit does not over-credit long headings from sparse toke
         heading.toLowerCase().includes("confidence propagation across counterfactual branches"),
       ),
     );
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit prunes umbrella numbered headings when child sections exist", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## 3. Core Decisions",
+      "## 3.1 Gatekeeper Runtime",
+      "Folder tree:",
+      "- packages/gatekeeper/src/worker.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  await seedBacklog("proj", {
+    taskTitle: "Document rollout notes",
+    taskDescription: "Capture deployment planning notes only.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      dryRun: true,
+      maxIterations: 1,
+      maxTasksPerIteration: 4,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(
+      !result.remainingSectionHeadings.some((heading) => /core decisions/i.test(heading)),
+      `umbrella parent heading should be pruned: ${JSON.stringify(result.remainingSectionHeadings)}`,
+    );
+    assert.ok(result.remainingSectionHeadings.some((heading) => /gatekeeper runtime/i.test(heading)));
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit avoids arbitrary implementation targets for broad section-only gaps", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## 7.2 System Resilience Envelope",
+      "Folder tree:",
+      "- scripts/promote-standby.sh",
+      "- docs/data-storage-architecture.md",
+    ].join("\n"),
+    "utf8",
+  );
+  const { projectId } = await seedBacklog("proj", {
+    taskTitle: "Document release notes",
+    taskDescription: "Capture release notes only.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      maxIterations: 1,
+      maxTasksPerIteration: 6,
+      minCoverageRatio: 0.99,
+    });
+    const repo = await WorkspaceRepository.create(workspaceRoot);
+    try {
+      const rows = await repo.getDb().all<
+        { title: string; description: string; metadata_json?: string | null }[]
+      >(`SELECT title, description, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`, projectId);
+      const sectionRows = rows
+        .map((row) => ({
+          title: row.title,
+          description: row.description,
+          metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
+        }))
+        .filter((row) => row.metadata?.sufficiencyAudit?.source === "task-sufficiency-audit")
+        .filter((row) => row.metadata?.sufficiencyAudit?.kind !== "folder");
+
+      assert.ok(sectionRows.length > 0);
+      assert.ok(
+        sectionRows.every((row) => (row.metadata?.sufficiencyAudit?.implementationTargets ?? []).length === 0),
+        `section gaps should not invent concrete targets: ${JSON.stringify(sectionRows.map((row) => row.metadata))}`,
+      );
+      assert.ok(
+        sectionRows.every((row) => !/scripts\/promote-standby\.sh|docs\/data-storage-architecture\.md/i.test(row.title)),
+      );
+      assert.ok(
+        sectionRows.some((row) => /system resilience envelope/i.test(row.title)),
+        `expected anchor-driven title, got ${JSON.stringify(sectionRows.map((row) => row.title))}`,
+      );
+      assert.ok(sectionRows.every((row) => row.description.includes("No direct file path was recovered")));
+    } finally {
+      await repo.close();
+    }
   } finally {
     await service.close();
   }
@@ -373,6 +593,181 @@ test("task-sufficiency-audit bundles related gap anchors into a single remediati
         .filter((metadata) => Array.isArray(metadata?.sufficiencyAudit?.anchors))
         .filter((metadata) => metadata.sufficiencyAudit.anchors.length > 1);
       assert.ok(bundled.length >= 1, "expected at least one bundled remediation task");
+    } finally {
+      await repo.close();
+    }
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit turns EP-style box-tree gaps into targeted remediation tasks", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Deployment Waves",
+      "## Gatekeeper Runtime",
+      "## Oracle Registry",
+      "```text",
+      ".",
+      "├── foundry.toml",
+      "├── contracts/",
+      "│   ├── script/",
+      "│   │   ├── DeployContracts.s.sol",
+      "│   │   └── ConfigurePolicies.s.sol",
+      "│   └── src/",
+      "│       └── IOraclePolicyRegistry.sol",
+      "├── packages/",
+      "│   ├── gatekeeper/",
+      "│   │   └── src/",
+      "│   │       └── worker.ts",
+      "│   └── terminal-client/",
+      "│       └── src/",
+      "│           └── main.ts",
+      "└── ops/",
+      "    └── systemd/",
+      "        └── gatekeeper.service",
+      "```",
+      "Wave 0 - contracts",
+      "Wave 1 - gatekeeper",
+      "Wave 2 - terminal client and ops",
+    ].join("\n"),
+    "utf8",
+  );
+  const { projectId } = await seedBacklog("proj", {
+    taskTitle: "Document deployment plan",
+    taskDescription: "Capture notes for future protocol deployment work.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      maxIterations: 2,
+      maxTasksPerIteration: 12,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(result.totalTasksAdded > 0);
+
+    const repo = await WorkspaceRepository.create(workspaceRoot);
+    try {
+      const rows = await repo.getDb().all<
+        { title: string; description: string; metadata_json?: string | null }[]
+      >(`SELECT title, description, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`, projectId);
+      const sufficiencyRows = rows
+        .map((row) => {
+          try {
+            return {
+              title: row.title,
+              description: row.description,
+              metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
+            };
+          } catch {
+            return { title: row.title, description: row.description, metadata: {} };
+          }
+        })
+        .filter((row) => row.metadata?.sufficiencyAudit?.source === "task-sufficiency-audit");
+
+      assert.ok(sufficiencyRows.length > 0);
+      assert.ok(
+        sufficiencyRows.every(
+          (row) =>
+            !row.title.includes("Implement SDS section") &&
+            !row.title.includes("Implement SDS path") &&
+            !row.title.includes("Implement SDS bundle"),
+        ),
+      );
+      assert.ok(
+        sufficiencyRows.every((row) => row.description.includes("## Concrete Implementation Targets")),
+      );
+      const implementationTargets = sufficiencyRows.flatMap(
+        (row) => row.metadata?.sufficiencyAudit?.implementationTargets ?? [],
+      );
+      assert.ok(
+        implementationTargets.some((target: string) => target === "contracts/script/DeployContracts.s.sol"),
+        `expected contract script target, got ${JSON.stringify(implementationTargets)}`,
+      );
+      assert.ok(
+        implementationTargets.some((target: string) => target === "packages/gatekeeper/src/worker.ts"),
+        `expected gatekeeper target, got ${JSON.stringify(implementationTargets)}`,
+      );
+      assert.ok(
+        sufficiencyRows.some((row) => row.description.includes("contracts/script/DeployContracts.s.sol")),
+      );
+    } finally {
+      await repo.close();
+    }
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit keeps custom implementation roots actionable", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Ledger Runtime",
+      "## Operator Console",
+      "```text",
+      ".",
+      "├── engines/",
+      "│   └── ledger/",
+      "│       └── src/",
+      "│           └── main.rs",
+      "├── consoles/",
+      "│   └── operator/",
+      "│       └── app/",
+      "│           └── main.py",
+      "└── docs/",
+      "    └── architecture.md",
+      "```",
+    ].join("\n"),
+    "utf8",
+  );
+  const { projectId } = await seedBacklog("proj", {
+    taskTitle: "Capture implementation notes",
+    taskDescription: "Document future implementation work only.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      maxIterations: 2,
+      maxTasksPerIteration: 12,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(result.totalTasksAdded > 0);
+
+    const repo = await WorkspaceRepository.create(workspaceRoot);
+    try {
+      const rows = await repo.getDb().all<
+        { title: string; description: string; metadata_json?: string | null }[]
+      >(`SELECT title, description, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`, projectId);
+      const sufficiencyRows = rows
+        .map((row) => {
+          try {
+            return {
+              title: row.title,
+              description: row.description,
+              metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
+            };
+          } catch {
+            return { title: row.title, description: row.description, metadata: {} };
+          }
+        })
+        .filter((row) => row.metadata?.sufficiencyAudit?.source === "task-sufficiency-audit");
+
+      const implementationTargets = sufficiencyRows.flatMap(
+        (row) => row.metadata?.sufficiencyAudit?.implementationTargets ?? [],
+      );
+      assert.ok(implementationTargets.includes("engines/ledger/src/main.rs"));
+      assert.ok(implementationTargets.includes("consoles/operator/app/main.py"));
+      assert.ok(sufficiencyRows.some((row) => row.description.includes("engines/ledger/src/main.rs")));
+      assert.ok(sufficiencyRows.some((row) => row.description.includes("consoles/operator/app/main.py")));
+      assert.ok(sufficiencyRows.every((row) => !row.title.includes("docs/")));
     } finally {
       await repo.close();
     }

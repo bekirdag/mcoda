@@ -19,6 +19,8 @@ const UNRESOLVED_PATTERNS = [
 const OPEN_QUESTIONS_HEADING = /open questions?/i;
 const RESOLVED_LINE = /^[-*+\d.)\s]*resolved:/i;
 const NO_OPEN_ITEMS_LINE = /no unresolved questions remain|no open questions remain/i;
+const MANAGED_PREFLIGHT_START = "<!-- mcoda:sds-preflight:start -->";
+const MANAGED_PREFLIGHT_END = "<!-- mcoda:sds-preflight:end -->";
 
 const isFenceLine = (line: string): boolean => /^```|^~~~/.test(line.trim());
 
@@ -69,6 +71,7 @@ export const runSdsNoUnresolvedItemsGate = async (
     const content = await fs.readFile(sds.path, "utf8");
     const lines = content.split(/\r?\n/);
     let inFence = false;
+    let inManagedPreflight = false;
     let inOpenQuestions = false;
 
     for (let i = 0; i < lines.length; i += 1) {
@@ -76,11 +79,20 @@ export const runSdsNoUnresolvedItemsGate = async (
       const trimmed = line.trim();
       if (!trimmed) continue;
 
+      if (trimmed === MANAGED_PREFLIGHT_START) {
+        inManagedPreflight = true;
+        continue;
+      }
+      if (trimmed === MANAGED_PREFLIGHT_END) {
+        inManagedPreflight = false;
+        continue;
+      }
+
       if (isFenceLine(trimmed)) {
         inFence = !inFence;
         continue;
       }
-      if (inFence) continue;
+      if (inFence || inManagedPreflight) continue;
 
       const heading = trimmed.match(/^#{1,6}\s+(.*)$/);
       if (heading) {
