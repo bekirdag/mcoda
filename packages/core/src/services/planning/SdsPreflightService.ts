@@ -45,8 +45,24 @@ const ignoredDirs = new Set([
   "temp",
 ]);
 
-const sdsFilenamePattern = /(sds|software[-_ ]design|system[-_ ]design|design[-_ ]spec|architecture)/i;
-const sdsContentPattern = /(software design specification|system design specification|^#\s*sds\b)/im;
+const strongSdsFilenamePattern = /(sds|software[-_ ]design|system[-_ ]design|design[-_ ]spec)/i;
+const strongSdsDirectoryPattern = /(?:^|[/\\])sds(?:[/\\]|$)/i;
+const weakSdsFilenamePattern = /architecture/i;
+const sdsTitlePattern = /^#\s*(?:software design specification|system design specification|sds)\b/im;
+const nonSdsTitlePattern = /^#\s*(?:product design review|pdr|request for proposal|rfp)\b/im;
+const sdsSectionPatterns = [
+  /^#{1,6}\s+open questions\b/im,
+  /^#{1,6}\s+folder tree\b/im,
+  /^#{1,6}\s+technology stack\b/im,
+  /^#{1,6}\s+policy(?: and cache consent)?\b/im,
+  /^#{1,6}\s+telemetry\b/im,
+  /^#{1,6}\s+(?:metering and usage|metering|usage)\b/im,
+  /^#{1,6}\s+(?:operations and deployment|operations|deployment)\b/im,
+  /^#{1,6}\s+observability\b/im,
+  /^#{1,6}\s+testing gates\b/im,
+  /^#{1,6}\s+(?:failure recovery and rollback|failure modes(?:, recovery, and rollback)?)\b/im,
+  /^#{1,6}\s+external integrations and adapter contracts\b/im,
+];
 const markdownPattern = /\.(md|markdown|txt|rst)$/i;
 const unresolvedTokenPattern = /\b(TBD|TBC|TODO|FIXME|to be determined|to be decided|unknown|unresolved)\b/gi;
 const sdsHeadingLinePattern = /^#{1,6}\s+(.+)$/;
@@ -91,6 +107,16 @@ const environmentMatchers: Array<{ label: string; pattern: RegExp }> = [
   { label: "staging", pattern: /\bstaging\b|\bpre-?prod\b/i },
   { label: "production", pattern: /\bprod(uction)?\b/i },
 ];
+const documentationSegmentPattern = /^(docs?|design|specs?|runbooks?|adr|architecture)$/i;
+const implementationSegmentPattern =
+  /^(src|app|apps|service|services|worker|workers|module|modules|package|packages|lib|libs|engine|engines|console|consoles|runtime|runtimes)$/i;
+const interfaceSegmentPattern = /^(api|apis|openapi|swagger|graphql|proto|schema|schemas|contract|contracts|interface|interfaces)$/i;
+const storageSegmentPattern = /^(db|data|storage|schema|schemas|migration|migrations|sql|seed|seeds)$/i;
+const automationSegmentPattern = /^(script|scripts|tool|tools|bin|cmd|cli|automation)$/i;
+const operationsSegmentPattern =
+  /^(ops|deploy|deployment|deployments|infra|infrastructure|terraform|helm|k8s|kubernetes|systemd)$/i;
+const validationSegmentPattern = /^(test|tests|testing|spec|specs|e2e|qa|fixtures)$/i;
+const staticAssetSegmentPattern = /^(public|static|assets)$/i;
 const moduleNoiseTokens = new Set([
   "and",
   "for",
@@ -115,6 +141,26 @@ const moduleNoiseTokens = new Set([
 const execFileAsync = promisify(execFile);
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
+
+const describeFolderEntry = (entry: string): string => {
+  if (/\s+#/.test(entry)) return "";
+  const segments = entry
+    .replace(/^\.?\//, "")
+    .split("/")
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
+  if (segments.length === 0) return "implementation surface";
+  if (segments.some((segment) => documentationSegmentPattern.test(segment))) return "documentation and planning inputs";
+  if (segments.some((segment) => validationSegmentPattern.test(segment))) return "automated validation surfaces";
+  if (segments.some((segment) => automationSegmentPattern.test(segment))) return "automation and command entrypoints";
+  if (segments.some((segment) => operationsSegmentPattern.test(segment))) return "deployment and operations assets";
+  if (segments.some((segment) => storageSegmentPattern.test(segment))) return "storage and schema assets";
+  if (segments.some((segment) => interfaceSegmentPattern.test(segment)))
+    return "interface definitions and compatibility surfaces";
+  if (segments.some((segment) => staticAssetSegmentPattern.test(segment))) return "runtime assets";
+  if (segments.some((segment) => implementationSegmentPattern.test(segment))) return "implementation surfaces";
+  return segments.length >= 2 ? "implementation surface" : "top-level workspace surface";
+};
 
 const normalizeQuestion = (value: string): string =>
   value
@@ -297,30 +343,50 @@ export class SdsPreflightService {
     return uniqueStrings(discovered).slice(0, SDS_SCAN_MAX_FILES);
   }
 
+  private countSdsSectionSignals(sample: string): number {
+    return sdsSectionPatterns.reduce((count, pattern) => count + (pattern.test(sample) ? 1 : 0), 0);
+  }
+
   private async isLikelySdsPath(filePath: string): Promise<boolean> {
     const baseName = path.basename(filePath);
-    if (sdsFilenamePattern.test(baseName)) return true;
+    const normalizedPath = filePath.replace(/\\/g, "/");
     try {
       const sample = (await fs.readFile(filePath, "utf8")).slice(0, 35000);
-      return sdsContentPattern.test(sample);
+      if (nonSdsTitlePattern.test(sample)) return false;
+      if (sdsTitlePattern.test(sample)) return true;
+      if (strongSdsFilenamePattern.test(baseName) || strongSdsDirectoryPattern.test(normalizedPath)) {
+        return true;
+      }
+      if (!weakSdsFilenamePattern.test(baseName)) return false;
+      return this.countSdsSectionSignals(sample) >= 3;
     } catch {
       return false;
     }
   }
 
-  private async resolveSdsPaths(options: SdsPreflightOptions): Promise<string[]> {
-    const explicit = await this.collectPathCandidates(options.sdsPaths);
-    const fromInputs = await this.collectPathCandidates(options.inputPaths);
-    const discovered = await this.discoverSdsPaths();
-    const candidatePaths = uniqueStrings([...explicit, ...fromInputs, ...discovered]).slice(0, SDS_SCAN_MAX_FILES);
+  private async selectLikelySdsPaths(candidatePaths: string[]): Promise<string[]> {
     const selected: string[] = [];
-    for (const candidate of candidatePaths) {
+    for (const candidate of uniqueStrings(candidatePaths).slice(0, SDS_SCAN_MAX_FILES)) {
       if (await this.isLikelySdsPath(candidate)) {
         selected.push(path.resolve(candidate));
       }
       if (selected.length >= SDS_SCAN_MAX_FILES) break;
     }
     return uniqueStrings(selected);
+  }
+
+  private async resolveSdsPaths(options: SdsPreflightOptions): Promise<string[]> {
+    const explicit = await this.collectPathCandidates(options.sdsPaths);
+    if (explicit.length > 0) {
+      return this.selectLikelySdsPaths(explicit);
+    }
+    const fromInputs = await this.collectPathCandidates(options.inputPaths);
+    const selectedFromInputs = await this.selectLikelySdsPaths(fromInputs);
+    if (selectedFromInputs.length > 0) {
+      return selectedFromInputs;
+    }
+    const discovered = await this.discoverSdsPaths();
+    return this.selectLikelySdsPaths(discovered);
   }
 
   private buildArtifacts(sdsPath: string): DocgenArtifactInventory {
@@ -557,12 +623,17 @@ export class SdsPreflightService {
 
   private managedFolderTreeSection(signals?: SdsFileSignals): string[] {
     const entries = signals?.folderEntries?.slice(0, 10) ?? [];
+    const annotateEntry = (entry: string, isLast: boolean): string => {
+      const hint = describeFolderEntry(entry);
+      const prefix = isLast ? "└──" : "├──";
+      return hint ? `${prefix} ${entry}  # ${hint}` : `${prefix} ${entry}`;
+    };
     if (entries.length > 0) {
       return [
         "## Folder Tree",
         "```text",
         ".",
-        ...entries.map((entry, index) => `${index === entries.length - 1 ? "└──" : "├──"} ${entry}`),
+        ...entries.map((entry, index) => annotateEntry(entry, index === entries.length - 1)),
         "```",
         "",
       ];
@@ -571,14 +642,12 @@ export class SdsPreflightService {
       "## Folder Tree",
       "```text",
       ".",
-      "├── docs/",
-      "├── apps/web/",
-      "├── services/api/",
-      "├── services/worker/",
-      "├── packages/shared/",
-      "├── db/migrations/",
-      "├── tests/",
-      "└── scripts/",
+      "├── docs/architecture/  # documentation and planning inputs",
+      "├── modules/core/  # implementation surfaces",
+      "├── interfaces/public/  # interface definitions and compatibility surfaces",
+      "├── data/migrations/  # storage and schema assets",
+      "├── tests/integration/  # automated validation surfaces",
+      "└── tools/release/  # automation and command entrypoints",
       "```",
       "",
     ];

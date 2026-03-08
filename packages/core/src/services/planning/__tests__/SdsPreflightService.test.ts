@@ -133,8 +133,109 @@ test("sds-preflight apply mode writes resolved decisions back to SDS", async () 
     assert.ok(updated.includes("## Operations and Deployment"));
     assert.ok(updated.includes("## External Integrations and Adapter Contracts"));
     assert.ok(updated.includes("services/scoring/src/pipeline.ts"));
+    assert.ok(updated.includes("# implementation surfaces"));
     assert.ok(updated.includes("mcoda:sds-preflight:start"));
     assert.ok(updated.includes("Resolved:"));
+  } finally {
+    await service.close();
+  }
+});
+
+test("sds-preflight uses stack-agnostic fallback folder tree examples", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Open Questions",
+      "- Which repository surfaces should be created first?",
+      "## Architecture Overview",
+      "Describe the target repository without assuming a framework-specific layout.",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const result = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: false,
+      applyToSds: true,
+    });
+    assert.equal(result.appliedToSds, true);
+    const updated = await fs.readFile(sdsPath, "utf8");
+    assert.ok(updated.includes("docs/architecture/"));
+    assert.ok(updated.includes("modules/core/"));
+    assert.ok(updated.includes("interfaces/public/"));
+    assert.ok(updated.includes("data/migrations/"));
+    assert.ok(updated.includes("tools/release/"));
+    assert.ok(!updated.includes("apps/web/"));
+    assert.ok(!updated.includes("services/api/"));
+    assert.ok(!updated.includes("packages/shared/"));
+    assert.ok(!updated.includes("contracts/  # on-chain contracts and deploy scripts"));
+  } finally {
+    await service.close();
+  }
+});
+
+test("sds-preflight keeps explicit SDS scope and stays clean on rerun", async () => {
+  const sdsDir = path.join(workspaceRoot, "docs", "sds");
+  const pdrDir = path.join(workspaceRoot, "docs", "pdr");
+  await fs.mkdir(sdsDir, { recursive: true });
+  await fs.mkdir(pdrDir, { recursive: true });
+  const sdsPath = path.join(sdsDir, "ep.md");
+  const pdrPath = path.join(pdrDir, "ep.md");
+  const architecturePath = path.join(workspaceRoot, "docs", "data_storage_architecture.md");
+
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Open Questions",
+      "- Should we include confidence propagation in API responses?",
+      "## Folder Tree",
+      "- services/api/src/index.ts",
+      "- services/scoring/src/pipeline.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  const originalPdr = [
+    "# Product Design Review: EP",
+    "## Repository Layout",
+    "│   └── sds/                   # software design specifications",
+  ].join("\n");
+  await fs.writeFile(pdrPath, originalPdr, "utf8");
+  const originalArchitecture = [
+    "# Data Storage Architecture",
+    "Purpose: explain pin and delete flows.",
+  ].join("\n");
+  await fs.writeFile(architecturePath, originalArchitecture, "utf8");
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const applied = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: false,
+      applyToSds: true,
+    });
+    assert.deepEqual(applied.sourceSdsPaths, [sdsPath]);
+    assert.deepEqual(applied.appliedSdsPaths, [sdsPath]);
+    assert.equal(await fs.readFile(pdrPath, "utf8"), originalPdr);
+    assert.equal(await fs.readFile(architecturePath, "utf8"), originalArchitecture);
+
+    const rerun = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: false,
+    });
+    assert.deepEqual(rerun.sourceSdsPaths, [sdsPath]);
+    assert.equal(rerun.requiredQuestionCount, 0);
+    assert.ok(rerun.issues.every((issue) => issue.gateId !== "gate-open-questions"));
   } finally {
     await service.close();
   }

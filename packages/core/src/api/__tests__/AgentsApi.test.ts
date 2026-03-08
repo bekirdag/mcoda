@@ -154,3 +154,48 @@ test("AgentsApi.listAgentUsageLimits exposes reset precision metadata", { concur
     }
   });
 });
+
+test("AgentsApi.listAgents refreshHealth option refreshes health snapshot", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    const agent = await repo.createAgent({ slug: "refresh-agent", adapter: "qa-cli" });
+    await repo.setAgentHealth({
+      agentId: agent.id,
+      status: "unreachable",
+      lastCheckedAt: "2026-03-01T00:00:00.000Z",
+    });
+
+    const fakeService = {
+      healthCheckCalls: 0,
+      healthCheck: async (agentId: string) => {
+        fakeService.healthCheckCalls += 1;
+        const health = {
+          agentId,
+          status: "healthy" as const,
+          lastCheckedAt: "2026-03-07T00:00:00.000Z",
+          latencyMs: 1,
+        };
+        await repo.setAgentHealth(health);
+        return health;
+      },
+    };
+
+    const api = new AgentsApi(repo, fakeService as any, {} as any);
+    try {
+      const withoutRefresh = await api.listAgents();
+      const baseline = withoutRefresh.find((entry) => entry.slug === "refresh-agent");
+      assert.ok(baseline);
+      assert.equal(baseline.health?.status, "unreachable");
+      assert.equal(fakeService.healthCheckCalls, 0);
+
+      const withRefresh = await api.listAgents({ refreshHealth: true });
+      const refreshed = withRefresh.find((entry) => entry.slug === "refresh-agent");
+      assert.ok(refreshed);
+      assert.equal(fakeService.healthCheckCalls, 1);
+      assert.equal(refreshed.health?.status, "healthy");
+      assert.equal(refreshed.health?.lastCheckedAt, "2026-03-07T00:00:00.000Z");
+    } finally {
+      await api.close();
+    }
+  });
+});

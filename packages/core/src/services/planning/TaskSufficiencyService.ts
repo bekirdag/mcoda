@@ -5,6 +5,7 @@ import { PathHelper } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
 import { JobService } from "../jobs/JobService.js";
 import { createEpicKeyGenerator, createStoryKeyGenerator, createTaskKeyGenerator } from "./KeyHelpers.js";
+import { extractStructuredPaths, filterImplementationStructuredPaths, isStructuredFilePath } from "./SdsStructureSignals.js";
 
 const DEFAULT_MAX_ITERATIONS = 5;
 const DEFAULT_MAX_TASKS_PER_ITERATION = 24;
@@ -19,34 +20,66 @@ const REPORT_FILE_NAME = "task-sufficiency-report.json";
 const ignoredDirs = new Set([".git", "node_modules", "dist", "build", ".mcoda", ".docdex"]);
 const sdsFilenamePattern = /(sds|software[-_ ]design|system[-_ ]design|design[-_ ]spec)/i;
 const sdsContentPattern = /(software design specification|system design specification|^#\s*sds\b)/im;
+const managedPreflightBlockPattern =
+  /<!--\s*mcoda:sds-preflight:start\s*-->[\s\S]*?<!--\s*mcoda:sds-preflight:end\s*-->\s*/gi;
 const nonImplementationHeadingPattern =
   /\b(software design specification|system design specification|\bsds\b|revision history|table of contents|purpose|scope|definitions?|abbreviations?|glossary|references?|appendix|document control|authors?)\b/i;
 const likelyImplementationHeadingPattern =
   /\b(architecture|entity|entities|service|services|module|modules|component|components|pipeline|workflow|api|endpoint|schema|model|feature|store|database|ingestion|training|inference|ui|frontend|backend|ops|observability|security|deployment|solver|integration|testing|validation|contract|index|mapping|registry|cache|queue|event|job|task|migration|controller|router|policy)\b/i;
-const repoRootSegments = new Set([
-  "apps",
+const supportRootSegments = new Set(["docs", "fixtures", "policies", "policy", "runbooks", "pdr", "rfp", "sds"]);
+const implementationPathHintSegments = new Set([
   "api",
-  "backend",
-  "config",
-  "configs",
+  "app",
+  "apps",
+  "bin",
+  "cli",
+  "cmd",
+  "component",
+  "components",
+  "controller",
+  "controllers",
+  "data",
   "db",
+  "deploy",
   "deployment",
   "deployments",
-  "docs",
-  "frontend",
-  "implementation",
+  "handler",
+  "handlers",
   "infra",
+  "integration",
   "internal",
-  "packages",
+  "job",
+  "jobs",
+  "lib",
+  "libs",
+  "migration",
+  "migrations",
+  "model",
+  "models",
+  "module",
+  "modules",
+  "ops",
+  "page",
+  "pages",
+  "route",
+  "routes",
+  "schema",
+  "schemas",
+  "script",
   "scripts",
+  "server",
+  "servers",
   "service",
   "services",
-  "shared",
+  "spec",
+  "specs",
   "src",
   "test",
   "tests",
   "ui",
   "web",
+  "worker",
+  "workers",
 ]);
 const headingNoiseTokens = new Set(["and", "for", "from", "into", "the", "with"]);
 const coverageStopTokens = new Set([
@@ -164,6 +197,9 @@ const normalizeAnchor = (kind: "section" | "folder", value: string): string =>
 
 const unique = (items: string[]): string[] => Array.from(new Set(items.filter(Boolean)));
 
+const stripManagedPreflightBlock = (value: string): string =>
+  value.replace(managedPreflightBlockPattern, "").replace(/\n{3,}/g, "\n\n").trim();
+
 const stripDecorators = (value: string): string =>
   value
     .replace(/[`*_]/g, " ")
@@ -172,16 +208,25 @@ const stripDecorators = (value: string): string =>
     .trim();
 
 const normalizeHeadingCandidate = (value: string): string => {
-  const cleaned = stripDecorators(value).replace(/^\d+(?:\.\d+)*\s+/, "").trim();
+  const cleaned = stripDecorators(value).replace(/^\d+(?:\.\d+)*\.?\s+/, "").trim();
   return cleaned.length > 0 ? cleaned : stripDecorators(value);
+};
+
+const extractHeadingNumberPath = (heading: string): string[] => {
+  const match = stripDecorators(heading).match(/^(\d+(?:\.\d+)*)\.?(?:\s+|$)/);
+  return (match?.[1] ?? "")
+    .split(".")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
 };
 
 const headingLooksImplementationRelevant = (heading: string): boolean => {
   const normalized = normalizeHeadingCandidate(heading).toLowerCase();
   if (!normalized || normalized.length < 3) return false;
+  if (normalized === "roles" || normalized === "role matrix" || normalized === "actors") return false;
   if (nonImplementationHeadingPattern.test(normalized)) return false;
   if (likelyImplementationHeadingPattern.test(normalized)) return true;
-  const sectionMatch = heading.trim().match(/^(\d+)(?:\.\d+)*(?:\s+|$)/);
+  const sectionMatch = heading.trim().match(/^(\d+)(?:\.\d+)*\.?(?:\s+|$)/);
   if (sectionMatch) {
     const major = Number.parseInt(sectionMatch[1] ?? "", 10);
     if (Number.isFinite(major) && major >= 3) return true;
@@ -198,7 +243,7 @@ const normalizeFolderEntry = (entry: string): string | undefined => {
     .replace(/^\.?\//, "")
     .replace(/\/+$/, "")
     .replace(/\s+/g, "");
-  if (!trimmed.includes("/")) return undefined;
+  if (!trimmed.includes("/")) return isStructuredFilePath(trimmed) ? trimmed : undefined;
   if (trimmed.includes("...") || trimmed.includes("*")) return undefined;
   return trimmed;
 };
@@ -207,10 +252,19 @@ const folderEntryLooksRepoRelevant = (entry: string): boolean => {
   const normalized = normalizeFolderEntry(entry);
   if (!normalized) return false;
   if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) return false;
-  const segments = normalized.split("/").filter(Boolean);
+  if (isStructuredFilePath(normalized)) {
+    const root = normalized.split("/")[0]?.toLowerCase();
+    return !root || !supportRootSegments.has(root);
+  }
+  const segments = normalized
+    .split("/")
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
   if (segments.length < 2) return false;
-  const root = segments[0]!.toLowerCase();
-  return repoRootSegments.has(root);
+  const root = segments[0]!;
+  if (supportRootSegments.has(root)) return false;
+  if (segments.some((segment) => implementationPathHintSegments.has(segment))) return true;
+  return segments.some((segment) => segment.length >= 3);
 };
 
 const deriveSectionDomain = (heading: string): string => {
@@ -228,6 +282,140 @@ const deriveFolderDomain = (entry: string): string => {
   const segments = normalized.split("/").filter(Boolean);
   if (segments.length === 0) return "structure";
   return segments.length === 1 ? segments[0]! : `${segments[0]}-${segments[1]}`;
+};
+
+const pruneParentImplementationHeadings = (headings: string[]): string[] => {
+  const numbered = headings.map((heading) => ({
+    heading,
+    numberPath: extractHeadingNumberPath(heading),
+  }));
+  return headings.filter((heading, index) => {
+    const current = numbered[index];
+    if (!current || current.numberPath.length === 0) return true;
+    return !numbered.some((candidate, candidateIndex) => {
+      if (candidateIndex === index) return false;
+      if (candidate.numberPath.length <= current.numberPath.length) return false;
+      return current.numberPath.every((segment, segmentIndex) => candidate.numberPath[segmentIndex] === segment);
+    });
+  });
+};
+
+const implementationRootWeight = (target: string): number => {
+  const normalized = normalizeFolderEntry(target)?.toLowerCase() ?? normalizeText(target);
+  const segments = normalized.split("/").filter(Boolean);
+  const root = segments[0] ?? normalized;
+  let score = 55 + Math.min(segments.length, 4) * 6 + (isStructuredFilePath(normalized) ? 10 : 0);
+  if (supportRootSegments.has(root)) score -= 30;
+  if (segments.some((segment) => ["src", "app", "apps", "lib", "libs", "server", "api", "worker", "workers"].includes(segment))) {
+    score += 20;
+  }
+  if (segments.some((segment) => ["test", "tests", "spec", "specs", "integration", "acceptance", "e2e"].includes(segment))) {
+    score += 10;
+  }
+  if (segments.some((segment) => ["db", "data", "schema", "schemas", "migration", "migrations"].includes(segment))) {
+    score += 12;
+  }
+  if (segments.some((segment) => ["ops", "infra", "deploy", "deployment", "deployments", "script", "scripts"].includes(segment))) {
+    score += 12;
+  }
+  return score;
+};
+
+const inferImplementationTargets = (bundle: GapBundle, availablePaths: string[], limit = 3): string[] => {
+  const explicitTargets = bundle.values
+    .map((value) => normalizeFolderEntry(value))
+    .filter((value): value is string => Boolean(value));
+  if (explicitTargets.length > 0) {
+    return unique(explicitTargets).slice(0, limit);
+  }
+
+  const anchorTokens = tokenizeCoverageSignal(
+    normalizeText([bundle.domain, ...bundle.values].join(" ")).replace(/[-/]+/g, " "),
+  );
+  const domainNeedle = bundle.domain.replace(/[-_]+/g, " ").trim();
+  const scored = availablePaths
+    .map((candidate) => normalizeFolderEntry(candidate))
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .filter((candidate) => bundle.kind === "folder" || !candidate.startsWith("docs/"))
+    .map((candidate) => {
+      const normalizedCandidate = normalizeText(candidate.replace(/\//g, " "));
+      const overlap = anchorTokens.filter((token) => normalizedCandidate.includes(token)).length;
+      const hasDomainMatch = domainNeedle.length > 0 && normalizedCandidate.includes(domainNeedle);
+      const hasEvidence = overlap > 0 || hasDomainMatch;
+      const score =
+        implementationRootWeight(candidate) +
+        overlap * 20 +
+        (hasDomainMatch ? 15 : 0) -
+        (candidate.startsWith("docs/") ? 25 : 0);
+      return { candidate, score, hasEvidence };
+    })
+    .filter((entry) => entry.hasEvidence)
+    .sort((left, right) => right.score - left.score || left.candidate.localeCompare(right.candidate));
+
+  return unique(scored.filter((entry) => entry.score > 0).map((entry) => entry.candidate)).slice(0, limit);
+};
+
+const summarizeImplementationTargets = (targets: string[]): string => {
+  if (targets.length === 0) return "target implementation surfaces";
+  if (targets.length === 1) return targets[0]!;
+  if (targets.length === 2) return `${targets[0]}, ${targets[1]}`;
+  return `${targets[0]} (+${targets.length - 1} more)`;
+};
+
+const summarizeBundleScope = (bundle: GapBundle): string => {
+  const normalizedValues = unique(
+    bundle.values
+      .map((value) =>
+        bundle.kind === "folder" ? normalizeFolderEntry(value) ?? stripDecorators(value) : normalizeHeadingCandidate(value),
+      )
+      .filter(Boolean),
+  );
+  if (normalizedValues.length === 0) return bundle.domain.replace(/[-_]+/g, " ").trim() || "coverage";
+  if (normalizedValues.length === 1) return normalizedValues[0]!;
+  return `${normalizedValues[0]} (+${normalizedValues.length - 1} more)`;
+};
+
+const buildRemediationTitle = (bundle: GapBundle, implementationTargets: string[]): string => {
+  const domainLabel = bundle.domain.replace(/[-_]+/g, " ").trim() || "coverage";
+  const scopeLabel = summarizeBundleScope(bundle);
+  if (implementationTargets.length > 0) {
+    if (bundle.kind === "folder") {
+      return `Implement ${summarizeImplementationTargets(implementationTargets)}`.slice(0, 180);
+    }
+    return `Implement ${scopeLabel} in ${summarizeImplementationTargets(implementationTargets)}`.slice(0, 180);
+  }
+  if (bundle.kind === "folder") {
+    return `Implement ${scopeLabel}`.slice(0, 180);
+  }
+  return `Implement requirements for ${scopeLabel || domainLabel}`.slice(0, 180);
+};
+
+const buildTargetedTestGuidance = (implementationTargets: string[]): string[] => {
+  const guidance = new Set<string>();
+  for (const target of implementationTargets) {
+    const segments = target
+      .toLowerCase()
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (segments.some((segment) => ["ui", "web", "frontend", "page", "pages", "screen", "screens", "component", "components"].includes(segment))) {
+      guidance.add("- Add/update unit, component, and flow coverage for the affected user-facing path.");
+    } else if (segments.some((segment) => ["api", "server", "backend", "route", "routes", "controller", "controllers", "handler", "handlers"].includes(segment))) {
+      guidance.add("- Add/update unit and integration coverage for the affected service/API surface.");
+    } else if (segments.some((segment) => ["cli", "cmd", "bin", "command", "commands"].includes(segment))) {
+      guidance.add("- Add/update command-level tests and end-to-end invocation coverage for the affected runtime flow.");
+    } else if (segments.some((segment) => ["ops", "infra", "deploy", "deployment", "deployments", "script", "scripts"].includes(segment))) {
+      guidance.add("- Add/update operational smoke coverage or script validation for the affected deployment/runbook path.");
+    } else if (segments.some((segment) => ["db", "data", "schema", "schemas", "migration", "migrations", "model", "models"].includes(segment))) {
+      guidance.add("- Add/update persistence, schema, and integration coverage for the affected implementation path.");
+    } else if (segments.some((segment) => ["worker", "workers", "job", "jobs", "queue", "task", "tasks", "service", "services", "module", "modules"].includes(segment))) {
+      guidance.add("- Add/update unit and integration coverage for the affected implementation path.");
+    }
+  }
+  if (guidance.size === 0) {
+    guidance.add("- Add/update the smallest deterministic test scope that proves the affected implementation targets.");
+  }
+  return Array.from(guidance);
 };
 
 const extractMarkdownHeadings = (content: string, limit: number): string[] => {
@@ -262,21 +450,7 @@ const extractMarkdownHeadings = (content: string, limit: number): string[] => {
 
 const extractFolderEntries = (content: string, limit: number): string[] => {
   if (!content) return [];
-  const candidates: string[] = [];
-  const lines = content.split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const matches = [...trimmed.matchAll(/[`'"]?([a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+)+(?:\/[a-zA-Z0-9._-]+)*)[`'"]?/g)];
-    for (const match of matches) {
-      const raw = (match[1] ?? "").replace(/^\.?\//, "").replace(/\/+$/, "").trim();
-      if (!raw || !raw.includes("/")) continue;
-      candidates.push(raw);
-      if (candidates.length >= limit) break;
-    }
-    if (candidates.length >= limit) break;
-  }
-  return unique(candidates).slice(0, limit);
+  return unique(filterImplementationStructuredPaths(extractStructuredPaths(content, limit))).slice(0, limit);
 };
 
 const tokenizeCoverageSignal = (value: string): string[] =>
@@ -468,7 +642,8 @@ export class TaskSufficiencyService {
     const docs: Array<{ path: string; content: string }> = [];
     for (const filePath of paths) {
       try {
-        const content = await fs.readFile(filePath, "utf8");
+        const rawContent = await fs.readFile(filePath, "utf8");
+        const content = stripManagedPreflightBlock(rawContent);
         if (!sdsContentPattern.test(content) && !sdsFilenamePattern.test(path.basename(filePath))) continue;
         docs.push({ path: filePath, content });
       } catch {
@@ -747,6 +922,7 @@ export class TaskSufficiencyService {
     epicId: string;
     maxPriority: number;
     gapBundles: GapBundle[];
+    knownPaths: string[];
     iteration: number;
     jobId: string;
     commandRunId: string;
@@ -755,31 +931,27 @@ export class TaskSufficiencyService {
     const taskKeyGen = createTaskKeyGenerator(params.storyKey, existingTaskKeys);
     const now = new Date().toISOString();
     const taskInserts = params.gapBundles.map((bundle, index) => {
-      const target = bundle.values[0] ?? "SDS coverage gap";
       const scopeCount = bundle.values.length;
       const domainLabel = bundle.domain.replace(/[-_]+/g, " ").trim() || "coverage";
-      const titlePrefix =
-        bundle.kind === "folder"
-          ? "Implement SDS path"
-          : bundle.kind === "mixed"
-            ? "Implement SDS bundle"
-            : "Implement SDS section";
-      const title =
-        scopeCount <= 1
-          ? `${titlePrefix}: ${target}`.slice(0, 180)
-          : `Implement SDS ${domainLabel} coverage bundle (${scopeCount} anchors)`.slice(0, 180);
+      const implementationTargets = inferImplementationTargets(bundle, params.knownPaths, 3);
+      const title = buildRemediationTitle(bundle, implementationTargets);
       const objective =
         bundle.kind === "folder"
           ? scopeCount <= 1
-            ? `Create or update production code under the SDS folder-tree path \`${target}\`.`
+            ? `Create or update production code under the SDS path \`${bundle.values[0] ?? implementationTargets[0] ?? domainLabel}\`.`
             : `Create or update production code for ${scopeCount} related SDS folder-tree paths in the ${domainLabel} domain.`
           : bundle.kind === "mixed"
             ? `Implement a cohesive capability slice covering both SDS sections and folder targets in the ${domainLabel} domain.`
             : scopeCount <= 1
-              ? `Implement the missing production functionality described by SDS section \`${target}\`.`
+              ? `Implement the missing production functionality described by SDS section \`${bundle.values[0] ?? domainLabel}\`.`
               : `Implement ${scopeCount} related SDS section requirements in the ${domainLabel} domain.`;
       const scopeLines = bundle.values.map((value) => `- ${value}`);
       const anchorLines = bundle.normalizedAnchors.map((anchor) => `- ${anchor}`);
+      const targetLines =
+        implementationTargets.length > 0
+          ? implementationTargets.map((target) => `- ${target}`)
+          : ["- No direct file path was recovered; update the closest concrete implementation surfaces before execution."];
+      const testingLines = buildTargetedTestGuidance(implementationTargets);
       const description = [
         "## Objective",
         objective,
@@ -792,21 +964,25 @@ export class TaskSufficiencyService {
         "## Anchor Scope",
         ...scopeLines,
         "",
+        "## Concrete Implementation Targets",
+        ...targetLines,
+        "",
         "## Anchor Keys",
         ...anchorLines,
         "",
         "## Implementation Plan",
-        "- Phase 1: add or update contracts/interfaces used by this scope.",
-        "- Phase 2: implement production logic for each anchor item (no docs-only closure).",
-        "- Phase 3: wire dependencies and startup/runtime integration points affected by this scope.",
+        "- Phase 1: update the listed implementation targets first; add missing files/scripts/tests only where the SDS requires them.",
+        "- Phase 2: implement production logic for each anchor item and keep the work mapped to the concrete targets above.",
+        "- Phase 3: wire dependencies, startup/runtime sequencing, and artifact generation affected by this scope.",
         "- Keep implementation traceable to anchor keys in commit and test evidence.",
         "",
         "## Testing",
-        "- Add or update targeted unit/component/integration/API coverage for all listed anchors.",
-        "- Execute the smallest deterministic test scope that proves the behavior.",
+        ...testingLines,
+        "- Execute the smallest deterministic test scope that proves the behavior for the listed targets.",
         "",
         "## Definition of Done",
         "- All anchor scope items in this bundle are represented in working code.",
+        "- All concrete implementation targets above are updated or explicitly confirmed unchanged with evidence.",
         "- Validation evidence exists and maps back to each anchor key.",
       ].join("\n");
       const storyPointsBase = bundle.kind === "folder" ? 1 : 2;
@@ -830,6 +1006,7 @@ export class TaskSufficiencyService {
             domain: bundle.domain,
             scopeCount,
             values: bundle.values,
+            implementationTargets,
             anchor: bundle.normalizedAnchors[0],
             anchors: bundle.normalizedAnchors,
             iteration: params.iteration,
@@ -926,10 +1103,9 @@ export class TaskSufficiencyService {
       const rawFolderEntries = unique(
         sdsDocs.flatMap((doc) => extractFolderEntries(doc.content, SDS_FOLDER_LIMIT)),
       ).slice(0, SDS_FOLDER_LIMIT);
+      const filteredSectionHeadings = unique(rawSectionHeadings.filter((heading) => headingLooksImplementationRelevant(heading)));
       const sectionHeadings = unique(
-        rawSectionHeadings
-          .map((heading) => normalizeHeadingCandidate(heading))
-          .filter((heading) => headingLooksImplementationRelevant(heading)),
+        pruneParentImplementationHeadings(filteredSectionHeadings).map((heading) => normalizeHeadingCandidate(heading)),
       ).slice(0, SDS_HEADING_LIMIT);
       const folderEntries = unique(
         rawFolderEntries
@@ -1068,6 +1244,7 @@ export class TaskSufficiencyService {
           epicId: target.epicId,
           maxPriority: snapshot.maxPriority,
           gapBundles,
+          knownPaths: folderEntries,
           iteration,
           jobId: job.id,
           commandRunId: commandRun.id,

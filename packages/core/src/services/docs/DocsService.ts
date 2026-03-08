@@ -1449,12 +1449,15 @@ const ensureSdsStructuredDraft = (
     structured = ensureSectionContent(structured, section, fallbackFor(section));
   }
   if ((context.openapi?.length ?? 0) === 0) {
-    const interfaceTitle = sections.find((section) => /interface|contract/i.test(section)) ?? "Interfaces & Contracts";
+    const interfaceTitle =
+      sections.find((section) => /(?:^|[\s,&/()-])(interface|interfaces|api|apis)(?:$|[\s,&/()-])/i.test(section)) ??
+      sections.find((section) => /contract/i.test(section)) ??
+      "Interfaces & Contracts";
     const extracted = extractSection(structured, interfaceTitle);
     if (extracted) {
       const scrubbed = stripInventedEndpoints(cleanBody(extracted.body ?? ""));
       const openApiFallback =
-        "No OpenAPI excerpts available. Capture interface needs as open questions (auth/identity, restaurant suggestions, voting cycles, results/analytics).";
+        "No OpenAPI excerpts available. Capture interface needs as explicit contracts, assumptions, and open questions without inventing endpoint paths.";
       let body = scrubbed.length > 0 && !/endpoint/i.test(scrubbed) ? scrubbed : cleanBody(openApiFallback);
       if (!/openapi/i.test(body)) {
         body = `${body}\n- No OpenAPI excerpts available; keep endpoints as open questions.`;

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
 import { GlobalRepository } from "@mcoda/db";
-import { WorkspaceResolver } from "@mcoda/core";
+import { AgentsApi, WorkspaceResolver } from "@mcoda/core";
 
 const captureLogs = async (fn: () => Promise<void> | void): Promise<string[]> => {
   const logs: string[] = [];
@@ -349,4 +349,67 @@ test("agent ratings lists recent run scores", { concurrency: false }, async () =
     assert.match(output, /work-on-tasks/);
     assert.match(output, /proj-epic-us-01-t01/);
   });
+});
+
+test("agent list forwards refresh-health policy to AgentsApi.listAgents", { concurrency: false }, async () => {
+  const originalCreate = (AgentsApi as any).create;
+  const listOptions: Array<{ refreshHealth?: boolean }> = [];
+  const fakeApi = {
+    listAgents: async (options?: { refreshHealth?: boolean }) => {
+      listOptions.push(options ?? {});
+      return [
+        {
+          id: "agent-1",
+          slug: "agent-1",
+          adapter: "codex-cli",
+          capabilities: ["chat"],
+          health: { status: "healthy", lastCheckedAt: "2026-03-07T00:00:00.000Z" },
+        },
+      ];
+    },
+    getAgent: async () => ({
+      id: "agent-1",
+      slug: "agent-1",
+      adapter: "codex-cli",
+      capabilities: ["chat"],
+      auth: { configured: false },
+      health: { status: "healthy", lastCheckedAt: "2026-03-07T00:00:00.000Z" },
+    }),
+    listAgentUsageLimits: async () => [],
+    close: async () => {},
+  };
+
+  (AgentsApi as any).create = async () => fakeApi;
+  try {
+    await captureLogs(() => AgentsCommands.run(["list"]));
+    await captureLogs(() => AgentsCommands.run(["list", "--json"]));
+    await captureLogs(() => AgentsCommands.run(["list", "--json", "--no-refresh-health"]));
+    await captureLogs(() => AgentsCommands.run(["list", "--refresh-health"]));
+  } finally {
+    (AgentsApi as any).create = originalCreate;
+  }
+
+  assert.equal(listOptions.length, 4);
+  assert.equal(listOptions[0].refreshHealth, false);
+  assert.equal(listOptions[1].refreshHealth, true);
+  assert.equal(listOptions[2].refreshHealth, false);
+  assert.equal(listOptions[3].refreshHealth, true);
+});
+
+test("agent list rejects conflicting refresh flags", { concurrency: false }, async () => {
+  const originalCreate = (AgentsApi as any).create;
+  const fakeApi = {
+    listAgents: async () => [],
+    listAgentUsageLimits: async () => [],
+    close: async () => {},
+  };
+  (AgentsApi as any).create = async () => fakeApi;
+  try {
+    await assert.rejects(
+      () => AgentsCommands.run(["list", "--refresh-health", "--no-refresh-health"]),
+      /Conflicting flags/,
+    );
+  } finally {
+    (AgentsApi as any).create = originalCreate;
+  }
 });

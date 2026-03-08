@@ -139,6 +139,47 @@ const fakeDoc = {
   segments: [{ id: "seg-1", docId: "doc-1", index: 0, content: "Segment content" }],
 };
 
+const EP_SDS_FIXTURE = [
+  "# Software Design Specification",
+  "## Folder Tree",
+  "```text",
+  ".",
+  "├── foundry.toml",
+  "├── contracts/",
+  "│   ├── script/",
+  "│   │   ├── DeployContracts.s.sol",
+  "│   │   ├── UpgradeRegistry.s.sol",
+  "│   │   └── ConfigurePolicies.s.sol",
+  "│   └── src/",
+  "│       └── IOraclePolicyRegistry.sol",
+  "├── packages/",
+  "│   ├── shared/",
+  "│   │   └── src/",
+  "│   │       └── index.ts",
+  "│   ├── gatekeeper/",
+  "│   │   └── src/",
+  "│   │       └── worker.ts",
+  "│   ├── oracle/",
+  "│   │   └── src/",
+  "│   │       └── oracle.ts",
+  "│   └── terminal-client/",
+  "│       └── src/",
+  "│           └── main.ts",
+  "└── ops/",
+  "    └── systemd/",
+  "        └── gatekeeper.service",
+  "```",
+  "## Deployment Waves",
+  "1. Wave 0 - Artifact build: shared, contracts",
+  "2. Wave 1 - Contract deployment: contracts, oracle",
+  "3. Wave 2 - Runtime startup: gatekeeper, oracle",
+  "4. Wave 3 - Terminal + operations: terminal client, ops",
+  "## Gatekeeper Runtime",
+  "packages/gatekeeper/src/worker.ts starts after contracts/script/ConfigurePolicies.s.sol finishes.",
+  "## Registry Contracts",
+  "Use IOraclePolicyRegistry.sol and ConfigurePolicies.s.sol as the canonical names.",
+].join("\n");
+
 class StubDocdex {
   registeredFiles: string[] = [];
   async fetchDocumentById(id: string) {
@@ -641,7 +682,127 @@ test("createTasks auto-runs task sufficiency audit and records summary checkpoin
   assert.equal(completedJob.meta.payload.sufficiencyAudit.satisfied, true);
 });
 
-test("createTasks runs SDS preflight, records checkpoint, and merges generated preflight docs", async () => {
+test("createTasks refreshes exported artifacts and result counts from the final persisted backlog", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = {
+    calls: [] as any[],
+    async runAudit(request: any) {
+      this.calls.push(request);
+      const project = workspaceRepo.projects[0];
+      const epic = workspaceRepo.epics[0];
+      const story = workspaceRepo.stories[0];
+      const [gapTask] = await workspaceRepo.insertTasks([
+        {
+          projectId: project.id,
+          epicId: epic.id,
+          userStoryId: story.id,
+          key: `${story.key}-t99`,
+          title: "Implement gatekeeper coverage gap",
+          description: "## Objective\nClose the remaining gatekeeper coverage gap.",
+          type: "feature",
+          status: "not_started",
+          storyPoints: 2,
+          priority: 99,
+          metadata: {
+            sufficiencyAudit: {
+              source: "task-sufficiency-audit",
+              anchor: "section:gatekeeper runtime",
+              anchors: ["section:gatekeeper runtime"],
+            },
+          },
+        },
+      ]);
+      await workspaceRepo.createTaskRun({
+        taskId: gapTask.id,
+        command: "task-sufficiency-audit",
+        status: "succeeded",
+        jobId: "suff-job-1",
+        commandRunId: "suff-cmd-1",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+      });
+      return {
+        jobId: "suff-job-1",
+        commandRunId: "suff-cmd-1",
+        projectKey: request.projectKey,
+        sourceCommand: request.sourceCommand,
+        satisfied: true,
+        dryRun: false,
+        totalTasksAdded: 1,
+        totalTasksUpdated: 0,
+        maxIterations: 3,
+        minCoverageRatio: 1,
+        finalCoverageRatio: 1,
+        remainingSectionHeadings: [] as string[],
+        remainingFolderEntries: [] as string[],
+        remainingGaps: { sections: 0, folders: 0, total: 0 },
+        iterations: [],
+        reportPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json"),
+        reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+        warnings: [],
+      };
+    },
+    async close() {},
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.ok(result.tasks.length >= 2);
+  assert.ok(result.tasks.some((task) => task.title === "Implement gatekeeper coverage gap"));
+  const tasksPath = path.join(workspace.mcodaDir, "tasks", "web", "tasks.json");
+  const planPath = path.join(workspace.mcodaDir, "tasks", "web", "plan.json");
+  const exportedTasks = JSON.parse(await fs.readFile(tasksPath, "utf8"));
+  const exportedPlan = JSON.parse(await fs.readFile(planPath, "utf8"));
+  assert.ok(exportedTasks.length >= 2);
+  assert.ok(exportedTasks.some((task: any) => task.title === "Implement gatekeeper coverage gap"));
+  assert.ok(exportedPlan.tasks.some((task: any) => task.title === "Implement gatekeeper coverage gap"));
+  assert.ok(jobService.checkpoints.some((entry) => entry.stage === "plan_refreshed"));
+  const completedJob = jobService.jobs[0];
+  assert.equal(completedJob?.meta?.payload?.tasksCreated, exportedTasks.length);
+});
+
+test("createTasks runs SDS preflight, records checkpoint, and avoids re-merging generated docs after apply-to-sds", async () => {
   const outputs = [
     JSON.stringify({
       epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
@@ -725,8 +886,8 @@ test("createTasks runs SDS preflight, records checkpoint, and merges generated p
   assert.ok(preflightCheckpoint);
   assert.equal(preflightCheckpoint.details.status, "succeeded");
   assert.equal(preflightCheckpoint.details.commitHash, "abc123def456");
-  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedQaPath));
-  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedGapPath));
+  assert.ok(!docdex.registeredFiles.some((entry) => entry === generatedQaPath));
+  assert.ok(!docdex.registeredFiles.some((entry) => entry === generatedGapPath));
   const completedJob = jobService.jobs[0];
   assert.equal(completedJob?.meta?.payload?.sdsPreflight?.qualityStatus, "pass");
 });
@@ -956,6 +1117,100 @@ test("buildDocContext samples SDS segments across long documents", () => {
   assert.ok(context.docSummary.includes("Section 12"));
 });
 
+test("prepareDocs strips managed preflight blocks from planning content", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "sds-managed.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "<!-- mcoda:sds-preflight:start -->",
+      "## Open Questions (Resolved)",
+      "- Resolved: No unresolved questions remain for this SDS file in this preflight run.",
+      "## Gap Remediation Summary (mcoda preflight)",
+      "- No unresolved SDS quality gaps remained for this SDS file in this preflight run.",
+      "<!-- mcoda:sds-preflight:end -->",
+      "## Folder Tree",
+      "```text",
+      ".",
+      "└── packages/gatekeeper/src/worker.ts",
+      "```",
+      "## Deployment Waves",
+      "1. Wave 1 - Runtime startup: gatekeeper",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = await (service as any).prepareDocs([sdsPath]);
+  assert.equal(docs.length >= 1, true);
+  assert.ok(!docs[0].content.includes("mcoda:sds-preflight:start"));
+  assert.ok(!docs[0].content.includes("Open Questions (Resolved)"));
+  assert.ok(docs[0].content.includes("packages/gatekeeper/src/worker.ts"));
+  const context = (service as any).buildDocContext(docs);
+  assert.ok(!context.docSummary.includes("mcoda:sds-preflight:start"));
+  assert.ok(!context.docSummary.includes("Open Questions (Resolved)"));
+});
+
+test("prepareDocs dedupes SDS docs across path-like ids and coerces them to SDS", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "ep.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Folder Tree",
+      "```text",
+      ".",
+      "└── packages/gatekeeper/src/worker.ts",
+      "```",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = (service as any).dedupePlanningDocs([
+    {
+      ...fakeDoc,
+      id: "docs/ep.md",
+      docType: "SDS",
+      path: "docs/ep.md",
+      title: "ep.md",
+      content: "# Software Design Specification\n## Folder Tree",
+      segments: [],
+    },
+    {
+      ...fakeDoc,
+      id: "local-ep-doc",
+      docType: "DOC",
+      path: sdsPath,
+      title: "ep.md",
+      content: await fs.readFile(sdsPath, "utf8"),
+      segments: [],
+    },
+  ]);
+
+  assert.equal(docs.length, 1);
+  assert.equal(docs[0].docType, "SDS");
+  assert.ok(docs[0].content.includes("packages/gatekeeper/src/worker.ts"));
+});
+
 test("collectDependencyStatements inspects late lines in long SDS text", () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
@@ -1008,6 +1263,415 @@ test("extractStartupWaveHints inspects late wave rows in long SDS text", () => {
     ),
     `wave rank entries did not include expected late wave service: ${JSON.stringify(waveEntries)}`,
   );
+});
+
+test("extractStructureTargets parses EP-style folder trees and top-level files", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const targets = (service as any).extractStructureTargets([
+    {
+      ...fakeDoc,
+      id: "doc-ep",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ]);
+
+  assert.ok(targets.directories.includes("contracts/script"));
+  assert.ok(targets.directories.includes("packages/gatekeeper/src"));
+  assert.ok(targets.directories.includes("packages/terminal-client/src"));
+  assert.ok(targets.directories.includes("ops/systemd"));
+  assert.ok(targets.files.includes("foundry.toml"));
+  assert.ok(targets.files.includes("contracts/script/DeployContracts.s.sol"));
+  assert.ok(targets.files.includes("contracts/script/UpgradeRegistry.s.sol"));
+  assert.ok(targets.files.includes("packages/gatekeeper/src/worker.ts"));
+});
+
+test("extractStructureTargets ignores negated non-goal path mentions", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const targets = (service as any).extractStructureTargets([
+    {
+      ...fakeDoc,
+      id: "doc-negated",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "ep.md",
+      content: [
+        "# Software Design Specification",
+        "No `apps/web`, `apps/admin`, or `services/api` subtree is part of the v1 target layout.",
+        "```text",
+        ".",
+        "└── packages/gatekeeper/src/worker.ts",
+        "```",
+      ].join("\n"),
+      segments: [],
+    },
+  ]);
+
+  assert.ok(!targets.directories.includes("apps/admin"));
+  assert.ok(!targets.directories.includes("apps/web"));
+  assert.ok(!targets.directories.includes("services/api"));
+  assert.ok(targets.files.includes("packages/gatekeeper/src/worker.ts"));
+});
+
+test("extractStructureTargets preserves root prefixes for root-line subtrees", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const targets = (service as any).extractStructureTargets([
+    {
+      ...fakeDoc,
+      id: "doc-root-tree",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "ep.md",
+      content: [
+        "# Software Design Specification",
+        "Source hierarchy:",
+        "- docs/rfp.md",
+        "- docs/pdr/ep.md",
+        "## Folder Tree",
+        "```text",
+        "contracts/",
+        "├── src/",
+        "│   └── OraclePolicyRegistry.sol",
+        "├── script/",
+        "│   └── ConfigurePolicies.s.sol",
+        "packages/",
+        "├── gatekeeper/",
+        "│   └── src/",
+        "│       └── worker.ts",
+        "```",
+        "Read/write capability interface notes.",
+      ].join("\n"),
+      segments: [],
+    },
+  ]);
+
+  assert.ok(targets.directories.includes("contracts/src"));
+  assert.ok(targets.directories.includes("contracts/script"));
+  assert.ok(targets.directories.includes("packages/gatekeeper"));
+  assert.ok(targets.directories.includes("packages/gatekeeper/src"));
+  assert.ok(targets.files.includes("contracts/src/OraclePolicyRegistry.sol"));
+  assert.ok(targets.files.includes("contracts/script/ConfigurePolicies.s.sol"));
+  assert.ok(targets.files.includes("packages/gatekeeper/src/worker.ts"));
+  assert.ok(!targets.directories.includes("docs"));
+  assert.ok(!targets.files.includes("docs/rfp.md"));
+  assert.ok(!targets.directories.includes("read/write"));
+});
+
+test("extractStartupWaveHints parses prose deployment waves with canonical aliases", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const aliases = new Map<string, Set<string>>([
+    ["contracts", new Set(["contracts"])],
+    ["shared", new Set(["shared"])],
+    ["oracle", new Set(["oracle"])],
+    ["gatekeeper", new Set(["gatekeeper"])],
+    ["terminal client", new Set(["terminal client", "terminal-client"])],
+    ["ops", new Set(["ops", "operations"])],
+  ]);
+  const hints = (service as any).extractStartupWaveHints(EP_SDS_FIXTURE, aliases);
+  const waveRank = hints.waveRank as Map<string, number>;
+
+  assert.equal(waveRank.get("shared"), 0);
+  assert.equal(waveRank.get("contracts"), 0);
+  assert.equal(waveRank.get("oracle"), 1);
+  assert.equal(waveRank.get("gatekeeper"), 2);
+  assert.equal(waveRank.get("terminal client"), 3);
+  assert.ok(hints.startupWaves.some((wave: any) => wave.wave === 2 && wave.services.includes("gatekeeper")));
+  assert.ok(!waveRank.has("gateway"));
+  assert.ok(!waveRank.has("read"));
+  assert.ok(!waveRank.has("test"));
+});
+
+test("buildServiceDependencyGraph ignores artifact-only and prose-noise service aliases", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-noise",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "ep.md",
+      content: [
+        "# Software Design Specification",
+        "## Deployment Waves",
+        "4. Wave 4 - Gatekeeper dry run",
+        "5. Wave 5 - Gatekeeper activation",
+        "No runtime component depends on a project-owned public API.",
+        "```text",
+        ".",
+        "├── packages/gatekeeper/src/worker.ts",
+        "├── protocol-artifacts/pricing_classes.json",
+        "└── read/write",
+        "```",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const serviceNames = new Set(catalog.services.map((entry: any) => entry.name));
+
+  assert.ok(serviceNames.has("gatekeeper"));
+  assert.ok(!serviceNames.has("owned public api"));
+  assert.ok(!serviceNames.has("protocol artifacts"));
+  assert.ok(!serviceNames.has("read"));
+  assert.equal(graph.waveRank.get("gatekeeper"), 4);
+});
+
+test("extractSdsSectionCandidates keeps scanning after repeated headings", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const sections = (service as any).extractSdsSectionCandidates(
+    [
+      {
+        ...fakeDoc,
+        id: "doc-repeat",
+        path: path.join(workspaceRoot, "docs", "repeat-sds.md"),
+        title: "repeat-sds.md",
+        content: [
+          "# Software Design Specification",
+          "## Architecture Overview",
+          "## Architecture Overview",
+          "## Architecture Overview",
+          "## Architecture Overview",
+          "## Foundry Deployment",
+          "## Gatekeeper Worker",
+          "## Policy Registry",
+        ].join("\n"),
+        segments: [],
+      },
+    ],
+    4,
+  );
+
+  assert.deepEqual(sections, [
+    "Architecture Overview",
+    "Foundry Deployment",
+    "Gatekeeper Worker",
+    "Policy Registry",
+  ]);
+});
+
+test("build planning prompts preserve documented names without stack-specific wording and dedupe source docs", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-ep-1",
+      path: sdsPath,
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+    {
+      ...fakeDoc,
+      id: "doc-ep-2",
+      path: sdsPath,
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const buildMethod = (service as any).buildProjectConstructionMethod(docs, graph);
+  const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const buildPlan = (service as any).buildProjectPlanArtifact("ep", docs, graph, buildMethod);
+  const prompt = (
+    service as any
+  ).buildPrompt(
+    "ep",
+    "[SDS] docdex:doc-ep-1\n- packages/gatekeeper/src/worker.ts\n- contracts/script/ConfigurePolicies.s.sol",
+    buildMethod,
+    catalog,
+    {},
+  ).prompt as string;
+
+  assert.deepEqual(buildPlan.sourceDocs, [sdsPath]);
+  assert.deepEqual(catalog.sourceDocs, [sdsPath]);
+  assert.ok(buildMethod.includes("create file: contracts/script/ConfigurePolicies.s.sol"));
+  assert.ok(buildMethod.includes("create file: contracts/src/IOraclePolicyRegistry.sol"));
+  assert.ok(buildPlan.startupWaves.some((wave: any) => wave.wave === 0 && wave.services.includes("contracts")));
+  assert.ok(buildPlan.startupWaves.some((wave: any) => wave.wave === 3 && wave.services.includes("terminal client")));
+  const serviceNames = new Set(catalog.services.map((entry: any) => entry.name));
+  assert.ok(serviceNames.has("contracts"));
+  assert.ok(serviceNames.has("shared"));
+  assert.ok(serviceNames.has("gatekeeper"));
+  assert.ok(serviceNames.has("oracle"));
+  assert.ok(serviceNames.has("terminal client"));
+  assert.ok(serviceNames.has("ops"));
+  assert.ok(!serviceNames.has("foundry toml"));
+  assert.ok(!serviceNames.has("ep md"));
+  assert.ok(!serviceNames.has("ordered gateway"));
+  assert.ok(!serviceNames.has("no public rest api"));
+  assert.ok(!serviceNames.has("artifact carries ordered gateway"));
+  assert.ok(prompt.includes("packages/gatekeeper/src/worker.ts"));
+  assert.ok(prompt.includes("ConfigurePolicies.s.sol"));
+  assert.match(
+    prompt,
+    /Use canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as they appear/i,
+  );
+  assert.match(prompt, /Do not rename explicit documented targets or replace them with invented alternatives/i);
+});
+
+test("buildServiceDependencyGraph recognizes custom container roots without project-specific allowlists", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-custom-roots",
+      path: path.join(workspaceRoot, "docs", "custom-sds.md"),
+      title: "custom-sds.md",
+      content: [
+        "# Software Design Specification",
+        "## Runtime Layout",
+        "```text",
+        ".",
+        "├── engines/",
+        "│   └── ledger/",
+        "│       └── src/",
+        "│           └── main.rs",
+        "├── consoles/",
+        "│   └── operator/",
+        "│       └── app/",
+        "│           └── main.py",
+        "└── docs/",
+        "    └── architecture.md",
+        "```",
+        "Wave 0 - ledger",
+        "Wave 1 - operator",
+        "The operator service depends on the ledger service.",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("proj", docs, graph);
+  const serviceNames = new Set(catalog.services.map((entry: any) => entry.name));
+
+  assert.ok(serviceNames.has("ledger"));
+  assert.ok(serviceNames.has("operator"));
+  assert.ok(!serviceNames.has("engines"));
+  assert.ok(!serviceNames.has("consoles"));
+  assert.ok(!serviceNames.has("docs"));
+  assert.equal(graph.waveRank.get("ledger"), 0);
+  assert.equal(graph.waveRank.get("operator"), 1);
+});
+
+test("buildServiceDependencyGraph ignores external state doc paths during structure extraction", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-external-state",
+      path: path.join(path.dirname(workspaceRoot), ".mcoda-state", "cache", "generated-sds.md"),
+      title: "generated-sds.md",
+      content: [
+        "# Software Design Specification",
+        "```text",
+        ".",
+        "└── packages/api/src/server.ts",
+        "```",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("proj", docs, graph);
+  const serviceNames = new Set(catalog.services.map((entry: any) => entry.name));
+
+  assert.ok(serviceNames.has("api"));
+  assert.ok(!serviceNames.has("mcoda"));
 });
 
 test("createTasks persists runnable metadata tests when harness is discoverable", async () => {
@@ -1168,6 +1832,95 @@ test("createTasks writes SDS coverage report artifact", async () => {
   assert.equal(services.projectKey, "web");
   assert.ok(Array.isArray(services.services));
   assert.ok(services.services.length > 0);
+});
+
+test("createTasks builds EP-style coverage and planning artifacts from box-tree SDS", async () => {
+  await fs.writeFile(path.join(workspaceRoot, "docs", "sds.md"), EP_SDS_FIXTURE, "utf8");
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "ep",
+          title: "Protocol foundation",
+          description: "Build contract and runtime foundations.",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Foundation story",
+          description: "Deliver contract deployment and runtime startup.",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement deployment foundation",
+          type: "feature",
+          description: "Create deployment scripts and runtime wiring.",
+          estimatedStoryPoints: 5,
+          priorityHint: 3,
+          dependsOnKeys: [],
+          unitTests: ["Add coverage for deployment helpers"],
+          componentTests: [],
+          integrationTests: ["Run deployment sequencing smoke flow"],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "ep",
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+    agentStream: false,
+  });
+
+  const coveragePath = path.join(workspace.mcodaDir, "tasks", "ep", "coverage-report.json");
+  const buildPlanPath = path.join(workspace.mcodaDir, "tasks", "ep", "build-plan.json");
+  const servicesPath = path.join(workspace.mcodaDir, "tasks", "ep", "services.json");
+  const coverage = JSON.parse(await fs.readFile(coveragePath, "utf8"));
+  const buildPlan = JSON.parse(await fs.readFile(buildPlanPath, "utf8"));
+  const services = JSON.parse(await fs.readFile(servicesPath, "utf8"));
+
+  assert.ok(coverage.totalSections >= 4, `expected multiple SDS sections, got ${coverage.totalSections}`);
+  assert.ok(!coverage.unmatched.includes("Software Design Specification"));
+  assert.ok(!coverage.unmatched.some((section: string) => /roles/i.test(section)));
+  assert.ok(buildPlan.startupWaves.length >= 3, `expected deployment waves, got ${JSON.stringify(buildPlan.startupWaves)}`);
+  assert.ok(buildPlan.startupWaves.some((wave: any) => wave.wave === 0 && wave.services.includes("contracts")));
+  assert.ok(buildPlan.startupWaves.some((wave: any) => wave.wave === 2 && wave.services.includes("gatekeeper")));
+  assert.equal(new Set(buildPlan.sourceDocs).size, buildPlan.sourceDocs.length);
+  assert.equal(buildPlan.sourceDocs.length, 1);
+  assert.equal(new Set(services.sourceDocs).size, services.sourceDocs.length);
+  const serviceNames = new Set((services.services ?? []).map((entry: any) => entry.name));
+  assert.ok(serviceNames.has("contracts"));
+  assert.ok(serviceNames.has("shared"));
+  assert.ok(serviceNames.has("gatekeeper"));
+  assert.ok(serviceNames.has("oracle"));
+  assert.ok(serviceNames.has("terminal client"));
+  assert.ok(serviceNames.has("ops"));
+  assert.ok(!serviceNames.has("foundry toml"));
+  assert.ok(!serviceNames.has("ordered gateway"));
+  assert.ok(!serviceNames.has("no public rest api"));
+  assert.ok(serviceNames.size >= 6, `expected concrete services, got ${JSON.stringify(Array.from(serviceNames))}`);
 });
 
 test("createTasks filters opaque local doc handles while preserving useful references", async () => {
@@ -3104,7 +3857,7 @@ test("createTasks keeps partial plan and applies story-level fallback when one s
 
   assert.ok(result.tasks.some((task) => task.title === "Story One Task One"));
   assert.ok(result.tasks.some((task) => task.title === "Implement core scope for Story Two"));
-  assert.ok(result.tasks.some((task) => task.title === "Integrate contracts for Story Two"));
+  assert.ok(result.tasks.some((task) => task.title === "Integrate dependencies for Story Two"));
   assert.ok(result.tasks.some((task) => task.title === "Validate Story Two regressions and readiness"));
   assert.ok(!result.tasks.some((task) => task.title === "Summarize requirements"));
 });

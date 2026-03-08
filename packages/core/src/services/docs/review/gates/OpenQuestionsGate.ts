@@ -55,7 +55,9 @@ const isExampleHeading = (heading: string): boolean => /example|sample/i.test(he
 const isOpenQuestionsHeading = (heading: string): boolean =>
   /open (questions?|issues?|items?)|unresolved questions?/i.test(heading);
 
-const RESOLVED_HINTS = [/^\s*resolved[:\]]/i, /^\s*decision:/i, /\[resolved\]/i];
+const MANAGED_PREFLIGHT_START = "<!-- mcoda:sds-preflight:start -->";
+const MANAGED_PREFLIGHT_END = "<!-- mcoda:sds-preflight:end -->";
+const RESOLVED_HINTS = [/^[-*+\d.)\s]*resolved[:\]]/i, /^[-*+\d.)\s]*decision:/i, /\[resolved\]/i];
 
 const isResolvedLine = (line: string): boolean =>
   RESOLVED_HINTS.some((pattern) => pattern.test(line.trim()));
@@ -134,6 +136,7 @@ const extractQuestions = async (
     const lines = content.split(/\r?\n/);
     const questions: ExtractedQuestion[] = [];
     let inFence = false;
+    let inManagedPreflight = false;
     let allowSection = false;
     let inOpenSection = false;
     let currentHeading: string | undefined;
@@ -142,6 +145,15 @@ const extractQuestions = async (
       const line = lines[i] ?? "";
       const trimmed = line.trim();
       if (!trimmed) continue;
+
+      if (trimmed === MANAGED_PREFLIGHT_START) {
+        inManagedPreflight = true;
+        continue;
+      }
+      if (trimmed === MANAGED_PREFLIGHT_END) {
+        inManagedPreflight = false;
+        continue;
+      }
 
       if (isFenceLine(trimmed)) {
         inFence = !inFence;
@@ -156,7 +168,7 @@ const extractQuestions = async (
         continue;
       }
 
-      if (inFence || allowSection) continue;
+      if (inFence || inManagedPreflight || allowSection) continue;
       if (isResolvedLine(trimmed)) continue;
 
       const explicitQuestion = inOpenSection;

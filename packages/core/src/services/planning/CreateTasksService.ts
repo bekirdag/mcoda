@@ -29,6 +29,12 @@ import {
   createStoryKeyGenerator,
   createTaskKeyGenerator,
 } from "./KeyHelpers.js";
+import {
+  extractStructuredPaths,
+  filterImplementationStructuredPaths,
+  isStructuredFilePath,
+  normalizeStructuredPathToken,
+} from "./SdsStructureSignals.js";
 import { TaskSufficiencyService, type TaskSufficiencyAuditResult } from "./TaskSufficiencyService.js";
 import { SdsPreflightService, type SdsPreflightResult } from "./SdsPreflightService.js";
 
@@ -360,7 +366,6 @@ const RELATIVE_DOC_PATH_PATTERN = /^(?:\.{1,2}\/)+[A-Za-z0-9._/-]+(?:\.[A-Za-z0-
 const FUZZY_DOC_CANDIDATE_LIMIT = 64;
 const DEPENDENCY_SCAN_LINE_LIMIT = 1400;
 const STARTUP_WAVE_SCAN_LINE_LIMIT = 4000;
-const VALID_AREAS = new Set(["web", "adm", "bck", "ops", "infra", "mobile"]);
 const VALID_TASK_TYPES = new Set(["feature", "bug", "chore", "spike"]);
 const VALID_EPIC_SERVICE_POLICIES = new Set<EpicServiceValidationPolicy>(["auto-remediate", "fail"]);
 const CROSS_SERVICE_TAG = "cross_service";
@@ -376,15 +381,12 @@ const inferDocType = (filePath: string): string => {
 
 const normalizeArea = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
-  const tokens = value
+  const normalized = value
     .toLowerCase()
-    .split(/[^a-z]+/)
-    .map((token) => token.trim())
-    .filter(Boolean);
-  for (const token of tokens) {
-    if (VALID_AREAS.has(token)) return token;
-  }
-  return undefined;
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+  return normalized.length > 0 ? normalized.slice(0, 24) : undefined;
 };
 
 const normalizeTaskType = (value: unknown): string | undefined => {
@@ -438,37 +440,51 @@ const normalizeRelatedDocs = (value: unknown): string[] => {
   return normalized;
 };
 
+const MANAGED_PREFLIGHT_BLOCK_PATTERN =
+  /<!--\s*mcoda:sds-preflight:start\s*-->[\s\S]*?<!--\s*mcoda:sds-preflight:end\s*-->\s*/gi;
+
+const stripManagedPreflightBlock = (value: string | undefined): string | undefined => {
+  if (typeof value !== "string" || value.length === 0) return value;
+  const sanitized = value.replace(MANAGED_PREFLIGHT_BLOCK_PATTERN, "").replace(/\n{3,}/g, "\n\n").trim();
+  return sanitized.length > 0 ? sanitized : undefined;
+};
+
 const extractMarkdownHeadings = (value: string, limit: number): string[] => {
   if (!value) return [];
   const lines = value.split(/\r?\n/);
   const headings: string[] = [];
+  const seen = new Set<string>();
+  const pushHeading = (rawValue: string | undefined) => {
+    const heading = rawValue?.replace(/#+$/, "").replace(/[`*_]/g, "").trim();
+    if (!heading) return;
+    const normalized = heading.replace(/\s+/g, " ").toLowerCase();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    headings.push(heading);
+  };
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]?.trim() ?? "";
     if (!line) continue;
     const hashHeading = line.match(/^#{1,6}\s+(.+)$/);
     if (hashHeading) {
-      headings.push(hashHeading[1]!.trim());
+      pushHeading(hashHeading[1]);
     } else if (
       index + 1 < lines.length &&
       /^[=-]{3,}\s*$/.test((lines[index + 1] ?? "").trim()) &&
       !line.startsWith("-") &&
       !line.startsWith("*")
     ) {
-      headings.push(line);
+      pushHeading(line);
     } else {
       const numberedHeading = line.match(/^(\d+(?:\.\d+)+)\s+(.+)$/);
       if (numberedHeading) {
         const headingText = `${numberedHeading[1]} ${numberedHeading[2]}`.trim();
-        if (/[a-z]/i.test(headingText)) headings.push(headingText);
+        if (/[a-z]/i.test(headingText)) pushHeading(headingText);
       }
     }
     if (headings.length >= limit) break;
   }
-  return uniqueStrings(
-    headings
-      .map((entry) => entry.replace(/[`*_]/g, "").trim())
-      .filter(Boolean),
-  );
+  return headings;
 };
 
 const pickDistributedIndices = (length: number, limit: number): number[] => {
@@ -795,8 +811,8 @@ const buildTaskDescription = (
       ? "- Task-specific tests are added/updated and green in the task validation loop."
       : "- Verification evidence is captured in task logs/checklists for this scope.",
     relatedDocs?.length
-      ? "- Related contracts/docs are consistent with delivered behavior."
-      : "- Documentation impact is reviewed and no additional contract docs are required.",
+      ? "- Related interfaces/docs are consistent with delivered behavior."
+      : "- Documentation impact is reviewed and no additional interface docs are required.",
     qa?.blockers?.length ? "- Remaining QA blockers are explicit and actionable." : "- QA blockers are resolved or not present.",
   ];
   const defaultImplementationPlan = [
@@ -807,7 +823,7 @@ const buildTaskDescription = (
   ];
   const defaultRisks = dependencies.length
     ? [`Delivery depends on upstream tasks: ${dependencies.join(", ")}.`]
-    : ["Keep implementation aligned to SDS/OpenAPI contracts to avoid drift."];
+    : ["Keep implementation aligned to documented interfaces and dependency expectations to avoid drift."];
   return [
     `* **Task Key**: ${taskKey}`,
     "* **Objective**",
@@ -905,6 +921,51 @@ const SERVICE_PATH_CONTAINER_SEGMENTS = new Set([
   "lib",
   "src",
 ]);
+const SOURCE_LIKE_PATH_SEGMENTS = new Set([
+  "api",
+  "app",
+  "apps",
+  "bin",
+  "cmd",
+  "components",
+  "controllers",
+  "handlers",
+  "internal",
+  "lib",
+  "libs",
+  "pages",
+  "routes",
+  "screens",
+  "server",
+  "servers",
+  "spec",
+  "specs",
+  "src",
+  "test",
+  "tests",
+  "ui",
+  "web",
+]);
+const GENERIC_CONTAINER_PATH_SEGMENTS = new Set([
+  "adapters",
+  "apps",
+  "clients",
+  "consoles",
+  "domains",
+  "engines",
+  "features",
+  "modules",
+  "packages",
+  "platforms",
+  "plugins",
+  "products",
+  "servers",
+  "services",
+  "systems",
+  "tools",
+  "workers",
+]);
+const NON_RUNTIME_STRUCTURE_ROOT_SEGMENTS = new Set(["docs", "fixtures", "runbooks", "policies", "policy"]);
 const SERVICE_NAME_STOPWORDS = new Set([
   "the",
   "a",
@@ -962,6 +1023,87 @@ const SERVICE_NAME_INVALID = new Set([
   "repository",
   "codebase",
 ]);
+const SERVICE_TEXT_INVALID_STARTERS = new Set([
+  "active",
+  "are",
+  "artifact",
+  "artifacts",
+  "be",
+  "been",
+  "being",
+  "block",
+  "blocks",
+  "build",
+  "builder",
+  "built",
+  "canonical",
+  "chain",
+  "configured",
+  "dedicated",
+  "deployment",
+  "discovered",
+  "failure",
+  "first",
+  "is",
+  "last",
+  "listing",
+  "mode",
+  "modes",
+  "never",
+  "no",
+  "not",
+  "ordered",
+  "owned",
+  "private",
+  "public",
+  "resolved",
+  "runtime",
+  "second",
+  "startup",
+  "third",
+  "validation",
+  "wave",
+  "waves",
+  "was",
+  "were",
+]);
+const NON_RUNTIME_SERVICE_SINGLETONS = new Set([
+  "artifact",
+  "artifacts",
+  "compose",
+  "config",
+  "configs",
+  "doc",
+  "docs",
+  "interface",
+  "interfaces",
+  "key",
+  "keys",
+  "libraries",
+  "library",
+  "pdr",
+  "read",
+  "rfp",
+  "sds",
+  "script",
+  "scripts",
+  "src",
+  "systemd",
+  "test",
+  "tests",
+  "types",
+  "write",
+]);
+const NON_RUNTIME_PATH_SERVICE_TOKENS = new Set([
+  "artifact",
+  "artifacts",
+  "manifest",
+  "manifests",
+  "schema",
+  "schemas",
+  "taxonomy",
+  "taxonomies",
+]);
 const SERVICE_LABEL_PATTERN =
   /\b([A-Za-z][A-Za-z0-9]*(?:[ _/-]+[A-Za-z][A-Za-z0-9]*){0,3})\s+(service|api|backend|frontend|worker|gateway|database|db|ui|client|server|adapter)\b/gi;
 const SERVICE_ARROW_PATTERN =
@@ -992,11 +1134,22 @@ const looksLikeSdsDoc = (doc: DocdexDocument): boolean => {
   return STRICT_SDS_CONTENT_PATTERN.test(sample);
 };
 
+const looksLikePathishDocId = (value: string | undefined): boolean => {
+  if (!value) return false;
+  if (DOCDEX_LOCAL_HANDLE.test(value)) return false;
+  return (
+    value.includes("/") ||
+    value.includes("\\") ||
+    FILE_EXTENSION_PATTERN.test(value) ||
+    STRICT_SDS_PATH_PATTERN.test(value.replace(/\\/g, "/").toLowerCase())
+  );
+};
+
 const EPIC_SCHEMA_SNIPPET = `{
   "epics": [
     {
       "localId": "e1",
-      "area": "web|adm|bck|ops|infra|mobile",
+      "area": "documented-area-label",
       "title": "Epic title",
       "description": "Epic description using the epic template",
       "acceptanceCriteria": ["criterion"],
@@ -1203,7 +1356,7 @@ export class CreateTasksService {
         "create-tasks requires at least one SDS document. Add an SDS file (for example docs/sds.md) or pass SDS paths as input.",
       );
     }
-    return this.sortDocsForPlanning(documents);
+    return this.sortDocsForPlanning(this.dedupePlanningDocs(documents.map((doc) => this.sanitizeDocForPlanning(doc))));
   }
 
   private normalizeDocInputForSet(input: string): string {
@@ -1225,8 +1378,18 @@ export class CreateTasksService {
     return merged;
   }
 
+  private canonicalizeDocPathKey(value: string | undefined): string | undefined {
+    const trimmed = `${value ?? ""}`.trim();
+    if (!trimmed || DOCDEX_LOCAL_HANDLE.test(trimmed)) return undefined;
+    if (path.isAbsolute(trimmed)) return path.resolve(trimmed).toLowerCase();
+    if (looksLikePathishDocId(trimmed)) {
+      return path.resolve(this.workspace.workspaceRoot, trimmed).toLowerCase();
+    }
+    return undefined;
+  }
+
   private docIdentity(doc: DocdexDocument): string {
-    const pathKey = `${doc.path ?? ""}`.trim().toLowerCase();
+    const pathKey = this.canonicalizeDocPathKey(doc.path) ?? this.canonicalizeDocPathKey(doc.id);
     const idKey = `${doc.id ?? ""}`.trim().toLowerCase();
     if (pathKey) return `path:${pathKey}`;
     if (idKey) return `id:${idKey}`;
@@ -1246,6 +1409,72 @@ export class CreateTasksService {
       merged.push(doc);
     }
     return merged;
+  }
+
+  private sanitizeDocForPlanning(doc: DocdexDocument): DocdexDocument {
+    const content = stripManagedPreflightBlock(doc.content);
+    const segments =
+      content !== doc.content
+        ? []
+        : (doc.segments ?? [])
+            .map((segment) => {
+              const sanitizedContent = stripManagedPreflightBlock(segment.content ?? undefined);
+              return {
+                ...segment,
+                content: sanitizedContent ?? segment.content,
+              };
+            })
+            .filter(
+              (segment) =>
+                `${segment.content ?? ""}`.trim().length > 0 || `${segment.heading ?? ""}`.trim().length > 0,
+            );
+    const sanitized: DocdexDocument = {
+      ...doc,
+      content: content ?? doc.content,
+      segments,
+    };
+    if (looksLikeSdsDoc(sanitized) && `${sanitized.docType ?? ""}`.toUpperCase() !== "SDS") {
+      sanitized.docType = "SDS";
+    }
+    return sanitized;
+  }
+
+  private scorePlanningDoc(doc: DocdexDocument): number {
+    const segmentCount = doc.segments?.length ?? 0;
+    const contentLength = `${doc.content ?? ""}`.length;
+    return (
+      (looksLikeSdsDoc(doc) ? 5000 : 0) +
+      (doc.path ? 400 : 0) +
+      segmentCount * 20 +
+      Math.min(300, contentLength)
+    );
+  }
+
+  private mergePlanningDocPair(current: DocdexDocument, incoming: DocdexDocument): DocdexDocument {
+    const [primary, secondary] =
+      this.scorePlanningDoc(incoming) > this.scorePlanningDoc(current) ? [incoming, current] : [current, incoming];
+    const merged = {
+      ...secondary,
+      ...primary,
+      path: primary.path ?? secondary.path,
+      title: primary.title ?? secondary.title,
+      content: primary.content ?? secondary.content,
+      segments: (primary.segments?.length ?? 0) > 0 ? primary.segments : secondary.segments,
+    };
+    if (looksLikeSdsDoc(merged) && `${merged.docType ?? ""}`.toUpperCase() !== "SDS") {
+      merged.docType = "SDS";
+    }
+    return merged;
+  }
+
+  private dedupePlanningDocs(docs: DocdexDocument[]): DocdexDocument[] {
+    const merged = new Map<string, DocdexDocument>();
+    for (const doc of docs) {
+      const identity = this.docIdentity(doc);
+      const existing = merged.get(identity);
+      merged.set(identity, existing ? this.mergePlanningDocPair(existing, doc) : doc);
+    }
+    return Array.from(merged.values());
   }
 
   private sortDocsForPlanning(docs: DocdexDocument[]): DocdexDocument[] {
@@ -1412,37 +1641,28 @@ export class CreateTasksService {
   }
 
   private normalizeStructurePathToken(value: string): string | undefined {
-    const normalized = value
-      .replace(/\\/g, "/")
-      .replace(/^[./]+/, "")
-      .replace(/^\/+/, "")
-      .trim();
+    const normalized = normalizeStructuredPathToken(value);
     if (!normalized) return undefined;
-    if (normalized.length > 140) return undefined;
-    if (!normalized.includes("/")) return undefined;
-    if (normalized.includes("://")) return undefined;
-    if (/[\u0000-\u001f]/.test(normalized)) return undefined;
-    const hadTrailingSlash = /\/$/.test(normalized);
-    const parts = normalized.split("/").filter(Boolean);
-    if (parts.length < 2 && !(hadTrailingSlash && parts.length === 1)) return undefined;
-    if (parts.some((part) => part === "." || part === "..")) return undefined;
-    if (parts.length === 1 && !TOP_LEVEL_STRUCTURE_PATTERN.test(parts[0])) return undefined;
-    if (DOC_SCAN_IGNORE_DIRS.has(parts[0].toLowerCase())) return undefined;
-    return parts.join("/");
+    const root = normalized.split("/")[0]?.toLowerCase();
+    if (root && DOC_SCAN_IGNORE_DIRS.has(root)) return undefined;
+    return normalized;
   }
 
   private extractStructureTargets(docs: DocdexDocument[]): { directories: string[]; files: string[] } {
     const directories = new Set<string>();
     const files = new Set<string>();
     for (const doc of docs) {
+      const relativeDocPath = doc.path ? path.relative(this.workspace.workspaceRoot, doc.path).replace(/\\/g, "/") : undefined;
+      const localDocPath =
+        relativeDocPath && !relativeDocPath.startsWith("..") && !path.isAbsolute(relativeDocPath)
+          ? relativeDocPath
+          : undefined;
       const segments = (doc.segments ?? []).map((segment) => segment.content).filter(Boolean).join("\n");
-      const corpus = [doc.title, doc.path, doc.content, segments].filter(Boolean).join("\n");
-      for (const match of corpus.matchAll(DOC_PATH_TOKEN_PATTERN)) {
-        const token = match[2];
-        if (!token) continue;
+      const corpus = [localDocPath, doc.content, segments].filter(Boolean).join("\n");
+      for (const token of filterImplementationStructuredPaths(extractStructuredPaths(corpus, 256))) {
         const normalized = this.normalizeStructurePathToken(token);
         if (!normalized) continue;
-        if (FILE_EXTENSION_PATTERN.test(path.basename(normalized))) {
+        if (isStructuredFilePath(path.basename(normalized))) {
           files.add(normalized);
           const parent = path.dirname(normalized).replace(/\\/g, "/");
           if (parent && parent !== ".") directories.add(parent);
@@ -1479,6 +1699,50 @@ export class CreateTasksService {
     return candidate.length >= 2 ? candidate : undefined;
   }
 
+  private normalizeTextServiceName(value: string): string | undefined {
+    const candidate = this.normalizeServiceName(value);
+    if (!candidate) return undefined;
+    const tokens = candidate.split(" ").filter(Boolean);
+    if (tokens.length === 0 || tokens.length > 3) return undefined;
+    const first = tokens[0] ?? "";
+    if (SERVICE_TEXT_INVALID_STARTERS.has(first)) return undefined;
+    if (tokens.length === 1) {
+      if (first.length < 3) return undefined;
+      if (SERVICE_NAME_INVALID.has(first) || NON_RUNTIME_SERVICE_SINGLETONS.has(first)) return undefined;
+      if (SERVICE_NAME_STOPWORDS.has(first)) return undefined;
+    }
+    return candidate;
+  }
+
+  private isLikelyServiceContainerSegment(parts: string[], index: number): boolean {
+    const segment = parts[index];
+    if (!segment) return false;
+    if (SERVICE_PATH_CONTAINER_SEGMENTS.has(segment)) return true;
+    if (index !== 0) return false;
+    const next = parts[index + 1];
+    if (!next) return false;
+    const following = parts[index + 2];
+    const nextLooksSpecific =
+      !SERVICE_PATH_CONTAINER_SEGMENTS.has(next) &&
+      !NON_RUNTIME_STRUCTURE_ROOT_SEGMENTS.has(next) &&
+      !SOURCE_LIKE_PATH_SEGMENTS.has(next) &&
+      !isStructuredFilePath(next);
+    if (!nextLooksSpecific) return false;
+    if (GENERIC_CONTAINER_PATH_SEGMENTS.has(segment)) {
+      if (!following) return true;
+      return SOURCE_LIKE_PATH_SEGMENTS.has(following) || isStructuredFilePath(following);
+    }
+    return false;
+  }
+
+  private normalizePathDerivedServiceName(value: string): string | undefined {
+    const candidate = this.normalizeServiceName(value);
+    if (!candidate) return undefined;
+    if (NON_RUNTIME_SERVICE_SINGLETONS.has(candidate)) return undefined;
+    if (candidate.split(" ").some((token) => NON_RUNTIME_PATH_SERVICE_TOKENS.has(token))) return undefined;
+    return candidate;
+  }
+
   private deriveServiceFromPathToken(pathToken: string): string | undefined {
     const parts = pathToken
       .replace(/\\/g, "/")
@@ -1486,11 +1750,15 @@ export class CreateTasksService {
       .map((part) => part.trim().toLowerCase())
       .filter(Boolean);
     if (!parts.length) return undefined;
+    if (NON_RUNTIME_STRUCTURE_ROOT_SEGMENTS.has(parts[0] ?? "")) return undefined;
+    if (parts.length === 1 && isStructuredFilePath(parts[0] ?? "")) return undefined;
     let idx = 0;
-    while (idx < parts.length - 1 && SERVICE_PATH_CONTAINER_SEGMENTS.has(parts[idx])) {
+    while (idx < parts.length - 1 && this.isLikelyServiceContainerSegment(parts, idx)) {
       idx += 1;
     }
-    return this.normalizeServiceName(parts[idx] ?? parts[0]);
+    const candidate = parts[idx] ?? parts[0];
+    if (isStructuredFilePath(candidate)) return undefined;
+    return this.normalizePathDerivedServiceName(candidate);
   }
 
   private addServiceAlias(aliases: Map<string, Set<string>>, rawValue: string): string | undefined {
@@ -1505,6 +1773,8 @@ export class CreateTasksService {
       .replace(/\s+/g, " ")
       .trim();
     if (alias) existing.add(alias);
+    if (alias.endsWith("s") && alias.length > 3) existing.add(alias.slice(0, -1));
+    if (!alias.endsWith("s") && alias.length > 2) existing.add(`${alias}s`);
     aliases.set(canonical, existing);
     return canonical;
   }
@@ -1514,7 +1784,7 @@ export class CreateTasksService {
     const mentions = new Set<string>();
     for (const match of text.matchAll(SERVICE_LABEL_PATTERN)) {
       const phrase = `${match[1] ?? ""} ${match[2] ?? ""}`.trim();
-      const normalized = this.normalizeServiceName(phrase);
+      const normalized = this.normalizeTextServiceName(phrase);
       if (normalized) mentions.add(normalized);
     }
     for (const match of text.matchAll(DOC_PATH_TOKEN_PATTERN)) {
@@ -1526,7 +1796,21 @@ export class CreateTasksService {
     return Array.from(mentions);
   }
 
-  private resolveServiceMentionFromPhrase(phrase: string, aliases: Map<string, Set<string>>): string | undefined {
+  private deriveServiceMentionFromPathPhrase(phrase: string): string | undefined {
+    for (const match of phrase.matchAll(DOC_PATH_TOKEN_PATTERN)) {
+      const token = match[2];
+      if (!token) continue;
+      const derived = this.deriveServiceFromPathToken(token);
+      if (derived) return derived;
+    }
+    return undefined;
+  }
+
+  private resolveServiceMentionFromPhrase(
+    phrase: string,
+    aliases: Map<string, Set<string>>,
+    options: { allowAliasRegistration?: boolean } = {},
+  ): string | undefined {
     const normalizedPhrase = phrase
       .toLowerCase()
       .replace(/[._/-]+/g, " ")
@@ -1546,6 +1830,9 @@ export class CreateTasksService {
       }
     }
     if (best) return best.key;
+    const pathDerived = this.deriveServiceMentionFromPathPhrase(phrase);
+    if (pathDerived) return pathDerived;
+    if (!options.allowAliasRegistration) return undefined;
     const mention = this.extractServiceMentionsFromText(phrase)[0];
     if (!mention) return undefined;
     return this.addServiceAlias(aliases, mention);
@@ -1635,9 +1922,15 @@ export class CreateTasksService {
         if (canonical) resolved.add(canonical);
       }
       if (resolved.size === 0) {
-        for (const mention of this.extractServiceMentionsFromText(cell)) {
-          const canonical = this.addServiceAlias(aliases, mention);
-          if (canonical) resolved.add(canonical);
+        const normalizedCell = this.normalizeServiceLookupKey(cell);
+        const haystack = normalizedCell ? ` ${normalizedCell} ` : "";
+        for (const [service, names] of aliases.entries()) {
+          for (const alias of names) {
+            if (!alias || alias.length < 2) continue;
+            if (!haystack.includes(` ${alias} `)) continue;
+            resolved.add(service);
+            break;
+          }
         }
       }
       return Array.from(resolved);
@@ -1674,6 +1967,25 @@ export class CreateTasksService {
       if (!waveFromSecond) continue;
       const waveIndex = Number.parseInt(waveFromSecond[1] ?? "", 10);
       for (const service of resolveServicesFromCell(cells[0])) registerWave(service, waveIndex);
+    }
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      const waveMatch = line.match(WAVE_LABEL_PATTERN);
+      if (!waveMatch) continue;
+      const waveIndex = Number.parseInt(waveMatch[1] ?? "", 10);
+      if (!Number.isFinite(waveIndex)) continue;
+      const contextLines = [line];
+      for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+        const next = lines[cursor]!;
+        if (WAVE_LABEL_PATTERN.test(next)) break;
+        if (/^#{1,6}\s+/.test(next)) break;
+        if (/^(?:[-*]|\d+[.)])\s+/.test(next)) break;
+        contextLines.push(next);
+        if (contextLines.length >= 4) break;
+      }
+      for (const service of resolveServicesFromCell(contextLines.join(" "))) {
+        registerWave(service, waveIndex);
+      }
     }
     const startupWaves = Array.from(startupWavesMap.entries())
       .sort((a, b) => a[0] - b[0])
@@ -1769,12 +2081,19 @@ export class CreateTasksService {
       }
     }
     const structureTargets = this.extractStructureTargets(docs);
-    for (const token of [...structureTargets.directories, ...structureTargets.files]) {
+    const structureTokens = [...structureTargets.directories, ...structureTargets.files];
+    for (const token of structureTokens) {
+      if (
+        !token.includes("/") &&
+        !isStructuredFilePath(path.basename(token)) &&
+        structureTokens.some((candidate) => candidate !== token && candidate.startsWith(`${token}/`))
+      ) {
+        continue;
+      }
       register(this.deriveServiceFromPathToken(token));
     }
     for (const match of docsText.matchAll(SERVICE_HANDLE_PATTERN)) register(match[1]);
     for (const match of planText.matchAll(SERVICE_HANDLE_PATTERN)) register(match[1]);
-    for (const mention of this.extractServiceMentionsFromText(docsText)) register(mention);
     for (const mention of this.extractServiceMentionsFromText(planText)) register(mention);
     const corpus = [docsText, planText].filter(Boolean);
     for (const text of corpus) {
@@ -1905,6 +2224,7 @@ export class CreateTasksService {
     const sourceDocs = docs
       .map((doc) => doc.path ?? (doc.id ? `docdex:${doc.id}` : doc.title ?? "doc"))
       .filter((value): value is string => Boolean(value))
+      .filter((value, index, items) => items.indexOf(value) === index)
       .slice(0, 24);
 
     return {
@@ -2138,8 +2458,20 @@ export class CreateTasksService {
   private buildProjectConstructionMethod(docs: DocdexDocument[], graph: ServiceDependencyGraph): string {
     const toLabel = (value: string): string => value.replace(/\s+/g, "-");
     const structureTargets = this.extractStructureTargets(docs);
-    const topDirectories = structureTargets.directories.slice(0, 10);
-    const topFiles = structureTargets.files.slice(0, 10);
+    const sourceDocPaths = new Set(
+      docs
+        .map((doc) => (doc.path ? path.relative(this.workspace.workspaceRoot, doc.path).replace(/\\/g, "/") : undefined))
+        .filter((value): value is string => Boolean(value)),
+    );
+    const sourceDocDirectories = new Set(
+      Array.from(sourceDocPaths)
+        .map((docPath) => path.posix.dirname(docPath))
+        .filter((dir) => dir && dir !== "."),
+    );
+    const buildDirectories = structureTargets.directories.filter((dir) => !sourceDocDirectories.has(dir));
+    const buildFiles = structureTargets.files.filter((file) => !sourceDocPaths.has(file));
+    const topDirectories = (buildDirectories.length > 0 ? buildDirectories : structureTargets.directories).slice(0, 10);
+    const topFiles = (buildFiles.length > 0 ? buildFiles : structureTargets.files).slice(0, 10);
     const startupWaveLines = graph.startupWaves
       .slice(0, 8)
       .map((wave) => `- Wave ${wave.wave}: ${wave.services.map(toLabel).join(", ")}`);
@@ -2165,7 +2497,9 @@ export class CreateTasksService {
       ...(graph.foundationalDependencies.length > 0
         ? graph.foundationalDependencies.map((dependency) => `   - foundation: ${dependency}`)
         : ["   - foundation: infer runtime prerequisites from SDS deployment sections"]),
-      ...(startupWaveLines.length > 0 ? startupWaveLines : ["   - startup waves: infer from dependency contracts"]),
+      ...(startupWaveLines.length > 0
+        ? startupWaveLines
+        : ["   - startup waves: infer from documented dependency constraints"]),
       "3) Implement services by dependency direction and startup wave.",
       `   - service order: ${serviceOrderLine}`,
       ...(dependencyPairs.length > 0
@@ -2185,6 +2519,7 @@ export class CreateTasksService {
     const sourceDocs = docs
       .map((doc) => doc.path ?? (doc.id ? `docdex:${doc.id}` : doc.title ?? "doc"))
       .filter((value): value is string => Boolean(value))
+      .filter((value, index, items) => items.indexOf(value) === index)
       .slice(0, 24);
     return {
       projectKey,
@@ -2465,7 +2800,7 @@ export class CreateTasksService {
       .slice(0, 12);
     const bootstrapEpic: PlanEpic = {
       localId: epicLocalId,
-      area: normalizeArea(projectKey) ?? "infra",
+      area: normalizeArea(projectKey) ?? "core",
       title: "Codebase Foundation and Structure Setup",
       description:
         "Create the SDS-defined codebase scaffold first (folders/files/service boundaries) before feature implementation tasks.",
@@ -2842,16 +3177,20 @@ export class CreateTasksService {
     const sections: string[] = [];
     for (const doc of docs) {
       if (!looksLikeSdsDoc(doc)) continue;
+      const scanLimit = Math.max(limit * 4, limit + 12);
+      const contentHeadings = extractMarkdownHeadings(doc.content ?? "", scanLimit);
       const segmentHeadings = (doc.segments ?? [])
         .map((segment) => segment.heading?.trim())
         .filter((heading): heading is string => Boolean(heading));
       const segmentContentHeadings = (doc.segments ?? [])
-        .flatMap((segment) => extractMarkdownHeadings(segment.content ?? "", Math.max(6, Math.ceil(limit / 4))))
-        .slice(0, limit);
-      const contentHeadings = extractMarkdownHeadings(doc.content ?? "", limit);
-      for (const heading of [...segmentHeadings, ...segmentContentHeadings, ...contentHeadings]) {
+        .flatMap((segment) => extractMarkdownHeadings(segment.content ?? "", Math.max(12, Math.ceil(scanLimit / 2))))
+        .slice(0, scanLimit);
+      for (const heading of uniqueStrings([...contentHeadings, ...segmentHeadings, ...segmentContentHeadings])) {
         const normalized = heading.replace(/[`*_]/g, "").trim();
         if (!normalized) continue;
+        if (/^software design specification$/i.test(normalized)) continue;
+        if (/^(?:\d+(?:\.\d+)*\.?\s*)?roles$/i.test(normalized)) continue;
+        if (sections.includes(normalized)) continue;
         sections.push(normalized);
         if (sections.length >= limit) break;
       }
@@ -2929,12 +3268,11 @@ export class CreateTasksService {
 
   private buildPrompt(
     projectKey: string,
-    docs: DocdexDocument[],
+    docSummary: string,
     projectBuildMethod: string,
     serviceCatalog: ServiceCatalogArtifact,
     options: { maxEpics?: number; maxStoriesPerEpic?: number; maxTasksPerStory?: number },
   ): { prompt: string; docSummary: string } {
-    const docSummary = docs.map((doc, idx) => describeDoc(doc, idx)).join("\n");
     const serviceCatalogSummary = this.buildServiceCatalogPromptSummary(serviceCatalog);
     const limits = [
       options.maxEpics ? `Limit epics to ${options.maxEpics}.` : "",
@@ -2957,6 +3295,8 @@ export class CreateTasksService {
       "- Keep epics actionable and implementation-oriented; avoid glossary/admin-only epics.",
       "- Prefer dependency-first sequencing: foundational setup epics before dependent feature epics.",
       "- Keep output derived from docs; do not assume stacks unless docs state them.",
+      "- Use canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as they appear in Docs and the project construction method.",
+      "- Do not rename explicit documented targets or replace them with invented alternatives.",
       "- serviceIds is required and must contain one or more ids from the phase-0 service catalog below.",
       `- If an epic spans multiple services, include tag \"${CROSS_SERVICE_TAG}\" in tags.`,
       "Project construction method to follow:",
@@ -3008,9 +3348,9 @@ export class CreateTasksService {
                 },
                 {
                   localId: "task-2",
-                  title: "Integrate core contracts and dependencies",
+                  title: "Integrate core dependencies and interfaces",
                   type: "feature",
-                  description: "Wire key contracts/interfaces and dependency paths so core behavior can execute end-to-end.",
+                  description: "Wire key dependencies, interfaces, and integration paths so core behavior can execute end-to-end.",
                   estimatedStoryPoints: 3,
                   priorityHint: 20,
                   dependsOnKeys: ["task-1"],
@@ -3317,6 +3657,7 @@ export class CreateTasksService {
       "- Use docdex handles when citing docs.",
       "- Keep stories direct and implementation-oriented; avoid placeholder-only narrative sections.",
       "- Keep story sequencing aligned with the project construction method.",
+      "- Preserve canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as written.",
       `Epic context (key=${epic.key ?? epic.localId ?? "TBD"}):`,
       epic.description ?? "(no description provided)",
       `Epic serviceIds: ${(epic.serviceIds ?? []).join(", ") || "(not provided)"}`,
@@ -3384,6 +3725,7 @@ export class CreateTasksService {
       "- Order tasks from foundational prerequisites to dependents based on documented dependency direction and startup constraints.",
       "- Avoid placeholder wording (TBD, TODO, to be defined, generic follow-up phrases).",
       "- Avoid documentation-only or glossary-only tasks unless story acceptance explicitly requires them.",
+      "- Preserve canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as written.",
       "- Use docdex handles when citing docs.",
       "- If OPENAPI_HINTS are present in Docs, align tasks with hinted service/capability/stage/test_requirements.",
       "- If SDS_COVERAGE_HINTS are present in Docs, cover the relevant SDS sections in implementation tasks.",
@@ -3487,11 +3829,11 @@ export class CreateTasksService {
       },
       {
         localId: "t-fallback-2",
-        title: `Integrate contracts for ${story.title}`,
+        title: `Integrate dependencies for ${story.title}`,
         type: "feature",
         description: [
-          `Integrate dependent contracts/interfaces for "${story.title}" after core scope implementation.`,
-          "Align internal/external interfaces, data contracts, and dependency wiring with SDS/OpenAPI context.",
+          `Integrate dependent interfaces and runtime dependencies for "${story.title}" after core scope implementation.`,
+          "Align internal/external interfaces, data shapes, and dependency wiring with the documented context.",
           "Record dependency rationale and compatibility constraints in the task output.",
         ].join("\n"),
         estimatedStoryPoints: 3,
@@ -3752,6 +4094,190 @@ export class CreateTasksService {
         throw error;
       }
     }
+  }
+
+  private splitPersistedAcceptanceCriteria(value: string | null | undefined): string[] {
+    if (!value) return [];
+    return uniqueStrings(
+      value
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^[-*]\s+/, "").trim())
+        .filter(Boolean),
+    );
+  }
+
+  private async loadPersistedBacklog(projectId: string): Promise<{
+    epics: EpicRow[];
+    stories: StoryRow[];
+    tasks: TaskRow[];
+    dependencies: TaskDependencyRow[];
+  }> {
+    const repoLike = this.workspaceRepo as any;
+    if (typeof repoLike.getDb !== "function") {
+      const epics = Array.isArray(repoLike.epics)
+        ? repoLike.epics.filter((row: EpicRow) => row.projectId === projectId)
+        : [];
+      const stories = Array.isArray(repoLike.stories)
+        ? repoLike.stories.filter((row: StoryRow) => row.projectId === projectId)
+        : [];
+      const tasks = Array.isArray(repoLike.tasks)
+        ? repoLike.tasks.filter((row: TaskRow) => row.projectId === projectId)
+        : [];
+      const taskIds = new Set(tasks.map((task: TaskRow) => task.id));
+      const dependencies = Array.isArray(repoLike.deps)
+        ? repoLike.deps.filter((row: TaskDependencyRow) => taskIds.has(row.taskId))
+        : [];
+      return { epics, stories, tasks, dependencies };
+    }
+
+    const db = repoLike.getDb();
+    const epicRows = await db.all(
+      `SELECT id, project_id, key, title, description, story_points_total, priority, metadata_json, created_at, updated_at
+       FROM epics
+       WHERE project_id = ?
+       ORDER BY COALESCE(priority, 2147483647), datetime(created_at), key`,
+      projectId,
+    );
+    const storyRows = await db.all(
+      `SELECT id, project_id, epic_id, key, title, description, acceptance_criteria, story_points_total, priority, metadata_json, created_at, updated_at
+       FROM user_stories
+       WHERE project_id = ?
+       ORDER BY COALESCE(priority, 2147483647), datetime(created_at), key`,
+      projectId,
+    );
+    const taskRows = await db.all(
+      `SELECT id, project_id, epic_id, user_story_id, key, title, description, type, status, story_points, priority,
+              assigned_agent_id, assignee_human, vcs_branch, vcs_base_branch, vcs_last_commit_sha, metadata_json,
+              openapi_version_at_creation, created_at, updated_at
+       FROM tasks
+       WHERE project_id = ?
+       ORDER BY COALESCE(priority, 2147483647), datetime(created_at), key`,
+      projectId,
+    );
+    const epics: EpicRow[] = epicRows.map((row: any) => ({
+      id: row.id,
+      projectId: row.project_id,
+      key: row.key,
+      title: row.title,
+      description: row.description,
+      storyPointsTotal: row.story_points_total ?? null,
+      priority: row.priority ?? null,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+    const stories: StoryRow[] = storyRows.map((row: any) => ({
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      key: row.key,
+      title: row.title,
+      description: row.description,
+      acceptanceCriteria: row.acceptance_criteria ?? null,
+      storyPointsTotal: row.story_points_total ?? null,
+      priority: row.priority ?? null,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+    const tasks: TaskRow[] = taskRows.map((row: any) => ({
+      id: row.id,
+      projectId: row.project_id,
+      epicId: row.epic_id,
+      userStoryId: row.user_story_id,
+      key: row.key,
+      title: row.title,
+      description: row.description,
+      type: row.type ?? null,
+      status: row.status,
+      storyPoints: row.story_points ?? null,
+      priority: row.priority ?? null,
+      assignedAgentId: row.assigned_agent_id ?? null,
+      assigneeHuman: row.assignee_human ?? null,
+      vcsBranch: row.vcs_branch ?? null,
+      vcsBaseBranch: row.vcs_base_branch ?? null,
+      vcsLastCommitSha: row.vcs_last_commit_sha ?? null,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+      openapiVersionAtCreation: row.openapi_version_at_creation ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+    const dependencies =
+      typeof repoLike.getTaskDependencies === "function"
+        ? await repoLike.getTaskDependencies(tasks.map((task: TaskRow) => task.id))
+        : [];
+    return { epics, stories, tasks, dependencies };
+  }
+
+  private buildPlanFromPersistedBacklog(backlog: {
+    epics: EpicRow[];
+    stories: StoryRow[];
+    tasks: TaskRow[];
+    dependencies: TaskDependencyRow[];
+  }): GeneratedPlan {
+    const storyById = new Map(backlog.stories.map((story) => [story.id, story]));
+    const epicById = new Map(backlog.epics.map((epic) => [epic.id, epic]));
+    const taskById = new Map(backlog.tasks.map((task) => [task.id, task]));
+    const dependencyKeysByTaskId = new Map<string, string[]>();
+    for (const dependency of backlog.dependencies) {
+      const current = dependencyKeysByTaskId.get(dependency.taskId) ?? [];
+      const dependsOn = taskById.get(dependency.dependsOnTaskId)?.key;
+      if (dependsOn && !current.includes(dependsOn)) current.push(dependsOn);
+      dependencyKeysByTaskId.set(dependency.taskId, current);
+    }
+
+    return {
+      epics: backlog.epics.map((epic) => {
+        const metadata = (epic.metadata ?? {}) as Record<string, unknown>;
+        return {
+          localId: epic.key,
+          area: epic.key.split("-")[0]?.toLowerCase() || "proj",
+          title: epic.title,
+          description: epic.description,
+          acceptanceCriteria: [],
+          relatedDocs: normalizeRelatedDocs(metadata.doc_links),
+          priorityHint: epic.priority ?? undefined,
+          serviceIds: normalizeStringArray(metadata.service_ids),
+          tags: normalizeStringArray(metadata.tags),
+          stories: [],
+        };
+      }),
+      stories: backlog.stories.map((story) => {
+        const metadata = (story.metadata ?? {}) as Record<string, unknown>;
+        return {
+          localId: story.key,
+          epicLocalId: epicById.get(story.epicId)?.key ?? story.epicId,
+          title: story.title,
+          userStory: undefined,
+          description: story.description,
+          acceptanceCriteria: this.splitPersistedAcceptanceCriteria(story.acceptanceCriteria),
+          relatedDocs: normalizeRelatedDocs(metadata.doc_links),
+          priorityHint: story.priority ?? undefined,
+          tasks: [],
+        };
+      }),
+      tasks: backlog.tasks.map((task) => {
+        const metadata = (task.metadata ?? {}) as Record<string, any>;
+        const testRequirements = (metadata.test_requirements ?? {}) as Record<string, unknown>;
+        return {
+          localId: task.key,
+          epicLocalId: epicById.get(task.epicId)?.key ?? task.epicId,
+          storyLocalId: storyById.get(task.userStoryId)?.key ?? task.userStoryId,
+          title: task.title,
+          type: task.type ?? "feature",
+          description: task.description,
+          estimatedStoryPoints: task.storyPoints ?? undefined,
+          priorityHint: task.priority ?? undefined,
+          dependsOnKeys: dependencyKeysByTaskId.get(task.id) ?? [],
+          relatedDocs: normalizeRelatedDocs(metadata.doc_links),
+          unitTests: normalizeStringArray(testRequirements.unit),
+          componentTests: normalizeStringArray(testRequirements.component),
+          integrationTests: normalizeStringArray(testRequirements.integration),
+          apiTests: normalizeStringArray(testRequirements.api),
+          qa: isPlainObject(metadata.qa) ? (metadata.qa as QaReadiness) : undefined,
+        };
+      }),
+    };
   }
 
   private async writePlanArtifacts(
@@ -4219,9 +4745,11 @@ export class CreateTasksService {
           }
         }
 
+        const preflightGeneratedDocInputs =
+          sdsPreflight && !sdsPreflight.appliedToSds ? sdsPreflight.generatedDocPaths : [];
         const preflightDocInputs = this.mergeDocInputs(
           options.inputs,
-          sdsPreflight ? [...sdsPreflight.sourceSdsPaths, ...sdsPreflight.generatedDocPaths] : [],
+          sdsPreflight ? [...sdsPreflight.sourceSdsPaths, ...preflightGeneratedDocInputs] : [],
         );
         const docs = await this.prepareDocs(preflightDocInputs);
         const { docSummary, warnings: indexedDocWarnings } = this.buildDocContext(docs);
@@ -4230,7 +4758,7 @@ export class CreateTasksService {
         const serviceCatalog = this.buildServiceCatalogArtifact(options.projectKey, docs, discoveryGraph);
         const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
         const projectBuildPlan = this.buildProjectPlanArtifact(options.projectKey, docs, discoveryGraph, projectBuildMethod);
-        const { prompt } = this.buildPrompt(options.projectKey, docs, projectBuildMethod, serviceCatalog, options);
+        const { prompt } = this.buildPrompt(options.projectKey, docSummary, projectBuildMethod, serviceCatalog, options);
         const qaPreflight = await this.buildQaPreflight();
         const qaOverrides = this.buildQaOverrides(options);
         await this.jobService.writeCheckpoint(job.id, {
@@ -4469,12 +4997,38 @@ export class CreateTasksService {
           }
         }
 
+        if ((sufficiencyAudit?.totalTasksAdded ?? 0) > 0) {
+          await this.seedPriorities(options.projectKey);
+        }
+
+        const finalBacklog = await this.loadPersistedBacklog(project.id);
+        const finalPlan = this.buildPlanFromPersistedBacklog(finalBacklog);
+        await this.writePlanArtifacts(
+          options.projectKey,
+          finalPlan,
+          docSummary,
+          docs,
+          projectBuildPlan,
+          serviceCatalog,
+        );
+        await this.jobService.writeCheckpoint(job.id, {
+          stage: "plan_refreshed",
+          timestamp: new Date().toISOString(),
+          details: {
+            folder,
+            epics: finalBacklog.epics.length,
+            stories: finalBacklog.stories.length,
+            tasks: finalBacklog.tasks.length,
+            dependencies: finalBacklog.dependencies.length,
+          },
+        });
+
         await this.jobService.updateJobStatus(job.id, "completed", {
           payload: {
-            epicsCreated: epicRows.length,
-            storiesCreated: storyRows.length,
-            tasksCreated: taskRows.length,
-            dependenciesCreated: dependencyRows.length,
+            epicsCreated: finalBacklog.epics.length,
+            storiesCreated: finalBacklog.stories.length,
+            tasksCreated: finalBacklog.tasks.length,
+            dependenciesCreated: finalBacklog.dependencies.length,
             docs: docSummary,
             planFolder: folder,
             planSource,
@@ -4540,10 +5094,10 @@ export class CreateTasksService {
         return {
           jobId: job.id,
           commandRunId: commandRun.id,
-          epics: epicRows,
-          stories: storyRows,
-          tasks: taskRows,
-          dependencies: dependencyRows,
+          epics: finalBacklog.epics,
+          stories: finalBacklog.stories,
+          tasks: finalBacklog.tasks,
+          dependencies: finalBacklog.dependencies,
         };
       } catch (error) {
         lastError = error;

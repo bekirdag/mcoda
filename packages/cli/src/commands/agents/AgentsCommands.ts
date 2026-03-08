@@ -48,6 +48,9 @@ Usage: mcoda agent <list|details|limits|add|update|delete|remove|auth|auth-statu
 
 Subcommands:
   list                       List agents (supports --json)
+    --refresh-health         Force health checks before listing
+    --no-refresh-health      Skip health checks before listing
+                             (default: enabled for --json, disabled for table output)
   details <NAME>             Show agent details (supports --json)
   limits                     Show tracked usage-limit windows/reset times
     --agent <NAME>           Filter by agent slug/id
@@ -159,6 +162,17 @@ const parseBooleanFlag = (
   if (["true", "1", "yes", "y"].includes(normalized)) return true;
   if (["false", "0", "no", "n"].includes(normalized)) return false;
   throw new Error(`Invalid ${label}; expected true/false`);
+};
+
+const resolveListRefreshHealth = (flags: Record<string, string | boolean | string[]>): boolean => {
+  const refreshHealth = parseBooleanFlag(flags["refresh-health"], "--refresh-health");
+  const noRefreshHealth = parseBooleanFlag(flags["no-refresh-health"], "--no-refresh-health");
+  if (refreshHealth === true && noRefreshHealth === true) {
+    throw new Error("Conflicting flags: --refresh-health and --no-refresh-health");
+  }
+  if (noRefreshHealth === true) return false;
+  if (refreshHealth === true) return true;
+  return Boolean(flags.json);
 };
 
 const parseCostPerMillion = (value: string | string[] | boolean | undefined): number | undefined => {
@@ -384,7 +398,8 @@ export class AgentsCommands {
     try {
       switch (subcommand) {
         case "list": {
-          const agents = await api.listAgents();
+          const refreshHealth = resolveListRefreshHealth(parsed.flags);
+          const agents = await api.listAgents({ refreshHealth });
           if (parsed.flags.json) {
             const detailed = await Promise.all(
               agents.map((agent) => api.getAgent(agent.id ?? agent.slug)),
