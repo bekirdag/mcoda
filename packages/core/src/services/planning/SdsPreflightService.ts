@@ -142,6 +142,18 @@ const execFileAsync = promisify(execFile);
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values.filter(Boolean)));
 
+const stripManagedPreflightBlocks = (content: string): string => {
+  let updated = content;
+  while (true) {
+    const startIndex = updated.indexOf(MANAGED_SDS_BLOCK_START);
+    if (startIndex < 0) break;
+    const endIndex = updated.indexOf(MANAGED_SDS_BLOCK_END, startIndex);
+    if (endIndex < 0) break;
+    updated = `${updated.slice(0, startIndex)}\n${updated.slice(endIndex + MANAGED_SDS_BLOCK_END.length)}`;
+  }
+  return updated;
+};
+
 const describeFolderEntry = (entry: string): string => {
   if (/\s+#/.test(entry)) return "";
   const segments = entry
@@ -344,14 +356,16 @@ export class SdsPreflightService {
   }
 
   private countSdsSectionSignals(sample: string): number {
-    return sdsSectionPatterns.reduce((count, pattern) => count + (pattern.test(sample) ? 1 : 0), 0);
+    const effectiveSample = stripManagedPreflightBlocks(sample);
+    return sdsSectionPatterns.reduce((count, pattern) => count + (pattern.test(effectiveSample) ? 1 : 0), 0);
   }
 
   private async isLikelySdsPath(filePath: string): Promise<boolean> {
     const baseName = path.basename(filePath);
     const normalizedPath = filePath.replace(/\\/g, "/");
     try {
-      const sample = (await fs.readFile(filePath, "utf8")).slice(0, 35000);
+      const rawSample = (await fs.readFile(filePath, "utf8")).slice(0, 35000);
+      const sample = stripManagedPreflightBlocks(rawSample);
       if (nonSdsTitlePattern.test(sample)) return false;
       if (sdsTitlePattern.test(sample)) return true;
       if (strongSdsFilenamePattern.test(baseName) || strongSdsDirectoryPattern.test(normalizedPath)) {
@@ -436,7 +450,7 @@ export class SdsPreflightService {
   }
 
   private collectSignalsFromContent(content: string): SdsFileSignals {
-    const lines = content.split(/\r?\n/);
+    const lines = stripManagedPreflightBlocks(content).split(/\r?\n/);
     const headings: string[] = [];
     const folderEntries: string[] = [];
     for (const line of lines) {
@@ -1099,25 +1113,25 @@ export class SdsPreflightService {
     const scopedIssues = issues.filter((issue) => this.issueMatchesPath(issue, sdsPath));
     const lines: string[] = [
       MANAGED_SDS_BLOCK_START,
-      "## Open Questions (Resolved)",
+      "## Planning Decisions (mcoda preflight)",
       "",
     ];
 
     if (scopedQuestions.length === 0) {
-      lines.push("- Resolved: No unresolved questions remain for this SDS file in this preflight run.");
+      lines.push("- Decision coverage baseline recorded for this SDS file in this preflight run.");
       lines.push("");
     } else {
       scopedQuestions.forEach((question, index) => {
         const summary = this.normalizeResolvedText(question.answer);
-        const prefix = summary || "Explicit decision recorded in managed preflight output.";
-        lines.push(`- Resolved: Decision ${index + 1} for "${question.question}" => ${prefix}`);
+        const prefix = summary || "Explicit implementation decision recorded in managed preflight output.";
+        lines.push(`- Decision ${index + 1}: ${prefix}`);
       });
       lines.push("");
     }
 
-    lines.push("## Resolved Decisions (mcoda preflight)");
-    lines.push("- Decision baseline: unresolved items are converted into explicit implementation decisions.");
-    lines.push("- Planning rule: each resolved decision must map to implementation and QA verification work.");
+    lines.push("## Decision Summary (mcoda preflight)");
+    lines.push("- Decision baseline: preflight converts planning ambiguities into explicit implementation guidance.");
+    lines.push("- Planning rule: each captured decision maps to implementation and QA verification work.");
     if (signals?.moduleDomains && signals.moduleDomains.length > 0) {
       lines.push(`- Module scope detected for this SDS file: ${signals.moduleDomains.slice(0, 6).join(", ")}.`);
     }
@@ -1132,11 +1146,12 @@ export class SdsPreflightService {
     lines.push("## Gap Remediation Summary (mcoda preflight)");
     lines.push("");
     if (scopedIssues.length === 0) {
-      lines.push("- No unresolved SDS quality gaps remained for this SDS file in this preflight run.");
+      lines.push("- No remaining SDS quality gaps were detected for this SDS file in this preflight run.");
       lines.push("");
     } else {
       scopedIssues.forEach((issue, index) => {
-        lines.push(`### Gap ${index + 1}: ${issue.message}`);
+        const gapSummary = this.normalizeResolvedText(issue.message) || issue.message;
+        lines.push(`### Gap ${index + 1}: ${gapSummary}`);
         lines.push(`- Gate: ${issue.gateId}`);
         lines.push(`- Source: ${formatIssueLocation(issue)}`);
         lines.push("- Remediation:");
@@ -1270,6 +1285,9 @@ export class SdsPreflightService {
     let questions = this.extractQuestionAnswers(issues, signalsByPath);
 
     const applyToSds = options.applyToSds === true;
+    if (options.commitAppliedChanges && !applyToSds) {
+      warnings.push("SDS preflight commit was requested without applyToSds; skipping commit because source SDS writeback is disabled.");
+    }
     let appliedSdsPaths: string[] = [];
     if (applyToSds) {
       const applyResult = await this.applyPreflightRemediationsToSds({

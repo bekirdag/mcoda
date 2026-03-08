@@ -436,6 +436,7 @@ class StubTaskSufficiencyService {
       totalTasksUpdated: 0,
       maxIterations: 3,
       minCoverageRatio: 0.95,
+      finalTotalSignals: 10,
       finalCoverageRatio: 1,
       remainingSectionHeadings: [] as string[],
       remainingFolderEntries: [] as string[],
@@ -724,7 +725,8 @@ test("createTasks refreshes exported artifacts and result counts from the final 
           userStoryId: story.id,
           key: `${story.key}-t99`,
           title: "Implement gatekeeper coverage gap",
-          description: "## Objective\nClose the remaining gatekeeper coverage gap.",
+          description:
+            "## Objective\nClose the remaining gatekeeper coverage gap in packages/gatekeeper/src/worker.ts and validate the runtime startup sequence.",
           type: "feature",
           status: "not_started",
           storyPoints: 2,
@@ -758,6 +760,7 @@ test("createTasks refreshes exported artifacts and result counts from the final 
         totalTasksUpdated: 0,
         maxIterations: 3,
         minCoverageRatio: 1,
+        finalTotalSignals: 4,
         finalCoverageRatio: 1,
         remainingSectionHeadings: [] as string[],
         remainingFolderEntries: [] as string[],
@@ -792,17 +795,237 @@ test("createTasks refreshes exported artifacts and result counts from the final 
   assert.ok(result.tasks.some((task) => task.title === "Implement gatekeeper coverage gap"));
   const tasksPath = path.join(workspace.mcodaDir, "tasks", "web", "tasks.json");
   const planPath = path.join(workspace.mcodaDir, "tasks", "web", "plan.json");
+  const servicesPath = path.join(workspace.mcodaDir, "tasks", "web", "services.json");
+  const buildPlanPath = path.join(workspace.mcodaDir, "tasks", "web", "build-plan.json");
   const exportedTasks = JSON.parse(await fs.readFile(tasksPath, "utf8"));
   const exportedPlan = JSON.parse(await fs.readFile(planPath, "utf8"));
+  const exportedServices = JSON.parse(await fs.readFile(servicesPath, "utf8"));
+  const exportedBuildPlan = JSON.parse(await fs.readFile(buildPlanPath, "utf8"));
   assert.ok(exportedTasks.length >= 2);
   assert.ok(exportedTasks.some((task: any) => task.title === "Implement gatekeeper coverage gap"));
   assert.ok(exportedPlan.tasks.some((task: any) => task.title === "Implement gatekeeper coverage gap"));
+  assert.ok(exportedBuildPlan.services.includes("gatekeeper"));
+  assert.ok(
+    exportedServices.services.some((service: any) => service.name === "gatekeeper"),
+    `expected refreshed services.json to include gatekeeper, got ${JSON.stringify(exportedServices.services)}`,
+  );
   assert.ok(jobService.checkpoints.some((entry) => entry.stage === "plan_refreshed"));
   const completedJob = jobService.jobs[0];
   assert.equal(completedJob?.meta?.payload?.tasksCreated, exportedTasks.length);
 });
 
-test("createTasks runs SDS preflight, records checkpoint, and avoids re-merging generated docs after apply-to-sds", async () => {
+test("createTasks aligns coverage-report.json with sufficiency coverage totals", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Gatekeeper Runtime",
+      "## Operator Console",
+      "Implementation targets:",
+      "- packages/gatekeeper/src/worker.ts",
+      "- consoles/operator/app/main.py",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Runtime foundation", description: "Implement runtime surfaces.", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Runtime story", description: "Cover runtime surfaces.", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement Gatekeeper Runtime",
+          type: "feature",
+          description: "Implement Gatekeeper Runtime in packages/gatekeeper/src/worker.ts.",
+          estimatedStoryPoints: 3,
+          priorityHint: 3,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t2",
+          title: "Implement Operator Console",
+          type: "feature",
+          description: "Implement Operator Console in consoles/operator/app/main.py.",
+          estimatedStoryPoints: 3,
+          priorityHint: 4,
+          dependsOnKeys: ["t1"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = {
+    async runAudit(request: any) {
+      const reportPath = path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json");
+      await fs.mkdir(path.dirname(reportPath), { recursive: true });
+      await fs.writeFile(
+        reportPath,
+        JSON.stringify(
+          {
+            finalCoverage: {
+              coverageRatio: 1,
+              totalSignals: 4,
+              missingSectionHeadings: [],
+              missingFolderEntries: [],
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      return {
+        jobId: "suff-job-2",
+        commandRunId: "suff-cmd-2",
+        projectKey: request.projectKey,
+        sourceCommand: request.sourceCommand,
+        satisfied: true,
+        dryRun: false,
+        totalTasksAdded: 0,
+        totalTasksUpdated: 0,
+        maxIterations: 1,
+        minCoverageRatio: 1,
+        finalTotalSignals: 4,
+        finalCoverageRatio: 1,
+        remainingSectionHeadings: [] as string[],
+        remainingFolderEntries: [] as string[],
+        remainingGaps: { sections: 0, folders: 0, total: 0 },
+        iterations: [],
+        reportPath,
+        reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+        warnings: [],
+      };
+    },
+    async close() {},
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+    agentStream: false,
+  });
+
+  const coveragePath = path.join(workspace.mcodaDir, "tasks", "web", "coverage-report.json");
+  const coverage = JSON.parse(await fs.readFile(coveragePath, "utf8"));
+  assert.equal(coverage.totalSignals, 4);
+  assert.equal(coverage.coverageRatio, 1);
+  assert.deepEqual(coverage.missingSectionHeadings, []);
+  assert.deepEqual(coverage.missingFolderEntries, []);
+});
+
+test("createTasks defaults SDS preflight to sidecar mode and merges generated docs into planning context", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const generatedQaPath = path.join(workspace.mcodaDir, "tasks", "web", "sds-open-questions-answers.md");
+  const generatedGapPath = path.join(workspace.mcodaDir, "tasks", "web", "sds-gap-remediation-addendum.md");
+  await fs.mkdir(path.dirname(generatedQaPath), { recursive: true });
+  await fs.writeFile(generatedQaPath, "# SDS Open Questions Q&A\n\nNo open questions were detected.\n", "utf8");
+  await fs.writeFile(generatedGapPath, "# SDS Gap Remediation Addendum\n\nNo unresolved SDS gaps were detected.\n", "utf8");
+
+  const preflightService = new StubSdsPreflightService({
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    readyForPlanning: true,
+    qualityStatus: "pass",
+    sourceSdsPaths: [path.join(workspaceRoot, "docs", "sds.md")],
+    reportPath: path.join(workspace.mcodaDir, "tasks", "web", "sds-preflight-report.json"),
+    openQuestionsPath: generatedQaPath,
+    gapAddendumPath: generatedGapPath,
+    generatedDocPaths: [generatedQaPath, generatedGapPath],
+    questionCount: 0,
+    requiredQuestionCount: 0,
+    issueCount: 0,
+    blockingIssueCount: 0,
+    appliedToSds: false,
+    appliedSdsPaths: [],
+    commitHash: undefined,
+    issues: [],
+    questions: [],
+    warnings: [],
+  });
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const docdex = new StubDocdexTyped();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async () => preflightService as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.equal(preflightService.calls.length, 1);
+  assert.equal(preflightService.calls[0]?.applyToSds, false);
+  assert.equal(preflightService.calls[0]?.commitAppliedChanges, false);
+  const preflightCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "sds_preflight");
+  assert.ok(preflightCheckpoint);
+  assert.equal(preflightCheckpoint.details.status, "succeeded");
+  assert.equal(preflightCheckpoint.details.appliedToSds, false);
+  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedQaPath));
+  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedGapPath));
+  const completedJob = jobService.jobs[0];
+  assert.equal(completedJob?.meta?.payload?.sdsPreflight?.qualityStatus, "pass");
+  assert.equal(completedJob?.meta?.payload?.sdsPreflight?.appliedToSds, false);
+});
+
+test("createTasks only avoids re-merging generated docs when SDS writeback is explicitly enabled", async () => {
   const outputs = [
     JSON.stringify({
       epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
@@ -874,6 +1097,7 @@ test("createTasks runs SDS preflight, records checkpoint, and avoids re-merging 
     projectKey: "web",
     inputs: [],
     agentStream: false,
+    sdsPreflightApplyToSds: true,
     sdsPreflightCommit: true,
     sdsPreflightCommitMessage: "mcoda: commit sds preflight output",
   });
@@ -890,6 +1114,114 @@ test("createTasks runs SDS preflight, records checkpoint, and avoids re-merging 
   assert.ok(!docdex.registeredFiles.some((entry) => entry === generatedGapPath));
   const completedJob = jobService.jobs[0];
   assert.equal(completedJob?.meta?.payload?.sdsPreflight?.qualityStatus, "pass");
+  assert.equal(completedJob?.meta?.payload?.sdsPreflight?.appliedToSds, true);
+});
+
+test("createTasks continues when SDS preflight emits remediation warnings after applying to SDS", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const generatedQaPath = path.join(workspace.mcodaDir, "tasks", "web", "sds-open-questions-answers.md");
+  const generatedGapPath = path.join(workspace.mcodaDir, "tasks", "web", "sds-gap-remediation-addendum.md");
+  await fs.mkdir(path.dirname(generatedQaPath), { recursive: true });
+  await fs.writeFile(
+    generatedQaPath,
+    "# Planning decisions\n\nDecision coverage captured by mcoda preflight.\n",
+    "utf8",
+  );
+  await fs.writeFile(
+    generatedGapPath,
+    "# Gap remediation addendum\n\nGap remediation details captured by mcoda preflight.\n",
+    "utf8",
+  );
+
+  const preflightService = new StubSdsPreflightService({
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    readyForPlanning: false,
+    qualityStatus: "fail",
+    sourceSdsPaths: [path.join(workspaceRoot, "docs", "sds.md")],
+    reportPath: path.join(workspace.mcodaDir, "tasks", "web", "sds-preflight-report.json"),
+    openQuestionsPath: generatedQaPath,
+    gapAddendumPath: generatedGapPath,
+    generatedDocPaths: [generatedQaPath, generatedGapPath],
+    questionCount: 2,
+    requiredQuestionCount: 2,
+    issueCount: 3,
+    blockingIssueCount: 0,
+    appliedToSds: true,
+    appliedSdsPaths: [path.join(workspaceRoot, "docs", "sds.md")],
+    commitHash: undefined,
+    issues: [],
+    questions: [],
+    warnings: ["Synthetic preflight warning"],
+  });
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const docdex = new StubDocdexTyped();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    sdsPreflightFactory: async () => preflightService as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  assert.ok(result.tasks.some((task) => task.title === "Task One"));
+  const preflightCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "sds_preflight");
+  assert.ok(preflightCheckpoint);
+  assert.equal(preflightCheckpoint.details.status, "continued_with_warnings");
+  assert.equal(preflightCheckpoint.details.continuedWithWarnings, true);
+  assert.deepEqual(preflightCheckpoint.details.blockingReasons, [
+    "SDS quality gates failed.",
+    "Required open questions remaining: 2.",
+    "SDS preflight reported planning context is not ready.",
+  ]);
+  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedQaPath));
+  assert.ok(docdex.registeredFiles.some((entry) => entry === generatedGapPath));
+  assert.ok(
+    jobService.logs.some((entry) => entry.includes("create-tasks will continue with remediation context")),
+  );
+  const completedJob = jobService.jobs[0];
+  assert.equal(completedJob?.state, "completed");
+  assert.equal(completedJob?.meta?.payload?.sdsPreflight?.continuedWithWarnings, true);
+  assert.deepEqual(completedJob?.meta?.payload?.sdsPreflight?.blockingReasons, [
+    "SDS quality gates failed.",
+    "Required open questions remaining: 2.",
+    "SDS preflight reported planning context is not ready.",
+  ]);
 });
 
 test("createTasks blocks when SDS preflight fails", async () => {
@@ -984,6 +1316,7 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
   sufficiencyService.runAudit = async (request: any) => ({
     ...(await StubTaskSufficiencyService.prototype.runAudit.call(sufficiencyService, request)),
     satisfied: false,
+    finalTotalSignals: 10,
     finalCoverageRatio: 0.94,
     remainingGaps: { sections: 3, folders: 0, total: 3 },
     remainingSectionHeadings: ["Missing"],
@@ -1014,6 +1347,152 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
   const sufficiencyCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "task_sufficiency_audit");
   assert.ok(sufficiencyCheckpoint);
   assert.equal(sufficiencyCheckpoint.details.status, "blocked");
+});
+
+test("validateTopologyExtraction fails when SDS runtime topology signals resolve to no services", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Runtime Topology",
+      "## Deployment Waves",
+      "```text",
+      ".",
+      "├── engines/",
+      "│   └── ledger/",
+      "│       └── src/",
+      "│           └── main.rs",
+      "└── consoles/",
+      "    └── operator/",
+      "        └── app/",
+      "            └── main.py",
+      "```",
+      "Wave 0 - ledger",
+      "Wave 1 - operator",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const docs = await (service as any).prepareDocs([path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")]);
+
+  assert.throws(
+    () =>
+      (service as any).validateTopologyExtraction("web", docs, {
+        services: [],
+        dependencies: new Map(),
+        aliases: new Map(),
+        waveRank: new Map(),
+        startupWaves: [],
+        foundationalDependencies: [],
+      }),
+    /runtime topology signals but no services were resolved/i,
+  );
+});
+
+test("validateTopologyExtraction fails when startup wave signals resolve to no startup waves", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Runtime Topology",
+      "## Deployment Waves",
+      "```text",
+      ".",
+      "├── engines/",
+      "│   └── ledger/",
+      "│       └── src/",
+      "│           └── main.rs",
+      "└── consoles/",
+      "    └── operator/",
+      "        └── app/",
+      "            └── main.py",
+      "```",
+      "Wave 0 - ledger",
+      "Wave 1 - operator",
+      "Operator depends on ledger.",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const docs = await (service as any).prepareDocs([path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")]);
+
+  assert.throws(
+    () =>
+      (service as any).validateTopologyExtraction("web", docs, {
+        services: ["ledger", "operator"],
+        dependencies: new Map([["operator", new Set(["ledger"])]]),
+        aliases: new Map([
+          ["ledger", new Set(["ledger"])],
+          ["operator", new Set(["operator"])],
+        ]),
+        waveRank: new Map(),
+        startupWaves: [],
+        foundationalDependencies: [],
+      }),
+    /startup wave signals but no startup waves were resolved/i,
+  );
+});
+
+test("createTasks propagates topology validation failures before artifact generation", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Runtime Topology",
+      "## Deployment Waves",
+      "```text",
+      ".",
+      "└── engines/",
+      "    └── ledger/",
+      "        └── src/",
+      "            └── main.rs",
+      "```",
+      "Wave 0 - ledger",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  (service as any).validateTopologyExtraction = () => {
+    throw new Error("topology validation triggered");
+  };
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+        agentStream: false,
+      }),
+    /topology validation triggered/i,
+  );
 });
 
 test("buildDocContext appends OpenAPI hint summary", () => {
@@ -1812,6 +2291,7 @@ test("createTasks writes SDS coverage report artifact", async () => {
     projectKey: "web",
     inputs: [],
     agentStream: false,
+    sdsPreflightApplyToSds: true,
   });
 
   const coveragePath = path.join(workspace.mcodaDir, "tasks", "web", "coverage-report.json");

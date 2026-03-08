@@ -53,16 +53,17 @@ afterEach(async () => {
 
 test("sds-preflight generates report, Q&A, and gap addendum artifacts", async () => {
   const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  const originalSds = [
+    "# Software Design Specification",
+    "## Open Questions",
+    "- Should we start as modular monolith or split services early?",
+    "## Folder Tree",
+    "- services/api/src/index.ts",
+    "- apps/web/src/main.tsx",
+  ].join("\n");
   await fs.writeFile(
     sdsPath,
-    [
-      "# Software Design Specification",
-      "## Open Questions",
-      "- Should we start as modular monolith or split services early?",
-      "## Folder Tree",
-      "- services/api/src/index.ts",
-      "- apps/web/src/main.tsx",
-    ].join("\n"),
+    originalSds,
     "utf8",
   );
 
@@ -75,22 +76,59 @@ test("sds-preflight generates report, Q&A, and gap addendum artifacts", async ()
       writeArtifacts: true,
     });
     assert.equal(result.projectKey, "proj");
+    assert.equal(result.appliedToSds, false);
+    assert.deepEqual(result.appliedSdsPaths, []);
     assert.ok(result.sourceSdsPaths.length >= 1);
     assert.ok(result.reportPath.endsWith(path.join("tasks", "proj", "sds-preflight-report.json")));
     assert.ok(result.openQuestionsPath.endsWith(path.join("tasks", "proj", "sds-open-questions-answers.md")));
     assert.ok(result.gapAddendumPath.endsWith(path.join("tasks", "proj", "sds-gap-remediation-addendum.md")));
     const qaDoc = await fs.readFile(result.openQuestionsPath, "utf8");
     const addendumDoc = await fs.readFile(result.gapAddendumPath, "utf8");
+    const currentSds = await fs.readFile(sdsPath, "utf8");
     assert.ok(qaDoc.includes("Question:"));
     assert.ok(qaDoc.includes("Answer:"));
     assert.ok(qaDoc.toLowerCase().includes("modular monolith"));
     assert.ok(qaDoc.includes("services/api"));
     assert.ok(addendumDoc.includes("SDS Gap Remediation Addendum"));
+    assert.equal(currentSds, originalSds);
     const reportRaw = await fs.readFile(result.reportPath, "utf8");
     const report = JSON.parse(reportRaw) as { projectKey: string; questionCount: number; issueCount: number };
     assert.equal(report.projectKey, "proj");
     assert.ok(report.questionCount >= 1);
     assert.ok(report.issueCount >= 1);
+  } finally {
+    await service.close();
+  }
+});
+
+test("sds-preflight warns when commit is requested without apply mode", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  const originalSds = [
+    "# Software Design Specification",
+    "## Open Questions",
+    "- Should we include confidence propagation in API responses?",
+    "## Folder Tree",
+    "- services/api/src/index.ts",
+  ].join("\n");
+  await fs.writeFile(sdsPath, originalSds, "utf8");
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const result = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: false,
+      commitAppliedChanges: true,
+    });
+    assert.equal(result.appliedToSds, false);
+    assert.deepEqual(result.appliedSdsPaths, []);
+    assert.ok(
+      result.warnings.some((warning) => /commit was requested without applyToSds/i.test(warning)),
+      `expected commit-without-apply warning, got ${JSON.stringify(result.warnings)}`,
+    );
+    const currentSds = await fs.readFile(sdsPath, "utf8");
+    assert.equal(currentSds, originalSds);
   } finally {
     await service.close();
   }
@@ -124,8 +162,8 @@ test("sds-preflight apply mode writes resolved decisions back to SDS", async () 
     assert.ok(result.appliedSdsPaths.includes(sdsPath));
     const updated = await fs.readFile(sdsPath, "utf8");
     assert.ok(updated.includes("# Software Design Specification\n\n<!-- mcoda:sds-preflight:start -->"));
-    assert.ok(updated.includes("## Open Questions (Resolved)"));
-    assert.ok(updated.includes("Resolved Decisions (mcoda preflight)"));
+    assert.ok(updated.includes("## Planning Decisions (mcoda preflight)"));
+    assert.ok(updated.includes("Decision Summary (mcoda preflight)"));
     assert.ok(updated.includes("## Folder Tree"));
     assert.ok(updated.includes("```text"));
     assert.ok(updated.includes("## Technology Stack"));
@@ -175,6 +213,55 @@ test("sds-preflight uses stack-agnostic fallback folder tree examples", async ()
     assert.ok(!updated.includes("services/api/"));
     assert.ok(!updated.includes("packages/shared/"));
     assert.ok(!updated.includes("contracts/  # on-chain contracts and deploy scripts"));
+  } finally {
+    await service.close();
+  }
+});
+
+test("sds-preflight does not reclassify weak architecture docs from managed preflight blocks", async () => {
+  const sdsDir = path.join(workspaceRoot, "docs", "sds");
+  await fs.mkdir(sdsDir, { recursive: true });
+  const sdsPath = path.join(sdsDir, "ep.md");
+  const architecturePath = path.join(workspaceRoot, "docs", "data_storage_architecture.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Architecture Overview",
+      "## Folder Tree",
+      "- services/api/src/index.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    architecturePath,
+    [
+      "# Data Storage Architecture",
+      "<!-- mcoda:sds-preflight:start -->",
+      "## Planning Decisions (mcoda preflight)",
+      "- Decision 1: Explicit implementation decision recorded in managed preflight output.",
+      "## Folder Tree",
+      "- data/migrations",
+      "## Technology Stack",
+      "- Chosen stack baseline: Go.",
+      "## Decision Summary (mcoda preflight)",
+      "- Decision baseline: preflight converts planning ambiguities into explicit implementation guidance.",
+      "<!-- mcoda:sds-preflight:end -->",
+      "## Purpose",
+      "This remains an architecture note, not the canonical SDS.",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const result = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      inputPaths: ["docs"],
+      writeArtifacts: false,
+    });
+    assert.deepEqual(result.sourceSdsPaths, [sdsPath]);
   } finally {
     await service.close();
   }

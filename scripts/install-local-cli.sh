@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the workspace and link the mcoda CLI globally for local development.
+# Build the workspace and link the CLI binaries globally for local development.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PNPM_BIN="${PNPM_BIN:-pnpm}"
@@ -11,18 +11,5 @@ if ! command -v "${PNPM_BIN}" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Installing workspace dependencies..."
-"${PNPM_BIN}" -C "${ROOT}" install
-
-echo "Building all packages (includes CLI dependencies)..."
-"${PNPM_BIN}" -C "${ROOT}" -r run build
-
-echo "Linking mcoda CLI globally..."
-"${PNPM_BIN}" -C "${ROOT}/packages/cli" link --global
-
-GLOBAL_BIN_DIR="$("${PNPM_BIN}" root -g)/.bin"
-
-echo
-echo "mcoda is now linked globally via pnpm."
-echo "Add to PATH if needed: export PATH=\"${GLOBAL_BIN_DIR}:\$PATH\""
-echo "Verify: ${GLOBAL_BIN_DIR}/mcoda --version"
+echo "Installing local CLI binaries..."
+"${PNPM_BIN}" -C "${ROOT}" run install:local:bins
