@@ -3538,6 +3538,40 @@ describe("PdrNoUnresolvedItemsGate", () => {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
   });
+
+  it("ignores managed mcoda preflight blocks", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-sds-unresolved-"));
+    const sdsPath = path.join(workspaceRoot, "sds.md");
+    const content = [
+      "# SDS",
+      "<!-- mcoda:sds-preflight:start -->",
+      "## Planning Decisions (mcoda preflight)",
+      "- Decision 1: Explicit implementation decision recorded in managed preflight output.",
+      "## Decision Summary (mcoda preflight)",
+      "- Decision baseline: preflight converts planning ambiguities into explicit implementation guidance.",
+      "## Gap Remediation Summary (mcoda preflight)",
+      "### Gap 1: SDS contains placeholder language.",
+      "- Gate: gate-sds-no-unresolved-items",
+      "- Remediation:",
+      "  - Convert outstanding items into explicit decisions.",
+      "<!-- mcoda:sds-preflight:end -->",
+    ].join("\n");
+    await fs.writeFile(sdsPath, content, "utf8");
+
+    const artifacts: DocgenArtifactInventory = {
+      sds: { kind: "sds", path: sdsPath, meta: {} },
+      openapi: [],
+      blueprints: [],
+    };
+
+    try {
+      const result = await runSdsNoUnresolvedItemsGate({ artifacts });
+      assert.equal(result.status, "pass");
+      assert.equal(result.issues.length, 0);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("SdsDecisionsGate", () => {

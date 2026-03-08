@@ -16,6 +16,18 @@ pnpm -r run build
 pnpm -r run test
 ```
 
+For a repo-local global link of the workspace packages, run:
+
+```bash
+pnpm run install:local
+```
+
+For only the executable binaries (`mcoda`, `codali`), run:
+
+```bash
+pnpm run install:local:bins
+```
+
 ## Making changes
 - Keep versions aligned across published packages (cli, core, db, integrations, shared, agents).
 - Add or update docs when behavior or flags change.

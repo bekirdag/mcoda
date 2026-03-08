@@ -36,7 +36,9 @@
   ],
   "scripts": {
     "build": "pnpm -r run build",
-    "build:all": "pnpm -r run build && npm -g install ./packages/cli ./packages/codali",
+    "build:all": "pnpm run install:local:bins",
+    "install:local": "node scripts/install-local-packages.js",
+    "install:local:bins": "node scripts/install-local-packages.js --bins-only",
     "lint": "pnpm -r run lint",
     "test": "node tests/all.js",
     "test:repo": "node --input-type=module -e \"process.env.MCODA_SKIP_WORKSPACE_TESTS='1'; import('./tests/all.js');\"",

@@ -30,10 +30,20 @@ import {
   createTaskKeyGenerator,
 } from "./KeyHelpers.js";
 import {
+  collectSdsCoverageSignalsFromDocs,
+  evaluateSdsCoverage,
+  normalizeCoverageText,
+  type SdsCoverageSummary,
+} from "./SdsCoverageModel.js";
+import {
+  collectSdsImplementationSignals,
   extractStructuredPaths,
   filterImplementationStructuredPaths,
+  headingLooksImplementationRelevant,
   isStructuredFilePath,
+  normalizeHeadingCandidate,
   normalizeStructuredPathToken,
+  stripManagedSdsPreflightBlock,
 } from "./SdsStructureSignals.js";
 import { TaskSufficiencyService, type TaskSufficiencyAuditResult } from "./TaskSufficiencyService.js";
 import { SdsPreflightService, type SdsPreflightResult } from "./SdsPreflightService.js";
@@ -53,6 +63,7 @@ export interface CreateTasksOptions {
   qaEntryUrl?: string;
   qaStartCommand?: string;
   qaRequires?: string[];
+  sdsPreflightApplyToSds?: boolean;
   sdsPreflightCommit?: boolean;
   sdsPreflightCommitMessage?: string;
   unknownEpicServicePolicy?: EpicServiceValidationPolicy;
@@ -139,6 +150,13 @@ type ServiceDependencyGraph = {
   waveRank: Map<string, number>;
   startupWaves: Array<{ wave: number; services: string[] }>;
   foundationalDependencies: string[];
+};
+
+type TopologySignalSummary = {
+  structureServices: string[];
+  topologyHeadings: string[];
+  dependencyPairs: string[];
+  waveMentions: string[];
 };
 
 type ServiceCatalogEntry = {
@@ -357,6 +375,7 @@ const DOC_CONTEXT_SEGMENTS_PER_DOC = 8;
 const DOC_CONTEXT_FALLBACK_CHUNK_LENGTH = 480;
 const SDS_COVERAGE_HINT_HEADING_LIMIT = 24;
 const SDS_COVERAGE_REPORT_SECTION_LIMIT = 80;
+const SDS_COVERAGE_REPORT_FOLDER_LIMIT = 240;
 const OPENAPI_HINT_OPERATIONS_LIMIT = 30;
 const DOCDEX_HANDLE = /^docdex:/i;
 const DOCDEX_LOCAL_HANDLE = /^docdex:local[-:/]/i;
@@ -438,53 +457,6 @@ const normalizeRelatedDocs = (value: unknown): string[] => {
     normalized.push(candidate);
   }
   return normalized;
-};
-
-const MANAGED_PREFLIGHT_BLOCK_PATTERN =
-  /<!--\s*mcoda:sds-preflight:start\s*-->[\s\S]*?<!--\s*mcoda:sds-preflight:end\s*-->\s*/gi;
-
-const stripManagedPreflightBlock = (value: string | undefined): string | undefined => {
-  if (typeof value !== "string" || value.length === 0) return value;
-  const sanitized = value.replace(MANAGED_PREFLIGHT_BLOCK_PATTERN, "").replace(/\n{3,}/g, "\n\n").trim();
-  return sanitized.length > 0 ? sanitized : undefined;
-};
-
-const extractMarkdownHeadings = (value: string, limit: number): string[] => {
-  if (!value) return [];
-  const lines = value.split(/\r?\n/);
-  const headings: string[] = [];
-  const seen = new Set<string>();
-  const pushHeading = (rawValue: string | undefined) => {
-    const heading = rawValue?.replace(/#+$/, "").replace(/[`*_]/g, "").trim();
-    if (!heading) return;
-    const normalized = heading.replace(/\s+/g, " ").toLowerCase();
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    headings.push(heading);
-  };
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim() ?? "";
-    if (!line) continue;
-    const hashHeading = line.match(/^#{1,6}\s+(.+)$/);
-    if (hashHeading) {
-      pushHeading(hashHeading[1]);
-    } else if (
-      index + 1 < lines.length &&
-      /^[=-]{3,}\s*$/.test((lines[index + 1] ?? "").trim()) &&
-      !line.startsWith("-") &&
-      !line.startsWith("*")
-    ) {
-      pushHeading(line);
-    } else {
-      const numberedHeading = line.match(/^(\d+(?:\.\d+)+)\s+(.+)$/);
-      if (numberedHeading) {
-        const headingText = `${numberedHeading[1]} ${numberedHeading[2]}`.trim();
-        if (/[a-z]/i.test(headingText)) pushHeading(headingText);
-      }
-    }
-    if (headings.length >= limit) break;
-  }
-  return headings;
 };
 
 const pickDistributedIndices = (length: number, limit: number): number[] => {
@@ -1110,6 +1082,8 @@ const SERVICE_ARROW_PATTERN =
   /([A-Za-z][A-Za-z0-9 _/-]{1,80})\s*(?:->|=>|→)\s*([A-Za-z][A-Za-z0-9 _/-]{1,80})/g;
 const SERVICE_HANDLE_PATTERN = /\b((?:svc|ui|worker)-[a-z0-9-*]+)\b/gi;
 const WAVE_LABEL_PATTERN = /\bwave\s*([0-9]{1,2})\b/i;
+const TOPOLOGY_HEADING_PATTERN =
+  /\b(service|services|component|components|module|modules|interface|interfaces|runtime|runtimes|worker|workers|client|clients|gateway|gateways|server|servers|engine|engines|pipeline|pipelines|registry|registries|adapter|adapters|processor|processors|daemon|daemons|ops|operations|deployment|deployments|topology)\b/i;
 
 const nextUniqueLocalId = (prefix: string, existing: Set<string>): string => {
   let index = 1;
@@ -1412,13 +1386,13 @@ export class CreateTasksService {
   }
 
   private sanitizeDocForPlanning(doc: DocdexDocument): DocdexDocument {
-    const content = stripManagedPreflightBlock(doc.content);
+    const content = stripManagedSdsPreflightBlock(doc.content);
     const segments =
       content !== doc.content
         ? []
         : (doc.segments ?? [])
             .map((segment) => {
-              const sanitizedContent = stripManagedPreflightBlock(segment.content ?? undefined);
+              const sanitizedContent = stripManagedSdsPreflightBlock(segment.content ?? undefined);
               return {
                 ...segment,
                 content: sanitizedContent ?? segment.content,
@@ -2116,6 +2090,87 @@ export class CreateTasksService {
       waveRank: waveHints.waveRank,
       startupWaves: waveHints.startupWaves,
       foundationalDependencies: waveHints.foundationalDependencies,
+    };
+  }
+
+  private summarizeTopologySignals(docs: DocdexDocument[]): TopologySignalSummary {
+    const structureTargets = this.extractStructureTargets(docs);
+    const structureServices = uniqueStrings(
+      [...structureTargets.directories, ...structureTargets.files]
+        .map((token) => this.deriveServiceFromPathToken(token))
+        .filter((value): value is string => Boolean(value)),
+    ).slice(0, 24);
+    const topologyHeadings = this.extractSdsSectionCandidates(docs, 64)
+      .filter((heading) => TOPOLOGY_HEADING_PATTERN.test(heading))
+      .slice(0, 24);
+    const docsText = docs
+      .map((doc) => [doc.title, doc.path, doc.content, ...(doc.segments ?? []).map((segment) => segment.content)].filter(Boolean).join("\n"))
+      .join("\n");
+    const dependencyPairs = uniqueStrings(
+      this.collectDependencyStatements(docsText).map((statement) => `${statement.dependent} -> ${statement.dependency}`),
+    ).slice(0, 16);
+    const waveMentions = docsText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => WAVE_LABEL_PATTERN.test(line))
+      .slice(0, 16);
+    return {
+      structureServices,
+      topologyHeadings,
+      dependencyPairs,
+      waveMentions,
+    };
+  }
+
+  private validateTopologyExtraction(
+    projectKey: string,
+    docs: DocdexDocument[],
+    graph: ServiceDependencyGraph,
+  ): TopologySignalSummary {
+    const topologySignals = this.summarizeTopologySignals(docs);
+    const hasServiceSignals =
+      topologySignals.structureServices.length > 0 ||
+      topologySignals.topologyHeadings.length > 0 ||
+      topologySignals.dependencyPairs.length > 0;
+    if (hasServiceSignals && graph.services.length === 0) {
+      const signalSummary = uniqueStrings([
+        ...topologySignals.structureServices.map((service) => `structure:${service}`),
+        ...topologySignals.topologyHeadings.map((heading) => `heading:${heading}`),
+        ...topologySignals.dependencyPairs.map((pair) => `dependency:${pair}`),
+      ])
+        .slice(0, 8)
+        .join("; ");
+      throw new Error(
+        `create-tasks failed internal topology extraction for project "${projectKey}". SDS includes runtime topology signals but no services were resolved. Signals: ${signalSummary || "unavailable"}`,
+      );
+    }
+    if (topologySignals.waveMentions.length > 0 && graph.startupWaves.length === 0) {
+      throw new Error(
+        `create-tasks failed internal topology extraction for project "${projectKey}". SDS includes startup wave signals but no startup waves were resolved. Signals: ${topologySignals.waveMentions.slice(0, 6).join("; ")}`,
+      );
+    }
+    return topologySignals;
+  }
+
+  private derivePlanningArtifacts(projectKey: string, docs: DocdexDocument[], plan: GeneratedPlan): {
+    discoveryGraph: ServiceDependencyGraph;
+    topologySignals: TopologySignalSummary;
+    serviceCatalog: ServiceCatalogArtifact;
+    projectBuildMethod: string;
+    projectBuildPlan: ProjectBuildPlanArtifact;
+  } {
+    const discoveryGraph = this.buildServiceDependencyGraph(plan, docs);
+    const topologySignals = this.validateTopologyExtraction(projectKey, docs, discoveryGraph);
+    const serviceCatalog = this.buildServiceCatalogArtifact(projectKey, docs, discoveryGraph);
+    const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
+    const projectBuildPlan = this.buildProjectPlanArtifact(projectKey, docs, discoveryGraph, projectBuildMethod);
+    return {
+      discoveryGraph,
+      topologySignals,
+      serviceCatalog,
+      projectBuildMethod,
+      projectBuildPlan,
     };
   }
 
@@ -3178,16 +3233,25 @@ export class CreateTasksService {
     for (const doc of docs) {
       if (!looksLikeSdsDoc(doc)) continue;
       const scanLimit = Math.max(limit * 4, limit + 12);
-      const contentHeadings = extractMarkdownHeadings(doc.content ?? "", scanLimit);
+      const contentHeadings = collectSdsImplementationSignals(doc.content ?? "", {
+        headingLimit: scanLimit,
+        folderLimit: 0,
+      }).sectionHeadings;
       const segmentHeadings = (doc.segments ?? [])
-        .map((segment) => segment.heading?.trim())
+        .map((segment) => normalizeHeadingCandidate(segment.heading?.trim() ?? ""))
         .filter((heading): heading is string => Boolean(heading));
       const segmentContentHeadings = (doc.segments ?? [])
-        .flatMap((segment) => extractMarkdownHeadings(segment.content ?? "", Math.max(12, Math.ceil(scanLimit / 2))))
+        .flatMap((segment) =>
+          collectSdsImplementationSignals(segment.content ?? "", {
+            headingLimit: Math.max(12, Math.ceil(scanLimit / 2)),
+            folderLimit: 0,
+          }).sectionHeadings,
+        )
         .slice(0, scanLimit);
       for (const heading of uniqueStrings([...contentHeadings, ...segmentHeadings, ...segmentContentHeadings])) {
-        const normalized = heading.replace(/[`*_]/g, "").trim();
+        const normalized = normalizeHeadingCandidate(heading);
         if (!normalized) continue;
+        if (!headingLooksImplementationRelevant(normalized)) continue;
         if (/^software design specification$/i.test(normalized)) continue;
         if (/^(?:\d+(?:\.\d+)*\.?\s*)?roles$/i.test(normalized)) continue;
         if (sections.includes(normalized)) continue;
@@ -3984,16 +4048,8 @@ export class CreateTasksService {
     return { epics: planEpics, stories: planStories, tasks: planTasks };
   }
 
-  private buildSdsCoverageReport(projectKey: string, docs: DocdexDocument[], plan: GeneratedPlan): Record<string, unknown> {
-    const sections = this.extractSdsSectionCandidates(docs, SDS_COVERAGE_REPORT_SECTION_LIMIT);
-    const normalize = (value: string): string =>
-      value
-        .toLowerCase()
-        .replace(/[`*_]/g, "")
-        .replace(/[^a-z0-9\s/-]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-    const planCorpus = normalize(
+  private buildCoverageCorpus(plan: GeneratedPlan): string {
+    return normalizeCoverageText(
       [
         ...plan.epics.map((epic) => `${epic.title} ${epic.description ?? ""} ${(epic.acceptanceCriteria ?? []).join(" ")}`),
         ...plan.stories.map(
@@ -4003,36 +4059,138 @@ export class CreateTasksService {
         ...plan.tasks.map((task) => `${task.title} ${task.description ?? ""}`),
       ].join("\n"),
     );
-    const matched: string[] = [];
-    const unmatched: string[] = [];
-    for (const section of sections) {
-      const normalizedSection = normalize(section);
-      if (!normalizedSection) continue;
-      const keywords = normalizedSection
-        .split(/\s+/)
-        .filter((token) => token.length >= 4)
-        .slice(0, 6);
-      const hasDirectMatch = normalizedSection.length >= 6 && planCorpus.includes(normalizedSection);
-      const hasKeywordMatch = keywords.some((keyword) => planCorpus.includes(keyword));
-      if (hasDirectMatch || hasKeywordMatch) {
-        matched.push(section);
-      } else {
-        unmatched.push(section);
+  }
+
+  private collectCoverageAnchorsFromBacklog(backlog: {
+    tasks: Array<{ metadata?: Record<string, unknown> | undefined }>;
+  }): Set<string> {
+    const anchors = new Set<string>();
+    for (const task of backlog.tasks) {
+      const sufficiencyAudit = task.metadata?.sufficiencyAudit as
+        | { anchor?: unknown; anchors?: unknown }
+        | undefined;
+      const anchor = typeof sufficiencyAudit?.anchor === "string" ? sufficiencyAudit.anchor.trim() : "";
+      if (anchor) anchors.add(anchor);
+      if (Array.isArray(sufficiencyAudit?.anchors)) {
+        for (const value of sufficiencyAudit.anchors) {
+          if (typeof value !== "string" || value.trim().length === 0) continue;
+          anchors.add(value.trim());
+        }
       }
     }
-    const totalSections = matched.length + unmatched.length;
-    const coverageRatio = totalSections === 0 ? 1 : matched.length / totalSections;
+    return anchors;
+  }
+
+  private assertCoverageConsistency(
+    projectKey: string,
+    report: {
+      totalSignals: number;
+      coverageRatio: number;
+      missingSectionHeadings: string[];
+      missingFolderEntries: string[];
+    },
+    expected: SdsCoverageSummary,
+  ): void {
+    const sort = (values: string[]): string[] => [...values].sort((left, right) => left.localeCompare(right));
+    const sameSectionGaps =
+      JSON.stringify(sort(report.missingSectionHeadings)) === JSON.stringify(sort(expected.missingSectionHeadings));
+    const sameFolderGaps =
+      JSON.stringify(sort(report.missingFolderEntries)) === JSON.stringify(sort(expected.missingFolderEntries));
+    if (
+      report.totalSignals !== expected.totalSignals ||
+      report.coverageRatio !== expected.coverageRatio ||
+      !sameSectionGaps ||
+      !sameFolderGaps
+    ) {
+      throw new Error(
+        `create-tasks produced inconsistent coverage artifacts for project "${projectKey}". coverage-report.json diverged from task sufficiency coverage.`,
+      );
+    }
+  }
+
+  private async loadExpectedCoverageFromSufficiencyReport(reportPath: string | undefined): Promise<SdsCoverageSummary | undefined> {
+    if (!reportPath) return undefined;
+    try {
+      const raw = await fs.readFile(reportPath, "utf8");
+      const parsed = JSON.parse(raw) as {
+        finalCoverage?: {
+          coverageRatio?: unknown;
+          totalSignals?: unknown;
+          missingSectionHeadings?: unknown;
+          missingFolderEntries?: unknown;
+        };
+      };
+      const finalCoverage = parsed.finalCoverage;
+      if (!finalCoverage) return undefined;
+      if (
+        typeof finalCoverage.coverageRatio !== "number" ||
+        typeof finalCoverage.totalSignals !== "number" ||
+        !Array.isArray(finalCoverage.missingSectionHeadings) ||
+        !Array.isArray(finalCoverage.missingFolderEntries)
+      ) {
+        return undefined;
+      }
+      return {
+        coverageRatio: finalCoverage.coverageRatio,
+        totalSignals: finalCoverage.totalSignals,
+        missingSectionHeadings: finalCoverage.missingSectionHeadings.filter(
+          (value): value is string => typeof value === "string",
+        ),
+        missingFolderEntries: finalCoverage.missingFolderEntries.filter(
+          (value): value is string => typeof value === "string",
+        ),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private buildSdsCoverageReport(
+    projectKey: string,
+    docs: DocdexDocument[],
+    plan: GeneratedPlan,
+    existingAnchors: Set<string> = new Set(),
+  ): Record<string, unknown> {
+    const coverageSignals = collectSdsCoverageSignalsFromDocs(docs, {
+      headingLimit: SDS_COVERAGE_REPORT_SECTION_LIMIT,
+      folderLimit: SDS_COVERAGE_REPORT_FOLDER_LIMIT,
+    });
+    const coverage = evaluateSdsCoverage(
+      this.buildCoverageCorpus(plan),
+      {
+        sectionHeadings: coverageSignals.sectionHeadings,
+        folderEntries: coverageSignals.folderEntries,
+      },
+      existingAnchors,
+    );
+    const matchedSections = coverageSignals.sectionHeadings.filter(
+      (heading) => !coverage.missingSectionHeadings.includes(heading),
+    );
+    const matchedFolderEntries = coverageSignals.folderEntries.filter(
+      (entry) => !coverage.missingFolderEntries.includes(entry),
+    );
     return {
       projectKey,
       generatedAt: new Date().toISOString(),
-      totalSections,
-      matched,
-      unmatched,
-      coverageRatio: Number(coverageRatio.toFixed(4)),
+      totalSignals: coverage.totalSignals,
+      totalSections: coverageSignals.sectionHeadings.length,
+      totalFolderEntries: coverageSignals.folderEntries.length,
+      rawSectionSignals: coverageSignals.rawSectionHeadings.length,
+      rawFolderSignals: coverageSignals.rawFolderEntries.length,
+      skippedHeadingSignals: coverageSignals.skippedHeadingSignals,
+      skippedFolderSignals: coverageSignals.skippedFolderSignals,
+      matched: matchedSections,
+      unmatched: coverage.missingSectionHeadings,
+      matchedSections,
+      missingSectionHeadings: coverage.missingSectionHeadings,
+      matchedFolderEntries,
+      missingFolderEntries: coverage.missingFolderEntries,
+      existingAnchorsCount: existingAnchors.size,
+      coverageRatio: coverage.coverageRatio,
       notes:
-        totalSections === 0
-          ? ["No SDS section headings detected; coverage defaults to 1.0."]
-          : ["Coverage is heading-based heuristic match between SDS sections and generated epic/story/task corpus."],
+        coverage.totalSignals === 0
+          ? ["No actionable SDS implementation signals detected; coverage defaults to 1.0."]
+          : ["Coverage uses the same heading and folder signal model as task-sufficiency-audit."],
     };
   }
 
@@ -4287,6 +4445,10 @@ export class CreateTasksService {
     docs: DocdexDocument[],
     buildPlan: ProjectBuildPlanArtifact,
     serviceCatalog: ServiceCatalogArtifact,
+    options?: {
+      existingCoverageAnchors?: Set<string>;
+      expectedCoverage?: SdsCoverageSummary;
+    },
   ): Promise<{ folder: string }> {
     const baseDir = path.join(this.workspace.mcodaDir, "tasks", projectKey);
     await fs.mkdir(baseDir, { recursive: true });
@@ -4309,7 +4471,16 @@ export class CreateTasksService {
       await write("epics.json", plan.epics);
       await write("stories.json", plan.stories);
       await write("tasks.json", plan.tasks);
-      await write("coverage-report.json", this.buildSdsCoverageReport(projectKey, docs, plan));
+      const coverageReport = this.buildSdsCoverageReport(
+        projectKey,
+        docs,
+        plan,
+        options?.existingCoverageAnchors ?? new Set(),
+      ) as SdsCoverageSummary & Record<string, unknown>;
+      if (options?.expectedCoverage) {
+        this.assertCoverageConsistency(projectKey, coverageReport, options.expectedCoverage);
+      }
+      await write("coverage-report.json", coverageReport);
     } finally {
       await releaseLock();
     }
@@ -4640,6 +4811,8 @@ export class CreateTasksService {
 
         let sdsPreflight: SdsPreflightResult | undefined;
         let sdsPreflightError: string | undefined;
+        let sdsPreflightBlockingReasons: string[] = [];
+        let continueAfterSdsPreflightWarnings = false;
         if (this.sdsPreflightFactory) {
           let sdsPreflightCloseError: string | undefined;
           try {
@@ -4651,7 +4824,7 @@ export class CreateTasksService {
                 inputPaths: options.inputs,
                 sdsPaths: options.inputs,
                 writeArtifacts: true,
-                applyToSds: true,
+                applyToSds: options.sdsPreflightApplyToSds === true,
                 commitAppliedChanges: options.sdsPreflightCommit === true,
                 commitMessage: options.sdsPreflightCommitMessage,
               });
@@ -4713,13 +4886,19 @@ export class CreateTasksService {
           }
           if (blockingReasons.length > 0) {
             sdsPreflightError = blockingReasons.join(" ");
+            sdsPreflightBlockingReasons = [...blockingReasons];
+            continueAfterSdsPreflightWarnings = true;
+            await this.jobService.appendLog(
+              job.id,
+              `SDS preflight reported planning warnings but create-tasks will continue with remediation context: ${blockingReasons.join(" ")} Report: ${sdsPreflight.reportPath}\n`,
+            );
           }
 
           await this.jobService.writeCheckpoint(job.id, {
             stage: "sds_preflight",
             timestamp: new Date().toISOString(),
             details: {
-              status: blockingReasons.length > 0 ? "blocked" : "succeeded",
+              status: blockingReasons.length > 0 ? "continued_with_warnings" : "succeeded",
               error: sdsPreflightError,
               readyForPlanning: sdsPreflight.readyForPlanning,
               qualityStatus: sdsPreflight.qualityStatus,
@@ -4734,19 +4913,17 @@ export class CreateTasksService {
               appliedToSds: sdsPreflight.appliedToSds,
               appliedSdsCount: sdsPreflight.appliedSdsPaths.length,
               commitHash: sdsPreflight.commitHash,
+              blockingReasons,
+              continuedWithWarnings: continueAfterSdsPreflightWarnings,
               warnings: preflightWarnings,
             },
           });
-
-          if (blockingReasons.length > 0) {
-            throw new Error(
-              `create-tasks blocked by SDS preflight. ${blockingReasons.join(" ")} Report: ${sdsPreflight.reportPath}`,
-            );
-          }
         }
 
         const preflightGeneratedDocInputs =
-          sdsPreflight && !sdsPreflight.appliedToSds ? sdsPreflight.generatedDocPaths : [];
+          sdsPreflight && (!sdsPreflight.appliedToSds || continueAfterSdsPreflightWarnings)
+            ? sdsPreflight.generatedDocPaths
+            : [];
         const preflightDocInputs = this.mergeDocInputs(
           options.inputs,
           sdsPreflight ? [...sdsPreflight.sourceSdsPaths, ...preflightGeneratedDocInputs] : [],
@@ -4754,17 +4931,24 @@ export class CreateTasksService {
         const docs = await this.prepareDocs(preflightDocInputs);
         const { docSummary, warnings: indexedDocWarnings } = this.buildDocContext(docs);
         const docWarnings = uniqueStrings([...(sdsPreflight?.warnings ?? []), ...indexedDocWarnings]);
-        const discoveryGraph = this.buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
-        const serviceCatalog = this.buildServiceCatalogArtifact(options.projectKey, docs, discoveryGraph);
-        const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
-        const projectBuildPlan = this.buildProjectPlanArtifact(options.projectKey, docs, discoveryGraph, projectBuildMethod);
+        const initialArtifacts = this.derivePlanningArtifacts(options.projectKey, docs, { epics: [], stories: [], tasks: [] });
+        const { discoveryGraph, topologySignals, serviceCatalog, projectBuildMethod, projectBuildPlan } = initialArtifacts;
         const { prompt } = this.buildPrompt(options.projectKey, docSummary, projectBuildMethod, serviceCatalog, options);
         const qaPreflight = await this.buildQaPreflight();
         const qaOverrides = this.buildQaOverrides(options);
         await this.jobService.writeCheckpoint(job.id, {
           stage: "docs_indexed",
           timestamp: new Date().toISOString(),
-          details: { count: docs.length, warnings: docWarnings, startupWaves: discoveryGraph.startupWaves.slice(0, 8) },
+          details: {
+            count: docs.length,
+            warnings: docWarnings,
+            startupWaves: discoveryGraph.startupWaves.slice(0, 8),
+            topologySignals: {
+              structureServices: topologySignals.structureServices.slice(0, 8),
+              topologyHeadings: topologySignals.topologyHeadings.slice(0, 8),
+              waveMentions: topologySignals.waveMentions.slice(0, 4),
+            },
+          },
         });
         await this.jobService.writeCheckpoint(job.id, {
           stage: "build_plan_defined",
@@ -5003,13 +5187,20 @@ export class CreateTasksService {
 
         const finalBacklog = await this.loadPersistedBacklog(project.id);
         const finalPlan = this.buildPlanFromPersistedBacklog(finalBacklog);
+        const finalArtifacts = this.derivePlanningArtifacts(options.projectKey, docs, finalPlan);
+        const finalCoverageAnchors = this.collectCoverageAnchorsFromBacklog(finalBacklog);
+        const expectedCoverage = await this.loadExpectedCoverageFromSufficiencyReport(sufficiencyAudit?.reportPath);
         await this.writePlanArtifacts(
           options.projectKey,
           finalPlan,
           docSummary,
           docs,
-          projectBuildPlan,
-          serviceCatalog,
+          finalArtifacts.projectBuildPlan,
+          finalArtifacts.serviceCatalog,
+          {
+            existingCoverageAnchors: finalCoverageAnchors,
+            expectedCoverage,
+          },
         );
         await this.jobService.writeCheckpoint(job.id, {
           stage: "plan_refreshed",
@@ -5020,6 +5211,8 @@ export class CreateTasksService {
             stories: finalBacklog.stories.length,
             tasks: finalBacklog.tasks.length,
             dependencies: finalBacklog.dependencies.length,
+            services: finalArtifacts.serviceCatalog.services.length,
+            startupWaves: finalArtifacts.projectBuildPlan.startupWaves.length,
           },
         });
 
@@ -5048,6 +5241,8 @@ export class CreateTasksService {
                   reportPath: sdsPreflight.reportPath,
                   openQuestionsPath: sdsPreflight.openQuestionsPath,
                   gapAddendumPath: sdsPreflight.gapAddendumPath,
+                  blockingReasons: sdsPreflightBlockingReasons,
+                  continuedWithWarnings: continueAfterSdsPreflightWarnings,
                   warnings: sdsPreflight.warnings,
                 }
               : undefined,

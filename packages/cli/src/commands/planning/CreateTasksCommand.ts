@@ -18,6 +18,7 @@ interface ParsedArgs {
   qaEntryUrl?: string;
   qaStartCommand?: string;
   qaRequires?: string[];
+  sdsPreflightApplyToSds: boolean;
   sdsPreflightCommit: boolean;
   sdsPreflightCommitMessage?: string;
   unknownEpicServicePolicy?: "auto-remediate" | "fail";
@@ -26,7 +27,11 @@ interface ParsedArgs {
 
 type ProjectKeyCandidate = { key: string; mtimeMs: number };
 
-const usage = `mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--sds-preflight-commit [true|false]] [--sds-preflight-commit-message <text>] [--unknown-epic-service-policy <auto-remediate|fail>] [--quiet]`;
+export const createTasksUsage = [
+  "mcoda create-tasks [INPUT...] [--workspace-root <path>] [--project-key <key>] [--agent <name>] [--agent-stream [true|false]] [--rate-agents] [--force] [--max-epics N] [--max-stories-per-epic N] [--max-tasks-per-story N] [--qa-profile <csv>] [--qa-entry-url <url>] [--qa-start-command <cmd>] [--qa-requires <csv>] [--sds-preflight-apply [true|false]] [--sds-preflight-commit [true|false]] [--sds-preflight-commit-message <text>] [--unknown-epic-service-policy <auto-remediate|fail>] [--quiet]",
+  "Default: SDS preflight runs in sidecar mode. Use --sds-preflight-apply to write remediations back to SDS sources.",
+  "Use --sds-preflight-commit only together with --sds-preflight-apply.",
+].join("\n");
 
 const readWorkspaceConfig = async (mcodaDir: string): Promise<Record<string, unknown>> => {
   const configPath = path.join(mcodaDir, "config.json");
@@ -163,6 +168,7 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
   let qaEntryUrl: string | undefined;
   let qaStartCommand: string | undefined;
   let qaRequires: string[] | undefined;
+  let sdsPreflightApplyToSds = false;
   let sdsPreflightCommit = false;
   let sdsPreflightCommitMessage: string | undefined;
   let unknownEpicServicePolicy: "auto-remediate" | "fail" | undefined;
@@ -184,6 +190,11 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
       if (arg.startsWith("--sds-preflight-commit=")) {
         const [, raw] = arg.split("=", 2);
         sdsPreflightCommit = parseBooleanFlag(raw, true);
+        continue;
+      }
+      if (arg.startsWith("--sds-preflight-apply=")) {
+        const [, raw] = arg.split("=", 2);
+        sdsPreflightApplyToSds = parseBooleanFlag(raw, true);
         continue;
       }
       if (arg.startsWith("--unknown-epic-service-policy=")) {
@@ -281,6 +292,16 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
           sdsPreflightCommitMessage = argv[i + 1];
           i += 1;
           break;
+        case "--sds-preflight-apply": {
+          const next = argv[i + 1];
+          if (next && !next.startsWith("--")) {
+            sdsPreflightApplyToSds = parseBooleanFlag(next, true);
+            i += 1;
+          } else {
+            sdsPreflightApplyToSds = true;
+          }
+          break;
+        }
         case "--unknown-epic-service-policy": {
           const value = argv[i + 1];
           const normalizedPolicy = normalizePolicy(value);
@@ -302,7 +323,7 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
         case "--help":
         case "-h":
           // eslint-disable-next-line no-console
-          console.log(usage);
+          console.log(createTasksUsage);
           process.exit(0);
           break;
         default:
@@ -311,6 +332,13 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     } else {
       inputs.push(arg);
     }
+  }
+
+  if (sdsPreflightCommit && !sdsPreflightApplyToSds) {
+    throw new Error("--sds-preflight-commit requires --sds-preflight-apply.");
+  }
+  if (sdsPreflightCommitMessage && !sdsPreflightCommit) {
+    throw new Error("--sds-preflight-commit-message requires --sds-preflight-commit.");
   }
 
   return {
@@ -328,6 +356,7 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     qaEntryUrl,
     qaStartCommand,
     qaRequires,
+    sdsPreflightApplyToSds,
     sdsPreflightCommit,
     sdsPreflightCommitMessage,
     unknownEpicServicePolicy,
@@ -382,6 +411,7 @@ export class CreateTasksCommand {
         qaEntryUrl: parsed.qaEntryUrl,
         qaStartCommand: parsed.qaStartCommand,
         qaRequires: parsed.qaRequires,
+        sdsPreflightApplyToSds: parsed.sdsPreflightApplyToSds,
         sdsPreflightCommit: parsed.sdsPreflightCommit,
         sdsPreflightCommitMessage: parsed.sdsPreflightCommitMessage,
         unknownEpicServicePolicy: parsed.unknownEpicServicePolicy,

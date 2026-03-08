@@ -498,6 +498,59 @@ test("task-sufficiency-audit avoids arbitrary implementation targets for broad s
       "# Software Design Specification",
       "## 7.2 System Resilience Envelope",
       "Folder tree:",
+      "- docs/data-storage-architecture.md",
+    ].join("\n"),
+    "utf8",
+  );
+  const { projectId } = await seedBacklog("proj", {
+    taskTitle: "Document release notes",
+    taskDescription: "Capture release notes only.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      maxIterations: 1,
+      maxTasksPerIteration: 6,
+      minCoverageRatio: 0.99,
+    });
+    assert.equal(result.satisfied, false);
+    assert.equal(result.totalTasksAdded, 0);
+    assert.ok(
+      result.remainingSectionHeadings.some((heading) => /system resilience envelope/i.test(heading)),
+      `expected unresolved section heading, got ${JSON.stringify(result.remainingSectionHeadings)}`,
+    );
+    assert.ok(
+      result.warnings.some((warning) => /no concrete implementation targets were inferred/i.test(warning)),
+      `expected unresolved-target warning, got ${JSON.stringify(result.warnings)}`,
+    );
+
+    const repo = await WorkspaceRepository.create(workspaceRoot);
+    try {
+      const rows = await repo.getDb().all<{ metadata_json?: string | null }[]>(
+        `SELECT metadata_json FROM tasks WHERE project_id = ? ORDER BY key`,
+        projectId,
+      );
+      const sufficiencyRows = rows
+        .map((row) => (row.metadata_json ? JSON.parse(row.metadata_json) : {}))
+        .filter((metadata) => metadata?.sufficiencyAudit?.source === "task-sufficiency-audit");
+      assert.equal(sufficiencyRows.length, 0);
+    } finally {
+      await repo.close();
+    }
+  } finally {
+    await service.close();
+  }
+});
+
+test("task-sufficiency-audit leaves section-only gaps unresolved when only unrelated folder targets are actionable", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## 7.2 System Resilience Envelope",
+      "Folder tree:",
       "- scripts/promote-standby.sh",
       "- docs/data-storage-architecture.md",
     ].join("\n"),
@@ -509,40 +562,50 @@ test("task-sufficiency-audit avoids arbitrary implementation targets for broad s
   });
   const service = await TaskSufficiencyService.create(workspace);
   try {
-    await service.runAudit({
+    const result = await service.runAudit({
       workspace,
       projectKey: "proj",
       maxIterations: 1,
       maxTasksPerIteration: 6,
       minCoverageRatio: 0.99,
     });
+    assert.equal(result.satisfied, false);
+    assert.ok(
+      result.remainingSectionHeadings.some((heading) => /system resilience envelope/i.test(heading)),
+      `expected unresolved section heading, got ${JSON.stringify(result.remainingSectionHeadings)}`,
+    );
+    assert.ok(
+      result.warnings.some((warning) => /no concrete implementation targets were inferred/i.test(warning)),
+      `expected unresolved-target warning, got ${JSON.stringify(result.warnings)}`,
+    );
     const repo = await WorkspaceRepository.create(workspaceRoot);
     try {
       const rows = await repo.getDb().all<
         { title: string; description: string; metadata_json?: string | null }[]
       >(`SELECT title, description, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`, projectId);
-      const sectionRows = rows
+      const sufficiencyRows = rows
         .map((row) => ({
           title: row.title,
           description: row.description,
           metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
         }))
-        .filter((row) => row.metadata?.sufficiencyAudit?.source === "task-sufficiency-audit")
+        .filter((row) => row.metadata?.sufficiencyAudit?.source === "task-sufficiency-audit");
+      const sectionRows = sufficiencyRows
         .filter((row) => row.metadata?.sufficiencyAudit?.kind !== "folder");
 
-      assert.ok(sectionRows.length > 0);
       assert.ok(
-        sectionRows.every((row) => (row.metadata?.sufficiencyAudit?.implementationTargets ?? []).length === 0),
-        `section gaps should not invent concrete targets: ${JSON.stringify(sectionRows.map((row) => row.metadata))}`,
+        sufficiencyRows.length > 0,
+        "expected at least one actionable folder remediation task to be generated",
+      );
+      assert.equal(sectionRows.length, 0);
+      assert.ok(
+        sufficiencyRows.every((row) => (row.metadata?.sufficiencyAudit?.implementationTargets ?? []).length > 0),
+        `all sufficiency tasks must have concrete targets: ${JSON.stringify(sufficiencyRows.map((row) => row.metadata))}`,
       );
       assert.ok(
-        sectionRows.every((row) => !/scripts\/promote-standby\.sh|docs\/data-storage-architecture\.md/i.test(row.title)),
+        sufficiencyRows.every((row) => !/No direct file path was recovered/i.test(row.description)),
+        `placeholder wording should be removed: ${JSON.stringify(sufficiencyRows.map((row) => row.description))}`,
       );
-      assert.ok(
-        sectionRows.some((row) => /system resilience envelope/i.test(row.title)),
-        `expected anchor-driven title, got ${JSON.stringify(sectionRows.map((row) => row.title))}`,
-      );
-      assert.ok(sectionRows.every((row) => row.description.includes("No direct file path was recovered")));
     } finally {
       await repo.close();
     }
