@@ -136,6 +136,7 @@ test("task-sufficiency-audit run resolves configured project key and emits JSON 
           totalTasksUpdated: 0,
           maxIterations: 5,
           minCoverageRatio: 0.96,
+          finalTotalSignals: 12,
           finalCoverageRatio: 1,
           remainingSectionHeadings: [],
           remainingFolderEntries: [],
@@ -144,6 +145,7 @@ test("task-sufficiency-audit run resolves configured project key and emits JSON 
             folders: 0,
             total: 0,
           },
+          unresolvedBundles: [],
           iterations: [],
           reportPath: path.join(mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json"),
           reportHistoryPath: path.join(mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
@@ -160,9 +162,16 @@ test("task-sufficiency-audit run resolves configured project key and emits JSON 
       await TaskSufficiencyAuditCommand.run(["--workspace-root", workspaceRoot, "--json"]);
       assert.equal(capturedProjectKey, "CFG");
       assert.ok(logs.length >= 1);
-      const payload = JSON.parse(logs[logs.length - 1] ?? "{}") as { projectKey?: string; satisfied?: boolean };
+      const payload = JSON.parse(logs[logs.length - 1] ?? "{}") as {
+        projectKey?: string;
+        satisfied?: boolean;
+        unresolvedBundles?: unknown[];
+        finalTotalSignals?: number;
+      };
       assert.equal(payload.projectKey, "CFG");
       assert.equal(payload.satisfied, true);
+      assert.equal(payload.finalTotalSignals, 12);
+      assert.deepEqual(payload.unresolvedBundles, []);
     } finally {
       (WorkspaceResolver as any).resolveWorkspace = originalResolveWorkspace;
       (TaskSufficiencyService as any).create = originalCreate;

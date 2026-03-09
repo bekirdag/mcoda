@@ -159,6 +159,21 @@ type TopologySignalSummary = {
   waveMentions: string[];
 };
 
+type SourceTopologyExpectation = {
+  runtimeBearing: boolean;
+  services: string[];
+  startupWaves: Array<{ wave: number; services: string[] }>;
+  dependencyPairs: string[];
+  signalSummary: TopologySignalSummary;
+};
+
+type CanonicalNameInventory = {
+  paths: string[];
+  pathSet: Set<string>;
+  services: string[];
+  serviceAliases: Map<string, Set<string>>;
+};
+
 type ServiceCatalogEntry = {
   id: string;
   name: string;
@@ -2037,9 +2052,15 @@ export class CreateTasksService {
   private buildServiceDependencyGraph(plan: GeneratedPlan, docs: DocdexDocument[]): ServiceDependencyGraph {
     const aliases = new Map<string, Set<string>>();
     const dependencies = new Map<string, Set<string>>();
+    const sourceBackedServices = new Set<string>();
     const register = (value: string | undefined): string | undefined => {
       if (!value) return undefined;
       return this.addServiceAlias(aliases, value);
+    };
+    const registerSourceBacked = (value: string | undefined): string | undefined => {
+      const canonical = register(value);
+      if (canonical) sourceBackedServices.add(canonical);
+      return canonical;
     };
     const docsText = docs
       .map((doc) => [doc.title, doc.path, doc.content, ...(doc.segments ?? []).map((segment) => segment.content)].filter(Boolean).join("\n"))
@@ -2064,11 +2085,20 @@ export class CreateTasksService {
       ) {
         continue;
       }
-      register(this.deriveServiceFromPathToken(token));
+      registerSourceBacked(this.deriveServiceFromPathToken(token));
     }
-    for (const match of docsText.matchAll(SERVICE_HANDLE_PATTERN)) register(match[1]);
-    for (const match of planText.matchAll(SERVICE_HANDLE_PATTERN)) register(match[1]);
-    for (const mention of this.extractServiceMentionsFromText(planText)) register(mention);
+    for (const match of docsText.matchAll(SERVICE_HANDLE_PATTERN)) registerSourceBacked(match[1]);
+    const docsHaveRuntimeTopologySignals =
+      sourceBackedServices.size > 0 &&
+      (structureTargets.directories.length > 0 ||
+        structureTargets.files.length > 0 ||
+        this.collectDependencyStatements(docsText).length > 0 ||
+        WAVE_LABEL_PATTERN.test(docsText) ||
+        TOPOLOGY_HEADING_PATTERN.test(docsText));
+    if (!docsHaveRuntimeTopologySignals) {
+      for (const match of planText.matchAll(SERVICE_HANDLE_PATTERN)) register(match[1]);
+      for (const mention of this.extractServiceMentionsFromText(planText)) register(mention);
+    }
     const corpus = [docsText, planText].filter(Boolean);
     for (const text of corpus) {
       const statements = this.collectDependencyStatements(text);
@@ -2123,37 +2153,269 @@ export class CreateTasksService {
     };
   }
 
+  private buildSourceTopologyExpectation(docs: DocdexDocument[]): SourceTopologyExpectation {
+    const signalSummary = this.summarizeTopologySignals(docs);
+    const docsOnlyGraph = this.buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+    return {
+      runtimeBearing:
+        docsOnlyGraph.services.length > 0 ||
+        docsOnlyGraph.startupWaves.length > 0 ||
+        signalSummary.dependencyPairs.length > 0,
+      services: docsOnlyGraph.services,
+      startupWaves: docsOnlyGraph.startupWaves.map((wave) => ({
+        wave: wave.wave,
+        services: [...wave.services],
+      })),
+      dependencyPairs: signalSummary.dependencyPairs,
+      signalSummary,
+    };
+  }
+
+  private buildCanonicalNameInventory(docs: DocdexDocument[]): CanonicalNameInventory {
+    const structureTargets = this.extractStructureTargets(docs);
+    const paths = uniqueStrings(
+      [...structureTargets.directories, ...structureTargets.files]
+        .map((token) => this.normalizeStructurePathToken(token))
+        .filter((value): value is string => Boolean(value)),
+    ).sort((a, b) => a.length - b.length || a.localeCompare(b));
+    const graph = this.buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+    const serviceAliases = new Map<string, Set<string>>();
+    for (const [service, aliases] of graph.aliases.entries()) {
+      serviceAliases.set(service, new Set(aliases));
+    }
+    for (const service of graph.services) {
+      const existing = serviceAliases.get(service) ?? new Set<string>();
+      existing.add(service);
+      serviceAliases.set(service, existing);
+    }
+    return {
+      paths,
+      pathSet: new Set(paths),
+      services: [...graph.services],
+      serviceAliases,
+    };
+  }
+
+  private countCommonPrefixSegments(left: string[], right: string[]): number {
+    let count = 0;
+    while (count < left.length && count < right.length && left[count] === right[count]) {
+      count += 1;
+    }
+    return count;
+  }
+
+  private countCommonSuffixSegments(left: string[], right: string[], prefixFloor = 0): number {
+    let count = 0;
+    while (
+      count < left.length - prefixFloor &&
+      count < right.length - prefixFloor &&
+      left[left.length - 1 - count] === right[right.length - 1 - count]
+    ) {
+      count += 1;
+    }
+    return count;
+  }
+
+  private tokenizeCanonicalName(value: string): string[] {
+    return this.normalizeServiceLookupKey(value)
+      .split(" ")
+      .map((token) => token.trim())
+      .filter(Boolean);
+  }
+
+  private namesSemanticallyCollide(candidate: string, canonical: string): boolean {
+    const candidateTokens = this.tokenizeCanonicalName(candidate);
+    const canonicalTokens = this.tokenizeCanonicalName(canonical);
+    if (candidateTokens.length === 0 || canonicalTokens.length === 0) return false;
+    const canonicalSet = new Set(canonicalTokens);
+    const shared = candidateTokens.filter((token) => canonicalSet.has(token));
+    if (shared.length === 0) return false;
+    if (shared.length === Math.min(candidateTokens.length, canonicalTokens.length)) return true;
+    const candidateNormalized = candidateTokens.join(" ");
+    const canonicalNormalized = canonicalTokens.join(" ");
+    return (
+      candidateNormalized.includes(canonicalNormalized) || canonicalNormalized.includes(candidateNormalized)
+    );
+  }
+
+  private findCanonicalPathConflict(
+    candidatePath: string,
+    inventory: CanonicalNameInventory,
+  ): { canonicalPath: string; canonicalService?: string } | undefined {
+    if (!candidatePath || inventory.pathSet.has(candidatePath)) return undefined;
+    const candidateParts = candidatePath.split("/").filter(Boolean);
+    let bestMatch:
+      | {
+          canonicalPath: string;
+          canonicalService?: string;
+          score: number;
+        }
+      | undefined;
+    for (const canonicalPath of inventory.paths) {
+      if (candidatePath === canonicalPath) continue;
+      const canonicalParts = canonicalPath.split("/").filter(Boolean);
+      const sharedPrefix = this.countCommonPrefixSegments(candidateParts, canonicalParts);
+      if (sharedPrefix === 0) continue;
+      const sharedSuffix = this.countCommonSuffixSegments(candidateParts, canonicalParts, sharedPrefix);
+      if (sharedSuffix === 0) continue;
+      const candidateCore = candidateParts.slice(sharedPrefix, candidateParts.length - sharedSuffix);
+      const canonicalCore = canonicalParts.slice(sharedPrefix, canonicalParts.length - sharedSuffix);
+      if (candidateCore.length !== 1 || canonicalCore.length !== 1) continue;
+      const candidateSegment = candidateCore[0] ?? "";
+      const canonicalSegment = canonicalCore[0] ?? "";
+      if (!this.namesSemanticallyCollide(candidateSegment, canonicalSegment)) continue;
+      const candidateService = this.deriveServiceFromPathToken(candidatePath);
+      const canonicalService = this.deriveServiceFromPathToken(canonicalPath);
+      if (
+        candidateService &&
+        canonicalService &&
+        candidateService !== canonicalService &&
+        !this.namesSemanticallyCollide(candidateService, canonicalService)
+      ) {
+        continue;
+      }
+      const score = sharedPrefix + sharedSuffix;
+      if (!bestMatch || score > bestMatch.score || (score === bestMatch.score && canonicalPath.length > bestMatch.canonicalPath.length)) {
+        bestMatch = { canonicalPath, canonicalService, score };
+      }
+    }
+    return bestMatch ? { canonicalPath: bestMatch.canonicalPath, canonicalService: bestMatch.canonicalService } : undefined;
+  }
+
+  private collectCanonicalPlanSources(plan: GeneratedPlan): Array<{ location: string; text: string }> {
+    const sources: Array<{ location: string; text: string }> = [];
+    for (const epic of plan.epics) {
+      sources.push({
+        location: `epic:${epic.localId}`,
+        text: [epic.title, epic.description, ...(epic.acceptanceCriteria ?? []), ...(epic.serviceIds ?? []), ...(epic.tags ?? [])]
+          .filter(Boolean)
+          .join("\n"),
+      });
+    }
+    for (const story of plan.stories) {
+      sources.push({
+        location: `story:${story.epicLocalId}/${story.localId}`,
+        text: [story.title, story.userStory, story.description, ...(story.acceptanceCriteria ?? [])]
+          .filter(Boolean)
+          .join("\n"),
+      });
+    }
+    for (const task of plan.tasks) {
+      sources.push({
+        location: `task:${task.epicLocalId}/${task.storyLocalId}/${task.localId}`,
+        text: [
+          task.title,
+          task.description,
+          ...(task.relatedDocs ?? []),
+          ...(task.unitTests ?? []),
+          ...(task.componentTests ?? []),
+          ...(task.integrationTests ?? []),
+          ...(task.apiTests ?? []),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      });
+    }
+    return sources.filter((source) => source.text.trim().length > 0);
+  }
+
+  private assertCanonicalNameConsistency(projectKey: string, docs: DocdexDocument[], plan: GeneratedPlan): void {
+    const inventory = this.buildCanonicalNameInventory(docs);
+    if (inventory.paths.length === 0 && inventory.services.length === 0) return;
+    const conflicts = new Map<string, { location: string; candidate: string; canonical: string }>();
+    for (const source of this.collectCanonicalPlanSources(plan)) {
+      const candidatePaths = uniqueStrings(
+        filterImplementationStructuredPaths(extractStructuredPaths(source.text, 256))
+          .map((token) => this.normalizeStructurePathToken(token))
+          .filter((value): value is string => Boolean(value)),
+      );
+      for (const candidatePath of candidatePaths) {
+        if (inventory.pathSet.has(candidatePath)) continue;
+        const conflict = this.findCanonicalPathConflict(candidatePath, inventory);
+        if (!conflict) continue;
+        const key = `${source.location}|${candidatePath}|${conflict.canonicalPath}`;
+        conflicts.set(key, {
+          location: source.location,
+          candidate: candidatePath,
+          canonical: conflict.canonicalPath,
+        });
+      }
+    }
+    if (conflicts.size === 0) return;
+    const summary = Array.from(conflicts.values())
+      .slice(0, 8)
+      .map((conflict) => `${conflict.location}: ${conflict.candidate} -> ${conflict.canonical}`)
+      .join("; ");
+    throw new Error(
+      `create-tasks failed canonical name validation for project "${projectKey}". Undocumented alternate implementation paths conflict with source-backed canonical names: ${summary}`,
+    );
+  }
+
+  private formatTopologySignalSummary(signalSummary: TopologySignalSummary): string {
+    return uniqueStrings([
+      ...signalSummary.structureServices.map((service) => `structure:${service}`),
+      ...signalSummary.topologyHeadings.map((heading) => `heading:${heading}`),
+      ...signalSummary.dependencyPairs.map((pair) => `dependency:${pair}`),
+      ...signalSummary.waveMentions.map((wave) => `wave:${wave}`),
+    ])
+      .slice(0, 10)
+      .join("; ");
+  }
+
   private validateTopologyExtraction(
     projectKey: string,
-    docs: DocdexDocument[],
+    expectation: SourceTopologyExpectation,
     graph: ServiceDependencyGraph,
   ): TopologySignalSummary {
-    const topologySignals = this.summarizeTopologySignals(docs);
-    const hasServiceSignals =
-      topologySignals.structureServices.length > 0 ||
-      topologySignals.topologyHeadings.length > 0 ||
-      topologySignals.dependencyPairs.length > 0;
-    if (hasServiceSignals && graph.services.length === 0) {
-      const signalSummary = uniqueStrings([
-        ...topologySignals.structureServices.map((service) => `structure:${service}`),
-        ...topologySignals.topologyHeadings.map((heading) => `heading:${heading}`),
-        ...topologySignals.dependencyPairs.map((pair) => `dependency:${pair}`),
-      ])
-        .slice(0, 8)
-        .join("; ");
+    const topologySignals = expectation.signalSummary;
+    if (!expectation.runtimeBearing) return topologySignals;
+    if (graph.services.length === 0) {
       throw new Error(
-        `create-tasks failed internal topology extraction for project "${projectKey}". SDS includes runtime topology signals but no services were resolved. Signals: ${signalSummary || "unavailable"}`,
+        `create-tasks failed internal topology extraction for project "${projectKey}". SDS includes runtime topology signals but no services were resolved. Signals: ${this.formatTopologySignalSummary(topologySignals) || "unavailable"}`,
       );
     }
-    if (topologySignals.waveMentions.length > 0 && graph.startupWaves.length === 0) {
+    const missingServices = expectation.services.filter((service) => !graph.services.includes(service));
+    if (missingServices.length > 0) {
+      throw new Error(
+        `create-tasks failed internal topology extraction for project "${projectKey}". Final planning artifacts lost source-backed services: ${missingServices.slice(0, 8).join(", ")}.`,
+      );
+    }
+    if (expectation.startupWaves.length > 0 && graph.startupWaves.length === 0) {
       throw new Error(
         `create-tasks failed internal topology extraction for project "${projectKey}". SDS includes startup wave signals but no startup waves were resolved. Signals: ${topologySignals.waveMentions.slice(0, 6).join("; ")}`,
+      );
+    }
+    const graphServicesByWave = new Map(
+      graph.startupWaves.map((wave) => [wave.wave, new Set(wave.services)] as const),
+    );
+    const missingWaves = expectation.startupWaves
+      .map((wave) => wave.wave)
+      .filter((wave) => !graphServicesByWave.has(wave));
+    if (missingWaves.length > 0) {
+      throw new Error(
+        `create-tasks failed internal topology extraction for project "${projectKey}". Final planning artifacts lost source-backed startup waves: ${missingWaves.slice(0, 8).join(", ")}.`,
+      );
+    }
+    const missingWaveServices = expectation.startupWaves.flatMap((wave) => {
+      const actualServices = graphServicesByWave.get(wave.wave);
+      return wave.services
+        .filter((service) => !(actualServices?.has(service) ?? false))
+        .map((service) => `wave ${wave.wave}:${service}`);
+    });
+    if (missingWaveServices.length > 0) {
+      throw new Error(
+        `create-tasks failed internal topology extraction for project "${projectKey}". Final planning artifacts lost source-backed startup wave services: ${missingWaveServices.slice(0, 8).join(", ")}.`,
       );
     }
     return topologySignals;
   }
 
-  private derivePlanningArtifacts(projectKey: string, docs: DocdexDocument[], plan: GeneratedPlan): {
+  private derivePlanningArtifacts(
+    projectKey: string,
+    docs: DocdexDocument[],
+    plan: GeneratedPlan,
+    expectation: SourceTopologyExpectation = this.buildSourceTopologyExpectation(docs),
+  ): {
     discoveryGraph: ServiceDependencyGraph;
     topologySignals: TopologySignalSummary;
     serviceCatalog: ServiceCatalogArtifact;
@@ -2161,7 +2423,7 @@ export class CreateTasksService {
     projectBuildPlan: ProjectBuildPlanArtifact;
   } {
     const discoveryGraph = this.buildServiceDependencyGraph(plan, docs);
-    const topologySignals = this.validateTopologyExtraction(projectKey, docs, discoveryGraph);
+    const topologySignals = this.validateTopologyExtraction(projectKey, expectation, discoveryGraph);
     const serviceCatalog = this.buildServiceCatalogArtifact(projectKey, docs, discoveryGraph);
     const projectBuildMethod = this.buildProjectConstructionMethod(docs, discoveryGraph);
     const projectBuildPlan = this.buildProjectPlanArtifact(projectKey, docs, discoveryGraph, projectBuildMethod);
@@ -4108,11 +4370,68 @@ export class CreateTasksService {
     }
   }
 
+  private assertPlanningArtifactConsistency(
+    projectKey: string,
+    buildPlan: ProjectBuildPlanArtifact,
+    serviceCatalog: ServiceCatalogArtifact,
+  ): void {
+    const sort = (values: string[]): string[] => [...values].sort((left, right) => left.localeCompare(right));
+    const catalogSourceDocs = sort(uniqueStrings(serviceCatalog.sourceDocs));
+    const buildPlanSourceDocs = sort(uniqueStrings(buildPlan.sourceDocs));
+    if (JSON.stringify(catalogSourceDocs) !== JSON.stringify(buildPlanSourceDocs)) {
+      throw new Error(
+        `create-tasks produced inconsistent planning artifacts for project "${projectKey}". build-plan.json and services.json disagree on source docs.`,
+      );
+    }
+
+    const catalogServiceNames = serviceCatalog.services.map((service) => service.name);
+    const catalogServiceIds = serviceCatalog.services.map((service) => service.id);
+    const expectedBuildPlanServiceNames = catalogServiceNames.slice(0, buildPlan.services.length);
+    const expectedBuildPlanServiceIds = catalogServiceIds.slice(0, buildPlan.serviceIds.length);
+    if (
+      JSON.stringify(buildPlan.services) !== JSON.stringify(expectedBuildPlanServiceNames) ||
+      JSON.stringify(buildPlan.serviceIds) !== JSON.stringify(expectedBuildPlanServiceIds)
+    ) {
+      throw new Error(
+        `create-tasks produced inconsistent planning artifacts for project "${projectKey}". build-plan.json and services.json disagree on service identity ordering.`,
+      );
+    }
+
+    const catalogServicesByName = new Map(serviceCatalog.services.map((service) => [service.name, service] as const));
+    const unknownWaveServices = buildPlan.startupWaves.flatMap((wave) =>
+      wave.services
+        .filter((serviceName) => !catalogServicesByName.has(serviceName))
+        .map((serviceName) => `wave ${wave.wave}:${serviceName}`),
+    );
+    if (unknownWaveServices.length > 0) {
+      throw new Error(
+        `create-tasks produced inconsistent planning artifacts for project "${projectKey}". build-plan.json references services missing from services.json: ${unknownWaveServices.slice(0, 8).join(", ")}.`,
+      );
+    }
+  }
+
   private async loadExpectedCoverageFromSufficiencyReport(reportPath: string | undefined): Promise<SdsCoverageSummary | undefined> {
     if (!reportPath) return undefined;
+    let raw: string;
     try {
-      const raw = await fs.readFile(reportPath, "utf8");
-      const parsed = JSON.parse(raw) as {
+      raw = await fs.readFile(reportPath, "utf8");
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error);
+      throw new Error(
+        `create-tasks failed to load task sufficiency coverage report from "${reportPath}": ${message}`,
+      );
+    }
+
+    let parsed: {
+      finalCoverage?: {
+        coverageRatio?: unknown;
+        totalSignals?: unknown;
+        missingSectionHeadings?: unknown;
+        missingFolderEntries?: unknown;
+      };
+    };
+    try {
+      parsed = JSON.parse(raw) as {
         finalCoverage?: {
           coverageRatio?: unknown;
           totalSignals?: unknown;
@@ -4120,29 +4439,35 @@ export class CreateTasksService {
           missingFolderEntries?: unknown;
         };
       };
-      const finalCoverage = parsed.finalCoverage;
-      if (!finalCoverage) return undefined;
-      if (
-        typeof finalCoverage.coverageRatio !== "number" ||
-        typeof finalCoverage.totalSignals !== "number" ||
-        !Array.isArray(finalCoverage.missingSectionHeadings) ||
-        !Array.isArray(finalCoverage.missingFolderEntries)
-      ) {
-        return undefined;
-      }
-      return {
-        coverageRatio: finalCoverage.coverageRatio,
-        totalSignals: finalCoverage.totalSignals,
-        missingSectionHeadings: finalCoverage.missingSectionHeadings.filter(
-          (value): value is string => typeof value === "string",
-        ),
-        missingFolderEntries: finalCoverage.missingFolderEntries.filter(
-          (value): value is string => typeof value === "string",
-        ),
-      };
-    } catch {
-      return undefined;
+    } catch (error) {
+      const message = (error as Error)?.message ?? String(error);
+      throw new Error(
+        `create-tasks failed to parse task sufficiency coverage report from "${reportPath}": ${message}`,
+      );
     }
+
+    const finalCoverage = parsed.finalCoverage;
+    if (
+      !finalCoverage ||
+      typeof finalCoverage.coverageRatio !== "number" ||
+      typeof finalCoverage.totalSignals !== "number" ||
+      !Array.isArray(finalCoverage.missingSectionHeadings) ||
+      !Array.isArray(finalCoverage.missingFolderEntries)
+    ) {
+      throw new Error(
+        `create-tasks failed to load task sufficiency coverage report from "${reportPath}": finalCoverage is incomplete.`,
+      );
+    }
+    return {
+      coverageRatio: finalCoverage.coverageRatio,
+      totalSignals: finalCoverage.totalSignals,
+      missingSectionHeadings: finalCoverage.missingSectionHeadings.filter(
+        (value): value is string => typeof value === "string",
+      ),
+      missingFolderEntries: finalCoverage.missingFolderEntries.filter(
+        (value): value is string => typeof value === "string",
+      ),
+    };
   }
 
   private buildSdsCoverageReport(
@@ -4454,6 +4779,7 @@ export class CreateTasksService {
     await fs.mkdir(baseDir, { recursive: true });
     const releaseLock = await this.acquirePlanArtifactLock(baseDir);
     try {
+      this.assertCanonicalNameConsistency(projectKey, docs, plan);
       const write = async (file: string, data: unknown) => {
         const target = path.join(baseDir, file);
         await this.writeJsonArtifactAtomic(target, data);
@@ -4471,6 +4797,7 @@ export class CreateTasksService {
       await write("epics.json", plan.epics);
       await write("stories.json", plan.stories);
       await write("tasks.json", plan.tasks);
+      this.assertPlanningArtifactConsistency(projectKey, buildPlan, serviceCatalog);
       const coverageReport = this.buildSdsCoverageReport(
         projectKey,
         docs,
@@ -4931,7 +5258,13 @@ export class CreateTasksService {
         const docs = await this.prepareDocs(preflightDocInputs);
         const { docSummary, warnings: indexedDocWarnings } = this.buildDocContext(docs);
         const docWarnings = uniqueStrings([...(sdsPreflight?.warnings ?? []), ...indexedDocWarnings]);
-        const initialArtifacts = this.derivePlanningArtifacts(options.projectKey, docs, { epics: [], stories: [], tasks: [] });
+        const sourceTopologyExpectation = this.buildSourceTopologyExpectation(docs);
+        const initialArtifacts = this.derivePlanningArtifacts(
+          options.projectKey,
+          docs,
+          { epics: [], stories: [], tasks: [] },
+          sourceTopologyExpectation,
+        );
         const { discoveryGraph, topologySignals, serviceCatalog, projectBuildMethod, projectBuildPlan } = initialArtifacts;
         const { prompt } = this.buildPrompt(options.projectKey, docSummary, projectBuildMethod, serviceCatalog, options);
         const qaPreflight = await this.buildQaPreflight();
@@ -5170,6 +5503,7 @@ export class CreateTasksService {
               remainingSectionCount: sufficiencyAudit.remainingSectionHeadings.length,
               remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
               remainingGapCount: sufficiencyAudit.remainingGaps.total,
+              unresolvedBundleCount: sufficiencyAudit.unresolvedBundles.length,
               warnings: sufficiencyWarnings,
             },
           });
@@ -5187,7 +5521,12 @@ export class CreateTasksService {
 
         const finalBacklog = await this.loadPersistedBacklog(project.id);
         const finalPlan = this.buildPlanFromPersistedBacklog(finalBacklog);
-        const finalArtifacts = this.derivePlanningArtifacts(options.projectKey, docs, finalPlan);
+        const finalArtifacts = this.derivePlanningArtifacts(
+          options.projectKey,
+          docs,
+          finalPlan,
+          sourceTopologyExpectation,
+        );
         const finalCoverageAnchors = this.collectCoverageAnchorsFromBacklog(finalBacklog);
         const expectedCoverage = await this.loadExpectedCoverageFromSufficiencyReport(sufficiencyAudit?.reportPath);
         await this.writePlanArtifacts(
@@ -5259,6 +5598,7 @@ export class CreateTasksService {
                   remainingSectionCount: sufficiencyAudit.remainingSectionHeadings.length,
                   remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
                   remainingGapCount: sufficiencyAudit.remainingGaps.total,
+                  unresolvedBundleCount: sufficiencyAudit.unresolvedBundles.length,
                   warnings: sufficiencyAudit.warnings,
                 }
               : undefined,

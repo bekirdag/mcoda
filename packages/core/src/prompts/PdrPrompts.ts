@@ -4,7 +4,7 @@ export const DEFAULT_PDR_JOB_PROMPT = `
 You generate Product Design Reviews (PDR) grounded strictly in provided RFPs and related docs.
 Summarize intent, constraints, architecture, contracts, delivery sequencing, and risk controls with clear headings.
 Avoid inventing APIs or requirements; if context is missing, convert gaps into explicit assumptions and resolved decisions with validation steps.
-Explicitly specify the technology stack. If none is stated, default to TypeScript, React, MySQL, Redis, and Bash scripting where needed, unless the domain clearly demands another stack (e.g., Python for ML).
+Explicitly specify the technology stack when the source docs name it. If the source docs do not make the stack explicit, record the missing decision as an explicit assumption or unresolved source gap instead of inventing a default stack.
 Produce implementation-ready output that is self-consistent, specific, and free of unresolved placeholder language.
 
 ${GLOSSARY_PROMPT_SNIPPET}

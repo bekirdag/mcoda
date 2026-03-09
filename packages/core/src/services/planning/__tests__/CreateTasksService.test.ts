@@ -445,6 +445,12 @@ class StubTaskSufficiencyService {
         folders: 0,
         total: 0,
       },
+      unresolvedBundles: [] as Array<{
+        kind: "section" | "folder" | "mixed";
+        domain: string;
+        values: string[];
+        anchors: string[];
+      }>,
       iterations: [
         {
           iteration: 1,
@@ -452,11 +458,12 @@ class StubTaskSufficiencyService {
           totalSignals: 10,
           missingSectionCount: 2,
           missingFolderCount: 1,
+          unresolvedBundleCount: 0,
           createdTaskKeys: ["web-01-us-01-t90"],
         },
       ],
-      reportPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json"),
-      reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+      reportPath: undefined,
+      reportHistoryPath: undefined,
       warnings: [],
     };
   }
@@ -684,6 +691,16 @@ test("createTasks auto-runs task sufficiency audit and records summary checkpoin
 });
 
 test("createTasks refreshes exported artifacts and result counts from the final persisted backlog", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Gatekeeper Runtime",
+      "Implementation targets:",
+      "- packages/gatekeeper/src/worker.ts",
+    ].join("\n"),
+    "utf8",
+  );
   const outputs = [
     JSON.stringify({
       epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
@@ -765,9 +782,10 @@ test("createTasks refreshes exported artifacts and result counts from the final 
         remainingSectionHeadings: [] as string[],
         remainingFolderEntries: [] as string[],
         remainingGaps: { sections: 0, folders: 0, total: 0 },
+        unresolvedBundles: [],
         iterations: [],
-        reportPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json"),
-        reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+        reportPath: undefined,
+        reportHistoryPath: undefined,
         warnings: [],
       };
     },
@@ -787,7 +805,7 @@ test("createTasks refreshes exported artifacts and result counts from the final 
   const result = await service.createTasks({
     workspace,
     projectKey: "web",
-    inputs: [],
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
     agentStream: false,
   });
 
@@ -903,6 +921,7 @@ test("createTasks aligns coverage-report.json with sufficiency coverage totals",
         remainingSectionHeadings: [] as string[],
         remainingFolderEntries: [] as string[],
         remainingGaps: { sections: 0, folders: 0, total: 0 },
+        unresolvedBundles: [],
         iterations: [],
         reportPath,
         reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
@@ -935,6 +954,96 @@ test("createTasks aligns coverage-report.json with sufficiency coverage totals",
   assert.equal(coverage.coverageRatio, 1);
   assert.deepEqual(coverage.missingSectionHeadings, []);
   assert.deepEqual(coverage.missingFolderEntries, []);
+});
+
+test("createTasks fails closed when task sufficiency coverage report cannot be loaded", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Gatekeeper Runtime",
+      "Implementation targets:",
+      "- packages/gatekeeper/src/worker.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Runtime foundation", description: "Implement runtime surfaces.", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Runtime story", description: "Cover runtime surfaces.", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement Gatekeeper Runtime",
+          type: "feature",
+          description: "Implement Gatekeeper Runtime in packages/gatekeeper/src/worker.ts.",
+          estimatedStoryPoints: 3,
+          priorityHint: 3,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const sufficiencyService = {
+    async runAudit(request: any) {
+      const reportPath = path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json");
+      await fs.mkdir(path.dirname(reportPath), { recursive: true });
+      await fs.writeFile(reportPath, JSON.stringify({ finalCoverage: { coverageRatio: 1 } }, null, 2), "utf8");
+      return {
+        jobId: "suff-job-invalid",
+        commandRunId: "suff-cmd-invalid",
+        projectKey: request.projectKey,
+        sourceCommand: request.sourceCommand,
+        satisfied: true,
+        dryRun: false,
+        totalTasksAdded: 0,
+        totalTasksUpdated: 0,
+        maxIterations: 1,
+        minCoverageRatio: 1,
+        finalTotalSignals: 1,
+        finalCoverageRatio: 1,
+        remainingSectionHeadings: [] as string[],
+        remainingFolderEntries: [] as string[],
+        remainingGaps: { sections: 0, folders: 0, total: 0 },
+        unresolvedBundles: [],
+        iterations: [],
+        reportPath,
+        reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+        warnings: [],
+      };
+    },
+    async close() {},
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+        agentStream: false,
+      }),
+    /failed to load task sufficiency coverage report/i,
+  );
 });
 
 test("createTasks defaults SDS preflight to sidecar mode and merges generated docs into planning context", async () => {
@@ -1313,15 +1422,26 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
   const workspaceRepo = new StubWorkspaceRepo();
   const jobService = new StubJobService();
   const sufficiencyService = new StubTaskSufficiencyService();
-  sufficiencyService.runAudit = async (request: any) => ({
-    ...(await StubTaskSufficiencyService.prototype.runAudit.call(sufficiencyService, request)),
-    satisfied: false,
-    finalTotalSignals: 10,
-    finalCoverageRatio: 0.94,
-    remainingGaps: { sections: 3, folders: 0, total: 3 },
-    remainingSectionHeadings: ["Missing"],
-    remainingFolderEntries: [],
-  });
+  sufficiencyService.runAudit = async (request: any) => {
+    const baseResult = await StubTaskSufficiencyService.prototype.runAudit.call(sufficiencyService, request);
+    return {
+      ...baseResult,
+      satisfied: false,
+      finalTotalSignals: 10,
+      finalCoverageRatio: 0.94,
+      remainingGaps: { sections: 3, folders: 0, total: 3 },
+      remainingSectionHeadings: ["Missing"],
+      remainingFolderEntries: [],
+      unresolvedBundles: [
+        {
+          kind: "section" as const,
+          domain: "coverage",
+          values: ["Missing"],
+          anchors: ["section:missing"],
+        },
+      ],
+    };
+  };
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdex() as any,
     jobService: jobService as any,
@@ -1347,6 +1467,7 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
   const sufficiencyCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "task_sufficiency_audit");
   assert.ok(sufficiencyCheckpoint);
   assert.equal(sufficiencyCheckpoint.details.status, "blocked");
+  assert.equal(sufficiencyCheckpoint.details.unresolvedBundleCount, 1);
 });
 
 test("validateTopologyExtraction fails when SDS runtime topology signals resolve to no services", async () => {
@@ -1383,10 +1504,11 @@ test("validateTopologyExtraction fails when SDS runtime topology signals resolve
     taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
   const docs = await (service as any).prepareDocs([path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")]);
+  const expectation = (service as any).buildSourceTopologyExpectation(docs);
 
   assert.throws(
     () =>
-      (service as any).validateTopologyExtraction("web", docs, {
+      (service as any).validateTopologyExtraction("web", expectation, {
         services: [],
         dependencies: new Map(),
         aliases: new Map(),
@@ -1433,10 +1555,11 @@ test("validateTopologyExtraction fails when startup wave signals resolve to no s
     taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
   });
   const docs = await (service as any).prepareDocs([path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")]);
+  const expectation = (service as any).buildSourceTopologyExpectation(docs);
 
   assert.throws(
     () =>
-      (service as any).validateTopologyExtraction("web", docs, {
+      (service as any).validateTopologyExtraction("web", expectation, {
         services: ["ledger", "operator"],
         dependencies: new Map([["operator", new Set(["ledger"])]]),
         aliases: new Map([
@@ -1492,6 +1615,122 @@ test("createTasks propagates topology validation failures before artifact genera
         agentStream: false,
       }),
     /topology validation triggered/i,
+  );
+});
+
+test("createTasks preserves custom-root topology through final artifact refresh", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Runtime Topology",
+      "## Deployment Waves",
+      "```text",
+      ".",
+      "├── engines/",
+      "│   └── ledger/",
+      "│       └── src/",
+      "│           └── main.rs",
+      "└── consoles/",
+      "    └── operator/",
+      "        └── app/",
+      "            └── main.py",
+      "```",
+      "Wave 0 - ledger",
+      "Wave 1 - operator",
+      "The operator service depends on the ledger service.",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "runtime",
+          title: "Runtime foundation",
+          description: "Implement the runtime services.",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Deliver runtime slices",
+          description: "Implement the source-backed runtime slices.",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t-ledger",
+          title: "Implement ledger runtime",
+          type: "feature",
+          description: "Build the ledger runtime in engines/ledger/src/main.rs.",
+          estimatedStoryPoints: 3,
+          priorityHint: 2,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t-operator",
+          title: "Implement operator console",
+          type: "feature",
+          description: "Build the operator console in consoles/operator/app/main.py after the ledger runtime is available.",
+          estimatedStoryPoints: 3,
+          priorityHint: 3,
+          dependsOnKeys: ["t-ledger"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "runtime",
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+    agentStream: false,
+  });
+
+  const servicesPath = path.join(workspace.mcodaDir, "tasks", "runtime", "services.json");
+  const buildPlanPath = path.join(workspace.mcodaDir, "tasks", "runtime", "build-plan.json");
+  const services = JSON.parse(await fs.readFile(servicesPath, "utf8"));
+  const buildPlan = JSON.parse(await fs.readFile(buildPlanPath, "utf8"));
+  const serviceNames = new Set((services.services ?? []).map((entry: any) => entry.name));
+
+  assert.deepEqual(buildPlan.services, ["ledger", "operator"]);
+  assert.ok(serviceNames.has("ledger"));
+  assert.ok(serviceNames.has("operator"));
+  assert.ok(!serviceNames.has("engines"));
+  assert.ok(!serviceNames.has("consoles"));
+  assert.ok(
+    buildPlan.startupWaves.some((wave: any) => wave.wave === 0 && wave.services.includes("ledger")),
+    `expected ledger startup wave, got ${JSON.stringify(buildPlan.startupWaves)}`,
+  );
+  assert.ok(
+    buildPlan.startupWaves.some((wave: any) => wave.wave === 1 && wave.services.includes("operator")),
+    `expected operator startup wave, got ${JSON.stringify(buildPlan.startupWaves)}`,
   );
 });
 
@@ -2151,6 +2390,249 @@ test("buildServiceDependencyGraph ignores external state doc paths during struct
 
   assert.ok(serviceNames.has("api"));
   assert.ok(!serviceNames.has("mcoda"));
+});
+
+test("validateTopologyExtraction preserves source-derived topology expectations across refreshes", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-topology-baseline",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+
+  const expectation = (service as any).buildSourceTopologyExpectation(docs);
+  const baselineGraph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+
+  assert.equal(expectation.runtimeBearing, true);
+  assert.ok(expectation.services.includes("contracts"));
+  assert.ok(expectation.services.includes("gatekeeper"));
+  assert.ok(expectation.startupWaves.some((wave: any) => wave.wave === 0 && wave.services.includes("contracts")));
+  assert.doesNotThrow(() => (service as any).validateTopologyExtraction("ep", expectation, baselineGraph));
+  assert.throws(
+    () =>
+      (service as any).validateTopologyExtraction("ep", expectation, {
+        services: ["ep core"],
+        dependencies: new Map(),
+        aliases: new Map(),
+        waveRank: new Map(),
+        startupWaves: [],
+        foundationalDependencies: [],
+      }),
+    /lost source-backed services/i,
+  );
+});
+
+test("derivePlanningArtifacts allows docs-only inputs to use the fallback service catalog", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-docs-only",
+      path: path.join(workspaceRoot, "docs", "docs-only-sds.md"),
+      title: "docs-only-sds.md",
+      content: [
+        "# Software Design Specification",
+        "## Architecture Overview",
+        "## Documentation Workflow",
+        "Document how the team captures release evidence and operational notes.",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const expectation = (service as any).buildSourceTopologyExpectation(docs);
+  const artifacts = (service as any).derivePlanningArtifacts(
+    "docs",
+    docs,
+    { epics: [], stories: [], tasks: [] },
+    expectation,
+  );
+
+  assert.equal(expectation.runtimeBearing, false);
+  assert.equal(artifacts.serviceCatalog.services.length, 1);
+  assert.equal(artifacts.serviceCatalog.services[0].name, "docs core");
+  assert.deepEqual(artifacts.projectBuildPlan.startupWaves, []);
+});
+
+test("buildCanonicalNameInventory preserves source-backed aliases for canonical matching", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-canonical-aliases",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+
+  const inventory = (service as any).buildCanonicalNameInventory(docs);
+
+  assert.ok(inventory.pathSet.has("packages/gatekeeper/src/worker.ts"));
+  assert.ok(inventory.pathSet.has("contracts/script/ConfigurePolicies.s.sol"));
+  assert.equal((service as any).resolveServiceMentionFromPhrase("terminal-client", inventory.serviceAliases), "terminal client");
+  assert.equal((service as any).resolveServiceMentionFromPhrase("gatekeeper", inventory.serviceAliases), "gatekeeper");
+});
+
+test("assertCanonicalNameConsistency rejects undocumented near-duplicate path names", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-canonical-conflict",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+  const plan = {
+    epics: [
+      {
+        localId: "e1",
+        area: "ep",
+        title: "Gatekeeper Runtime",
+        description: "Implement the gatekeeper runtime.",
+        acceptanceCriteria: ["Gatekeeper worker starts after contract configuration."],
+        serviceIds: ["gatekeeper"],
+        tags: [],
+        stories: [],
+      },
+    ],
+    stories: [
+      {
+        localId: "us1",
+        epicLocalId: "e1",
+        title: "Runtime startup",
+        userStory: "As an operator, I want runtime startup ordered correctly.",
+        description: "Start the gatekeeper runtime after policy configuration.",
+        acceptanceCriteria: ["Runtime startup order is documented and enforced."],
+        tasks: [],
+      },
+    ],
+    tasks: [
+      {
+        localId: "t1",
+        epicLocalId: "e1",
+        storyLocalId: "us1",
+        title: "Wire runtime worker",
+        description:
+          "Implement packages/gatekeeper-oracle/src/worker.ts so it starts after contracts/script/ConfigurePolicies.s.sol.",
+        type: "feature",
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => (service as any).assertCanonicalNameConsistency("ep", docs, plan),
+    /packages\/gatekeeper-oracle\/src\/worker\.ts -> packages\/gatekeeper\/src\/worker\.ts/i,
+  );
+});
+
+test("writePlanArtifacts rejects inconsistent build-plan and services artifacts", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const buildPlan = {
+    projectKey: "proj",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds.md"],
+    startupWaves: [{ wave: 0, services: ["operator"] }],
+    services: ["operator"],
+    serviceIds: ["operator"],
+    foundationalDependencies: [],
+    buildMethod: "Build the runtime.",
+  };
+  const serviceCatalog = {
+    projectKey: "proj",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds.md"],
+    services: [
+      {
+        id: "ledger",
+        name: "ledger",
+        aliases: ["ledger"],
+        startupWave: 0,
+        dependsOnServiceIds: [],
+        isFoundational: true,
+      },
+    ],
+  };
+
+  await assert.rejects(
+    () =>
+      (service as any).writePlanArtifacts(
+        "proj",
+        { epics: [], stories: [], tasks: [] },
+        "[SDS] docs/sds.md",
+        [],
+        buildPlan,
+        serviceCatalog,
+      ),
+    /build-plan\.json and services\.json disagree on service identity ordering/i,
+  );
 });
 
 test("createTasks persists runnable metadata tests when harness is discoverable", async () => {
@@ -3024,6 +3506,73 @@ test("acquirePlanArtifactLock prevents concurrent writes and releases lock file"
   });
   await releaseAgain();
   await assert.rejects(() => fs.access(lockPath));
+});
+
+test("createTasks fails closed when generated backlog invents alternate source-backed path names", async () => {
+  await fs.writeFile(path.join(workspaceRoot, "docs", "sds.md"), EP_SDS_FIXTURE, "utf8");
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "ep",
+          title: "Gatekeeper Runtime",
+          description: "Implement the gatekeeper runtime.",
+          acceptanceCriteria: ["Gatekeeper runtime is sequenced after policy configuration."],
+          serviceIds: ["gatekeeper"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Runtime startup",
+          description: "Start the gatekeeper runtime after policy configuration.",
+          acceptanceCriteria: ["Runtime startup order is enforced."],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Wire runtime worker",
+          type: "feature",
+          description:
+            "Implement packages/gatekeeper-oracle/src/worker.ts so it starts after contracts/script/ConfigurePolicies.s.sol.",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "ep",
+        inputs: [path.join(workspaceRoot, "docs", "sds.md")],
+        agentStream: false,
+      }),
+    /failed canonical name validation/i,
+  );
 });
 
 test("createTasks merges qa overrides into task metadata", async () => {

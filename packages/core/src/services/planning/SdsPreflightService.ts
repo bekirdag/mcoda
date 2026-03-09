@@ -672,17 +672,17 @@ export class SdsPreflightService {
     if (technologies.length > 0) {
       return [
         "## Technology Stack",
-        `- Chosen stack baseline: ${technologies.join(", ")}.`,
-        "- Alternatives considered must be recorded with trade-offs for runtime, complexity, and verification impact.",
-        "- Keep one explicit baseline per layer so create-tasks can generate deterministic implementation work.",
+        `- Observed source-backed technology signals: ${technologies.join(", ")}.`,
+        "- Keep the chosen stack explicit in the source docs for runtime, language, persistence, interface, and tooling layers.",
+        "- Record alternatives only when the source docs name them; do not invent default stack choices during preflight.",
         "",
       ];
     }
     return [
       "## Technology Stack",
-      "- Chosen stack baseline must be explicit for runtime, language, persistence, and tooling layers.",
-      "- Alternatives considered should be named with rationale and trade-offs.",
-      "- Use one baseline per layer to avoid ambiguous backlog generation.",
+      "- Source docs do not yet make the technology stack explicit.",
+      "- Record runtime, language, persistence, interface, and tooling decisions explicitly in the source docs without assuming defaults.",
+      "- Preflight must not invent a chosen stack baseline when the source is silent.",
       "",
     ];
   }

@@ -147,9 +147,15 @@ test("task-sufficiency-audit adds focused backlog tasks for uncovered SDS signal
     );
     assert.ok(result.reportPath.endsWith(path.join("tasks", "proj", "task-sufficiency-report.json")));
     const reportRaw = await fs.readFile(result.reportPath, "utf8");
-    const report = JSON.parse(reportRaw) as { projectKey: string; iterations: unknown[] };
+    const report = JSON.parse(reportRaw) as {
+      projectKey: string;
+      iterations: Array<{ unresolvedBundleCount?: number }>;
+      unresolvedBundles?: unknown[];
+    };
     assert.equal(report.projectKey, "proj");
     assert.ok(Array.isArray(report.iterations));
+    assert.deepEqual(result.unresolvedBundles, []);
+    assert.deepEqual(report.unresolvedBundles, []);
 
     const repo = await WorkspaceRepository.create(workspaceRoot);
     try {
@@ -525,6 +531,29 @@ test("task-sufficiency-audit avoids arbitrary implementation targets for broad s
       result.warnings.some((warning) => /no concrete implementation targets were inferred/i.test(warning)),
       `expected unresolved-target warning, got ${JSON.stringify(result.warnings)}`,
     );
+    assert.ok(result.unresolvedBundles.length > 0);
+    assert.ok(
+      result.unresolvedBundles.some(
+        (bundle) =>
+          bundle.kind === "section" &&
+          bundle.values.some((value) => /system resilience envelope/i.test(value)),
+      ),
+      `expected unresolved section bundle, got ${JSON.stringify(result.unresolvedBundles)}`,
+    );
+    const reportRaw = await fs.readFile(result.reportPath, "utf8");
+    const report = JSON.parse(reportRaw) as {
+      unresolvedBundles?: Array<{ values?: string[] }>;
+      iterations?: Array<{ unresolvedBundleCount?: number }>;
+    };
+    assert.ok(Array.isArray(report.unresolvedBundles));
+    assert.ok(
+      report.unresolvedBundles?.some((bundle) =>
+        (bundle.values ?? []).some((value) => /system resilience envelope/i.test(value)),
+      ),
+      `expected unresolved bundle in report, got ${reportRaw}`,
+    );
+    assert.equal(result.iterations[0]?.unresolvedBundleCount, result.unresolvedBundles.length);
+    assert.equal(report.iterations?.[0]?.unresolvedBundleCount, result.unresolvedBundles.length);
 
     const repo = await WorkspaceRepository.create(workspaceRoot);
     try {
@@ -577,6 +606,15 @@ test("task-sufficiency-audit leaves section-only gaps unresolved when only unrel
     assert.ok(
       result.warnings.some((warning) => /no concrete implementation targets were inferred/i.test(warning)),
       `expected unresolved-target warning, got ${JSON.stringify(result.warnings)}`,
+    );
+    assert.ok(result.unresolvedBundles.length > 0);
+    assert.ok(
+      result.unresolvedBundles.some(
+        (bundle) =>
+          bundle.kind === "section" &&
+          bundle.values.some((value) => /system resilience envelope/i.test(value)),
+      ),
+      `expected unresolved section bundle, got ${JSON.stringify(result.unresolvedBundles)}`,
     );
     const repo = await WorkspaceRepository.create(workspaceRoot);
     try {

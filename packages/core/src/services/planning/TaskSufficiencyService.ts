@@ -71,6 +71,13 @@ type PlannedGapBundle = {
   implementationTargets: string[];
 };
 
+export interface TaskSufficiencyUnresolvedBundle {
+  kind: "section" | "folder" | "mixed";
+  domain: string;
+  values: string[];
+  anchors: string[];
+}
+
 export interface TaskSufficiencyAuditRequest {
   workspace: WorkspaceResolution;
   projectKey: string;
@@ -87,6 +94,7 @@ export interface TaskSufficiencyAuditIteration {
   totalSignals: number;
   missingSectionCount: number;
   missingFolderCount: number;
+  unresolvedBundleCount: number;
   createdTaskKeys: string[];
 }
 
@@ -110,6 +118,7 @@ export interface TaskSufficiencyAuditResult {
     folders: number;
     total: number;
   };
+  unresolvedBundles: TaskSufficiencyUnresolvedBundle[];
   iterations: TaskSufficiencyAuditIteration[];
   reportPath: string;
   reportHistoryPath?: string;
@@ -256,6 +265,13 @@ const summarizeAnchorBundle = (bundle: GapBundle): string => {
   }
   return `${bundle.normalizedAnchors[0]} (+${bundle.normalizedAnchors.length - 1} more)`;
 };
+
+const toUnresolvedBundle = (bundle: GapBundle): TaskSufficiencyUnresolvedBundle => ({
+  kind: bundle.kind,
+  domain: bundle.domain,
+  values: [...bundle.values],
+  anchors: [...bundle.normalizedAnchors],
+});
 
 const buildTargetedTestGuidance = (implementationTargets: string[]): string[] => {
   const guidance = new Set<string>();
@@ -886,6 +902,7 @@ export class TaskSufficiencyService {
       let totalTasksAdded = 0;
       const totalTasksUpdated = 0;
       let satisfied = false;
+      let latestUnresolvedBundles: TaskSufficiencyUnresolvedBundle[] = [];
 
       for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
         const snapshot = await this.loadProjectSnapshot(request.projectKey);
@@ -907,6 +924,7 @@ export class TaskSufficiencyService {
             totalSignals: coverage.totalSignals,
             missingSectionCount: coverage.missingSectionHeadings.length,
             missingFolderCount: coverage.missingFolderEntries.length,
+            unresolvedBundleCount: 0,
             createdTaskKeys: [],
           });
           await this.jobService.writeCheckpoint(job.id, {
@@ -918,6 +936,7 @@ export class TaskSufficiencyService {
               totalSignals: coverage.totalSignals,
               missingSectionCount: coverage.missingSectionHeadings.length,
               missingFolderCount: coverage.missingFolderEntries.length,
+              unresolvedBundleCount: 0,
               action: "complete",
             },
           });
@@ -927,6 +946,7 @@ export class TaskSufficiencyService {
         const gapItems = this.buildGapItems(coverage, snapshot.existingAnchors, maxTasksPerIteration);
         const gapBundles = this.bundleGapItems(gapItems, maxTasksPerIteration);
         if (gapBundles.length === 0) {
+          latestUnresolvedBundles = [];
           warnings.push(
             `Iteration ${iteration}: unresolved SDS gaps remain but no insertable gap items were identified.`,
           );
@@ -936,6 +956,7 @@ export class TaskSufficiencyService {
             totalSignals: coverage.totalSignals,
             missingSectionCount: coverage.missingSectionHeadings.length,
             missingFolderCount: coverage.missingFolderEntries.length,
+            unresolvedBundleCount: 0,
             createdTaskKeys: [],
           });
           break;
@@ -947,6 +968,7 @@ export class TaskSufficiencyService {
         }));
         const actionableGapBundles = plannedGapBundles.filter((entry) => entry.implementationTargets.length > 0);
         const unresolvedGapBundles = plannedGapBundles.filter((entry) => entry.implementationTargets.length === 0);
+        latestUnresolvedBundles = unresolvedGapBundles.map((entry) => toUnresolvedBundle(entry.bundle));
         if (unresolvedGapBundles.length > 0) {
           warnings.push(
             `Iteration ${iteration}: ${unresolvedGapBundles.length} SDS gap bundle(s) remain unresolved because no concrete implementation targets were inferred (${unresolvedGapBundles
@@ -964,6 +986,7 @@ export class TaskSufficiencyService {
             totalSignals: coverage.totalSignals,
             missingSectionCount: coverage.missingSectionHeadings.length,
             missingFolderCount: coverage.missingFolderEntries.length,
+            unresolvedBundleCount: latestUnresolvedBundles.length,
             createdTaskKeys: [],
           });
           await this.jobService.writeCheckpoint(job.id, {
@@ -975,13 +998,9 @@ export class TaskSufficiencyService {
               totalSignals: coverage.totalSignals,
               missingSectionCount: coverage.missingSectionHeadings.length,
               missingFolderCount: coverage.missingFolderEntries.length,
+              unresolvedBundleCount: latestUnresolvedBundles.length,
               action: "unresolved",
-              unresolvedGapItems: unresolvedGapBundles.map((entry) => ({
-                kind: entry.bundle.kind,
-                domain: entry.bundle.domain,
-                values: entry.bundle.values,
-                anchors: entry.bundle.normalizedAnchors,
-              })),
+              unresolvedGapItems: latestUnresolvedBundles,
             },
           });
           break;
@@ -994,6 +1013,7 @@ export class TaskSufficiencyService {
             totalSignals: coverage.totalSignals,
             missingSectionCount: coverage.missingSectionHeadings.length,
             missingFolderCount: coverage.missingFolderEntries.length,
+            unresolvedBundleCount: latestUnresolvedBundles.length,
             createdTaskKeys: [],
           });
           await this.jobService.writeCheckpoint(job.id, {
@@ -1005,6 +1025,7 @@ export class TaskSufficiencyService {
               totalSignals: coverage.totalSignals,
               missingSectionCount: coverage.missingSectionHeadings.length,
               missingFolderCount: coverage.missingFolderEntries.length,
+              unresolvedBundleCount: latestUnresolvedBundles.length,
               action: "dry_run",
               proposedGapItems: actionableGapBundles.map((entry) => ({
                 kind: entry.bundle.kind,
@@ -1012,12 +1033,7 @@ export class TaskSufficiencyService {
                 values: entry.bundle.values,
                 implementationTargets: entry.implementationTargets,
               })),
-              unresolvedGapItems: unresolvedGapBundles.map((entry) => ({
-                kind: entry.bundle.kind,
-                domain: entry.bundle.domain,
-                values: entry.bundle.values,
-                anchors: entry.bundle.normalizedAnchors,
-              })),
+              unresolvedGapItems: latestUnresolvedBundles,
             },
           });
           break;
@@ -1043,6 +1059,7 @@ export class TaskSufficiencyService {
           totalSignals: coverage.totalSignals,
           missingSectionCount: coverage.missingSectionHeadings.length,
           missingFolderCount: coverage.missingFolderEntries.length,
+          unresolvedBundleCount: latestUnresolvedBundles.length,
           createdTaskKeys,
         });
         await this.jobService.writeCheckpoint(job.id, {
@@ -1054,6 +1071,7 @@ export class TaskSufficiencyService {
             totalSignals: coverage.totalSignals,
             missingSectionCount: coverage.missingSectionHeadings.length,
             missingFolderCount: coverage.missingFolderEntries.length,
+            unresolvedBundleCount: latestUnresolvedBundles.length,
             createdTaskKeys,
             addedCount: createdTaskKeys.length,
           },
@@ -1082,6 +1100,19 @@ export class TaskSufficiencyService {
           `Sufficiency target not reached (coverage=${finalCoverage.coverageRatio}, threshold=${minCoverageRatio}) after ${iterations.length} iteration(s).`,
         );
       }
+      const finalGapItemLimit = Math.max(
+        1,
+        finalCoverage.missingSectionHeadings.length + finalCoverage.missingFolderEntries.length,
+      );
+      const finalGapItems = this.buildGapItems(finalCoverage, finalSnapshot.existingAnchors, finalGapItemLimit);
+      const finalGapBundles = this.bundleGapItems(finalGapItems, finalGapItemLimit);
+      const unresolvedBundles = finalGapBundles
+        .map((bundle) => ({
+          bundle,
+          implementationTargets: inferImplementationTargets(bundle, folderEntries, 3),
+        }))
+        .filter((entry) => entry.implementationTargets.length === 0)
+        .map((entry) => toUnresolvedBundle(entry.bundle));
 
       const report = {
         projectKey: request.projectKey,
@@ -1114,6 +1145,7 @@ export class TaskSufficiencyService {
           missingSectionHeadings: finalCoverage.missingSectionHeadings,
           missingFolderEntries: finalCoverage.missingFolderEntries,
         },
+        unresolvedBundles,
         iterations,
         warnings,
       };
@@ -1129,6 +1161,7 @@ export class TaskSufficiencyService {
           totalTasksUpdated,
           finalTotalSignals: finalCoverage.totalSignals,
           finalCoverageRatio: finalCoverage.coverageRatio,
+          unresolvedBundleCount: unresolvedBundles.length,
         },
       });
 
@@ -1152,6 +1185,7 @@ export class TaskSufficiencyService {
           folders: finalCoverage.missingFolderEntries.length,
           total: finalCoverage.missingSectionHeadings.length + finalCoverage.missingFolderEntries.length,
         },
+        unresolvedBundles,
         iterations,
         reportPath,
         reportHistoryPath: historyPath,
@@ -1171,6 +1205,7 @@ export class TaskSufficiencyService {
           finalCoverageRatio: finalCoverage.coverageRatio,
           remainingSectionCount: finalCoverage.missingSectionHeadings.length,
           remainingFolderCount: finalCoverage.missingFolderEntries.length,
+          unresolvedBundleCount: unresolvedBundles.length,
           reportPath,
           reportHistoryPath: historyPath,
           warnings,
