@@ -218,6 +218,109 @@ test("sds-preflight uses stack-agnostic fallback folder tree examples", async ()
   }
 });
 
+test("sds-preflight does not invent a chosen stack baseline when the source is silent", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Open Questions",
+      "- Which runtime and persistence layers should this project choose?",
+      "## Architecture Overview",
+      "The project structure is still being decided.",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const result = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: false,
+      applyToSds: true,
+    });
+    assert.equal(result.appliedToSds, true);
+    const updated = await fs.readFile(sdsPath, "utf8");
+    assert.ok(updated.includes("## Technology Stack"));
+    assert.ok(updated.includes("Source docs do not yet make the technology stack explicit."));
+    assert.ok(updated.includes("Preflight must not invent a chosen stack baseline when the source is silent."));
+    assert.ok(!updated.includes("Chosen stack baseline:"));
+  } finally {
+    await service.close();
+  }
+});
+
+test("sds-preflight sidecar artifacts stay stack- and repo-shape agnostic when the source is silent", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Open Questions",
+      "- Which repository surfaces and runtime stack should this project use?",
+      "## Architecture Overview",
+      "The project shape and runtime technologies are still undecided.",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const result = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: true,
+    });
+    const qaDoc = await fs.readFile(result.openQuestionsPath, "utf8");
+    const addendumDoc = await fs.readFile(result.gapAddendumPath, "utf8");
+    const combined = `${qaDoc}\n${addendumDoc}`;
+    assert.ok(combined.includes("technology stack"));
+    assert.ok(!combined.includes("Chosen stack baseline:"));
+    assert.ok(!combined.includes("apps/web/"));
+    assert.ok(!combined.includes("services/api/"));
+    assert.ok(!combined.includes("packages/shared/"));
+    assert.ok(!combined.includes("contracts/  # on-chain contracts and deploy scripts"));
+  } finally {
+    await service.close();
+  }
+});
+
+test("sds-preflight summarizes observed technologies without presenting them as generated defaults", async () => {
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "## Technology Stack",
+      "Chosen stack: Go runtime, PostgreSQL persistence, and Docker packaging.",
+      "## Deployment",
+      "Operators deploy Docker images and run Go services against PostgreSQL.",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const service = await SdsPreflightService.create(workspace);
+  try {
+    const result = await service.runPreflight({
+      workspace,
+      projectKey: "proj",
+      sdsPaths: [sdsPath],
+      writeArtifacts: false,
+      applyToSds: true,
+    });
+    assert.equal(result.appliedToSds, true);
+    const updated = await fs.readFile(sdsPath, "utf8");
+    assert.ok(updated.includes("Observed source-backed technology signals: Go, PostgreSQL, Docker."));
+    assert.ok(updated.includes("do not invent default stack choices during preflight"));
+    assert.ok(!updated.includes("Chosen stack baseline: Go"));
+  } finally {
+    await service.close();
+  }
+});
+
 test("sds-preflight does not reclassify weak architecture docs from managed preflight blocks", async () => {
   const sdsDir = path.join(workspaceRoot, "docs", "sds");
   await fs.mkdir(sdsDir, { recursive: true });
