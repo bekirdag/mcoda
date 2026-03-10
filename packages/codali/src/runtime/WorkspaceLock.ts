@@ -1,9 +1,12 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface WorkspaceLockInfo {
   runId: string;
   acquiredAt: number;
+  pid?: number;
+  hostname?: string;
 }
 
 export interface WorkspaceLockSignalOptions {
@@ -15,6 +18,7 @@ export interface WorkspaceLockSignalOptions {
 export class WorkspaceLock {
   private lockPath: string;
   private acquired = false;
+  private readonly hostname = os.hostname();
 
   constructor(
     private workspaceRoot: string,
@@ -37,16 +41,70 @@ export class WorkspaceLock {
     return Date.now() - info.acquiredAt > this.maxAgeMs;
   }
 
+  private isSameHost(info: WorkspaceLockInfo): boolean {
+    return !info.hostname || info.hostname === this.hostname;
+  }
+
+  private isProcessAlive(info: WorkspaceLockInfo): boolean | undefined {
+    if (!this.isSameHost(info)) return undefined;
+    if (!Number.isInteger(info.pid) || (info.pid ?? 0) <= 0) return undefined;
+    try {
+      process.kill(info.pid!, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return false;
+      if (code === "EPERM") return true;
+      return undefined;
+    }
+  }
+
+  private async hasTerminalRunLog(runId: string): Promise<boolean> {
+    const logPath = path.join(this.workspaceRoot, "logs", `${runId}.jsonl`);
+    try {
+      const content = await fs.readFile(logPath, "utf8");
+      const lines = content.split("\n");
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index]?.trim();
+        if (!line) continue;
+        try {
+          const parsed = JSON.parse(line) as { type?: string };
+          if (parsed.type === "run_summary" || parsed.type === "run_failed" || parsed.type === "run_cancelled") {
+            return true;
+          }
+        } catch {
+          // Ignore malformed log lines and continue scanning older entries.
+        }
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
+
+  private async shouldClearExisting(info: WorkspaceLockInfo): Promise<boolean> {
+    if (this.isStale(info)) return true;
+    const processAlive = this.isProcessAlive(info);
+    if (processAlive === false) return true;
+    if (processAlive === true) return false;
+    return this.hasTerminalRunLog(info.runId);
+  }
+
   async acquire(): Promise<void> {
     await fs.mkdir(path.dirname(this.lockPath), { recursive: true });
     const existing = await this.readLock();
-    if (existing && !this.isStale(existing)) {
+    if (existing && !(await this.shouldClearExisting(existing))) {
       throw new Error(`Workspace is locked by run ${existing.runId}`);
     }
-    if (existing && this.isStale(existing)) {
+    if (existing) {
       await fs.unlink(this.lockPath).catch(() => undefined);
     }
-    const payload: WorkspaceLockInfo = { runId: this.runId, acquiredAt: Date.now() };
+    const payload: WorkspaceLockInfo = {
+      runId: this.runId,
+      acquiredAt: Date.now(),
+      pid: process.pid,
+      hostname: this.hostname,
+    };
     await fs.writeFile(this.lockPath, JSON.stringify(payload, null, 2), "utf8");
     this.acquired = true;
   }

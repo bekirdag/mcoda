@@ -45,7 +45,11 @@ import {
   normalizeStructuredPathToken,
   stripManagedSdsPreflightBlock,
 } from "./SdsStructureSignals.js";
-import { TaskSufficiencyService, type TaskSufficiencyAuditResult } from "./TaskSufficiencyService.js";
+import {
+  TaskSufficiencyService,
+  type TaskSufficiencyAuditResult,
+  type TaskSufficiencyPlannedGapBundle,
+} from "./TaskSufficiencyService.js";
 import { SdsPreflightService, type SdsPreflightResult } from "./SdsPreflightService.js";
 
 export interface CreateTasksOptions {
@@ -207,6 +211,41 @@ type ProjectBuildPlanArtifact = {
   serviceIds: string[];
   foundationalDependencies: string[];
   buildMethod: string;
+};
+
+type SdsServiceBuildUnit = {
+  serviceId: string;
+  serviceName: string;
+  aliases: string[];
+  startupWave?: number;
+  dependsOnServiceIds: string[];
+  directories: string[];
+  files: string[];
+  headings: string[];
+  isFoundational: boolean;
+};
+
+type SdsVerificationSuite = {
+  name: string;
+  scope?: string;
+  sourceCoverage?: string;
+};
+
+type SdsAcceptanceScenario = {
+  index: number;
+  title: string;
+  details: string;
+};
+
+type BuildTargetPurpose = "structure" | "implementation" | "verification";
+
+type BuildTargetClassification = {
+  normalized: string;
+  basename: string;
+  segments: string[];
+  isFile: boolean;
+  kind: "runtime" | "interface" | "data" | "test" | "ops" | "manifest" | "doc" | "unknown";
+  isServiceArtifact: boolean;
 };
 
 type PersistPlanOptions = {
@@ -1099,6 +1138,115 @@ const SERVICE_HANDLE_PATTERN = /\b((?:svc|ui|worker)-[a-z0-9-*]+)\b/gi;
 const WAVE_LABEL_PATTERN = /\bwave\s*([0-9]{1,2})\b/i;
 const TOPOLOGY_HEADING_PATTERN =
   /\b(service|services|component|components|module|modules|interface|interfaces|runtime|runtimes|worker|workers|client|clients|gateway|gateways|server|servers|engine|engines|pipeline|pipelines|registry|registries|adapter|adapters|processor|processors|daemon|daemons|ops|operations|deployment|deployments|topology)\b/i;
+const MARKDOWN_HEADING_PATTERN = /^(#{1,6})\s+(.+?)\s*$/;
+const RUNTIME_COMPONENTS_HEADING_PATTERN =
+  /\b(runtime components?|runtime topology|system components?|component topology|services?)\b/i;
+const VERIFICATION_MATRIX_HEADING_PATTERN =
+  /\b(verification matrix|validation matrix|test matrix|verification suites?)\b/i;
+const ACCEPTANCE_SCENARIOS_HEADING_PATTERN = /\b(required )?acceptance scenarios?\b/i;
+const BUILD_TARGET_RUNTIME_SEGMENTS = new Set([
+  "api",
+  "app",
+  "apps",
+  "bin",
+  "cli",
+  "client",
+  "clients",
+  "cmd",
+  "command",
+  "commands",
+  "engine",
+  "engines",
+  "feature",
+  "features",
+  "gateway",
+  "gateways",
+  "handler",
+  "handlers",
+  "module",
+  "modules",
+  "page",
+  "pages",
+  "processor",
+  "processors",
+  "route",
+  "routes",
+  "screen",
+  "screens",
+  "server",
+  "servers",
+  "service",
+  "services",
+  "src",
+  "ui",
+  "web",
+  "worker",
+  "workers",
+]);
+const BUILD_TARGET_INTERFACE_SEGMENTS = new Set([
+  "contract",
+  "contracts",
+  "dto",
+  "dtos",
+  "interface",
+  "interfaces",
+  "proto",
+  "protocol",
+  "protocols",
+  "schema",
+  "schemas",
+  "spec",
+  "specs",
+  "type",
+  "types",
+]);
+const BUILD_TARGET_DATA_SEGMENTS = new Set([
+  "cache",
+  "caches",
+  "data",
+  "db",
+  "ledger",
+  "migration",
+  "migrations",
+  "model",
+  "models",
+  "persistence",
+  "repository",
+  "repositories",
+  "storage",
+]);
+const BUILD_TARGET_TEST_SEGMENTS = new Set([
+  "acceptance",
+  "e2e",
+  "integration",
+  "spec",
+  "specs",
+  "test",
+  "tests",
+]);
+const BUILD_TARGET_OPS_SEGMENTS = new Set([
+  "deploy",
+  "deployment",
+  "deployments",
+  "helm",
+  "infra",
+  "k8s",
+  "ops",
+  "operation",
+  "operations",
+  "runbook",
+  "runbooks",
+  "script",
+  "scripts",
+  "systemd",
+  "terraform",
+]);
+const BUILD_TARGET_DOC_SEGMENTS = new Set(["docs", "policy", "policies", "rfp", "pdr", "sds"]);
+const MANIFEST_TARGET_BASENAME_PATTERN =
+  /^(package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|turbo\.json|tsconfig(?:\.[^.]+)?\.json|eslint(?:\.[^.]+)?\.(?:js|cjs|mjs|json)|prettier(?:\.[^.]+)?\.(?:js|cjs|mjs|json)|vite\.config\.[^.]+|webpack\.config\.[^.]+|rollup\.config\.[^.]+|cargo\.toml|pyproject\.toml|go\.mod|go\.sum|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|requirements\.txt|poetry\.lock|foundry\.toml|hardhat\.config\.[^.]+)$/i;
+const SERVICE_ARTIFACT_BASENAME_PATTERN =
+  /(?:\.service|\.socket|\.timer|(?:^|[.-])compose\.(?:ya?ml|json)$|docker-compose\.(?:ya?ml|json)$)$/i;
+const GENERIC_IMPLEMENTATION_TASK_PATTERN = /update the concrete .* modules surfaced by the sds/i;
 
 const nextUniqueLocalId = (prefix: string, existing: Set<string>): string => {
   let index = 1;
@@ -1190,9 +1338,53 @@ const TASK_SCHEMA_SNIPPET = `{
   ]
 }`;
 
+const FULL_PLAN_SCHEMA_SNIPPET = `{
+  "epics": [
+    {
+      "localId": "e1",
+      "area": "documented-area-label",
+      "title": "Epic title",
+      "description": "Epic description using the epic template",
+      "acceptanceCriteria": ["criterion"],
+      "relatedDocs": ["docdex:..."],
+      "priorityHint": 50,
+      "serviceIds": ["backend-api"],
+      "tags": ["cross_service"],
+      "stories": [
+        {
+          "localId": "us1",
+          "title": "Story title",
+          "userStory": "As a ...",
+          "description": "Story description using the template",
+          "acceptanceCriteria": ["criterion"],
+          "relatedDocs": ["docdex:..."],
+          "priorityHint": 50,
+          "tasks": [
+            {
+              "localId": "t1",
+              "title": "Task title",
+              "type": "feature|bug|chore|spike",
+              "description": "Task description using the template",
+              "estimatedStoryPoints": 3,
+              "priorityHint": 50,
+              "dependsOnKeys": ["t0"],
+              "relatedDocs": ["docdex:..."],
+              "unitTests": ["unit test description"],
+              "componentTests": ["component test description"],
+              "integrationTests": ["integration test description"],
+              "apiTests": ["api test description"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`;
+
 export class CreateTasksService {
   private static readonly MAX_BUSY_RETRIES = 6;
   private static readonly BUSY_BACKOFF_MS = 500;
+  private static readonly MAX_AGENT_REFINEMENT_ATTEMPTS = 3;
   private docdex: DocdexClient;
   private jobService: JobService;
   private agentService: AgentService;
@@ -2087,6 +2279,9 @@ export class CreateTasksService {
       }
       registerSourceBacked(this.deriveServiceFromPathToken(token));
     }
+    for (const component of this.extractRuntimeComponentNames(docs)) {
+      registerSourceBacked(component);
+    }
     for (const match of docsText.matchAll(SERVICE_HANDLE_PATTERN)) registerSourceBacked(match[1]);
     const docsHaveRuntimeTopologySignals =
       sourceBackedServices.size > 0 &&
@@ -2128,7 +2323,8 @@ export class CreateTasksService {
     const structureServices = uniqueStrings(
       [...structureTargets.directories, ...structureTargets.files]
         .map((token) => this.deriveServiceFromPathToken(token))
-        .filter((value): value is string => Boolean(value)),
+        .filter((value): value is string => Boolean(value))
+        .concat(this.extractRuntimeComponentNames(docs)),
     ).slice(0, 24);
     const topologyHeadings = this.extractSdsSectionCandidates(docs, 64)
       .filter((heading) => TOPOLOGY_HEADING_PATTERN.test(heading))
@@ -2850,6 +3046,646 @@ export class CreateTasksService {
     };
   }
 
+  private scoreServiceUnitForText(
+    unit: SdsServiceBuildUnit,
+    text: string,
+    graph: ServiceDependencyGraph,
+  ): number {
+    const normalizedText = this.normalizeServiceLookupKey(text);
+    if (!normalizedText) return 0;
+    const tokens = normalizedText
+      .split(" ")
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3);
+    if (tokens.length === 0) return 0;
+    const unitCorpus = this.normalizeServiceLookupKey(
+      [
+        unit.serviceName,
+        ...unit.aliases,
+        ...unit.directories,
+        ...unit.files,
+        ...unit.headings,
+        ...unit.dependsOnServiceIds,
+      ].join("\n"),
+    );
+    const overlap = tokens.filter((token) => unitCorpus.includes(token)).length;
+    let score = overlap * 10;
+    const direct = this.resolveServiceMentionFromPhrase(text, graph.aliases);
+    if (direct && unit.serviceName === direct) score += 100;
+    if (normalizedText.includes(this.normalizeServiceLookupKey(unit.serviceName))) score += 25;
+    if (unit.isFoundational) score += 4;
+    return score;
+  }
+
+  private buildSdsServiceUnits(
+    docs: DocdexDocument[],
+    catalog: ServiceCatalogArtifact,
+    graph: ServiceDependencyGraph,
+  ): SdsServiceBuildUnit[] {
+    const units = new Map<string, SdsServiceBuildUnit>();
+    const serviceById = new Map(catalog.services.map((service) => [service.id, service]));
+    const serviceByName = new Map(catalog.services.map((service) => [service.name, service]));
+    const orderedServiceIds = catalog.services.map((service) => service.id);
+    const primaryFoundationalServiceId =
+      catalog.services.find((service) => service.isFoundational)?.id ?? catalog.services[0]?.id;
+    const opsServiceId =
+      catalog.services.find((service) =>
+        /\b(ops|operation|deploy|infra|runtime|platform)\b/.test(
+          this.normalizeServiceLookupKey([service.name, ...service.aliases].join(" ")),
+        ),
+      )?.id ?? primaryFoundationalServiceId;
+    const coverageSignals = collectSdsCoverageSignalsFromDocs(
+      docs.map((doc) => ({ content: doc.content })),
+      { headingLimit: 200, folderLimit: 240 },
+    );
+    const structureTargets = this.extractStructureTargets(docs);
+    const runtimeComponents = this.extractRuntimeComponentNames(docs);
+    const ensureUnit = (serviceId: string | undefined): SdsServiceBuildUnit | undefined => {
+      if (!serviceId) return undefined;
+      const service = serviceById.get(serviceId);
+      if (!service) return undefined;
+      const existing = units.get(serviceId);
+      if (existing) return existing;
+      const unit: SdsServiceBuildUnit = {
+        serviceId: service.id,
+        serviceName: service.name,
+        aliases: uniqueStrings([service.name, ...service.aliases]),
+        startupWave: service.startupWave,
+        dependsOnServiceIds: [...service.dependsOnServiceIds],
+        directories: [],
+        files: [],
+        headings: [],
+        isFoundational: service.isFoundational,
+      };
+      units.set(serviceId, unit);
+      return unit;
+    };
+    for (const serviceId of orderedServiceIds) ensureUnit(serviceId);
+
+    const selectUnitForText = (text: string, options?: { pathLike?: boolean }): SdsServiceBuildUnit | undefined => {
+      const directName = this.resolveServiceMentionFromPhrase(text, graph.aliases);
+      if (directName) {
+        const direct = serviceByName.get(directName);
+        if (direct) return ensureUnit(direct.id);
+      }
+      const pathMatch = options?.pathLike ? this.deriveServiceFromPathToken(text) : undefined;
+      if (pathMatch) {
+        const fromPath = serviceByName.get(pathMatch);
+        if (fromPath) return ensureUnit(fromPath.id);
+      }
+      let bestUnit: SdsServiceBuildUnit | undefined;
+      let bestScore = 0;
+      for (const unit of units.values()) {
+        const score = this.scoreServiceUnitForText(unit, text, graph);
+        if (score > bestScore) {
+          bestScore = score;
+          bestUnit = unit;
+        }
+      }
+      if (bestUnit && bestScore > 0) return bestUnit;
+      const normalizedText = this.normalizeServiceLookupKey(text);
+      if (
+        /\b(deploy|deployment|startup|rollback|recovery|observability|quality|release|failover|runbook|environment|secret|compute|operations?)\b/.test(
+          normalizedText,
+        )
+      ) {
+        return ensureUnit(opsServiceId);
+      }
+      return ensureUnit(primaryFoundationalServiceId);
+    };
+
+    for (const directory of structureTargets.directories) {
+      const unit = selectUnitForText(directory, { pathLike: true });
+      if (!unit) continue;
+      unit.directories.push(directory);
+    }
+    for (const file of structureTargets.files) {
+      const unit = selectUnitForText(file, { pathLike: true });
+      if (!unit) continue;
+      unit.files.push(file);
+      const parent = path.dirname(file).replace(/\\/g, "/");
+      if (parent && parent !== ".") unit.directories.push(parent);
+    }
+    for (const heading of coverageSignals.sectionHeadings) {
+      const unit = selectUnitForText(heading);
+      if (!unit) continue;
+      unit.headings.push(normalizeHeadingCandidate(heading));
+    }
+    for (const component of runtimeComponents) {
+      const unit = selectUnitForText(component);
+      if (!unit) continue;
+      unit.headings.push(normalizeHeadingCandidate(component));
+    }
+
+    return catalog.services
+      .map((service) => units.get(service.id))
+      .filter((unit): unit is SdsServiceBuildUnit => Boolean(unit))
+      .map((unit) => ({
+        ...unit,
+        aliases: uniqueStrings(unit.aliases).sort((a, b) => a.localeCompare(b)),
+        directories: uniqueStrings(unit.directories).sort((a, b) => a.length - b.length || a.localeCompare(b)),
+        files: uniqueStrings(unit.files).sort((a, b) => a.length - b.length || a.localeCompare(b)),
+        headings: uniqueStrings(unit.headings),
+      }));
+  }
+
+  private buildSdsDrivenPlan(
+    projectKey: string,
+    docs: DocdexDocument[],
+    catalog: ServiceCatalogArtifact,
+    graph: ServiceDependencyGraph,
+  ): GeneratedPlan {
+    const units = this.buildSdsServiceUnits(docs, catalog, graph);
+    const verificationSuites = this.extractVerificationSuites(docs);
+    const acceptanceScenarios = this.extractAcceptanceScenarios(docs);
+    const localIds = new Set<string>();
+    const epics: PlanEpic[] = [];
+    const stories: PlanStory[] = [];
+    const tasks: PlanTask[] = [];
+    const rootPreview = (items: string[], fallback: string): string =>
+      items.length > 0 ? items.slice(0, 8).map((item) => `- ${item}`).join("\n") : `- ${fallback}`;
+    const chunk = (items: string[], size: number): string[][] => {
+      const chunks: string[][] = [];
+      for (let index = 0; index < items.length; index += size) {
+        chunks.push(items.slice(index, index + size));
+      }
+      return chunks;
+    };
+    const toDisplayName = (value: string): string =>
+      value
+        .split(/\s+/)
+        .map((token) => (token ? token[0]!.toUpperCase() + token.slice(1) : token))
+        .join(" ");
+    const defaultArea = normalizeArea(projectKey) ?? "core";
+
+    for (const unit of units) {
+      const epicLocalId = nextUniqueLocalId(`svc-${unit.serviceId}`, localIds);
+      const epicTitle = `Build ${toDisplayName(unit.serviceName)}`;
+      epics.push({
+        localId: epicLocalId,
+        area: defaultArea,
+        title: epicTitle,
+        description: [
+          `Implement the ${unit.serviceName} build slice from the SDS.`,
+          unit.startupWave !== undefined ? `Startup wave: ${unit.startupWave}.` : undefined,
+          unit.dependsOnServiceIds.length > 0
+            ? `Dependencies: ${unit.dependsOnServiceIds.join(", ")}.`
+            : "Dependencies: foundational or none.",
+          unit.headings.length > 0
+            ? `Covered SDS sections: ${unit.headings.slice(0, 5).join("; ")}.`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        acceptanceCriteria: [
+          `${unit.serviceName} structure and implementation surfaces are represented in the backlog.`,
+          `${unit.serviceName} sequencing stays aligned to SDS dependency and startup ordering.`,
+          `${unit.serviceName} validation work exists for the implemented scope.`,
+        ],
+        relatedDocs: docs
+          .map((doc) => (doc.id ? `docdex:${doc.id}` : undefined))
+          .filter((value): value is string => Boolean(value))
+          .slice(0, 12),
+        priorityHint: epics.length + 1,
+        serviceIds: [unit.serviceId],
+        tags: unit.isFoundational ? ["foundational"] : [],
+        stories: [],
+      });
+
+      if (unit.directories.length > 0 || unit.files.length > 0) {
+        const storyLocalId = nextUniqueLocalId(`svc-${unit.serviceId}-structure`, localIds);
+        stories.push({
+          localId: storyLocalId,
+          epicLocalId,
+          title: `Establish ${toDisplayName(unit.serviceName)} structure`,
+          userStory: `As an engineer, I need the ${unit.serviceName} scaffold in place before implementation continues.`,
+          description: [
+            `Create the SDS-defined folder and file scaffold for ${unit.serviceName}.`,
+            "Use the documented target tree as the implementation baseline.",
+          ].join("\n"),
+          acceptanceCriteria: [
+            `Required ${unit.serviceName} directories exist.`,
+            `Required ${unit.serviceName} file entrypoints are present or explicitly queued in dependent tasks.`,
+            `Follow-up tasks can reference real ${unit.serviceName} implementation paths.`,
+          ],
+          relatedDocs: [],
+          priorityHint: 1,
+          tasks: [],
+        });
+        const directoryChunks = chunk(unit.directories, 6);
+        const fileChunks = chunk(unit.files, 5);
+        if (directoryChunks.length > 0) {
+          tasks.push({
+            localId: nextUniqueLocalId(`svc-${unit.serviceId}-structure-task`, localIds),
+            storyLocalId,
+            epicLocalId,
+            title: `Create ${unit.serviceName} directory scaffold`,
+            type: "chore",
+            description: [
+              `Create the initial ${unit.serviceName} repository structure required by the SDS.`,
+              "Target directories:",
+              rootPreview(directoryChunks[0] ?? [], "Infer the concrete runtime directories from the SDS build tree."),
+            ].join("\n"),
+            estimatedStoryPoints: 2,
+            priorityHint: 1,
+            dependsOnKeys: [],
+            relatedDocs: [],
+            unitTests: [],
+            componentTests: [],
+            integrationTests: [],
+            apiTests: [],
+          });
+        }
+        if (fileChunks.length > 0) {
+          const structureFileTargets = this.selectBuildTargets(
+            unit,
+            [`${unit.serviceName} structure entrypoints`],
+            "structure",
+            5,
+          );
+          tasks.push({
+            localId: nextUniqueLocalId(`svc-${unit.serviceId}-structure-task`, localIds),
+            storyLocalId,
+            epicLocalId,
+            title: `Create ${unit.serviceName} runtime entrypoints`,
+            type: "feature",
+            description: [
+              `Create or stub the first concrete ${unit.serviceName} implementation files from the SDS folder tree.`,
+              "Target files:",
+              rootPreview(
+                structureFileTargets.length > 0 ? structureFileTargets : fileChunks[0] ?? [],
+                "Create the primary runtime entrypoints and implementation surfaces.",
+              ),
+            ].join("\n"),
+            estimatedStoryPoints: 3,
+            priorityHint: 2,
+            dependsOnKeys: tasks.filter((task) => task.storyLocalId === storyLocalId).map((task) => task.localId),
+            relatedDocs: [],
+            unitTests: [],
+            componentTests: [],
+            integrationTests: [],
+            apiTests: [],
+          });
+        }
+      }
+
+      if (unit.headings.length > 0 || unit.files.length > 0) {
+        const storyLocalId = nextUniqueLocalId(`svc-${unit.serviceId}-implementation`, localIds);
+        stories.push({
+          localId: storyLocalId,
+          epicLocalId,
+          title: `Implement ${toDisplayName(unit.serviceName)} capabilities`,
+          userStory: `As a delivery team, we need the ${unit.serviceName} capability set implemented from the SDS.`,
+          description: [
+            `Implement the ${unit.serviceName} behavior defined across the SDS sections assigned to this build slice.`,
+            unit.headings.length > 0 ? `Primary SDS sections: ${unit.headings.slice(0, 6).join("; ")}.` : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          acceptanceCriteria: [
+            `${unit.serviceName} covers its assigned SDS capability sections.`,
+            `${unit.serviceName} implementation targets are concrete and source-backed.`,
+            `${unit.serviceName} leaves no generic placeholder work inside this story.`,
+          ],
+          relatedDocs: [],
+          priorityHint: 2,
+          tasks: [],
+        });
+        const headingChunks = chunk(unit.headings.length > 0 ? unit.headings : [`${unit.serviceName} runtime implementation`], 2);
+        headingChunks.slice(0, 6).forEach((group, index) => {
+          const targetSlice = this.selectBuildTargets(unit, group, "implementation", 3);
+          tasks.push({
+            localId: nextUniqueLocalId(`svc-${unit.serviceId}-implementation-task`, localIds),
+            storyLocalId,
+            epicLocalId,
+            title: `Implement ${group[0] ?? unit.serviceName}`,
+            type: "feature",
+            description: [
+              `Implement the ${unit.serviceName} scope required by these SDS sections: ${group.join("; ")}.`,
+              "Primary implementation targets:",
+              rootPreview(
+                targetSlice,
+                `Extend the SDS-defined ${unit.serviceName} runtime surfaces captured in this build slice.`,
+              ),
+              unit.dependsOnServiceIds.length > 0
+                ? `Keep dependency direction aligned to: ${unit.dependsOnServiceIds.join(", ")}.`
+                : "Keep this slice buildable without introducing undocumented dependencies.",
+            ].join("\n"),
+            estimatedStoryPoints: Math.min(8, 3 + Math.max(0, Math.max(1, targetSlice.length) - 1)),
+            priorityHint: index + 1,
+            dependsOnKeys: [],
+            relatedDocs: [],
+            unitTests:
+              targetSlice.length > 0 ? [`Cover ${unit.serviceName} implementation behavior for ${targetSlice[0]}.`] : [],
+            componentTests: [],
+            integrationTests: [],
+            apiTests: [],
+          });
+        });
+      }
+
+      if (unit.dependsOnServiceIds.length > 0) {
+        const storyLocalId = nextUniqueLocalId(`svc-${unit.serviceId}-integration`, localIds);
+        stories.push({
+          localId: storyLocalId,
+          epicLocalId,
+          title: `Integrate ${toDisplayName(unit.serviceName)} dependencies`,
+          userStory: `As an engineer, I need ${unit.serviceName} wired to its SDS-defined dependencies and interfaces.`,
+          description: [
+            `Implement dependency and interface wiring for ${unit.serviceName}.`,
+            `SDS dependency chain: ${unit.dependsOnServiceIds.join(", ")}.`,
+          ].join("\n"),
+          acceptanceCriteria: [
+            `${unit.serviceName} dependency integration is explicit and ordered.`,
+            `${unit.serviceName} uses only documented runtime dependencies.`,
+          ],
+          relatedDocs: [],
+          priorityHint: 3,
+          tasks: [],
+        });
+        unit.dependsOnServiceIds.slice(0, 4).forEach((dependencyId, index) => {
+          tasks.push({
+            localId: nextUniqueLocalId(`svc-${unit.serviceId}-integration-task`, localIds),
+            storyLocalId,
+            epicLocalId,
+            title: `Wire ${unit.serviceName} to ${dependencyId}`,
+            type: "feature",
+            description: [
+              `Implement the SDS-defined dependency direction from ${unit.serviceName} to ${dependencyId}.`,
+              "Update runtime interfaces, configuration reads, or orchestration flow as required.",
+            ].join("\n"),
+            estimatedStoryPoints: 2,
+            priorityHint: index + 1,
+            dependsOnKeys: [],
+            relatedDocs: [],
+            unitTests: [],
+            componentTests: [],
+            integrationTests: [`Validate ${unit.serviceName} integration with ${dependencyId}.`],
+            apiTests: [],
+          });
+        });
+      }
+
+      const verificationStoryLocalId = nextUniqueLocalId(`svc-${unit.serviceId}-verification`, localIds);
+      stories.push({
+        localId: verificationStoryLocalId,
+        epicLocalId,
+        title: `Verify ${toDisplayName(unit.serviceName)} readiness`,
+        userStory: `As a reviewer, I need concrete verification evidence for ${unit.serviceName}.`,
+        description: [
+          `Add the validation work needed to prove ${unit.serviceName} against the SDS.`,
+          unit.headings.length > 0 ? `Verification should cover: ${unit.headings.slice(0, 4).join("; ")}.` : undefined,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        acceptanceCriteria: [
+          `${unit.serviceName} has deterministic validation coverage.`,
+          `${unit.serviceName} evidence maps back to SDS responsibilities.`,
+        ],
+        relatedDocs: [],
+        priorityHint: 4,
+        tasks: [],
+      });
+      tasks.push({
+        localId: nextUniqueLocalId(`svc-${unit.serviceId}-verification-task`, localIds),
+        storyLocalId: verificationStoryLocalId,
+        epicLocalId,
+        title: `Add ${unit.serviceName} focused test coverage`,
+        type: "chore",
+        description: [
+          `Add or update the smallest deterministic validation surface that proves ${unit.serviceName}.`,
+          "Cover the implemented runtime paths, dependency behavior, and SDS acceptance expectations for this build slice.",
+          "Primary verification targets:",
+          rootPreview(
+            this.selectBuildTargets(unit, [...unit.headings, `${unit.serviceName} verification`], "verification", 3),
+            `Capture service-local validation against ${unit.serviceName} runtime surfaces.`,
+          ),
+        ].join("\n"),
+        estimatedStoryPoints: 2,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [`Validate ${unit.serviceName} internal behavior.`],
+        componentTests: unit.files.some((file) => /\b(ui|web|component|page|screen)\b/i.test(file))
+          ? [`Validate ${unit.serviceName} component-level behavior.`]
+          : [],
+        integrationTests: [`Validate ${unit.serviceName} end-to-end dependency behavior.`],
+        apiTests: [],
+      });
+    }
+
+    if (verificationSuites.length > 0 || acceptanceScenarios.length > 0) {
+      const releaseEpicLocalId = nextUniqueLocalId("release-verification", localIds);
+      epics.push({
+        localId: releaseEpicLocalId,
+        area: defaultArea,
+        title: "Verify Release Readiness",
+        description: [
+          "Execute the named verification suites and acceptance scenarios documented in the SDS release gate.",
+          verificationSuites.length > 0
+            ? `Named suites: ${verificationSuites.map((suite) => suite.name).slice(0, 8).join("; ")}.`
+            : undefined,
+          acceptanceScenarios.length > 0
+            ? `Acceptance scenarios: ${acceptanceScenarios.length} documented launch scenarios must be green.`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        acceptanceCriteria: [
+          "Every named verification suite from the SDS is represented as executable backlog work.",
+          "Every required acceptance scenario from the SDS is represented as executable backlog work.",
+          "Release verification evidence maps back to the SDS release gate.",
+        ],
+        relatedDocs: docs
+          .map((doc) => (doc.id ? `docdex:${doc.id}` : undefined))
+          .filter((value): value is string => Boolean(value))
+          .slice(0, 12),
+        priorityHint: epics.length + 1,
+        serviceIds: uniqueStrings(units.map((unit) => unit.serviceId)).slice(0, 12),
+        tags: [CROSS_SERVICE_TAG],
+        stories: [],
+      });
+
+      if (verificationSuites.length > 0) {
+        const verificationStoryLocalId = nextUniqueLocalId("release-verification-suites", localIds);
+        stories.push({
+          localId: verificationStoryLocalId,
+          epicLocalId: releaseEpicLocalId,
+          title: "Execute named verification suites",
+          userStory: "As a release reviewer, I need every named SDS verification suite to exist as executable backlog work.",
+          description: "Create the exact named verification suites from the SDS verification matrix and map them to deterministic evidence.",
+          acceptanceCriteria: [
+            "All named SDS verification suites have backlog tasks with explicit scope.",
+            "Suite tasks reference the exact SDS suite names instead of generic test placeholders.",
+          ],
+          relatedDocs: [],
+          priorityHint: 1,
+          tasks: [],
+        });
+        verificationSuites.forEach((suite, index) => {
+          const draft = this.buildVerificationSuiteTaskDraft(suite, "the release slice");
+          tasks.push({
+            localId: nextUniqueLocalId("release-verification-suite-task", localIds),
+            storyLocalId: verificationStoryLocalId,
+            epicLocalId: releaseEpicLocalId,
+            title: `Execute suite: ${suite.name}`,
+            type: "chore",
+            description: draft.description,
+            estimatedStoryPoints: /\b(end-to-end|acceptance|drill|integration)\b/i.test(suite.name) ? 3 : 2,
+            priorityHint: index + 1,
+            dependsOnKeys: [],
+            relatedDocs: [],
+            unitTests: draft.unitTests,
+            componentTests: draft.componentTests,
+            integrationTests: draft.integrationTests,
+            apiTests: draft.apiTests,
+          });
+        });
+      }
+
+      if (acceptanceScenarios.length > 0) {
+        const scenarioStoryLocalId = nextUniqueLocalId("release-acceptance-scenarios", localIds);
+        stories.push({
+          localId: scenarioStoryLocalId,
+          epicLocalId: releaseEpicLocalId,
+          title: "Run required acceptance scenarios",
+          userStory: "As a launch approver, I need every required acceptance scenario executed before release.",
+          description:
+            "Create one executable backlog task per SDS acceptance scenario so launch approval is tied to concrete scenario evidence.",
+          acceptanceCriteria: [
+            "All numbered SDS acceptance scenarios exist as backlog tasks.",
+            "Scenario tasks preserve the SDS launch wording closely enough for release review.",
+          ],
+          relatedDocs: [],
+          priorityHint: 2,
+          tasks: [],
+        });
+        acceptanceScenarios.forEach((scenario) => {
+          tasks.push({
+            localId: nextUniqueLocalId("release-acceptance-scenario-task", localIds),
+            storyLocalId: scenarioStoryLocalId,
+            epicLocalId: releaseEpicLocalId,
+            title: `Validate acceptance scenario ${scenario.index}: ${scenario.title}`,
+            type: "chore",
+            description: [
+              `Execute SDS acceptance scenario ${scenario.index}.`,
+              scenario.details,
+              "Capture deterministic pass/fail evidence and link it to the release gate.",
+            ].join("\n"),
+            estimatedStoryPoints: 2,
+            priorityHint: scenario.index,
+            dependsOnKeys: [],
+            relatedDocs: [],
+            unitTests: [],
+            componentTests: [],
+            integrationTests: [`Execute acceptance scenario ${scenario.index} end to end.`],
+            apiTests: [],
+          });
+        });
+      }
+    }
+
+    return { epics, stories, tasks };
+  }
+
+  private hasStrongSdsPlanningEvidence(
+    docs: DocdexDocument[],
+    catalog: ServiceCatalogArtifact,
+    expectation: SourceTopologyExpectation,
+  ): boolean {
+    const sdsDocs = docs.filter((doc) => looksLikeSdsDoc(doc));
+    if (sdsDocs.length === 0) return false;
+    const coverageSignals = collectSdsCoverageSignalsFromDocs(
+      docs.map((doc) => ({ content: doc.content })),
+      { headingLimit: 200, folderLimit: 240 },
+    );
+    const structureTargets = this.extractStructureTargets(docs);
+    const structureSignalCount = structureTargets.directories.length + structureTargets.files.length;
+    const headingSignalCount = coverageSignals.sectionHeadings.length;
+    const topologySignalCount =
+      expectation.services.length +
+      expectation.startupWaves.length +
+      expectation.dependencyPairs.length +
+      expectation.signalSummary.topologyHeadings.length +
+      expectation.signalSummary.waveMentions.length;
+    return (
+      structureSignalCount >= 4 ||
+      headingSignalCount >= 8 ||
+      catalog.services.length >= 2 ||
+      topologySignalCount >= 4
+    );
+  }
+
+  private taskUsesOnlyWeakImplementationTargets(task: PlanTask, docs: DocdexDocument[]): boolean {
+    if (!/\bimplement\b/i.test(`${task.title} ${task.description ?? ""}`)) return false;
+    const inventory = this.buildCanonicalNameInventory(docs);
+    if (!inventory.paths.some((candidate) => this.isStrongImplementationTarget(candidate))) return false;
+    const candidateTargets = uniqueStrings(
+      filterImplementationStructuredPaths(extractStructuredPaths(`${task.title}\n${task.description ?? ""}`, 64))
+        .map((token) => this.normalizeStructurePathToken(token))
+        .filter((value): value is string => Boolean(value)),
+    );
+    if (candidateTargets.length === 0) return false;
+    return candidateTargets.every((target) => !this.isStrongImplementationTarget(target));
+  }
+
+  private planLooksTooWeakForSds(
+    plan: GeneratedPlan,
+    docs: DocdexDocument[],
+    catalog: ServiceCatalogArtifact,
+    expectation: SourceTopologyExpectation,
+  ): boolean {
+    if (!this.hasStrongSdsPlanningEvidence(docs, catalog, expectation)) return false;
+    const genericTitles = plan.tasks.filter((task) =>
+      /initial planning|draft backlog|review inputs|baseline project scaffolding|integrate core dependencies|validate baseline behavior/i.test(
+        `${task.title} ${task.description ?? ""}`,
+      ),
+    ).length;
+    const genericImplementationTasks = plan.tasks.filter((task) =>
+      GENERIC_IMPLEMENTATION_TASK_PATTERN.test(`${task.title} ${task.description ?? ""}`),
+    ).length;
+    const weakImplementationTargetTasks = plan.tasks.filter((task) =>
+      this.taskUsesOnlyWeakImplementationTargets(task, docs),
+    ).length;
+    const verificationSuites = this.extractVerificationSuites(docs);
+    const acceptanceScenarios = this.extractAcceptanceScenarios(docs);
+    const planCorpus = this.normalizeServiceLookupKey(
+      [
+        ...plan.epics.map((epic) => `${epic.title}\n${epic.description ?? ""}`),
+        ...plan.stories.map((story) => `${story.title}\n${story.description ?? ""}\n${story.userStory ?? ""}`),
+        ...plan.tasks.map((task) => `${task.title}\n${task.description ?? ""}`),
+      ].join("\n"),
+    );
+    const coveredVerificationSuites = verificationSuites.filter((suite) =>
+      planCorpus.includes(this.normalizeServiceLookupKey(suite.name)),
+    ).length;
+    const coveredAcceptanceScenarios = acceptanceScenarios.filter(
+      (scenario) =>
+        planCorpus.includes(`scenario ${scenario.index}`) ||
+        planCorpus.includes(this.normalizeServiceLookupKey(scenario.title)),
+    ).length;
+    const coveredServiceIds = new Set(plan.epics.flatMap((epic) => normalizeStringArray(epic.serviceIds)));
+    return (
+      plan.epics.length === 0 ||
+      plan.stories.length === 0 ||
+      plan.tasks.length === 0 ||
+      genericTitles >= Math.min(2, plan.tasks.length) ||
+      genericImplementationTasks > 0 ||
+      weakImplementationTargetTasks > 0 ||
+      (verificationSuites.length > 0 && coveredVerificationSuites === 0) ||
+      (acceptanceScenarios.length > 0 && coveredAcceptanceScenarios < Math.min(3, acceptanceScenarios.length)) ||
+      (genericTitles > 0 &&
+        catalog.services.length > 1 &&
+        coveredServiceIds.size > 0 &&
+        coveredServiceIds.size < Math.min(catalog.services.length, 2))
+    );
+  }
+
+  private backlogMostlyAlignedEnough(audit: TaskSufficiencyAuditResult | undefined): boolean {
+    if (!audit) return true;
+    return audit.satisfied;
+  }
+
   private orderStoryTasksByDependencies(
     storyTasks: PlanTask[],
     serviceRank: Map<string, number>,
@@ -3525,6 +4361,320 @@ export class CreateTasksService {
     return uniqueStrings(sections).slice(0, limit);
   }
 
+  private collectSdsSections(docs: DocdexDocument[]): Array<{ heading: string; body: string[] }> {
+    const sections: Array<{ heading: string; body: string[] }> = [];
+    for (const doc of docs) {
+      if (!looksLikeSdsDoc(doc)) continue;
+      const content = stripManagedSdsPreflightBlock(doc.content ?? "") ?? "";
+      const lines = content.split(/\r?\n/);
+      let currentHeading: string | undefined;
+      let currentBody: string[] = [];
+      let inCodeFence = false;
+      const flush = () => {
+        if (!currentHeading) return;
+        sections.push({ heading: currentHeading, body: [...currentBody] });
+      };
+      for (const rawLine of lines) {
+        const line = rawLine ?? "";
+        const trimmed = line.trim();
+        if (/^```/.test(trimmed)) {
+          inCodeFence = !inCodeFence;
+          currentBody.push(line);
+          continue;
+        }
+        if (!inCodeFence) {
+          const headingMatch = trimmed.match(MARKDOWN_HEADING_PATTERN);
+          if (headingMatch) {
+            flush();
+            currentHeading = normalizeHeadingCandidate(headingMatch[2] ?? "");
+            currentBody = [];
+            continue;
+          }
+        }
+        if (currentHeading) currentBody.push(line);
+      }
+      flush();
+    }
+    return sections;
+  }
+
+  private normalizeRuntimeComponentCandidate(rawValue: string): string | undefined {
+    let candidate = rawValue.trim();
+    if (!candidate) return undefined;
+    const backtickMatch = candidate.match(/`([^`]+)`/);
+    if (backtickMatch?.[1]) {
+      candidate = backtickMatch[1];
+    }
+    const colonHead = candidate.split(/:\s+/, 2)[0]?.trim();
+    if (colonHead && colonHead.split(/\s+/).length <= 5) {
+      candidate = colonHead;
+    }
+    const dashHead = candidate.split(/\s+[—-]\s+/, 2)[0]?.trim();
+    if (dashHead && dashHead.split(/\s+/).length <= 5) {
+      candidate = dashHead;
+    }
+    candidate = candidate.replace(/\([^)]*\)/g, " ").replace(/[.;,]+$/, "").trim();
+    if (!candidate) return undefined;
+    const normalized = this.normalizeTextServiceName(candidate) ?? this.normalizeServiceName(candidate);
+    if (!normalized) return undefined;
+    if (normalized.split(" ").length > 4) return undefined;
+    return normalized;
+  }
+
+  private extractRuntimeComponentNames(docs: DocdexDocument[]): string[] {
+    const components = new Set<string>();
+    for (const section of this.collectSdsSections(docs)) {
+      if (!RUNTIME_COMPONENTS_HEADING_PATTERN.test(section.heading)) continue;
+      let inCodeFence = false;
+      for (const rawLine of section.body) {
+        const trimmed = rawLine.trim();
+        if (/^```/.test(trimmed)) {
+          inCodeFence = !inCodeFence;
+          continue;
+        }
+        if (inCodeFence) continue;
+        const listMatch = trimmed.match(/^(?:[-*]|\d+[.)])\s+(.+)$/);
+        if (!listMatch?.[1]) continue;
+        const candidate = this.normalizeRuntimeComponentCandidate(listMatch[1]);
+        if (candidate) components.add(candidate);
+      }
+    }
+    return Array.from(components);
+  }
+
+  private extractVerificationSuites(docs: DocdexDocument[]): SdsVerificationSuite[] {
+    const suites: SdsVerificationSuite[] = [];
+    const seen = new Set<string>();
+    for (const section of this.collectSdsSections(docs)) {
+      if (!VERIFICATION_MATRIX_HEADING_PATTERN.test(section.heading)) continue;
+      for (const rawLine of section.body) {
+        const trimmed = rawLine.trim();
+        if (!trimmed.startsWith("|")) continue;
+        if (/^\|\s*-+\s*\|/i.test(trimmed)) continue;
+        const cells = trimmed
+          .split("|")
+          .map((cell) => cell.trim())
+          .filter(Boolean);
+        if (cells.length < 2) continue;
+        if (/verification suite/i.test(cells[0] ?? "")) continue;
+        const name = normalizeHeadingCandidate(cells[0] ?? "");
+        if (!name) continue;
+        const key = this.normalizeServiceLookupKey(name);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        suites.push({
+          name,
+          scope: cells[1] || undefined,
+          sourceCoverage: cells[2] || undefined,
+        });
+      }
+    }
+    return suites;
+  }
+
+  private extractAcceptanceScenarios(docs: DocdexDocument[]): SdsAcceptanceScenario[] {
+    const scenarios: SdsAcceptanceScenario[] = [];
+    const seen = new Set<number>();
+    for (const section of this.collectSdsSections(docs)) {
+      if (!ACCEPTANCE_SCENARIOS_HEADING_PATTERN.test(section.heading)) continue;
+      for (const rawLine of section.body) {
+        const trimmed = rawLine.trim();
+        const match = trimmed.match(/^(\d+)\.\s+(.+)$/);
+        if (!match?.[1] || !match[2]) continue;
+        const index = Number.parseInt(match[1], 10);
+        if (!Number.isFinite(index) || seen.has(index)) continue;
+        const details = match[2].trim();
+        const title = normalizeHeadingCandidate(details.split(/:\s+/, 2)[0] ?? details) || `Scenario ${index}`;
+        scenarios.push({ index, title, details });
+        seen.add(index);
+      }
+    }
+    return scenarios.sort((left, right) => left.index - right.index);
+  }
+
+  private classifyBuildTarget(target: string): BuildTargetClassification {
+    const normalized = this.normalizeStructurePathToken(target) ?? target.replace(/\\/g, "/").trim();
+    const segments = normalized
+      .toLowerCase()
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    const basename = segments[segments.length - 1] ?? normalized.toLowerCase();
+    const isFile = isStructuredFilePath(basename);
+    const isServiceArtifact = SERVICE_ARTIFACT_BASENAME_PATTERN.test(basename);
+    if (segments.some((segment) => BUILD_TARGET_DOC_SEGMENTS.has(segment))) {
+      return { normalized, basename, segments, isFile, kind: "doc", isServiceArtifact };
+    }
+    if (MANIFEST_TARGET_BASENAME_PATTERN.test(basename) || isServiceArtifact) {
+      return { normalized, basename, segments, isFile, kind: "manifest", isServiceArtifact };
+    }
+    if (segments.some((segment) => BUILD_TARGET_TEST_SEGMENTS.has(segment))) {
+      return { normalized, basename, segments, isFile, kind: "test", isServiceArtifact };
+    }
+    if (segments.some((segment) => BUILD_TARGET_OPS_SEGMENTS.has(segment))) {
+      return { normalized, basename, segments, isFile, kind: "ops", isServiceArtifact };
+    }
+    if (segments.some((segment) => BUILD_TARGET_INTERFACE_SEGMENTS.has(segment))) {
+      return { normalized, basename, segments, isFile, kind: "interface", isServiceArtifact };
+    }
+    if (segments.some((segment) => BUILD_TARGET_DATA_SEGMENTS.has(segment))) {
+      return { normalized, basename, segments, isFile, kind: "data", isServiceArtifact };
+    }
+    if (segments.some((segment) => BUILD_TARGET_RUNTIME_SEGMENTS.has(segment))) {
+      return { normalized, basename, segments, isFile, kind: "runtime", isServiceArtifact };
+    }
+    return { normalized, basename, segments, isFile, kind: "unknown", isServiceArtifact };
+  }
+
+  private isStrongImplementationTarget(target: string): boolean {
+    const classification = this.classifyBuildTarget(target);
+    return (
+      classification.kind === "runtime" ||
+      classification.kind === "interface" ||
+      classification.kind === "data" ||
+      classification.kind === "test" ||
+      classification.kind === "ops"
+    );
+  }
+
+  private deriveBuildFocusProfile(texts: string[]): {
+    wantsOps: boolean;
+    wantsVerification: boolean;
+    wantsData: boolean;
+    wantsInterface: boolean;
+  } {
+    const corpus = this.normalizeServiceLookupKey(texts.join("\n"));
+    return {
+      wantsOps:
+        /\b(deploy|deployment|startup|release|rollback|recovery|rotation|drill|runbook|failover|proxy|operations?|runtime)\b/.test(
+          corpus,
+        ),
+      wantsVerification:
+        /\b(verify|verification|acceptance|scenario|quality|suite|test|tests|matrix|gate|drill)\b/.test(corpus),
+      wantsData: /\b(data|storage|cache|ledger|pipeline|db|database|persistence)\b/.test(corpus),
+      wantsInterface: /\b(contract|policy|provider|gateway|rpc|api|interface|schema|oracle|protocol)\b/.test(corpus),
+    };
+  }
+
+  private selectBuildTargets(
+    unit: SdsServiceBuildUnit,
+    focusTexts: string[],
+    purpose: BuildTargetPurpose,
+    limit: number,
+  ): string[] {
+    const candidates = uniqueStrings([...unit.files, ...unit.directories])
+      .map((candidate) => this.normalizeStructurePathToken(candidate) ?? candidate.replace(/\\/g, "/").trim())
+      .filter(Boolean);
+    if (candidates.length === 0) return [];
+    const focusCorpus = this.normalizeServiceLookupKey(
+      [unit.serviceName, ...unit.aliases, ...focusTexts].filter(Boolean).join("\n"),
+    );
+    const focusTokens = focusCorpus
+      .split(" ")
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3);
+    const focusProfile = this.deriveBuildFocusProfile(focusTexts);
+    const scored = candidates
+      .map((target) => {
+        const classification = this.classifyBuildTarget(target);
+        const normalizedTarget = this.normalizeServiceLookupKey(target.replace(/\//g, " "));
+        const overlap = focusTokens.filter((token) => normalizedTarget.includes(token)).length;
+        let score = overlap * 25 + (classification.isFile ? 12 : 0);
+        if (purpose === "structure") {
+          if (classification.kind === "runtime" || classification.kind === "interface") score += 90;
+          else if (classification.kind === "data") score += 75;
+          else if (classification.kind === "ops") score += 30;
+          else if (classification.kind === "manifest") score += 10;
+          else if (classification.kind === "doc") score -= 80;
+        } else if (purpose === "implementation") {
+          if (classification.kind === "runtime") score += classification.isFile ? 170 : 140;
+          else if (classification.kind === "interface") score += classification.isFile ? 160 : 135;
+          else if (classification.kind === "data") score += classification.isFile ? 150 : 125;
+          else if (classification.kind === "test") score += 70;
+          else if (classification.kind === "ops") score += focusProfile.wantsOps ? 140 : 25;
+          else if (classification.kind === "manifest") score -= 140;
+          else if (classification.kind === "doc") score -= 180;
+        } else {
+          if (classification.kind === "test") score += 170;
+          else if (classification.kind === "runtime") score += 120;
+          else if (classification.kind === "interface") score += 105;
+          else if (classification.kind === "data") score += 95;
+          else if (classification.kind === "ops") score += focusProfile.wantsOps ? 160 : 90;
+          else if (classification.kind === "manifest") score -= 120;
+          else if (classification.kind === "doc") score -= 180;
+        }
+        if (focusProfile.wantsOps && classification.kind === "ops") score += 60;
+        if (focusProfile.wantsVerification && classification.kind === "test") score += 60;
+        if (focusProfile.wantsData && classification.kind === "data") score += 55;
+        if (focusProfile.wantsInterface && classification.kind === "interface") score += 55;
+        if (focusProfile.wantsInterface && classification.kind === "runtime") score += 20;
+        return { target, classification, score };
+      })
+      .sort((left, right) => right.score - left.score || left.target.length - right.target.length || left.target.localeCompare(right.target));
+    const strongExists = scored.some(
+      (entry) =>
+        entry.score > 0 &&
+        (entry.classification.kind === "runtime" ||
+          entry.classification.kind === "interface" ||
+          entry.classification.kind === "data" ||
+          entry.classification.kind === "test" ||
+          entry.classification.kind === "ops"),
+    );
+    const filtered = scored.filter((entry) => {
+      if (entry.score <= 0) return false;
+      if (!strongExists) return true;
+      if (purpose === "structure") return entry.classification.kind !== "doc";
+      if (entry.classification.kind === "manifest") return false;
+      return entry.classification.kind !== "doc";
+    });
+    const ranked = (filtered.length > 0 ? filtered : scored.filter((entry) => entry.score > 0)).map((entry) => entry.target);
+    return uniqueStrings(ranked).slice(0, Math.max(1, limit));
+  }
+
+  private buildVerificationSuiteTaskDraft(
+    suite: SdsVerificationSuite,
+    serviceName: string,
+  ): Pick<PlanTask, "unitTests" | "componentTests" | "integrationTests" | "apiTests" | "description"> {
+    const normalized = this.normalizeServiceLookupKey([suite.name, suite.scope, suite.sourceCoverage].filter(Boolean).join(" "));
+    const unitTests: string[] = [];
+    const componentTests: string[] = [];
+    const integrationTests: string[] = [];
+    const apiTests: string[] = [];
+    if (/\bunit\b/.test(normalized)) {
+      unitTests.push(`Execute the named suite "${suite.name}" for ${serviceName}.`);
+    }
+    if (/\b(component|ui|render|client)\b/.test(normalized)) {
+      componentTests.push(`Execute the named suite "${suite.name}" against the ${serviceName} surface.`);
+    }
+    if (/\b(integration|acceptance|end to end|end-to-end|drill|replay|failover)\b/.test(normalized)) {
+      integrationTests.push(`Execute the named suite "${suite.name}" end to end for ${serviceName}.`);
+    }
+    if (/\b(api|gateway|rpc|provider)\b/.test(normalized)) {
+      apiTests.push(`Execute the named suite "${suite.name}" against the ${serviceName} API/provider surface.`);
+    }
+    if (
+      unitTests.length === 0 &&
+      componentTests.length === 0 &&
+      integrationTests.length === 0 &&
+      apiTests.length === 0
+    ) {
+      integrationTests.push(`Execute the named suite "${suite.name}" and capture deterministic evidence.`);
+    }
+    return {
+      description: [
+        `Implement and wire the named verification suite "${suite.name}" for ${serviceName}.`,
+        suite.scope ? `Scope: ${suite.scope}` : undefined,
+        suite.sourceCoverage ? `Source coverage: ${suite.sourceCoverage}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      unitTests,
+      componentTests,
+      integrationTests,
+      apiTests,
+    };
+  }
+
   private buildSdsCoverageHints(docs: DocdexDocument[]): string {
     const hints = this.extractSdsSectionCandidates(docs, SDS_COVERAGE_HINT_HEADING_LIMIT);
     if (hints.length === 0) return "";
@@ -3592,6 +4742,284 @@ export class CreateTasksService {
     return { docSummary: blocks.join("\n\n") || "(no docs)", warnings };
   }
 
+  private buildCreateTasksAgentMission(projectKey: string): string {
+    return [
+      `You are the orchestration agent for mcoda create-tasks on project ${projectKey}.`,
+      "Your job in this run is to turn the SDS and supporting docs into an executable backlog that is enough to build the documented product.",
+      "You must understand the services/tools that need to exist, define implementation epics, define the user stories needed to finish each epic, and define the concrete tasks needed to finish each story.",
+      "Keep every phase aligned to the SDS folder tree, runtime topology, dependency order, startup waves, verification suites, acceptance scenarios, and named implementation targets.",
+      "Use only canonical documented names for services, modules, interfaces, commands, schemas, files, and runtime artifacts.",
+      "Do not invent stack choices, rename documented targets, emit placeholder work, or defer SDS gaps to a later manual pass.",
+      "If coverage gaps remain, refine the backlog itself until the backlog is enough to build the product.",
+    ].join("\n");
+  }
+
+  private schemaSnippetForAction(action: string): string {
+    switch (action) {
+      case "epics":
+        return EPIC_SCHEMA_SNIPPET;
+      case "stories":
+        return STORY_SCHEMA_SNIPPET;
+      case "tasks":
+        return TASK_SCHEMA_SNIPPET;
+      case "full_plan":
+        return FULL_PLAN_SCHEMA_SNIPPET;
+      default:
+        return FULL_PLAN_SCHEMA_SNIPPET;
+    }
+  }
+
+  private buildPlanOutline(
+    plan: GeneratedPlan,
+    options?: { maxEpics?: number; maxStoriesPerEpic?: number; maxTasksPerStory?: number },
+  ): string {
+    const maxEpics = options?.maxEpics ?? 16;
+    const maxStoriesPerEpic = options?.maxStoriesPerEpic ?? 8;
+    const maxTasksPerStory = options?.maxTasksPerStory ?? 10;
+    const summary = {
+      epics: plan.epics.slice(0, maxEpics).map((epic) => ({
+        localId: epic.localId,
+        title: epic.title,
+        area: epic.area,
+        serviceIds: normalizeStringArray(epic.serviceIds),
+        tags: normalizeStringArray(epic.tags),
+        acceptanceCriteria: (epic.acceptanceCriteria ?? []).slice(0, 8),
+        stories: plan.stories
+          .filter((story) => story.epicLocalId === epic.localId)
+          .slice(0, maxStoriesPerEpic)
+          .map((story) => ({
+            localId: story.localId,
+            title: story.title,
+            userStory: story.userStory,
+            acceptanceCriteria: (story.acceptanceCriteria ?? []).slice(0, 8),
+            tasks: plan.tasks
+              .filter((task) => task.epicLocalId === epic.localId && task.storyLocalId === story.localId)
+              .slice(0, maxTasksPerStory)
+              .map((task) => ({
+                localId: task.localId,
+                title: task.title,
+                type: task.type,
+                dependsOnKeys: normalizeStringArray(task.dependsOnKeys),
+                description: task.description,
+                unitTests: normalizeStringArray(task.unitTests),
+                componentTests: normalizeStringArray(task.componentTests),
+                integrationTests: normalizeStringArray(task.integrationTests),
+                apiTests: normalizeStringArray(task.apiTests),
+              })),
+          })),
+      })),
+    };
+    return JSON.stringify(summary, null, 2);
+  }
+
+  private parseFullPlan(
+    output: string,
+    options: { maxEpics?: number; maxStoriesPerEpic?: number; maxTasksPerStory?: number },
+  ): GeneratedPlan {
+    const parsed = extractJson(output);
+    if (!parsed || !Array.isArray(parsed.epics) || parsed.epics.length === 0) {
+      throw new Error("Agent did not return a full backlog plan in expected format");
+    }
+    return this.materializePlanFromSeed(parsed as AgentPlan, options);
+  }
+
+  private async normalizeGeneratedPlan(params: {
+    plan: GeneratedPlan;
+    docs: DocdexDocument[];
+    serviceCatalog: ServiceCatalogArtifact;
+    sourceTopologyExpectation: SourceTopologyExpectation;
+    unknownEpicServicePolicy: EpicServiceValidationPolicy;
+    jobId: string;
+  }): Promise<GeneratedPlan> {
+    const normalizedPlanEpics = this.alignEpicsToServiceCatalog(
+      params.plan.epics,
+      params.serviceCatalog,
+      params.unknownEpicServicePolicy,
+    );
+    for (const warning of normalizedPlanEpics.warnings) {
+      await this.jobService.appendLog(params.jobId, `[create-tasks] ${warning}\n`);
+    }
+    let plan: GeneratedPlan = {
+      ...params.plan,
+      epics: normalizedPlanEpics.epics.map((epic, index) => ({
+        ...epic,
+        localId: epic.localId ?? `e${index + 1}`,
+        stories: [],
+      })),
+    };
+    plan = this.enforceStoryScopedDependencies(plan);
+    plan = this.injectStructureBootstrapPlan(plan, params.docs, params.serviceCatalog.projectKey);
+    plan = this.enforceStoryScopedDependencies(plan);
+    this.validatePlanLocalIdentifiers(plan);
+    plan = this.applyServiceDependencySequencing(plan, params.docs);
+    plan = this.enforceStoryScopedDependencies(plan);
+    this.validatePlanLocalIdentifiers(plan);
+    this.derivePlanningArtifacts(
+      params.serviceCatalog.projectKey,
+      params.docs,
+      plan,
+      params.sourceTopologyExpectation,
+    );
+    return plan;
+  }
+
+  private buildRefinementPrompt(params: {
+    projectKey: string;
+    currentPlan: GeneratedPlan;
+    audit: TaskSufficiencyAuditResult;
+    reasons: string[];
+    docSummary: string;
+    projectBuildMethod: string;
+    serviceCatalog: ServiceCatalogArtifact;
+    options: { maxEpics?: number; maxStoriesPerEpic?: number; maxTasksPerStory?: number };
+    iteration: number;
+  }): string {
+    const serviceCatalogSummary = this.buildServiceCatalogPromptSummary(params.serviceCatalog);
+    const planOutline = this.buildPlanOutline(params.currentPlan, params.options);
+    const refinementLimits = [
+      params.options.maxEpics ? `- Limit epics to ${params.options.maxEpics}.` : "",
+      params.options.maxStoriesPerEpic ? `- Limit stories per epic to ${params.options.maxStoriesPerEpic}.` : "",
+      params.options.maxTasksPerStory ? `- Limit tasks per story to ${params.options.maxTasksPerStory}.` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const plannedGapBundles =
+      params.audit.plannedGapBundles.length > 0
+        ? JSON.stringify(params.audit.plannedGapBundles.slice(0, 48), null, 2)
+        : "[]";
+    return [
+      this.buildCreateTasksAgentMission(params.projectKey),
+      `Refinement iteration ${params.iteration}. The current backlog did not yet satisfy the SDS sufficiency audit.`,
+      "Return a complete replacement backlog as valid JSON only matching:",
+      FULL_PLAN_SCHEMA_SNIPPET,
+      "Refinement rules:",
+      "- Return the full revised backlog, not a delta.",
+      "- Preserve already-good backlog slices unless a stricter SDS-aligned replacement is required.",
+      "- Every epic must map to one or more serviceIds from the phase-0 service catalog.",
+      "- Every story must contain concrete tasks, and every task must stay scoped to its own story.",
+      "- Every task must be implementation-concrete, name real targets when the SDS exposes them, and include unit/component/integration/api test arrays ([] when not applicable).",
+      "- Fix the specific missing SDS coverage items listed below. Do not claim coverage unless the backlog contains executable work for them.",
+      "- Maintain dependency-first sequencing from foundational/runtime prerequisites through verification and acceptance evidence.",
+      refinementLimits || "- Use reasonable scope without over-generating backlog items.",
+      "Why this revision is required:",
+      formatBullets(params.reasons, "SDS coverage gaps remain."),
+      "Current backlog outline:",
+      planOutline,
+      "Remaining section headings:",
+      formatBullets(params.audit.remainingSectionHeadings, "none"),
+      "Remaining folder entries:",
+      formatBullets(params.audit.remainingFolderEntries, "none"),
+      "Actionable gap bundles (anchor + concrete implementation targets):",
+      plannedGapBundles,
+      "Project construction method:",
+      params.projectBuildMethod,
+      "Phase 0 service catalog (allowed serviceIds):",
+      serviceCatalogSummary,
+      "Docs available:",
+      params.docSummary || "- (no docs provided; propose sensible refinements).",
+    ].join("\n\n");
+  }
+
+  private async refinePlanWithAgent(params: {
+    agent: Agent;
+    currentPlan: GeneratedPlan;
+    audit: TaskSufficiencyAuditResult;
+    reasons: string[];
+    docs: DocdexDocument[];
+    docSummary: string;
+    projectKey: string;
+    projectBuildMethod: string;
+    serviceCatalog: ServiceCatalogArtifact;
+    sourceTopologyExpectation: SourceTopologyExpectation;
+    unknownEpicServicePolicy: EpicServiceValidationPolicy;
+    options: { maxEpics?: number; maxStoriesPerEpic?: number; maxTasksPerStory?: number };
+    agentStream: boolean;
+    jobId: string;
+    commandRunId: string;
+    iteration: number;
+  }): Promise<GeneratedPlan> {
+    const prompt = this.buildRefinementPrompt({
+      projectKey: params.projectKey,
+      currentPlan: params.currentPlan,
+      audit: params.audit,
+      reasons: params.reasons,
+      docSummary: params.docSummary,
+      projectBuildMethod: params.projectBuildMethod,
+      serviceCatalog: params.serviceCatalog,
+      options: params.options,
+      iteration: params.iteration,
+    });
+    const { output } = await this.invokeAgentWithRetry(
+      params.agent,
+      prompt,
+      "full_plan",
+      params.agentStream,
+      params.jobId,
+      params.commandRunId,
+      {
+        refinementIteration: params.iteration,
+        remainingGapCount: params.audit.remainingGaps.total,
+        remainingSectionCount: params.audit.remainingSectionHeadings.length,
+        remainingFolderCount: params.audit.remainingFolderEntries.length,
+      },
+    );
+    const refinedPlan = this.parseFullPlan(output, params.options);
+    return this.normalizeGeneratedPlan({
+      plan: refinedPlan,
+      docs: params.docs,
+      serviceCatalog: params.serviceCatalog,
+      sourceTopologyExpectation: params.sourceTopologyExpectation,
+      unknownEpicServicePolicy: params.unknownEpicServicePolicy,
+      jobId: params.jobId,
+    });
+  }
+
+  private async runTaskSufficiencyAudit(params: {
+    workspace: WorkspaceResolution;
+    projectKey: string;
+    sourceCommand: string;
+    dryRun: boolean;
+    jobId: string;
+  }): Promise<{ audit?: TaskSufficiencyAuditResult; error?: string; warnings: string[] }> {
+    if (!this.taskSufficiencyFactory) {
+      return { warnings: [] };
+    }
+    let audit: TaskSufficiencyAuditResult | undefined;
+    let error: string | undefined;
+    let closeError: string | undefined;
+    try {
+      const sufficiencyService = await this.taskSufficiencyFactory(this.workspace);
+      try {
+        audit = await sufficiencyService.runAudit({
+          workspace: params.workspace,
+          projectKey: params.projectKey,
+          sourceCommand: params.sourceCommand,
+          dryRun: params.dryRun,
+        });
+      } finally {
+        try {
+          await sufficiencyService.close();
+        } catch (caught) {
+          closeError = (caught as Error)?.message ?? String(caught);
+          await this.jobService.appendLog(
+            params.jobId,
+            `Task sufficiency audit close warning: ${closeError}\n`,
+          );
+        }
+      }
+    } catch (caught) {
+      error = (caught as Error)?.message ?? String(caught);
+    }
+    return {
+      audit,
+      error,
+      warnings: uniqueStrings([
+        ...(audit?.warnings ?? []),
+        ...(closeError ? [`Task sufficiency audit close warning: ${closeError}`] : []),
+      ]),
+    };
+  }
+
   private buildPrompt(
     projectKey: string,
     docSummary: string,
@@ -3609,12 +5037,14 @@ export class CreateTasksService {
       .join(" ");
 
     const prompt = [
-      `You are assisting in phase 1 of 3 for project ${projectKey}: generate epics only.`,
-      "Process is strict and direct: build plan -> epics -> stories -> tasks.",
+      this.buildCreateTasksAgentMission(projectKey),
+      `You are assisting in phase 1 of 3 for project ${projectKey}: understand the documented services/tools and generate epics only.`,
+      "Process is strict and direct: understand services/tools -> epics -> stories -> tasks -> sufficiency refinement.",
       "This step outputs only epics derived from the build plan and docs.",
       "Return strictly valid JSON (no prose) matching:",
       EPIC_SCHEMA_SNIPPET,
       "Rules:",
+      "- First reason through which documented services/tools must be created or changed, then express that understanding through executable implementation epics.",
       "- Do NOT include final slugs; the system will assign keys.",
       "- Use docdex handles when referencing docs.",
       "- acceptanceCriteria must be an array of strings (5-10 items).",
@@ -3855,7 +5285,7 @@ export class CreateTasksService {
       const attempt = 2;
       const fixPrompt = [
         "Rewrite the previous response into valid JSON matching the expected schema.",
-        `Schema hint:\n${action === "epics" ? EPIC_SCHEMA_SNIPPET : action === "stories" ? STORY_SCHEMA_SNIPPET : TASK_SCHEMA_SNIPPET}`,
+        `Schema hint:\n${this.schemaSnippetForAction(action)}`,
         "Return JSON only; no prose.",
         `Original content:\n${output}`,
       ].join("\n\n");
@@ -3965,6 +5395,7 @@ export class CreateTasksService {
 
   private async generateStoriesForEpic(
     agent: Agent,
+    projectKey: string,
     epic: AgentEpicNode & { key?: string },
     docSummary: string,
     projectBuildMethod: string,
@@ -3973,6 +5404,7 @@ export class CreateTasksService {
     commandRunId: string,
   ): Promise<AgentStoryNode[]> {
     const prompt = [
+      this.buildCreateTasksAgentMission(projectKey),
       `Generate user stories for epic "${epic.title}" (phase 2 of 3).`,
       "This phase is stories-only. Do not generate tasks yet.",
       "Return JSON only matching:",
@@ -3982,6 +5414,7 @@ export class CreateTasksService {
       "- acceptanceCriteria must be an array of strings.",
       "- Use docdex handles when citing docs.",
       "- Keep stories direct and implementation-oriented; avoid placeholder-only narrative sections.",
+      "- Define the minimum set of user stories that, when completed, will finish this epic according to the SDS and construction method.",
       "- Keep story sequencing aligned with the project construction method.",
       "- Preserve canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as written.",
       `Epic context (key=${epic.key ?? epic.localId ?? "TBD"}):`,
@@ -4015,6 +5448,7 @@ export class CreateTasksService {
 
   private async generateTasksForStory(
     agent: Agent,
+    projectKey: string,
     epic: { key?: string; title: string },
     story: AgentStoryNode & { key?: string },
     docSummary: string,
@@ -4031,6 +5465,7 @@ export class CreateTasksService {
         .filter(Boolean);
     };
     const prompt = [
+      this.buildCreateTasksAgentMission(projectKey),
       `Generate tasks for story "${story.title}" (Epic: ${epic.title}, phase 3 of 3).`,
       "This phase is tasks-only for the given story.",
       "Return JSON only matching:",
@@ -4049,6 +5484,7 @@ export class CreateTasksService {
       "- Start from prerequisite codebase setup: add structure/bootstrap tasks before feature tasks when missing.",
       "- Keep dependencies strictly inside this story; never reference tasks from other stories/epics.",
       "- Order tasks from foundational prerequisites to dependents based on documented dependency direction and startup constraints.",
+      "- Generate the concrete work that would actually complete this story in one automated backlog pass; do not leave implied implementation gaps behind.",
       "- Avoid placeholder wording (TBD, TODO, to be defined, generic follow-up phrases).",
       "- Avoid documentation-only or glossary-only tasks unless story acceptance explicitly requires them.",
       "- Preserve canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as written.",
@@ -4193,6 +5629,7 @@ export class CreateTasksService {
   }
 
   private async generatePlanFromAgent(
+    projectKey: string,
     epics: AgentEpicNode[],
     agent: Agent,
     docSummary: string,
@@ -4220,6 +5657,7 @@ export class CreateTasksService {
       try {
         stories = await this.generateStoriesForEpic(
           agent,
+          projectKey,
           { ...epic },
           docSummary,
           options.projectBuildMethod,
@@ -4268,6 +5706,7 @@ export class CreateTasksService {
         try {
           tasks = await this.generateTasksForStory(
             agent,
+            projectKey,
             { key: story.epicLocalId, title: story.title },
             story,
             docSummary,
@@ -5266,6 +6705,23 @@ export class CreateTasksService {
           sourceTopologyExpectation,
         );
         const { discoveryGraph, topologySignals, serviceCatalog, projectBuildMethod, projectBuildPlan } = initialArtifacts;
+        const sdsDrivenPlan = this.buildSdsDrivenPlan(
+          options.projectKey,
+          docs,
+          serviceCatalog,
+          discoveryGraph,
+        );
+        const deterministicFallbackPlan = this.hasStrongSdsPlanningEvidence(
+          docs,
+          serviceCatalog,
+          sourceTopologyExpectation,
+        )
+          ? sdsDrivenPlan
+          : this.materializePlanFromSeed(this.fallbackPlan(options.projectKey, docs), {
+              maxEpics: options.maxEpics,
+              maxStoriesPerEpic: options.maxStoriesPerEpic,
+              maxTasksPerStory: options.maxTasksPerStory,
+            });
         const { prompt } = this.buildPrompt(options.projectKey, docSummary, projectBuildMethod, serviceCatalog, options);
         const qaPreflight = await this.buildQaPreflight();
         const qaOverrides = this.buildQaOverrides(options);
@@ -5313,7 +6769,7 @@ export class CreateTasksService {
         });
 
         let agent: Agent | undefined;
-        let planSource: "agent" | "fallback" = "agent";
+        let planSource: "agent" | "fallback" | "sds" = "agent";
         let fallbackReason: string | undefined;
         let plan: GeneratedPlan;
         try {
@@ -5341,7 +6797,7 @@ export class CreateTasksService {
             timestamp: new Date().toISOString(),
             details: { epics: epics.length, source: "agent" },
           });
-          plan = await this.generatePlanFromAgent(epics, agent, docSummary, {
+          plan = await this.generatePlanFromAgent(options.projectKey, epics, agent, docSummary, {
             agentStream,
             jobId: job.id,
             commandRunId: commandRun.id,
@@ -5357,16 +6813,12 @@ export class CreateTasksService {
           ) {
             throw error;
           }
-          planSource = "fallback";
           await this.jobService.appendLog(
             job.id,
-            `Agent planning failed, using deterministic fallback plan: ${fallbackReason}\n`,
+            `Agent planning failed, using deterministic planner fallback: ${fallbackReason}\n`,
           );
-          plan = this.materializePlanFromSeed(this.fallbackPlan(options.projectKey, docs), {
-            maxEpics: options.maxEpics,
-            maxStoriesPerEpic: options.maxStoriesPerEpic,
-            maxTasksPerStory: options.maxTasksPerStory,
-          });
+          planSource = deterministicFallbackPlan === sdsDrivenPlan ? "sds" : "fallback";
+          plan = deterministicFallbackPlan;
           await this.jobService.writeCheckpoint(job.id, {
             stage: "epics_generated",
             timestamp: new Date().toISOString(),
@@ -5374,25 +6826,35 @@ export class CreateTasksService {
           });
         }
 
-        const normalizedPlanEpics = this.alignEpicsToServiceCatalog(plan.epics, serviceCatalog, unknownEpicServicePolicy);
-        for (const warning of normalizedPlanEpics.warnings) {
-          await this.jobService.appendLog(job.id, `[create-tasks] ${warning}\n`);
+        plan = await this.normalizeGeneratedPlan({
+          plan,
+          docs,
+          serviceCatalog,
+          sourceTopologyExpectation,
+          unknownEpicServicePolicy,
+          jobId: job.id,
+        });
+        if (this.planLooksTooWeakForSds(plan, docs, serviceCatalog, sourceTopologyExpectation)) {
+          fallbackReason = [
+            fallbackReason,
+            `generated backlog was too weak for SDS-first acceptance (epics=${plan.epics.length}, tasks=${plan.tasks.length})`,
+          ]
+            .filter(Boolean)
+            .join("; ");
+          planSource = "sds";
+          plan = await this.normalizeGeneratedPlan({
+            plan: sdsDrivenPlan,
+            docs,
+            serviceCatalog,
+            sourceTopologyExpectation,
+            unknownEpicServicePolicy,
+            jobId: job.id,
+          });
+          await this.jobService.appendLog(
+            job.id,
+            `create-tasks replaced the weak generated backlog with the SDS-first deterministic plan. Reason: ${fallbackReason}\n`,
+          );
         }
-        plan = {
-          ...plan,
-          epics: normalizedPlanEpics.epics.map((epic, index) => ({
-            ...epic,
-            localId: epic.localId ?? `e${index + 1}`,
-            stories: [],
-          })),
-        };
-        plan = this.enforceStoryScopedDependencies(plan);
-        plan = this.injectStructureBootstrapPlan(plan, docs, options.projectKey);
-        plan = this.enforceStoryScopedDependencies(plan);
-        this.validatePlanLocalIdentifiers(plan);
-        plan = this.applyServiceDependencySequencing(plan, docs);
-        plan = this.enforceStoryScopedDependencies(plan);
-        this.validatePlanLocalIdentifiers(plan);
 
         await this.jobService.writeCheckpoint(job.id, {
           stage: "stories_generated",
@@ -5429,29 +6891,101 @@ export class CreateTasksService {
         await this.seedPriorities(options.projectKey);
         let sufficiencyAudit: TaskSufficiencyAuditResult | undefined;
         let sufficiencyAuditError: string | undefined;
-        if (this.taskSufficiencyFactory) {
-          let sufficiencyCloseError: string | undefined;
-          try {
-            const sufficiencyService = await this.taskSufficiencyFactory(this.workspace);
+        const sufficiencyWarnings: string[] = [];
+        let refinementAttempt = 0;
+        while (true) {
+            const auditResult = await this.runTaskSufficiencyAudit({
+              workspace: options.workspace,
+              projectKey: options.projectKey,
+              sourceCommand: "create-tasks",
+              dryRun: true,
+              jobId: job.id,
+            });
+            sufficiencyAudit = auditResult.audit;
+            sufficiencyAuditError = auditResult.error;
+            sufficiencyWarnings.push(...auditResult.warnings);
+
+            if (!sufficiencyAudit) {
+              break;
+            }
+            if (sufficiencyAudit.satisfied) {
+              sufficiencyAuditError = undefined;
+              break;
+            }
+
+            const refinementReasons = [
+              `SDS coverage target not reached (coverage=${sufficiencyAudit.finalCoverageRatio}, remaining gaps=${sufficiencyAudit.remainingGaps.total}).`,
+              ...(sufficiencyAudit.remainingSectionHeadings.length > 0
+                ? [
+                    `Remaining section headings: ${sufficiencyAudit.remainingSectionHeadings.slice(0, 12).join(", ")}`,
+                  ]
+                : []),
+              ...(sufficiencyAudit.remainingFolderEntries.length > 0
+                ? [
+                    `Remaining folder entries: ${sufficiencyAudit.remainingFolderEntries.slice(0, 12).join(", ")}`,
+                  ]
+                : []),
+            ];
+            if (!agent || refinementAttempt >= CreateTasksService.MAX_AGENT_REFINEMENT_ATTEMPTS) {
+              sufficiencyAuditError = refinementReasons[0];
+              break;
+            }
+
+            refinementAttempt += 1;
+            await this.jobService.writeCheckpoint(job.id, {
+              stage: "backlog_refinement",
+              timestamp: new Date().toISOString(),
+              details: {
+                iteration: refinementAttempt,
+                remainingGapCount: sufficiencyAudit.remainingGaps.total,
+                remainingSectionCount: sufficiencyAudit.remainingSectionHeadings.length,
+                remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
+                plannedGapBundleCount: sufficiencyAudit.plannedGapBundles.length,
+                unresolvedBundleCount: sufficiencyAudit.unresolvedBundles.length,
+              },
+            });
             try {
-              sufficiencyAudit = await sufficiencyService.runAudit({
-                workspace: options.workspace,
+              plan = await this.refinePlanWithAgent({
+                agent,
+                currentPlan: plan,
+                audit: sufficiencyAudit,
+                reasons: refinementReasons,
+                docs,
+                docSummary,
                 projectKey: options.projectKey,
-                sourceCommand: "create-tasks",
+                projectBuildMethod,
+                serviceCatalog,
+                sourceTopologyExpectation,
+                unknownEpicServicePolicy,
+                options,
+                agentStream,
+                jobId: job.id,
+                commandRunId: commandRun.id,
+                iteration: refinementAttempt,
               });
-            } finally {
-              try {
-                await sufficiencyService.close();
-              } catch (closeError) {
-                sufficiencyCloseError = (closeError as Error)?.message ?? String(closeError);
-                await this.jobService.appendLog(
-                  job.id,
-                  `Task sufficiency audit close warning: ${sufficiencyCloseError}\n`,
-                );
+              planSource = "agent";
+              await this.persistPlanToDb(project.id, options.projectKey, plan, job.id, commandRun.id, {
+                force: true,
+                resetKeys: true,
+                qaPreflight,
+                qaOverrides,
+              });
+              await this.seedPriorities(options.projectKey);
+              await this.jobService.appendLog(
+                job.id,
+                `create-tasks refinement iteration ${refinementAttempt} replaced the backlog with ${plan.epics.length} epics, ${plan.stories.length} stories, and ${plan.tasks.length} tasks.\n`,
+              );
+            } catch (error) {
+              const message = (error as Error)?.message ?? String(error);
+              await this.jobService.appendLog(
+                job.id,
+                `create-tasks refinement iteration ${refinementAttempt} failed: ${message}\n`,
+              );
+              sufficiencyAuditError = refinementReasons[0];
+              if (refinementAttempt >= CreateTasksService.MAX_AGENT_REFINEMENT_ATTEMPTS) {
+                break;
               }
             }
-          } catch (error) {
-            sufficiencyAuditError = (error as Error)?.message ?? String(error);
           }
 
           if (!sufficiencyAudit) {
@@ -5473,16 +7007,18 @@ export class CreateTasksService {
                 remainingSectionCount: undefined,
                 remainingFolderCount: undefined,
                 remainingGapCount: undefined,
+                plannedGapBundleCount: undefined,
                 warnings: [],
               },
             });
             throw new Error(message);
           }
 
-          const sufficiencyWarnings = uniqueStrings([
-            ...(sufficiencyAudit.warnings ?? []),
-            ...(sufficiencyCloseError ? [`Task sufficiency audit close warning: ${sufficiencyCloseError}`] : []),
-          ]);
+          const uniqueSufficiencyWarnings = uniqueStrings(sufficiencyWarnings);
+          sufficiencyAudit = {
+            ...sufficiencyAudit,
+            warnings: uniqueSufficiencyWarnings,
+          };
           if (!sufficiencyAudit.satisfied) {
             sufficiencyAuditError = `SDS coverage target not reached (coverage=${sufficiencyAudit.finalCoverageRatio}, remaining gaps=${sufficiencyAudit.remainingGaps.total}).`;
           }
@@ -5503,17 +7039,11 @@ export class CreateTasksService {
               remainingSectionCount: sufficiencyAudit.remainingSectionHeadings.length,
               remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
               remainingGapCount: sufficiencyAudit.remainingGaps.total,
+              plannedGapBundleCount: sufficiencyAudit.plannedGapBundles.length,
               unresolvedBundleCount: sufficiencyAudit.unresolvedBundles.length,
-              warnings: sufficiencyWarnings,
+              warnings: uniqueSufficiencyWarnings,
             },
           });
-
-          if (!sufficiencyAudit.satisfied) {
-            throw new Error(
-              `create-tasks blocked: task sufficiency audit did not reach full coverage. Report: ${sufficiencyAudit.reportPath}`,
-            );
-          }
-        }
 
         if ((sufficiencyAudit?.totalTasksAdded ?? 0) > 0) {
           await this.seedPriorities(options.projectKey);
@@ -5552,8 +7082,15 @@ export class CreateTasksService {
             dependencies: finalBacklog.dependencies.length,
             services: finalArtifacts.serviceCatalog.services.length,
             startupWaves: finalArtifacts.projectBuildPlan.startupWaves.length,
+            acceptedWithResidualSectionGaps: false,
           },
         });
+        const acceptedWithResidualSectionGaps = false;
+        if (sufficiencyAudit && !sufficiencyAudit.satisfied) {
+          throw new Error(
+            `create-tasks blocked: task sufficiency audit did not reach full coverage. Report: ${sufficiencyAudit.reportPath}`,
+          );
+        }
 
         await this.jobService.updateJobStatus(job.id, "completed", {
           payload: {
@@ -5599,6 +7136,7 @@ export class CreateTasksService {
                   remainingFolderCount: sufficiencyAudit.remainingFolderEntries.length,
                   remainingGapCount: sufficiencyAudit.remainingGaps.total,
                   unresolvedBundleCount: sufficiencyAudit.unresolvedBundles.length,
+                  acceptedWithResidualSectionGaps,
                   warnings: sufficiencyAudit.warnings,
                 }
               : undefined,

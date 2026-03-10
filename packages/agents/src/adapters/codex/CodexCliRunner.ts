@@ -8,6 +8,12 @@ const CODEX_STREAM_IO_ENV = "MCODA_STREAM_IO";
 const CODEX_STREAM_IO_FORMAT_ENV = "MCODA_STREAM_IO_FORMAT";
 const CODEX_STREAM_IO_COLOR_ENV = "MCODA_STREAM_IO_COLOR";
 const CODEX_STREAM_IO_PREFIX = "codex-cli";
+const CODEX_COMMAND_ENV = "MCODA_CODEX_COMMAND";
+const CODEX_COMMAND_ARGS_ENV = "MCODA_CODEX_COMMAND_ARGS";
+const CODEX_TIMEOUT_ENV = "MCODA_CODEX_TIMEOUT_MS";
+const CODEX_EXIT_GRACE_ENV = "MCODA_CODEX_EXIT_GRACE_MS";
+const CODEX_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const CODEX_DEFAULT_EXIT_GRACE_MS = 5_000;
 
 type AssistantTextEvent = { text: string; kind: "delta" | "final" };
 type StreamLine = { text: string; indent?: number; color?: keyof typeof ANSI; bold?: boolean };
@@ -118,6 +124,100 @@ const extractItemText = (item: any): string => {
       .join("");
   }
   return "";
+};
+
+const parseCommandArgs = (raw: string | undefined): string[] => {
+  const trimmed = raw?.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+          .filter(Boolean);
+      }
+    } catch {
+      // fall through to whitespace parsing
+    }
+  }
+  return trimmed.split(/\s+/).filter(Boolean);
+};
+
+const resolveCodexCommand = (): { command: string; preArgs: string[] } => {
+  const command = process.env[CODEX_COMMAND_ENV]?.trim() || "codex";
+  const preArgs = parseCommandArgs(process.env[CODEX_COMMAND_ARGS_ENV]);
+  return { command, preArgs };
+};
+
+const parsePositiveIntEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
+const resolveCodexTimeoutMs = (): number => parsePositiveIntEnv(CODEX_TIMEOUT_ENV, CODEX_DEFAULT_TIMEOUT_MS);
+
+const resolveCodexExitGraceMs = (): number =>
+  parsePositiveIntEnv(CODEX_EXIT_GRACE_ENV, CODEX_DEFAULT_EXIT_GRACE_MS);
+
+const isIgnorableStdinError = (error: NodeJS.ErrnoException): boolean =>
+  error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED";
+
+const safeKill = (child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void => {
+  try {
+    if (!child.killed) {
+      child.kill(signal);
+    }
+  } catch {
+    /* ignore kill errors */
+  }
+};
+
+const scheduleHardKill = (child: ReturnType<typeof spawn>, delayMs = 250): void => {
+  const timer = setTimeout(() => {
+    safeKill(child, "SIGKILL");
+  }, delayMs);
+  timer.unref();
+};
+
+const extractProtocolError = (parsed: any): string | undefined => {
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type === "turn.failed") {
+    const message = parsed?.error?.message ?? parsed?.error;
+    return message ? String(message) : "codex turn failed";
+  }
+  if (type === "error" && parsed?.message) {
+    return String(parsed.message);
+  }
+  return undefined;
+};
+
+const isCompletionEvent = (parsed: any): boolean => {
+  if (!parsed || typeof parsed !== "object") return false;
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  return type === "turn.completed" || type === "response.completed";
+};
+
+const parseCodexOutput = (raw: string): string => {
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  let message = "";
+  for (const line of lines) {
+    const parsed = safeJsonParse(line);
+    const event = extractAssistantText(parsed);
+    if (!event) continue;
+    if (event.kind === "delta") {
+      message += event.text;
+      continue;
+    }
+    message = event.text;
+  }
+  if (!message) {
+    return lines[lines.length - 1] ?? "";
+  }
+  return message;
 };
 
 const normalizeValue = (value: unknown): unknown => {
@@ -538,6 +638,173 @@ const extractAssistantText = (parsed: any): AssistantTextEvent | null => {
   return null;
 };
 
+interface CodexInvocationHooks {
+  onLine?: (line: string) => void;
+  onAssistantEvent?: (event: AssistantTextEvent, rawLine: string) => void;
+}
+
+const invokeCodexProcess = async (
+  prompt: string,
+  model?: string,
+  hooks?: CodexInvocationHooks,
+): Promise<{ output: string; raw: string; forcedExit: boolean }> => {
+  const resolvedModel = model ?? "gpt-5.1-codex-max";
+  const sandboxArgs = resolveSandboxArgs();
+  const reasoningEffort = resolveReasoningEffort(resolvedModel);
+  const codexCommand = resolveCodexCommand();
+  const args = [...codexCommand.preArgs, ...sandboxArgs.args, "exec", "--model", resolvedModel, "--json"];
+  if (!sandboxArgs.bypass) {
+    args.push("--full-auto");
+  }
+  if (reasoningEffort) {
+    args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
+  }
+  args.push("-");
+
+  const timeoutMs = resolveCodexTimeoutMs();
+  const exitGraceMs = resolveCodexExitGraceMs();
+
+  return await new Promise<{ output: string; raw: string; forcedExit: boolean }>((resolve, reject) => {
+    const child = spawn(codexCommand.command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let raw = "";
+    let stderr = "";
+    let lineBuffer = "";
+    let message = "";
+    let protocolError: string | undefined;
+    let settled = false;
+    let forcedExit = false;
+    let completionTimer: NodeJS.Timeout | undefined;
+
+    const clearTimers = () => {
+      if (completionTimer) {
+        clearTimeout(completionTimer);
+        completionTimer = undefined;
+      }
+      clearTimeout(timeoutHandle);
+    };
+
+    const finalizeOutput = () => {
+      const parsedOutput = parseCodexOutput(raw).trim();
+      return parsedOutput || message.trim();
+    };
+
+    const finishResolve = () => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      resolve({ output: finalizeOutput(), raw, forcedExit });
+    };
+
+    const finishReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      reject(error);
+    };
+
+    const scheduleCompletionGrace = () => {
+      if (settled) return;
+      if (completionTimer) {
+        clearTimeout(completionTimer);
+      }
+      completionTimer = setTimeout(() => {
+        if (settled) return;
+        forcedExit = true;
+        safeKill(child, "SIGTERM");
+        scheduleHardKill(child);
+        finishResolve();
+      }, exitGraceMs);
+      completionTimer.unref();
+    };
+
+    const handleLine = (line: string) => {
+      const normalized = line.replace(/\r$/, "");
+      hooks?.onLine?.(normalized);
+      const parsed = safeJsonParse(normalized);
+      const event = extractAssistantText(parsed);
+      if (event) {
+        if (event.kind === "delta") {
+          message += event.text;
+        } else {
+          message = event.text;
+          scheduleCompletionGrace();
+        }
+        hooks?.onAssistantEvent?.(event, normalized);
+      }
+      const parsedError = extractProtocolError(parsed);
+      if (parsedError) {
+        protocolError = parsedError;
+      }
+      if (isCompletionEvent(parsed)) {
+        scheduleCompletionGrace();
+      }
+    };
+
+    const timeoutHandle = setTimeout(() => {
+      if (settled) return;
+      forcedExit = true;
+      safeKill(child, "SIGTERM");
+      scheduleHardKill(child);
+      const detail = stderr.trim().length > 0 ? `: ${stderr.trim()}` : "";
+      finishReject(new Error(`AUTH_ERROR: codex CLI timed out after ${timeoutMs}ms${detail}`));
+    }, timeoutMs);
+    timeoutHandle.unref();
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      const text = chunk.toString();
+      raw += text;
+      lineBuffer += text;
+      let idx: number;
+      while ((idx = lineBuffer.indexOf("\n")) !== -1) {
+        const line = lineBuffer.slice(0, idx);
+        lineBuffer = lineBuffer.slice(idx + 1);
+        handleLine(line);
+      }
+    });
+
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      if (settled || isIgnorableStdinError(error)) return;
+      finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${error.message})`));
+    });
+
+    child.on("error", (error) => {
+      finishReject(new Error(`AUTH_ERROR: codex CLI failed (${error.message})`));
+    });
+
+    child.on("close", (code) => {
+      if (lineBuffer.trim()) {
+        handleLine(lineBuffer);
+        lineBuffer = "";
+      }
+      if (settled) return;
+      if ((code ?? 0) !== 0) {
+        finishReject(
+          new Error(`AUTH_ERROR: codex CLI failed (exit ${code ?? 0}): ${stderr || protocolError || "no output"}`),
+        );
+        return;
+      }
+      if (protocolError && !finalizeOutput()) {
+        finishReject(new Error(`AUTH_ERROR: codex CLI failed (${protocolError})`));
+        return;
+      }
+      finishResolve();
+    });
+
+    try {
+      child.stdin?.write(prompt);
+      child.stdin?.end();
+    } catch (error) {
+      finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${(error as Error).message})`));
+    }
+  });
+};
+
 export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Record<string, unknown> } => {
   if (process.env.MCODA_CLI_STUB === "1") {
     return { ok: true, details: { stub: true } };
@@ -545,7 +812,11 @@ export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Recor
   if (process.env.MCODA_SKIP_CLI_CHECKS === "1") {
     return { ok: true, details: { skipped: true } };
   }
-  const result = spawnSync("codex", ["--version"], { encoding: "utf8", maxBuffer: CODEX_MAX_BUFFER_BYTES });
+  const codexCommand = resolveCodexCommand();
+  const result = spawnSync(codexCommand.command, [...codexCommand.preArgs, "--version"], {
+    encoding: "utf8",
+    maxBuffer: CODEX_MAX_BUFFER_BYTES,
+  });
   if (result.error) {
     const details = { reason: "missing_cli", error: result.error.message };
     if (throwOnError) {
@@ -567,61 +838,15 @@ export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Recor
   return { ok: true, details: { version: result.stdout?.toString().trim() } };
 };
 
-export const runCodexExec = (prompt: string, model?: string): { output: string; raw: string } => {
+export const runCodexExec = async (prompt: string, model?: string): Promise<{ output: string; raw: string }> => {
   if (process.env.MCODA_CLI_STUB === "1") {
     const output = `qa-stub:${prompt}`;
     const raw = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: output } });
     return { output, raw };
   }
-  const health = cliHealthy(true);
-  const resolvedModel = model ?? "gpt-5.1-codex-max";
-  const sandboxArgs = resolveSandboxArgs();
-  const args = [...sandboxArgs.args, "exec", "--model", resolvedModel, "--json"];
-  if (!sandboxArgs.bypass) {
-    args.push("--full-auto");
-  }
-  const reasoningEffort = resolveReasoningEffort(resolvedModel);
-  if (reasoningEffort) {
-    args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
-  }
-  args.push("-");
-  const result = spawnSync("codex", args, {
-    input: prompt,
-    encoding: "utf8",
-    maxBuffer: CODEX_MAX_BUFFER_BYTES,
-  });
-  if (result.error) {
-    const error = new Error(`AUTH_ERROR: codex CLI failed (${result.error.message})`);
-    (error as any).details = { reason: "cli_error", cli: health.details };
-    throw error;
-  }
-  if (result.status !== 0) {
-    const error = new Error(`AUTH_ERROR: codex CLI failed (exit ${result.status}): ${result.stderr ?? result.stdout ?? ""}`);
-    (error as any).details = { reason: "cli_error", exitCode: result.status, stderr: result.stderr };
-    throw error;
-  }
-
-  const raw = result.stdout?.toString() ?? "";
-  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  let message = "";
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      const event = extractAssistantText(parsed);
-      if (!event) continue;
-      if (event.kind === "delta") {
-        message += event.text;
-        continue;
-      }
-      message = event.text;
-    } catch {
-      /* ignore parse errors */
-    }
-  }
-  if (!message) {
-    message = lines[lines.length - 1] ?? "";
-  }
-  return { output: message.trim(), raw };
+  cliHealthy(true);
+  const result = await invokeCodexProcess(prompt, model);
+  return { output: result.output, raw: result.raw };
 };
 
 export async function* runCodexExecStream(
@@ -636,106 +861,59 @@ export async function* runCodexExecStream(
   }
   cliHealthy(true);
   const resolvedModel = model ?? "gpt-5.1-codex-max";
-  const sandboxArgs = resolveSandboxArgs();
-  const args = [...sandboxArgs.args, "exec", "--model", resolvedModel, "--json"];
-  if (!sandboxArgs.bypass) {
-    args.push("--full-auto");
-  }
-  const reasoningEffort = resolveReasoningEffort(resolvedModel);
-  if (reasoningEffort) {
-    args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
-  }
-  args.push("-");
-  const child = spawn("codex", args, { stdio: ["pipe", "pipe", "pipe"] });
-  child.stdin.write(prompt);
-  child.stdin.end();
+  const formatter = createStreamFormatter(resolvedModel);
+  const queue: Array<{ output: string; raw: string }> = [];
+  const waiters: Array<() => void> = [];
+  let done = false;
+  let failure: Error | undefined;
+  let sawDelta = false;
 
-  let stderr = "";
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk) => {
-    stderr += chunk.toString();
-  });
-
-  const closePromise = new Promise<number>((resolve, reject) => {
-    child.on("error", (err) => reject(err));
-    child.on("close", (code) => resolve(code ?? 0));
-  });
-
-  const parseLine = (line: string): AssistantTextEvent | null => {
-    try {
-      const parsed = JSON.parse(line);
-      return extractAssistantText(parsed);
-    } catch {
-      return null;
+  const notify = () => {
+    while (waiters.length) {
+      waiters.shift()?.();
     }
   };
 
-  const stream = child.stdout;
-  stream?.setEncoding("utf8");
-  const formatter = createStreamFormatter(resolvedModel);
-  let buffer = "";
-  let sawDelta = false;
-  let streamError: Error | null = null;
-  try {
-    for await (const chunk of stream ?? []) {
-      buffer += chunk;
-      let idx: number;
-      while ((idx = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-        const normalized = line.replace(/\r$/, "");
-        formatter.handleLine(normalized);
-        const parsed = parseLine(normalized);
-        if (!parsed) continue;
-        if (parsed.kind === "delta") {
-          sawDelta = true;
-          yield { output: parsed.text, raw: normalized };
-          continue;
-        }
-        if (!sawDelta) {
-          const output = parsed.text.endsWith("\n") ? parsed.text : `${parsed.text}\n`;
-          yield { output, raw: normalized };
-        }
-        sawDelta = false;
+  void invokeCodexProcess(prompt, model, {
+    onLine: (line) => {
+      formatter.handleLine(line);
+    },
+    onAssistantEvent: (event, rawLine) => {
+      if (event.kind === "delta") {
+        sawDelta = true;
+        queue.push({ output: event.text, raw: rawLine });
+        notify();
+        return;
       }
-    }
-    const trailing = buffer.replace(/\r$/, "");
-    if (trailing) {
-      formatter.handleLine(trailing);
-      const parsed = parseLine(trailing);
-      if (parsed) {
-        if (parsed.kind === "delta") {
-          sawDelta = true;
-          yield { output: parsed.text, raw: trailing };
-        } else if (!sawDelta) {
-          const output = parsed.text.endsWith("\n") ? parsed.text : `${parsed.text}\n`;
-          yield { output, raw: trailing };
-          sawDelta = false;
-        }
+      if (!sawDelta) {
+        const output = event.text.endsWith("\n") ? event.text : `${event.text}\n`;
+        queue.push({ output, raw: rawLine });
+        notify();
       }
+      sawDelta = false;
+    },
+  })
+    .catch((error) => {
+      failure = error as Error;
+      formatter.handleLine(JSON.stringify({ type: "error", message: failure.message }));
+    })
+    .finally(() => {
+      done = true;
+      formatter.end();
+      notify();
+    });
+
+  while (!done || queue.length > 0) {
+    if (queue.length > 0) {
+      yield queue.shift() as { output: string; raw: string };
+      continue;
     }
-  } catch (error) {
-    streamError = error as Error;
+    await new Promise<void>((resolve) => {
+      waiters.push(resolve);
+    });
   }
 
-  const exitCode = await closePromise;
-  if (exitCode !== 0) {
-    formatter.handleLine(
-      JSON.stringify({
-        type: "error",
-        message: `codex exec failed with exit ${exitCode}: ${stderr || "no output"}`,
-      }),
-    );
-    const error = new Error(`AUTH_ERROR: codex CLI failed (exit ${exitCode}): ${stderr || "no output"}`);
-    (error as any).details = { reason: "cli_error", exitCode, stderr };
-    formatter.end();
-    if (streamError) {
-      throw streamError;
-    }
-    throw error;
-  }
-  formatter.end();
-  if (streamError) {
-    throw streamError;
+  if (failure) {
+    throw failure;
   }
 }

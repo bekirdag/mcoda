@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/agents",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "description": "Agent registry and capabilities for mcoda.",
   "type": "module",
   "main": "dist/index.js",
