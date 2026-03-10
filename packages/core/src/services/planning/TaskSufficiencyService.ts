@@ -34,6 +34,99 @@ const sdsFilenamePattern = /(sds|software[-_ ]design|system[-_ ]design|design[-_
 const sdsContentPattern = /(software design specification|system design specification|^#\s*sds\b)/im;
 const supportRootSegments = new Set(["docs", "fixtures", "policies", "policy", "runbooks", "pdr", "rfp", "sds"]);
 const headingNoiseTokens = new Set(["and", "for", "from", "into", "the", "with"]);
+const runtimePathSegments = new Set([
+  "api",
+  "app",
+  "apps",
+  "bin",
+  "cli",
+  "client",
+  "clients",
+  "cmd",
+  "command",
+  "commands",
+  "engine",
+  "engines",
+  "feature",
+  "features",
+  "gateway",
+  "gateways",
+  "handler",
+  "handlers",
+  "module",
+  "modules",
+  "pipeline",
+  "pipelines",
+  "processor",
+  "processors",
+  "route",
+  "routes",
+  "server",
+  "servers",
+  "service",
+  "services",
+  "src",
+  "ui",
+  "web",
+  "worker",
+  "workers",
+]);
+const interfacePathSegments = new Set([
+  "contract",
+  "contracts",
+  "dto",
+  "dtos",
+  "interface",
+  "interfaces",
+  "policy",
+  "policies",
+  "proto",
+  "protocol",
+  "protocols",
+  "schema",
+  "schemas",
+  "spec",
+  "specs",
+  "type",
+  "types",
+]);
+const dataPathSegments = new Set([
+  "cache",
+  "caches",
+  "data",
+  "db",
+  "ledger",
+  "migration",
+  "migrations",
+  "model",
+  "models",
+  "persistence",
+  "repository",
+  "repositories",
+  "storage",
+]);
+const testPathSegments = new Set(["acceptance", "e2e", "integration", "spec", "specs", "test", "tests"]);
+const opsPathSegments = new Set([
+  "deploy",
+  "deployment",
+  "deployments",
+  "helm",
+  "infra",
+  "k8s",
+  "ops",
+  "operation",
+  "operations",
+  "runbook",
+  "runbooks",
+  "script",
+  "scripts",
+  "systemd",
+  "terraform",
+]);
+const manifestBasenamePattern =
+  /^(package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|turbo\.json|tsconfig(?:\.[^.]+)?\.json|cargo\.toml|pyproject\.toml|go\.mod|go\.sum|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|requirements\.txt|poetry\.lock|foundry\.toml|hardhat\.config\.[^.]+)$/i;
+const serviceArtifactBasenamePattern =
+  /(?:\.service|\.socket|\.timer|(?:^|[.-])compose\.(?:ya?ml|json)$|docker-compose\.(?:ya?ml|json)$)$/i;
 
 type CoverageSummary = {
   coverageRatio: number;
@@ -70,6 +163,14 @@ type PlannedGapBundle = {
   bundle: GapBundle;
   implementationTargets: string[];
 };
+
+export interface TaskSufficiencyPlannedGapBundle {
+  kind: "section" | "folder" | "mixed";
+  domain: string;
+  values: string[];
+  anchors: string[];
+  implementationTargets: string[];
+}
 
 export interface TaskSufficiencyUnresolvedBundle {
   kind: "section" | "folder" | "mixed";
@@ -118,6 +219,7 @@ export interface TaskSufficiencyAuditResult {
     folders: number;
     total: number;
   };
+  plannedGapBundles: TaskSufficiencyPlannedGapBundle[];
   unresolvedBundles: TaskSufficiencyUnresolvedBundle[];
   iterations: TaskSufficiencyAuditIteration[];
   reportPath: string;
@@ -134,6 +236,14 @@ const normalizeText = (value: string): string =>
   normalizeCoverageText(value);
 
 const normalizeAnchor = normalizeCoverageAnchor;
+
+const toPlannedGapBundle = (entry: PlannedGapBundle): TaskSufficiencyPlannedGapBundle => ({
+  kind: entry.bundle.kind,
+  domain: entry.bundle.domain,
+  values: entry.bundle.values,
+  anchors: entry.bundle.normalizedAnchors,
+  implementationTargets: entry.implementationTargets,
+});
 
 const unique = (items: string[]): string[] => Array.from(new Set(items.filter(Boolean)));
 
@@ -190,6 +300,62 @@ const implementationRootWeight = (target: string): number => {
   return score;
 };
 
+const classifyImplementationTarget = (
+  target: string,
+): {
+  normalized: string;
+  basename: string;
+  segments: string[];
+  kind: "runtime" | "interface" | "data" | "test" | "ops" | "manifest" | "doc" | "unknown";
+  isServiceArtifact: boolean;
+} => {
+  const normalized = normalizeFolderEntry(target)?.toLowerCase() ?? normalizeText(target);
+  const segments = normalized.split("/").filter(Boolean);
+  const basename = segments[segments.length - 1] ?? normalized;
+  const isServiceArtifact = serviceArtifactBasenamePattern.test(basename);
+  if (segments.some((segment) => supportRootSegments.has(segment))) {
+    return { normalized, basename, segments, kind: "doc", isServiceArtifact };
+  }
+  if (manifestBasenamePattern.test(basename) || isServiceArtifact) {
+    return { normalized, basename, segments, kind: "manifest", isServiceArtifact };
+  }
+  if (segments.some((segment) => testPathSegments.has(segment))) {
+    return { normalized, basename, segments, kind: "test", isServiceArtifact };
+  }
+  if (segments.some((segment) => opsPathSegments.has(segment))) {
+    return { normalized, basename, segments, kind: "ops", isServiceArtifact };
+  }
+  if (segments.some((segment) => interfacePathSegments.has(segment))) {
+    return { normalized, basename, segments, kind: "interface", isServiceArtifact };
+  }
+  if (segments.some((segment) => dataPathSegments.has(segment))) {
+    return { normalized, basename, segments, kind: "data", isServiceArtifact };
+  }
+  if (segments.some((segment) => runtimePathSegments.has(segment))) {
+    return { normalized, basename, segments, kind: "runtime", isServiceArtifact };
+  }
+  return { normalized, basename, segments, kind: "unknown", isServiceArtifact };
+};
+
+const deriveSemanticTargetNeeds = (bundle: GapBundle): {
+  wantsVerification: boolean;
+  wantsOps: boolean;
+  wantsInterface: boolean;
+  wantsData: boolean;
+  wantsProvider: boolean;
+} => {
+  const corpus = normalizeText([bundle.domain, ...bundle.values].join(" "));
+  return {
+    wantsVerification: /\b(verify|verification|acceptance|scenario|suite|test|tests|quality|gate|matrix)\b/.test(corpus),
+    wantsOps: /\b(rollback|recovery|replay|restart|rotation|drill|runbook|failover|release|startup|deploy|deployment|operations?|incident|compromise)\b/.test(
+      corpus,
+    ),
+    wantsInterface: /\b(contract|interface|schema|policy|policies|oracle|gateway|api|protocol)\b/.test(corpus),
+    wantsData: /\b(data|storage|cache|db|database|ledger|pipeline|metering|pricing)\b/.test(corpus),
+    wantsProvider: /\b(provider|providers|gateway|gateways|rpc|adapter|adapters|sanctions|moderation|kyt)\b/.test(corpus),
+  };
+};
+
 const inferImplementationTargets = (bundle: GapBundle, availablePaths: string[], limit = 3): string[] => {
   const explicitTargets = bundle.values
     .map((value) => normalizeFolderEntry(value))
@@ -202,26 +368,66 @@ const inferImplementationTargets = (bundle: GapBundle, availablePaths: string[],
     normalizeText([bundle.domain, ...bundle.values].join(" ")).replace(/[-/]+/g, " "),
   );
   const domainNeedle = bundle.domain.replace(/[-_]+/g, " ").trim();
+  const targetNeeds = deriveSemanticTargetNeeds(bundle);
   const scored = availablePaths
     .map((candidate) => normalizeFolderEntry(candidate))
     .filter((candidate): candidate is string => Boolean(candidate))
     .filter((candidate) => bundle.kind === "folder" || !candidate.startsWith("docs/"))
     .map((candidate) => {
-      const normalizedCandidate = normalizeText(candidate.replace(/\//g, " "));
+      const classification = classifyImplementationTarget(candidate);
+      const normalizedCandidate = classification.normalized.replace(/\//g, " ");
       const overlap = anchorTokens.filter((token) => normalizedCandidate.includes(token)).length;
       const hasDomainMatch = domainNeedle.length > 0 && normalizedCandidate.includes(domainNeedle);
-      const hasEvidence = overlap > 0 || hasDomainMatch;
+      const semanticEvidence =
+        (targetNeeds.wantsVerification && classification.kind === "test") ||
+        (targetNeeds.wantsOps && classification.kind === "ops") ||
+        (targetNeeds.wantsInterface && classification.kind === "interface") ||
+        (targetNeeds.wantsData && classification.kind === "data") ||
+        (targetNeeds.wantsProvider &&
+          (classification.kind === "interface" ||
+            classification.kind === "runtime" ||
+            classification.kind === "ops"));
+      const hasEvidence = overlap > 0 || hasDomainMatch || semanticEvidence;
       const score =
         implementationRootWeight(candidate) +
         overlap * 20 +
         (hasDomainMatch ? 15 : 0) -
-        (candidate.startsWith("docs/") ? 25 : 0);
-      return { candidate, score, hasEvidence };
+        (candidate.startsWith("docs/") ? 25 : 0) +
+        (targetNeeds.wantsVerification && classification.kind === "test" ? 45 : 0) +
+        (targetNeeds.wantsOps && classification.kind === "ops" ? 60 : 0) +
+        (targetNeeds.wantsInterface && classification.kind === "interface" ? 55 : 0) +
+        (targetNeeds.wantsData && classification.kind === "data" ? 55 : 0) +
+        (targetNeeds.wantsProvider &&
+        (classification.kind === "interface" || classification.kind === "runtime")
+          ? 35
+          : 0) -
+        (classification.kind === "manifest" ? 120 : 0) -
+        (classification.kind === "doc" ? 120 : 0);
+      return { candidate, classification, score, hasEvidence };
     })
     .filter((entry) => entry.hasEvidence)
     .sort((left, right) => right.score - left.score || left.candidate.localeCompare(right.candidate));
+  const hasStrongCandidates = scored.some(
+    (entry) =>
+      entry.score > 0 &&
+      (entry.classification.kind === "runtime" ||
+        entry.classification.kind === "interface" ||
+        entry.classification.kind === "data" ||
+        entry.classification.kind === "test" ||
+        entry.classification.kind === "ops"),
+  );
+  const filtered = scored.filter((entry) => {
+    if (entry.score <= 0) return false;
+    if (!hasStrongCandidates) return true;
+    if (entry.classification.kind === "manifest") return false;
+    if (entry.classification.kind === "doc") return false;
+    return true;
+  });
 
-  return unique(scored.filter((entry) => entry.score > 0).map((entry) => entry.candidate)).slice(0, limit);
+  return unique((filtered.length > 0 ? filtered : scored.filter((entry) => entry.score > 0)).map((entry) => entry.candidate)).slice(
+    0,
+    limit,
+  );
 };
 
 const summarizeImplementationTargets = (targets: string[]): string => {
@@ -1106,11 +1312,12 @@ export class TaskSufficiencyService {
       );
       const finalGapItems = this.buildGapItems(finalCoverage, finalSnapshot.existingAnchors, finalGapItemLimit);
       const finalGapBundles = this.bundleGapItems(finalGapItems, finalGapItemLimit);
-      const unresolvedBundles = finalGapBundles
-        .map((bundle) => ({
-          bundle,
-          implementationTargets: inferImplementationTargets(bundle, folderEntries, 3),
-        }))
+      const finalPlannedGapBundles = finalGapBundles.map((bundle) => ({
+        bundle,
+        implementationTargets: inferImplementationTargets(bundle, folderEntries, 3),
+      }));
+      const plannedGapBundles = finalPlannedGapBundles.map(toPlannedGapBundle);
+      const unresolvedBundles = finalPlannedGapBundles
         .filter((entry) => entry.implementationTargets.length === 0)
         .map((entry) => toUnresolvedBundle(entry.bundle));
 
@@ -1145,6 +1352,7 @@ export class TaskSufficiencyService {
           missingSectionHeadings: finalCoverage.missingSectionHeadings,
           missingFolderEntries: finalCoverage.missingFolderEntries,
         },
+        plannedGapBundles,
         unresolvedBundles,
         iterations,
         warnings,
@@ -1185,6 +1393,7 @@ export class TaskSufficiencyService {
           folders: finalCoverage.missingFolderEntries.length,
           total: finalCoverage.missingSectionHeadings.length + finalCoverage.missingFolderEntries.length,
         },
+        plannedGapBundles,
         unresolvedBundles,
         iterations,
         reportPath,

@@ -702,6 +702,87 @@ test("task-sufficiency-audit bundles related gap anchors into a single remediati
   }
 });
 
+test("task-sufficiency-audit turns mandatory verification and recovery sections into executable tasks", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Quality Gates",
+      "## Verification Matrix",
+      "## Rollback",
+      "## Compromise Recovery",
+      "## BSC RPC Providers",
+      "## Sanctions Source",
+      "```text",
+      ".",
+      "├── packages/gatekeeper/src/provider-registry.ts",
+      "├── packages/gatekeeper/src/sanctions-source.ts",
+      "├── packages/gatekeeper/src/runtime-policy.ts",
+      "├── tests/acceptance/replay.spec.ts",
+      "└── ops/scripts/rollback-gatekeeper.sh",
+      "```",
+    ].join("\n"),
+    "utf8",
+  );
+  const { projectId } = await seedBacklog("proj", {
+    taskTitle: "Capture planning notes",
+    taskDescription: "Document future work without implementation detail.",
+  });
+  const service = await TaskSufficiencyService.create(workspace);
+  try {
+    const result = await service.runAudit({
+      workspace,
+      projectKey: "proj",
+      maxIterations: 2,
+      maxTasksPerIteration: 12,
+      minCoverageRatio: 0.99,
+    });
+    assert.ok(result.totalTasksAdded > 0);
+    assert.ok(!result.remainingSectionHeadings.some((heading) => /quality gates/i.test(heading)));
+    assert.ok(!result.remainingSectionHeadings.some((heading) => /verification matrix/i.test(heading)));
+    assert.ok(!result.remainingSectionHeadings.some((heading) => /rollback/i.test(heading)));
+    assert.ok(!result.remainingSectionHeadings.some((heading) => /compromise recovery/i.test(heading)));
+    assert.ok(!result.remainingSectionHeadings.some((heading) => /bsc rpc providers/i.test(heading)));
+    assert.ok(!result.remainingSectionHeadings.some((heading) => /sanctions source/i.test(heading)));
+
+    const repo = await WorkspaceRepository.create(workspaceRoot);
+    try {
+      const rows = await repo.getDb().all<
+        { title: string; description: string; metadata_json?: string | null }[]
+      >(`SELECT title, description, metadata_json FROM tasks WHERE project_id = ? ORDER BY key`, projectId);
+      const sufficiencyRows = rows
+        .map((row) => {
+          try {
+            return {
+              title: row.title,
+              description: row.description,
+              metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
+            };
+          } catch {
+            return { title: row.title, description: row.description, metadata: {} };
+          }
+        })
+        .filter((row) => row.metadata?.sufficiencyAudit?.source === "task-sufficiency-audit");
+
+      const implementationTargets = sufficiencyRows.flatMap(
+        (row) => row.metadata?.sufficiencyAudit?.implementationTargets ?? [],
+      );
+      assert.ok(implementationTargets.includes("packages/gatekeeper/src/provider-registry.ts"));
+      assert.ok(implementationTargets.includes("packages/gatekeeper/src/sanctions-source.ts"));
+      assert.ok(implementationTargets.includes("ops/scripts/rollback-gatekeeper.sh"));
+      assert.ok(implementationTargets.includes("tests/acceptance/replay.spec.ts"));
+      assert.ok(
+        sufficiencyRows.every((row) => !/No direct file path was recovered/i.test(row.description)),
+        `placeholder wording should be removed: ${JSON.stringify(sufficiencyRows.map((row) => row.description))}`,
+      );
+    } finally {
+      await repo.close();
+    }
+  } finally {
+    await service.close();
+  }
+});
+
 test("task-sufficiency-audit turns EP-style box-tree gaps into targeted remediation tasks", async () => {
   await fs.writeFile(
     path.join(workspaceRoot, "docs", "sds.md"),
@@ -721,6 +802,7 @@ test("task-sufficiency-audit turns EP-style box-tree gaps into targeted remediat
       "│       └── IOraclePolicyRegistry.sol",
       "├── packages/",
       "│   ├── gatekeeper/",
+      "│   │   ├── package.json",
       "│   │   └── src/",
       "│   │       └── worker.ts",
       "│   └── terminal-client/",
@@ -785,13 +867,28 @@ test("task-sufficiency-audit turns EP-style box-tree gaps into targeted remediat
       const implementationTargets = sufficiencyRows.flatMap(
         (row) => row.metadata?.sufficiencyAudit?.implementationTargets ?? [],
       );
+      const gatekeeperSectionTargets = sufficiencyRows
+        .filter(
+          (row) =>
+            row.metadata?.sufficiencyAudit?.kind !== "folder" &&
+            (row.metadata?.sufficiencyAudit?.anchors ?? []).some((anchor: string) => /gatekeeper runtime/i.test(anchor)),
+        )
+        .flatMap((row) => row.metadata?.sufficiencyAudit?.implementationTargets ?? []);
       assert.ok(
         implementationTargets.some((target: string) => target === "contracts/script/DeployContracts.s.sol"),
         `expected contract script target, got ${JSON.stringify(implementationTargets)}`,
       );
       assert.ok(
-        implementationTargets.some((target: string) => target === "packages/gatekeeper/src/worker.ts"),
-        `expected gatekeeper target, got ${JSON.stringify(implementationTargets)}`,
+        gatekeeperSectionTargets.some((target: string) => target === "packages/gatekeeper/src/worker.ts"),
+        `expected gatekeeper target, got ${JSON.stringify(gatekeeperSectionTargets)}`,
+      );
+      assert.ok(
+        !gatekeeperSectionTargets.includes("packages/gatekeeper/package.json"),
+        `manifest target should not win over runtime files: ${JSON.stringify(gatekeeperSectionTargets)}`,
+      );
+      assert.ok(
+        !gatekeeperSectionTargets.includes("ops/systemd/gatekeeper.service"),
+        `service artifact target should not win over runtime files: ${JSON.stringify(gatekeeperSectionTargets)}`,
       );
       assert.ok(
         sufficiencyRows.some((row) => row.description.includes("contracts/script/DeployContracts.s.sol")),

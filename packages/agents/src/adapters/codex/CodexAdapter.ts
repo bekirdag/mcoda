@@ -24,7 +24,7 @@ export class CodexAdapter implements AgentAdapter {
   async invoke(request: InvocationRequest): Promise<InvocationResult> {
     const health = cliHealthy(true);
     const cliDetails = health.details;
-    const result = runCodexExec(request.input, this.config.model);
+    const result = await runCodexExec(request.input, this.config.model);
     return {
       output: result.output,
       adapter: this.config.adapter ?? "codex-cli",

@@ -23,7 +23,7 @@ export class OpenAiCliAdapter implements AgentAdapter {
 
   async invoke(request: InvocationRequest): Promise<InvocationResult> {
     const cliDetails = codexCliHealthy(true);
-    const result = runCodexExec(request.input, this.config.model);
+    const result = await runCodexExec(request.input, this.config.model);
     return {
       output: result.output,
       adapter: this.config.adapter ?? "codex-cli",

@@ -180,6 +180,49 @@ const EP_SDS_FIXTURE = [
   "Use IOraclePolicyRegistry.sol and ConfigurePolicies.s.sol as the canonical names.",
 ].join("\n");
 
+const EP_RUNTIME_AND_VERIFICATION_FIXTURE = [
+  "# Software Design Specification",
+  "## Runtime Components",
+  "1. Managed storage adapters: persist sanctioned and approved listing state.",
+  "2. Read path: browse approved listings through the public query surface.",
+  "3. Gatekeeper: consume events, moderation, and pricing providers.",
+  "## Folder Tree",
+  "```text",
+  ".",
+  "├── packages/gatekeeper/package.json",
+  "├── packages/gatekeeper/src/providers.ts",
+  "├── packages/gatekeeper/src/worker.ts",
+  "├── packages/read-path/src/query.ts",
+  "├── packages/storage-adapters/src/index.ts",
+  "└── ops/systemd/gatekeeper.service",
+  "```",
+  "## Architectural Dependency Order",
+  "- read path depends on managed storage adapters",
+  "- gatekeeper depends on managed storage adapters",
+  "## Verification Matrix",
+  "| Verification Suite | Scope | Source Coverage |",
+  "| --- | --- | --- |",
+  "| Contract unit tests | fee quoting, lifecycle transitions | HR-01 |",
+  "| Gatekeeper integration tests | event intake, finality, failover | HR-04 |",
+  "| End-to-end acceptance tests | submit, approve, browse, reject | AT-01 to AT-44 |",
+  "| Operations drills | signer rotation, policy rollback, replay from historical blocks | NFR-08 |",
+  "## Required Acceptance Scenarios",
+  "1. Minimal valid listing: `title` and `description` only, approved and rendered.",
+  "2. Payload invalidation: missing `title` or `description`, rejected before publication.",
+  "3. Image-cap failure: more than 10 images, rejected.",
+  "4. KYT block: flagged wallet rejected before moderation spend.",
+  "5. KYT outage: hold and retry, then reject after exhaustion.",
+  "6. Moderation provider failover: primary fails, secondary succeeds.",
+  "7. Gateway failover: first gateway fails, second succeeds.",
+  "8. Pricing mismatch: final category is higher band than the declared class and rejects.",
+  "9. Refund accounting: rejection refund obeys the locked fee tuple and `max_rejection_cost`.",
+  "10. Creator removal: owner pays `1 USDT`, listing disappears immediately.",
+  "11. Expiry enforcement: early expiration is honored exactly; any request above 180 days is rejected.",
+  "12. Pricing version bump: stale cached pricing data is discarded and on-chain values win.",
+  "13. Oracle rotation: old signer loses authority and new signer resolves backlog.",
+  "14. Replay after restart: no duplicate or conflicting decision writes occur.",
+].join("\n");
+
 class StubDocdex {
   registeredFiles: string[] = [];
   async fetchDocumentById(id: string) {
@@ -211,13 +254,15 @@ class StubDocdexTyped extends StubDocdex {
 
 class StubAgentService {
   private queue: string[];
+  invocations: Array<{ input: string; metadata?: Record<string, unknown> }> = [];
   constructor(outputs: string[]) {
     this.queue = [...outputs];
   }
   async resolveAgent() {
     return { id: "agent-1", slug: "agent-1", adapter: "local-model", defaultModel: "stub" } as any;
   }
-  async invoke() {
+  async invoke(_agentId?: string, request?: { input?: string; metadata?: Record<string, unknown> }) {
+    this.invocations.push({ input: request?.input ?? "", metadata: request?.metadata });
     return { output: this.queue.shift() ?? "" };
   }
 }
@@ -291,6 +336,23 @@ class StubWorkspaceRepo {
     const row = { id: `p-${this.projects.length + 1}`, ...input };
     this.projects.push(row);
     return row;
+  }
+  async deleteProjectBacklog(projectId: string) {
+    const epicIds = new Set(this.epics.filter((epic) => epic.projectId === projectId).map((epic) => epic.id));
+    const storyIds = new Set(
+      this.stories
+        .filter((story) => story.projectId === projectId || epicIds.has(story.epicId))
+        .map((story) => story.id),
+    );
+    const taskIds = new Set(
+      this.tasks
+        .filter((task) => task.projectId === projectId || storyIds.has(task.userStoryId) || epicIds.has(task.epicId))
+        .map((task) => task.id),
+    );
+    this.epics = this.epics.filter((epic) => !epicIds.has(epic.id));
+    this.stories = this.stories.filter((story) => !storyIds.has(story.id));
+    this.tasks = this.tasks.filter((task) => !taskIds.has(task.id));
+    this.deps = this.deps.filter((dep) => !taskIds.has(dep.taskId) && !taskIds.has(dep.dependsOnTaskId));
   }
   async listEpicKeys() {
     return this.epics.map((e) => e.key);
@@ -431,7 +493,7 @@ class StubTaskSufficiencyService {
       projectKey: request.projectKey,
       sourceCommand: request.sourceCommand,
       satisfied: true,
-      dryRun: false,
+      dryRun: request?.dryRun === true,
       totalTasksAdded: 2,
       totalTasksUpdated: 0,
       maxIterations: 3,
@@ -445,6 +507,13 @@ class StubTaskSufficiencyService {
         folders: 0,
         total: 0,
       },
+      plannedGapBundles: [] as Array<{
+        kind: "section" | "folder" | "mixed";
+        domain: string;
+        values: string[];
+        anchors: string[];
+        implementationTargets: string[];
+      }>,
       unresolvedBundles: [] as Array<{
         kind: "section" | "folder" | "mixed";
         domain: string;
@@ -684,10 +753,247 @@ test("createTasks auto-runs task sufficiency audit and records summary checkpoin
 
   assert.equal(sufficiencyService.calls.length, 1);
   assert.equal(sufficiencyService.calls[0].projectKey, "web");
+  assert.equal(sufficiencyService.calls[0].dryRun, true);
   assert.ok(jobService.checkpoints.some((entry) => entry.stage === "task_sufficiency_audit"));
   const completedJob = jobService.jobs[0];
   assert.ok(completedJob?.meta?.payload?.sufficiencyAudit);
   assert.equal(completedJob.meta.payload.sufficiencyAudit.satisfied, true);
+});
+
+test("createTasks sends an explicit orchestration prompt to the selected agent", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const agentService = new StubAgentService(outputs);
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentName: "agent-1",
+    agentStream: false,
+  });
+
+  assert.ok(agentService.invocations.length >= 3);
+  assert.match(
+    agentService.invocations[0]?.input ?? "",
+    /You are the orchestration agent for mcoda create-tasks on project web\./i,
+  );
+  assert.match(
+    agentService.invocations[0]?.input ?? "",
+    /understand the documented services\/tools and generate epics only/i,
+  );
+  assert.ok(
+    agentService.invocations.every((entry) =>
+      entry.input.includes("turn the SDS and supporting docs into an executable backlog"),
+    ),
+  );
+});
+
+test("createTasks refines the backlog with the same agent until sufficiency passes", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Runtime Epic", description: "Initial epic", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Runtime Story", description: "Initial story", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Initial runtime task",
+          type: "feature",
+          description: "Implement the first runtime slice in packages/gatekeeper/src/worker.ts.",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Runtime Epic",
+          description: "Deliver the runtime slice and close the remaining SDS gap.",
+          acceptanceCriteria: ["Runtime gap is implemented", "Verification coverage exists"],
+          serviceIds: ["gatekeeper"],
+          stories: [
+            {
+              localId: "us1",
+              title: "Runtime Story",
+              userStory: "As an operator, I need the runtime policy path completed so the feature is production-ready.",
+              description: "Finish runtime policy implementation and validation.",
+              acceptanceCriteria: ["Runtime policy code exists", "Runtime policy verification exists"],
+              tasks: [
+                {
+                  localId: "t1",
+                  title: "Implement runtime policy gap",
+                  type: "feature",
+                  description: "Implement the missing runtime policy logic in packages/gatekeeper/src/runtime-policy.ts and wire it from packages/gatekeeper/src/worker.ts.",
+                  estimatedStoryPoints: 3,
+                  priorityHint: 10,
+                  dependsOnKeys: [],
+                  relatedDocs: ["docdex:doc-1"],
+                  unitTests: ["Add runtime policy unit coverage"],
+                  componentTests: [],
+                  integrationTests: ["Run gatekeeper runtime policy integration coverage"],
+                  apiTests: [],
+                },
+                {
+                  localId: "t2",
+                  title: "Validate runtime policy verification",
+                  type: "chore",
+                  description: "Execute the runtime policy verification evidence after implementation lands; depends on t1.",
+                  estimatedStoryPoints: 2,
+                  priorityHint: 20,
+                  dependsOnKeys: ["t1"],
+                  relatedDocs: ["docdex:doc-1"],
+                  unitTests: [],
+                  componentTests: [],
+                  integrationTests: ["Run gatekeeper runtime policy integration coverage"],
+                  apiTests: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }),
+  ];
+  const agentService = new StubAgentService(outputs);
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = {
+    calls: [] as any[],
+    async runAudit(request: any) {
+      this.calls.push(request);
+      if (this.calls.length === 1) {
+        return {
+          jobId: "suff-job-1",
+          commandRunId: "suff-cmd-1",
+          projectKey: request.projectKey,
+          sourceCommand: request.sourceCommand,
+          satisfied: false,
+          dryRun: request?.dryRun === true,
+          totalTasksAdded: 0,
+          totalTasksUpdated: 0,
+          maxIterations: 1,
+          minCoverageRatio: 1,
+          finalTotalSignals: 6,
+          finalCoverageRatio: 0.66,
+          remainingSectionHeadings: ["Runtime Policy"],
+          remainingFolderEntries: ["packages/gatekeeper/src/runtime-policy.ts"],
+          remainingGaps: { sections: 1, folders: 1, total: 2 },
+          plannedGapBundles: [
+            {
+              kind: "mixed" as const,
+              domain: "gatekeeper",
+              values: ["Runtime Policy", "packages/gatekeeper/src/runtime-policy.ts"],
+              anchors: ["section:runtime policy", "folder:packages/gatekeeper/src/runtime-policy.ts"],
+              implementationTargets: [
+                "packages/gatekeeper/src/runtime-policy.ts",
+                "packages/gatekeeper/src/worker.ts",
+              ],
+            },
+          ],
+          unresolvedBundles: [],
+          iterations: [],
+          reportPath: undefined,
+          reportHistoryPath: undefined,
+          warnings: [],
+        };
+      }
+      return {
+        jobId: "suff-job-2",
+        commandRunId: "suff-cmd-2",
+        projectKey: request.projectKey,
+        sourceCommand: request.sourceCommand,
+        satisfied: true,
+        dryRun: request?.dryRun === true,
+        totalTasksAdded: 0,
+        totalTasksUpdated: 0,
+        maxIterations: 1,
+        minCoverageRatio: 1,
+        finalTotalSignals: 6,
+        finalCoverageRatio: 1,
+        remainingSectionHeadings: [],
+        remainingFolderEntries: [],
+        remainingGaps: { sections: 0, folders: 0, total: 0 },
+        plannedGapBundles: [],
+        unresolvedBundles: [],
+        iterations: [],
+        reportPath: undefined,
+        reportHistoryPath: undefined,
+        warnings: [],
+      };
+    },
+    async close() {},
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentName: "agent-1",
+    agentStream: false,
+    force: true,
+  });
+
+  assert.equal(sufficiencyService.calls.length, 2);
+  assert.ok(jobService.checkpoints.some((entry) => entry.stage === "backlog_refinement"));
+  assert.ok(result.tasks.some((task) => task.title === "Implement runtime policy gap"));
+  assert.ok(result.tasks.some((task) => task.title === "Validate runtime policy verification"));
+  assert.ok(agentService.invocations.some((entry) => entry.metadata?.action === "full_plan"));
 });
 
 test("createTasks refreshes exported artifacts and result counts from the final persisted backlog", async () => {
@@ -772,7 +1078,7 @@ test("createTasks refreshes exported artifacts and result counts from the final 
         projectKey: request.projectKey,
         sourceCommand: request.sourceCommand,
         satisfied: true,
-        dryRun: false,
+        dryRun: request?.dryRun === true,
         totalTasksAdded: 1,
         totalTasksUpdated: 0,
         maxIterations: 3,
@@ -782,6 +1088,7 @@ test("createTasks refreshes exported artifacts and result counts from the final 
         remainingSectionHeadings: [] as string[],
         remainingFolderEntries: [] as string[],
         remainingGaps: { sections: 0, folders: 0, total: 0 },
+        plannedGapBundles: [],
         unresolvedBundles: [],
         iterations: [],
         reportPath: undefined,
@@ -911,7 +1218,7 @@ test("createTasks aligns coverage-report.json with sufficiency coverage totals",
         projectKey: request.projectKey,
         sourceCommand: request.sourceCommand,
         satisfied: true,
-        dryRun: false,
+        dryRun: request?.dryRun === true,
         totalTasksAdded: 0,
         totalTasksUpdated: 0,
         maxIterations: 1,
@@ -921,6 +1228,7 @@ test("createTasks aligns coverage-report.json with sufficiency coverage totals",
         remainingSectionHeadings: [] as string[],
         remainingFolderEntries: [] as string[],
         remainingGaps: { sections: 0, folders: 0, total: 0 },
+        plannedGapBundles: [],
         unresolvedBundles: [],
         iterations: [],
         reportPath,
@@ -1004,7 +1312,7 @@ test("createTasks fails closed when task sufficiency coverage report cannot be l
         projectKey: request.projectKey,
         sourceCommand: request.sourceCommand,
         satisfied: true,
-        dryRun: false,
+        dryRun: request?.dryRun === true,
         totalTasksAdded: 0,
         totalTasksUpdated: 0,
         maxIterations: 1,
@@ -1014,6 +1322,7 @@ test("createTasks fails closed when task sufficiency coverage report cannot be l
         remainingSectionHeadings: [] as string[],
         remainingFolderEntries: [] as string[],
         remainingGaps: { sections: 0, folders: 0, total: 0 },
+        plannedGapBundles: [],
         unresolvedBundles: [],
         iterations: [],
         reportPath,
@@ -1427,11 +1736,20 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
     return {
       ...baseResult,
       satisfied: false,
-      finalTotalSignals: 10,
-      finalCoverageRatio: 0.94,
-      remainingGaps: { sections: 3, folders: 0, total: 3 },
+      finalTotalSignals: 12,
+      finalCoverageRatio: 0.72,
+      remainingGaps: { sections: 3, folders: 1, total: 4 },
       remainingSectionHeadings: ["Missing"],
-      remainingFolderEntries: [],
+      remainingFolderEntries: ["packages/gatekeeper/src/runtime-policy.ts"],
+      plannedGapBundles: [
+        {
+          kind: "section" as const,
+          domain: "coverage",
+          values: ["Missing"],
+          anchors: ["section:missing"],
+          implementationTargets: ["packages/gatekeeper/src/runtime-policy.ts"],
+        },
+      ],
       unresolvedBundles: [
         {
           kind: "section" as const,
@@ -1468,6 +1786,369 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
   assert.ok(sufficiencyCheckpoint);
   assert.equal(sufficiencyCheckpoint.details.status, "blocked");
   assert.equal(sufficiencyCheckpoint.details.unresolvedBundleCount, 1);
+});
+
+test("createTasks refreshes exported backlog artifacts before failing an unsatisfied sufficiency audit", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Gatekeeper Runtime",
+      "Implementation targets:",
+      "- packages/gatekeeper/src/worker.ts",
+      "- packages/gatekeeper/src/runtime-policy.ts",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = {
+    async runAudit(request: any) {
+      const project = workspaceRepo.projects[0];
+      const epic = workspaceRepo.epics[0];
+      const story = workspaceRepo.stories[0];
+      await workspaceRepo.insertTasks([
+        {
+          projectId: project.id,
+          epicId: epic.id,
+          userStoryId: story.id,
+          key: `${story.key}-t99`,
+          title: "Implement gatekeeper runtime policy",
+          description:
+            "## Objective\nClose the remaining gatekeeper runtime gap in packages/gatekeeper/src/runtime-policy.ts.",
+          type: "feature",
+          status: "not_started",
+          storyPoints: 2,
+          priority: 99,
+          metadata: {
+            sufficiencyAudit: {
+              source: "task-sufficiency-audit",
+              anchor: "folder:packages/gatekeeper/src/runtime-policy.ts",
+              anchors: ["folder:packages/gatekeeper/src/runtime-policy.ts"],
+            },
+          },
+        },
+      ]);
+      return {
+        jobId: "suff-job-refresh-fail",
+        commandRunId: "suff-cmd-refresh-fail",
+        projectKey: request.projectKey,
+        sourceCommand: request.sourceCommand,
+        satisfied: false,
+        dryRun: request?.dryRun === true,
+        totalTasksAdded: 1,
+        totalTasksUpdated: 0,
+        maxIterations: 2,
+        minCoverageRatio: 1,
+        finalTotalSignals: 10,
+        finalCoverageRatio: 0.84,
+        remainingSectionHeadings: ["Gatekeeper Runtime"],
+        remainingFolderEntries: ["packages/gatekeeper/src/runtime-policy.ts"],
+        remainingGaps: { sections: 1, folders: 1, total: 2 },
+        plannedGapBundles: [
+          {
+            kind: "mixed" as const,
+            domain: "gatekeeper",
+            values: ["Gatekeeper Runtime", "packages/gatekeeper/src/runtime-policy.ts"],
+            anchors: [
+              "section:gatekeeper runtime",
+              "folder:packages/gatekeeper/src/runtime-policy.ts",
+            ],
+            implementationTargets: ["packages/gatekeeper/src/runtime-policy.ts"],
+          },
+        ],
+        unresolvedBundles: [],
+        iterations: [],
+        reportPath: undefined,
+        reportHistoryPath: undefined,
+        warnings: [],
+      };
+    },
+    async close() {},
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+        agentStream: false,
+      }),
+    /task sufficiency audit did not reach full coverage/i,
+  );
+
+  const tasksPath = path.join(workspace.mcodaDir, "tasks", "web", "tasks.json");
+  const exportedTasks = JSON.parse(await fs.readFile(tasksPath, "utf8"));
+  assert.ok(exportedTasks.some((task: any) => task.title === "Implement gatekeeper runtime policy"));
+  assert.ok(jobService.checkpoints.some((entry) => entry.stage === "plan_refreshed"));
+});
+
+test("createTasks replaces a weak generic generated backlog with the SDS-first deterministic plan", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Runtime Components",
+      "```text",
+      ".",
+      "├── packages/shared/src/types/index.ts",
+      "├── packages/gatekeeper/src/worker.ts",
+      "├── packages/terminal-client/src/commands/submit.ts",
+      "└── ops/scripts/verify-release.sh",
+      "```",
+      "## Dependency Contracts",
+      "- terminal client depends on shared",
+      "- gatekeeper depends on shared",
+      "## Deployment Waves",
+      "- Wave 0: shared",
+      "- Wave 1: gatekeeper",
+      "- Wave 2: terminal client",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Initial planning for web", description: "Seed epic", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "story-1", title: "Review inputs and draft backlog", description: "Draft", acceptanceCriteria: ["draft"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "task-1",
+          title: "Implement baseline project scaffolding",
+          type: "feature",
+          description: "Create SDS-aligned baseline structure and core implementation entrypoints from the available docs.",
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () =>
+      ({
+        async runAudit(request: any) {
+          return {
+            jobId: "suff-job-sds",
+            commandRunId: "suff-cmd-sds",
+            projectKey: request.projectKey,
+            sourceCommand: request.sourceCommand,
+            satisfied: true,
+            dryRun: request?.dryRun === true,
+            totalTasksAdded: 0,
+            totalTasksUpdated: 0,
+            maxIterations: 1,
+            minCoverageRatio: 1,
+            finalTotalSignals: 8,
+            finalCoverageRatio: 1,
+            remainingSectionHeadings: [],
+            remainingFolderEntries: [],
+            remainingGaps: { sections: 0, folders: 0, total: 0 },
+            plannedGapBundles: [],
+            unresolvedBundles: [],
+            iterations: [],
+            reportPath: undefined,
+            reportHistoryPath: undefined,
+            warnings: [],
+          };
+        },
+        async close() {},
+      }) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+    agentStream: false,
+  });
+
+  assert.ok(result.epics.length >= 3, `expected multi-epic SDS plan, got ${result.epics.length}`);
+  assert.ok(result.tasks.length > 6, `expected SDS-first task expansion, got ${result.tasks.length}`);
+  assert.ok(!result.tasks.some((task) => task.title === "Implement baseline project scaffolding"));
+  assert.ok(result.epics.some((epic) => /Build Shared/i.test(epic.title)));
+  assert.ok(result.epics.some((epic) => /Build Gatekeeper/i.test(epic.title)));
+});
+
+test("buildSdsDrivenPlan prefers runtime modules and expands named verification work", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-verification",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "ep.md",
+      content: EP_RUNTIME_AND_VERIFICATION_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const plan = (service as any).buildSdsDrivenPlan("ep", docs, catalog, graph);
+  const implementationTasks = plan.tasks.filter((task: any) => /^Implement /i.test(task.title));
+  const verificationTasks = plan.tasks.filter((task: any) => /^Execute suite:/i.test(task.title));
+  const acceptanceTasks = plan.tasks.filter((task: any) => /^Validate acceptance scenario /i.test(task.title));
+
+  assert.ok(plan.epics.some((epic: any) => /Build Managed Storage Adapters/i.test(epic.title)));
+  assert.ok(plan.epics.some((epic: any) => /Build Read Path/i.test(epic.title)));
+  assert.ok(
+    implementationTasks.some(
+      (task: any) =>
+        /packages\/gatekeeper\/src\/worker\.ts/.test(task.description) ||
+        /packages\/storage-adapters\/src\/index\.ts/.test(task.description) ||
+        /packages\/read-path\/src\/query\.ts/.test(task.description),
+    ),
+  );
+  assert.ok(
+    implementationTasks.every(
+      (task: any) =>
+        !/package\.json/.test(task.description) &&
+        !/gatekeeper\.service/.test(task.description) &&
+        !/Update the concrete .* modules surfaced by the SDS/i.test(task.description),
+    ),
+  );
+  assert.ok(verificationTasks.some((task: any) => task.title === "Execute suite: Contract unit tests"));
+  assert.ok(verificationTasks.some((task: any) => task.title === "Execute suite: Operations drills"));
+  assert.equal(acceptanceTasks.length, 14);
+  assert.ok(
+    acceptanceTasks.some((task: any) => /Validate acceptance scenario 14: Replay after restart/i.test(task.title)),
+  );
+});
+
+test("createTasks blocks when section gaps remain unresolved after sufficiency", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description: "Task desc",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const sufficiencyService = new StubTaskSufficiencyService();
+  sufficiencyService.runAudit = async (request: any) => {
+    const baseResult = await StubTaskSufficiencyService.prototype.runAudit.call(sufficiencyService, request);
+    return {
+      ...baseResult,
+      satisfied: false,
+      finalTotalSignals: 10,
+      finalCoverageRatio: 0.94,
+      remainingGaps: { sections: 3, folders: 0, total: 3 },
+      remainingSectionHeadings: ["Missing"],
+      remainingFolderEntries: [],
+      plannedGapBundles: [],
+      unresolvedBundles: [
+        {
+          kind: "section" as const,
+          domain: "coverage",
+          values: ["Missing"],
+          anchors: ["section:missing"],
+        },
+      ],
+    };
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [],
+        agentStream: false,
+      }),
+    /task sufficiency audit did not reach full coverage/i,
+  );
+  const lastCheckpoint = jobService.checkpoints.at(-1);
+  assert.equal(lastCheckpoint?.details?.acceptedWithResidualSectionGaps, false);
 });
 
 test("validateTopologyExtraction fails when SDS runtime topology signals resolve to no services", async () => {
@@ -2183,6 +2864,46 @@ test("buildServiceDependencyGraph ignores artifact-only and prose-noise service 
   assert.ok(!serviceNames.has("protocol artifacts"));
   assert.ok(!serviceNames.has("read"));
   assert.equal(graph.waveRank.get("gatekeeper"), 4);
+});
+
+test("buildServiceDependencyGraph registers textual runtime components as real services", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-runtime-components",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "ep.md",
+      content: [
+        "# Software Design Specification",
+        "## Runtime Components",
+        "1. Managed storage adapters: persist approved listings.",
+        "2. Read path: browse approved listings.",
+        "3. Gatekeeper: process moderation results.",
+        "## Architectural Dependency Order",
+        "- read path depends on managed storage adapters",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const serviceNames = new Set(graph.services as string[]);
+
+  assert.ok(serviceNames.has("managed storage adapters"));
+  assert.ok(serviceNames.has("read path"));
+  assert.ok(serviceNames.has("gatekeeper"));
+  assert.ok((graph.dependencies as Map<string, Set<string>>).get("read path")?.has("managed storage adapters"));
 });
 
 test("extractSdsSectionCandidates keeps scanning after repeated headings", () => {
