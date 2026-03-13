@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { parseRefineTasksArgs, pickRefineTasksProjectKey } from "../commands/planning/RefineTasksCommand.js";
+import {
+  getRefineResultStatus,
+  parseRefineTasksArgs,
+  pickRefineTasksProjectKey,
+} from "../commands/planning/RefineTasksCommand.js";
 
 describe("refine-tasks argument parsing", () => {
   it("defaults booleans correctly", () => {
@@ -81,5 +85,27 @@ describe("refine-tasks argument parsing", () => {
       existing: [{ key: "P3" }, { key: "P4" }],
     });
     assert.equal(fallback.projectKey, "P3");
+  });
+
+  it("reports no_operations separately from dry_run", () => {
+    assert.equal(
+      getRefineResultStatus({
+        applied: false,
+        operations: 0,
+        applyRequested: true,
+        dryRunRequested: false,
+      }),
+      "no_operations",
+    );
+
+    assert.equal(
+      getRefineResultStatus({
+        applied: false,
+        operations: 2,
+        applyRequested: false,
+        dryRunRequested: true,
+      }),
+      "dry_run",
+    );
   });
 });

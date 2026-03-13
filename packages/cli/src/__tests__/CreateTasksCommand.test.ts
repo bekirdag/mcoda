@@ -19,6 +19,7 @@ let originalCreateTasksCreate: typeof CreateTasksService.create;
 let originalLog: typeof console.log;
 let originalWarn: typeof console.warn;
 let originalError: typeof console.error;
+let originalExitCode: typeof process.exitCode;
 
 beforeEach(() => {
   originalResolveWorkspace = WorkspaceResolver.resolveWorkspace;
@@ -26,6 +27,8 @@ beforeEach(() => {
   originalLog = console.log;
   originalWarn = console.warn;
   originalError = console.error;
+  originalExitCode = process.exitCode;
+  process.exitCode = undefined;
 });
 
 afterEach(async () => {
@@ -34,6 +37,7 @@ afterEach(async () => {
   console.log = originalLog;
   console.warn = originalWarn;
   console.error = originalError;
+  process.exitCode = originalExitCode;
   if (tempWorkspaceRoot) {
     await fs.rm(tempWorkspaceRoot, { recursive: true, force: true });
   }
@@ -42,12 +46,18 @@ afterEach(async () => {
 });
 
 describe("create-tasks argument parsing", () => {
-  it("defaults agent stream to false and captures inputs", () => {
+  it("defaults agent stream to false when no explicit agent is requested and captures inputs", () => {
     const parsed = parseCreateTasksArgs(["Feature", "More", "--quiet"]);
     assert.equal(parsed.agentStream, false);
     assert.equal(parsed.rateAgents, false);
     assert.equal(parsed.quiet, true);
     assert.deepEqual(parsed.inputs, ["Feature", "More"]);
+  });
+
+  it("defaults agent stream to true when an explicit agent is requested", () => {
+    const parsed = parseCreateTasksArgs(["--agent", "planner"]);
+    assert.equal(parsed.agentName, "planner");
+    assert.equal(parsed.agentStream, true);
   });
 
   it("parses numeric limits and agent options", () => {

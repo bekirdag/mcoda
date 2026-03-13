@@ -46,7 +46,7 @@
   },
   "pnpm": {
     "overrides": {
-      "tar": "7.5.10",
+      "tar": "7.5.11",
       "minimatch": "10.2.3",
       "basic-ftp": "5.2.0",
       "axios": "1.13.5",

@@ -78,6 +78,17 @@ export interface TaskRow extends TaskInsert {
   updatedAt: string;
 }
 
+export interface ProjectBacklogSummary {
+  taskCount: number;
+  nonNotStartedTaskCount: number;
+  taskRunCount: number;
+  taskQaRunCount: number;
+  taskCommentCount: number;
+  taskReviewCount: number;
+  taskRevisionCount: number;
+  taskLogCount: number;
+}
+
 const DOD_HEADER = /(definition of done|dod)\b/i;
 const SECTION_HEADER = /^(?:\*+\s*)?(?:\*\*)?\s*(objective|context|inputs|implementation plan|testing|dependencies|risks|references|related documentation|acceptance criteria)\b/i;
 
@@ -899,6 +910,52 @@ export class WorkspaceRepository {
   async listTaskKeys(userStoryId: string): Promise<string[]> {
     const rows = await this.db.all(`SELECT key FROM tasks WHERE user_story_id = ? ORDER BY key`, userStoryId);
     return rows.map((r: any) => r.key as string);
+  }
+
+  async getProjectBacklogSummary(projectId: string): Promise<ProjectBacklogSummary> {
+    const row = await this.db.get(
+      `SELECT
+         COALESCE((SELECT COUNT(*) FROM tasks WHERE project_id = ?), 0) AS task_count,
+         COALESCE((SELECT COUNT(*) FROM tasks WHERE project_id = ? AND LOWER(COALESCE(status, '')) <> 'not_started'), 0) AS non_not_started_task_count,
+         COALESCE((
+           SELECT COUNT(*)
+           FROM task_runs
+           WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+             AND LOWER(COALESCE(command, '')) NOT IN ('create-tasks', 'refine-tasks', 'task-sufficiency-audit')
+         ), 0) AS task_run_count,
+         COALESCE((SELECT COUNT(*) FROM task_qa_runs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)), 0) AS task_qa_run_count,
+         COALESCE((SELECT COUNT(*) FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)), 0) AS task_comment_count,
+         COALESCE((SELECT COUNT(*) FROM task_reviews WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)), 0) AS task_review_count,
+         COALESCE((SELECT COUNT(*) FROM task_revisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)), 0) AS task_revision_count,
+         COALESCE((
+           SELECT COUNT(*)
+           FROM task_logs
+           WHERE task_run_id IN (
+             SELECT id
+             FROM task_runs
+             WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+               AND LOWER(COALESCE(command, '')) NOT IN ('create-tasks', 'refine-tasks', 'task-sufficiency-audit')
+           )
+         ), 0) AS task_log_count`,
+      projectId,
+      projectId,
+      projectId,
+      projectId,
+      projectId,
+      projectId,
+      projectId,
+      projectId,
+    );
+    return {
+      taskCount: Number(row?.task_count ?? 0),
+      nonNotStartedTaskCount: Number(row?.non_not_started_task_count ?? 0),
+      taskRunCount: Number(row?.task_run_count ?? 0),
+      taskQaRunCount: Number(row?.task_qa_run_count ?? 0),
+      taskCommentCount: Number(row?.task_comment_count ?? 0),
+      taskReviewCount: Number(row?.task_review_count ?? 0),
+      taskRevisionCount: Number(row?.task_revision_count ?? 0),
+      taskLogCount: Number(row?.task_log_count ?? 0),
+    };
   }
 
   async createJob(record: JobInsert): Promise<JobRow> {

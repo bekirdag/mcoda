@@ -56,6 +56,23 @@ describe("RefineTasksService", () => {
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-refine-"));
+    await fs.writeFile(
+      path.join(workspaceDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "mcoda-refine-test-workspace",
+          private: true,
+          scripts: {
+            "test:unit": "echo unit",
+            "test:integration": "echo integration",
+            "test:api": "echo api",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
     workspace = await WorkspaceResolver.resolveWorkspace({ cwd: workspaceDir, explicitWorkspace: workspaceDir });
     service = await RefineTasksService.create(workspace);
     repo = (service as any).workspaceRepo as WorkspaceRepository;
@@ -363,6 +380,237 @@ describe("RefineTasksService", () => {
     assert.ok(result.plan.operations.length >= 1);
   });
 
+  it("keeps plan-in enrichments even when terminal status updates are ignored", { concurrency: false }, async () => {
+    const plan: RefineTasksPlan = {
+      strategy: "enrich",
+      operations: [
+        {
+          op: "update_task",
+          taskKey,
+          updates: { title: "Refined task title", status: "completed" },
+        },
+      ],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-terminal-status.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "enrich",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    assert.equal(result.plan.operations.length, 1);
+    assert.ok(result.updatedTasks?.includes(taskKey));
+    assert.ok(result.plan.warnings?.some((w) => w.includes("Ignored terminal status completed")));
+
+    const row = await repo.getDb().get<{ title: string; status: string }>(
+      `SELECT title, status FROM tasks WHERE key = ?`,
+      taskKey,
+    );
+    assert.equal(row?.title, "Refined task title");
+    assert.equal(row?.status, "not_started");
+  });
+
+  it("keeps agent-generated operations that were previously rejected by validation", { concurrency: false }, async () => {
+    const agent = {
+      id: "agent-keep-invalid",
+      slug: "agent-keep-invalid",
+      adapter: "local-model",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).agentService = {
+      invoke: async () => ({
+        output: JSON.stringify({
+          operations: [
+            {
+              op: "update_task",
+              taskKey,
+              updates: {
+                title: "Agent-refined title",
+                status: "completed",
+              },
+            },
+          ],
+        }),
+      }),
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "enrich",
+      agentStream: false,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.equal(result.plan.operations.length, 1);
+    const op = result.plan.operations[0] as any;
+    assert.equal(op.op, "update_task");
+    assert.equal(op.taskKey, taskKey);
+    assert.equal(op.updates?.title, "Agent-refined title");
+    assert.equal(op.updates?.status, "completed");
+  });
+
+  it("parses streamed final JSON even when earlier chunks contain progress narration", { concurrency: false }, async () => {
+    const agent = {
+      id: "agent-stream-json",
+      slug: "agent-stream-json",
+      adapter: "codex-cli",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).agentService = {
+      invokeStream: async function* () {
+        yield { output: "I am grounding the refinement in repo context first. " };
+        yield {
+          output: JSON.stringify({
+            operations: [{ op: "update_estimate", taskKey, storyPoints: 8 }],
+          }),
+        };
+      },
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "estimate",
+      agentStream: true,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.equal(result.plan.operations.length, 1);
+    const op = result.plan.operations[0] as any;
+    assert.equal(op.op, "update_estimate");
+    assert.equal(op.taskKey, taskKey);
+    assert.equal(op.storyPoints, 8);
+  });
+
+  it("retries with a strict non-stream invocation when streamed output is only narration", { concurrency: false }, async () => {
+    const agent = {
+      id: "agent-stream-retry-json",
+      slug: "agent-stream-retry-json",
+      adapter: "codex-cli",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    let streamCalls = 0;
+    let invokeCalls = 0;
+
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).agentService = {
+      invokeStream: async function* () {
+        streamCalls += 1;
+        yield { output: "I'm checking context first." };
+      },
+      invoke: async () => {
+        invokeCalls += 1;
+        return {
+          output: JSON.stringify({
+            operations: [{ op: "update_estimate", taskKey, storyPoints: 5 }],
+          }),
+        };
+      },
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "estimate",
+      agentStream: true,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.equal(streamCalls, 1);
+    assert.equal(invokeCalls, 1);
+    assert.equal(result.plan.operations.length, 1);
+    const op = result.plan.operations[0] as any;
+    assert.equal(op.op, "update_estimate");
+    assert.equal(op.taskKey, taskKey);
+    assert.equal(op.storyPoints, 5);
+  });
+
+  it("skips malformed split_task operations during apply instead of aborting", { concurrency: false }, async () => {
+    const malformedPlan = {
+      strategy: "split",
+      operations: [
+        {
+          op: "split_task",
+          taskKey,
+          children: "not-an-array",
+        },
+      ],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-malformed-split.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(malformedPlan, null, 2), "utf8");
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "split",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    assert.equal(result.plan.operations.length, 1);
+    assert.equal(result.createdTasks?.length ?? 0, 0);
+    assert.ok(result.plan.warnings?.some((w) => w.includes("children array is required")));
+
+    const rows = await repo
+      .getDb()
+      .all<{ key: string }[]>(`SELECT key FROM tasks WHERE user_story_id = ? ORDER BY key`, storyId);
+    assert.deepEqual(rows.map((row) => row.key), [taskKey]);
+  });
+
   it("rejects plan-in operations targeting unknown tasks", { concurrency: false }, async () => {
     const plan: RefineTasksPlan = {
       strategy: "estimate",
@@ -428,6 +676,685 @@ describe("RefineTasksService", () => {
     assert.ok(result.summary.includes("[OPENAPI_HINTS]"));
     assert.ok(result.summary.includes("GET /users"));
     assert.ok(result.summary.includes("backend-api"));
+  });
+
+  it("builds prompt context from task metadata, comments, and repo target candidates", async () => {
+    const taskRow = await repo.getTaskByKey(taskKey);
+    assert.ok(taskRow);
+    await repo.updateTask(taskRow!.id, {
+      metadata: {
+        files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+        doc_links: ["docdex:docs/sds/project.md"],
+        test_requirements: { unit: ["cover metadata selection"], integration: [], component: [], api: [] },
+        tests: ["npm run test:unit"],
+        stage: "backend",
+        foundation: false,
+      },
+    });
+    const artifactDir = path.join(workspace.mcodaDir, "tasks", "demo");
+    await fs.mkdir(artifactDir, { recursive: true });
+    await fs.writeFile(
+      path.join(artifactDir, "build-plan.json"),
+      JSON.stringify(
+        {
+          projectKey: "demo",
+          buildMethod:
+            "1. create file: packages/core/src/services/execution/WorkOnTasksService.ts\n2. update file: packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(artifactDir, "tasks.json"),
+      JSON.stringify(
+        [
+          {
+            localId: taskKey,
+            epicLocalId: "demo-01",
+            storyLocalId: "demo-01-us-01",
+            title: "Initial task",
+            description:
+              "Implement packages/core/src/services/execution/WorkOnTasksService.ts and verify packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts.",
+            files: [
+              "packages/core/src/services/execution/WorkOnTasksService.ts",
+              "packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts",
+            ],
+          },
+        ],
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await repo.createTaskComment({
+      taskId: taskRow!.id,
+      sourceCommand: "code-review",
+      authorType: "agent",
+      category: "missing_context",
+      status: "open",
+      body: "Use packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts as the first verification surface.",
+      createdAt: new Date().toISOString(),
+    });
+    (service as any).docdex = {
+      search: async (request: any) => {
+        if (request?.profile === "sds") {
+          return [
+            {
+              id: "doc-sds",
+              docType: "SDS",
+              title: "project-sds.md",
+              path: "docs/sds/project-sds.md",
+              content: [
+                "# SDS",
+                "Implement packages/core/src/services/execution/WorkOnTasksService.ts.",
+                "Verify with packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts.",
+              ].join("\n"),
+              segments: [
+                {
+                  content:
+                    "Implement packages/core/src/services/execution/WorkOnTasksService.ts and validate packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts.",
+                },
+              ],
+            },
+          ];
+        }
+        if (request?.profile === "openapi") return [];
+        if (request?.profile === "workspace-code") {
+          return [
+            {
+              id: "code-1",
+              docType: "CODE",
+              title: "WorkOnTasksService.ts",
+              path: "packages/core/src/services/execution/WorkOnTasksService.ts",
+              content: "",
+              segments: [],
+            },
+            {
+              id: "code-2",
+              docType: "CODE",
+              title: "WorkOnTasksService.test.ts",
+              path: "packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts",
+              content: "",
+              segments: [],
+            },
+          ];
+        }
+        return [];
+      },
+    };
+
+    const refreshedTask = await repo.getTaskByKey(taskKey);
+    const docContext = await (service as any).summarizeDocs("demo", "demo-01", "demo-01-us-01");
+    const artifactContext = await (service as any).loadPlanningArtifactContext("demo", "demo-01", "demo-01-us-01");
+    const historySummary = await (service as any).summarizeHistory([taskRow!.id]);
+    const prompt = await (service as any).buildStoryPrompt(
+      {
+        epic: { id: epicId, key: "demo-01", title: "Demo Epic", description: "Epic" },
+        story: {
+          id: storyId,
+          key: "demo-01-us-01",
+          title: "Story",
+          description: "Story",
+          acceptance: ["Keep execution guidance concrete."],
+        },
+        tasks: [
+          {
+            ...refreshedTask!,
+            storyKey: "demo-01-us-01",
+            epicKey: "demo-01",
+            dependencies: [],
+          },
+        ],
+        docSummary: docContext.summary,
+        historySummary,
+        docLinks: docContext.docLinks,
+        implementationTargets: Array.from(
+          new Set([...docContext.implementationTargets, ...artifactContext.implementationTargets]),
+        ),
+        testTargets: Array.from(new Set([...docContext.testTargets, ...artifactContext.testTargets])),
+        architectureRoots: artifactContext.architectureRoots,
+        suggestedTestRequirements: docContext.suggestedTestRequirements,
+      },
+      "auto",
+      docContext.summary,
+    );
+
+    assert.match(prompt, /Files: packages\/core\/src\/services\/execution\/WorkOnTasksService\.ts/);
+    assert.match(prompt, /Architecture roots: packages/);
+    assert.match(prompt, /Docs: docdex:docs\/sds\/project\.md/);
+    assert.match(prompt, /Test requirements: unit=cover metadata selection/);
+    assert.match(prompt, /Test commands: npm run test:unit/);
+    assert.match(prompt, /COMMENT missing_context\/open/i);
+    assert.match(prompt, /WorkOnTasksService\.test\.ts/);
+    assert.match(prompt, /Implementation tasks should name concrete repo targets/i);
+  });
+
+  it("retries parseable but generic output with an execution-readiness critique", { concurrency: false }, async () => {
+    const agent = {
+      id: "agent-quality-retry",
+      slug: "agent-quality-retry",
+      adapter: "codex-cli",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    let invokeCalls = 0;
+    const prompts: string[] = [];
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).docdex = {
+      search: async (request: any) => {
+        if (request?.profile === "sds") {
+          return [
+            {
+              id: "doc-sds",
+              docType: "SDS",
+              title: "project-sds.md",
+              path: "docs/sds/project-sds.md",
+              content: "Implement packages/core/src/services/execution/WorkOnTasksService.ts.",
+              segments: [{ content: "Implement packages/core/src/services/execution/WorkOnTasksService.ts." }],
+            },
+          ];
+        }
+        if (request?.profile === "workspace-code") {
+          return [
+            {
+              id: "code-1",
+              docType: "CODE",
+              title: "WorkOnTasksService.ts",
+              path: "packages/core/src/services/execution/WorkOnTasksService.ts",
+              content: "",
+              segments: [],
+            },
+            {
+              id: "code-2",
+              docType: "CODE",
+              title: "WorkOnTasksService.test.ts",
+              path: "packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts",
+              content: "",
+              segments: [],
+            },
+          ];
+        }
+        return [];
+      },
+    };
+    (service as any).agentService = {
+      invoke: async (_agentId: string, request: any) => {
+        prompts.push(request.input);
+        invokeCalls += 1;
+        if (invokeCalls === 1) {
+          return {
+            output: JSON.stringify({
+              operations: [
+                {
+                  op: "update_task",
+                  taskKey,
+                  updates: {
+                    title: "Map runtime scope",
+                    description: "Analyze runtime scope and capture evidence for the execution flow.",
+                    type: "feature",
+                  },
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          output: JSON.stringify({
+            operations: [
+              {
+                op: "update_task",
+                taskKey,
+                updates: {
+                  title: "Update WorkOnTasks metadata selection",
+                  description:
+                    "Update packages/core/src/services/execution/WorkOnTasksService.ts and cover packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts.",
+                  metadata: {
+                    files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+                    test_requirements: { unit: ["cover metadata selection"], component: [], integration: [], api: [] },
+                  },
+                },
+              },
+            ],
+          }),
+        };
+      },
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "auto",
+      agentStream: false,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.equal(invokeCalls, 2);
+    assert.ok(result.plan.warnings?.some((warning) => warning.includes("Triggered critique retry")));
+    assert.match(prompts[1] ?? "", /not execution-ready enough/i);
+    const op = result.plan.operations[0] as any;
+    assert.equal(op.updates?.metadata?.files?.[0], "packages/core/src/services/execution/WorkOnTasksService.ts");
+  });
+
+  it("retries when a feature refinement only targets documentation paths", { concurrency: false }, async () => {
+    const agent = {
+      id: "agent-docs-only-retry",
+      slug: "agent-docs-only-retry",
+      adapter: "codex-cli",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    let invokeCalls = 0;
+    const prompts: string[] = [];
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).docdex = {
+      search: async (request: any) => {
+        if (request?.profile === "sds") {
+          return [
+            {
+              id: "doc-sds",
+              docType: "SDS",
+              title: "project-sds.md",
+              path: "docs/sds/project-sds.md",
+              content: "Implement packages/core/src/services/execution/WorkOnTasksService.ts.",
+              segments: [{ content: "Implement packages/core/src/services/execution/WorkOnTasksService.ts." }],
+            },
+          ];
+        }
+        if (request?.profile === "workspace-code") {
+          return [
+            {
+              id: "code-1",
+              docType: "CODE",
+              title: "WorkOnTasksService.ts",
+              path: "packages/core/src/services/execution/WorkOnTasksService.ts",
+              content: "",
+              segments: [],
+            },
+          ];
+        }
+        return [];
+      },
+    };
+    (service as any).agentService = {
+      invoke: async (_agentId: string, request: any) => {
+        prompts.push(request.input);
+        invokeCalls += 1;
+        if (invokeCalls === 1) {
+          return {
+            output: JSON.stringify({
+              operations: [
+                {
+                  op: "update_task",
+                  taskKey,
+                  updates: {
+                    title: "Document execution notes",
+                    description: "Update docs/planning-notes.md with execution details for the flow.",
+                    type: "feature",
+                    metadata: {
+                      files: ["docs/planning-notes.md"],
+                    },
+                  },
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          output: JSON.stringify({
+            operations: [
+              {
+                op: "update_task",
+                taskKey,
+                updates: {
+                  title: "Update execution flow",
+                  description: "Update packages/core/src/services/execution/WorkOnTasksService.ts for the flow.",
+                  type: "feature",
+                  metadata: {
+                    files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+                  },
+                },
+              },
+            ],
+          }),
+        };
+      },
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "auto",
+      agentStream: false,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.equal(invokeCalls, 2);
+    assert.match(prompts[1] ?? "", /Only documentation-style paths were provided/i);
+    const op = result.plan.operations[0] as any;
+    assert.equal(op.updates?.metadata?.files?.[0], "packages/core/src/services/execution/WorkOnTasksService.ts");
+  });
+
+  it("retries when refinement drifts outside artifact-backed architecture roots", { concurrency: false }, async () => {
+    const artifactDir = path.join(workspace.mcodaDir, "tasks", "demo");
+    await fs.mkdir(artifactDir, { recursive: true });
+    await fs.writeFile(
+      path.join(artifactDir, "build-plan.json"),
+      JSON.stringify(
+        {
+          projectKey: "demo",
+          buildMethod: "1. create file: packages/core/src/services/execution/WorkOnTasksService.ts",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(artifactDir, "tasks.json"),
+      JSON.stringify(
+        [
+          {
+            localId: taskKey,
+            epicLocalId: "demo-01",
+            storyLocalId: "demo-01-us-01",
+            title: "Initial task",
+            description: "Update packages/core/src/services/execution/WorkOnTasksService.ts.",
+            files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+          },
+        ],
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const agent = {
+      id: "agent-root-drift-retry",
+      slug: "agent-root-drift-retry",
+      adapter: "codex-cli",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    let invokeCalls = 0;
+    const prompts: string[] = [];
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).docdex = {
+      search: async () => [],
+    };
+    (service as any).agentService = {
+      invoke: async (_agentId: string, request: any) => {
+        prompts.push(request.input);
+        invokeCalls += 1;
+        if (invokeCalls === 1) {
+          return {
+            output: JSON.stringify({
+              operations: [
+                {
+                  op: "update_task",
+                  taskKey,
+                  updates: {
+                    title: "Update execution flow",
+                    description: "Update core/execution/WorkOnTasksService.ts for the flow.",
+                    type: "feature",
+                    metadata: {
+                      files: ["core/execution/WorkOnTasksService.ts"],
+                    },
+                  },
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          output: JSON.stringify({
+            operations: [
+              {
+                op: "update_task",
+                taskKey,
+                updates: {
+                  title: "Update execution flow",
+                  description: "Update packages/core/src/services/execution/WorkOnTasksService.ts for the flow.",
+                  type: "feature",
+                  metadata: {
+                    files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+                  },
+                },
+              },
+            ],
+          }),
+        };
+      },
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "auto",
+      agentStream: false,
+      fromDb: true,
+      apply: false,
+      dryRun: true,
+    });
+
+    assert.equal(invokeCalls, 2);
+    assert.match(prompts[1] ?? "", /outside the established architecture roots/i);
+    const op = result.plan.operations[0] as any;
+    assert.equal(op.updates?.metadata?.files?.[0], "packages/core/src/services/execution/WorkOnTasksService.ts");
+  });
+
+  it("persists enriched execution metadata for update_task refinements", { concurrency: false }, async () => {
+    const agent = {
+      id: "agent-enrich-update",
+      slug: "agent-enrich-update",
+      adapter: "local-model",
+      rating: 7,
+      reasoningRating: 6,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    (service as any).routingService = {
+      resolveAgentForCommand: async () => ({ agent }),
+    };
+    (service as any).repo = {
+      getAgentByName: async () => agent,
+      getAgentCapabilities: async () => ["plan"],
+      listAgents: async () => [agent],
+      listAgentHealthSummary: async () => [{ agentId: agent.id, status: "healthy" }],
+    };
+    (service as any).docdex = {
+      search: async (request: any) => {
+        if (request?.profile === "sds") {
+          return [
+            {
+              id: "doc-sds",
+              docType: "SDS",
+              title: "project-sds.md",
+              path: "docs/sds/project-sds.md",
+              content:
+                "Implement packages/core/src/services/execution/WorkOnTasksService.ts and verify packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts.",
+              segments: [
+                {
+                  content:
+                    "Implement packages/core/src/services/execution/WorkOnTasksService.ts and verify packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts.",
+                },
+              ],
+            },
+          ];
+        }
+        if (request?.profile === "openapi") {
+          return [
+            {
+              id: "doc-openapi",
+              docType: "OPENAPI",
+              title: "openapi.yaml",
+              path: "docs/openapi/openapi.yaml",
+              content: [
+                "openapi: 3.1.0",
+                "paths:",
+                "  /users:",
+                "    get:",
+                "      x-mcoda-task-hints:",
+                "        service: backend-api",
+                "        capability: users-list",
+                "        stage: backend",
+                "        complexity: 5",
+                "        depends_on_operations: []",
+                "        test_requirements:",
+                "          unit: [\"cover metadata selection\"]",
+                "          api: [\"exercise users endpoint\"]",
+              ].join("\n"),
+              segments: [],
+            },
+          ];
+        }
+        if (request?.profile === "workspace-code") {
+          return [
+            {
+              id: "code-1",
+              docType: "CODE",
+              title: "WorkOnTasksService.ts",
+              path: "packages/core/src/services/execution/WorkOnTasksService.ts",
+              content: "",
+              segments: [],
+            },
+            {
+              id: "code-2",
+              docType: "CODE",
+              title: "WorkOnTasksService.test.ts",
+              path: "packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts",
+              content: "",
+              segments: [],
+            },
+          ];
+        }
+        return [];
+      },
+    };
+    (service as any).agentService = {
+      invoke: async () => ({
+        output: JSON.stringify({
+          operations: [
+            {
+              op: "update_task",
+              taskKey,
+              updates: {
+                title: "Update WorkOnTasks metadata selection",
+                description:
+                  "Update WorkOnTasksService.ts for endpoint verification and cover WorkOnTasksService.test.ts in the same flow.",
+                type: "feature",
+              },
+            },
+          ],
+        }),
+      }),
+    };
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      strategy: "auto",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    assert.ok(result.updatedTasks?.includes(taskKey));
+    const updatedTask = await repo.getTaskByKey(taskKey);
+    const metadata = (updatedTask?.metadata ?? {}) as Record<string, any>;
+    const files = Array.isArray(metadata.files) ? metadata.files : [];
+    const docLinks = Array.isArray(metadata.doc_links) ? metadata.doc_links : [];
+    const tests = Array.isArray(metadata.tests) ? metadata.tests : [];
+    assert.ok(files.includes("packages/core/src/services/execution/WorkOnTasksService.ts"));
+    assert.ok(files.includes("packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts"));
+    assert.ok(docLinks.includes("docdex:doc-sds"));
+    assert.ok((metadata.test_requirements?.unit ?? []).length > 0);
+    assert.ok(tests.some((command: string) => command.includes("test:unit") || command.includes("test:api")));
+  });
+
+  it("persists enriched execution metadata for split child tasks", { concurrency: false }, async () => {
+    const plan: RefineTasksPlan = {
+      strategy: "split",
+      operations: [
+        {
+          op: "split_task",
+          taskKey,
+          children: [
+            {
+              title: "Add WorkOnTasks regression coverage",
+              description:
+                "Extend packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts to cover metadata selection.",
+              storyPoints: 2,
+              metadata: {
+                files: ["packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts"],
+                doc_links: ["docdex:doc-sds"],
+                test_requirements: { unit: ["cover metadata selection"], component: [], integration: [], api: [] },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const tmpPlan = path.join(workspaceDir, "plan-split-enriched-metadata.json");
+    await fs.writeFile(tmpPlan, JSON.stringify(plan, null, 2), "utf8");
+
+    const result = await service.refineTasks({
+      workspace,
+      projectKey: "demo",
+      planInPath: tmpPlan,
+      strategy: "split",
+      agentStream: false,
+      fromDb: true,
+      apply: true,
+      dryRun: false,
+    });
+
+    assert.equal(result.createdTasks?.length ?? 0, 1);
+    const child = await repo.getTaskByKey(result.createdTasks![0]!);
+    const metadata = (child?.metadata ?? {}) as Record<string, any>;
+    const files = Array.isArray(metadata.files) ? metadata.files : [];
+    const docLinks = Array.isArray(metadata.doc_links) ? metadata.doc_links : [];
+    const tests = Array.isArray(metadata.tests) ? metadata.tests : [];
+    assert.ok(files.includes("packages/core/src/services/execution/__tests__/WorkOnTasksService.test.ts"));
+    assert.ok(docLinks.includes("docdex:doc-sds"));
+    assert.ok((metadata.test_requirements?.unit ?? []).includes("cover metadata selection"));
+    assert.ok(tests.some((command: string) => command.includes("test:unit")));
   });
 
   it("invokes agent rating when enabled", { concurrency: false }, async () => {

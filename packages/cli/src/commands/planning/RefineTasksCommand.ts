@@ -116,6 +116,18 @@ const formatCounts = (ops: any[]): string => {
     .join(", ");
 };
 
+export const getRefineResultStatus = (options: {
+  applied: boolean;
+  operations: number;
+  applyRequested: boolean;
+  dryRunRequested: boolean;
+}): "applied" | "dry_run" | "no_operations" => {
+  if (options.applied) return "applied";
+  if (options.operations === 0) return "no_operations";
+  if (options.dryRunRequested || !options.applyRequested) return "dry_run";
+  return "no_operations";
+};
+
 export const parseRefineTasksArgs = (argv: string[]): ParsedRefineArgs => {
   let workspaceRoot: string | undefined;
   let projectKey: string | undefined;
@@ -465,6 +477,13 @@ export class RefineTasksCommand {
         ...baseRequest,
         maxTasks: parsed.maxTasks,
       });
+      const operations = result.plan.operations.length;
+      const resultStatus = getRefineResultStatus({
+        applied: result.applied,
+        operations,
+        applyRequested: parsed.apply,
+        dryRunRequested: parsed.dryRun,
+      });
 
       if (parsed.json) {
         const warnings = [...commandWarnings, ...(result.plan.warnings ?? [])];
@@ -472,7 +491,7 @@ export class RefineTasksCommand {
         console.log(
           JSON.stringify(
             {
-              status: result.applied ? "applied" : "dry_run",
+              status: resultStatus,
               summary: result.summary,
               plan: result.plan,
               warnings,
@@ -483,9 +502,15 @@ export class RefineTasksCommand {
         );
       } else {
         const opSummary = formatCounts(result.plan.operations);
+        const appliedLabel =
+          resultStatus === "applied"
+            ? "yes"
+            : resultStatus === "dry_run"
+              ? "no (dry run)"
+              : "no (no operations)";
         const summaryLines = [
           `Job: ${result.jobId}, Command Run: ${result.commandRunId}`,
-          `Applied: ${result.applied ? "yes" : "no (dry run)"}`,
+          `Applied: ${appliedLabel}`,
           `Operations: ${result.plan.operations.length}${opSummary ? ` (${opSummary})` : ""}`,
           result.summary
             ? `Tasks processed: ${result.summary.tasksProcessed}, affected: ${result.summary.tasksAffected}, story points delta: ${result.summary.storyPointsDelta ?? 0}`

@@ -345,7 +345,7 @@ export const parseCreateTasksArgs = (argv: string[]): ParsedArgs => {
     workspaceRoot,
     projectKey,
     agentName,
-    agentStream: agentStream ?? false,
+    agentStream: agentStream ?? Boolean(agentName),
     rateAgents,
     maxEpics: Number.isFinite(maxEpics) ? maxEpics : undefined,
     maxStoriesPerEpic: Number.isFinite(maxStoriesPerEpic) ? maxStoriesPerEpic : undefined,
@@ -427,6 +427,10 @@ export class CreateTasksCommand {
             `Job ID: ${result.jobId}, Command Run: ${result.commandRunId}`,
           ].join("\n"),
         );
+        if (result.warnings.length > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(result.warnings.join("\n"));
+        }
       }
     } catch (error) {
       // eslint-disable-next-line no-console

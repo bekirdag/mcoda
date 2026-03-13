@@ -22,6 +22,7 @@ import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { classifyTask } from "../backlog/TaskOrderingHeuristics.js";
 import { TaskOrderingService } from "../backlog/TaskOrderingService.js";
+import { QaTestCommandBuilder } from "../execution/QaTestCommandBuilder.js";
 import { createTaskKeyGenerator } from "./KeyHelpers.js";
 
 interface RefineTasksOptions extends RefineTasksRequest {
@@ -63,6 +64,54 @@ interface StoryGroup {
   tasks: CandidateTask[];
   docSummary?: string;
   historySummary?: string;
+  docLinks?: string[];
+  implementationTargets?: string[];
+  testTargets?: string[];
+  architectureRoots?: string[];
+  suggestedTestRequirements?: TestRequirements;
+}
+
+interface TestRequirements {
+  unit: string[];
+  component: string[];
+  integration: string[];
+  api: string[];
+}
+
+interface StoryDocContextSummary {
+  summary: string;
+  warnings: string[];
+  docLinks: string[];
+  implementationTargets: string[];
+  testTargets: string[];
+  suggestedTestRequirements: TestRequirements;
+}
+
+interface PlanningArtifactContextSummary {
+  warnings: string[];
+  implementationTargets: string[];
+  testTargets: string[];
+  architectureRoots: string[];
+}
+
+interface RefineQualityIssue {
+  code:
+    | "missing_targets"
+    | "docs_only_targets"
+    | "path_drift"
+    | "meta_task"
+    | "missing_verification_harness"
+    | "over_bundled";
+  message: string;
+  taskKey: string;
+}
+
+interface RefineQualityEvaluation {
+  issues: RefineQualityIssue[];
+  issueCount: number;
+  critiqueLines: string[];
+  shouldRetry: boolean;
+  score: number;
 }
 
 const DEFAULT_STRATEGY: RefineStrategy = "auto";
@@ -76,10 +125,275 @@ const MAX_AGENT_OUTPUT_CHARS = 10_000_000;
 const PLANNING_DOC_HINT_PATTERN = /(sds|pdr|rfp|requirements|architecture|openapi|swagger|design)/i;
 const OPENAPI_METHODS = new Set(["get", "post", "put", "patch", "delete", "options", "head", "trace"]);
 const OPENAPI_HINTS_LIMIT = 20;
+const DOCDEX_HANDLE = /^docdex:/i;
+const DOCDEX_LOCAL_HANDLE = /^docdex:local[-:/]/i;
+const RELATED_DOC_PATH_PATTERN =
+  /^(?:~\/|\/|[A-Za-z]:[\\/]|[A-Za-z0-9._-]+\/)[A-Za-z0-9._/-]+(?:\.[A-Za-z0-9._-]+)?(?:#[A-Za-z0-9._:-]+)?$/;
+const RELATIVE_DOC_PATH_PATTERN = /^(?:\.{1,2}\/)+[A-Za-z0-9._/-]+(?:\.[A-Za-z0-9._-]+)?(?:#[A-Za-z0-9._:-]+)?$/;
+const REPO_PATH_PATTERN =
+  /(?:^|[\s`"'(])((?:\.{1,2}\/)?(?:[A-Za-z0-9@._-]+\/)+(?:[A-Za-z0-9@._-]+(?:\.[A-Za-z0-9._-]+)?))(?:$|[\s`"',):;])/g;
+const LIKELY_REPO_ROOTS = new Set([
+  "apps",
+  "api",
+  "bin",
+  "cmd",
+  "components",
+  "configs",
+  "contracts",
+  "consoles",
+  "docs",
+  "engines",
+  "lib",
+  "ops",
+  "openapi",
+  "packages",
+  "scripts",
+  "services",
+  "src",
+  "test",
+  "tests",
+]);
+const IMPLEMENTATION_VERB_PATTERN =
+  /\b(implement|add|update|wire|create|build|fix|persist|register|normalize|connect|expose|refactor|seed|migrate|enforce|run|validate|test)\b/i;
+const META_TASK_PATTERN =
+  /\b(map|inventory|identify|analyze|scope|capture evidence|document baseline|baseline|research|review requirements|assess|audit|plan(?:\s+out)?)\b/i;
+const DOCS_OR_COORDINATION_PATTERN =
+  /\b(document|docs?|guide|runbook|playbook|policy|audit|review|report|analysis|investigation|evidence|baseline)\b/i;
+const VERIFICATION_TASK_PATTERN =
+  /\b(test|tests|verify|verification|scenario|smoke|acceptance|regression|qa|harness|fixture|assert|coverage|evidence)\b/i;
+const RUNNABLE_TEST_REFERENCE_PATTERN =
+  /\b(pnpm|npm|yarn|node|pytest|go test|cargo test|dotnet test|mvn|gradle|jest|ava|mocha|cypress|playwright)\b|(?:^|\/)(tests?|__tests__|specs?)(?:\/|$)|\.(?:test|spec)\.[A-Za-z0-9]+/i;
 
 const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
+const isOperationObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+const emptyTestRequirements = (): TestRequirements => ({ unit: [], component: [], integration: [], api: [] });
+const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+const truncate = (value: string, max = 140): string => (value.length > max ? `${value.slice(0, max - 3)}...` : value);
+const normalizeStringArray = (value: unknown): string[] => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+const normalizeRelatedDocs = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const entry of value) {
+    const candidate =
+      typeof entry === "string"
+        ? entry.trim()
+        : entry && typeof entry === "object" && "handle" in entry && typeof entry.handle === "string"
+          ? entry.handle.trim()
+          : "";
+    if (!candidate) continue;
+    if (DOCDEX_LOCAL_HANDLE.test(candidate)) continue;
+    const isDocHandle = DOCDEX_HANDLE.test(candidate);
+    const isHttp = /^https?:\/\/\S+$/i.test(candidate);
+    const isPath = RELATED_DOC_PATH_PATTERN.test(candidate) || RELATIVE_DOC_PATH_PATTERN.test(candidate);
+    if (!isDocHandle && !isHttp && !isPath) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    normalized.push(candidate);
+  }
+  return normalized;
+};
+const normalizeTestRequirements = (value: unknown): TestRequirements => {
+  const raw = isPlainObject(value) ? value : {};
+  return {
+    unit: normalizeStringArray(raw.unit),
+    component: normalizeStringArray(raw.component),
+    integration: normalizeStringArray(raw.integration),
+    api: normalizeStringArray(raw.api),
+  };
+};
+const mergeTestRequirements = (...sets: Array<TestRequirements | undefined>): TestRequirements => {
+  const merged = emptyTestRequirements();
+  for (const value of sets) {
+    if (!value) continue;
+    merged.unit = uniqueStrings([...merged.unit, ...value.unit]);
+    merged.component = uniqueStrings([...merged.component, ...value.component]);
+    merged.integration = uniqueStrings([...merged.integration, ...value.integration]);
+    merged.api = uniqueStrings([...merged.api, ...value.api]);
+  }
+  return merged;
+};
+const hasTestRequirements = (value: TestRequirements): boolean =>
+  value.unit.length > 0 || value.component.length > 0 || value.integration.length > 0 || value.api.length > 0;
+const summarizeTestRequirements = (value: TestRequirements): string => {
+  const parts = [
+    value.unit.length ? `unit=${value.unit.join("; ")}` : "",
+    value.component.length ? `component=${value.component.join("; ")}` : "",
+    value.integration.length ? `integration=${value.integration.join("; ")}` : "",
+    value.api.length ? `api=${value.api.join("; ")}` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+};
+const sanitizePathCandidate = (candidate: string): string =>
+  candidate.replace(/^[`"'(]+/, "").replace(/[`"'),.;:]+$/, "").trim();
+const isLikelyRepoPath = (candidate: string): boolean => {
+  const cleaned = sanitizePathCandidate(candidate);
+  if (!cleaned || /^https?:/i.test(cleaned) || DOCDEX_HANDLE.test(cleaned)) return false;
+  const normalized = cleaned.replace(/^\.\/+/, "").replace(/^\.\.\/+/, "");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length < 2) return false;
+  const root = parts[0]?.toLowerCase() ?? "";
+  if (LIKELY_REPO_ROOTS.has(root)) return true;
+  return /\.[A-Za-z0-9_-]+$/.test(parts[parts.length - 1] ?? "");
+};
+const extractRepoPaths = (value: string | undefined): string[] => {
+  if (!value) return [];
+  const matches = new Set<string>();
+  const source = value.replace(/\r/g, "");
+  REPO_PATH_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = REPO_PATH_PATTERN.exec(source)) !== null) {
+    const candidate = sanitizePathCandidate(match[1] ?? "");
+    if (!isLikelyRepoPath(candidate)) continue;
+    matches.add(candidate.replace(/^\.\/+/, ""));
+  }
+  return Array.from(matches);
+};
+const isLikelyTestPath = (candidate: string): boolean =>
+  /(?:^|\/)(?:tests?|__tests__|specs?)(?:\/|$)|\.(?:test|spec)\.[A-Za-z0-9]+$/i.test(candidate);
+const classifyRepoPathKind = (candidate: string): "runtime" | "interface" | "data" | "test" | "ops" | "doc" | "unknown" => {
+  const normalized = sanitizePathCandidate(candidate).replace(/\\/g, "/").toLowerCase();
+  const parts = normalized.split("/").filter(Boolean);
+  const basename = parts[parts.length - 1] ?? normalized;
+  if (
+    parts.some((part) => ["docs", "rfp", "pdr", "sds"].includes(part)) ||
+    /\.(?:md|mdx|txt|rst|adoc)$/i.test(basename)
+  ) {
+    return "doc";
+  }
+  if (isLikelyTestPath(normalized)) return "test";
+  if (parts.some((part) => ["ops", "scripts", "deploy", "deployment", "infra", "systemd", "terraform"].includes(part))) {
+    return "ops";
+  }
+  if (
+    parts.some((part) =>
+      ["contract", "contracts", "interface", "interfaces", "schema", "schemas", "types", "proto", "protocol"].includes(
+        part,
+      ),
+    )
+  ) {
+    return "interface";
+  }
+  if (parts.some((part) => ["db", "data", "storage", "cache", "migrations", "migration", "models", "repositories"].includes(part))) {
+    return "data";
+  }
+  if (
+    parts.some((part) =>
+      ["src", "app", "apps", "service", "services", "packages", "worker", "workers", "server", "client", "web", "ui", "lib", "core"].includes(
+        part,
+      ),
+    )
+  ) {
+    return "runtime";
+  }
+  return "unknown";
+};
+const isStrongExecutionPath = (candidate: string): boolean => {
+  const kind = classifyRepoPathKind(candidate);
+  return kind === "runtime" || kind === "interface" || kind === "data" || kind === "test" || kind === "ops";
+};
+const getRepoPathRoot = (candidate: string): string | undefined =>
+  sanitizePathCandidate(candidate)
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .split("/")
+    .filter(Boolean)[0];
+const basenameWithoutExt = (targetPath: string): string => {
+  const base = path.basename(targetPath.trim());
+  const ext = path.extname(base);
+  return ext ? base.slice(0, base.length - ext.length) : base;
+};
+const tokenize = (value?: string): string[] =>
+  (value ?? "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((token) => token.trim())
+    .filter(Boolean);
+const scoreTargetMatch = (text: string, targetPath: string): number => {
+  const lower = text.toLowerCase();
+  const normalizedTarget = targetPath.toLowerCase();
+  if (lower.includes(normalizedTarget)) return 100;
+  const base = path.basename(targetPath).toLowerCase();
+  if (base && lower.includes(base)) return 80;
+  const stem = basenameWithoutExt(targetPath).toLowerCase();
+  if (stem && lower.includes(stem)) return 60;
+  const tokens = new Set(tokenize(text));
+  let score = 0;
+  for (const part of tokenize(stem)) {
+    if (tokens.has(part)) score += 10;
+  }
+  return score;
+};
+const selectRelevantTargets = (text: string, candidates: string[], limit = 3): string[] =>
+  candidates
+    .map((candidate) => ({ candidate, score: scoreTargetMatch(text, candidate) }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.candidate.localeCompare(right.candidate))
+    .slice(0, limit)
+    .map((entry) => entry.candidate);
+const inferTestRequirementsFromTargets = (targets: string[]): TestRequirements => {
+  const inferred = emptyTestRequirements();
+  for (const target of targets) {
+    const bucket = /(?:^|\/)api(?:\/|$)/i.test(target)
+      ? inferred.api
+      : /(?:^|\/)(?:integration|int)(?:\/|$)/i.test(target)
+        ? inferred.integration
+        : /(?:^|\/)component(?:\/|$)/i.test(target)
+          ? inferred.component
+          : /(?:^|\/)unit(?:\/|$)/i.test(target)
+            ? inferred.unit
+            : inferred.integration;
+    bucket.push(target);
+  }
+  inferred.unit = uniqueStrings(inferred.unit);
+  inferred.component = uniqueStrings(inferred.component);
+  inferred.integration = uniqueStrings(inferred.integration);
+  inferred.api = uniqueStrings(inferred.api);
+  return inferred;
+};
+const isDocsOrCoordinationTask = (text: string): boolean =>
+  DOCS_OR_COORDINATION_PATTERN.test(text) && !IMPLEMENTATION_VERB_PATTERN.test(text);
+const isMetaTaskText = (text: string): boolean => META_TASK_PATTERN.test(text) && !IMPLEMENTATION_VERB_PATTERN.test(text);
+const isVerificationTask = (text: string): boolean => VERIFICATION_TASK_PATTERN.test(text);
+const hasRunnableTestReference = (
+  text: string,
+  metadata: Record<string, unknown>,
+  testTargets: string[],
+): boolean =>
+  RUNNABLE_TEST_REFERENCE_PATTERN.test(text) ||
+  normalizeStringArray(metadata.tests).length > 0 ||
+  normalizeStringArray(metadata.testCommands).length > 0 ||
+  hasTestRequirements(
+    mergeTestRequirements(
+      normalizeTestRequirements(metadata.test_requirements),
+      normalizeTestRequirements(metadata.testRequirements),
+    ),
+  ) ||
+  selectRelevantTargets(text, testTargets, 2).length > 0;
+const REFINE_OUTPUT_CONTRACT = [
+  "STRICT OUTPUT CONTRACT:",
+  "- Use only the context already included in this prompt.",
+  "- Do not claim you are loading, checking, inspecting, searching, or gathering more context.",
+  "- Do not mention Docdex, repo scans, index checks, or tool usage.",
+  "- Do not narrate your process or provide status updates.",
+  "- Do not ask follow-up questions.",
+  "- Respond with JSON only (no prose, no markdown, no code fences).",
+  "- Output must be exactly one JSON object that starts with '{' and ends with '}'.",
+  '- If no safe refinement is possible, return {"operations":[]}.',
+].join("\n");
 
 const parseStructuredDoc = (raw: string): Record<string, unknown> | undefined => {
   if (!raw || raw.trim().length === 0) return undefined;
@@ -234,14 +548,37 @@ const safeParsePlan = (content: string): RefineTasksPlan | undefined => {
 };
 
 const formatTaskSummary = (task: CandidateTask): string => {
+  const metadata = isPlainObject(task.metadata) ? task.metadata : {};
+  const files = normalizeStringArray(metadata.files).slice(0, 4);
+  const docLinks = normalizeRelatedDocs(metadata.doc_links).slice(0, 4);
+  const testCommands = uniqueStrings([
+    ...normalizeStringArray(metadata.tests),
+    ...normalizeStringArray(metadata.testCommands),
+  ]).slice(0, 3);
+  const testRequirements = mergeTestRequirements(
+    normalizeTestRequirements(metadata.test_requirements),
+    normalizeTestRequirements(metadata.testRequirements),
+  );
   return [
     `- ${task.key}: ${task.title} [${task.status}${task.type ? `/${task.type}` : ""}]`,
     task.storyPoints !== null && task.storyPoints !== undefined ? `  SP: ${task.storyPoints}` : "",
     task.dependencies.length ? `  Depends on: ${task.dependencies.join(", ")}` : "",
+    files.length ? `  Files: ${files.join(", ")}` : "",
+    docLinks.length ? `  Docs: ${docLinks.join(", ")}` : "",
+    hasTestRequirements(testRequirements) ? `  Test requirements: ${summarizeTestRequirements(testRequirements)}` : "",
+    testCommands.length ? `  Test commands: ${testCommands.join(" && ")}` : "",
+    typeof metadata.stage === "string" ? `  Stage: ${metadata.stage}` : "",
+    typeof metadata.foundation === "boolean" ? `  Foundation: ${String(metadata.foundation)}` : "",
   ]
     .filter(Boolean)
     .join("\n");
 };
+
+const formatTargetSummary = (label: string, values: string[], limit = 6): string =>
+  values.length > 0 ? `- ${label}: ${values.slice(0, limit).join(", ")}` : `- ${label}: (none)`;
+
+const summarizeQualityIssues = (issues: RefineQualityIssue[], limit = 6): string[] =>
+  issues.slice(0, limit).map((issue) => `- ${issue.taskKey}: ${issue.message}`);
 
 const splitChildReferenceFields = ["taskKey", "key", "localId", "id", "slug", "alias", "ref"] as const;
 
@@ -771,6 +1108,19 @@ export class RefineTasksService {
     };
   }
 
+  private buildStoryExecutionContext(group: StoryGroup): string {
+    const suggestedTests = group.suggestedTestRequirements ?? emptyTestRequirements();
+    return [
+      formatTargetSummary("Architecture roots", group.architectureRoots ?? []),
+      formatTargetSummary("Implementation targets", group.implementationTargets ?? []),
+      formatTargetSummary("Test targets", group.testTargets ?? []),
+      formatTargetSummary("Doc links to preserve in metadata", group.docLinks ?? []),
+      hasTestRequirements(suggestedTests)
+        ? `- Suggested test requirements: ${summarizeTestRequirements(suggestedTests)}`
+        : "- Suggested test requirements: (none)",
+    ].join("\n");
+  }
+
   private buildStoryPrompt(group: StoryGroup, strategy: RefineStrategy, docSummary?: string): string {
     const taskList = group.tasks.map((t) => formatTaskSummary(t)).join("\n");
     const constraints = [
@@ -779,31 +1129,67 @@ export class RefineTasksService {
       "- Splits: children stay under same story; keep parent unless keepParent=false; child dependsOn must reference existing tasks or siblings.",
       "- Merges: target and sources must be in same story; prefer cancelling redundant sources (status=cancelled) and preserve useful details in target updates.",
       "- Dependencies: maintain DAG; do not introduce cycles or cross-story edges.",
-      "- Enrichment focus: strengthen task descriptions with concrete implementation scope, expected files/modules, and actionable validation details.",
+      "- Implementation tasks should name concrete repo targets when the context provides them. Prefer exact file paths, module names, scripts, or test entrypoints over generic area labels.",
+      "- When architecture roots are provided, keep new implementation paths inside those established top-level roots unless the source task already uses a different root.",
+      "- Verification tasks should name exact suites, scripts, commands, fixtures, entrypoints, or test files when the context provides them.",
+      "- Do not rewrite implementation work into planning, scoping, research, evidence-capture, or inventory tasks unless the source task is already docs/process work.",
+      "- If a task mixes unrelated subsystem families, split it into smaller tasks rather than bundling them together.",
+      "- Preserve and enrich useful metadata. When you know concrete files/docs/tests, place them in updates.metadata.files, updates.metadata.doc_links, updates.metadata.test_requirements, and updates.metadata.tests/testCommands as appropriate.",
       "- Story points: non-negative, keep within typical agile range (0-13).",
       "- Do not invent new epics/stories or change parentage.",
     ].join("\n");
     return [
+      "ROLE: backlog refinement agent.",
+      "TASK: Refine the selected story tasks into work-agent-ready backlog operations using only the supplied context.",
+      REFINE_OUTPUT_CONTRACT,
       `You are refining tasks for epic ${group.epic.key} "${group.epic.title}" and story ${group.story.key} "${group.story.title}".`,
       `Strategy: ${strategy}`,
       "Story acceptance criteria:",
       group.story.acceptance?.length ? group.story.acceptance.map((c) => `- ${c}`).join("\n") : "- (none provided)",
       "Current tasks:",
       taskList || "- (no tasks selected)",
+      "Story execution context:",
+      this.buildStoryExecutionContext(group),
       "Doc context (summaries only):",
       docSummary || "(none)",
       "Recent task history (logs/comments):",
       group.historySummary || "(none)",
       "Constraints:",
       constraints,
-      "Example JSON:",
-      "{\"operations\":[{\"op\":\"update_task\",\"taskKey\":\"web-01-us-01-t01\",\"updates\":{\"title\":\"Refined title\",\"storyPoints\":3}}]}",
+      "Output schema example:",
+      JSON.stringify(
+        {
+          operations: [
+            {
+              op: "update_task",
+              taskKey: "web-01-us-01-t01",
+              updates: {
+                title: "Wire provider registry into task selection",
+                description:
+                  "Update packages/core/src/services/execution/WorkOnTasksService.ts to consume the refined task metadata contract and validate the flow with node tests/all.js.",
+                storyPoints: 3,
+                metadata: {
+                  files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+                  doc_links: ["docdex:doc-1"],
+                  test_requirements: { unit: ["cover metadata selection"], integration: ["run task execution path"] },
+                  tests: ["node tests/all.js"],
+                },
+              },
+            },
+          ],
+        },
+        null,
+        0,
+      ),
       "Return JSON ONLY matching: { \"operations\": [UpdateTaskOp | SplitTaskOp | MergeTasksOp | UpdateEstimateOp] } where each item has an `op` discriminator (update_task|split_task|merge_tasks|update_estimate).",
+      'Never answer with lines like "I\'m checking context first" or "I\'ll inspect the repo".',
+      "Return the JSON object now.",
     ].join("\n\n");
   }
 
-  private buildOpenApiHintSummary(docs: any[]): string {
+  private buildOpenApiHintSummary(docs: any[]): { summary: string; suggestedTestRequirements: TestRequirements } {
     const lines: string[] = [];
+    let suggestedTestRequirements = emptyTestRequirements();
     for (const doc of docs ?? []) {
       const raw =
         typeof doc?.content === "string" && doc.content.trim().length > 0
@@ -837,19 +1223,123 @@ export class RefineTasksService {
             Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").length : 0;
           const dependsOn = countItems(hints.depends_on_operations);
           const testRequirements = isPlainObject(hints.test_requirements) ? hints.test_requirements : undefined;
+          suggestedTestRequirements = mergeTestRequirements(
+            suggestedTestRequirements,
+            normalizeTestRequirements(testRequirements),
+          );
           lines.push(
             `- ${normalizedMethod.toUpperCase()} ${apiPath} :: service=${service}; capability=${capability}; stage=${stage}; complexity=${complexity}; deps=${dependsOn}; tests(u/c/i/a)=${countItems(testRequirements?.unit)}/${countItems(testRequirements?.component)}/${countItems(testRequirements?.integration)}/${countItems(testRequirements?.api)}`,
           );
           if (lines.length >= OPENAPI_HINTS_LIMIT) {
-            return lines.join("\n");
+            return { summary: lines.join("\n"), suggestedTestRequirements };
           }
         }
       }
     }
-    return lines.join("\n");
+    return { summary: lines.join("\n"), suggestedTestRequirements };
   }
 
-  private async summarizeDocs(projectKey: string, epicKey?: string, storyKey?: string): Promise<{ summary: string; warnings: string[] }> {
+  private buildDocLinkHandle(doc: any): string | undefined {
+    const candidate =
+      typeof doc?.id === "string" && doc.id.trim().length > 0
+        ? `docdex:${doc.id.trim()}`
+        : typeof doc?.path === "string"
+          ? doc.path.trim()
+          : typeof doc?.title === "string"
+            ? doc.title.trim()
+            : undefined;
+    return candidate ? normalizeRelatedDocs([candidate])[0] : undefined;
+  }
+
+  private collectCandidateTargetsFromDocs(docs: any[]): { implementationTargets: string[]; testTargets: string[] } {
+    const allTargets = uniqueStrings(
+      docs.flatMap((doc) => {
+        const values: string[] = [];
+        if (typeof doc?.path === "string" && isLikelyRepoPath(doc.path)) {
+          values.push(doc.path.trim());
+        }
+        const rawContent =
+          typeof doc?.content === "string" && doc.content.trim().length > 0
+            ? doc.content
+            : Array.isArray(doc?.segments)
+              ? doc.segments
+                  .map((segment: any) => (typeof segment?.content === "string" ? segment.content : ""))
+                  .filter(Boolean)
+                  .join("\n")
+              : "";
+        values.push(...extractRepoPaths(rawContent));
+        return values;
+      }),
+    );
+    return {
+      implementationTargets: allTargets.filter((entry) => !isLikelyTestPath(entry)).slice(0, 8),
+      testTargets: allTargets.filter((entry) => isLikelyTestPath(entry)).slice(0, 8),
+    };
+  }
+
+  private async readPlanningArtifactJson(projectKey: string, fileName: string): Promise<unknown | undefined> {
+    const artifactPath = path.join(this.workspace.mcodaDir, "tasks", projectKey, fileName);
+    try {
+      const raw = await fs.readFile(artifactPath, "utf8");
+      return JSON.parse(raw);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return undefined;
+      throw new Error(`Failed to parse ${fileName}: ${(error as Error).message}`);
+    }
+  }
+
+  private async loadPlanningArtifactContext(
+    projectKey: string,
+    epicKey?: string,
+    storyKey?: string,
+  ): Promise<PlanningArtifactContextSummary> {
+    const warnings: string[] = [];
+    try {
+      const [buildPlanRaw, tasksRaw] = await Promise.all([
+        this.readPlanningArtifactJson(projectKey, "build-plan.json"),
+        this.readPlanningArtifactJson(projectKey, "tasks.json"),
+      ]);
+      const buildPlan = isPlainObject(buildPlanRaw) ? (buildPlanRaw as Record<string, unknown>) : undefined;
+      const taskNodes = Array.isArray(tasksRaw) ? tasksRaw : [];
+      const relevantTasks = taskNodes.filter((task) => {
+        if (!isPlainObject(task)) return false;
+        if (storyKey && typeof task.storyLocalId === "string" && task.storyLocalId !== storyKey) return false;
+        if (epicKey && typeof task.epicLocalId === "string" && task.epicLocalId !== epicKey) return false;
+        return true;
+      });
+      const extractedTargets = uniqueStrings([
+        ...relevantTasks.flatMap((task) => normalizeStringArray((task as Record<string, unknown>).files)),
+        ...relevantTasks.flatMap((task) => extractRepoPaths(String((task as Record<string, unknown>).description ?? ""))),
+        ...extractRepoPaths(typeof buildPlan?.buildMethod === "string" ? buildPlan.buildMethod : ""),
+      ]);
+      const implementationTargets = extractedTargets.filter(
+        (target) => isStrongExecutionPath(target) && !isLikelyTestPath(target),
+      );
+      const testTargets = extractedTargets.filter((target) => isLikelyTestPath(target) || classifyRepoPathKind(target) === "test");
+      const architectureRoots = uniqueStrings(
+        [...implementationTargets, ...testTargets]
+          .map((target) => getRepoPathRoot(target))
+          .filter((value): value is string => Boolean(value)),
+      ).slice(0, 8);
+      return {
+        warnings,
+        implementationTargets: implementationTargets.slice(0, 8),
+        testTargets: testTargets.slice(0, 8),
+        architectureRoots,
+      };
+    } catch (error) {
+      warnings.push(`Planning artifact lookup failed: ${(error as Error).message}`);
+      return {
+        warnings,
+        implementationTargets: [],
+        testTargets: [],
+        architectureRoots: [],
+      };
+    }
+  }
+
+  private async summarizeDocs(projectKey: string, epicKey?: string, storyKey?: string): Promise<StoryDocContextSummary> {
     const warnings: string[] = [];
     const startedAt = Date.now();
     try {
@@ -861,36 +1351,43 @@ export class RefineTasksService {
         profile: "sds",
         query,
       });
-      if (!docs || docs.length === 0) {
-        docs = await this.docdex.search({
-          projectKey,
-          profile: "openapi",
-          query,
-        });
+      const openApiDocs = await this.docdex.search({
+        projectKey,
+        profile: "openapi",
+        query,
+      });
+      const workspaceCodeDocs = await this.docdex.search({
+        projectKey,
+        profile: "workspace-code",
+        query,
+      });
+      if ((!docs || docs.length === 0) && (!openApiDocs || openApiDocs.length === 0) && (!workspaceCodeDocs || workspaceCodeDocs.length === 0)) {
+        return {
+          summary: "(no relevant docdex entries)",
+          warnings: [],
+          docLinks: [],
+          implementationTargets: [],
+          testTargets: [],
+          suggestedTestRequirements: emptyTestRequirements(),
+        };
       }
-      if (!docs || docs.length === 0) {
-        docs = await this.docdex.search({
-          projectKey,
-          profile: "workspace-code",
-          query,
-        });
-      }
-      if (!docs || docs.length === 0) {
-        return { summary: "(no relevant docdex entries)", warnings: [] };
-      }
-      const top = docs
+      const planningDocs = uniqueStrings([
+        ...(docs ?? []).map((doc) => JSON.stringify(doc)),
+        ...(openApiDocs ?? []).map((doc) => JSON.stringify(doc)),
+      ]).map((entry) => JSON.parse(entry));
+      const top = planningDocs
         .filter((doc) => {
           const type = (doc.docType ?? "").toLowerCase();
           const pathTitle = `${doc.path ?? ""} ${doc.title ?? ""}`.toLowerCase();
           return type.includes("sds") || type.includes("pdr") || type.includes("rfp") || PLANNING_DOC_HINT_PATTERN.test(pathTitle);
         })
         .slice(0, 5);
-      const selected = top.length > 0 ? top : docs.slice(0, 5);
-      const summary = top
+      const selectedPlanning = top.length > 0 ? top : planningDocs.slice(0, 5);
+      const summary = selectedPlanning
         .map((doc) => {
           const segments = (doc.segments ?? []).slice(0, 3);
           const segText = segments
-            .map((seg, idx) => {
+            .map((seg: any, idx: number) => {
               const snippet = seg.content.length > 180 ? `${seg.content.slice(0, 180)}...` : seg.content;
               return `    (${idx + 1}) ${seg.heading ? `${seg.heading}: ` : ""}${snippet}`;
             })
@@ -899,9 +1396,33 @@ export class RefineTasksService {
           return [`- [${doc.docType}] ${doc.title ?? doc.path ?? doc.id}${head ? ` — ${head}` : ""}`, segText].filter(Boolean).join("\n");
         })
         .join("\n");
-      const finalSummary = (summary || (selected.length ? selected.map((doc) => `- ${doc.title ?? doc.path ?? doc.id}`).join("\n") : "")).trim();
-      const openApiHintSummary = this.buildOpenApiHintSummary(selected);
-      const composedSummary = [finalSummary || "(no doc segments found)", openApiHintSummary ? `[OPENAPI_HINTS]\n${openApiHintSummary}` : ""]
+      const finalSummary = (
+        summary ||
+        (selectedPlanning.length ? selectedPlanning.map((doc) => `- ${doc.title ?? doc.path ?? doc.id}`).join("\n") : "")
+      ).trim();
+      const openApiHints = this.buildOpenApiHintSummary(openApiDocs ?? []);
+      const codeTargets = this.collectCandidateTargetsFromDocs(workspaceCodeDocs ?? []);
+      const planningTargets = this.collectCandidateTargetsFromDocs(selectedPlanning);
+      const implementationTargets = uniqueStrings([
+        ...planningTargets.implementationTargets,
+        ...codeTargets.implementationTargets,
+      ]).slice(0, 8);
+      const testTargets = uniqueStrings([...planningTargets.testTargets, ...codeTargets.testTargets]).slice(0, 8);
+      const docLinks = normalizeRelatedDocs(
+        selectedPlanning
+          .map((doc) => this.buildDocLinkHandle(doc))
+          .filter((value): value is string => Boolean(value)),
+      );
+      const suggestedTestRequirements = mergeTestRequirements(
+        openApiHints.suggestedTestRequirements,
+        inferTestRequirementsFromTargets(testTargets),
+      );
+      const composedSummary = [
+        finalSummary || "(no doc segments found)",
+        openApiHints.summary ? `[OPENAPI_HINTS]\n${openApiHints.summary}` : "",
+        implementationTargets.length ? `[REPO_TARGETS]\n${implementationTargets.map((target) => `- ${target}`).join("\n")}` : "",
+        testTargets.length ? `[TEST_TARGETS]\n${testTargets.map((target) => `- ${target}`).join("\n")}` : "",
+      ]
         .filter(Boolean)
         .join("\n\n");
       const durationSeconds = (Date.now() - startedAt) / 1000;
@@ -918,10 +1439,17 @@ export class RefineTasksService {
         timestamp: new Date().toISOString(),
         metadata: { command: "refine-tasks", action: "docdex_search", projectKey, epicKey, storyKey },
       });
-      return { summary: composedSummary, warnings };
+      return { summary: composedSummary, warnings, docLinks, implementationTargets, testTargets, suggestedTestRequirements };
     } catch (error) {
       warnings.push(`Docdex lookup failed: ${(error as Error).message}`);
-      return { summary: "(docdex unavailable)", warnings };
+      return {
+        summary: "(docdex unavailable)",
+        warnings,
+        docLinks: [],
+        implementationTargets: [],
+        testTargets: [],
+        suggestedTestRequirements: emptyTestRequirements(),
+      };
     }
   }
 
@@ -930,7 +1458,7 @@ export class RefineTasksService {
     const db = this.workspaceRepo.getDb();
     const placeholders = taskIds.map(() => "?").join(", ");
     try {
-      const rows = await db.all<
+      const logRows = await db.all<
         { task_id: string; timestamp: string; level: string | null; message: string | null; source: string | null }[]
       >(
         `
@@ -943,13 +1471,49 @@ export class RefineTasksService {
       `,
         taskIds,
       );
-      if (!rows || rows.length === 0) return "(none)";
-      return rows
-        .map((row) => {
+      const commentRows = await db.all<
+        {
+          task_id: string;
+          timestamp: string;
+          category: string | null;
+          status: string | null;
+          body: string | null;
+          author_type: string | null;
+        }[]
+      >(
+        `
+        SELECT task_id, created_at as timestamp, category, status, body, author_type
+        FROM task_comments
+        WHERE task_id IN (${placeholders})
+        ORDER BY created_at DESC
+        LIMIT 15
+      `,
+        taskIds,
+      );
+      const historyEntries = [
+        ...(logRows ?? []).map((row) => {
           const level = row.level ? row.level.toUpperCase() : "INFO";
           const msg = row.message ?? "";
-          return `- ${row.task_id}: [${level}] ${msg} (${row.source ?? "run"})`;
-        })
+          return {
+            timestamp: row.timestamp,
+            line: `- ${row.task_id}: [${level}] ${truncate(msg, 180)} (${row.source ?? "run"})`,
+          };
+        }),
+        ...(commentRows ?? []).map((row) => {
+          const category = row.category ? row.category : "comment";
+          const status = row.status ? `/${row.status}` : "";
+          const author = row.author_type ? row.author_type : "unknown";
+          return {
+            timestamp: row.timestamp,
+            line: `- ${row.task_id}: [COMMENT ${category}${status}] ${truncate(row.body ?? "", 180)} (${author})`,
+          };
+        }),
+      ]
+        .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+        .slice(0, 15);
+      if (historyEntries.length === 0) return "(none)";
+      return historyEntries
+        .map((entry) => entry.line)
         .join("\n");
     } catch {
       return "(unavailable)";
@@ -1013,111 +1577,17 @@ export class RefineTasksService {
     };
   }
 
-  private validateOperation(group: StoryGroup, op: RefineOperation): { valid: boolean; reason?: string } {
-    const allowedOps = new Set(["update_task", "split_task", "merge_tasks", "update_estimate"]);
-    if (!op || typeof (op as any).op !== "string" || !allowedOps.has((op as any).op)) {
-      return { valid: false, reason: "Unknown op type" };
+  private sanitizeStatusUpdate(status: unknown, taskKey: string, warnings: string[]): string | undefined {
+    if (status === undefined || status === null) return undefined;
+    if (typeof status !== "string") {
+      warnings.push(`Skipped status update for ${taskKey}: status must be a string.`);
+      return undefined;
     }
-    if (op.op === "update_task") {
-      if (!op.taskKey || typeof op.updates !== "object") {
-        return { valid: false, reason: "update_task missing taskKey or updates" };
-      }
+    if (FORBIDDEN_TARGET_STATUSES.has(status.toLowerCase())) {
+      warnings.push(`Ignored terminal status ${status} for ${taskKey}; refine-tasks only enriches task data.`);
+      return undefined;
     }
-    if (op.op === "split_task") {
-      const split = op as SplitTaskOp;
-      if (!split.taskKey || !Array.isArray(split.children) || split.children.length === 0) {
-        return { valid: false, reason: "split_task missing taskKey or children" };
-      }
-    }
-    if (op.op === "merge_tasks") {
-      if (!op.targetTaskKey || !Array.isArray(op.sourceTaskKeys) || op.sourceTaskKeys.length === 0) {
-        return { valid: false, reason: "merge_tasks missing targets" };
-      }
-    }
-    if (op.op === "update_estimate") {
-      if (!op.taskKey) return { valid: false, reason: "update_estimate missing taskKey" };
-    }
-    const keySet = new Set(group.tasks.map((t) => t.key));
-    if ((op as any).taskKey && !keySet.has((op as any).taskKey)) {
-      return { valid: false, reason: `Unknown task key ${(op as any).taskKey} for story ${group.story.key}` };
-    }
-    if ((op as any).targetTaskKey && !keySet.has((op as any).targetTaskKey)) {
-      return { valid: false, reason: `Unknown merge target ${(op as any).targetTaskKey}` };
-    }
-    if ((op as any).sourceTaskKeys) {
-      const missing = (op as any).sourceTaskKeys.filter((k: string) => !keySet.has(k));
-      if (missing.length) {
-        return { valid: false, reason: `Merge sources not in story ${group.story.key}: ${missing.join(", ")}` };
-      }
-    }
-    if (op.op === "update_task" && op.updates.status && FORBIDDEN_TARGET_STATUSES.has(op.updates.status.toLowerCase())) {
-      return { valid: false, reason: `Status ${op.updates.status} not allowed in refine-tasks` };
-    }
-    if (op.op === "update_task" && op.updates.storyPoints !== undefined) {
-      const sp = op.updates.storyPoints;
-      if (sp !== null && (typeof sp !== "number" || sp < 0 || sp > 13)) {
-        return { valid: false, reason: `Story points out of bounds for ${op.taskKey}` };
-      }
-    }
-    if (op.op === "split_task") {
-      const split = op as SplitTaskOp;
-      const taskKeysByNormalized = new Map<string, string>();
-      for (const key of keySet) {
-        taskKeysByNormalized.set(normalizeSplitDependencyRef(key), key);
-      }
-      const siblingReferences = new Set<string>();
-      const selfReferencesByChild = split.children.map((child) => {
-        const selfReferences = new Set<string>();
-        for (const reference of collectSplitChildReferences(child)) {
-          const normalized = normalizeSplitDependencyRef(reference);
-          if (!normalized) continue;
-          selfReferences.add(normalized);
-          siblingReferences.add(normalized);
-        }
-        return selfReferences;
-      });
-      const invalidDep = split.children.some((child) =>
-        child.dependsOn?.some((dep) => {
-          const normalized = normalizeSplitDependencyRef(dep);
-          if (!normalized) return false;
-          if (taskKeysByNormalized.has(normalized)) return false;
-          if (siblingReferences.has(normalized)) return false;
-          return true;
-        }),
-      );
-      if (invalidDep) {
-        return { valid: false, reason: "Split child references unknown dependency" };
-      }
-      const selfDependency = split.children.some((child, index) =>
-        child.dependsOn?.some((dep) => selfReferencesByChild[index]?.has(normalizeSplitDependencyRef(dep))),
-      );
-      if (selfDependency) {
-        return { valid: false, reason: "Split child cannot depend on itself" };
-      }
-      if (split.children.some((child) => child.storyPoints !== undefined && child.storyPoints !== null && (child.storyPoints < 0 || child.storyPoints > 13))) {
-        return { valid: false, reason: "Child story points out of bounds" };
-      }
-      const crossStory = split.children.some((child) => (child as any).storyKey && (child as any).storyKey !== group.story.key);
-      if (crossStory) {
-        return { valid: false, reason: "Split children must stay within the same story" };
-      }
-    }
-    if (op.op === "merge_tasks") {
-      const crossStory =
-        op.sourceTaskKeys.some((k) => !keySet.has(k)) ||
-        (op.targetTaskKey && !keySet.has(op.targetTaskKey));
-      if (crossStory) {
-        return { valid: false, reason: "Merge must stay within the same story" };
-      }
-      const uniqueSources = new Set(op.sourceTaskKeys.filter(Boolean));
-      if (uniqueSources.size !== op.sourceTaskKeys.length) {
-        return { valid: false, reason: "Duplicate source task keys in merge" };
-      }
-      if (uniqueSources.has(op.targetTaskKey)) {
-        return { valid: false, reason: "Merge sources cannot include target" };
-      }
-    }
-    return { valid: true };
+    return status;
   }
 
   private detectCycle(edges: Array<{ from: string; to: string }>): boolean {
@@ -1164,6 +1634,277 @@ export class RefineTasksService {
     return false;
   }
 
+  private evaluateTaskQuality(
+    group: StoryGroup,
+    taskKey: string,
+    sourceTask: Pick<CandidateTask, "title" | "description" | "type" | "metadata"> | undefined,
+    candidate: {
+      title?: string;
+      description?: string | null;
+      type?: string | null;
+      metadata?: Record<string, unknown>;
+    },
+  ): RefineQualityIssue[] {
+    const issues: RefineQualityIssue[] = [];
+    const title = candidate.title ?? sourceTask?.title ?? "";
+    const description = candidate.description ?? sourceTask?.description ?? "";
+    const type = candidate.type ?? sourceTask?.type ?? "";
+    const metadata = this.mergeMetadata(sourceTask?.metadata, candidate.metadata) ?? {};
+    const text = [title, description, type].filter(Boolean).join("\n");
+    const sourceText = [sourceTask?.title, sourceTask?.description, sourceTask?.type].filter(Boolean).join("\n");
+    const existingFiles = normalizeStringArray(metadata.files);
+    const explicitPaths = extractRepoPaths(text);
+    const relevantTargets = selectRelevantTargets(text, group.implementationTargets ?? [], 3);
+    const relevantTestTargets = selectRelevantTargets(text, group.testTargets ?? [], 3);
+    const effectiveFiles = uniqueStrings([
+      ...existingFiles,
+      ...explicitPaths,
+      ...relevantTargets,
+      ...(isVerificationTask(text) ? relevantTestTargets : []),
+    ]);
+    const strongFiles = effectiveFiles.filter((target) => isStrongExecutionPath(target));
+    const docOnlyFiles = effectiveFiles.filter((target) => classifyRepoPathKind(target) === "doc");
+    const docsOrCoordination = isDocsOrCoordinationTask(text) || isDocsOrCoordinationTask(sourceText);
+    const shouldExpectConcreteTargets =
+      !docsOrCoordination &&
+      !isVerificationTask(text) &&
+      ((group.implementationTargets?.length ?? 0) > 0 || normalizeStringArray(sourceTask?.metadata?.files).length > 0);
+    if (shouldExpectConcreteTargets && strongFiles.length === 0) {
+      issues.push({
+        code: "missing_targets",
+        taskKey,
+        message: "Missing concrete repo targets even though story-level targets are available.",
+      });
+    }
+    if (shouldExpectConcreteTargets && strongFiles.length === 0 && docOnlyFiles.length > 0) {
+      issues.push({
+        code: "docs_only_targets",
+        taskKey,
+        message: "Only documentation-style paths were provided; implementation work still lacks executable code surfaces.",
+      });
+    }
+    if (!docsOrCoordination && isMetaTaskText(text)) {
+      issues.push({
+        code: "meta_task",
+        taskKey,
+        message: "Task reads like planning/scoping work instead of executable implementation work.",
+      });
+    }
+    if (
+      isVerificationTask(text) &&
+      ((group.testTargets?.length ?? 0) > 0 || hasTestRequirements(group.suggestedTestRequirements ?? emptyTestRequirements())) &&
+      !hasRunnableTestReference(text, metadata, group.testTargets ?? [])
+    ) {
+      issues.push({
+        code: "missing_verification_harness",
+        taskKey,
+        message: "Verification work does not name a runnable test command, suite, fixture, entrypoint, or test file.",
+      });
+    }
+    const allowedRoots = new Set(group.architectureRoots ?? []);
+    const sourceRoots = new Set(
+      normalizeStringArray(sourceTask?.metadata?.files)
+        .map((target) => getRepoPathRoot(target))
+        .filter((value): value is string => Boolean(value)),
+    );
+    const driftRoots = uniqueStrings(
+      strongFiles
+        .map((target) => getRepoPathRoot(target))
+        .filter((value): value is string => typeof value === "string")
+        .filter((value) => allowedRoots.size > 0 && !allowedRoots.has(value) && !sourceRoots.has(value)),
+    );
+    if (!docsOrCoordination && driftRoots.length > 0) {
+      issues.push({
+        code: "path_drift",
+        taskKey,
+        message: `Task introduces paths outside the established architecture roots: ${driftRoots.join(", ")}.`,
+      });
+    }
+    const distinctRoots = new Set(
+      strongFiles.map((target) => {
+        const cleaned = target.replace(/^\.\/+/, "");
+        const [root] = cleaned.split("/").filter(Boolean);
+        return root ?? cleaned;
+      }),
+    );
+    if (strongFiles.length >= 4 && distinctRoots.size >= 3) {
+      issues.push({
+        code: "over_bundled",
+        taskKey,
+        message: "Task appears to span too many unrelated implementation surfaces and should likely be split.",
+      });
+    }
+    return issues;
+  }
+
+  private evaluateOperationsQuality(group: StoryGroup, operations: RefineOperation[]): RefineQualityEvaluation {
+    const issues: RefineQualityIssue[] = [];
+    const affectedTasks = new Set<string>();
+    let reviewableUnits = 0;
+    for (const op of operations) {
+      if (!op || typeof op !== "object") continue;
+      if (op.op === "update_task") {
+        reviewableUnits += 1;
+        const taskKey = op.taskKey ?? "unknown-task";
+        const sourceTask = group.tasks.find((task) => task.key === taskKey);
+        const opIssues = this.evaluateTaskQuality(group, taskKey, sourceTask, {
+          title: op.updates?.title,
+          description: op.updates?.description,
+          type: op.updates?.type,
+          metadata: isPlainObject(op.updates?.metadata) ? op.updates.metadata : undefined,
+        });
+        if (opIssues.length > 0) affectedTasks.add(taskKey);
+        issues.push(...opIssues);
+      } else if (op.op === "split_task" && Array.isArray(op.children)) {
+        for (const child of op.children) {
+          reviewableUnits += 1;
+          const taskKey = `${op.taskKey}:${truncate(child.title ?? "child", 48)}`;
+          const sourceTask = group.tasks.find((task) => task.key === op.taskKey);
+          const opIssues = this.evaluateTaskQuality(group, taskKey, sourceTask, {
+            title: child.title,
+            description: child.description,
+            type: child.type,
+            metadata: isPlainObject(child.metadata) ? (child.metadata as Record<string, unknown>) : undefined,
+          });
+          if (opIssues.length > 0) affectedTasks.add(op.taskKey);
+          issues.push(...opIssues);
+        }
+      }
+    }
+    const critiqueLines = summarizeQualityIssues(issues);
+    const shouldRetry =
+      reviewableUnits > 0 &&
+      issues.length > 0 &&
+      affectedTasks.size >= Math.max(1, Math.ceil(reviewableUnits / 2));
+    return {
+      issues,
+      issueCount: issues.length,
+      critiqueLines,
+      shouldRetry,
+      score: issues.length * 100 - Math.min(operations.length, 25),
+    };
+  }
+
+  private buildQualityRetryPrompt(
+    prompt: string,
+    group: StoryGroup,
+    evaluation: RefineQualityEvaluation,
+  ): string {
+    return [
+      REFINE_OUTPUT_CONTRACT,
+      "RETRY: Your previous response was parseable JSON, but it was not execution-ready enough for downstream work agents.",
+      `Story: ${group.story.key}`,
+      "Fix the following quality issues in the rewritten JSON plan:",
+      evaluation.critiqueLines.join("\n") || "- Previous output was too generic.",
+      "Rewrite the operations so implementation tasks point at concrete repo targets and verification tasks name runnable commands, suites, fixtures, entrypoints, or test files when the supplied context provides them.",
+      'Return exactly one JSON object of the form {"operations":[...]}.',
+      'If no safe changes are possible, return {"operations":[]}.',
+      "",
+      prompt,
+    ].join("\n\n");
+  }
+
+  private async buildExecutionMetadata(
+    group: StoryGroup,
+    testCommandBuilder: QaTestCommandBuilder,
+    content: {
+      title: string;
+      description?: string | null;
+      type?: string | null;
+      existingMetadata?: Record<string, unknown>;
+      updateMetadata?: Record<string, unknown>;
+    },
+  ): Promise<Record<string, unknown> | undefined> {
+    const merged = this.mergeMetadata(content.existingMetadata, content.updateMetadata) ?? {};
+    const text = [content.title, content.description ?? "", content.type ?? ""].join("\n");
+    const explicitPaths = extractRepoPaths(text);
+    const relevantTargets = selectRelevantTargets(text, group.implementationTargets ?? [], 3);
+    const relevantTestTargets = selectRelevantTargets(text, group.testTargets ?? [], 3);
+    const fallbackImplementationTargets =
+      relevantTargets.length === 0 &&
+      !isDocsOrCoordinationTask(text) &&
+      !isVerificationTask(text) &&
+      (group.implementationTargets?.length ?? 0) === 1
+        ? [group.implementationTargets![0]]
+        : [];
+    const files = uniqueStrings([
+      ...normalizeStringArray(merged.files),
+      ...explicitPaths,
+      ...relevantTargets,
+      ...fallbackImplementationTargets,
+      ...(isVerificationTask(text) ? relevantTestTargets : []),
+    ]).filter((target) => isDocsOrCoordinationTask(text) || isStrongExecutionPath(target));
+    const docLinks = normalizeRelatedDocs([
+      ...normalizeRelatedDocs(merged.doc_links),
+      ...(group.docLinks ?? []),
+    ]);
+    let testRequirements = mergeTestRequirements(
+      normalizeTestRequirements(merged.test_requirements),
+      normalizeTestRequirements(merged.testRequirements),
+    );
+    if (!hasTestRequirements(testRequirements)) {
+      if (isVerificationTask(text)) {
+        testRequirements = mergeTestRequirements(
+          testRequirements,
+          inferTestRequirementsFromTargets(relevantTestTargets),
+          group.suggestedTestRequirements,
+        );
+      } else if (/\b(api|endpoint|route|schema|handler|server)\b/i.test(text)) {
+        testRequirements = mergeTestRequirements(testRequirements, group.suggestedTestRequirements);
+      }
+    }
+    let commands = uniqueStrings([
+      ...normalizeStringArray(merged.tests),
+      ...normalizeStringArray(merged.testCommands),
+    ]);
+    if (commands.length === 0 && hasTestRequirements(testRequirements)) {
+      try {
+        const plan = await testCommandBuilder.build({
+          task: {
+            id: "refine-preview",
+            projectId: "refine-preview",
+            epicId: "refine-preview",
+            userStoryId: "refine-preview",
+            key: "refine-preview",
+            title: content.title,
+            description: content.description ?? "",
+            type: content.type ?? "feature",
+            status: "not_started",
+            storyPoints: null,
+            priority: null,
+            assignedAgentId: null,
+            assigneeHuman: null,
+            vcsBranch: null,
+            vcsBaseBranch: null,
+            vcsLastCommitSha: null,
+            openapiVersionAtCreation: null,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+            metadata: {
+              ...merged,
+              test_requirements: testRequirements,
+              ...(files.length > 0 ? { files } : {}),
+              ...(docLinks.length > 0 ? { doc_links: docLinks } : {}),
+            },
+          } as TaskRow & { metadata?: Record<string, unknown> },
+        });
+        commands = uniqueStrings(plan.commands);
+      } catch {
+        commands = [];
+      }
+    }
+
+    const next: Record<string, unknown> = { ...merged };
+    if (files.length > 0) next.files = files;
+    if (docLinks.length > 0) next.doc_links = docLinks;
+    if (hasTestRequirements(testRequirements)) next.test_requirements = testRequirements;
+    if (commands.length > 0) {
+      next.tests = commands;
+      next.testCommands = commands;
+    }
+    return Object.keys(next).length > 0 ? next : undefined;
+  }
+
   private async applyOperations(
     projectId: string,
     jobId: string,
@@ -1191,35 +1932,49 @@ export class RefineTasksService {
         );
         const existingKeys = storyKeyRows.map((r) => r.key);
         const keyGen = createTaskKeyGenerator(group.story.key, existingKeys);
+        const testCommandBuilder = new QaTestCommandBuilder(this.workspace.workspaceRoot);
 
         for (const op of operations) {
-          stage = `op:${op.op}`;
+          if (!op || typeof op !== "object") {
+            warnings.push("Skipped malformed refine op: operation must be an object.");
+            continue;
+          }
+          stage = `op:${(op as any).op ?? "unknown"}`;
           if (op.op === "update_task") {
+            if (!op.taskKey) {
+              warnings.push("Skipped update_task without taskKey.");
+              continue;
+            }
             const target = taskByKey.get(op.taskKey);
             if (!target) continue;
+            const updates = (isPlainObject(op.updates) ? op.updates : {}) as UpdateTaskOp["updates"];
             const before = { ...target };
-            const mergedMetadata = this.mergeMetadata(target.metadata, op.updates.metadata);
-            const contentUpdated =
-              op.updates.title !== undefined || op.updates.description !== undefined || op.updates.type !== undefined;
             const metadata = this.applyStageMetadata(
-              mergedMetadata,
+              await this.buildExecutionMetadata(group, testCommandBuilder, {
+                title: updates.title ?? target.title,
+                description: updates.description ?? target.description ?? null,
+                type: updates.type ?? target.type ?? null,
+                existingMetadata: target.metadata,
+                updateMetadata: isPlainObject(updates.metadata) ? updates.metadata : undefined,
+              }),
               {
-                title: op.updates.title ?? target.title,
-                description: op.updates.description ?? target.description ?? null,
-                type: op.updates.type ?? target.type ?? null,
+                title: updates.title ?? target.title,
+                description: updates.description ?? target.description ?? null,
+                type: updates.type ?? target.type ?? null,
               },
-              contentUpdated,
+              updates.title !== undefined || updates.description !== undefined || updates.type !== undefined,
             );
             const beforeSp = target.storyPoints ?? 0;
-            const afterSp = op.updates.storyPoints ?? target.storyPoints ?? null;
+            const afterSp = updates.storyPoints ?? target.storyPoints ?? null;
+            const nextStatus = this.sanitizeStatusUpdate(updates.status, op.taskKey, warnings) ?? target.status;
             storyPointsDelta += (afterSp ?? 0) - (beforeSp ?? 0);
             await this.workspaceRepo.updateTask(target.id, {
-              title: op.updates.title ?? target.title,
-              description: op.updates.description ?? target.description ?? null,
-              type: op.updates.type ?? target.type ?? null,
+              title: updates.title ?? target.title,
+              description: updates.description ?? target.description ?? null,
+              type: updates.type ?? target.type ?? null,
               storyPoints: afterSp,
-              priority: op.updates.priority ?? target.priority ?? null,
-              status: op.updates.status ?? target.status,
+              priority: updates.priority ?? target.priority ?? null,
+              status: nextStatus,
               metadata,
             });
             updated.push(target.key);
@@ -1228,34 +1983,54 @@ export class RefineTasksService {
               jobId,
               commandRunId,
               snapshotBefore: before,
-              snapshotAfter: { ...before, ...op.updates, storyPoints: afterSp, metadata },
+              snapshotAfter: { ...before, ...updates, storyPoints: afterSp, status: nextStatus, metadata },
               createdAt: new Date().toISOString(),
             });
           } else if (op.op === "split_task") {
+            if (!op.taskKey) {
+              warnings.push("Skipped split_task without taskKey.");
+              continue;
+            }
+            if (!Array.isArray(op.children) || op.children.length === 0) {
+              warnings.push(`Skipped split_task for ${op.taskKey}: children array is required.`);
+              continue;
+            }
             const target = taskByKey.get(op.taskKey);
             if (!target) continue;
-            if (op.parentUpdates) {
+            const parentUpdates =
+              op.parentUpdates === undefined
+                ? undefined
+                : isPlainObject(op.parentUpdates)
+                  ? (op.parentUpdates as NonNullable<SplitTaskOp["parentUpdates"]>)
+                  : undefined;
+            if (op.parentUpdates !== undefined && !parentUpdates) {
+              warnings.push(`Ignored malformed parentUpdates for ${op.taskKey}; expected an object.`);
+            }
+            if (parentUpdates) {
               const before = { ...target };
-              const mergedMetadata = this.mergeMetadata(target.metadata, op.parentUpdates.metadata);
-              const contentUpdated =
-                op.parentUpdates.title !== undefined ||
-                op.parentUpdates.description !== undefined ||
-                op.parentUpdates.type !== undefined;
               const metadata = this.applyStageMetadata(
-                mergedMetadata,
+                await this.buildExecutionMetadata(group, testCommandBuilder, {
+                  title: parentUpdates.title ?? target.title,
+                  description: parentUpdates.description ?? target.description ?? null,
+                  type: parentUpdates.type ?? target.type ?? null,
+                  existingMetadata: target.metadata,
+                  updateMetadata: isPlainObject(parentUpdates.metadata) ? parentUpdates.metadata : undefined,
+                }),
                 {
-                  title: op.parentUpdates.title ?? target.title,
-                  description: op.parentUpdates.description ?? target.description ?? null,
-                  type: op.parentUpdates.type ?? target.type ?? null,
+                  title: parentUpdates.title ?? target.title,
+                  description: parentUpdates.description ?? target.description ?? null,
+                  type: parentUpdates.type ?? target.type ?? null,
                 },
-                contentUpdated,
+                parentUpdates.title !== undefined ||
+                  parentUpdates.description !== undefined ||
+                  parentUpdates.type !== undefined,
               );
               await this.workspaceRepo.updateTask(target.id, {
-                title: op.parentUpdates.title ?? target.title,
-                description: op.parentUpdates.description ?? target.description ?? null,
-                type: op.parentUpdates.type ?? target.type ?? null,
-                storyPoints: op.parentUpdates.storyPoints ?? target.storyPoints ?? null,
-                priority: op.parentUpdates.priority ?? target.priority ?? null,
+                title: parentUpdates.title ?? target.title,
+                description: parentUpdates.description ?? target.description ?? null,
+                type: parentUpdates.type ?? target.type ?? null,
+                storyPoints: parentUpdates.storyPoints ?? target.storyPoints ?? null,
+                priority: parentUpdates.priority ?? target.priority ?? null,
                 metadata,
               });
               updated.push(target.key);
@@ -1266,8 +2041,8 @@ export class RefineTasksService {
                 snapshotBefore: before,
                 snapshotAfter: {
                   ...before,
-                  ...op.parentUpdates,
-                  storyPoints: op.parentUpdates.storyPoints ?? before.storyPoints,
+                  ...parentUpdates,
+                  storyPoints: parentUpdates.storyPoints ?? before.storyPoints,
                   metadata,
                 },
                 createdAt: new Date().toISOString(),
@@ -1277,9 +2052,10 @@ export class RefineTasksService {
             for (const key of taskByKey.keys()) {
               existingTaskKeyByNormalized.set(normalizeSplitDependencyRef(key), key);
             }
-            const childKeys = op.children.map(() => keyGen());
+            const children = op.children;
+            const childKeys = children.map(() => keyGen());
             const childRefToKey = new Map<string, string>();
-            op.children.forEach((child, index) => {
+            children.forEach((child, index) => {
               const childKey = childKeys[index];
               childRefToKey.set(normalizeSplitDependencyRef(childKey), childKey);
               for (const reference of collectSplitChildReferences(child)) {
@@ -1289,20 +2065,28 @@ export class RefineTasksService {
               }
             });
 
-            for (let index = 0; index < op.children.length; index += 1) {
-              const child = op.children[index];
+            for (let index = 0; index < children.length; index += 1) {
+              const child = children[index];
               const childKey = childKeys[index];
               const childSp = child.storyPoints ?? null;
               if (childSp) {
                 storyPointsDelta += childSp;
               }
-              const childMetadata = this.mergeMetadata({}, child.metadata);
               const childContent = {
                 title: child.title,
                 description: child.description ?? target.description ?? "",
                 type: child.type ?? target.type ?? "feature",
               };
-              const resolvedChildMetadata = this.applyStageMetadata(childMetadata, childContent, true);
+              const resolvedChildMetadata = this.applyStageMetadata(
+                await this.buildExecutionMetadata(group, testCommandBuilder, {
+                  title: childContent.title,
+                  description: childContent.description,
+                  type: childContent.type,
+                  updateMetadata: isPlainObject(child.metadata) ? (child.metadata as Record<string, unknown>) : undefined,
+                }),
+                childContent,
+                true,
+              );
               const childInsert: TaskInsert = {
                 projectId,
                 epicId: target.epicId,
@@ -1323,7 +2107,11 @@ export class RefineTasksService {
                 openapiVersionAtCreation: target.openapiVersionAtCreation ?? null,
               };
               newTasks.push(childInsert);
-              for (const dependencyReference of child.dependsOn ?? []) {
+              const childDependsOn = Array.isArray(child.dependsOn) ? child.dependsOn : [];
+              if (child.dependsOn !== undefined && !Array.isArray(child.dependsOn)) {
+                warnings.push(`Ignored malformed dependsOn for split child ${childKey}; expected an array.`);
+              }
+              for (const dependencyReference of childDependsOn) {
                 const normalizedReference = normalizeSplitDependencyRef(dependencyReference);
                 if (!normalizedReference) continue;
                 const dependencyKey =
@@ -1351,33 +2139,49 @@ export class RefineTasksService {
                 updatedAt: "",
                 storyKey: group.story.key,
                 epicKey: group.epic.key,
-                dependencies: child.dependsOn ?? [],
+                dependencies: childDependsOn,
               });
               created.push(childKey);
             }
           } else if (op.op === "merge_tasks") {
+            if (!op.targetTaskKey || !Array.isArray(op.sourceTaskKeys) || op.sourceTaskKeys.length === 0) {
+              warnings.push("Skipped merge_tasks without targetTaskKey/sourceTaskKeys.");
+              continue;
+            }
             const target = taskByKey.get(op.targetTaskKey);
             if (!target) continue;
-            if (op.updates) {
+            const updates =
+              op.updates === undefined
+                ? undefined
+                : isPlainObject(op.updates)
+                  ? op.updates
+                  : undefined;
+            if (op.updates !== undefined && !updates) {
+              warnings.push(`Ignored malformed merge updates for ${op.targetTaskKey}; expected an object.`);
+            }
+            if (updates) {
               const before = { ...target };
-              const mergedMetadata = this.mergeMetadata(target.metadata, op.updates.metadata);
-              const contentUpdated =
-                op.updates.title !== undefined || op.updates.description !== undefined || op.updates.type !== undefined;
               const metadata = this.applyStageMetadata(
-                mergedMetadata,
+                await this.buildExecutionMetadata(group, testCommandBuilder, {
+                  title: updates.title ?? target.title,
+                  description: updates.description ?? target.description ?? null,
+                  type: updates.type ?? target.type ?? null,
+                  existingMetadata: target.metadata,
+                  updateMetadata: isPlainObject(updates.metadata) ? updates.metadata : undefined,
+                }),
                 {
-                  title: op.updates.title ?? target.title,
-                  description: op.updates.description ?? target.description ?? null,
-                  type: op.updates.type ?? target.type ?? null,
+                  title: updates.title ?? target.title,
+                  description: updates.description ?? target.description ?? null,
+                  type: updates.type ?? target.type ?? null,
                 },
-                contentUpdated,
+                updates.title !== undefined || updates.description !== undefined || updates.type !== undefined,
               );
               await this.workspaceRepo.updateTask(target.id, {
-                title: op.updates.title ?? target.title,
-                description: op.updates.description ?? target.description ?? null,
-                type: op.updates.type ?? target.type ?? null,
-                storyPoints: op.updates.storyPoints ?? target.storyPoints ?? null,
-                priority: op.updates.priority ?? target.priority ?? null,
+                title: updates.title ?? target.title,
+                description: updates.description ?? target.description ?? null,
+                type: updates.type ?? target.type ?? null,
+                storyPoints: updates.storyPoints ?? target.storyPoints ?? null,
+                priority: updates.priority ?? target.priority ?? null,
                 metadata,
               });
               updated.push(target.key);
@@ -1388,8 +2192,8 @@ export class RefineTasksService {
                 snapshotBefore: before,
                 snapshotAfter: {
                   ...before,
-                  ...op.updates,
-                  storyPoints: op.updates.storyPoints ?? before.storyPoints,
+                  ...updates,
+                  storyPoints: updates.storyPoints ?? before.storyPoints,
                   metadata,
                 },
                 createdAt: new Date().toISOString(),
@@ -1415,6 +2219,10 @@ export class RefineTasksService {
               });
             }
           } else if (op.op === "update_estimate") {
+            if (!op.taskKey) {
+              warnings.push("Skipped update_estimate without taskKey.");
+              continue;
+            }
             const target = taskByKey.get(op.taskKey);
             if (!target) continue;
             const beforeSp = target.storyPoints ?? 0;
@@ -1451,6 +2259,8 @@ export class RefineTasksService {
               },
               createdAt: new Date().toISOString(),
             });
+          } else {
+            warnings.push(`Skipped unsupported refine op ${(op as any).op ?? "(missing op)"}.`);
           }
         }
 
@@ -1675,7 +2485,7 @@ export class RefineTasksService {
         command: "refine-tasks",
         action: "agent_refine",
         phase: "agent_refine",
-        attempt: 1,
+        attempt: typeof metadata?.attempt === "number" ? metadata.attempt : 1,
         ...(metadata ?? {}),
       },
     });
@@ -1820,11 +2630,15 @@ export class RefineTasksService {
         };
         plan.metadata = mergedMeta;
         if (planInput.warnings) plan.warnings?.push(...planInput.warnings);
-        // Validate ops against current selection and group membership.
+        // Keep parsed plan-in ops as-is for downstream enrichment; only scope them to the current selection.
         const taskToGroup = new Map<string, StoryGroup>();
         selection.groups.forEach((g) => g.tasks.forEach((t) => taskToGroup.set(t.key, g)));
         const allowCreateMissingPlanIn = false;
         for (const rawOp of planInput.operations) {
+          if (!isOperationObject(rawOp)) {
+            plan.warnings?.push("Skipped plan-in item because it was not an operation object.");
+            continue;
+          }
           const op = normalizeOperation(rawOp);
           const keyCandidate = (op as any).taskKey ?? (op as any).targetTaskKey ?? null;
           let group = keyCandidate ? taskToGroup.get(keyCandidate) : undefined;
@@ -1850,11 +2664,6 @@ export class RefineTasksService {
             plan.warnings?.push(`Skipped plan-in op because task key not in selection: ${keyCandidate ?? op.op}`);
             continue;
           }
-          const { valid, reason } = this.validateOperation(group, op);
-          if (!valid) {
-            if (reason) plan.warnings?.push(`Skipped plan-in op: ${reason}`);
-            continue;
-          }
           plan.operations.push(op as RefineOperation);
         }
       }
@@ -1867,12 +2676,48 @@ export class RefineTasksService {
         }
         for (const group of selection.groups) {
           try {
-            const { summary: docSummary, warnings: docWarnings } = await this.summarizeDocs(
+            const artifactContext = await this.loadPlanningArtifactContext(
+              options.projectKey,
+              group.epic.key,
+              group.story.key,
+            );
+            const {
+              summary: docSummary,
+              warnings: docWarnings,
+              docLinks,
+              implementationTargets,
+              testTargets,
+              suggestedTestRequirements,
+            } = await this.summarizeDocs(
               options.projectKey,
               group.epic.key,
               group.story.key,
             );
             group.docSummary = docSummary;
+            group.docLinks = normalizeRelatedDocs([
+              ...docLinks,
+              ...group.tasks.flatMap((task) => normalizeRelatedDocs((task.metadata as Record<string, unknown> | undefined)?.doc_links)),
+            ]);
+            group.implementationTargets = uniqueStrings([
+              ...artifactContext.implementationTargets,
+              ...implementationTargets,
+              ...group.tasks.flatMap((task) => normalizeStringArray((task.metadata as Record<string, unknown> | undefined)?.files)),
+            ]).slice(0, 8);
+            group.testTargets = uniqueStrings([...artifactContext.testTargets, ...testTargets]).slice(0, 8);
+            group.architectureRoots = uniqueStrings([
+              ...artifactContext.architectureRoots,
+              ...group.implementationTargets.map((target) => getRepoPathRoot(target)).filter((value): value is string => Boolean(value)),
+              ...group.testTargets.map((target) => getRepoPathRoot(target)).filter((value): value is string => Boolean(value)),
+            ]).slice(0, 8);
+            group.suggestedTestRequirements = mergeTestRequirements(
+              suggestedTestRequirements,
+              ...group.tasks.map((task) =>
+                mergeTestRequirements(
+                  normalizeTestRequirements((task.metadata as Record<string, unknown> | undefined)?.test_requirements),
+                  normalizeTestRequirements((task.metadata as Record<string, unknown> | undefined)?.testRequirements),
+                ),
+              ),
+            );
             const historySummary = await this.summarizeHistory(group.tasks.map((t) => t.id));
             group.historySummary = historySummary;
             await this.jobService.writeCheckpoint(job.id, {
@@ -1892,18 +2737,24 @@ export class RefineTasksService {
                 docWarnings.join("; "),
               );
             }
+            if (artifactContext.warnings.length) {
+              plan.warnings?.push(...artifactContext.warnings);
+            }
             const prompt = this.buildStoryPrompt(group, strategy, docSummary);
             const parseOps = (raw: string): RefineOperation[] => {
               const parsed = normalizePlanJson(extractJson(raw));
               const ops = parsed?.operations && Array.isArray(parsed.operations) ? (parsed.operations as RefineOperation[]) : [];
-              const normalized = ops.map(normalizeOperation);
-              return normalized.filter((op) => {
-                const { valid, reason } = this.validateOperation(group, op);
-                if (!valid && reason) {
-                  plan.warnings?.push(`Skipped op for story ${group.story.key}: ${reason}`);
+              const normalized: RefineOperation[] = [];
+              for (const candidate of ops) {
+                if (!isOperationObject(candidate)) {
+                  plan.warnings?.push(
+                    `Skipped malformed op for story ${group.story.key}: operation must be an object.`,
+                  );
+                  continue;
                 }
-                return valid;
-              });
+                normalized.push(normalizeOperation(candidate));
+              }
+              return normalized;
             };
             const { raw, agentId } = await this.invokeAgent(
               options.agentName,
@@ -1911,27 +2762,78 @@ export class RefineTasksService {
               agentStream,
               job.id,
               commandRun.id,
-              { epicKey: group.epic.key, storyKey: group.story.key },
+              { epicKey: group.epic.key, storyKey: group.story.key, attempt: 1 },
             );
             ratingAgentId = agentId;
             let filtered = parseOps(raw);
             if (filtered.length === 0) {
-              const retryPrompt = `${prompt}\n\nRETRY: Your previous response did not match the JSON schema. Return only a JSON object with an operations array (no prose, no markdown, no <think> tags).`;
+              const retryPrompt = [
+                REFINE_OUTPUT_CONTRACT,
+                "RETRY: Your previous response was invalid because it did not return a parseable JSON object.",
+                'Return exactly one JSON object of the form {"operations":[...]}.',
+                'Do not output sentences like "I\'m loading context" or "I\'ll inspect the repo".',
+                'Do not mention Docdex, tools, or additional investigation.',
+                'If you truly have no safe changes, return {"operations":[]}.',
+                "",
+                prompt,
+              ].join("\n\n");
               const retry = await this.invokeAgent(
                 options.agentName,
                 retryPrompt,
-                agentStream,
+                false,
                 job.id,
                 commandRun.id,
-                { epicKey: group.epic.key, storyKey: group.story.key, retry: true },
+                { epicKey: group.epic.key, storyKey: group.story.key, retry: true, attempt: 2 },
               );
               ratingAgentId = retry.agentId;
               filtered = parseOps(retry.raw);
               if (filtered.length === 0) {
-                plan.warnings?.push(`No valid operations returned for story ${group.story.key}.`);
+                plan.warnings?.push(`No parseable operations returned for story ${group.story.key}.`);
               }
             }
-            plan.operations.push(...filtered);
+            let selectedOperations = filtered;
+            let selectedEvaluation =
+              filtered.length > 0 ? this.evaluateOperationsQuality(group, filtered) : undefined;
+            if (selectedEvaluation?.shouldRetry) {
+              plan.warnings?.push(
+                `Triggered critique retry for story ${group.story.key}: ${selectedEvaluation.critiqueLines[0] ?? "generic execution guidance."}`,
+              );
+              const retryPrompt = this.buildQualityRetryPrompt(prompt, group, selectedEvaluation);
+              const retry = await this.invokeAgent(
+                options.agentName,
+                retryPrompt,
+                false,
+                job.id,
+                commandRun.id,
+                { epicKey: group.epic.key, storyKey: group.story.key, retry: true, qualityRetry: true, attempt: 3 },
+              );
+              ratingAgentId = retry.agentId;
+              const retryOperations = parseOps(retry.raw);
+              if (retryOperations.length > 0) {
+                const retryEvaluation = this.evaluateOperationsQuality(group, retryOperations);
+                if (retryEvaluation.score <= selectedEvaluation.score) {
+                  selectedOperations = retryOperations;
+                  selectedEvaluation = retryEvaluation;
+                } else {
+                  plan.warnings?.push(
+                    `Critique retry did not improve story ${group.story.key}; keeping the stronger first parseable result.`,
+                  );
+                }
+              } else {
+                plan.warnings?.push(
+                  `Critique retry for story ${group.story.key} returned no parseable operations; keeping the first parseable result.`,
+                );
+              }
+            }
+            if (selectedEvaluation && selectedEvaluation.issueCount > 0) {
+              plan.warnings?.push(
+                `Execution-readiness warnings for story ${group.story.key}: ${selectedEvaluation.critiqueLines
+                  .slice(0, 3)
+                  .map((line) => line.replace(/^- /, ""))
+                  .join("; ")}`,
+              );
+            }
+            plan.operations.push(...selectedOperations);
           } catch (error) {
             throw new Error(
               `Failed while refining epic ${group.epic.key} story ${group.story.key}: ${(error as Error).message}`,

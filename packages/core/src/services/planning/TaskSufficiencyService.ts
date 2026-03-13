@@ -107,26 +107,92 @@ const dataPathSegments = new Set([
 ]);
 const testPathSegments = new Set(["acceptance", "e2e", "integration", "spec", "specs", "test", "tests"]);
 const opsPathSegments = new Set([
+  "automation",
   "deploy",
   "deployment",
   "deployments",
-  "helm",
   "infra",
-  "k8s",
   "ops",
   "operation",
   "operations",
+  "orchestration",
+  "orchestrations",
+  "provision",
+  "provisioning",
   "runbook",
   "runbooks",
   "script",
   "scripts",
-  "systemd",
-  "terraform",
 ]);
-const manifestBasenamePattern =
-  /^(package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|turbo\.json|tsconfig(?:\.[^.]+)?\.json|cargo\.toml|pyproject\.toml|go\.mod|go\.sum|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|requirements\.txt|poetry\.lock|foundry\.toml|hardhat\.config\.[^.]+)$/i;
-const serviceArtifactBasenamePattern =
-  /(?:\.service|\.socket|\.timer|(?:^|[.-])compose\.(?:ya?ml|json)$|docker-compose\.(?:ya?ml|json)$)$/i;
+const manifestSignalTokens = new Set([
+  "build",
+  "config",
+  "configuration",
+  "dependency",
+  "dependencies",
+  "environment",
+  "lock",
+  "lockfile",
+  "manifest",
+  "package",
+  "project",
+  "settings",
+  "tooling",
+  "workspace",
+  "worktree",
+]);
+const manifestMachineFilePattern =
+  /\.(?:cfg|cnf|conf|gradle|ini|json|kts|lock|mod|properties|sum|toml|txt|xml|ya?ml)$/i;
+const nonManifestTokens = new Set([
+  "acceptance",
+  "archive",
+  "changelog",
+  "contract",
+  "contracts",
+  "example",
+  "examples",
+  "fixture",
+  "fixtures",
+  "guide",
+  "guides",
+  "license",
+  "manual",
+  "manuals",
+  "notice",
+  "readme",
+  "reference",
+  "references",
+  "sample",
+  "samples",
+  "schema",
+  "schemas",
+  "spec",
+  "specs",
+  "test",
+  "tests",
+]);
+const serviceArtifactSignalPattern =
+  /(?:^|[._-])(compose|daemon|orchestrator|scheduler|service|socket|timer|worker)(?:[._-]|$)|\.(?:service|socket|timer)$/i;
+
+const tokenizeBasename = (value: string): string[] =>
+  value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+const isManifestLikeBasename = (basename: string, segments: string[] = []): boolean => {
+  const normalized = basename.toLowerCase();
+  const tokens = tokenizeBasename(normalized);
+  if (tokens.some((token) => manifestSignalTokens.has(token))) return true;
+  if (!manifestMachineFilePattern.test(normalized)) return false;
+  if (segments.length <= 2 && tokens.length <= 3 && !tokens.some((token) => nonManifestTokens.has(token))) {
+    return true;
+  }
+  return false;
+};
+
+const isServiceArtifactBasename = (basename: string): boolean => serviceArtifactSignalPattern.test(basename.toLowerCase());
 
 type CoverageSummary = {
   coverageRatio: number;
@@ -312,11 +378,11 @@ const classifyImplementationTarget = (
   const normalized = normalizeFolderEntry(target)?.toLowerCase() ?? normalizeText(target);
   const segments = normalized.split("/").filter(Boolean);
   const basename = segments[segments.length - 1] ?? normalized;
-  const isServiceArtifact = serviceArtifactBasenamePattern.test(basename);
+  const isServiceArtifact = isServiceArtifactBasename(basename);
   if (segments.some((segment) => supportRootSegments.has(segment))) {
     return { normalized, basename, segments, kind: "doc", isServiceArtifact };
   }
-  if (manifestBasenamePattern.test(basename) || isServiceArtifact) {
+  if (isManifestLikeBasename(basename, segments) || isServiceArtifact) {
     return { normalized, basename, segments, kind: "manifest", isServiceArtifact };
   }
   if (segments.some((segment) => testPathSegments.has(segment))) {
@@ -423,11 +489,83 @@ const inferImplementationTargets = (bundle: GapBundle, availablePaths: string[],
     if (entry.classification.kind === "doc") return false;
     return true;
   });
-
-  return unique((filtered.length > 0 ? filtered : scored.filter((entry) => entry.score > 0)).map((entry) => entry.candidate)).slice(
-    0,
-    limit,
+  const prioritized = (filtered.length > 0 ? filtered : scored.filter((entry) => entry.score > 0)).filter((entry, _, entries) => {
+    if (isStructuredFilePath(entry.classification.basename)) return true;
+    return !entries.some((other) => {
+      if (other === entry) return false;
+      if (other.score + 5 < entry.score) return false;
+      if (!other.candidate.startsWith(`${entry.candidate}/`)) return false;
+      return (
+        other.classification.kind === entry.classification.kind ||
+        isStructuredFilePath(other.classification.basename)
+      );
+    });
+  });
+  const prioritizedFiles = prioritized.filter((entry) => isStructuredFilePath(entry.classification.basename));
+  const fileLifted = prioritized.map((entry) => {
+    if (isStructuredFilePath(entry.classification.basename)) return entry;
+    const replacement = prioritizedFiles.find((other) => {
+      if (!other.candidate.startsWith(`${entry.candidate}/`)) return false;
+      if (other.score + 10 < entry.score) return false;
+      return (
+        other.classification.kind === entry.classification.kind ||
+        other.classification.kind === "runtime" ||
+        entry.classification.kind === "unknown"
+      );
+    });
+    return replacement ?? entry;
+  });
+  const collapsed = fileLifted.filter((entry, _, entries) => {
+    if (isStructuredFilePath(entry.classification.basename)) return true;
+    return !entries.some((other) => {
+      if (other === entry) return false;
+      if (!isStructuredFilePath(other.classification.basename)) return false;
+      return other.candidate.startsWith(`${entry.candidate}/`);
+    });
+  });
+  const descendantFiles = unique(
+    availablePaths
+      .map((candidate) => normalizeFolderEntry(candidate))
+      .filter((candidate): candidate is string => Boolean(candidate))
+      .filter((candidate) => isStructuredFilePath(path.basename(candidate)))
+      .map((candidate) => {
+        const classification = classifyImplementationTarget(candidate);
+        const normalizedCandidate = classification.normalized.replace(/\//g, " ");
+        const overlap = anchorTokens.filter((token) => normalizedCandidate.includes(token)).length;
+        const hasDomainMatch = domainNeedle.length > 0 && normalizedCandidate.includes(domainNeedle);
+        const semanticBonus =
+          (targetNeeds.wantsVerification && classification.kind === "test" ? 40 : 0) +
+          (targetNeeds.wantsOps && classification.kind === "ops" ? 50 : 0) +
+          (targetNeeds.wantsInterface && classification.kind === "interface" ? 45 : 0) +
+          (targetNeeds.wantsData && classification.kind === "data" ? 45 : 0) +
+          (targetNeeds.wantsProvider &&
+          (classification.kind === "runtime" || classification.kind === "interface")
+            ? 25
+            : 0);
+        return {
+          candidate,
+          score: implementationRootWeight(candidate) + overlap * 20 + (hasDomainMatch ? 20 : 0) + semanticBonus,
+        };
+      })
+      .sort((left, right) => right.score - left.score || left.candidate.localeCompare(right.candidate))
+      .map((entry) => entry.candidate),
   );
+  const promoted = unique(
+    collapsed.map((entry) => {
+      if (isStructuredFilePath(entry.classification.basename)) return entry.candidate;
+      const replacement = descendantFiles.find(
+        (candidate) => candidate.startsWith(`${entry.candidate}/`) || candidate.startsWith(`${entry.candidate.replace(/\/+$/g, "")}/`),
+      );
+      return replacement ?? entry.candidate;
+    }),
+  ).filter((candidate, _, entries) => {
+    if (isStructuredFilePath(path.basename(candidate))) return true;
+    return !entries.some(
+      (other) => other !== candidate && isStructuredFilePath(path.basename(other)) && other.startsWith(`${candidate}/`),
+    );
+  });
+
+  return promoted.slice(0, limit);
 };
 
 const summarizeImplementationTargets = (targets: string[]): string => {

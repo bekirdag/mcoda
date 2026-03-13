@@ -66,6 +66,16 @@ export interface TaskRow extends TaskInsert {
     createdAt: string;
     updatedAt: string;
 }
+export interface ProjectBacklogSummary {
+    taskCount: number;
+    nonNotStartedTaskCount: number;
+    taskRunCount: number;
+    taskQaRunCount: number;
+    taskCommentCount: number;
+    taskReviewCount: number;
+    taskRevisionCount: number;
+    taskLogCount: number;
+}
 export interface TaskDependencyInsert {
     taskId: string;
     dependsOnTaskId: string;
@@ -298,6 +308,7 @@ export declare class WorkspaceRepository {
     listEpicKeys(projectId: string): Promise<string[]>;
     listStoryKeys(epicId: string): Promise<string[]>;
     listTaskKeys(userStoryId: string): Promise<string[]>;
+    getProjectBacklogSummary(projectId: string): Promise<ProjectBacklogSummary>;
     createJob(record: JobInsert): Promise<JobRow>;
     listJobs(): Promise<JobRow[]>;
     getJob(id: string): Promise<JobRow | undefined>;

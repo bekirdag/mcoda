@@ -197,6 +197,16 @@ test("task-sufficiency-audit adds focused backlog tasks for uncovered SDS signal
   }
 });
 
+test("TaskSufficiencyService implementation heuristics avoid stack-specific manifest and ops allowlists", async () => {
+  const source = await fs.readFile(new URL("../TaskSufficiencyService.js", import.meta.url), "utf8");
+  assert.ok(source.includes("manifestSignalTokens"));
+  assert.ok(!source.includes("pnpm-workspace"));
+  assert.ok(!source.includes("foundry.toml"));
+  assert.ok(!source.includes("hardhat"));
+  assert.ok(!source.includes("\"helm\""));
+  assert.ok(!source.includes("\"terraform\""));
+});
+
 test("task-sufficiency-audit dry-run does not mutate backlog", async () => {
   await fs.writeFile(
     path.join(workspaceRoot, "docs", "sds.md"),

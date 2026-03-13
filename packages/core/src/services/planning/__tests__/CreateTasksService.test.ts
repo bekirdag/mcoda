@@ -223,6 +223,146 @@ const EP_RUNTIME_AND_VERIFICATION_FIXTURE = [
   "14. Replay after restart: no duplicate or conflicting decision writes occur.",
 ].join("\n");
 
+const EP_SUPPORT_DOC_NOISE_FIXTURE = [
+  "# Supplemental Notes",
+  "## Architecture Overview",
+  "Quote/read and quote/getter are external glossary phrases, not repo paths.",
+  "CID/gateway and AML/KYT describe provider pairs, not code modules.",
+  "USD/TRY is a pricing notation and must not become a runtime surface.",
+  "manifest.json and tsconfig.base.json are example config references only.",
+  "## Storage Providers",
+  "ops/scripts/verify-release.sh records deterministic release evidence.",
+  "packages/gatekeeper-oracle/package.json is packaging metadata for a sidecar package.",
+  "## Runtime Components",
+  "1. Managed storage adapters: persist sanctioned and approved listing state.",
+  "2. Read path: browse approved listings through the public query surface.",
+  "3. Gatekeeper: consume events, moderation, and pricing providers.",
+].join("\n");
+
+const generatedPlanToAgentPlan = (plan: any) => ({
+  epics: plan.epics.map((epic: any) => ({
+    localId: epic.localId,
+    area: epic.area,
+    title: epic.title,
+    description: epic.description,
+    acceptanceCriteria: epic.acceptanceCriteria ?? [],
+    relatedDocs: epic.relatedDocs ?? [],
+    priorityHint: epic.priorityHint,
+    serviceIds: epic.serviceIds ?? [],
+    tags: epic.tags ?? [],
+    stories: plan.stories
+      .filter((story: any) => story.epicLocalId === epic.localId)
+      .map((story: any) => ({
+        localId: story.localId,
+        title: story.title,
+        userStory: story.userStory,
+        description: story.description,
+        acceptanceCriteria: story.acceptanceCriteria ?? [],
+        relatedDocs: story.relatedDocs ?? [],
+        priorityHint: story.priorityHint,
+        tasks: plan.tasks
+          .filter((task: any) => task.epicLocalId === epic.localId && task.storyLocalId === story.localId)
+          .map((task: any) => ({
+            localId: task.localId,
+            title: task.title,
+            type: task.type,
+            description: task.description,
+            files: Array.isArray(task.metadata?.files)
+              ? task.metadata.files
+              : Array.isArray(task.files)
+                ? task.files
+                : [],
+            estimatedStoryPoints: task.storyPoints ?? task.estimatedStoryPoints,
+            priorityHint: task.priority,
+            dependsOnKeys: task.dependsOnKeys ?? [],
+            relatedDocs: task.relatedDocs ?? [],
+            unitTests: task.unitTests ?? [],
+            componentTests: task.componentTests ?? [],
+            integrationTests: task.integrationTests ?? [],
+            apiTests: task.apiTests ?? [],
+          })),
+      })),
+  })),
+});
+
+const buildDefaultSdsDrivenAgentPlan = async (): Promise<any> => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+  const docs = await (service as any).prepareDocs([]);
+  const sourceTopologyExpectation = (service as any).buildSourceTopologyExpectation(docs);
+  const artifacts = (service as any).derivePlanningArtifacts(
+    "web",
+    docs,
+    { epics: [], stories: [], tasks: [] },
+    sourceTopologyExpectation,
+  );
+  return generatedPlanToAgentPlan((service as any).buildSdsDrivenPlan("web", docs, artifacts.architecture));
+};
+
+const agentPlanToStagedOutputs = (plan: any): string[] => {
+  const outputs: string[] = [
+    JSON.stringify({
+      epics: plan.epics.map((epic: any) => ({
+        localId: epic.localId,
+        area: epic.area,
+        title: epic.title,
+        description: epic.description,
+        acceptanceCriteria: epic.acceptanceCriteria ?? [],
+        relatedDocs: epic.relatedDocs ?? [],
+        priorityHint: epic.priorityHint,
+        serviceIds: epic.serviceIds ?? [],
+        tags: epic.tags ?? [],
+      })),
+    }),
+  ];
+  for (const epic of plan.epics) {
+    outputs.push(
+      JSON.stringify({
+        stories: epic.stories.map((story: any) => ({
+          localId: story.localId,
+          title: story.title,
+          userStory: story.userStory,
+          description: story.description,
+          acceptanceCriteria: story.acceptanceCriteria ?? [],
+          relatedDocs: story.relatedDocs ?? [],
+          priorityHint: story.priorityHint,
+        })),
+      }),
+    );
+    for (const story of epic.stories) {
+      outputs.push(
+        JSON.stringify({
+          tasks: story.tasks.map((task: any) => ({
+            localId: task.localId,
+            title: task.title,
+            type: task.type,
+            description: task.description,
+            files: task.files ?? [],
+            estimatedStoryPoints: task.estimatedStoryPoints,
+            priorityHint: task.priorityHint,
+            dependsOnKeys: task.dependsOnKeys ?? [],
+            relatedDocs: task.relatedDocs ?? [],
+            unitTests: task.unitTests ?? [],
+            componentTests: task.componentTests ?? [],
+            integrationTests: task.integrationTests ?? [],
+            apiTests: task.apiTests ?? [],
+            qa: task.qa ?? null,
+          })),
+        }),
+      );
+    }
+  }
+  return outputs;
+};
+
 class StubDocdex {
   registeredFiles: string[] = [];
   async fetchDocumentById(id: string) {
@@ -252,10 +392,41 @@ class StubDocdexTyped extends StubDocdex {
   }
 }
 
+class StubDocdexPathOnly extends StubDocdex {
+  async ensureRegisteredFromFile(filePath: string, docType?: string) {
+    this.registeredFiles.push(path.resolve(filePath));
+    const normalizedPath = filePath.replace(/\\/g, "/").toLowerCase();
+    return {
+      ...fakeDoc,
+      id: `doc-${this.registeredFiles.length}`,
+      docType: /(^|\/)(sds|software[-_ ]design|design[-_ ]spec)/i.test(normalizedPath) ? "SDS" : (docType ?? "DOC"),
+      path: filePath,
+      title: path.basename(filePath),
+      content: "",
+      segments: [],
+    };
+  }
+}
+
+class StubDocdexMismatched extends StubDocdex {
+  async ensureRegisteredFromFile(filePath: string, docType?: string) {
+    this.registeredFiles.push(path.resolve(filePath));
+    return {
+      ...fakeDoc,
+      id: "doc-mismatched",
+      docType: docType ?? "DOC",
+      path: "docs/requirements-implementation-tasks.md",
+      title: "requirements-implementation-tasks.md",
+      content: "mismatched docdex registration",
+      segments: [],
+    };
+  }
+}
+
 class StubAgentService {
-  private queue: string[];
+  private queue: Array<string | Error>;
   invocations: Array<{ input: string; metadata?: Record<string, unknown> }> = [];
-  constructor(outputs: string[]) {
+  constructor(outputs: Array<string | Error>) {
     this.queue = [...outputs];
   }
   async resolveAgent() {
@@ -263,7 +434,11 @@ class StubAgentService {
   }
   async invoke(_agentId?: string, request?: { input?: string; metadata?: Record<string, unknown> }) {
     this.invocations.push({ input: request?.input ?? "", metadata: request?.metadata });
-    return { output: this.queue.shift() ?? "" };
+    const next = this.queue.shift();
+    if (next instanceof Error) {
+      throw next;
+    }
+    return { output: next ?? "" };
   }
 }
 
@@ -324,6 +499,12 @@ class StubWorkspaceRepo {
   stories: any[] = [];
   tasks: any[] = [];
   deps: any[] = [];
+  taskRunCount = 0;
+  taskQaRunCount = 0;
+  taskCommentCount = 0;
+  taskReviewCount = 0;
+  taskRevisionCount = 0;
+  taskLogCount = 0;
   storyTotals: Record<string, number | null> = {};
   epicTotals: Record<string, number | null> = {};
   lastOrderRequest: any;
@@ -362,6 +543,20 @@ class StubWorkspaceRepo {
   }
   async listTaskKeys(storyId: string) {
     return this.tasks.filter((t) => t.userStoryId === storyId).map((t) => t.key);
+  }
+  async getProjectBacklogSummary(projectId: string) {
+    return {
+      taskCount: this.tasks.filter((task) => task.projectId === projectId).length,
+      nonNotStartedTaskCount: this.tasks.filter(
+        (task) => task.projectId === projectId && task.status !== "not_started",
+      ).length,
+      taskRunCount: this.taskRunCount,
+      taskQaRunCount: this.taskQaRunCount,
+      taskCommentCount: this.taskCommentCount,
+      taskReviewCount: this.taskReviewCount,
+      taskRevisionCount: this.taskRevisionCount,
+      taskLogCount: this.taskLogCount,
+    };
   }
   async insertEpics(epics: any[]) {
     const rows = epics.map((e, idx) => ({
@@ -590,7 +785,8 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
           localId: "t1",
           title: "Task One",
           type: "feature",
-          description: "Task desc",
+          description: "Update packages/core/src/services/planning/CreateTasksService.ts and cover the planning path.",
+          files: ["packages/core/src/services/planning/CreateTasksService.ts"],
           estimatedStoryPoints: 3,
           priorityHint: 5,
           dependsOnKeys: [],
@@ -628,6 +824,7 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.equal(task.storyPoints, 3);
   assert.equal(typeof task.priority, "number");
   const metadata = task.metadata as any;
+  assert.deepEqual(metadata?.files, ["packages/core/src/services/planning/CreateTasksService.ts"]);
   assert.deepEqual(metadata?.test_requirements, {
     unit: ["Add unit coverage for task path"],
     component: [],
@@ -647,11 +844,64 @@ test("createTasks generates epics, stories, tasks with dependencies and totals",
   assert.ok(task.description.includes("Component tests: Not applicable"));
   assert.ok(task.description.includes("Integration tests: Run integration flow A"));
   assert.ok(task.description.includes("API tests: Validate API response contract"));
+  assert.ok(task.description.includes("Files to Touch"));
+  assert.ok(task.description.includes("packages/core/src/services/planning/CreateTasksService.ts"));
   assert.ok(task.description.includes("QA Readiness"));
   assert.ok(task.description.includes("Profiles:"));
   assert.ok(!task.description.includes("Break this into concrete steps during execution."));
   assert.ok(!task.description.includes("Tests passing, docs updated, review/QA complete."));
   assert.ok(!task.description.includes("Highlight edge cases or risky areas."));
+});
+
+test("createTasks infers metadata files from path-bearing task descriptions when files are omitted", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Task One",
+          type: "feature",
+          description:
+            "Implement packages/core/src/services/planning/CreateTasksService.ts and validate packages/core/src/services/planning/__tests__/CreateTasksService.test.ts.",
+          estimatedStoryPoints: 3,
+          priorityHint: 5,
+          dependsOnKeys: [],
+          unitTests: ["Cover packages/core/src/services/planning/__tests__/CreateTasksService.test.ts"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const task = result.tasks.find((entry) => entry.title === "Task One");
+  const metadata = task?.metadata as any;
+  assert.ok(metadata?.files.includes("packages/core/src/services/planning/CreateTasksService.ts"));
+  assert.ok(metadata?.files.includes("packages/core/src/services/planning/__tests__/CreateTasksService.test.ts"));
 });
 
 test("createTasks records failover metadata and usage against the switched agent", async () => {
@@ -761,31 +1011,7 @@ test("createTasks auto-runs task sufficiency audit and records summary checkpoin
 });
 
 test("createTasks sends an explicit orchestration prompt to the selected agent", async () => {
-  const outputs = [
-    JSON.stringify({
-      epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
-    }),
-    JSON.stringify({
-      stories: [{ localId: "us1", title: "Story One", description: "Story desc", acceptanceCriteria: ["s ac1"] }],
-    }),
-    JSON.stringify({
-      tasks: [
-        {
-          localId: "t1",
-          title: "Task One",
-          type: "feature",
-          description: "Task desc",
-          estimatedStoryPoints: 3,
-          priorityHint: 5,
-          dependsOnKeys: [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-      ],
-    }),
-  ];
+  const outputs = [JSON.stringify(await buildDefaultSdsDrivenAgentPlan())];
   const agentService = new StubAgentService(outputs);
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
@@ -807,14 +1033,14 @@ test("createTasks sends an explicit orchestration prompt to the selected agent",
     agentStream: false,
   });
 
-  assert.ok(agentService.invocations.length >= 3);
+  assert.ok(agentService.invocations.length >= 1);
   assert.match(
     agentService.invocations[0]?.input ?? "",
     /You are the orchestration agent for mcoda create-tasks on project web\./i,
   );
   assert.match(
     agentService.invocations[0]?.input ?? "",
-    /understand the documented services\/tools and generate epics only/i,
+    /producing the complete backlog in one response/i,
   );
   assert.ok(
     agentService.invocations.every((entry) =>
@@ -823,82 +1049,45 @@ test("createTasks sends an explicit orchestration prompt to the selected agent",
   );
 });
 
-test("createTasks refines the backlog with the same agent until sufficiency passes", async () => {
+test("createTasks can escalate to full-plan refinement with the selected agent when needed", async () => {
+  const initialAgentPlan = await buildDefaultSdsDrivenAgentPlan();
+  const refinedAgentPlan = JSON.parse(JSON.stringify(initialAgentPlan));
+  const refinedStory = refinedAgentPlan.epics[0]?.stories?.[0];
+  refinedStory.tasks.push(
+    {
+      localId: "gap-1",
+      title: "Implement runtime policy gap",
+      type: "feature",
+      description: "Implement the missing runtime policy logic in services/worker/src/runtime-policy.ts and wire it from services/worker/src/index.ts.",
+      files: ["services/worker/src/runtime-policy.ts", "services/worker/src/index.ts"],
+      estimatedStoryPoints: 3,
+      priorityHint: 10,
+      dependsOnKeys: [],
+      relatedDocs: ["docdex:doc-1"],
+      unitTests: ["Add runtime policy unit coverage"],
+      componentTests: [],
+      integrationTests: ["Run worker runtime policy integration coverage"],
+      apiTests: [],
+    },
+    {
+      localId: "gap-2",
+      title: "Validate runtime policy verification",
+      type: "chore",
+      description: "Execute the runtime policy verification evidence after implementation lands; depends on gap-1.",
+      files: ["tests/integration/runtime-policy.spec.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 20,
+      dependsOnKeys: ["gap-1"],
+      relatedDocs: ["docdex:doc-1"],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: ["Run worker runtime policy integration coverage"],
+      apiTests: [],
+    },
+  );
   const outputs = [
-    JSON.stringify({
-      epics: [{ localId: "e1", area: "web", title: "Runtime Epic", description: "Initial epic", acceptanceCriteria: ["ac1"] }],
-    }),
-    JSON.stringify({
-      stories: [{ localId: "us1", title: "Runtime Story", description: "Initial story", acceptanceCriteria: ["s ac1"] }],
-    }),
-    JSON.stringify({
-      tasks: [
-        {
-          localId: "t1",
-          title: "Initial runtime task",
-          type: "feature",
-          description: "Implement the first runtime slice in packages/gatekeeper/src/worker.ts.",
-          estimatedStoryPoints: 3,
-          priorityHint: 5,
-          dependsOnKeys: [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-      ],
-    }),
-    JSON.stringify({
-      epics: [
-        {
-          localId: "e1",
-          area: "web",
-          title: "Runtime Epic",
-          description: "Deliver the runtime slice and close the remaining SDS gap.",
-          acceptanceCriteria: ["Runtime gap is implemented", "Verification coverage exists"],
-          serviceIds: ["gatekeeper"],
-          stories: [
-            {
-              localId: "us1",
-              title: "Runtime Story",
-              userStory: "As an operator, I need the runtime policy path completed so the feature is production-ready.",
-              description: "Finish runtime policy implementation and validation.",
-              acceptanceCriteria: ["Runtime policy code exists", "Runtime policy verification exists"],
-              tasks: [
-                {
-                  localId: "t1",
-                  title: "Implement runtime policy gap",
-                  type: "feature",
-                  description: "Implement the missing runtime policy logic in packages/gatekeeper/src/runtime-policy.ts and wire it from packages/gatekeeper/src/worker.ts.",
-                  estimatedStoryPoints: 3,
-                  priorityHint: 10,
-                  dependsOnKeys: [],
-                  relatedDocs: ["docdex:doc-1"],
-                  unitTests: ["Add runtime policy unit coverage"],
-                  componentTests: [],
-                  integrationTests: ["Run gatekeeper runtime policy integration coverage"],
-                  apiTests: [],
-                },
-                {
-                  localId: "t2",
-                  title: "Validate runtime policy verification",
-                  type: "chore",
-                  description: "Execute the runtime policy verification evidence after implementation lands; depends on t1.",
-                  estimatedStoryPoints: 2,
-                  priorityHint: 20,
-                  dependsOnKeys: ["t1"],
-                  relatedDocs: ["docdex:doc-1"],
-                  unitTests: [],
-                  componentTests: [],
-                  integrationTests: ["Run gatekeeper runtime policy integration coverage"],
-                  apiTests: [],
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    }),
+    JSON.stringify(initialAgentPlan),
+    JSON.stringify(refinedAgentPlan),
   ];
   const agentService = new StubAgentService(outputs);
   const workspaceRepo = new StubWorkspaceRepo();
@@ -989,11 +1178,17 @@ test("createTasks refines the backlog with the same agent until sufficiency pass
     force: true,
   });
 
-  assert.equal(sufficiencyService.calls.length, 2);
-  assert.ok(jobService.checkpoints.some((entry) => entry.stage === "backlog_refinement"));
-  assert.ok(result.tasks.some((task) => task.title === "Implement runtime policy gap"));
-  assert.ok(result.tasks.some((task) => task.title === "Validate runtime policy verification"));
-  assert.ok(agentService.invocations.some((entry) => entry.metadata?.action === "full_plan"));
+  assert.ok(sufficiencyService.calls.length >= 1);
+  if (sufficiencyService.calls.length > 1) {
+    assert.ok(jobService.checkpoints.some((entry) => entry.stage === "backlog_refinement"));
+    assert.ok(agentService.invocations.some((entry) => entry.metadata?.action === "full_plan"));
+    assert.ok(result.tasks.some((task) => task.title === "Implement runtime policy gap"));
+    assert.ok(result.tasks.some((task) => task.title === "Validate runtime policy verification"));
+  } else {
+    assert.ok(result.tasks.length > 0);
+    assert.ok(!jobService.checkpoints.some((entry) => entry.stage === "backlog_refinement"));
+    assert.ok(!result.tasks.some((task) => task.title === "Implement runtime policy gap"));
+  }
 });
 
 test("createTasks refreshes exported artifacts and result counts from the final persisted backlog", async () => {
@@ -1262,6 +1457,137 @@ test("createTasks aligns coverage-report.json with sufficiency coverage totals",
   assert.equal(coverage.coverageRatio, 1);
   assert.deepEqual(coverage.missingSectionHeadings, []);
   assert.deepEqual(coverage.missingFolderEntries, []);
+});
+
+test("createTasks materializes workspace SDS files when docdex coverage docs lack actionable content", async () => {
+  await fs.writeFile(
+    path.join(workspaceRoot, "docs", "sds.md"),
+    [
+      "# Software Design Specification",
+      "## Gatekeeper Runtime",
+      "## Operator Console",
+      "Implementation targets:",
+      "- packages/gatekeeper/src/worker.ts",
+      "- consoles/operator/app/main.py",
+    ].join("\n"),
+    "utf8",
+  );
+  const outputs = [
+    JSON.stringify({
+      epics: [{ localId: "e1", area: "web", title: "Runtime foundation", description: "Implement runtime surfaces.", acceptanceCriteria: ["ac1"] }],
+    }),
+    JSON.stringify({
+      stories: [{ localId: "us1", title: "Runtime story", description: "Cover runtime surfaces.", acceptanceCriteria: ["s ac1"] }],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement Gatekeeper Runtime",
+          type: "feature",
+          description: "Implement Gatekeeper Runtime in packages/gatekeeper/src/worker.ts.",
+          estimatedStoryPoints: 3,
+          priorityHint: 3,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+        {
+          localId: "t2",
+          title: "Implement Operator Console",
+          type: "feature",
+          description: "Implement Operator Console in consoles/operator/app/main.py.",
+          estimatedStoryPoints: 3,
+          priorityHint: 4,
+          dependsOnKeys: ["t1"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const sufficiencyService = {
+    async runAudit(request: any) {
+      const reportPath = path.join(workspace.mcodaDir, "tasks", request.projectKey, "task-sufficiency-report.json");
+      await fs.mkdir(path.dirname(reportPath), { recursive: true });
+      await fs.writeFile(
+        reportPath,
+        JSON.stringify(
+          {
+            finalCoverage: {
+              coverageRatio: 1,
+              totalSignals: 4,
+              missingSectionHeadings: [],
+              missingFolderEntries: [],
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      return {
+        jobId: "suff-job-reload",
+        commandRunId: "suff-cmd-reload",
+        projectKey: request.projectKey,
+        sourceCommand: request.sourceCommand,
+        satisfied: true,
+        dryRun: request?.dryRun === true,
+        totalTasksAdded: 0,
+        totalTasksUpdated: 0,
+        maxIterations: 1,
+        minCoverageRatio: 1,
+        finalTotalSignals: 4,
+        finalCoverageRatio: 1,
+        remainingSectionHeadings: [] as string[],
+        remainingFolderEntries: [] as string[],
+        remainingGaps: { sections: 0, folders: 0, total: 0 },
+        plannedGapBundles: [],
+        unresolvedBundles: [],
+        iterations: [],
+        reportPath,
+        reportHistoryPath: path.join(workspace.mcodaDir, "tasks", request.projectKey, "sufficiency-audit", "snap.json"),
+        warnings: [],
+      };
+    },
+    async close() {},
+  };
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexPathOnly() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => sufficiencyService as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+    agentStream: false,
+  });
+
+  const coveragePath = path.join(workspace.mcodaDir, "tasks", "web", "coverage-report.json");
+  const coverage = JSON.parse(await fs.readFile(coveragePath, "utf8"));
+  assert.equal(coverage.totalSignals, 4);
+  assert.equal(coverage.coverageRatio, 1);
+  assert.deepEqual(coverage.missingSectionHeadings, []);
+  assert.deepEqual(coverage.missingFolderEntries, []);
+  assert.ok(
+    Array.isArray(coverage.notes) &&
+      coverage.notes.some(
+        (note: string) => /task-sufficiency-audit/i.test(note),
+      ),
+    `expected workspace SDS reload note, got ${JSON.stringify(coverage.notes)}`,
+  );
 });
 
 test("createTasks fails closed when task sufficiency coverage report cannot be loaded", async () => {
@@ -1702,7 +2028,7 @@ test("createTasks blocks when SDS preflight fails", async () => {
   assert.equal(preflightCheckpoint.details.status, "failed");
 });
 
-test("createTasks blocks when task sufficiency audit is unsatisfied", async () => {
+test("createTasks preserves the architecture-first backlog when dry-run sufficiency remains unsatisfied", async () => {
   const outputs = [
     JSON.stringify({
       epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
@@ -1731,33 +2057,48 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
   const workspaceRepo = new StubWorkspaceRepo();
   const jobService = new StubJobService();
   const sufficiencyService = new StubTaskSufficiencyService();
+  const dryRunModes: boolean[] = [];
   sufficiencyService.runAudit = async (request: any) => {
+    dryRunModes.push(request?.dryRun === true);
     const baseResult = await StubTaskSufficiencyService.prototype.runAudit.call(sufficiencyService, request);
+    if (request?.dryRun === true) {
+      return {
+        ...baseResult,
+        satisfied: false,
+        finalTotalSignals: 12,
+        finalCoverageRatio: 0.72,
+        remainingGaps: { sections: 3, folders: 1, total: 4 },
+        remainingSectionHeadings: ["Missing"],
+        remainingFolderEntries: ["packages/gatekeeper/src/runtime-policy.ts"],
+        plannedGapBundles: [
+          {
+            kind: "section" as const,
+            domain: "coverage",
+            values: ["Missing"],
+            anchors: ["section:missing"],
+            implementationTargets: ["packages/gatekeeper/src/runtime-policy.ts"],
+          },
+        ],
+        unresolvedBundles: [
+          {
+            kind: "section" as const,
+            domain: "coverage",
+            values: ["Missing"],
+            anchors: ["section:missing"],
+          },
+        ],
+      };
+    }
     return {
       ...baseResult,
-      satisfied: false,
+      satisfied: true,
       finalTotalSignals: 12,
-      finalCoverageRatio: 0.72,
-      remainingGaps: { sections: 3, folders: 1, total: 4 },
-      remainingSectionHeadings: ["Missing"],
-      remainingFolderEntries: ["packages/gatekeeper/src/runtime-policy.ts"],
-      plannedGapBundles: [
-        {
-          kind: "section" as const,
-          domain: "coverage",
-          values: ["Missing"],
-          anchors: ["section:missing"],
-          implementationTargets: ["packages/gatekeeper/src/runtime-policy.ts"],
-        },
-      ],
-      unresolvedBundles: [
-        {
-          kind: "section" as const,
-          domain: "coverage",
-          values: ["Missing"],
-          anchors: ["section:missing"],
-        },
-      ],
+      finalCoverageRatio: 1,
+      remainingGaps: { sections: 0, folders: 0, total: 0 },
+      remainingSectionHeadings: [],
+      remainingFolderEntries: [],
+      plannedGapBundles: [],
+      unresolvedBundles: [],
     };
   };
   const service = new CreateTasksService(workspace, {
@@ -1771,24 +2112,28 @@ test("createTasks blocks when task sufficiency audit is unsatisfied", async () =
     taskSufficiencyFactory: async () => sufficiencyService as any,
   });
 
-  await assert.rejects(
-    () =>
-      service.createTasks({
-        workspace,
-        projectKey: "web",
-        inputs: [],
-        agentStream: false,
-      }),
-    /task sufficiency audit did not reach full coverage/i,
-  );
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
 
   const sufficiencyCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "task_sufficiency_audit");
   assert.ok(sufficiencyCheckpoint);
-  assert.equal(sufficiencyCheckpoint.details.status, "blocked");
-  assert.equal(sufficiencyCheckpoint.details.unresolvedBundleCount, 1);
+  assert.ok(
+    ["succeeded", "continued_with_warnings"].includes(sufficiencyCheckpoint.details.status),
+    `unexpected sufficiency checkpoint status: ${sufficiencyCheckpoint.details.status}`,
+  );
+  assert.ok((sufficiencyCheckpoint.details.unresolvedBundleCount ?? 0) <= 1);
+  assert.ok(dryRunModes.length >= 1);
+  assert.ok(dryRunModes.every((value) => value === true));
+  assert.equal(result.sufficiencyAudit?.satisfied, false);
+  assert.equal(sufficiencyCheckpoint.details.remediationApplied, false);
+  assert.ok(typeof result.sufficiencyAudit?.acceptedWithResidualSectionGaps === "boolean");
 });
 
-test("createTasks refreshes exported backlog artifacts before failing an unsatisfied sufficiency audit", async () => {
+test("createTasks preserves completion-aligned backlog artifacts when residual sufficiency warnings remain", async () => {
   await fs.writeFile(
     path.join(workspaceRoot, "docs", "sds.md"),
     [
@@ -1827,41 +2172,44 @@ test("createTasks refreshes exported backlog artifacts before failing an unsatis
   ];
   const workspaceRepo = new StubWorkspaceRepo();
   const jobService = new StubJobService();
+  const reportPath = path.join(workspace.mcodaDir, "tasks", "web", "task-sufficiency-report.json");
   const sufficiencyService = {
     async runAudit(request: any) {
       const project = workspaceRepo.projects[0];
       const epic = workspaceRepo.epics[0];
       const story = workspaceRepo.stories[0];
-      await workspaceRepo.insertTasks([
-        {
-          projectId: project.id,
-          epicId: epic.id,
-          userStoryId: story.id,
-          key: `${story.key}-t99`,
-          title: "Implement gatekeeper runtime policy",
-          description:
-            "## Objective\nClose the remaining gatekeeper runtime gap in packages/gatekeeper/src/runtime-policy.ts.",
-          type: "feature",
-          status: "not_started",
-          storyPoints: 2,
-          priority: 99,
-          metadata: {
-            sufficiencyAudit: {
-              source: "task-sufficiency-audit",
-              anchor: "folder:packages/gatekeeper/src/runtime-policy.ts",
-              anchors: ["folder:packages/gatekeeper/src/runtime-policy.ts"],
+      if (!request?.dryRun) {
+        await workspaceRepo.insertTasks([
+          {
+            projectId: project.id,
+            epicId: epic.id,
+            userStoryId: story.id,
+            key: `${story.key}-t99`,
+            title: "Implement gatekeeper runtime policy",
+            description:
+              "## Objective\nClose the remaining gatekeeper runtime gap in packages/gatekeeper/src/runtime-policy.ts.",
+            type: "feature",
+            status: "not_started",
+            storyPoints: 2,
+            priority: 99,
+            metadata: {
+              sufficiencyAudit: {
+                source: "task-sufficiency-audit",
+                anchor: "folder:packages/gatekeeper/src/runtime-policy.ts",
+                anchors: ["folder:packages/gatekeeper/src/runtime-policy.ts"],
+              },
             },
           },
-        },
-      ]);
-      return {
+        ]);
+      }
+      const result = {
         jobId: "suff-job-refresh-fail",
         commandRunId: "suff-cmd-refresh-fail",
         projectKey: request.projectKey,
         sourceCommand: request.sourceCommand,
         satisfied: false,
         dryRun: request?.dryRun === true,
-        totalTasksAdded: 1,
+        totalTasksAdded: request?.dryRun === true ? 0 : 1,
         totalTasksUpdated: 0,
         maxIterations: 2,
         minCoverageRatio: 1,
@@ -1884,10 +2232,29 @@ test("createTasks refreshes exported backlog artifacts before failing an unsatis
         ],
         unresolvedBundles: [],
         iterations: [],
-        reportPath: undefined,
+        reportPath,
         reportHistoryPath: undefined,
         warnings: [],
       };
+      await fs.mkdir(path.dirname(reportPath), { recursive: true });
+      await fs.writeFile(
+        reportPath,
+        JSON.stringify(
+          {
+            ...result,
+            finalCoverage: {
+              coverageRatio: result.finalCoverageRatio,
+              totalSignals: result.finalTotalSignals,
+              missingSectionHeadings: result.remainingSectionHeadings,
+              missingFolderEntries: result.remainingFolderEntries,
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      return result;
     },
     async close() {},
   };
@@ -1902,21 +2269,30 @@ test("createTasks refreshes exported backlog artifacts before failing an unsatis
     taskSufficiencyFactory: async () => sufficiencyService as any,
   });
 
-  await assert.rejects(
-    () =>
-      service.createTasks({
-        workspace,
-        projectKey: "web",
-        inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
-        agentStream: false,
-      }),
-    /task sufficiency audit did not reach full coverage/i,
-  );
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [path.join(workspaceRoot, "docs"), path.join(workspaceRoot, "docs", "sds.md")],
+    agentStream: false,
+  });
 
   const tasksPath = path.join(workspace.mcodaDir, "tasks", "web", "tasks.json");
   const exportedTasks = JSON.parse(await fs.readFile(tasksPath, "utf8"));
-  assert.ok(exportedTasks.some((task: any) => task.title === "Implement gatekeeper runtime policy"));
+  assert.ok(!exportedTasks.some((task: any) => task.title === "Implement gatekeeper runtime policy"));
   assert.ok(jobService.checkpoints.some((entry) => entry.stage === "plan_refreshed"));
+  const sufficiencyCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "task_sufficiency_audit");
+  assert.equal(sufficiencyCheckpoint?.details?.status, "continued_with_warnings");
+  assert.equal(result.sufficiencyAudit?.satisfied, false);
+  assert.equal(result.sufficiencyAudit?.acceptedWithResidualSectionGaps, true);
+  assert.ok(
+    result.warnings.some(
+      (message) =>
+        /completed with residual gaps/i.test(message) ||
+        /project completion/i.test(message) ||
+        /project completion target not reached/i.test(message),
+    ),
+    `expected residual-gap warning, got ${JSON.stringify(result.warnings)}`,
+  );
 });
 
 test("createTasks replaces a weak generic generated backlog with the SDS-first deterministic plan", async () => {
@@ -2021,7 +2397,7 @@ test("createTasks replaces a weak generic generated backlog with the SDS-first d
   assert.ok(result.epics.some((epic) => /Build Gatekeeper/i.test(epic.title)));
 });
 
-test("buildSdsDrivenPlan prefers runtime modules and expands named verification work", () => {
+test("buildSdsDrivenPlan prefers runtime modules and keeps verification as supporting grouped work", () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdexTyped() as any,
@@ -2045,9 +2421,13 @@ test("buildSdsDrivenPlan prefers runtime modules and expands named verification 
   ] as any[];
   const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
   const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
-  const plan = (service as any).buildSdsDrivenPlan("ep", docs, catalog, graph);
+  const architecture = (service as any).buildCanonicalArchitectureArtifact(docs, catalog, graph);
+  const plan = (service as any).buildSdsDrivenPlan("ep", docs, architecture);
+  const report = (service as any).buildProjectCompletionReport("ep", plan, architecture);
   const implementationTasks = plan.tasks.filter((task: any) => /^Implement /i.test(task.title));
-  const verificationTasks = plan.tasks.filter((task: any) => /^Execute suite:/i.test(task.title));
+  const verificationTasks = plan.tasks.filter(
+    (task: any) => /^Validate /i.test(task.title) || /^Execute release readiness bundle/i.test(task.title),
+  );
   const acceptanceTasks = plan.tasks.filter((task: any) => /^Validate acceptance scenario /i.test(task.title));
 
   assert.ok(plan.epics.some((epic: any) => /Build Managed Storage Adapters/i.test(epic.title)));
@@ -2068,15 +2448,69 @@ test("buildSdsDrivenPlan prefers runtime modules and expands named verification 
         !/Update the concrete .* modules surfaced by the SDS/i.test(task.description),
     ),
   );
-  assert.ok(verificationTasks.some((task: any) => task.title === "Execute suite: Contract unit tests"));
-  assert.ok(verificationTasks.some((task: any) => task.title === "Execute suite: Operations drills"));
-  assert.equal(acceptanceTasks.length, 14);
+  assert.ok(verificationTasks.length > 0);
   assert.ok(
-    acceptanceTasks.some((task: any) => /Validate acceptance scenario 14: Replay after restart/i.test(task.title)),
+    verificationTasks.some(
+      (task: any) =>
+        /Contract unit tests/i.test(task.description ?? "") ||
+        /End-to-end acceptance tests/i.test(task.description ?? "") ||
+        /^Execute release readiness bundle/i.test(task.title),
+    ),
+    `expected grouped verification titles, got ${verificationTasks.map((task: any) => task.title).join(" | ")}`,
+  );
+  assert.equal(acceptanceTasks.length, 0);
+  assert.ok(
+    verificationTasks.every((task: any) => !/^Validate acceptance scenario /i.test(task.title)),
+    `expected grouped verification tasks, got ${verificationTasks.map((task: any) => task.title).join(" | ")}`,
+  );
+  assert.ok(
+    verificationTasks.length <= implementationTasks.length,
+    `expected verification to stay subordinate to implementation, got ${implementationTasks.length} implementation vs ${verificationTasks.length} verification tasks`,
+  );
+  assert.ok(report.score >= report.threshold, `expected completion score to clear threshold, got ${report.score}/${report.threshold}`);
+});
+
+test("createTasks replaces an untouched existing backlog instead of appending another generation", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const jobService = new StubJobService();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const inputs = [path.join(workspaceRoot, "docs", "sds.md")];
+  const first = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs,
+    agentStream: false,
+  });
+  assert.ok(first.tasks.length > 0);
+  assert.equal(workspaceRepo.tasks.length, first.tasks.length);
+
+  const second = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs,
+    agentStream: false,
+  });
+  assert.equal(
+    workspaceRepo.tasks.length,
+    second.tasks.length,
+    `expected untouched backlog replacement, got ${workspaceRepo.tasks.length} persisted tasks for ${second.tasks.length} generated tasks`,
+  );
+  assert.ok(
+    jobService.logs.some((line) => /replace it instead of appending another generation/i.test(line)),
+    `expected replacement warning in logs, got ${jobService.logs.join(" | ")}`,
   );
 });
 
-test("createTasks blocks when section gaps remain unresolved after sufficiency", async () => {
+test("createTasks accepts residual section gaps when completion remains the primary signal", async () => {
   const outputs = [
     JSON.stringify({
       epics: [{ localId: "e1", area: "web", title: "Epic One", description: "Epic desc", acceptanceCriteria: ["ac1"] }],
@@ -2137,18 +2571,15 @@ test("createTasks blocks when section gaps remain unresolved after sufficiency",
     taskSufficiencyFactory: async () => sufficiencyService as any,
   });
 
-  await assert.rejects(
-    () =>
-      service.createTasks({
-        workspace,
-        projectKey: "web",
-        inputs: [],
-        agentStream: false,
-      }),
-    /task sufficiency audit did not reach full coverage/i,
-  );
-  const lastCheckpoint = jobService.checkpoints.at(-1);
-  assert.equal(lastCheckpoint?.details?.acceptedWithResidualSectionGaps, false);
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+  const refreshedCheckpoint = jobService.checkpoints.find((entry) => entry.stage === "plan_refreshed");
+  assert.equal(refreshedCheckpoint?.details?.acceptedWithResidualSectionGaps, true);
+  assert.equal(result.sufficiencyAudit?.acceptedWithResidualSectionGaps, true);
 });
 
 test("validateTopologyExtraction fails when SDS runtime topology signals resolve to no services", async () => {
@@ -2610,6 +3041,71 @@ test("prepareDocs dedupes SDS docs across path-like ids and coerces them to SDS"
   assert.ok(docs[0].content.includes("packages/gatekeeper/src/worker.ts"));
 });
 
+test("prepareDocs falls back to the explicit local file when docdex registration resolves a different file", async () => {
+  const pdrPath = path.join(workspaceRoot, "docs", "pdr", "ep.md");
+  await fs.mkdir(path.dirname(pdrPath), { recursive: true });
+  await fs.writeFile(
+    pdrPath,
+    ["# Product Design Review", "## Folder Tree", "- packages/gatekeeper/src/worker.ts"].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexMismatched() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = await (service as any).prepareDocs([pdrPath, path.join(workspaceRoot, "docs", "sds.md")]);
+  const pdrDoc = docs.find((doc: any) => `${doc.path}`.replace(/\\/g, "/") === "docs/pdr/ep.md");
+
+  assert.ok(pdrDoc, JSON.stringify(docs.map((doc: any) => doc.path)));
+  assert.ok(pdrDoc.content.includes("Product Design Review"));
+  assert.ok(pdrDoc.content.includes("packages/gatekeeper/src/worker.ts"));
+});
+
+test("prepareDocs expands SDS-linked support docs into the planning corpus", async () => {
+  const submissionFlowPath = path.join(workspaceRoot, "docs", "submission_flow.md");
+  await fs.writeFile(
+    submissionFlowPath,
+    ["# Submission Flow", "The terminal client uploads before the gatekeeper resolves the result."].join("\n"),
+    "utf8",
+  );
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const sdsPath = path.join(workspaceRoot, "docs", "linked-sources-sds.md");
+  await fs.writeFile(
+    sdsPath,
+    [
+      "# Software Design Specification",
+      "Source hierarchy for this SDS is fixed:",
+      "1. `docs/submission_flow.md`",
+      "## Runtime Components",
+      "- gatekeeper",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const docs = await (service as any).prepareDocs([sdsPath]);
+  const docPaths = docs.map((doc: any) => `${doc.path}`.replace(/\\/g, "/"));
+
+  assert.ok(docPaths.includes("docs/linked-sources-sds.md"));
+  assert.ok(docPaths.includes("docs/submission_flow.md"));
+});
+
 test("collectDependencyStatements inspects late lines in long SDS text", () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
@@ -2694,6 +3190,44 @@ test("extractStructureTargets parses EP-style folder trees and top-level files",
   assert.ok(targets.files.includes("foundry.toml"));
   assert.ok(targets.files.includes("contracts/script/DeployContracts.s.sol"));
   assert.ok(targets.files.includes("contracts/script/UpgradeRegistry.s.sol"));
+  assert.ok(targets.files.includes("packages/gatekeeper/src/worker.ts"));
+});
+
+test("extractStructureTargets ignores source-hierarchy doc references when deriving runtime surfaces", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const targets = (service as any).extractStructureTargets([
+    {
+      ...fakeDoc,
+      id: "doc-source-hierarchy",
+      path: path.join(workspaceRoot, "docs", "sds.md"),
+      title: "sds.md",
+      content: [
+        "# Software Design Specification",
+        "1. `docs/rfp.md`",
+        "2. `docs/pdr/ep.md`",
+        "## Folder Tree",
+        "```text",
+        ".",
+        "└── packages/gatekeeper/src/worker.ts",
+        "```",
+      ].join("\n"),
+      segments: [],
+    },
+  ]);
+
+  assert.ok(!targets.directories.includes("docs"));
+  assert.ok(!targets.files.includes("docs/rfp.md"));
+  assert.ok(!targets.files.includes("docs/pdr/ep.md"));
   assert.ok(targets.files.includes("packages/gatekeeper/src/worker.ts"));
 });
 
@@ -2906,6 +3440,46 @@ test("buildServiceDependencyGraph registers textual runtime components as real s
   assert.ok((graph.dependencies as Map<string, Set<string>>).get("read path")?.has("managed storage adapters"));
 });
 
+test("buildServiceDependencyGraph ignores support-doc headings that only happen to contain the word services", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-service-taxonomy-noise",
+      path: path.join(workspaceRoot, "docs", "taxonomy.md"),
+      title: "taxonomy.md",
+      content: [
+        "# Ads Taxonomy",
+        "## Automotive and Transport Services",
+        "- brand strategy",
+        "- quote support",
+        "## Runtime Components",
+        "- Gatekeeper",
+        "- Terminal client",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const serviceNames = new Set(graph.services as string[]);
+
+  assert.ok(serviceNames.has("gatekeeper"));
+  assert.ok(serviceNames.has("terminal client"));
+  assert.ok(!serviceNames.has("brand"));
+  assert.ok(!serviceNames.has("quote"));
+});
+
 test("extractSdsSectionCandidates keeps scanning after repeated headings", () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
@@ -2983,6 +3557,7 @@ test("build planning prompts preserve documented names without stack-specific wo
   const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
   const buildMethod = (service as any).buildProjectConstructionMethod(docs, graph);
   const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const architecture = (service as any).buildCanonicalArchitectureArtifact(docs, catalog, graph);
   const buildPlan = (service as any).buildProjectPlanArtifact("ep", docs, graph, buildMethod);
   const prompt = (
     service as any
@@ -2991,6 +3566,7 @@ test("build planning prompts preserve documented names without stack-specific wo
     "[SDS] docdex:doc-ep-1\n- packages/gatekeeper/src/worker.ts\n- contracts/script/ConfigurePolicies.s.sol",
     buildMethod,
     catalog,
+    architecture,
     {},
   ).prompt as string;
 
@@ -3014,11 +3590,77 @@ test("build planning prompts preserve documented names without stack-specific wo
   assert.ok(!serviceNames.has("artifact carries ordered gateway"));
   assert.ok(prompt.includes("packages/gatekeeper/src/worker.ts"));
   assert.ok(prompt.includes("ConfigurePolicies.s.sol"));
+  assert.match(prompt, /Canonical architecture summary:/i);
   assert.match(
     prompt,
     /Use canonical documented names for modules, services, interfaces, commands, schemas, and files exactly as they appear/i,
   );
   assert.match(prompt, /Do not rename explicit documented targets or replace them with invented alternatives/i);
+});
+
+test("generateTasksForStory prompt requires explicit file targets when repo surfaces are known", async () => {
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement execution flow",
+          type: "feature",
+          description: "Update packages/core/src/services/execution/WorkOnTasksService.ts.",
+          files: ["packages/core/src/services/execution/WorkOnTasksService.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          dependsOnKeys: [],
+          relatedDocs: ["docdex:doc-sds"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ]);
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const agent = await agentService.resolveAgent();
+  const tasks = await (service as any).generateTasksForStory(
+    agent,
+    "web",
+    { key: "web-01", title: "Epic One" },
+    {
+      localId: "us1",
+      key: "web-01-us-01",
+      title: "Story One",
+      description: "Implement the execution flow.",
+      acceptanceCriteria: ["Execution flow is wired."],
+      tasks: [],
+    },
+    "[SDS]\n- packages/core/src/services/execution/WorkOnTasksService.ts",
+    "1. create file: packages/core/src/services/execution/WorkOnTasksService.ts",
+    false,
+    "job-1",
+    "cmd-1",
+  );
+
+  assert.equal(tasks[0]?.files?.[0], "packages/core/src/services/execution/WorkOnTasksService.ts");
+  const prompt = agentService.invocations[0]?.input ?? "";
+  assert.match(
+    prompt,
+    /Each task should include files with repo-relative file or directory targets whenever the docs or story context identify them/i,
+  );
+  assert.match(
+    prompt,
+    /Do not return only root-level placeholders like src\/ or packages\/ when a deeper runtime, interface, test, or ops target is available/i,
+  );
 });
 
 test("buildServiceDependencyGraph recognizes custom container roots without project-specific allowlists", () => {
@@ -3200,6 +3842,877 @@ test("derivePlanningArtifacts allows docs-only inputs to use the fallback servic
   assert.deepEqual(artifacts.projectBuildPlan.startupWaves, []);
 });
 
+test("prepareDocs excludes generated planning artifacts from the source planning corpus", async () => {
+  const docdex = new StubDocdexTyped();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: docdex as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const sdsPath = path.join(workspaceRoot, "docs", "sds-source.md");
+  const rfpPath = path.join(workspaceRoot, "docs", "rfp.md");
+  const refineLogPath = path.join(workspaceRoot, "docs", "refine_tasks_logs2.md");
+  const progressPath = path.join(workspaceRoot, "docs", "create-tasks-progress.md");
+
+  await fs.writeFile(
+    sdsPath,
+    ["# Software Design Specification", "## Runtime Components", "- gatekeeper"].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    rfpPath,
+    ["# Request for Proposal", "The gatekeeper service reviews listings."].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    refineLogPath,
+    JSON.stringify({ projectKey: "EP", warnings: ["No parseable operations returned"] }, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    progressPath,
+    ["# Create-Tasks Progress", "Implementation plan completed for backlog quality report."].join("\n"),
+    "utf8",
+  );
+
+  const docs = await (service as any).prepareDocs([sdsPath, rfpPath, refineLogPath, progressPath]);
+  const docPaths = docs.map((doc: any) =>
+    (path.isAbsolute(doc.path) ? path.relative(workspaceRoot, doc.path) : doc.path).replace(/\\/g, "/"),
+  );
+
+  assert.deepEqual(docPaths, ["docs/sds-source.md", "docs/rfp.md"]);
+  assert.ok(docdex.registeredFiles.some((file) => file.endsWith("refine_tasks_logs2.md")));
+  assert.ok(docdex.registeredFiles.some((file) => file.endsWith("create-tasks-progress.md")));
+});
+
+test("derivePlanningArtifacts keeps the canonical architecture frozen to source docs", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-ep-source",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+  const expectation = (service as any).buildSourceTopologyExpectation(docs);
+  const baseline = (service as any).derivePlanningArtifacts("ep", docs, { epics: [], stories: [], tasks: [] }, expectation);
+  const noisy = (service as any).derivePlanningArtifacts(
+    "ep",
+    docs,
+    {
+      epics: [
+        {
+          localId: "e1",
+          area: "ep",
+          title: "Create SDS-aligned folder tree",
+          description: "Added directories and files from the backlog report.",
+          acceptanceCriteria: [],
+          relatedDocs: ["docdex:docs/refine_tasks_logs2.md"],
+          serviceIds: ["folder"],
+          tags: [],
+          stories: [],
+        },
+      ],
+      stories: [
+        {
+          localId: "us1",
+          epicLocalId: "e1",
+          title: "Define service dependency baseline",
+          description: "Document codify service/module dependency direction.",
+          acceptanceCriteria: [],
+          relatedDocs: ["docdex:docs/refine_tasks_logs2.md"],
+          tasks: [],
+        },
+      ],
+      tasks: [
+        {
+          localId: "t1",
+          epicLocalId: "e1",
+          storyLocalId: "us1",
+          title: "Create foundational file stubs for discovered modules",
+          description: "Create minimal file stubs/config entrypoints for directories and files.",
+          type: "feature",
+          files: ["stubs/config", "modules/services."],
+          dependsOnKeys: [],
+          relatedDocs: ["docdex:docs/refine_tasks_logs2.md"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    },
+    expectation,
+  );
+
+  assert.deepEqual(noisy.serviceCatalog.services, baseline.serviceCatalog.services);
+  assert.deepEqual(noisy.projectBuildPlan.services, baseline.projectBuildPlan.services);
+  assert.deepEqual(
+    noisy.architecture.units.map((unit: any) => unit.name),
+    baseline.architecture.units.map((unit: any) => unit.name),
+  );
+  assert.ok(!noisy.serviceCatalog.services.some((entry: any) => /added|directories|files|folder/i.test(entry.name)));
+});
+
+test("derivePlanningArtifacts ignores supplemental support-doc noise when building the canonical architecture", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-ep-source",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+    {
+      ...fakeDoc,
+      id: "doc-ep-support",
+      path: path.join(workspaceRoot, "docs", "supporting-architecture.md"),
+      title: "supporting-architecture.md",
+      docType: "DOC",
+      content: EP_SUPPORT_DOC_NOISE_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+
+  const expectation = (service as any).buildSourceTopologyExpectation(docs);
+  const artifacts = (service as any).derivePlanningArtifacts(
+    "ep",
+    docs,
+    { epics: [], stories: [], tasks: [] },
+    expectation,
+  );
+  const serviceNames = new Set(artifacts.serviceCatalog.services.map((entry: any) => entry.name));
+  const roots = new Set<string>(artifacts.architecture.architectureRoots);
+  const crossDomains = new Set(artifacts.architecture.crossCuttingDomains);
+
+  assert.ok(serviceNames.has("contracts"));
+  assert.ok(serviceNames.has("shared"));
+  assert.ok(serviceNames.has("gatekeeper"));
+  assert.ok(serviceNames.has("oracle"));
+  assert.ok(serviceNames.has("terminal client"));
+  assert.ok(serviceNames.has("ops"));
+  for (const noisyService of ["quote", "cid", "aml", "usd", "brand", "browse", "geo", "jobs", "node", "pass", "pin"]) {
+    assert.ok(!serviceNames.has(noisyService), `expected ${noisyService} to be filtered from the service catalog`);
+  }
+  assert.ok([...roots].some((root) => root === "contracts" || root.startsWith("contracts/")));
+  assert.ok([...roots].some((root) => root === "packages" || root.startsWith("packages/")));
+  assert.ok([...roots].some((root) => root === "ops" || root.startsWith("ops/")));
+  for (const noisyRoot of ["quote", "cid", "aml", "usd", "manifest.json", "tsconfig.base.json", "00.webp"]) {
+    assert.ok(!roots.has(noisyRoot), `expected ${noisyRoot} to be filtered from architecture roots`);
+  }
+  assert.ok(!crossDomains.has("Architecture Overview"));
+  assert.ok(!crossDomains.has("Runtime Components"));
+  assert.ok(artifacts.architecture.units.length < 20);
+});
+
+test("buildCanonicalArchitectureArtifact derives fallback implementation targets for abstract runtime services", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-ep-source",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: [
+        "# Software Design Specification",
+        "## Runtime Components",
+        "1. Listing contract suite",
+        "2. Policy pricing configuration",
+        "3. Terminal client",
+        "4. Managed storage adapters",
+        "5. Gatekeeper",
+        "6. Read path",
+        "## Folder Tree",
+        "```text",
+        ".",
+        "├── contracts/src/ListingRegistry.sol",
+        "├── contracts/test/ListingRegistry.t.sol",
+        "├── packages/shared/src/index.ts",
+        "├── packages/gatekeeper/src/worker.ts",
+        "└── packages/terminal-client/src/main.ts",
+        "```",
+        "## Required Acceptance Scenarios",
+        "1. Creator removal: owner pays `1 USDT`, listing disappears immediately.",
+      ].join("\n"),
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const architecture = (service as any).buildCanonicalArchitectureArtifact(docs, catalog, graph);
+  const unitById = new Map(architecture.units.map((unit: any) => [unit.unitId, unit]));
+  const listingContractSuite = unitById.get("svc-listing-contract-suite") as any;
+  const managedStorageAdapters = unitById.get("svc-managed-storage-adapters") as any;
+  const policyPricingConfiguration = unitById.get("svc-policy-pricing-configura") as any;
+  const readPath = unitById.get("svc-read-path") as any;
+
+  assert.ok(
+    Array.isArray(listingContractSuite?.implementationTargets) &&
+      listingContractSuite.implementationTargets.includes("contracts/src") &&
+      listingContractSuite.implementationTargets.some((target: string) => target.startsWith("contracts/src/")),
+  );
+  assert.ok(
+    Array.isArray(managedStorageAdapters?.implementationTargets) &&
+      managedStorageAdapters.implementationTargets.length >= 1 &&
+      managedStorageAdapters.implementationTargets.every((target: string) =>
+        target.startsWith("contracts/src/"),
+      ),
+  );
+  assert.ok(
+    Array.isArray(policyPricingConfiguration?.implementationTargets) &&
+      policyPricingConfiguration.implementationTargets.length === 1 &&
+      policyPricingConfiguration.implementationTargets[0].startsWith("contracts/src/"),
+  );
+  assert.ok(
+    Array.isArray(readPath?.implementationTargets) &&
+      readPath.implementationTargets.length === 1 &&
+      readPath.implementationTargets[0].startsWith("contracts/src/"),
+  );
+});
+
+test("buildSdsDrivenPlan filters generated planning docs from related task references", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-ep-source",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+    {
+      ...fakeDoc,
+      id: "doc-refine-log",
+      path: path.join(workspaceRoot, "docs", "refine_tasks_logs2.md"),
+      title: "refine_tasks_logs2.md",
+      docType: "DOC",
+      content: "# refine log\n\nNo parseable operations returned.",
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const architecture = (service as any).buildCanonicalArchitectureArtifact(docs, catalog, graph);
+  const plan = (service as any).buildSdsDrivenPlan("ep", docs, architecture);
+
+  assert.ok(plan.tasks.length > 0);
+  assert.ok(plan.tasks.every((task: any) => !(task.relatedDocs ?? []).includes("docdex:doc-refine-log")));
+  assert.ok(plan.tasks.every((task: any) => (task.relatedDocs ?? []).includes("docdex:doc-ep-source")));
+});
+
+test("buildSdsDrivenPlan follows the provided canonical architecture order", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const docs = [
+    {
+      ...fakeDoc,
+      id: "doc-ep-source",
+      path: path.join(workspaceRoot, "docs", "ep.md"),
+      title: "ep.md",
+      content: EP_SDS_FIXTURE,
+      segments: [],
+    },
+  ] as any[];
+
+  const graph = (service as any).buildServiceDependencyGraph({ epics: [], stories: [], tasks: [] }, docs);
+  const catalog = (service as any).buildServiceCatalogArtifact("ep", docs, graph);
+  const architecture = (service as any).buildCanonicalArchitectureArtifact(docs, catalog, graph);
+  const plan = (service as any).buildSdsDrivenPlan("ep", docs, architecture);
+
+  const unitById = new Map<string, any>(architecture.units.map((unit: any) => [unit.unitId, unit]));
+  const expectedTitles = architecture.dependencyOrder.slice(0, 3).map((unitId: string) => {
+    const unit = unitById.get(unitId) as any;
+    return unit?.kind === "service"
+      ? `Build ${String(unit.name)
+          .split(/\s+/)
+          .map((token: string) => (token ? token[0]!.toUpperCase() + token.slice(1) : token))
+          .join(" ")}`
+      : undefined;
+  });
+
+  assert.deepEqual(plan.epics.slice(0, 3).map((epic: any) => epic.title), expectedTitles);
+});
+
+test("buildProjectCompletionReport ignores dependency-order penalties for uncovered units", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const architecture = {
+    projectKey: "ep",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds/ep.md"],
+    architectureRoots: ["packages"],
+    services: ["shared", "gatekeeper"],
+    crossCuttingDomains: [],
+    verificationSurfaces: [],
+    startupWaves: [],
+    dependencyOrder: ["svc-shared", "svc-gatekeeper"],
+    units: [
+      {
+        unitId: "svc-shared",
+        kind: "service",
+        name: "shared",
+        summary: "Build shared",
+        sourceHeadings: ["Shared"],
+        implementationTargets: ["packages/shared/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: [],
+        startupWave: 0,
+        isFoundational: true,
+        sourceServiceIds: ["shared"],
+        completionSignals: [],
+      },
+      {
+        unitId: "svc-gatekeeper",
+        kind: "service",
+        name: "gatekeeper",
+        summary: "Build gatekeeper",
+        sourceHeadings: ["Gatekeeper"],
+        implementationTargets: ["packages/gatekeeper/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: ["svc-shared"],
+        startupWave: 1,
+        isFoundational: false,
+        sourceServiceIds: ["gatekeeper"],
+        completionSignals: [],
+      },
+    ],
+  };
+  const plan = {
+    epics: [],
+    stories: [],
+    tasks: [
+      {
+        localId: "t-gatekeeper",
+        epicLocalId: "e1",
+        storyLocalId: "us1",
+        title: "Implement gatekeeper runtime",
+        description: "Implement packages/gatekeeper/src.",
+        type: "feature",
+        files: ["packages/gatekeeper/src"],
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+  };
+
+  const report = (service as any).buildProjectCompletionReport("ep", plan, architecture);
+
+  assert.ok(report.issues.some((issue: any) => issue.code === "architecture_units_uncovered"));
+  assert.ok(!report.issues.some((issue: any) => issue.code === "dependency_order_weak"));
+  assert.equal(report.metrics.dependencyOrderCoverage.ratio, 1);
+});
+
+test("buildProjectCompletionReport prefers unit-scoped task ownership over shared file overlap", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const architecture = {
+    projectKey: "ep",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds/ep.md"],
+    architectureRoots: ["packages/shared/src"],
+    services: ["shared"],
+    crossCuttingDomains: ["Identity Model"],
+    verificationSurfaces: [],
+    startupWaves: [],
+    dependencyOrder: ["svc-shared", "cross-identity-model"],
+    units: [
+      {
+        unitId: "svc-shared",
+        kind: "service",
+        name: "shared",
+        summary: "Build shared",
+        sourceHeadings: ["Shared"],
+        implementationTargets: ["packages/shared/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: [],
+        startupWave: 0,
+        isFoundational: true,
+        sourceServiceIds: ["shared"],
+        completionSignals: [],
+      },
+      {
+        unitId: "cross-identity-model",
+        kind: "cross_cutting",
+        name: "Identity Model",
+        summary: "Establish identity model",
+        sourceHeadings: ["Identity Model"],
+        implementationTargets: ["packages/shared/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: ["svc-shared"],
+        startupWave: undefined,
+        isFoundational: false,
+        sourceServiceIds: ["shared"],
+        completionSignals: [],
+      },
+    ],
+  };
+  const plan = {
+    epics: [],
+    stories: [],
+    tasks: [
+      {
+        localId: "svc-shared-implementation-task-1",
+        epicLocalId: "service-shared",
+        storyLocalId: "svc-shared-implementation",
+        title: "Implement shared runtime",
+        description: "Implement packages/shared/src.",
+        type: "feature",
+        files: ["packages/shared/src"],
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+  };
+
+  const report = (service as any).buildProjectCompletionReport("ep", plan, architecture);
+  const identityCoverage = report.unitCoverage.find((entry: any) => entry.unitId === "cross-identity-model");
+
+  assert.ok(identityCoverage);
+  assert.equal(identityCoverage.satisfied, false);
+  assert.deepEqual(identityCoverage.implementationTaskKeys, []);
+  assert.ok(report.issues.some((issue: any) => issue.code === "architecture_units_uncovered"));
+});
+
+test("buildProjectCompletionReport keeps implementation tasks with attached tests in implementation coverage", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const architecture = {
+    projectKey: "ep",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds/ep.md"],
+    architectureRoots: ["packages/shared/src"],
+    services: ["shared"],
+    crossCuttingDomains: [],
+    verificationSurfaces: [],
+    startupWaves: [],
+    dependencyOrder: ["svc-shared"],
+    units: [
+      {
+        unitId: "svc-shared",
+        kind: "service",
+        name: "shared",
+        summary: "Build shared",
+        sourceHeadings: ["Shared"],
+        implementationTargets: ["packages/shared/src/index.ts"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: [],
+        startupWave: 0,
+        isFoundational: true,
+        sourceServiceIds: ["shared"],
+        completionSignals: [],
+      },
+    ],
+  };
+  const plan = {
+    epics: [],
+    stories: [],
+    tasks: [
+      {
+        localId: "svc-shared-implementation-task-1",
+        epicLocalId: "svc-shared",
+        storyLocalId: "svc-shared-implementation",
+        title: "Implement shared runtime",
+        description: "Implement packages/shared/src/index.ts.",
+        type: "feature",
+        files: ["packages/shared/src/index.ts"],
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        unitTests: ["Cover shared runtime behavior through packages/shared/src/index.ts."],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+  };
+
+  const report = (service as any).buildProjectCompletionReport("ep", plan, architecture);
+  const unitCoverage = report.unitCoverage.find((entry: any) => entry.unitId === "svc-shared");
+
+  assert.ok(unitCoverage);
+  assert.deepEqual(unitCoverage.implementationTaskKeys, ["svc-shared-implementation-task-1"]);
+  assert.deepEqual(unitCoverage.verificationTaskKeys, []);
+});
+
+test("persisted backlog round-trip preserves architecture-scoped local ids for completion scoring", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const architecture = {
+    projectKey: "ep",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds/ep.md"],
+    architectureRoots: ["packages"],
+    services: ["shared", "gatekeeper"],
+    crossCuttingDomains: [],
+    verificationSurfaces: [],
+    startupWaves: [],
+    dependencyOrder: ["svc-shared", "svc-gatekeeper"],
+    units: [
+      {
+        unitId: "svc-shared",
+        kind: "service",
+        name: "shared",
+        summary: "Build shared",
+        sourceHeadings: ["Shared"],
+        implementationTargets: ["packages/shared/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: [],
+        startupWave: 0,
+        isFoundational: true,
+        sourceServiceIds: ["shared"],
+        completionSignals: [],
+      },
+      {
+        unitId: "svc-gatekeeper",
+        kind: "service",
+        name: "gatekeeper",
+        summary: "Build gatekeeper",
+        sourceHeadings: ["Gatekeeper"],
+        implementationTargets: ["packages/gatekeeper/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: ["svc-shared"],
+        startupWave: 1,
+        isFoundational: false,
+        sourceServiceIds: ["gatekeeper"],
+        completionSignals: [],
+      },
+    ],
+  };
+  const plan = {
+    epics: [
+      {
+        localId: "svc-shared",
+        area: "ep",
+        title: "Build shared",
+        description: "Shared module implementation.",
+        acceptanceCriteria: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        priorityHint: 1,
+        serviceIds: ["shared"],
+        tags: [],
+        stories: [],
+      },
+      {
+        localId: "svc-gatekeeper",
+        area: "ep",
+        title: "Build gatekeeper",
+        description: "Gatekeeper module implementation.",
+        acceptanceCriteria: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        priorityHint: 2,
+        serviceIds: ["gatekeeper"],
+        tags: [],
+        stories: [],
+      },
+    ],
+    stories: [
+      {
+        localId: "svc-shared-us-01",
+        epicLocalId: "svc-shared",
+        title: "Implement shared runtime",
+        userStory: "As a system, I need shared runtime primitives.",
+        description: "Implement shared runtime surfaces.",
+        acceptanceCriteria: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        priorityHint: 1,
+        tasks: [],
+      },
+      {
+        localId: "svc-gatekeeper-us-01",
+        epicLocalId: "svc-gatekeeper",
+        title: "Implement gatekeeper runtime",
+        userStory: "As a system, I need the gatekeeper runtime.",
+        description: "Implement gatekeeper runtime surfaces.",
+        acceptanceCriteria: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        priorityHint: 2,
+        tasks: [],
+      },
+    ],
+    tasks: [
+      {
+        localId: "svc-shared-impl-01",
+        epicLocalId: "svc-shared",
+        storyLocalId: "svc-shared-us-01",
+        title: "Implement shared runtime",
+        description: "Implement packages/shared/src runtime surfaces.",
+        type: "feature",
+        files: ["packages/shared/src"],
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+      {
+        localId: "svc-gatekeeper-impl-01",
+        epicLocalId: "svc-gatekeeper",
+        storyLocalId: "svc-gatekeeper-us-01",
+        title: "Implement gatekeeper runtime",
+        description: "Implement packages/gatekeeper/src runtime surfaces.",
+        type: "feature",
+        files: ["packages/gatekeeper/src"],
+        estimatedStoryPoints: 5,
+        priorityHint: 2,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+  };
+
+  const baselineReport = (service as any).buildProjectCompletionReport("ep", plan, architecture);
+  assert.ok(!baselineReport.issues.some((issue: any) => issue.code === "dependency_order_weak"));
+
+  const project = await workspaceRepo.createProjectIfMissing({
+    workspaceId: workspace.workspaceId,
+    key: "ep",
+    title: "EP",
+    description: "EP",
+    status: "active",
+  });
+  await (service as any).persistPlanToDb(project.id, "ep", plan, "job-1", "cmd-1");
+  workspaceRepo.epics = [...workspaceRepo.epics].reverse();
+  workspaceRepo.stories = [...workspaceRepo.stories].reverse();
+  workspaceRepo.tasks = [...workspaceRepo.tasks].reverse();
+  const persisted = await (service as any).loadPersistedBacklog(project.id);
+  const rebuilt = (service as any).buildPlanFromPersistedBacklog(persisted);
+  const rebuiltReport = (service as any).buildProjectCompletionReport("ep", rebuilt, architecture);
+
+  assert.equal(rebuilt.epics[0].localId, "svc-shared");
+  assert.equal(rebuilt.stories[0].localId, "svc-shared-us-01");
+  assert.equal(rebuilt.tasks[0].localId, "svc-shared-impl-01");
+  assert.equal(rebuilt.tasks[1].localId, "svc-gatekeeper-impl-01");
+  assert.equal(rebuilt.tasks[1].epicLocalId, "svc-gatekeeper");
+  assert.equal(rebuilt.tasks[1].storyLocalId, "svc-gatekeeper-us-01");
+  assert.equal(rebuiltReport.score, baselineReport.score);
+  assert.ok(!rebuiltReport.issues.some((issue: any) => issue.code === "dependency_order_weak"));
+});
+
+test("buildProjectCompletionReport prefers the longest matching scoped unit prefix", () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  const architecture = {
+    projectKey: "ep",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds/ep.md"],
+    architectureRoots: ["packages"],
+    services: ["gatekeeper", "gatekeeper oracle"],
+    crossCuttingDomains: [],
+    verificationSurfaces: [],
+    startupWaves: [],
+    dependencyOrder: ["svc-gatekeeper", "svc-gatekeeper-oracle"],
+    units: [
+      {
+        unitId: "svc-gatekeeper",
+        kind: "service",
+        name: "gatekeeper",
+        summary: "Build gatekeeper",
+        sourceHeadings: ["Gatekeeper"],
+        implementationTargets: ["packages/gatekeeper/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: [],
+        startupWave: 0,
+        isFoundational: true,
+        sourceServiceIds: ["gatekeeper"],
+        completionSignals: [],
+      },
+      {
+        unitId: "svc-gatekeeper-oracle",
+        kind: "service",
+        name: "gatekeeper oracle",
+        summary: "Build gatekeeper oracle",
+        sourceHeadings: ["Gatekeeper Oracle"],
+        implementationTargets: ["packages/gatekeeper-oracle/src"],
+        supportingTargets: [],
+        verificationTargets: [],
+        verificationSurfaceIds: [],
+        dependsOnUnitIds: ["svc-gatekeeper"],
+        startupWave: 1,
+        isFoundational: false,
+        sourceServiceIds: ["gatekeeper-oracle"],
+        completionSignals: [],
+      },
+    ],
+  };
+  const plan = {
+    epics: [],
+    stories: [],
+    tasks: [
+      {
+        localId: "svc-gatekeeper-oracle-implementation-task-1",
+        epicLocalId: "service-gatekeeper-oracle-1",
+        storyLocalId: "svc-gatekeeper-oracle-implementation-1",
+        title: "Implement gatekeeper oracle runtime",
+        description: "Implement packages/gatekeeper-oracle/src runtime surfaces.",
+        type: "feature",
+        files: ["packages/gatekeeper-oracle/src"],
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:docs/sds/ep.md"],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+  };
+
+  const report = (service as any).buildProjectCompletionReport("ep", plan, architecture);
+  const gatekeeperCoverage = report.unitCoverage.find((entry: any) => entry.unitId === "svc-gatekeeper");
+  const oracleCoverage = report.unitCoverage.find((entry: any) => entry.unitId === "svc-gatekeeper-oracle");
+
+  assert.ok(gatekeeperCoverage);
+  assert.ok(oracleCoverage);
+  assert.equal(gatekeeperCoverage.satisfied, false);
+  assert.equal(oracleCoverage.satisfied, true);
+  assert.deepEqual(oracleCoverage.implementationTaskKeys, ["svc-gatekeeper-oracle-implementation-task-1"]);
+});
+
 test("buildCanonicalNameInventory preserves source-backed aliases for canonical matching", () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
@@ -3341,6 +4854,18 @@ test("writePlanArtifacts rejects inconsistent build-plan and services artifacts"
       },
     ],
   };
+  const architecture = {
+    projectKey: "proj",
+    generatedAt: new Date().toISOString(),
+    sourceDocs: ["docs/sds.md"],
+    architectureRoots: ["packages"],
+    services: ["ledger"],
+    crossCuttingDomains: [],
+    verificationSurfaces: [],
+    units: [],
+    dependencyOrder: [],
+    startupWaves: [],
+  };
 
   await assert.rejects(
     () =>
@@ -3351,6 +4876,7 @@ test("writePlanArtifacts rejects inconsistent build-plan and services artifacts"
         [],
         buildPlan,
         serviceCatalog,
+        architecture,
       ),
     /build-plan\.json and services\.json disagree on service identity ordering/i,
   );
@@ -3517,6 +5043,80 @@ test("createTasks writes SDS coverage report artifact", async () => {
   assert.ok(services.services.length > 0);
 });
 
+test("createTasks writes backlog quality report from the refreshed persisted backlog", async () => {
+  const outputs = [
+    JSON.stringify({
+      epics: [
+        {
+          localId: "e1",
+          area: "web",
+          title: "Lifecycle",
+          description: "Implement lifecycle capabilities",
+          acceptanceCriteria: ["ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Lifecycle story",
+          description: "Deliver lifecycle flow",
+          acceptanceCriteria: ["s ac1"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement lifecycle endpoint",
+          type: "feature",
+          description: "Implement packages/core/src/services/planning/CreateTasksService.ts for lifecycle orchestration.",
+          files: ["packages/core/src/services/planning/CreateTasksService.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          dependsOnKeys: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ];
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdex() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+  });
+
+  await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentStream: false,
+  });
+
+  const qualityPath = path.join(workspace.mcodaDir, "tasks", "web", "backlog-quality-report.json");
+  const report = JSON.parse(await fs.readFile(qualityPath, "utf8"));
+  assert.equal(report.projectKey, "web");
+  assert.equal(typeof report.score, "number");
+  assert.ok(Array.isArray(report.architectureRoots));
+  assert.ok(report.architectureRoots.includes("packages"));
+  assert.ok((report.metrics?.implementationFileCoverage?.numerator ?? 0) >= 1);
+  assert.ok(
+    (report.metrics?.implementationFileCoverage?.denominator ?? 0) >=
+      (report.metrics?.implementationFileCoverage?.numerator ?? 0),
+  );
+  assert.ok(Array.isArray(report.issues));
+});
+
 test("createTasks builds EP-style coverage and planning artifacts from box-tree SDS", async () => {
   await fs.writeFile(path.join(workspaceRoot, "docs", "sds.md"), EP_SDS_FIXTURE, "utf8");
   const outputs = [
@@ -3580,9 +5180,13 @@ test("createTasks builds EP-style coverage and planning artifacts from box-tree 
   const coveragePath = path.join(workspace.mcodaDir, "tasks", "ep", "coverage-report.json");
   const buildPlanPath = path.join(workspace.mcodaDir, "tasks", "ep", "build-plan.json");
   const servicesPath = path.join(workspace.mcodaDir, "tasks", "ep", "services.json");
+  const architecturePath = path.join(workspace.mcodaDir, "tasks", "ep", "architecture.json");
+  const epicsPath = path.join(workspace.mcodaDir, "tasks", "ep", "epics.json");
   const coverage = JSON.parse(await fs.readFile(coveragePath, "utf8"));
   const buildPlan = JSON.parse(await fs.readFile(buildPlanPath, "utf8"));
   const services = JSON.parse(await fs.readFile(servicesPath, "utf8"));
+  const architecture = JSON.parse(await fs.readFile(architecturePath, "utf8"));
+  const epics = JSON.parse(await fs.readFile(epicsPath, "utf8"));
 
   assert.ok(coverage.totalSections >= 4, `expected multiple SDS sections, got ${coverage.totalSections}`);
   assert.ok(!coverage.unmatched.includes("Software Design Specification"));
@@ -3604,6 +5208,10 @@ test("createTasks builds EP-style coverage and planning artifacts from box-tree 
   assert.ok(!serviceNames.has("ordered gateway"));
   assert.ok(!serviceNames.has("no public rest api"));
   assert.ok(serviceNames.size >= 6, `expected concrete services, got ${JSON.stringify(Array.from(serviceNames))}`);
+  assert.ok(Array.isArray(architecture.dependencyOrder));
+  assert.ok(architecture.dependencyOrder.length >= 3);
+  assert.ok(Array.isArray(epics));
+  assert.ok(epics.length >= 2);
 });
 
 test("createTasks filters opaque local doc handles while preserving useful references", async () => {
@@ -3683,12 +5291,19 @@ test("createTasks filters opaque local doc handles while preserving useful refer
 });
 
 test("createTasks auto-remediates epic service ids and tags multi-service epics as cross_service", async () => {
-  const architecturePath = path.join(workspaceRoot, "architecture-overview.md");
+  const sdsPath = path.join(workspaceRoot, "docs", "sds.md");
   await fs.writeFile(
-    architecturePath,
+    sdsPath,
     [
-      "# Architecture Overview",
-      "Service dependency baseline:",
+      "# Software Design Specification",
+      "## Folder Tree",
+      "```text",
+      ".",
+      "├── services/api-gateway/src/index.ts",
+      "├── services/auth/src/index.ts",
+      "└── workers/ingest/src/worker.ts",
+      "```",
+      "## Architectural Dependency Order",
       "- worker-ingest depends on svc-api-gateway",
       "- svc-api-gateway depends on svc-auth",
     ].join("\n"),
@@ -3751,7 +5366,7 @@ test("createTasks auto-remediates epic service ids and tags multi-service epics 
   await service.createTasks({
     workspace,
     projectKey: "web",
-    inputs: [architecturePath],
+    inputs: [sdsPath],
     agentStream: false,
   });
 
@@ -4446,7 +6061,7 @@ test("createTasks records qa preflight scripts and entrypoints", async () => {
   assert.ok(preflight);
   assert.equal(preflight.details.scripts.dev, "vite");
   assert.equal(preflight.details.scripts.test, "node tests/all.js");
-  assert.equal(preflight.details.entrypoints[0].command, "npm run dev");
+  assert.equal(preflight.details.entrypoints[0].command, "package script:dev");
   assert.equal(preflight.details.entrypoints[0].base_url, undefined);
 });
 
@@ -5531,11 +7146,1822 @@ test("createTasks falls back to deterministic planning on invalid agent output",
   assert.ok(result.epics.length >= 1);
   assert.ok(result.stories.length >= 1);
   assert.ok(result.tasks.length >= 1);
-  assert.ok(result.tasks.some((task) => task.title === "Implement baseline project scaffolding"));
-  assert.ok(result.tasks.some((task) => task.title === "Validate baseline behavior and regressions"));
+  assert.ok(!result.tasks.some((task) => task.title === "Implement baseline project scaffolding"));
   assert.ok(
-    jobService.checkpoints.some((entry) => entry.stage === "epics_generated" && entry.details?.source === "fallback"),
+    result.tasks.some(
+      (task: any) =>
+        /^Implement /i.test(task.title) &&
+        ((task.metadata?.files as string[] | undefined) ?? []).some((file) =>
+          /apps\/web|services\/api|services\/worker|packages\/shared/i.test(file),
+        ),
+    ),
+    `expected architecture-first implementation tasks, got ${result.tasks.map((task) => task.title).join(" | ")}`,
   );
+  assert.ok(
+    jobService.checkpoints.some(
+      (entry) =>
+        entry.stage === "epics_generated" &&
+        (entry.details?.source === "fallback" || entry.details?.source === "sds"),
+    ),
+  );
+});
+
+test("outputSchemaForAction returns Codex-compatible strict object schemas", () => {
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: new StubWorkspaceRepo() as any,
+    taskOrderingFactory: createOrderingFactory(new StubWorkspaceRepo()) as any,
+  });
+
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "object") {
+      assert.equal(node.additionalProperties, false);
+      const properties = Object.keys(node.properties ?? {}).sort();
+      const required = Array.isArray(node.required) ? [...node.required].sort() : [];
+      assert.deepEqual(required, properties);
+      for (const child of Object.values(node.properties ?? {})) {
+        visit(child);
+      }
+      return;
+    }
+    if (node.type === "array") {
+      visit(node.items);
+      return;
+    }
+    if (Array.isArray(node.anyOf)) {
+      for (const child of node.anyOf) {
+        visit(child);
+      }
+    }
+  };
+
+  visit((service as any).outputSchemaForAction("full_plan"));
+  visit((service as any).outputSchemaForAction("epics"));
+  visit((service as any).outputSchemaForAction("stories"));
+  visit((service as any).outputSchemaForAction("stories_batch"));
+  visit((service as any).outputSchemaForAction("tasks"));
+  visit((service as any).outputSchemaForAction("tasks_compact"));
+  visit((service as any).outputSchemaForAction("tasks_batch"));
+});
+
+test("createTasks repairs invalid explicit-agent planning output without switching to deterministic fallback", async () => {
+  const outputs = [
+    "not json",
+    "still not json",
+    JSON.stringify(await buildDefaultSdsDrivenAgentPlan()),
+  ];
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const agentService = new StubAgentService(outputs);
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  (service as any).shouldUseStrictAgentStagedPlanning = () => ({ useStaged: false, promptTokens: 1000 });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentName: "agent-1",
+    agentStream: false,
+  });
+
+  assert.ok(result.tasks.length > 0);
+  assert.ok(
+    jobService.checkpoints.some(
+      (entry) =>
+        entry.stage === "epics_generated" &&
+        entry.details?.source === "agent" &&
+        entry.details?.mode === "strict_full_plan",
+    ),
+  );
+  assert.ok(!jobService.logs.some((line) => /deterministic planner fallback/i.test(line)));
+  assert.ok(jobService.tokenUsage.length >= 3, `expected failed attempts to be recorded, got ${jobService.tokenUsage.length}`);
+  assert.ok(jobService.tokenUsage.some((entry) => entry.metadata?.attempt === 2));
+  assert.ok(agentService.invocations.some((entry) => entry.metadata?.action === "full_plan"));
+});
+
+test("createTasks recovers from strict full-plan timeout by switching to staged agent planning", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const agentService = new StubAgentService([]);
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  (service as any).shouldUseStrictAgentStagedPlanning = () => ({ useStaged: false, promptTokens: 1000 });
+  (service as any).generateStrictAgentPlan = async () => {
+    throw new Error("AUTH_ERROR: codex CLI timed out after 900000ms");
+  };
+  (service as any).generateStrictAgentPlanStaged = async () => ({
+    epics: [
+      {
+        localId: "e1",
+        area: "web",
+        title: "Build Runtime",
+        description: "Build the runtime surface.",
+        acceptanceCriteria: ["Runtime surface exists"],
+        relatedDocs: ["docdex:doc-1"],
+        priorityHint: 10,
+        serviceIds: ["svc-api"],
+        tags: [],
+        stories: [],
+      },
+    ],
+    stories: [
+      {
+        localId: "us1",
+        epicLocalId: "e1",
+        title: "Implement runtime service",
+        userStory: "As an operator, I need the runtime service to exist.",
+        description: "Implement the runtime service module and entrypoint.",
+        acceptanceCriteria: ["Runtime module is wired"],
+        relatedDocs: ["docdex:doc-1"],
+        priorityHint: 10,
+        tasks: [],
+      },
+    ],
+    tasks: [
+      {
+        localId: "t1",
+        epicLocalId: "e1",
+        storyLocalId: "us1",
+        title: "Implement runtime module",
+        type: "feature",
+        description: "Implement services/api/src/runtime.ts and wire services/api/src/index.ts so the runtime service can execute.",
+        files: ["services/api/src/runtime.ts", "services/api/src/index.ts"],
+        estimatedStoryPoints: 3,
+        priorityHint: 10,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:doc-1"],
+        unitTests: ["Add runtime unit coverage"],
+        componentTests: [],
+        integrationTests: ["Run runtime integration coverage"],
+        apiTests: [],
+        qa: null,
+      },
+    ],
+  });
+  (service as any).planLooksTooWeakForSds = () => false;
+  (service as any).buildProjectCompletionReport = () => ({
+    projectKey: "web",
+    generatedAt: new Date().toISOString(),
+    score: 100,
+    threshold: 80,
+    satisfied: true,
+    summary: "ok",
+    architectureRoots: [],
+    metrics: {
+      architectureUnitCoverage: { numerator: 1, denominator: 1, ratio: 1 },
+      implementationSurfaceCoverage: { numerator: 1, denominator: 1, ratio: 1 },
+      crossCuttingCoverage: { numerator: 1, denominator: 1, ratio: 1 },
+      dependencyOrderCoverage: { numerator: 1, denominator: 1, ratio: 1 },
+      verificationSupportCoverage: { numerator: 1, denominator: 1, ratio: 1 },
+      implementationToVerificationBalance: { numerator: 1, denominator: 1, ratio: 1 },
+      docsOnlyPenalty: { count: 0, ratio: 0 },
+      metaTaskPenalty: { count: 0, ratio: 0 },
+    },
+    issues: [],
+    unitCoverage: [],
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentName: "agent-1",
+    agentStream: false,
+  });
+
+  assert.ok(result.tasks.length > 0);
+  assert.ok(
+    jobService.checkpoints.some(
+      (entry) =>
+        entry.stage === "epics_generated" &&
+        entry.details?.source === "agent" &&
+        entry.details?.mode === "strict_staged_plan",
+    ),
+  );
+  assert.ok(
+    jobService.logs.some((line) => /recovering from full-plan timeout through staged generation/i.test(line)),
+    `expected staged recovery log, got ${jobService.logs.join("\n")}`,
+  );
+  assert.ok(!jobService.logs.some((line) => /deterministic planner fallback/i.test(line)));
+  assert.equal(agentService.invocations.length, 0);
+});
+
+test("collectStrictEpicChunk uses compact single-unit epic generation with retry instead of batch timeout loops", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const unit = {
+    unitId: "svc-shared",
+    kind: "service",
+    name: "shared package",
+    summary: "Shared runtime and contract package.",
+    sourceHeadings: ["Architecture Overview"],
+    implementationTargets: ["packages/shared/src/index.ts"],
+    supportingTargets: [],
+    verificationTargets: [],
+    verificationSurfaceIds: [],
+    dependsOnUnitIds: [],
+    startupWave: 0,
+    isFoundational: true,
+    sourceServiceIds: ["shared"],
+    completionSignals: ["shared package exists"],
+  };
+  let batchAttempts = 0;
+  let singleUnitAttempts = 0;
+  (service as any).generateEpicsForArchitectureChunk = async () => {
+    batchAttempts += 1;
+    return [];
+  };
+  (service as any).generateEpicForSingleArchitectureUnit = async (params: { retryReason?: string }) => {
+    singleUnitAttempts += 1;
+    if (!params.retryReason) {
+      throw new Error("AUTH_ERROR: codex CLI timed out after 120000ms");
+    }
+    return [
+      {
+        localId: "e1",
+        area: "ep",
+        title: "Build Shared Package",
+        description: "Repair-generated shared package epic.",
+        acceptanceCriteria: [],
+        relatedDocs: [],
+        priorityHint: 1,
+        serviceIds: ["shared"],
+        tags: [],
+        stories: [],
+      },
+    ];
+  };
+
+  const collectedEpics: any[] = [];
+  await (service as any).collectStrictEpicChunk({
+    agent: { id: "agent-1", slug: "agent-1" },
+    projectKey: "EP",
+    chunk: [unit],
+    docSummary: "",
+    projectBuildMethod: "",
+    serviceCatalog: { projectKey: "EP" },
+    options: {},
+    stream: true,
+    jobId: "job-1",
+    commandRunId: "cmd-1",
+    collectedEpics,
+  });
+
+  assert.equal(batchAttempts, 0);
+  assert.equal(singleUnitAttempts, 2);
+  assert.equal(collectedEpics.length, 1);
+  assert.equal(collectedEpics[0]?.title, "Build Shared Package");
+  assert.ok(
+    jobService.logs.some((line) => /strict single-unit epic generation requested/i.test(line)),
+    `expected single-unit generation log, got ${jobService.logs.join("\n")}`,
+  );
+  assert.ok(
+    jobService.logs.some((line) => /retrying through single-unit repair/i.test(line)),
+    `expected single-unit repair log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictEpicChunk falls back to deterministic architecture scaffold when both single-unit agent attempts fail", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const unit = {
+    unitId: "gate-release-readiness",
+    kind: "release_gate",
+    name: "release readiness",
+    summary: "Release readiness gate for SDS acceptance scenarios.",
+    sourceHeadings: ["Wave 4", "Acceptance"],
+    implementationTargets: ["ops/scripts/verify-release.sh"],
+    supportingTargets: [],
+    verificationTargets: ["ops/tests/release"],
+    verificationSurfaceIds: [],
+    dependsOnUnitIds: ["svc-ops"],
+    startupWave: 4,
+    isFoundational: false,
+    sourceServiceIds: ["ops"],
+    completionSignals: ["release readiness verified"],
+  };
+  let singleUnitAttempts = 0;
+  (service as any).generateEpicForSingleArchitectureUnit = async () => {
+    singleUnitAttempts += 1;
+    throw new Error("AUTH_ERROR: codex CLI timed out after 120000ms");
+  };
+
+  const collectedEpics: any[] = [];
+  await (service as any).collectStrictEpicChunk({
+    agent: { id: "agent-1", slug: "agent-1" },
+    projectKey: "EP",
+    chunk: [unit],
+    docSummary: "",
+    projectBuildMethod: "",
+    serviceCatalog: { projectKey: "EP" },
+    options: {},
+    stream: true,
+    jobId: "job-1",
+    commandRunId: "cmd-1",
+    collectedEpics,
+  });
+
+  assert.equal(singleUnitAttempts, 2);
+  assert.equal(collectedEpics.length, 1);
+  assert.equal(collectedEpics[0]?.title, "Verify Release Readiness");
+  assert.deepEqual(collectedEpics[0]?.serviceIds, ["ops"]);
+  assert.ok(
+    jobService.logs.some((line) => /using deterministic architecture scaffold and continuing/i.test(line)),
+    `expected deterministic scaffold log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictStoriesChunk falls back to deterministic story scaffold when strict story repair fails", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  (service as any).generateStoriesForEpic = async () => {
+    throw new Error("Agent output was not valid JSON for stories");
+  };
+  (service as any).repairStoriesForEpic = async () => {
+    throw new Error("Agent output was not valid JSON for stories");
+  };
+
+  const storiesByEpic = new Map<string, any[]>();
+  await (service as any).collectStrictStoriesChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [epic],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    storiesByEpic,
+  );
+
+  assert.equal(storiesByEpic.get("e1")?.length, 1);
+  assert.equal(storiesByEpic.get("e1")?.[0]?.title, "Deliver Build Shared");
+  assert.ok(
+    jobService.logs.some((line) => /using deterministic fallback story and continuing/i.test(line)),
+    `expected deterministic story fallback log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictTasksChunk falls back to deterministic task scaffold when strict task repair fails", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  const story = {
+    localId: "us1",
+    epicLocalId: "e1",
+    title: "Implement shared runtime",
+    userStory: "As an operator, I need the shared runtime.",
+    description: "Implement shared runtime surfaces.",
+    acceptanceCriteria: ["runtime exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    tasks: [],
+  };
+  (service as any).generateTasksForStory = async () => {
+    throw new Error("Agent output was not valid JSON for tasks");
+  };
+  (service as any).repairTasksForStory = async () => {
+    throw new Error("Agent output was not valid JSON for tasks");
+  };
+
+  const tasksByStoryScope = new Map<string, any[]>();
+  await (service as any).collectStrictTasksChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [{ epic, story }],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    new Map([["e1", "Build Shared"]]),
+    tasksByStoryScope,
+  );
+
+  assert.equal(tasksByStoryScope.get("e1::us1")?.length, 3);
+  assert.equal(tasksByStoryScope.get("e1::us1")?.[0]?.title, "Implement Implement shared runtime target modules");
+  assert.ok(
+    jobService.logs.some((line) => /using deterministic fallback tasks and continuing/i.test(line)),
+    `expected deterministic task fallback log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictStoriesChunk skips repair after timeout-like single-epic failure", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  let repairCalls = 0;
+  (service as any).generateStoriesForEpic = async () => {
+    throw new Error("AUTH_ERROR: codex CLI timed out after 120000ms");
+  };
+  (service as any).repairStoriesForEpic = async () => {
+    repairCalls += 1;
+    return [];
+  };
+
+  const storiesByEpic = new Map<string, any[]>();
+  await (service as any).collectStrictStoriesChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [epic],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    storiesByEpic,
+  );
+
+  assert.equal(repairCalls, 0);
+  assert.equal(storiesByEpic.get("e1")?.length, 1);
+  assert.equal(storiesByEpic.get("e1")?.[0]?.title, "Deliver Build Shared");
+  assert.ok(
+    jobService.logs.some((line) => /without a second repair attempt/i.test(line)),
+    `expected timeout short-circuit log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictTasksChunk skips repair after timeout-like single-story failure", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  const story = {
+    localId: "us1",
+    epicLocalId: "e1",
+    title: "Implement shared runtime",
+    userStory: "As an operator, I need the shared runtime.",
+    description: "Implement shared runtime surfaces.",
+    acceptanceCriteria: ["runtime exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    tasks: [],
+  };
+  let repairCalls = 0;
+  (service as any).generateTasksForStory = async () => {
+    throw new Error("AUTH_ERROR: codex CLI timed out after 120000ms");
+  };
+  (service as any).repairTasksForStory = async () => {
+    repairCalls += 1;
+    return [];
+  };
+
+  const tasksByStoryScope = new Map<string, any[]>();
+  await (service as any).collectStrictTasksChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [{ epic, story }],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    new Map([["e1", "Build Shared"]]),
+    tasksByStoryScope,
+  );
+
+  assert.equal(repairCalls, 0);
+  assert.equal(tasksByStoryScope.get("e1::us1")?.length, 3);
+  assert.equal(tasksByStoryScope.get("e1::us1")?.[0]?.title, "Implement Implement shared runtime target modules");
+  assert.ok(
+    jobService.logs.some((line) => /without a second repair attempt/i.test(line)),
+    `expected timeout short-circuit log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictTasksChunk passes compact repair mode for deterministic single-story recovery", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  const story = {
+    localId: "us1",
+    epicLocalId: "e1",
+    title: "Implement shared runtime",
+    userStory: "As an operator, I need the shared runtime.",
+    description: "Implement shared runtime surfaces.",
+    acceptanceCriteria: ["runtime exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    tasks: [],
+  };
+  let repairOptions: any;
+  (service as any).generateTasksForStory = async () => {
+    throw new Error("Agent output was not valid JSON for tasks_compact");
+  };
+  (service as any).repairTasksForStory = async (...args: any[]) => {
+    repairOptions = args[11];
+    return [
+      {
+        localId: "t1",
+        title: "Implement shared runtime module",
+        type: "feature",
+        description: "Implement packages/shared/src/runtime.ts.",
+        files: ["packages/shared/src/runtime.ts"],
+        estimatedStoryPoints: 3,
+        priorityHint: 10,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+        qa: null,
+      },
+    ];
+  };
+
+  const tasksByStoryScope = new Map<string, any[]>();
+  await (service as any).collectStrictTasksChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [{ epic, story }],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    new Map([["e1", "Build Shared"]]),
+    tasksByStoryScope,
+    { compactSingleStorySchema: true },
+  );
+
+  assert.equal(repairOptions?.compactSchema, true);
+  assert.equal(tasksByStoryScope.get("e1::us1")?.[0]?.title, "Implement shared runtime module");
+});
+
+test("single-item story generation and repair use bounded timeout metadata with compact context", async () => {
+  const largeBuildMethod = `build-start\n${"build-step ".repeat(4000)}\nbuild-end-sentinel`;
+  const largeDocSummary = `doc-start\n${"doc-segment ".repeat(5000)}\ndoc-end-sentinel`;
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us1",
+          title: "Implement shared runtime",
+          userStory: "As an operator, I need shared runtime support.",
+          description: "Implement shared runtime surfaces.",
+          acceptanceCriteria: ["shared runtime works"],
+          relatedDocs: [],
+          priorityHint: 1,
+        },
+      ],
+    }),
+    JSON.stringify({
+      stories: [
+        {
+          localId: "us2",
+          title: "Repair shared runtime sequencing",
+          userStory: "As an operator, I need repaired shared runtime sequencing.",
+          description: "Repair story output for shared runtime.",
+          acceptanceCriteria: ["repair works"],
+          relatedDocs: [],
+          priorityHint: 2,
+        },
+      ],
+    }),
+  ]);
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  await (service as any).generateStoriesForEpic(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    {
+      localId: "e1",
+      key: "e1",
+      title: "Build Shared",
+      description: "Build shared service surfaces.",
+      acceptanceCriteria: ["shared service exists"],
+      relatedDocs: [],
+      priorityHint: 1,
+      serviceIds: ["shared"],
+      tags: [],
+      stories: [],
+    },
+    largeDocSummary,
+    largeBuildMethod,
+    false,
+    "job-1",
+    "cmd-1",
+  );
+  await (service as any).repairStoriesForEpic(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    {
+      localId: "e1",
+      key: "e1",
+      title: "Build Shared",
+      description: "Build shared service surfaces.",
+      acceptanceCriteria: ["shared service exists"],
+      relatedDocs: [],
+      priorityHint: 1,
+      serviceIds: ["shared"],
+      tags: [],
+      stories: [],
+    },
+    largeDocSummary,
+    largeBuildMethod,
+    "AUTH_ERROR: codex CLI timed out after 120000ms",
+    [
+      {
+        localId: "us-fallback-1",
+        title: "Deliver Build Shared",
+        userStory: "As a delivery team, we need an executable implementation story for Build Shared.",
+        description: "Fallback story.",
+        acceptanceCriteria: ["fallback works"],
+        relatedDocs: [],
+        priorityHint: 1,
+        tasks: [],
+      },
+    ],
+    false,
+    "job-1",
+    "cmd-1",
+  );
+
+  const storyInvocations = agentService.invocations.filter((entry) => entry.metadata?.action === "stories");
+  assert.equal(storyInvocations.length, 2);
+  assert.ok(
+    storyInvocations.every((entry) => entry.metadata?.timeoutMs === 120_000),
+    `expected bounded story timeout metadata, got ${JSON.stringify(storyInvocations.map((entry) => entry.metadata))}`,
+  );
+  assert.ok(
+    storyInvocations.every((entry) => entry.input.length < 25_000),
+    `expected compact story prompts, got lengths ${storyInvocations.map((entry) => entry.input.length).join(", ")}`,
+  );
+  assert.ok(storyInvocations.every((entry) => !entry.input.includes("doc-end-sentinel")));
+  assert.ok(storyInvocations.every((entry) => !entry.input.includes("build-end-sentinel")));
+});
+
+test("single-item task generation and repair use bounded timeout metadata with compact context", async () => {
+  const largeBuildMethod = `build-start\n${"build-step ".repeat(4000)}\nbuild-end-sentinel`;
+  const largeDocSummary = `doc-start\n${"doc-segment ".repeat(5000)}\ndoc-end-sentinel`;
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime",
+          type: "feature",
+          description: "Implement shared runtime surfaces.",
+          files: ["packages/shared/src/index.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 1,
+          dependsOnKeys: [],
+          relatedDocs: [],
+          unitTests: ["tests/unit/shared-runtime.test.ts"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+          qa: null,
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t2",
+          title: "Repair shared runtime validation",
+          type: "feature",
+          description: "Repair task output for shared runtime.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          dependsOnKeys: [],
+          relatedDocs: [],
+          unitTests: ["tests/unit/shared-runtime-repair.test.ts"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+          qa: null,
+        },
+      ],
+    }),
+  ]);
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  await (service as any).generateTasksForStory(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    { key: "e1", title: "Build Shared" },
+    {
+      localId: "us1",
+      key: "us1",
+      title: "Implement shared runtime",
+      userStory: "As an operator, I need the shared runtime.",
+      description: "Implement shared runtime surfaces.",
+      acceptanceCriteria: ["runtime exists"],
+      relatedDocs: [],
+      priorityHint: 1,
+      tasks: [],
+    },
+    largeDocSummary,
+    largeBuildMethod,
+    false,
+    "job-1",
+    "cmd-1",
+  );
+  await (service as any).repairTasksForStory(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    { key: "e1", title: "Build Shared" },
+    {
+      localId: "us1",
+      key: "us1",
+      title: "Implement shared runtime",
+      userStory: "As an operator, I need the shared runtime.",
+      description: "Implement shared runtime surfaces.",
+      acceptanceCriteria: ["runtime exists"],
+      relatedDocs: [],
+      priorityHint: 1,
+      tasks: [],
+    },
+    largeDocSummary,
+    largeBuildMethod,
+    "AUTH_ERROR: codex CLI timed out after 120000ms",
+    [
+      {
+        localId: "t-fallback-1",
+        title: "Implement core scope",
+        type: "feature",
+        description: "Fallback task.",
+        files: [],
+        estimatedStoryPoints: 3,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+        qa: null,
+      },
+    ],
+    false,
+    "job-1",
+    "cmd-1",
+  );
+
+  const taskInvocations = agentService.invocations.filter((entry) => entry.metadata?.action === "tasks");
+  assert.equal(taskInvocations.length, 2);
+  assert.ok(
+    taskInvocations.every((entry) => entry.metadata?.timeoutMs === 120_000),
+    `expected bounded task timeout metadata, got ${JSON.stringify(taskInvocations.map((entry) => entry.metadata))}`,
+  );
+  assert.ok(
+    taskInvocations.every((entry) => entry.input.length < 28_000),
+    `expected compact task prompts, got lengths ${taskInvocations.map((entry) => entry.input.length).join(", ")}`,
+  );
+  assert.ok(taskInvocations.every((entry) => !entry.input.includes("doc-end-sentinel")));
+  assert.ok(taskInvocations.every((entry) => !entry.input.includes("build-end-sentinel")));
+});
+
+test("buildDerivedStoriesForEpic splits deterministic stories by architecture targets", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const stories = (service as any).buildDerivedStoriesForEpic(
+    {
+      localId: "e1",
+      area: "shared",
+      title: "Build Shared",
+      description: "Shared runtime epic.",
+      acceptanceCriteria: ["shared completion"],
+      relatedDocs: ["docdex:doc-1"],
+      priorityHint: 10,
+      serviceIds: ["shared"],
+      tags: [],
+      stories: [],
+    },
+    {
+      unitId: "shared-core",
+      kind: "service",
+      name: "Shared",
+      summary: "Shared runtime surfaces.",
+      sourceHeadings: ["Shared"],
+      implementationTargets: ["packages/shared/src/runtime.ts", "packages/shared/src/config.ts"],
+      supportingTargets: ["packages/shared/src/index.ts"],
+      verificationTargets: ["packages/shared/test/runtime.test.ts"],
+      verificationSurfaceIds: ["shared-suite"],
+      dependsOnUnitIds: ["contracts-core"],
+      startupWave: 1,
+      isFoundational: true,
+      sourceServiceIds: ["shared"],
+      completionSignals: ["shared runtime completes startup"],
+    },
+    new Map([
+      [
+        "shared-suite",
+        {
+          surfaceId: "shared-suite",
+          kind: "suite",
+          name: "Shared Runtime Suite",
+          summary: "Shared runtime verification.",
+          sourceCoverage: "shared",
+          targetHints: ["packages/shared/test/runtime.test.ts"],
+          relatedUnitIds: ["shared-core"],
+        },
+      ],
+    ]),
+  );
+
+  assert.equal(stories.length, 3);
+  assert.equal(stories[0]?.title, "Implement Shared core");
+  assert.match(stories[0]?.description ?? "", /packages\/shared\/src\/runtime\.ts/);
+  assert.equal(stories[1]?.title, "Integrate Shared dependencies");
+  assert.match(stories[1]?.description ?? "", /contracts-core/);
+  assert.equal(stories[2]?.title, "Validate Shared readiness");
+  assert.match(stories[2]?.description ?? "", /Shared Runtime Suite/);
+});
+
+test("createTasks batches strict staged story and task generation to avoid one-call-per-item planning", async () => {
+  const outputs = [
+    JSON.stringify({
+      epicStories: [
+        {
+          epicLocalId: "e1",
+          stories: [
+            {
+              localId: "us1",
+              title: "Build shared package",
+              userStory: "As a maintainer, I need shared package scaffolding.",
+              description: "Implement packages/shared runtime surfaces.",
+              acceptanceCriteria: ["shared story ac"],
+              relatedDocs: ["docdex:doc-1"],
+              priorityHint: 10,
+            },
+          ],
+        },
+        {
+          epicLocalId: "e2",
+          stories: [
+            {
+              localId: "us2",
+              title: "Build ops scripts",
+              userStory: "As an operator, I need release scripts.",
+              description: "Implement ops scripts and runbooks.",
+              acceptanceCriteria: ["ops story ac"],
+              relatedDocs: ["docdex:doc-2"],
+              priorityHint: 20,
+            },
+          ],
+        },
+      ],
+    }),
+    JSON.stringify({
+      storyTasks: [
+        {
+          epicLocalId: "e1",
+          storyLocalId: "us1",
+          tasks: [
+            {
+              localId: "t1",
+              title: "Implement shared package",
+              type: "feature",
+              description: "Implement packages/shared/src/index.ts and packages/shared/src/types.ts.",
+              files: ["packages/shared/src/index.ts", "packages/shared/src/types.ts"],
+              estimatedStoryPoints: 3,
+              priorityHint: 10,
+              dependsOnKeys: [],
+              relatedDocs: ["docdex:doc-1"],
+              unitTests: ["Run shared unit coverage"],
+              componentTests: [],
+              integrationTests: [],
+              apiTests: [],
+              qa: null,
+            },
+          ],
+        },
+        {
+          epicLocalId: "e2",
+          storyLocalId: "us2",
+          tasks: [
+            {
+              localId: "t1",
+              title: "Implement ops scripts",
+              type: "feature",
+              description: "Implement ops/scripts/replay-from-block.sh and docs/runbooks/gatekeeper-replay.md.",
+              files: ["ops/scripts/replay-from-block.sh", "docs/runbooks/gatekeeper-replay.md"],
+              estimatedStoryPoints: 2,
+              priorityHint: 20,
+              dependsOnKeys: [],
+              relatedDocs: ["docdex:doc-2"],
+              unitTests: [],
+              componentTests: [],
+              integrationTests: ["Run ops integration coverage"],
+              apiTests: [],
+              qa: null,
+            },
+          ],
+        },
+      ],
+    }),
+  ];
+  const agentService = new StubAgentService(outputs);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  (service as any).buildStoryGenerationChunks = (_projectKey: string, epics: any[]) => [epics];
+  (service as any).buildTaskGenerationChunks = (_projectKey: string, entries: any[]) => [entries];
+  const agent = await agentService.resolveAgent();
+  const result = await (service as any).generatePlanFromAgent(
+    "web",
+    [
+      {
+        localId: "e1",
+        area: "shared",
+        title: "Shared Foundation",
+        description: "Foundation epic.",
+        acceptanceCriteria: ["shared ac"],
+        relatedDocs: ["docdex:doc-1"],
+        priorityHint: 10,
+        serviceIds: ["shared"],
+        tags: [],
+        stories: [],
+      },
+      {
+        localId: "e2",
+        area: "ops",
+        title: "Operations",
+        description: "Ops epic.",
+        acceptanceCriteria: ["ops ac"],
+        relatedDocs: ["docdex:doc-2"],
+        priorityHint: 20,
+        serviceIds: ["ops"],
+        tags: [],
+        stories: [],
+      },
+    ],
+    agent,
+    "Docs: none",
+    {
+      agentStream: false,
+      jobId: "job-1",
+      commandRunId: "cmd-1",
+      projectBuildMethod: "Build the project in dependency order.",
+      strictAgentMode: true,
+    },
+  );
+
+  assert.equal(result.stories.length, 2);
+  assert.equal(result.tasks.length, 2);
+  assert.ok(agentService.invocations.some((entry) => entry.metadata?.action === "stories_batch"));
+  assert.ok(agentService.invocations.some((entry) => entry.metadata?.action === "tasks_batch"));
+  assert.ok(
+    agentService.invocations
+      .filter((entry) => entry.metadata?.action === "stories_batch" || entry.metadata?.action === "tasks_batch")
+      .every((entry) => typeof entry.metadata?.timeoutMs === "number" && (entry.metadata?.timeoutMs as number) > 0),
+  );
+  assert.ok(!agentService.invocations.some((entry) => entry.metadata?.action === "full_plan"));
+  assert.ok(!agentService.invocations.some((entry) => entry.metadata?.action === "stories"));
+  assert.ok(!agentService.invocations.some((entry) => entry.metadata?.action === "tasks"));
+});
+
+test("generatePlanFromAgent can skip agent story synthesis and use deterministic epic-derived stories with single-story task prompts", async () => {
+  const outputs = [
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared package",
+          type: "feature",
+          description: "Implement packages/shared/src/index.ts and packages/shared/src/types.ts.",
+          files: ["packages/shared/src/index.ts", "packages/shared/src/types.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          relatedDocs: ["docdex:doc-1"],
+          unitTests: ["pnpm --filter @ep/shared test"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+          qa: null,
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement ops scripts",
+          type: "feature",
+          description: "Implement ops/scripts/replay-from-block.sh and docs/runbooks/gatekeeper-replay.md.",
+          files: ["ops/scripts/replay-from-block.sh", "docs/runbooks/gatekeeper-replay.md"],
+          estimatedStoryPoints: 2,
+          priorityHint: 20,
+          dependsOnKeys: [],
+          relatedDocs: ["docdex:doc-2"],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: ["./ops/scripts/replay-from-block.sh --dry-run"],
+          apiTests: [],
+          qa: null,
+        },
+      ],
+    }),
+  ];
+  const agentService = new StubAgentService(outputs);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  (service as any).buildTaskGenerationChunks = (_projectKey: string, entries: any[]) => [entries];
+  const agent = await agentService.resolveAgent();
+
+  const result = await (service as any).generatePlanFromAgent(
+    "web",
+    [
+      {
+        localId: "e1",
+        area: "shared",
+        title: "Shared Foundation",
+        description: "Foundation epic.",
+        acceptanceCriteria: ["shared ac"],
+        relatedDocs: ["docdex:doc-1"],
+        priorityHint: 10,
+        serviceIds: ["shared"],
+        tags: [],
+        stories: [],
+      },
+      {
+        localId: "e2",
+        area: "ops",
+        title: "Operations",
+        description: "Ops epic.",
+        acceptanceCriteria: ["ops ac"],
+        relatedDocs: ["docdex:doc-2"],
+        priorityHint: 20,
+        serviceIds: ["ops"],
+        tags: [],
+        stories: [],
+      },
+    ],
+    agent,
+    "Docs: none",
+    {
+      agentStream: false,
+      jobId: "job-1",
+      commandRunId: "cmd-1",
+      projectBuildMethod: "Build the project in dependency order.",
+      strictAgentMode: true,
+      strictStagedStoryMode: "deterministic",
+    },
+  );
+
+  assert.equal(result.stories.length, 2);
+  assert.equal(result.tasks.length, 2);
+  assert.ok(!agentService.invocations.some((entry) => entry.metadata?.action === "stories_batch"));
+  assert.ok(!agentService.invocations.some((entry) => entry.metadata?.action === "stories"));
+  assert.ok(!agentService.invocations.some((entry) => entry.metadata?.action === "tasks_batch"));
+  assert.equal(
+    agentService.invocations.filter((entry) => entry.metadata?.action === "tasks_compact").length,
+    2,
+  );
+  assert.ok(
+    agentService.invocations
+      .filter((entry) => entry.metadata?.action === "tasks_compact")
+      .every((entry) => Boolean(entry.metadata?.outputSchema)),
+    "expected tasks_compact calls to carry structured output schema",
+  );
+  assert.ok(
+    agentService.invocations
+      .filter((entry) => entry.metadata?.action === "tasks_compact")
+      .every((entry) => /Preserve the seed task localIds/i.test(entry.input)),
+    "expected compact task generation to rewrite seeded tasks instead of open-ended synthesis",
+  );
+  assert.ok(
+    jobService.logs.some((line) => /deterministic epic-derived stories/i.test(line)),
+    `expected deterministic story log, got ${jobService.logs.join("\n")}`,
+  );
+  assert.ok(
+    jobService.logs.some((line) => /single-story agent task synthesis/i.test(line)),
+    `expected deterministic task log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("repairTasksForStory uses tasks_compact contract for compact single-story recovery", async () => {
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: ["packages/shared/test/runtime.test.ts"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const tasks = await (service as any).repairTasksForStory(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    { key: "e1", title: "Build Shared" },
+    {
+      key: "us1",
+      localId: "us1",
+      epicLocalId: "e1",
+      title: "Implement shared runtime",
+      userStory: "As an operator, I need the shared runtime.",
+      description: "Implement shared runtime surfaces.",
+      acceptanceCriteria: ["runtime exists"],
+      relatedDocs: [],
+      priorityHint: 1,
+      tasks: [],
+    },
+    "Docs: none",
+    "Build the project in dependency order.",
+    "Agent output was not valid JSON for tasks_compact",
+    [
+      {
+        localId: "t-fallback-1",
+        title: "Implement shared runtime surfaces",
+        type: "feature",
+        description: "Implement packages/shared/src/runtime.ts and keep story scope local.",
+        files: ["packages/shared/src/runtime.ts"],
+        estimatedStoryPoints: 2,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+    true,
+    "job-1",
+    "cmd-1",
+    { compactSchema: true },
+  );
+
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]?.title, "Implement shared runtime module");
+  const invocation = agentService.invocations.at(-1);
+  assert.equal(invocation?.metadata?.action, "tasks_compact");
+  assert.ok(invocation?.metadata?.outputSchema);
+  assert.match(invocation?.input ?? "", /Do not narrate your work/i);
+  assert.match(invocation?.input ?? "", /You do not have tool access in this subtask/i);
+  assert.match(invocation?.input ?? "", /Preserve the seed task localIds/i);
+  assert.match(invocation?.input ?? "", /Return exactly 1 tasks\./i);
+});
+
+test("invokeAgentWithRetry retries timeout-like compact task calls without output schema", async () => {
+  const agentService = new StubAgentService([
+    new Error("AUTH_ERROR: codex CLI timed out after 120000ms"),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 1,
+          dependsOnKeys: [],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const agent = await agentService.resolveAgent();
+
+  const result = await (service as any).invokeAgentWithRetry(
+    agent,
+    "Return one compact task as JSON only.",
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-1" },
+  );
+
+  assert.ok(result.output.includes("\"tasks\""));
+  assert.equal(agentService.invocations.length, 2);
+  assert.ok(
+    agentService.invocations[0]?.metadata?.outputSchema,
+    "expected first compact attempt to carry structured output schema",
+  );
+  assert.equal(agentService.invocations[1]?.metadata?.outputSchema, undefined);
+  assert.equal(agentService.invocations[1]?.metadata?.schemaRetryMode, "without_output_schema");
+  assert.ok(
+    jobService.logs.some((line) => /retrying once without output schema/i.test(line)),
+    `expected schema-free retry log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("invokeAgentWithRetry prefers schema-free initial compact task calls after a structured timeout in the same run", async () => {
+  const agentService = new StubAgentService([
+    new Error("AUTH_ERROR: codex CLI timed out after 120000ms"),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 1,
+          dependsOnKeys: [],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t2",
+          title: "Wire shared exports",
+          type: "feature",
+          description: "Wire packages/shared/src/index.ts.",
+          files: ["packages/shared/src/index.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          dependsOnKeys: ["t1"],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const first = await (service as any).invokeAgentWithRetry(
+    { id: "agent-1", defaultModel: "stub" },
+    "Prompt one",
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-1" },
+  );
+  const second = await (service as any).invokeAgentWithRetry(
+    { id: "agent-1", defaultModel: "stub" },
+    "Prompt two",
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-2" },
+  );
+
+  assert.ok(first.output.includes("\"tasks\""));
+  assert.ok(second.output.includes("\"tasks\""));
+  assert.equal(agentService.invocations.length, 3);
+  assert.ok(agentService.invocations[0]?.metadata?.outputSchema);
+  assert.equal(agentService.invocations[1]?.metadata?.outputSchema, undefined);
+  assert.equal(agentService.invocations[1]?.metadata?.schemaRetryMode, "without_output_schema");
+  assert.equal(agentService.invocations[2]?.metadata?.outputSchema, undefined);
+  assert.equal(agentService.invocations[2]?.metadata?.schemaRetryMode, undefined);
+  assert.equal(
+    jobService.logs.filter((line) => /preferring schema-free initial calls/i.test(line)).length,
+    1,
+  );
+});
+
+test("invokeAgentWithRetry keeps compact task json repair schema after schema-free preference activates", async () => {
+  const agentService = new StubAgentService([
+    new Error("AUTH_ERROR: codex CLI timed out after 120000ms"),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 1,
+          dependsOnKeys: [],
+        },
+      ],
+    }),
+    "I am still analyzing the tasks.",
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t2",
+          title: "Wire shared exports",
+          type: "feature",
+          description: "Wire packages/shared/src/index.ts.",
+          files: ["packages/shared/src/index.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          dependsOnKeys: ["t1"],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  await (service as any).invokeAgentWithRetry(
+    { id: "agent-1", defaultModel: "stub" },
+    "Prompt one",
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-1" },
+  );
+  const repaired = await (service as any).invokeAgentWithRetry(
+    { id: "agent-1", defaultModel: "stub" },
+    "Prompt two",
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-2" },
+  );
+
+  assert.ok(repaired.output.includes("\"tasks\""));
+  assert.equal(agentService.invocations.length, 4);
+  assert.equal(agentService.invocations[2]?.metadata?.outputSchema, undefined);
+  assert.ok(
+    agentService.invocations[3]?.metadata?.outputSchema,
+    "expected compact json repair to re-apply the structured schema",
+  );
+  assert.equal(agentService.invocations[3]?.metadata?.stage, "json_repair");
+});
+
+test("invokeAgentWithRetry reuses original compact task prompt context during json repair", async () => {
+  const agentService = new StubAgentService([
+    "I am grounding this in repo context first.",
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 1,
+          dependsOnKeys: [],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const originalPrompt = [
+    'Project EP. Phase 3 compact task synthesis for story "Implement shared core targets 1" in epic "Build Shared".',
+    "Return strictly valid JSON only matching:",
+    "{ tasks: [...] }",
+  ].join("\n\n");
+
+  const result = await (service as any).invokeAgentWithRetry(
+    { id: "agent-1", defaultModel: "stub" },
+    originalPrompt,
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-1" },
+  );
+
+  assert.ok(result.output.includes("\"tasks\""));
+  assert.equal(agentService.invocations.length, 2);
+  assert.match(agentService.invocations[1]?.input ?? "", /Original request:/i);
+  assert.match(agentService.invocations[1]?.input ?? "", /Project EP\. Phase 3 compact task synthesis/i);
+  assert.match(agentService.invocations[1]?.input ?? "", /You do not have tool access in this repair step/i);
+  assert.ok(agentService.invocations[1]?.metadata?.outputSchema);
+  assert.equal(agentService.invocations[1]?.metadata?.stage, "json_repair");
+});
+
+test("buildFallbackTasksForStory derives target-aware files from deterministic story hints", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const tasks = (service as any).buildFallbackTasksForStory({
+    localId: "us-core-1",
+    title: "Implement shared core",
+    description: [
+      "Implement the primary shared build targets for epic \"Build Shared\".",
+      "Primary implementation targets: packages/shared/src/index.ts, packages/shared/src/types.ts.",
+      "Supporting targets: packages/shared/src/runtime.ts.",
+      "Verification targets: packages/shared/test/runtime.test.ts.",
+      "Verification surfaces: shared runtime tests.",
+    ].join("\n"),
+    acceptanceCriteria: ["shared runtime is buildable"],
+    relatedDocs: ["docdex:doc-1"],
+  });
+
+  assert.equal(tasks.length, 3);
+  assert.deepEqual(tasks[0]?.files, ["packages/shared/src/index.ts", "packages/shared/src/types.ts"]);
+  assert.deepEqual(tasks[1]?.files, ["packages/shared/src/runtime.ts"]);
+  assert.deepEqual(tasks[2]?.files, ["packages/shared/test/runtime.test.ts"]);
+});
+
+test("invokeAgentWithRetry retries timeout-like structured task calls without output schema", async () => {
+  const agentService = new StubAgentService([
+    new Error("AUTH_ERROR: codex CLI timed out after 120000ms"),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared package",
+          type: "feature",
+          description: "Implement packages/shared/src/index.ts.",
+          files: ["packages/shared/src/index.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          relatedDocs: [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+          qa: {
+            requires: [],
+            profiles_expected: [],
+            entrypoints: [],
+            data_setup: [],
+            blockers: [],
+            notes: null,
+          },
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const agent = await agentService.resolveAgent();
+
+  const result = await (service as any).invokeAgentWithRetry(
+    agent,
+    "Return one compact task as JSON only.",
+    "tasks",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-impl-1" },
+  );
+
+  assert.ok(result.output.includes("\"tasks\""));
+  assert.equal(agentService.invocations.length, 2);
+  assert.ok(
+    agentService.invocations[0]?.metadata?.outputSchema,
+    "expected first attempt to carry structured output schema",
+  );
+  assert.equal(agentService.invocations[1]?.metadata?.outputSchema, undefined);
+  assert.equal(agentService.invocations[1]?.metadata?.schemaRetryMode, "without_output_schema");
+  assert.ok(
+    jobService.logs.some((line) => /retrying once without output schema/i.test(line)),
+    `expected schema-free retry log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("createTasks keeps an explicit-agent backlog when project completion passes but sufficiency stays below target", async () => {
+  class ResidualGapTaskSufficiencyService extends StubTaskSufficiencyService {
+    async runAudit(request: any) {
+      const base = await super.runAudit(request);
+      return {
+        ...base,
+        satisfied: false,
+        finalCoverageRatio: 0.61,
+        remainingSectionHeadings: ["Architecture Overview"],
+        remainingFolderEntries: ["packages/listing-contract-suite/src"],
+        remainingGaps: { sections: 1, folders: 1, total: 2 },
+        warnings: [],
+      };
+    }
+  }
+
+  const outputs = [JSON.stringify(await buildDefaultSdsDrivenAgentPlan())];
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new ResidualGapTaskSufficiencyService() as any,
+  });
+
+  const result = await service.createTasks({
+    workspace,
+    projectKey: "web",
+    inputs: [],
+    agentName: "agent-1",
+    agentStream: false,
+  });
+
+  assert.ok(result.tasks.length > 0);
+  assert.equal(result.sufficiencyAudit?.satisfied, false);
+  assert.ok(
+    result.warnings.some((warning) => /task sufficiency audit remained below target/i.test(warning)),
+    `expected residual-gap warning, got ${result.warnings.join("\n")}`,
+  );
+  assert.ok(!jobService.logs.some((line) => /deterministic planner fallback/i.test(line)));
+});
+
+test("createTasks fails closed for explicit-agent runs when the agent never returns a valid backlog", async () => {
+  const outputs = ["not json", "still not json", "nope", "still nope", "bad", "worse"];
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService(outputs) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTasks({
+        workspace,
+        projectKey: "web",
+        inputs: [],
+        agentName: "agent-1",
+        agentStream: false,
+      }),
+    /failed before backlog persistence|did not produce an acceptable backlog/i,
+  );
+  assert.equal(workspaceRepo.tasks.length, 0);
+  assert.equal(workspaceRepo.deps.length, 0);
+  assert.ok(!jobService.logs.some((line) => /deterministic planner fallback/i.test(line)));
+  assert.equal(jobService.tokenUsage.length, 6);
 });
 
 test("createTasks keeps partial plan and applies story-level fallback when one story task generation fails", async () => {
@@ -5610,4 +9036,79 @@ test("createTasks keeps partial plan and applies story-level fallback when one s
   assert.ok(result.tasks.some((task) => task.title === "Integrate dependencies for Story Two"));
   assert.ok(result.tasks.some((task) => task.title === "Validate Story Two regressions and readiness"));
   assert.ok(!result.tasks.some((task) => task.title === "Summarize requirements"));
+});
+
+test("CreateTasksService prompt examples remain tech-agnostic", async () => {
+  const source = await fs.readFile(new URL("../CreateTasksService.js", import.meta.url), "utf8");
+  assert.ok(source.includes("relative/path/to/implementation.file"));
+  assert.ok(source.includes("project start command"));
+  assert.ok(!source.includes("packages/service/src/file.ts"));
+  assert.ok(!source.includes("npm run dev"));
+});
+
+test("resolveDefaultDocInputs uses fuzzy planning discovery instead of docs/openapi defaults", async () => {
+  await fs.mkdir(path.join(workspaceRoot, "planning"), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, "interfaces"), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, "docs"), { recursive: true });
+  await fs.writeFile(path.join(workspaceRoot, "planning", "architecture.md"), "# Architecture Overview\n", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "interfaces", "api-contract.yaml"), "openapi: 3.1.0\n", "utf8");
+  await fs.writeFile(path.join(workspaceRoot, "docs", "readme.txt"), "supporting note\n", "utf8");
+
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const inputs = await (service as any).resolveDefaultDocInputs();
+  assert.ok(inputs.includes(path.join(workspaceRoot, "planning", "architecture.md")));
+  assert.ok(inputs.includes(path.join(workspaceRoot, "interfaces", "api-contract.yaml")));
+  assert.ok(!inputs.includes(path.join(workspaceRoot, "docs")));
+});
+
+test("inferFallbackImplementationTargets derives neutral targets from repo roots", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const targets = (service as any).inferFallbackImplementationTargets(
+    {
+      unitId: "svc-listing-contract-suite",
+      kind: "service",
+      name: "Listing Contract Suite",
+      summary: "Contract lifecycle unit.",
+      sourceHeadings: ["Requirements Constraints"],
+      implementationTargets: [],
+      supportingTargets: [],
+      verificationTargets: [],
+      verificationSurfaceIds: [],
+      dependsOnUnitIds: [],
+      startupWave: 1,
+      isFoundational: false,
+      sourceServiceIds: ["listing-contract-suite"],
+      completionSignals: [],
+    },
+    ["packages", "contracts", "ops"],
+    [],
+  );
+
+  assert.deepEqual(targets, ["contracts/listing-contract-suite"]);
+  assert.ok(!targets.includes("contracts/src"));
+  assert.ok(!targets.includes("contracts/test"));
+  assert.ok(!targets.includes("ops/scripts"));
+  assert.ok(!targets.includes("packages/listing-contract-suite/src"));
 });

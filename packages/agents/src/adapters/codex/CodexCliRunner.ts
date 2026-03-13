@@ -1,4 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const CODEX_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 const CODEX_REASONING_ENV = "MCODA_CODEX_REASONING_EFFORT";
@@ -219,6 +222,8 @@ const parseCodexOutput = (raw: string): string => {
   }
   return message;
 };
+
+const normalizeComparableAssistantText = (value: string): string => value.replace(/\r\n/g, "\n").trim();
 
 const normalizeValue = (value: unknown): unknown => {
   if (typeof value !== "string") return value;
@@ -643,16 +648,47 @@ interface CodexInvocationHooks {
   onAssistantEvent?: (event: AssistantTextEvent, rawLine: string) => void;
 }
 
+interface CodexInvocationOptions {
+  hooks?: CodexInvocationHooks;
+  outputSchema?: Record<string, unknown>;
+  timeoutMs?: number;
+}
+
+const materializeOutputSchema = async (
+  outputSchema?: Record<string, unknown>,
+): Promise<{ schemaPath: string; cleanup: () => Promise<void> } | undefined> => {
+  if (!outputSchema || typeof outputSchema !== "object" || Array.isArray(outputSchema)) {
+    return undefined;
+  }
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "mcoda-codex-schema-"));
+  const schemaPath = path.join(tempDir, "output-schema.json");
+  await writeFile(schemaPath, `${JSON.stringify(outputSchema, null, 2)}\n`, "utf8");
+  return {
+    schemaPath,
+    cleanup: async () => {
+      try {
+        await rm(tempDir, { recursive: true, force: true });
+      } catch {
+        /* ignore cleanup errors */
+      }
+    },
+  };
+};
+
 const invokeCodexProcess = async (
   prompt: string,
   model?: string,
-  hooks?: CodexInvocationHooks,
+  options?: CodexInvocationOptions,
 ): Promise<{ output: string; raw: string; forcedExit: boolean }> => {
   const resolvedModel = model ?? "gpt-5.1-codex-max";
   const sandboxArgs = resolveSandboxArgs();
   const reasoningEffort = resolveReasoningEffort(resolvedModel);
   const codexCommand = resolveCodexCommand();
   const args = [...codexCommand.preArgs, ...sandboxArgs.args, "exec", "--model", resolvedModel, "--json"];
+  const schemaFile = await materializeOutputSchema(options?.outputSchema);
+  if (schemaFile) {
+    args.push("--output-schema", schemaFile.schemaPath);
+  }
   if (!sandboxArgs.bypass) {
     args.push("--full-auto");
   }
@@ -661,148 +697,155 @@ const invokeCodexProcess = async (
   }
   args.push("-");
 
-  const timeoutMs = resolveCodexTimeoutMs();
+  const timeoutMs =
+    typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? Math.floor(options.timeoutMs)
+      : resolveCodexTimeoutMs();
   const exitGraceMs = resolveCodexExitGraceMs();
 
-  return await new Promise<{ output: string; raw: string; forcedExit: boolean }>((resolve, reject) => {
-    const child = spawn(codexCommand.command, args, { stdio: ["pipe", "pipe", "pipe"] });
-    let raw = "";
-    let stderr = "";
-    let lineBuffer = "";
-    let message = "";
-    let protocolError: string | undefined;
-    let settled = false;
-    let forcedExit = false;
-    let completionTimer: NodeJS.Timeout | undefined;
+  try {
+    return await new Promise<{ output: string; raw: string; forcedExit: boolean }>((resolve, reject) => {
+      const child = spawn(codexCommand.command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      let raw = "";
+      let stderr = "";
+      let lineBuffer = "";
+      let message = "";
+      let protocolError: string | undefined;
+      let settled = false;
+      let forcedExit = false;
+      let completionTimer: NodeJS.Timeout | undefined;
 
-    const clearTimers = () => {
-      if (completionTimer) {
-        clearTimeout(completionTimer);
-        completionTimer = undefined;
-      }
-      clearTimeout(timeoutHandle);
-    };
+      const clearTimers = () => {
+        if (completionTimer) {
+          clearTimeout(completionTimer);
+          completionTimer = undefined;
+        }
+        clearTimeout(timeoutHandle);
+      };
 
-    const finalizeOutput = () => {
-      const parsedOutput = parseCodexOutput(raw).trim();
-      return parsedOutput || message.trim();
-    };
+      const finalizeOutput = () => {
+        const parsedOutput = parseCodexOutput(raw).trim();
+        return parsedOutput || message.trim();
+      };
 
-    const finishResolve = () => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      resolve({ output: finalizeOutput(), raw, forcedExit });
-    };
+      const finishResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        resolve({ output: finalizeOutput(), raw, forcedExit });
+      };
 
-    const finishReject = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      reject(error);
-    };
+      const finishReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        reject(error);
+      };
 
-    const scheduleCompletionGrace = () => {
-      if (settled) return;
-      if (completionTimer) {
-        clearTimeout(completionTimer);
-      }
-      completionTimer = setTimeout(() => {
+      const scheduleCompletionGrace = () => {
+        if (settled) return;
+        if (completionTimer) {
+          clearTimeout(completionTimer);
+        }
+        completionTimer = setTimeout(() => {
+          if (settled) return;
+          forcedExit = true;
+          safeKill(child, "SIGTERM");
+          scheduleHardKill(child);
+          finishResolve();
+        }, exitGraceMs);
+        completionTimer.unref();
+      };
+
+      const handleLine = (line: string) => {
+        const normalized = line.replace(/\r$/, "");
+        options?.hooks?.onLine?.(normalized);
+        const parsed = safeJsonParse(normalized);
+        const event = extractAssistantText(parsed);
+        if (event) {
+          if (event.kind === "delta") {
+            message += event.text;
+          } else {
+            message = event.text;
+            scheduleCompletionGrace();
+          }
+          options?.hooks?.onAssistantEvent?.(event, normalized);
+        }
+        const parsedError = extractProtocolError(parsed);
+        if (parsedError) {
+          protocolError = parsedError;
+        }
+        if (isCompletionEvent(parsed)) {
+          scheduleCompletionGrace();
+        }
+      };
+
+      const timeoutHandle = setTimeout(() => {
         if (settled) return;
         forcedExit = true;
         safeKill(child, "SIGTERM");
         scheduleHardKill(child);
-        finishResolve();
-      }, exitGraceMs);
-      completionTimer.unref();
-    };
+        const detail = stderr.trim().length > 0 ? `: ${stderr.trim()}` : "";
+        finishReject(new Error(`AUTH_ERROR: codex CLI timed out after ${timeoutMs}ms${detail}`));
+      }, timeoutMs);
+      timeoutHandle.unref();
 
-    const handleLine = (line: string) => {
-      const normalized = line.replace(/\r$/, "");
-      hooks?.onLine?.(normalized);
-      const parsed = safeJsonParse(normalized);
-      const event = extractAssistantText(parsed);
-      if (event) {
-        if (event.kind === "delta") {
-          message += event.text;
-        } else {
-          message = event.text;
-          scheduleCompletionGrace();
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        const text = chunk.toString();
+        raw += text;
+        lineBuffer += text;
+        let idx: number;
+        while ((idx = lineBuffer.indexOf("\n")) !== -1) {
+          const line = lineBuffer.slice(0, idx);
+          lineBuffer = lineBuffer.slice(idx + 1);
+          handleLine(line);
         }
-        hooks?.onAssistantEvent?.(event, normalized);
-      }
-      const parsedError = extractProtocolError(parsed);
-      if (parsedError) {
-        protocolError = parsedError;
-      }
-      if (isCompletionEvent(parsed)) {
-        scheduleCompletionGrace();
-      }
-    };
+      });
 
-    const timeoutHandle = setTimeout(() => {
-      if (settled) return;
-      forcedExit = true;
-      safeKill(child, "SIGTERM");
-      scheduleHardKill(child);
-      const detail = stderr.trim().length > 0 ? `: ${stderr.trim()}` : "";
-      finishReject(new Error(`AUTH_ERROR: codex CLI timed out after ${timeoutMs}ms${detail}`));
-    }, timeoutMs);
-    timeoutHandle.unref();
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
 
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      const text = chunk.toString();
-      raw += text;
-      lineBuffer += text;
-      let idx: number;
-      while ((idx = lineBuffer.indexOf("\n")) !== -1) {
-        const line = lineBuffer.slice(0, idx);
-        lineBuffer = lineBuffer.slice(idx + 1);
-        handleLine(line);
+      child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+        if (settled || isIgnorableStdinError(error)) return;
+        finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${error.message})`));
+      });
+
+      child.on("error", (error) => {
+        finishReject(new Error(`AUTH_ERROR: codex CLI failed (${error.message})`));
+      });
+
+      child.on("close", (code) => {
+        if (lineBuffer.trim()) {
+          handleLine(lineBuffer);
+          lineBuffer = "";
+        }
+        if (settled) return;
+        if ((code ?? 0) !== 0) {
+          finishReject(
+            new Error(`AUTH_ERROR: codex CLI failed (exit ${code ?? 0}): ${stderr || protocolError || "no output"}`),
+          );
+          return;
+        }
+        if (protocolError && !finalizeOutput()) {
+          finishReject(new Error(`AUTH_ERROR: codex CLI failed (${protocolError})`));
+          return;
+        }
+        finishResolve();
+      });
+
+      try {
+        child.stdin?.write(prompt);
+        child.stdin?.end();
+      } catch (error) {
+        finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${(error as Error).message})`));
       }
     });
-
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
-      if (settled || isIgnorableStdinError(error)) return;
-      finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${error.message})`));
-    });
-
-    child.on("error", (error) => {
-      finishReject(new Error(`AUTH_ERROR: codex CLI failed (${error.message})`));
-    });
-
-    child.on("close", (code) => {
-      if (lineBuffer.trim()) {
-        handleLine(lineBuffer);
-        lineBuffer = "";
-      }
-      if (settled) return;
-      if ((code ?? 0) !== 0) {
-        finishReject(
-          new Error(`AUTH_ERROR: codex CLI failed (exit ${code ?? 0}): ${stderr || protocolError || "no output"}`),
-        );
-        return;
-      }
-      if (protocolError && !finalizeOutput()) {
-        finishReject(new Error(`AUTH_ERROR: codex CLI failed (${protocolError})`));
-        return;
-      }
-      finishResolve();
-    });
-
-    try {
-      child.stdin?.write(prompt);
-      child.stdin?.end();
-    } catch (error) {
-      finishReject(new Error(`AUTH_ERROR: codex CLI stdin failed (${(error as Error).message})`));
-    }
-  });
+  } finally {
+    await schemaFile?.cleanup();
+  }
 };
 
 export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Record<string, unknown> } => {
@@ -838,20 +881,27 @@ export const cliHealthy = (throwOnError = false): { ok: boolean; details?: Recor
   return { ok: true, details: { version: result.stdout?.toString().trim() } };
 };
 
-export const runCodexExec = async (prompt: string, model?: string): Promise<{ output: string; raw: string }> => {
+export const runCodexExec = async (
+  prompt: string,
+  model?: string,
+  outputSchema?: Record<string, unknown>,
+  timeoutMs?: number,
+): Promise<{ output: string; raw: string }> => {
   if (process.env.MCODA_CLI_STUB === "1") {
     const output = `qa-stub:${prompt}`;
     const raw = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: output } });
     return { output, raw };
   }
   cliHealthy(true);
-  const result = await invokeCodexProcess(prompt, model);
+  const result = await invokeCodexProcess(prompt, model, { outputSchema, timeoutMs });
   return { output: result.output, raw: result.raw };
 };
 
 export async function* runCodexExecStream(
   prompt: string,
   model?: string,
+  outputSchema?: Record<string, unknown>,
+  timeoutMs?: number,
 ): AsyncGenerator<{ output: string; raw: string }, void, unknown> {
   if (process.env.MCODA_CLI_STUB === "1") {
     const output = `qa-stub:${prompt}\n`;
@@ -867,6 +917,7 @@ export async function* runCodexExecStream(
   let done = false;
   let failure: Error | undefined;
   let sawDelta = false;
+  let assistantDeltaBuffer = "";
 
   const notify = () => {
     while (waiters.length) {
@@ -875,22 +926,40 @@ export async function* runCodexExecStream(
   };
 
   void invokeCodexProcess(prompt, model, {
-    onLine: (line) => {
+    outputSchema,
+    timeoutMs,
+    hooks: {
+      onLine: (line) => {
       formatter.handleLine(line);
-    },
-    onAssistantEvent: (event, rawLine) => {
-      if (event.kind === "delta") {
-        sawDelta = true;
-        queue.push({ output: event.text, raw: rawLine });
-        notify();
-        return;
-      }
-      if (!sawDelta) {
-        const output = event.text.endsWith("\n") ? event.text : `${event.text}\n`;
+      },
+      onAssistantEvent: (event, rawLine) => {
+        if (event.kind === "delta") {
+          sawDelta = true;
+          assistantDeltaBuffer += event.text;
+          queue.push({ output: event.text, raw: rawLine });
+          notify();
+          return;
+        }
+        const finalText = event.text;
+        const bufferedText = assistantDeltaBuffer;
+        assistantDeltaBuffer = "";
+        if (!sawDelta) {
+          const output = finalText.endsWith("\n") ? finalText : `${finalText}\n`;
+          queue.push({ output, raw: rawLine });
+          notify();
+          return;
+        }
+        sawDelta = false;
+        const normalizedFinal = normalizeComparableAssistantText(finalText);
+        const normalizedBuffered = normalizeComparableAssistantText(bufferedText);
+        if (!normalizedFinal || normalizedFinal === normalizedBuffered) {
+          return;
+        }
+        const suffix = finalText.startsWith(bufferedText) ? finalText.slice(bufferedText.length) : finalText;
+        const output = suffix.endsWith("\n") ? suffix : `${suffix}\n`;
         queue.push({ output, raw: rawLine });
         notify();
-      }
-      sawDelta = false;
+      },
     },
   })
     .catch((error) => {

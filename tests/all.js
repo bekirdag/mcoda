@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, mkdirSync, writeFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,36 +131,108 @@ const collectTests = (dir) => {
   return files;
 };
 
+const normalizeRepoRelativePath = (file) => {
+  const relative = path.isAbsolute(file) ? path.relative(root, file) : file;
+  return relative.split(path.sep).join("/").replace(/^\.\//, "");
+};
+
+const readPackageName = (packageJsonPath) => {
+  try {
+    const raw = readFileSync(packageJsonPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed.name === "string" ? parsed.name.trim() : "";
+  } catch {
+    return "";
+  }
+};
+
+const getWorkspacePackageEntries = () => {
+  const entries = [];
+  const rootPackageName = readPackageName(path.join(root, "package.json"));
+  if (rootPackageName) {
+    entries.push({ prefix: "", name: rootPackageName });
+  }
+  const packagesDir = path.join(root, "packages");
+  if (!existsSync(packagesDir)) return entries;
+  for (const entry of readdirSync(packagesDir)) {
+    const packageDir = path.join(packagesDir, entry);
+    let stat;
+    try {
+      stat = statSync(packageDir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    const packageName = readPackageName(path.join(packageDir, "package.json"));
+    if (!packageName) continue;
+    entries.push({ prefix: `packages/${entry}`, name: packageName });
+  }
+  return entries;
+};
+
+const workspacePackageEntries = getWorkspacePackageEntries();
+const workspacePackageFilters = workspacePackageEntries
+  .filter((entry) => entry.prefix.length > 0)
+  .sort((left, right) => right.prefix.length - left.prefix.length);
+const rootWorkspacePackage = workspacePackageEntries.find((entry) => entry.prefix.length === 0)?.name;
+
+const rawCliOverride = process.argv
+  .slice(2)
+  .map((file) => file.trim())
+  .filter(Boolean);
+
+const rawEnvOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
+  .split(",")
+  .map((file) => file.trim())
+  .filter(Boolean);
+
+const rawRepoOverride = rawCliOverride.length ? rawCliOverride : rawEnvOverride;
+
+const resolveWorkspacePackageFilters = (targets) => {
+  const filters = new Set();
+  for (const target of targets) {
+    const relative = normalizeRepoRelativePath(target);
+    const match = workspacePackageFilters.find(({ prefix }) => relative === prefix || relative.startsWith(`${prefix}/`));
+    if (match) {
+      filters.add(match.name);
+      continue;
+    }
+    if (rootWorkspacePackage && relative.length > 0 && !relative.startsWith("packages/")) {
+      filters.add(rootWorkspacePackage);
+    }
+  }
+  return Array.from(filters);
+};
+
+const runWorkspacePackageTests = (packageFilters, shell) => {
+  for (const pkg of packageFilters) {
+    let workspace = run(`workspace-tests:${pkg}`, pnpm, ["--filter", pkg, "run", "test"], { shell });
+    if (workspace.error) {
+      const fallback = run(`workspace-tests-corepack:${pkg}`, "corepack", ["pnpm", "--filter", pkg, "run", "test"], {
+        shell,
+      });
+      results.push(workspace, fallback);
+      workspace = fallback;
+    } else {
+      results.push(workspace);
+    }
+    if (workspace.error) {
+      console.error(`[${workspace.label}] ${workspace.error}`);
+    }
+    if (workspace.status !== 0) failed = true;
+  }
+};
+
+const scopedWorkspacePackages = rawRepoOverride.length ? resolveWorkspacePackageFilters(rawRepoOverride) : [];
+
 if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
   const shell = process.platform === "win32";
-  if (process.platform === "win32") {
-    const workspacePackages = [
-      "@mcoda/shared",
-      "@mcoda/generators",
-      "@mcoda/integrations",
-      "@mcoda/db",
-      "@mcoda/agents",
-      "@mcoda/core",
-      "mcoda",
-      "@mcoda/codali",
-      "@mcoda/testing",
-    ];
-    for (const pkg of workspacePackages) {
-      let workspace = run(`workspace-tests:${pkg}`, pnpm, ["--filter", pkg, "run", "test"], { shell });
-      if (workspace.error) {
-        const fallback = run(`workspace-tests-corepack:${pkg}`, "corepack", ["pnpm", "--filter", pkg, "run", "test"], {
-          shell,
-        });
-        results.push(workspace, fallback);
-        workspace = fallback;
-      } else {
-        results.push(workspace);
-      }
-      if (workspace.error) {
-        console.error(`[${workspace.label}] ${workspace.error}`);
-      }
-      if (workspace.status !== 0) failed = true;
-    }
+  if (scopedWorkspacePackages.length) {
+    runWorkspacePackageTests(scopedWorkspacePackages, shell);
+  } else if (rawRepoOverride.length) {
+    console.log(`[tests] skipping workspace package tests for target override: ${rawRepoOverride.join(", ")}`);
+  } else if (process.platform === "win32") {
+    runWorkspacePackageTests(workspacePackageEntries.map((entry) => entry.name), shell);
   } else {
     let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"], { shell });
     if (workspace.error) {
@@ -214,7 +286,9 @@ const extraWorkspaceTests = [
 ];
 
 const normalizeRepoTestPath = (file) => {
-  const relative = path.isAbsolute(file) ? path.relative(root, file) : file;
+  const relative = normalizeRepoRelativePath(file);
+  const mappedDirectory = relative.replace(/^packages\/([^/]+)\/src(?=\/|$)/, "packages/$1/dist");
+  if (mappedDirectory !== relative && existsSync(path.join(root, mappedDirectory))) return mappedDirectory;
   if (!relative.endsWith(".ts") && !relative.endsWith(".tsx")) return relative;
   const mapped = relative
     .replace(/^packages\/([^/]+)\/src\//, "packages/$1/dist/")
@@ -223,17 +297,22 @@ const normalizeRepoTestPath = (file) => {
   return relative;
 };
 
-const cliOverride = process.argv
-  .slice(2)
-  .map((file) => file.trim())
-  .filter(Boolean)
-  .map(normalizeRepoTestPath);
+const expandRepoTestTarget = (file) => {
+  const relative = normalizeRepoTestPath(file);
+  const absolute = path.join(root, relative);
+  if (!existsSync(absolute)) return [relative];
+  try {
+    const stat = statSync(absolute);
+    if (!stat.isDirectory()) return [relative];
+  } catch {
+    return [relative];
+  }
+  return collectTests(absolute).map((testFile) => normalizeRepoRelativePath(path.relative(root, testFile)));
+};
 
-const envOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
-  .split(",")
-  .map((file) => file.trim())
-  .filter(Boolean)
-  .map(normalizeRepoTestPath);
+const cliOverride = rawCliOverride.flatMap(expandRepoTestTarget);
+
+const envOverride = rawEnvOverride.flatMap(expandRepoTestTarget);
 
 const repoOverride = cliOverride.length ? cliOverride : envOverride;
 const testFiles = repoOverride.length
