@@ -81,6 +81,34 @@ test("GlobalMigrations backfills ratings for known agents", async () => {
   }
 });
 
+test("GlobalMigrations backfills GLM pricing for current z.ai models", async () => {
+  const db = await openDb();
+  try {
+    await GlobalMigrations.run(db);
+    await db.run(
+      "INSERT INTO agents (id, slug, adapter, default_model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ["agent-glm-5", "glm-5", "zhipu-api", "glm-5", "now", "now"],
+    );
+    await db.run(
+      "INSERT INTO agents (id, slug, adapter, default_model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ["agent-glm-47", "glm-worker", "zhipu-api", "glm-4.7", "now", "now"],
+    );
+
+    await GlobalMigrations.run(db);
+
+    const rows = (await db.all(
+      "SELECT slug, cost_per_million FROM agents WHERE slug IN ('glm-5', 'glm-worker') ORDER BY slug",
+    )) as Array<{ slug: string; cost_per_million: number }>;
+
+    assert.deepEqual(rows, [
+      { slug: "glm-5", cost_per_million: 3.2 },
+      { slug: "glm-worker", cost_per_million: 2.2 },
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("GlobalMigrations ensures gateway-router capabilities", async () => {
   const db = await openDb();
   try {

@@ -429,6 +429,7 @@ export class GlobalMigrations {
             WHEN lower(slug) = 'gpt-oss-qa' THEN 0
             WHEN lower(adapter) LIKE 'ollama%' OR lower(adapter) = 'local-model' OR lower(adapter) = 'qa-cli' THEN 0
             WHEN lower(default_model) LIKE '%gpt-5.2%' OR lower(slug) LIKE '%gpt-5.2%' THEN 14.0
+            WHEN lower(default_model) LIKE '%glm-5%' OR lower(slug) LIKE '%glm-5%' THEN 3.2
             WHEN lower(default_model) LIKE '%glm-4.7%' OR lower(slug) LIKE '%glm-4.7%' THEN 2.2
             WHEN lower(default_model) LIKE '%gpt-5.1%' AND (lower(default_model) LIKE '%codex%' OR lower(slug) LIKE '%codex%') THEN 10.0
             WHEN lower(default_model) LIKE '%gemini-3-pro%' OR lower(slug) LIKE '%gemini-3-pro%' THEN 18.0
