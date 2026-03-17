@@ -7,6 +7,7 @@ export declare class PathHelper {
     static resolveRelativePath(root: string, target: string): string;
     static isPathInside(root: string, target: string): boolean;
     static getGlobalMcodaDir(): string;
+    static getGlobalConfigPath(): string;
     static getGlobalDbPath(): string;
     static getGlobalWorkspaceDir(workspaceRoot: string): string;
     static getWorkspaceDir(workspaceRoot?: string): string;

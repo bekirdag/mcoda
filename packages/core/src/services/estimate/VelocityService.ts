@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Connection, type Database } from "@mcoda/db";
 import { PathHelper, READY_TO_CODE_REVIEW } from "@mcoda/shared";
@@ -29,7 +28,7 @@ export class VelocityService {
   }
 
   private static async readGlobalVelocityConfig(): Promise<VelocityConfig | undefined> {
-    const configPath = path.join(PathHelper.getGlobalMcodaDir(), "config.json");
+    const configPath = PathHelper.getGlobalConfigPath();
     try {
       const raw = await fs.readFile(configPath, "utf8");
       const parsed = JSON.parse(raw) as { velocity?: Partial<VelocityConfig> };

@@ -88,7 +88,7 @@ export class McodaEntrypoint {
     if (!command) {
       throw new Error(
         "Usage: mcoda <agent|cloud|cloud-agent|config|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
-          "Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in ~/.mcoda/config.json.\n" +
+          "Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in the resolved global mcoda config file.\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +

@@ -98,6 +98,7 @@ interface ListMswarmCloudAgentsResponse {
   agents?: unknown;
 }
 
+const DEFAULT_BASE_URL = "https://api.mswarm.org/";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_SLUG_PREFIX = "mswarm-cloud";
 
@@ -155,7 +156,7 @@ const resolveOptions = async (options: MswarmApiOptions = {}): Promise<ResolvedM
   const stored = needsStoredFallback ? await new MswarmConfigStore().readState() : {};
   return {
     baseUrl: normalizeBaseUrl(
-      directBaseUrl ?? stored.baseUrl,
+      directBaseUrl ?? stored.baseUrl ?? DEFAULT_BASE_URL,
       "MCODA_MSWARM_BASE_URL",
     ),
     apiKey: resolveString(directApiKey ?? stored.apiKey) ?? (() => {

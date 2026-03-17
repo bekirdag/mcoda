@@ -8985,7 +8985,9 @@ Configuration is layered; later sources override earlier ones for each setting:
 
    * Used for machine‑level defaults: docdex base URL, default project keys, global budgets, SP/h baselines, update‑check behavior, cache/jobs paths, and default agent name.
 
-   * API keys and tokens are **never** stored in `config.json`; they are stored **encrypted** in `~/.mcoda/mcoda.db` via `mcoda agent add`.
+   * Provider API keys and tokens are generally stored **encrypted** in `~/.mcoda/mcoda.db` via `mcoda agent add`.
+
+   * The `mcoda config set mswarm-api-key` command is the current exception: it stores `mswarm.encryptedApiKey` **encrypted** in the global config file so mswarm cloud-agent discovery/sync can reuse it.
 
 3. **Workspace config (file)**
 
@@ -11560,7 +11562,7 @@ Used for telemetry, budgeting, and SP/hour learning.
 
 23.2.1 Example global config (`~/.mcoda/config.json`)
 
-Global config is stored under `~/.mcoda/config.json` (not in XDG or platform‑specific config directories). It configures machine‑level defaults and paths; **API keys are never stored here**.
+Global config is stored under `~/.mcoda/config.json` by default (not in XDG or platform‑specific config directories), and `MCODA_CONFIG` can override that path. It configures machine‑level defaults and paths. Most API keys stay in `~/.mcoda/mcoda.db`; the current exception is the encrypted `mswarm.encryptedApiKey` written by `mcoda config set mswarm-api-key`.
 
 ```json
 {
@@ -11612,7 +11614,9 @@ Global config is stored under `~/.mcoda/config.json` (not in XDG or platform‑s
 
 * Global config lives at `~/.mcoda/config.json`.
 
-* API keys and provider tokens are **added via** `mcoda agent add` and stored **only** (encrypted) in the global `mcoda.db`.
+* API keys and provider tokens are usually **added via** `mcoda agent add` and stored **encrypted** in the global `mcoda.db`.
+
+* `mcoda config set mswarm-api-key` stores the mswarm key as encrypted `mswarm.encryptedApiKey` in the resolved global config file so `mcoda cloud agent ...` commands can reuse it.
 
 * Velocity settings are *defaults*; observed SP/hour is computed from real runs and can override these baselines in estimation logic.
 

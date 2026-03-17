@@ -4,7 +4,7 @@ const USAGE = `
 Usage: mcoda config set mswarm-api-key <KEY>
 
 Subcommands:
-  set mswarm-api-key <KEY>   Persist an encrypted global mswarm API key under ~/.mcoda/config.json
+  set mswarm-api-key <KEY>   Persist an encrypted global mswarm API key in the resolved global mcoda config file
 
 Flags:
   --help                     Show this help

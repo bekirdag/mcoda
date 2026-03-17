@@ -105,6 +105,47 @@ test("MswarmApi.create falls back to the stored encrypted API key", { concurrenc
   });
 });
 
+test("MswarmApi.create respects MCODA_CONFIG for stored API key fallback", { concurrency: false }, async () => {
+  await withTempHome(async (home) => {
+    const originalConfig = process.env.MCODA_CONFIG;
+    process.env.MCODA_CONFIG = path.join(home, "custom", "config.json");
+    try {
+      const store = new MswarmConfigStore();
+      await store.saveApiKey("stored-cloud-key");
+      await withStubServer((req, res) => {
+        assert.equal(req.headers["x-api-key"], "stored-cloud-key");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ agents: [] }));
+      }, async (baseUrl) => {
+        const api = await MswarmApi.create({ baseUrl });
+        try {
+          const agents = await api.listCloudAgents();
+          assert.deepEqual(agents, []);
+        } finally {
+          await api.close();
+        }
+      });
+    } finally {
+      if (originalConfig === undefined) {
+        delete process.env.MCODA_CONFIG;
+      } else {
+        process.env.MCODA_CONFIG = originalConfig;
+      }
+    }
+  });
+});
+
+test("MswarmApi.create defaults to the public mswarm gateway", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const api = await MswarmApi.create({ apiKey: "cloud-key" });
+    try {
+      assert.equal(api.baseUrl, "https://api.mswarm.org/");
+    } finally {
+      await api.close();
+    }
+  });
+});
+
 test("MswarmApi.syncCloudAgents materializes managed cloud agents into the registry", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await withStubServer((req, res) => {

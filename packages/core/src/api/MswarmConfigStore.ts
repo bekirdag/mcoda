@@ -21,10 +21,10 @@ export interface MswarmConfigState {
 }
 
 export class MswarmConfigStore {
-  constructor(private readonly mcodaDir: string = PathHelper.getGlobalMcodaDir()) {}
+  constructor(private readonly configFilePath: string = PathHelper.getGlobalConfigPath()) {}
 
   configPath(): string {
-    return path.join(this.mcodaDir, "config.json");
+    return this.configFilePath;
   }
 
   async readState(): Promise<MswarmConfigState> {
@@ -79,7 +79,7 @@ export class MswarmConfigStore {
   }
 
   private async writeConfigFile(config: MswarmConfigFileState): Promise<void> {
-    await PathHelper.ensureDir(this.mcodaDir);
+    await PathHelper.ensureDir(path.dirname(this.configPath()));
     await fs.writeFile(this.configPath(), JSON.stringify(config, null, 2), "utf8");
   }
 }

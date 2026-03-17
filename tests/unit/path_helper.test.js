@@ -31,6 +31,21 @@ test("PathHelper workspace paths derive from cwd", () => {
   }
 });
 
+test("PathHelper.getGlobalConfigPath honors MCODA_CONFIG", () => {
+  const originalConfig = process.env.MCODA_CONFIG;
+  const overridePath = path.join(os.tmpdir(), "mcoda-config-override.json");
+  process.env.MCODA_CONFIG = overridePath;
+  try {
+    assert.equal(PathHelper.getGlobalConfigPath(), path.resolve(overridePath));
+  } finally {
+    if (originalConfig === undefined) {
+      delete process.env.MCODA_CONFIG;
+    } else {
+      process.env.MCODA_CONFIG = originalConfig;
+    }
+  }
+});
+
 test("PathHelper.ensureDir creates nested directories", async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-paths-"));
   const target = path.join(base, "a", "b", "c");

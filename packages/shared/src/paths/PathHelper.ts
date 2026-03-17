@@ -31,6 +31,14 @@ export class PathHelper {
     return path.join(homeDir, ".mcoda");
   }
 
+  static getGlobalConfigPath(): string {
+    const configuredPath = process.env.MCODA_CONFIG?.trim();
+    if (configuredPath) {
+      return path.resolve(configuredPath);
+    }
+    return path.join(this.getGlobalMcodaDir(), "config.json");
+  }
+
   static getGlobalDbPath(): string {
     return path.join(this.getGlobalMcodaDir(), "mcoda.db");
   }

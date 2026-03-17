@@ -19,7 +19,7 @@ Subcommands:
     --agent-slug-prefix <P> Override the local managed-agent slug prefix
 
 Connection options:
-  --base-url <URL>          Override MCODA_MSWARM_BASE_URL
+  --base-url <URL>          Override MCODA_MSWARM_BASE_URL (default: https://api.mswarm.org/)
   --api-key <KEY>           Override MCODA_MSWARM_API_KEY
   --timeout-ms <N>          Override MCODA_MSWARM_TIMEOUT_MS
 

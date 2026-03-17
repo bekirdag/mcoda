@@ -48,3 +48,24 @@ test("config set mswarm-api-key stores an encrypted key in global config", { con
     assert.equal(state.apiKey, "cloud-key");
   });
 });
+
+test("config set mswarm-api-key honors MCODA_CONFIG", { concurrency: false }, async () => {
+  await withTempHome(async (home) => {
+    const originalConfig = process.env.MCODA_CONFIG;
+    const configPath = path.join(home, "custom", "mcoda-config.json");
+    process.env.MCODA_CONFIG = configPath;
+    try {
+      await captureLogs(() => ConfigCommands.run(["set", "mswarm-api-key", "cloud-key"]));
+      const raw = await fs.readFile(configPath, "utf8");
+      const parsed = JSON.parse(raw) as { mswarm?: { encryptedApiKey?: string } };
+      assert.ok(parsed.mswarm?.encryptedApiKey);
+      assert.notEqual(parsed.mswarm?.encryptedApiKey, "cloud-key");
+    } finally {
+      if (originalConfig === undefined) {
+        delete process.env.MCODA_CONFIG;
+      } else {
+        process.env.MCODA_CONFIG = originalConfig;
+      }
+    }
+  });
+});
