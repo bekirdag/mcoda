@@ -87,9 +87,25 @@ const ADAPTERS_REQUIRING_AUTH = new Set([
 const countMatches = (capabilities: string[], required: string[]): number =>
   required.filter((cap) => capabilities.includes(cap)).length;
 
-const isCloudModel = (model?: string): boolean => {
-  if (!model) return false;
-  return model.toLowerCase().includes(":cloud");
+const isManagedMswarmCloudAgent = (agent: Agent): boolean => {
+  const config = agent.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return false;
+  }
+  const managed = (config as Record<string, unknown>).mswarmCloud;
+  return Boolean(
+    managed &&
+      typeof managed === "object" &&
+      !Array.isArray(managed) &&
+      (managed as Record<string, unknown>).managed === true,
+  );
+};
+
+const isCloudModel = (agent: Agent): boolean => {
+  if (isManagedMswarmCloudAgent(agent)) {
+    return true;
+  }
+  return Boolean(agent.defaultModel?.toLowerCase().includes(":cloud"));
 };
 
 const normalizeAdapter = (adapter?: string): string => (adapter ?? "").trim().toLowerCase();
@@ -249,7 +265,7 @@ export const selectPhaseAgents = async (
       for (const agent of agents) {
         if (excludedIds.has(agent.id)) continue;
         if (!agent.defaultModel) continue;
-        if (!options.allowCloudModels && isCloudModel(agent.defaultModel)) continue;
+        if (!options.allowCloudModels && isCloudModel(agent)) continue;
         const readiness = await getReadiness(agent);
         if (readiness.healthStatus === "unreachable") continue;
         const caps = await getCaps(agent);

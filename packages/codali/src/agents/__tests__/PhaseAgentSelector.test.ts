@@ -219,6 +219,62 @@ test("selectPhaseAgents prefers structured-output capable builders in patch_json
   });
 });
 
+test("selectPhaseAgents treats managed mswarm agents as cloud-gated candidates", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const localArchitect = await repo.createAgent({
+        slug: "local-architect",
+        adapter: "openai-api",
+        defaultModel: "gpt-4o-mini",
+        rating: 7,
+        reasoningRating: 7,
+        costPerMillion: 3,
+        bestUsage: "system_architecture",
+        openaiCompatible: true,
+      });
+      await repo.setAgentCapabilities(localArchitect.id, ["plan", "system_architecture"]);
+      await repo.setAgentAuth(localArchitect.id, await CryptoHelper.encryptSecret("key-local"));
+
+      const managedCloud = await repo.createAgent({
+        slug: "mswarm-cloud-openai-gpt-4-1-mini",
+        adapter: "openai-api",
+        defaultModel: "openai/gpt-4.1-mini",
+        rating: 9,
+        reasoningRating: 9,
+        costPerMillion: 1,
+        bestUsage: "system_architecture",
+        openaiCompatible: true,
+        config: {
+          baseUrl: "https://mswarm.example/v1/swarm/openai/",
+          mswarmCloud: {
+            managed: true,
+            remoteSlug: "openai/gpt-4.1-mini",
+          },
+        },
+      });
+      await repo.setAgentCapabilities(managedCloud.id, ["plan", "system_architecture"]);
+      await repo.setAgentAuth(managedCloud.id, await CryptoHelper.encryptSecret("key-cloud"));
+    } finally {
+      await repo.close();
+    }
+
+    const withoutCloud = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "freeform",
+      allowCloudModels: false,
+    });
+    assert.equal(withoutCloud.architect.agent?.slug, "local-architect");
+
+    const withCloud = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "freeform",
+      allowCloudModels: true,
+    });
+    assert.equal(withCloud.architect.agent?.slug, "mswarm-cloud-openai-gpt-4-1-mini");
+  });
+});
+
 test("selectPhaseAgents still prefers structured patch builders when unstructured options are cheaper", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const repo = await GlobalRepository.create();

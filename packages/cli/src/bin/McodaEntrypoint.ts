@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json" with { type: "json" };
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
+import { CloudCommands } from "../commands/cloud/CloudCommands.js";
 import { GatewayAgentCommand } from "../commands/agents/GatewayAgentCommand.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
@@ -85,8 +86,9 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
+        "Usage: mcoda <agent|cloud|cloud-agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
+          "Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
           "Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n" +
           "Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.",
@@ -94,6 +96,14 @@ export class McodaEntrypoint {
     }
     if (command === "agent") {
       await AgentsCommands.run(rest);
+      return;
+    }
+    if (command === "cloud") {
+      await CloudCommands.run(rest);
+      return;
+    }
+    if (command === "cloud-agent") {
+      await CloudCommands.run(["agent", ...rest]);
       return;
     }
     if (command === "gateway-agent") {

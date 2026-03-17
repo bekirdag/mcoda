@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import packageJson from "../../package.json" with { type: "json" };
 import { McodaEntrypoint } from "../bin/McodaEntrypoint.js";
+import { CloudCommands } from "../commands/cloud/CloudCommands.js";
 import { SdsPreflightCommand } from "../commands/planning/SdsPreflightCommand.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 
@@ -68,6 +69,21 @@ test("McodaEntrypoint routes sds-preflight command", { concurrency: false }, asy
     assert.equal(called, true);
   } finally {
     (SdsPreflightCommand as any).run = originalRun;
+  }
+});
+
+test("McodaEntrypoint routes cloud agent commands", { concurrency: false }, async () => {
+  const originalRun = CloudCommands.run;
+  let called = false;
+  (CloudCommands as any).run = async (argv: string[]) => {
+    called = true;
+    assert.deepEqual(argv, ["agent", "list", "--json"]);
+  };
+  try {
+    await McodaEntrypoint.run(["cloud", "agent", "list", "--json"]);
+    assert.equal(called, true);
+  } finally {
+    (CloudCommands as any).run = originalRun;
   }
 });
 
