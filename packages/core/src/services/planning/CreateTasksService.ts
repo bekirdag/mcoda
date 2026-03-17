@@ -648,6 +648,18 @@ const STRICT_AGENT_SINGLE_STORY_DOC_SUMMARY_TOKEN_LIMIT = 1200;
 const STRICT_AGENT_SINGLE_STORY_BUILD_METHOD_TOKEN_LIMIT = 900;
 const STRICT_AGENT_SINGLE_TASK_DOC_SUMMARY_TOKEN_LIMIT = 1200;
 const STRICT_AGENT_SINGLE_TASK_BUILD_METHOD_TOKEN_LIMIT = 900;
+const STRICT_AGENT_COMPACT_TASK_STRUCTURED_PROMPT_TOKEN_LIMIT = 1200;
+const STRICT_AGENT_COMPACT_TASK_RUNTIME_PROMPT_TOKEN_LIMIT = 1000;
+const STRICT_AGENT_COMPACT_TASK_MINIMAL_PROMPT_TOKEN_LIMIT = 650;
+const STRICT_AGENT_COMPACT_TASK_FULL_STORY_TOKEN_LIMIT = 260;
+const STRICT_AGENT_COMPACT_TASK_MINIMAL_STORY_TOKEN_LIMIT = 140;
+const STRICT_AGENT_COMPACT_TASK_FULL_ACCEPTANCE_TOKEN_LIMIT = 180;
+const STRICT_AGENT_COMPACT_TASK_MINIMAL_ACCEPTANCE_TOKEN_LIMIT = 90;
+const STRICT_AGENT_COMPACT_TASK_FULL_DOC_TOKEN_LIMIT = 140;
+const STRICT_AGENT_COMPACT_TASK_MINIMAL_DOC_TOKEN_LIMIT = 60;
+const STRICT_AGENT_COMPACT_TASK_FULL_BUILD_TOKEN_LIMIT = 160;
+const STRICT_AGENT_COMPACT_TASK_MINIMAL_BUILD_TOKEN_LIMIT = 70;
+const STRICT_AGENT_MAX_TASKS_PER_COMPACT_REWRITE = 3;
 const META_TASK_PATTERN =
   /\b(plan|planning|backlog|coverage|artifact|evidence capture|document baseline|update refine log|record refinement|review inputs)\b/i;
 
@@ -1739,7 +1751,12 @@ const TASK_COMPACT_SCHEMA_SNIPPET = `{
       "files": ["relative/path/to/implementation.file"],
       "estimatedStoryPoints": 3,
       "priorityHint": 50,
-      "dependsOnKeys": ["t0"]
+      "dependsOnKeys": ["t0"],
+      "relatedDocs": ["docdex:..."],
+      "unitTests": ["unit test description"],
+      "componentTests": ["component test description"],
+      "integrationTests": ["integration test description"],
+      "apiTests": ["api test description"]
     }
   ]
 }`;
@@ -2393,10 +2410,37 @@ export class CreateTasksService {
           .join("\n"),
         96,
       ),
-    )
+      )
       .map((value) => this.normalizeStructurePathToken(value))
       .filter((value): value is string => Boolean(value));
-    return uniqueStrings([...explicitFiles, ...extractedFiles]).slice(0, 8);
+    return this.preferSpecificTaskTargets([...explicitFiles, ...extractedFiles]).slice(0, 8);
+  }
+
+  private preferSpecificTaskTargets(targets: string[]): string[] {
+    const normalized = uniqueStrings(
+      targets
+        .map((value) => this.normalizeStructurePathToken(value) ?? value.replace(/\\/g, "/").trim())
+        .filter((value): value is string => Boolean(value)),
+    );
+    const sorted = normalized.sort((left, right) => {
+      const leftIsFile = isStructuredFilePath(path.basename(left));
+      const rightIsFile = isStructuredFilePath(path.basename(right));
+      if (leftIsFile !== rightIsFile) return leftIsFile ? -1 : 1;
+      const leftDepth = left.split("/").filter(Boolean).length;
+      const rightDepth = right.split("/").filter(Boolean).length;
+      if (leftDepth !== rightDepth) return rightDepth - leftDepth;
+      if (left.length !== right.length) return right.length - left.length;
+      return left.localeCompare(right);
+    });
+    const kept: string[] = [];
+    for (const target of sorted) {
+      const prefix = `${target.replace(/\/+$/g, "")}/`;
+      if (kept.some((existing) => existing === target || existing.startsWith(prefix))) {
+        continue;
+      }
+      kept.push(target);
+    }
+    return kept.sort((left, right) => left.length - right.length || left.localeCompare(right));
   }
 
   private extractStructureTargets(docs: DocdexDocument[]): { directories: string[]; files: string[] } {
@@ -6333,6 +6377,11 @@ export class CreateTasksService {
         "estimatedStoryPoints",
         "priorityHint",
         "dependsOnKeys",
+        "relatedDocs",
+        "unitTests",
+        "componentTests",
+        "integrationTests",
+        "apiTests",
       ],
       properties: {
         localId: nullableString,
@@ -6343,6 +6392,11 @@ export class CreateTasksService {
         estimatedStoryPoints: nullableNumber,
         priorityHint: nullableNumber,
         dependsOnKeys: stringArray,
+        relatedDocs: stringArray,
+        unitTests: stringArray,
+        componentTests: stringArray,
+        integrationTests: stringArray,
+        apiTests: stringArray,
       },
       additionalProperties: false,
     };
@@ -6613,7 +6667,7 @@ export class CreateTasksService {
     return this.compactTaskSchemaStrategy === "schema_free_pref";
   }
 
-  private async activateCompactTaskSchemaFallback(jobId: string): Promise<void> {
+  private async activateCompactTaskSchemaFallback(jobId: string, reason?: string): Promise<void> {
     this.compactTaskSchemaStrategy = "schema_free_pref";
     if (this.compactTaskSchemaStrategyLogged) return;
     this.compactTaskSchemaStrategyLogged = true;
@@ -6621,6 +6675,9 @@ export class CreateTasksService {
       jobId,
       "[create-tasks] tasks_compact structured mode is unstable in this run; preferring schema-free initial calls for remaining compact task prompts.\n",
     );
+    if (reason) {
+      await this.jobService.appendLog(jobId, `[create-tasks] ${reason}\n`);
+    }
   }
 
   private buildJsonRepairPrompt(action: string, originalPrompt: string, originalOutput: string): string {
@@ -7710,6 +7767,17 @@ export class CreateTasksService {
     let output = "";
     let invocationMetadata: Record<string, unknown> | undefined;
     const currentTimestamp = () => new Date().toISOString();
+    const promptTokens = estimateTokens(prompt);
+    if (
+      action === "tasks_compact" &&
+      !this.shouldPreferSchemaFreeInitialCompactTasks() &&
+      promptTokens > STRICT_AGENT_COMPACT_TASK_STRUCTURED_PROMPT_TOKEN_LIMIT
+    ) {
+      await this.activateCompactTaskSchemaFallback(
+        jobId,
+        `tasks_compact prompt estimate ${promptTokens} exceeds structured reliability limit ${STRICT_AGENT_COMPACT_TASK_STRUCTURED_PROMPT_TOKEN_LIMIT}.`,
+      );
+    }
     const actionOutputSchema = this.outputSchemaForAction(action);
     const preferSchemaFreeInitialCompactCall =
       action === "tasks_compact" && this.shouldPreferSchemaFreeInitialCompactTasks();
@@ -8301,6 +8369,13 @@ export class CreateTasksService {
           );
           stories = [this.buildFallbackStoryForEpic(epic)];
         }
+        if (stories.length === 0) {
+          await this.jobService.appendLog(
+            jobId,
+            `Strict story repair returned no stories for epic "${epic.title}". Using deterministic fallback story and continuing.\n`,
+          );
+          stories = [this.buildFallbackStoryForEpic(epic)];
+        }
       }
       if (stories.length === 0) {
         await this.jobService.appendLog(
@@ -8325,6 +8400,13 @@ export class CreateTasksService {
           await this.jobService.appendLog(
             jobId,
             `Strict story repair failed for epic "${epic.title}" after empty output. Using deterministic fallback story and continuing. Reason: ${repairMessage}\n`,
+          );
+          stories = [this.buildFallbackStoryForEpic(epic)];
+        }
+        if (stories.length === 0) {
+          await this.jobService.appendLog(
+            jobId,
+            `Strict story repair returned no stories for epic "${epic.title}" after empty output. Using deterministic fallback story and continuing.\n`,
           );
           stories = [this.buildFallbackStoryForEpic(epic)];
         }
@@ -8397,6 +8479,7 @@ export class CreateTasksService {
     if (chunk.length === 1) {
       const { epic, story } = chunk[0]!;
       const storyScope = this.storyScopeKey(story.epicLocalId, story.localId);
+      const fallbackTasks = this.buildFallbackTasksForStory(story);
       let tasks: AgentTaskNode[];
       try {
         tasks = await this.generateTasksForStory(
@@ -8416,9 +8499,31 @@ export class CreateTasksService {
         if (this.isAgentTimeoutLikeError(error)) {
           await this.jobService.appendLog(
             jobId,
-            `Task generation timed out for story "${story.title}" (${storyScope}). Using deterministic fallback tasks without a second repair attempt.\n`,
+            `Task generation timed out for story "${story.title}" (${storyScope}). Retrying through strict staged recovery before deterministic fallback.\n`,
           );
-          tasks = this.buildFallbackTasksForStory(story);
+          try {
+            tasks = await this.repairTasksForStory(
+              agent,
+              projectKey,
+              { key: epic.localId, title: epicTitleByLocalId.get(epic.localId) ?? epic.title },
+              { ...story, key: story.localId },
+              docSummary,
+              projectBuildMethod,
+              message,
+              fallbackTasks,
+              stream,
+              jobId,
+              commandRunId,
+              { compactSchema: options?.compactSingleStorySchema === true },
+            );
+          } catch (repairError) {
+            const repairMessage = (repairError as Error).message ?? String(repairError);
+            await this.jobService.appendLog(
+              jobId,
+              `Strict task repair failed for story "${story.title}" (${storyScope}) after timeout. Using deterministic fallback tasks and continuing. Reason: ${repairMessage}\n`,
+            );
+            tasks = fallbackTasks;
+          }
           tasksByStoryScope.set(storyScope, tasks);
           return;
         }
@@ -8435,7 +8540,7 @@ export class CreateTasksService {
             docSummary,
             projectBuildMethod,
             message,
-            this.buildFallbackTasksForStory(story),
+            fallbackTasks,
             stream,
             jobId,
             commandRunId,
@@ -8447,7 +8552,14 @@ export class CreateTasksService {
             jobId,
             `Strict task repair failed for story "${story.title}" (${storyScope}). Using deterministic fallback tasks and continuing. Reason: ${repairMessage}\n`,
           );
-          tasks = this.buildFallbackTasksForStory(story);
+          tasks = fallbackTasks;
+        }
+        if (tasks.length === 0) {
+          await this.jobService.appendLog(
+            jobId,
+            `Strict task repair returned no tasks for story "${story.title}" (${storyScope}). Using deterministic fallback tasks and continuing.\n`,
+          );
+          tasks = fallbackTasks;
         }
       }
       if (tasks.length === 0) {
@@ -8464,7 +8576,7 @@ export class CreateTasksService {
             docSummary,
             projectBuildMethod,
             `No tasks were returned for story ${story.title}.`,
-            this.buildFallbackTasksForStory(story),
+            fallbackTasks,
             stream,
             jobId,
             commandRunId,
@@ -8476,7 +8588,14 @@ export class CreateTasksService {
             jobId,
             `Strict task repair failed for story "${story.title}" (${storyScope}) after empty output. Using deterministic fallback tasks and continuing. Reason: ${repairMessage}\n`,
           );
-          tasks = this.buildFallbackTasksForStory(story);
+          tasks = fallbackTasks;
+        }
+        if (tasks.length === 0) {
+          await this.jobService.appendLog(
+            jobId,
+            `Strict task repair returned no tasks for story "${story.title}" (${storyScope}) after empty output. Using deterministic fallback tasks and continuing.\n`,
+          );
+          tasks = fallbackTasks;
         }
       }
       tasksByStoryScope.set(storyScope, tasks);
@@ -8618,15 +8737,22 @@ export class CreateTasksService {
       compactSchema ? 180 : STRICT_AGENT_SINGLE_TASK_DOC_SUMMARY_TOKEN_LIMIT,
       "none",
     );
+    if (compactSchema) {
+      return this.executeCompactTaskRewrite(
+        agent,
+        projectKey,
+        epic,
+        story,
+        compactDocSummary,
+        compactBuildMethod,
+        seedTasks,
+        stream,
+        jobId,
+        commandRunId,
+      );
+    }
     const prompt = compactSchema
-      ? this.buildCompactSeededTaskPrompt({
-          projectKey,
-          epic,
-          story,
-          docSummary: compactDocSummary,
-          projectBuildMethod: compactBuildMethod,
-          seedTasks,
-        })
+      ? ""
       : [
           this.buildCreateTasksAgentMission(projectKey),
           `Generate tasks for story "${story.title}" (Epic: ${epic.title}, phase 3 of 3).`,
@@ -8666,8 +8792,8 @@ export class CreateTasksService {
           compactBuildMethod,
           `Docs: ${compactDocSummary}`,
         ].join("\n\n");
-    const action = compactSchema ? "tasks_compact" : "tasks";
-    const taskStream = compactSchema ? false : stream;
+    const action = "tasks";
+    const taskStream = stream;
     const { output } = await this.invokeAgentWithRetry(agent, prompt, action, taskStream, jobId, commandRunId, {
       epicKey: epic.key,
       storyKey: story.key ?? story.localId,
@@ -8677,9 +8803,10 @@ export class CreateTasksService {
     if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
       throw new Error(`Agent did not return tasks for story ${story.title}`);
     }
-    return parsed.tasks
+    const normalizedTasks = parsed.tasks
       .map((task: any, idx: number) => this.normalizeAgentTaskNode(task, idx))
       .filter((t: AgentTaskNode) => t.title);
+    return compactSchema ? this.mergeCompactTaskMetadata(normalizedTasks, seedTasks) : normalizedTasks;
   }
 
   private async repairStoriesForEpic(
@@ -8765,16 +8892,23 @@ export class CreateTasksService {
       compactSchema ? 180 : STRICT_AGENT_SINGLE_TASK_DOC_SUMMARY_TOKEN_LIMIT,
       "none",
     );
+    if (compactSchema) {
+      return this.executeCompactTaskRewrite(
+        agent,
+        projectKey,
+        epic,
+        story,
+        compactDocSummary,
+        compactBuildMethod,
+        seedTasks,
+        stream,
+        jobId,
+        commandRunId,
+        reason,
+      );
+    }
     const prompt = compactSchema
-      ? this.buildCompactSeededTaskPrompt({
-          projectKey,
-          epic,
-          story,
-          docSummary: compactDocSummary,
-          projectBuildMethod: compactBuildMethod,
-          seedTasks,
-          previousFailure: reason,
-        })
+      ? ""
       : [
           this.buildCreateTasksAgentMission(projectKey),
           `Repair task generation for story "${story.title}" (Epic: ${epic.title}). The previous attempt failed or returned no tasks.`,
@@ -8798,8 +8932,8 @@ export class CreateTasksService {
           JSON.stringify({ tasks: seedTasks }, null, 2),
           `Docs: ${compactDocSummary}`,
         ].join("\n\n");
-    const action = compactSchema ? "tasks_compact" : "tasks";
-    const taskStream = compactSchema ? false : stream;
+    const action = "tasks";
+    const taskStream = stream;
     const { output } = await this.invokeAgentWithRetry(agent, prompt, action, taskStream, jobId, commandRunId, {
       epicKey: epic.key,
       storyKey: story.key ?? story.localId,
@@ -8811,9 +8945,100 @@ export class CreateTasksService {
     if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
       throw new Error(`Agent did not return repair tasks for story ${story.title}`);
     }
-    return parsed.tasks
+    const normalizedTasks = parsed.tasks
       .map((task: any, idx: number) => this.normalizeAgentTaskNode(task, idx))
       .filter((task: AgentTaskNode) => task.title);
+    return compactSchema ? this.mergeCompactTaskMetadata(normalizedTasks, seedTasks) : normalizedTasks;
+  }
+
+  private splitCompactTaskRewriteChunks(seedTasks: AgentTaskNode[]): AgentTaskNode[][] {
+    if (seedTasks.length <= STRICT_AGENT_MAX_TASKS_PER_COMPACT_REWRITE) {
+      return [seedTasks];
+    }
+    const chunks: AgentTaskNode[][] = [];
+    for (let index = 0; index < seedTasks.length; index += STRICT_AGENT_MAX_TASKS_PER_COMPACT_REWRITE) {
+      chunks.push(seedTasks.slice(index, index + STRICT_AGENT_MAX_TASKS_PER_COMPACT_REWRITE));
+    }
+    return chunks;
+  }
+
+  private async executeCompactTaskRewrite(
+    agent: Agent,
+    projectKey: string,
+    epic: { key?: string; title: string },
+    story: AgentStoryNode & { key?: string },
+    docSummary: string,
+    projectBuildMethod: string,
+    seedTasks: AgentTaskNode[],
+    stream: boolean,
+    jobId: string,
+    commandRunId: string,
+    previousFailure?: string,
+  ): Promise<AgentTaskNode[]> {
+    const initialChunkCount = this.splitCompactTaskRewriteChunks(seedTasks).length;
+    const taskChunks = this.planCompactTaskRewriteChunks({
+      projectKey,
+      epic,
+      story,
+      docSummary,
+      projectBuildMethod,
+      seedTasks,
+      previousFailure,
+    });
+    if (taskChunks.length > initialChunkCount) {
+      await this.jobService.appendLog(
+        jobId,
+        `[create-tasks] compact task rewrite split story "${story.title}" into ${taskChunks.length} prompt-bounded chunk(s).\n`,
+      );
+    }
+    if (taskChunks.some((chunk) => chunk.contextMode === "minimal")) {
+      await this.jobService.appendLog(
+        jobId,
+        `[create-tasks] compact task rewrite is using reduced prompt context for story "${story.title}".\n`,
+      );
+    }
+    const rewritten: AgentTaskNode[] = [];
+    for (const [index, chunkPlan] of taskChunks.entries()) {
+      const prompt = this.buildCompactSeededTaskPrompt({
+        projectKey,
+        epic,
+        story,
+        docSummary,
+        projectBuildMethod,
+        seedTasks: chunkPlan.seedTasks,
+        previousFailure,
+        chunkIndex: index,
+        chunkCount: taskChunks.length,
+        totalSeedTaskCount: seedTasks.length,
+        contextMode: chunkPlan.contextMode,
+      });
+      const { output } = await this.invokeAgentWithRetry(
+        agent,
+        prompt,
+        "tasks_compact",
+        false,
+        jobId,
+        commandRunId,
+        {
+          epicKey: epic.key,
+          storyKey: story.key ?? story.localId,
+          strictAgentMode: true,
+          repairStage: previousFailure ? "tasks" : undefined,
+          taskChunkIndex: index + 1,
+          taskChunkCount: taskChunks.length,
+          timeoutMs: this.resolveStrictBatchTimeoutMs("tasks_batch", 1),
+        },
+      );
+      const parsed = extractJson(output);
+      if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
+        throw new Error(`Agent did not return compact tasks for story ${story.title} chunk ${index + 1}`);
+      }
+      const normalizedTasks = parsed.tasks
+        .map((task: any, taskIndex: number) => this.normalizeAgentTaskNode(task, taskIndex))
+        .filter((task: AgentTaskNode) => task.title);
+      rewritten.push(...this.mergeCompactTaskMetadata(normalizedTasks, chunkPlan.seedTasks));
+    }
+    return rewritten;
   }
 
   private buildFallbackStoryForEpic(epic: PlanEpic): AgentStoryNode {
@@ -9056,7 +9281,7 @@ export class CreateTasksService {
   }
 
   private normalizeStoryHintFiles(values: string[]): string[] {
-    return uniqueStrings(
+    return this.preferSpecificTaskTargets(
       values
         .map((value) => this.normalizeStructurePathToken(value))
         .filter((value): value is string => Boolean(value)),
@@ -9080,10 +9305,45 @@ export class CreateTasksService {
     projectBuildMethod: string;
     seedTasks: AgentTaskNode[];
     previousFailure?: string;
+    chunkIndex?: number;
+    chunkCount?: number;
+    totalSeedTaskCount?: number;
+    contextMode?: "full" | "minimal";
   }): string {
-    const compactSeedTasks = this.buildCompactTaskSeeds(params.seedTasks);
+    const contextMode = params.contextMode ?? "full";
+    const minimalContext = contextMode === "minimal";
+    const compactSeedTasks = this.buildCompactTaskSeeds(params.seedTasks, { minimalContext });
+    const chunkCount = Math.max(1, params.chunkCount ?? 1);
+    const chunkIndex = Math.max(0, params.chunkIndex ?? 0);
+    const totalSeedTaskCount = Math.max(compactSeedTasks.length, params.totalSeedTaskCount ?? compactSeedTasks.length);
+    const chunkLocalIds = compactSeedTasks.map((task) => `${task.localId ?? ""}`.trim()).filter(Boolean);
+    const storyContext = compactPromptContext(
+      params.story.description ?? params.story.userStory ?? "",
+      minimalContext ? STRICT_AGENT_COMPACT_TASK_MINIMAL_STORY_TOKEN_LIMIT : STRICT_AGENT_COMPACT_TASK_FULL_STORY_TOKEN_LIMIT,
+      "none",
+    );
+    const acceptanceContext = compactPromptContext(
+      (params.story.acceptanceCriteria ?? []).slice(0, minimalContext ? 3 : 5).join("; "),
+      minimalContext
+        ? STRICT_AGENT_COMPACT_TASK_MINIMAL_ACCEPTANCE_TOKEN_LIMIT
+        : STRICT_AGENT_COMPACT_TASK_FULL_ACCEPTANCE_TOKEN_LIMIT,
+      "none",
+    );
+    const compactBuildMethod = compactPromptContext(
+      params.projectBuildMethod,
+      minimalContext ? STRICT_AGENT_COMPACT_TASK_MINIMAL_BUILD_TOKEN_LIMIT : STRICT_AGENT_COMPACT_TASK_FULL_BUILD_TOKEN_LIMIT,
+      "none",
+    );
+    const compactDocSummary = compactPromptContext(
+      params.docSummary,
+      minimalContext ? STRICT_AGENT_COMPACT_TASK_MINIMAL_DOC_TOKEN_LIMIT : STRICT_AGENT_COMPACT_TASK_FULL_DOC_TOKEN_LIMIT,
+      "none",
+    );
     return [
       `Project ${params.projectKey}. Phase 3 compact task synthesis for story "${params.story.title}" in epic "${params.epic.title}".`,
+      chunkCount > 1
+        ? `This prompt covers compact task chunk ${chunkIndex + 1}/${chunkCount} for ${totalSeedTaskCount} total story tasks. Rewrite only the localIds in this chunk: ${chunkLocalIds.join(", ")}.`
+        : null,
       params.previousFailure
         ? `The previous attempt failed: ${params.previousFailure}`
         : "Rewrite the provided seed tasks into the final story task list.",
@@ -9093,36 +9353,214 @@ export class CreateTasksService {
       `- Return exactly ${compactSeedTasks.length} tasks.`,
       "- Preserve the seed task localIds and dependsOnKeys unless a direct consistency fix is required.",
       "- Keep each returned task aligned to the corresponding seed task role and execution order.",
+      chunkCount > 1
+        ? "- Return tasks only for the chunk localIds listed in this prompt. Preserve dependsOnKeys even when they reference earlier-chunk localIds not rewritten here."
+        : null,
       "- Keep the task list scoped to this story only; do not introduce cross-story dependencies.",
-      "- Improve titles, descriptions, file targets, and story points using the story context and seed targets below.",
+      "- Improve titles, descriptions, file targets, related docs, test arrays, and story points using the story context and seed targets below.",
       "- Prefer exact repo-relative files from the seed tasks and story hints; only broaden to directories when no deeper target is known.",
       "- You do not have tool access in this subtask. Do not say you will inspect Docdex, repo files, profile memory, or any other context.",
       "- Do not narrate your work, explain your reasoning, or emit any prose outside the JSON object.",
       '- Emit the final JSON object immediately. The first character must be "{" and the last must be "}".',
       `Story context (key=${params.story.key ?? params.story.localId ?? "TBD"}):`,
-      params.story.description ?? params.story.userStory ?? "",
-      `Acceptance criteria: ${(params.story.acceptanceCriteria ?? []).join("; ")}`,
+      storyContext,
+      `Acceptance criteria: ${acceptanceContext}`,
       "Project construction method:",
-      params.projectBuildMethod,
+      compactBuildMethod,
       "Seed tasks to rewrite exactly:",
       JSON.stringify({ tasks: compactSeedTasks }, null, 2),
-      `Docs: ${params.docSummary}`,
+      `Docs: ${compactDocSummary}`,
     ]
       .filter((line): line is string => Boolean(line))
       .join("\n\n");
   }
 
-  private buildCompactTaskSeeds(tasks: AgentTaskNode[]): Array<Record<string, unknown>> {
+  private buildCompactTaskSeeds(
+    tasks: AgentTaskNode[],
+    options?: { minimalContext?: boolean },
+  ): Array<Record<string, unknown>> {
+    const minimalContext = options?.minimalContext === true;
+    const compactDescription = (value: string | undefined): string => {
+      const collapsed = `${value ?? ""}`.replace(/\s+/g, " ").trim();
+      const maxLength = minimalContext ? 160 : 280;
+      if (collapsed.length <= maxLength) return collapsed;
+      return `${collapsed.slice(0, maxLength - 3).replace(/[ ,;:.-]+$/g, "")}...`;
+    };
     return tasks.map((task) => ({
       localId: task.localId,
       title: task.title,
       type: task.type,
-      description: task.description,
-      files: normalizeStringArray(task.files),
+      description: compactDescription(task.description),
+      files: this.preferSpecificTaskTargets(normalizeStringArray(task.files)).slice(0, minimalContext ? 4 : 8),
       estimatedStoryPoints: task.estimatedStoryPoints ?? null,
       priorityHint: task.priorityHint ?? null,
       dependsOnKeys: normalizeStringArray(task.dependsOnKeys),
+      relatedDocs: normalizeRelatedDocs(task.relatedDocs).slice(0, minimalContext ? 2 : 4),
+      unitTests: normalizeStringArray(task.unitTests).slice(0, minimalContext ? 1 : 2),
+      componentTests: normalizeStringArray(task.componentTests).slice(0, minimalContext ? 1 : 2),
+      integrationTests: normalizeStringArray(task.integrationTests).slice(0, minimalContext ? 1 : 2),
+      apiTests: normalizeStringArray(task.apiTests).slice(0, minimalContext ? 1 : 2),
     }));
+  }
+
+  private planCompactTaskRewriteChunks(params: {
+    projectKey: string;
+    epic: { key?: string; title: string };
+    story: AgentStoryNode & { key?: string };
+    docSummary: string;
+    projectBuildMethod: string;
+    seedTasks: AgentTaskNode[];
+    previousFailure?: string;
+  }): Array<{ seedTasks: AgentTaskNode[]; contextMode: "full" | "minimal" }> {
+    const initialContextMode: "full" | "minimal" = params.previousFailure ? "minimal" : "full";
+    const queue = this.splitCompactTaskRewriteChunks(params.seedTasks).map((seedChunk) => ({
+      seedTasks: seedChunk,
+      contextMode: initialContextMode,
+    }));
+    const planned: Array<{ seedTasks: AgentTaskNode[]; contextMode: "full" | "minimal" }> = [];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const prompt = this.buildCompactSeededTaskPrompt({
+        ...params,
+        seedTasks: current.seedTasks,
+        chunkIndex: 0,
+        chunkCount: 1,
+        totalSeedTaskCount: params.seedTasks.length,
+        contextMode: current.contextMode,
+      });
+      const promptTokens = estimateTokens(prompt);
+      const promptLimit =
+        current.contextMode === "minimal"
+          ? STRICT_AGENT_COMPACT_TASK_MINIMAL_PROMPT_TOKEN_LIMIT
+          : STRICT_AGENT_COMPACT_TASK_RUNTIME_PROMPT_TOKEN_LIMIT;
+      if (promptTokens > promptLimit && current.contextMode !== "minimal") {
+        queue.unshift({ seedTasks: current.seedTasks, contextMode: "minimal" });
+        continue;
+      }
+      if (promptTokens > promptLimit && current.seedTasks.length > 1) {
+        const [left, right] = this.splitChunkInHalf(current.seedTasks);
+        if (right.length > 0) {
+          queue.unshift(
+            { seedTasks: right, contextMode: "minimal" },
+            { seedTasks: left, contextMode: "minimal" },
+          );
+          continue;
+        }
+      }
+      planned.push(current);
+    }
+    return planned;
+  }
+
+  private groupFallbackTaskTargets(targets: string[], maxGroups: number): string[][] {
+    const cleaned = this.preferSpecificTaskTargets(targets).filter((value): value is string => Boolean(value));
+    if (cleaned.length === 0 || maxGroups <= 0) return [];
+    const groups = new Map<string, string[]>();
+    for (const target of cleaned) {
+      const normalized = target.replace(/\\/g, "/");
+      const parts = normalized.split("/").filter(Boolean);
+      const keyParts = isStructuredFilePath(path.basename(normalized)) ? parts.slice(0, -1) : parts;
+      let key = target;
+      if (keyParts.length >= 4) {
+        key = keyParts.slice(0, 4).join("/");
+      } else if (keyParts.length >= 3) {
+        key = keyParts.slice(0, 3).join("/");
+      } else if (keyParts.length >= 2) {
+        key = keyParts.slice(0, 2).join("/");
+      }
+      const existing = groups.get(key) ?? [];
+      existing.push(target);
+      groups.set(key, existing);
+    }
+    const ordered = [...groups.values()]
+      .map((group) => uniqueStrings(group))
+      .sort((left, right) => right.length - left.length || left[0]!.localeCompare(right[0]!));
+    if (ordered.length <= maxGroups) return ordered;
+    const head = ordered.slice(0, Math.max(1, maxGroups - 1));
+    const tail = uniqueStrings(ordered.slice(Math.max(1, maxGroups - 1)).flat());
+    return [...head, tail];
+  }
+
+  private summarizeFallbackTargetGroup(targets: string[]): string {
+    if (targets.length === 0) return "Target Slice";
+    const titleize = (value: string): string =>
+      value
+        .split(/[\s._/-]+/)
+        .filter(Boolean)
+        .map((token) => token[0]!.toUpperCase() + token.slice(1))
+        .join(" ");
+    const fileNames = uniqueStrings(
+      targets
+        .map((target) => path.basename(target))
+        .filter((value) => isStructuredFilePath(value))
+        .map((value) => value.replace(/\.[^.]+$/, "")),
+    );
+    if (fileNames.length === 1) return titleize(fileNames[0]!);
+    if (fileNames.length >= 2) return `${titleize(fileNames[0]!)} and ${titleize(fileNames[1]!)}`;
+    const firstTarget = targets[0]!;
+    let root = path.dirname(firstTarget);
+    try {
+      root = this.extractArchitectureRoot(firstTarget) ?? root;
+    } catch {
+      root = path.dirname(firstTarget);
+    }
+    const label = root.split("/").filter(Boolean).slice(-2).join(" ");
+    return titleize(label || firstTarget);
+  }
+
+  private buildFallbackTestMetadata(
+    storyTitle: string,
+    targets: string[],
+  ): Pick<AgentTaskNode, "unitTests" | "componentTests" | "integrationTests" | "apiTests"> {
+    const unitTests: string[] = [];
+    const componentTests: string[] = [];
+    const integrationTests: string[] = [];
+    const apiTests: string[] = [];
+    for (const target of uniqueStrings(targets).slice(0, 4)) {
+      const lower = target.toLowerCase();
+      const statement = `Exercise ${target} for ${storyTitle}.`;
+      if (/\b(api|rpc|gateway|provider|endpoint)\b/.test(lower)) {
+        apiTests.push(statement);
+      } else if (/\b(component|screen|page|view|ui)\b/.test(lower)) {
+        componentTests.push(statement);
+      } else if (/\b(test|spec|scenario|e2e|integration|workflow|script|runbook|deploy)\b/.test(lower)) {
+        integrationTests.push(statement);
+      } else {
+        unitTests.push(statement);
+      }
+    }
+    if (unitTests.length === 0 && componentTests.length === 0 && integrationTests.length === 0 && apiTests.length === 0) {
+      integrationTests.push(`Execute focused readiness coverage for ${storyTitle}.`);
+    }
+    return { unitTests, componentTests, integrationTests, apiTests };
+  }
+
+  private mergeCompactTaskMetadata(tasks: AgentTaskNode[], seedTasks: AgentTaskNode[]): AgentTaskNode[] {
+    if (tasks.length === 0 || seedTasks.length === 0) return tasks;
+    const seedByLocalId = new Map(seedTasks.map((task) => [task.localId, task] as const));
+    return tasks.map((task, index) => {
+      const seed = (task.localId ? seedByLocalId.get(task.localId) : undefined) ?? seedTasks[index];
+      if (!seed) return task;
+      const mergedFiles = this.preferSpecificTaskTargets([
+        ...normalizeStringArray(task.files),
+        ...normalizeStringArray(seed.files),
+      ]).slice(0, 8);
+      const taskRelatedDocs = normalizeRelatedDocs(task.relatedDocs);
+      const taskUnitTests = normalizeStringArray(task.unitTests);
+      const taskComponentTests = normalizeStringArray(task.componentTests);
+      const taskIntegrationTests = normalizeStringArray(task.integrationTests);
+      const taskApiTests = normalizeStringArray(task.apiTests);
+      return {
+        ...task,
+        files: mergedFiles.length > 0 ? mergedFiles : normalizeStringArray(seed.files),
+        relatedDocs: taskRelatedDocs.length > 0 ? taskRelatedDocs : normalizeRelatedDocs(seed.relatedDocs),
+        unitTests: taskUnitTests.length > 0 ? taskUnitTests : normalizeStringArray(seed.unitTests),
+        componentTests: taskComponentTests.length > 0 ? taskComponentTests : normalizeStringArray(seed.componentTests),
+        integrationTests:
+          taskIntegrationTests.length > 0 ? taskIntegrationTests : normalizeStringArray(seed.integrationTests),
+        apiTests: taskApiTests.length > 0 ? taskApiTests : normalizeStringArray(seed.apiTests),
+      };
+    });
   }
 
   private buildFallbackTasksForStory(
@@ -9178,200 +9616,152 @@ export class CreateTasksService {
         : defaultSupportingFiles.length > 0
           ? defaultSupportingFiles
           : fallbackFiles;
+    const taskGroups: Array<{
+      kind: "primary" | "supporting" | "verification";
+      files: string[];
+    }> = [];
+    const pushGroups = (kind: "primary" | "supporting" | "verification", groups: string[][]): void => {
+      for (const files of groups) {
+        if (files.length > 0) taskGroups.push({ kind, files });
+      }
+    };
+    const verificationSeedFiles =
+      defaultVerificationFiles.length > 0 ? defaultVerificationFiles : uniqueStrings([...defaultSupportingFiles, ...defaultCoreFiles]);
     if (mode === "verification") {
-      return [
-        {
-          localId: "t-fallback-1",
-          title: `Implement ${story.title} verification surfaces`,
-          type: "feature",
-          description: [
-            `Implement the concrete verification and readiness surfaces for story "${story.title}".`,
-            `Primary objective: ${objectiveLine}`,
-            verificationLine,
-            "Add or update the harness, assertions, fixtures, or operational hooks that make the story verifiable.",
-            criteriaLines ? `Acceptance criteria to satisfy:\n${criteriaLines}` : "Acceptance criteria: use story definition.",
-          ].join("\n"),
-          files: defaultVerificationFiles,
-          estimatedStoryPoints: 3,
-          priorityHint: 1,
-          dependsOnKeys: [],
-          relatedDocs: story.relatedDocs ?? [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-        {
-          localId: "t-fallback-2",
-          title: `Exercise ${story.title} regression paths`,
-          type: "feature",
-          description: [
-            `Exercise the runtime, dependency, and failure paths covered by "${story.title}" after the verification surfaces exist.`,
-            supportingLine,
-            verificationLine,
-            "Ensure the verification path covers the documented completion signals and dependency order.",
-          ].join("\n"),
-          files: uniqueStrings([...defaultVerificationFiles, ...defaultSupportingFiles]).slice(0, 6),
-          estimatedStoryPoints: 2,
-          priorityHint: 2,
-          dependsOnKeys: ["t-fallback-1"],
-          relatedDocs: story.relatedDocs ?? [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-        {
-          localId: "t-fallback-3",
-          title: `Finalize ${story.title} readiness evidence`,
-          type: "chore",
-          description: [
-            `Finalize readiness evidence for "${story.title}" once the verification path is executable.`,
-            verificationLine,
-            "Capture the focused regression signals, residual risks, and release-readiness artifacts required by the story.",
-          ].join("\n"),
-          files: defaultVerificationFiles,
-          estimatedStoryPoints: 1,
-          priorityHint: 3,
-          dependsOnKeys: ["t-fallback-2"],
-          relatedDocs: story.relatedDocs ?? [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-      ];
+      pushGroups("primary", this.groupFallbackTaskTargets(verificationSeedFiles, 2));
+      pushGroups("supporting", this.groupFallbackTaskTargets(defaultSupportingFiles, 1));
+    } else if (mode === "integration") {
+      pushGroups("primary", this.groupFallbackTaskTargets(defaultSupportingFiles, 2));
+      pushGroups("supporting", this.groupFallbackTaskTargets(uniqueStrings([...defaultCoreFiles, ...defaultSupportingFiles]), 1));
+    } else {
+      pushGroups("primary", this.groupFallbackTaskTargets(defaultCoreFiles, 2));
+      pushGroups("supporting", this.groupFallbackTaskTargets(defaultSupportingFiles, 2));
     }
-    if (mode === "integration") {
-      return [
-        {
-          localId: "t-fallback-1",
-          title: `Implement ${story.title} dependency wiring`,
-          type: "feature",
-          description: [
-            `Implement the dependency and integration surfaces for story "${story.title}".`,
-            `Primary objective: ${objectiveLine}`,
-            supportingLine,
-            "Wire the documented upstream/downstream modules and runtime contracts in the required order.",
-            criteriaLines ? `Acceptance criteria to satisfy:\n${criteriaLines}` : "Acceptance criteria: use story definition.",
-          ].join("\n"),
-          files: defaultSupportingFiles,
-          estimatedStoryPoints: 3,
-          priorityHint: 1,
-          dependsOnKeys: [],
-          relatedDocs: story.relatedDocs ?? [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-        {
-          localId: "t-fallback-2",
-          title: `Align ${story.title} runtime contracts`,
-          type: "feature",
-          description: [
-            `Align the data contracts, orchestration flow, and runtime boundaries for "${story.title}" after dependency wiring lands.`,
-            primaryLine,
-            supportingLine,
-            "Update compatibility seams so the integrated path is stable and dependency rationale is explicit.",
-          ].join("\n"),
-          files: uniqueStrings([...defaultSupportingFiles, ...defaultCoreFiles]).slice(0, 6),
-          estimatedStoryPoints: 2,
-          priorityHint: 2,
-          dependsOnKeys: ["t-fallback-1"],
-          relatedDocs: story.relatedDocs ?? [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-        {
-          localId: "t-fallback-3",
-          title: `Verify ${story.title} integrated behavior`,
-          type: "chore",
-          description: [
-            `Verify the integrated behavior and readiness surface for "${story.title}" after dependency alignment completes.`,
-            verificationLine,
-            "Add or update the focused validation path that proves the integration behaves in documented order.",
-          ].join("\n"),
-          files:
-            defaultVerificationFiles.length > 0
-              ? defaultVerificationFiles
-              : uniqueStrings([...defaultSupportingFiles, ...defaultCoreFiles]).slice(0, 6),
-          estimatedStoryPoints: 2,
-          priorityHint: 3,
-          dependsOnKeys: ["t-fallback-2"],
-          relatedDocs: story.relatedDocs ?? [],
-          unitTests: [],
-          componentTests: [],
-          integrationTests: [],
-          apiTests: [],
-        },
-      ];
+    pushGroups("verification", this.groupFallbackTaskTargets(verificationSeedFiles, mode === "verification" ? 1 : 2));
+    if (taskGroups.length === 0) {
+      taskGroups.push({ kind: "primary", files: fallbackFiles.slice(0, 3) });
+      taskGroups.push({ kind: "verification", files: fallbackFiles.slice(0, 3) });
     }
-    return [
-      {
-        localId: "t-fallback-1",
-        title:
-          mode === "core" ? `Implement ${story.title} target modules` : `Implement core scope for ${story.title}`,
-        type: "feature",
-        description: [
-          `Implement the core product behavior for story "${story.title}".`,
-          `Primary objective: ${objectiveLine}`,
-          primaryLine,
-          "Create or update concrete modules/files and wire baseline runtime paths first.",
-          criteriaLines ? `Acceptance criteria to satisfy:\n${criteriaLines}` : "Acceptance criteria: use story definition.",
-        ].join("\n"),
-        files: defaultCoreFiles,
-        estimatedStoryPoints: 3,
-        priorityHint: 1,
-        dependsOnKeys: [],
-        relatedDocs: story.relatedDocs ?? [],
-        unitTests: [],
-        componentTests: [],
-        integrationTests: [],
-        apiTests: [],
-      },
-      {
-        localId: "t-fallback-2",
-        title:
-          mode === "core" ? `Wire ${story.title} supporting dependencies` : `Integrate dependencies for ${story.title}`,
-        type: "feature",
-        description: [
-          `Integrate dependent interfaces and runtime dependencies for "${story.title}" after core scope implementation.`,
-          supportingLine,
-          "Align internal/external interfaces, data shapes, and dependency wiring with the documented context.",
-        ].join("\n"),
-        files: defaultSupportingFiles,
-        estimatedStoryPoints: 3,
-        priorityHint: 2,
-        dependsOnKeys: ["t-fallback-1"],
-        relatedDocs: story.relatedDocs ?? [],
-        unitTests: [],
-        componentTests: [],
-        integrationTests: [],
-        apiTests: [],
-      },
-      {
-        localId: "t-fallback-3",
-        title: `Validate ${story.title} regressions and readiness`,
+    const dedupedGroups: Array<{ kind: "primary" | "supporting" | "verification"; files: string[] }> = [];
+    const seenGroupKeys = new Set<string>();
+    for (const group of taskGroups) {
+      const key = `${group.kind}:${group.files.join("|")}`;
+      if (seenGroupKeys.has(key)) continue;
+      seenGroupKeys.add(key);
+      dedupedGroups.push(group);
+    }
+    const boundedGroups = this.boundFallbackTaskGroups(dedupedGroups, mode);
+    return boundedGroups.map((group, index) => {
+      const label = this.summarizeFallbackTargetGroup(group.files);
+      const dependsOnKeys = index > 0 ? [`t-fallback-${index}`] : [];
+      const acceptanceBlock =
+        index === 0 && criteriaLines ? `Acceptance criteria to satisfy:\n${criteriaLines}` : "Acceptance criteria: use story definition.";
+      if (group.kind === "primary") {
+        return {
+          localId: `t-fallback-${index + 1}`,
+          title:
+            mode === "verification"
+              ? `Build ${label} verification surfaces for ${story.title}`
+              : `Implement ${label} for ${story.title}`,
+          type: "feature",
+          description: [
+            `Implement the core product behavior for story "${story.title}".`,
+            `Primary objective: ${objectiveLine}`,
+            `Focused targets: ${group.files.join(", ")}.`,
+            group.kind === "primary" && mode === "integration"
+              ? supportingLine
+              : primaryLine,
+            "Create or update the concrete modules and baseline execution path for this target group before downstream wiring.",
+            acceptanceBlock,
+          ].join("\n"),
+          files: group.files,
+          estimatedStoryPoints: group.files.length > 2 ? 5 : 3,
+          priorityHint: Math.max(1, 100 - index * 10),
+          dependsOnKeys,
+          relatedDocs: story.relatedDocs ?? [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        } satisfies AgentTaskNode;
+      }
+      if (group.kind === "supporting") {
+        return {
+          localId: `t-fallback-${index + 1}`,
+          title: `Wire ${label} into ${story.title}`,
+          type: "feature",
+          description: [
+            `Integrate the supporting runtime and dependency surfaces for "${story.title}" after the prerequisite target groups are in place.`,
+            `Focused targets: ${group.files.join(", ")}.`,
+            supportingLine,
+            "Align internal/external interfaces, dependency order, and runtime contracts across this target group.",
+          ].join("\n"),
+          files: group.files,
+          estimatedStoryPoints: group.files.length > 2 ? 3 : 2,
+          priorityHint: Math.max(1, 90 - index * 10),
+          dependsOnKeys,
+          relatedDocs: story.relatedDocs ?? [],
+          unitTests: [],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        } satisfies AgentTaskNode;
+      }
+      const testMetadata = this.buildFallbackTestMetadata(story.title, group.files);
+      return {
+        localId: `t-fallback-${index + 1}`,
+        title: `Validate ${label} for ${story.title}`,
         type: "chore",
         description: [
-          `Validate "${story.title}" end-to-end with focused regression coverage and readiness evidence.`,
+          `Validate the completed story slice for "${story.title}" with focused regression coverage and readiness evidence.`,
+          `Focused verification targets: ${group.files.join(", ")}.`,
           verificationLine,
-          "Add/update targeted tests and verification scripts tied to implemented behavior.",
+          "Add or update the targeted verification path that proves this slice behaves correctly after implementation and wiring land.",
         ].join("\n"),
-        files: defaultVerificationFiles,
+        files: group.files,
         estimatedStoryPoints: 2,
-        priorityHint: 3,
-        dependsOnKeys: ["t-fallback-2"],
+        priorityHint: Math.max(1, 80 - index * 10),
+        dependsOnKeys,
         relatedDocs: story.relatedDocs ?? [],
-        unitTests: [],
-        componentTests: [],
-        integrationTests: [],
-        apiTests: [],
-      },
-    ];
+        unitTests: testMetadata.unitTests,
+        componentTests: testMetadata.componentTests,
+        integrationTests: testMetadata.integrationTests,
+        apiTests: testMetadata.apiTests,
+      } satisfies AgentTaskNode;
+    });
+  }
+
+  private boundFallbackTaskGroups(
+    groups: Array<{ kind: "primary" | "supporting" | "verification"; files: string[] }>,
+    mode: "core" | "integration" | "verification" | "generic",
+  ): Array<{ kind: "primary" | "supporting" | "verification"; files: string[] }> {
+    const budgets: Record<"primary" | "supporting" | "verification", number> =
+      mode === "verification"
+        ? { primary: 1, supporting: 1, verification: 1 }
+        : { primary: 2, supporting: 1, verification: 1 };
+    const mergedByKind = new Map<"primary" | "supporting" | "verification", string[]>();
+    const passThroughCounts = new Map<"primary" | "supporting" | "verification", number>();
+    const bounded: Array<{ kind: "primary" | "supporting" | "verification"; files: string[] }> = [];
+    for (const group of groups) {
+      const budget = budgets[group.kind];
+      const passthroughBudget = Math.max(0, budget - 1);
+      const currentCount = passThroughCounts.get(group.kind) ?? 0;
+      if (currentCount < passthroughBudget) {
+        bounded.push(group);
+        passThroughCounts.set(group.kind, currentCount + 1);
+        continue;
+      }
+      const existing = mergedByKind.get(group.kind) ?? [];
+      mergedByKind.set(group.kind, [...existing, ...group.files]);
+    }
+    for (const [kind, files] of mergedByKind.entries()) {
+      if (files.length === 0) continue;
+      bounded.push({
+        kind,
+        files: this.preferSpecificTaskTargets(files).slice(0, 6),
+      });
+    }
+    return bounded;
   }
 
   private async generatePlanFromAgent(
@@ -9578,6 +9968,7 @@ export class CreateTasksService {
           );
           limitedStories = [this.buildFallbackStoryForEpic(epic)];
         } else {
+          const fallbackStories = [this.buildFallbackStoryForEpic(epic)];
           await this.jobService.appendLog(
             options.jobId,
             `Story generation returned no stories for epic "${epic.title}". Retrying through strict staged recovery.\n`,
@@ -9590,12 +9981,22 @@ export class CreateTasksService {
               docSummary,
               options.projectBuildMethod,
               `No stories were returned for epic ${epic.title}.`,
-              [this.buildFallbackStoryForEpic(epic)],
+              fallbackStories,
               options.agentStream,
               options.jobId,
               options.commandRunId,
             )
           ).slice(0, options.maxStoriesPerEpic ?? Number.MAX_SAFE_INTEGER);
+          if (limitedStories.length === 0) {
+            await this.jobService.appendLog(
+              options.jobId,
+              `Strict story repair returned no stories for epic "${epic.title}" after empty output. Using deterministic fallback story.\n`,
+            );
+            limitedStories = fallbackStories.slice(
+              0,
+              options.maxStoriesPerEpic ?? Number.MAX_SAFE_INTEGER,
+            );
+          }
         }
       }
       limitedStories.forEach((story, idx) => {
@@ -9676,6 +10077,7 @@ export class CreateTasksService {
             options.maxTasksPerStory ?? Number.MAX_SAFE_INTEGER,
           );
         } else {
+          const fallbackTasks = this.buildFallbackTasksForStory(story);
           await this.jobService.appendLog(
             options.jobId,
             `Task generation returned no tasks for story "${story.title}" (${storyScope}). Retrying through strict staged recovery.\n`,
@@ -9692,12 +10094,22 @@ export class CreateTasksService {
               docSummary,
               options.projectBuildMethod,
               `No tasks were returned for story ${story.title}.`,
-              this.buildFallbackTasksForStory(story),
+              fallbackTasks,
               options.agentStream,
               options.jobId,
               options.commandRunId,
             )
           ).slice(0, options.maxTasksPerStory ?? Number.MAX_SAFE_INTEGER);
+          if (limitedTasks.length === 0) {
+            await this.jobService.appendLog(
+              options.jobId,
+              `Strict task repair returned no tasks for story "${story.title}" (${storyScope}) after empty output. Using deterministic fallback tasks.\n`,
+            );
+            limitedTasks = fallbackTasks.slice(
+              0,
+              options.maxTasksPerStory ?? Number.MAX_SAFE_INTEGER,
+            );
+          }
         }
       }
       limitedTasks.forEach((task, idx) => {

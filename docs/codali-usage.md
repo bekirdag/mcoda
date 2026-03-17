@@ -311,7 +311,7 @@ converts it into patch JSON for Codali to apply.
 - `CODALI_INTERPRETER_MODEL` (`auto` by default; uses the selected phase model unless overridden)
 - `CODALI_INTERPRETER_FORMAT` (default `json`)
 - `CODALI_INTERPRETER_MAX_RETRIES` (default `1`)
-- `CODALI_INTERPRETER_TIMEOUT_MS` (default `120000`)
+- `CODALI_INTERPRETER_TIMEOUT_MS` (default `300000`)
 - `--agent-interpreter <agent-slug>` (CLI override, resolves provider/model via mcoda agent DB)
 - `CODALI_AGENT_INTERPRETER` (env override for interpreter agent selection)
 

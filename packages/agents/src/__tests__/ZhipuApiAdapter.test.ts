@@ -68,6 +68,35 @@ test("ZhipuApiAdapter invoke returns parsed output and usage", { concurrency: fa
   }
 });
 
+test("ZhipuApiAdapter defaults glm-4.7 to coding endpoint and maps boolean thinking", { concurrency: false }, async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      assert.equal(url, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions");
+      const body = JSON.parse(init?.body as string);
+      assert.equal(body.model, "glm-4.7");
+      assert.deepEqual(body.thinking, { type: "enabled" });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const adapter = new ZhipuApiAdapter({
+      agent,
+      capabilities: ["chat"],
+      model: "glm-4.7",
+      apiKey: "secret",
+      thinking: true,
+    } as any);
+    const result = await adapter.invoke({ input: "hi" });
+    assert.equal(result.output, "ok");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("ZhipuApiAdapter invokeStream parses SSE chunks", { concurrency: false }, async () => {
   const originalFetch = globalThis.fetch;
   try {

@@ -85,7 +85,7 @@ test("loadConfig provides defaults for context/security/builder/streaming/cost/l
   assert.equal(config.interpreter.model, "auto");
   assert.equal(config.interpreter.format, "json");
   assert.equal(config.interpreter.maxRetries, 1);
-  assert.equal(config.interpreter.timeoutMs, 120_000);
+  assert.equal(config.interpreter.timeoutMs, 300_000);
   assert.equal(config.streaming.enabled, true);
   assert.equal(config.cost.maxCostPerRun, 0.5);
   assert.equal(config.cost.charPerToken, 4);

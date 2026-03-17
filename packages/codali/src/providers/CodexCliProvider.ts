@@ -161,7 +161,7 @@ export class CodexCliProvider implements Provider {
       args.push("-c", `reasoning_effort=${reasoningEffort}`);
       args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
     }
-    const timeoutMs = Math.max(1, this.config.timeoutMs ?? 120_000);
+    const timeoutMs = Math.max(1, this.config.timeoutMs ?? 300_000);
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
     if (reasoningEffort) {
       childEnv[CODEX_REASONING_ENV] = reasoningEffort;

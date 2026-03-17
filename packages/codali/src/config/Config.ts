@@ -405,7 +405,7 @@ export const DEFAULT_INTERPRETER: InterpreterConfig = {
   model: "auto",
   format: "json",
   maxRetries: 1,
-  timeoutMs: 120_000,
+  timeoutMs: 300_000,
 };
 
 export const DEFAULT_STREAMING: StreamingConfig = {

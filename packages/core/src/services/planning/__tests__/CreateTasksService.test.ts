@@ -7566,6 +7566,64 @@ test("collectStrictStoriesChunk falls back to deterministic story scaffold when 
   );
 });
 
+test("collectStrictStoriesChunk falls back when strict story repair returns no stories after empty output", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  let repairCalls = 0;
+  (service as any).generateStoriesForEpic = async () => [];
+  (service as any).repairStoriesForEpic = async () => {
+    repairCalls += 1;
+    return [];
+  };
+
+  const storiesByEpic = new Map<string, any[]>();
+  await (service as any).collectStrictStoriesChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [epic],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    storiesByEpic,
+  );
+
+  assert.equal(repairCalls, 1);
+  assert.equal(storiesByEpic.get("e1")?.length, 1);
+  assert.equal(storiesByEpic.get("e1")?.[0]?.title, "Deliver Build Shared");
+  assert.ok(
+    jobService.logs.some((line) =>
+      /Strict story repair returned no stories .* after empty output\. Using deterministic fallback story/i.test(
+        line,
+      ),
+    ),
+    `expected empty-output story fallback log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
 test("collectStrictTasksChunk falls back to deterministic task scaffold when strict task repair fails", async () => {
   const jobService = new StubJobService();
   const workspaceRepo = new StubWorkspaceRepo();
@@ -7623,11 +7681,83 @@ test("collectStrictTasksChunk falls back to deterministic task scaffold when str
     tasksByStoryScope,
   );
 
-  assert.equal(tasksByStoryScope.get("e1::us1")?.length, 3);
-  assert.equal(tasksByStoryScope.get("e1::us1")?.[0]?.title, "Implement Implement shared runtime target modules");
+  const fallbackTasks = tasksByStoryScope.get("e1::us1") ?? [];
+  assert.ok(fallbackTasks.length >= 1);
+  assert.match(fallbackTasks[0]?.title ?? "", /Implement .*shared runtime/i);
   assert.ok(
     jobService.logs.some((line) => /using deterministic fallback tasks and continuing/i.test(line)),
     `expected deterministic task fallback log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictTasksChunk falls back when strict task repair returns no tasks after empty output", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  const story = {
+    localId: "us1",
+    epicLocalId: "e1",
+    title: "Implement shared runtime",
+    userStory: "As an operator, I need the shared runtime.",
+    description: "Implement shared runtime surfaces.",
+    acceptanceCriteria: ["runtime exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    tasks: [],
+  };
+  let repairCalls = 0;
+  (service as any).generateTasksForStory = async () => [];
+  (service as any).repairTasksForStory = async () => {
+    repairCalls += 1;
+    return [];
+  };
+
+  const tasksByStoryScope = new Map<string, any[]>();
+  await (service as any).collectStrictTasksChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [{ epic, story }],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    new Map([["e1", "Build Shared"]]),
+    tasksByStoryScope,
+  );
+
+  assert.equal(repairCalls, 1);
+  const fallbackTasks = tasksByStoryScope.get("e1::us1") ?? [];
+  assert.ok(fallbackTasks.length >= 1);
+  assert.match(fallbackTasks[0]?.title ?? "", /Implement .*shared runtime/i);
+  assert.ok(
+    jobService.logs.some((line) =>
+      /Strict task repair returned no tasks .* after empty output\. Using deterministic fallback tasks/i.test(
+        line,
+      ),
+    ),
+    `expected empty-output task fallback log, got ${jobService.logs.join("\n")}`,
   );
 });
 
@@ -7687,7 +7817,7 @@ test("collectStrictStoriesChunk skips repair after timeout-like single-epic fail
   );
 });
 
-test("collectStrictTasksChunk skips repair after timeout-like single-story failure", async () => {
+test("collectStrictTasksChunk retries timeout-like single-story failure through repair before fallback", async () => {
   const jobService = new StubJobService();
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
@@ -7729,7 +7859,24 @@ test("collectStrictTasksChunk skips repair after timeout-like single-story failu
   };
   (service as any).repairTasksForStory = async () => {
     repairCalls += 1;
-    return [];
+    return [
+      {
+        localId: "t-repair-1",
+        title: "Repair shared runtime module",
+        type: "feature",
+        description: "Repair packages/shared/src/runtime.ts after the timed out generation attempt.",
+        files: ["packages/shared/src/runtime.ts"],
+        estimatedStoryPoints: 3,
+        priorityHint: 10,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+        qa: null,
+      },
+    ];
   };
 
   const tasksByStoryScope = new Map<string, any[]>();
@@ -7746,12 +7893,82 @@ test("collectStrictTasksChunk skips repair after timeout-like single-story failu
     tasksByStoryScope,
   );
 
-  assert.equal(repairCalls, 0);
-  assert.equal(tasksByStoryScope.get("e1::us1")?.length, 3);
-  assert.equal(tasksByStoryScope.get("e1::us1")?.[0]?.title, "Implement Implement shared runtime target modules");
+  assert.equal(repairCalls, 1);
+  const timeoutRecoveredTasks = tasksByStoryScope.get("e1::us1") ?? [];
+  assert.equal(timeoutRecoveredTasks.length, 1);
+  assert.equal(timeoutRecoveredTasks[0]?.title, "Repair shared runtime module");
   assert.ok(
-    jobService.logs.some((line) => /without a second repair attempt/i.test(line)),
-    `expected timeout short-circuit log, got ${jobService.logs.join("\n")}`,
+    jobService.logs.some((line) => /Retrying through strict staged recovery before deterministic fallback/i.test(line)),
+    `expected timeout recovery log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("collectStrictTasksChunk falls back after timeout when strict repair also fails", async () => {
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+  const epic = {
+    localId: "e1",
+    area: "ep",
+    title: "Build Shared",
+    description: "Build shared service surfaces.",
+    acceptanceCriteria: ["shared service exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    serviceIds: ["shared"],
+    tags: [],
+    stories: [],
+  };
+  const story = {
+    localId: "us1",
+    epicLocalId: "e1",
+    title: "Implement shared runtime",
+    userStory: "As an operator, I need the shared runtime.",
+    description: "Implement shared runtime surfaces.",
+    acceptanceCriteria: ["runtime exists"],
+    relatedDocs: [],
+    priorityHint: 1,
+    tasks: [],
+  };
+  let repairCalls = 0;
+  (service as any).generateTasksForStory = async () => {
+    throw new Error("AUTH_ERROR: codex CLI timed out after 120000ms");
+  };
+  (service as any).repairTasksForStory = async () => {
+    repairCalls += 1;
+    throw new Error("AUTH_ERROR: codex CLI timed out after 120000ms");
+  };
+
+  const tasksByStoryScope = new Map<string, any[]>();
+  await (service as any).collectStrictTasksChunk(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    [{ epic, story }],
+    "",
+    "",
+    true,
+    "job-1",
+    "cmd-1",
+    new Map([["e1", "Build Shared"]]),
+    tasksByStoryScope,
+  );
+
+  assert.equal(repairCalls, 1);
+  const timeoutFallbackTasks = tasksByStoryScope.get("e1::us1") ?? [];
+  assert.ok(timeoutFallbackTasks.length >= 1);
+  assert.match(timeoutFallbackTasks[0]?.title ?? "", /Implement .*shared runtime/i);
+  assert.ok(
+    jobService.logs.some((line) => /after timeout\. Using deterministic fallback tasks/i.test(line)),
+    `expected timeout fallback log, got ${jobService.logs.join("\n")}`,
   );
 });
 
@@ -8518,6 +8735,404 @@ test("repairTasksForStory uses tasks_compact contract for compact single-story r
   assert.match(invocation?.input ?? "", /Return exactly 1 tasks\./i);
 });
 
+test("repairTasksForStory uses reduced compact prompt context after timeout-like failure", async () => {
+  const largeBuildMethod = `build-start\n${"build-step ".repeat(2000)}\nbuild-end-sentinel`;
+  const largeDocSummary = `doc-start\n${"doc-segment ".repeat(2000)}\ndoc-end-sentinel`;
+  const largeStoryDescription = `story-start\n${"story-segment ".repeat(2500)}\nstory-end-sentinel`;
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t-fallback-1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 3,
+          priorityHint: 10,
+          dependsOnKeys: [],
+          unitTests: ["packages/shared/test/runtime.test.ts"],
+          componentTests: [],
+          integrationTests: [],
+          apiTests: [],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const tasks = await (service as any).repairTasksForStory(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    { key: "e1", title: "Build Shared" },
+    {
+      key: "us1",
+      localId: "us1",
+      epicLocalId: "e1",
+      title: "Implement shared runtime",
+      userStory: "As an operator, I need the shared runtime.",
+      description: largeStoryDescription,
+      acceptanceCriteria: [
+        "runtime exists",
+        "exports stay stable",
+        "type bindings stay compatible",
+        "downstream consumers keep compiling",
+      ],
+      relatedDocs: [],
+      priorityHint: 1,
+      tasks: [],
+    },
+    largeDocSummary,
+    largeBuildMethod,
+    "AUTH_ERROR: codex CLI timed out after 120000ms",
+    [
+      {
+        localId: "t-fallback-1",
+        title: "Implement shared runtime surfaces",
+        type: "feature",
+        description: "Implement packages/shared/src/runtime.ts and keep story scope local.",
+        files: ["packages/shared/src/runtime.ts"],
+        estimatedStoryPoints: 2,
+        priorityHint: 1,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: ["packages/shared/test/runtime.test.ts"],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+      },
+    ],
+    false,
+    "job-1",
+    "cmd-1",
+    { compactSchema: true },
+  );
+
+  assert.equal(tasks.length, 1);
+  const invocation = agentService.invocations.at(-1);
+  assert.equal(invocation?.metadata?.action, "tasks_compact");
+  assert.doesNotMatch(invocation?.input ?? "", /doc-end-sentinel/);
+  assert.doesNotMatch(invocation?.input ?? "", /build-end-sentinel/);
+  assert.doesNotMatch(invocation?.input ?? "", /story-end-sentinel/);
+  assert.ok(
+    jobService.logs.some((line) => /reduced prompt context/i.test(line)),
+    `expected reduced prompt context log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
+test("planCompactTaskRewriteChunks splits prompt-heavy compact rewrites into minimal chunks", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const seedTasks = [
+    {
+      localId: "t1",
+      title: "Seed runtime",
+      type: "feature",
+      description: "runtime ".repeat(200),
+      files: ["packages/shared/src/runtime.ts", "packages/shared/src/index.ts", "packages/shared/src/config.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 1,
+      dependsOnKeys: [],
+      relatedDocs: ["docdex:doc-1", "docdex:doc-2", "docdex:doc-3"],
+      unitTests: ["runtime-test-1", "runtime-test-2"],
+      componentTests: ["runtime-component"],
+      integrationTests: ["runtime-integration"],
+      apiTests: [],
+    },
+    {
+      localId: "t2",
+      title: "Seed pricing",
+      type: "feature",
+      description: "pricing ".repeat(200),
+      files: ["packages/shared/src/pricing/helpers.ts", "packages/shared/src/pricing/index.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 2,
+      dependsOnKeys: ["t1"],
+      relatedDocs: ["docdex:doc-1", "docdex:doc-2"],
+      unitTests: ["pricing-test-1", "pricing-test-2"],
+      componentTests: [],
+      integrationTests: ["pricing-integration"],
+      apiTests: [],
+    },
+    {
+      localId: "t3",
+      title: "Seed validation",
+      type: "chore",
+      description: "validation ".repeat(200),
+      files: ["packages/shared/src/validation.ts", "packages/shared/src/validation/index.ts"],
+      estimatedStoryPoints: 1,
+      priorityHint: 3,
+      dependsOnKeys: ["t2"],
+      relatedDocs: ["docdex:doc-2", "docdex:doc-3"],
+      unitTests: ["validation-test-1", "validation-test-2"],
+      componentTests: [],
+      integrationTests: ["validation-integration"],
+      apiTests: [],
+    },
+  ];
+
+  const initialChunks = (service as any).splitCompactTaskRewriteChunks(seedTasks);
+  const plannedChunks = (service as any).planCompactTaskRewriteChunks({
+    projectKey: "EP",
+    epic: { key: "e1", title: "Build Shared" },
+    story: {
+      key: "us1",
+      localId: "us1",
+      epicLocalId: "e1",
+      title: "Implement shared runtime",
+      userStory: "As an operator, I need the shared runtime.",
+      description: `story-start\n${"story-detail ".repeat(3000)}\nstory-end-sentinel`,
+      acceptanceCriteria: [
+        "runtime exists",
+        "exports stay stable",
+        "pricing helpers remain compatible",
+        "validation coverage stays wired",
+      ],
+      relatedDocs: [],
+      priorityHint: 1,
+      tasks: [],
+    },
+    docSummary: `doc-start\n${"doc-detail ".repeat(2500)}\ndoc-end-sentinel`,
+    projectBuildMethod: `build-start\n${"build-step ".repeat(2500)}\nbuild-end-sentinel`,
+    seedTasks,
+  });
+
+  assert.equal(initialChunks.length, 1);
+  assert.ok(plannedChunks.length >= initialChunks.length);
+  assert.ok(plannedChunks.some((chunk: any) => chunk.contextMode === "minimal"));
+});
+
+test("generateTasksForStory splits oversized compact rewrites into smaller agent-authored chunks", async () => {
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 1,
+          dependsOnKeys: [],
+        },
+        {
+          localId: "t2",
+          title: "Implement shared pricing helpers",
+          type: "feature",
+          description: "Implement packages/shared/src/pricing/helpers.ts.",
+          files: ["packages/shared/src/pricing/helpers.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 2,
+          dependsOnKeys: ["t1"],
+        },
+        {
+          localId: "t3",
+          title: "Validate shared runtime exports",
+          type: "chore",
+          description: "Validate packages/shared/src/index.ts exports.",
+          files: ["packages/shared/src/index.ts"],
+          estimatedStoryPoints: 1,
+          priorityHint: 3,
+          dependsOnKeys: ["t2"],
+        },
+      ],
+    }),
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t4",
+          title: "Implement shared schema surface",
+          type: "feature",
+          description: "Implement packages/shared/src/schemas/runtime.ts.",
+          files: ["packages/shared/src/schemas/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 4,
+          dependsOnKeys: ["t3"],
+        },
+        {
+          localId: "t5",
+          title: "Wire shared schema exports",
+          type: "feature",
+          description: "Wire packages/shared/src/schemas/index.ts.",
+          files: ["packages/shared/src/schemas/index.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 5,
+          dependsOnKeys: ["t4"],
+        },
+        {
+          localId: "t6",
+          title: "Validate shared schema exports",
+          type: "chore",
+          description: "Validate packages/shared/src/schemas exports.",
+          files: ["packages/shared/src/schemas"],
+          estimatedStoryPoints: 1,
+          priorityHint: 6,
+          dependsOnKeys: ["t5"],
+        },
+      ],
+    }),
+  ]);
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  (service as any).buildFallbackTasksForStory = () => [
+    {
+      localId: "t1",
+      title: "Seed runtime",
+      type: "feature",
+      description: "Seed runtime task.",
+      files: ["packages/shared/src/runtime.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 1,
+      dependsOnKeys: [],
+      relatedDocs: [],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: [],
+      apiTests: [],
+    },
+    {
+      localId: "t2",
+      title: "Seed pricing",
+      type: "feature",
+      description: "Seed pricing task.",
+      files: ["packages/shared/src/pricing/helpers.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 2,
+      dependsOnKeys: ["t1"],
+      relatedDocs: [],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: [],
+      apiTests: [],
+    },
+    {
+      localId: "t3",
+      title: "Seed runtime validation",
+      type: "chore",
+      description: "Seed runtime validation task.",
+      files: ["packages/shared/src/index.ts"],
+      estimatedStoryPoints: 1,
+      priorityHint: 3,
+      dependsOnKeys: ["t2"],
+      relatedDocs: [],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: [],
+      apiTests: [],
+    },
+    {
+      localId: "t4",
+      title: "Seed schema",
+      type: "feature",
+      description: "Seed schema task.",
+      files: ["packages/shared/src/schemas/runtime.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 4,
+      dependsOnKeys: ["t3"],
+      relatedDocs: [],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: [],
+      apiTests: [],
+    },
+    {
+      localId: "t5",
+      title: "Seed schema exports",
+      type: "feature",
+      description: "Seed schema export task.",
+      files: ["packages/shared/src/schemas/index.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 5,
+      dependsOnKeys: ["t4"],
+      relatedDocs: [],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: [],
+      apiTests: [],
+    },
+    {
+      localId: "t6",
+      title: "Seed schema validation",
+      type: "chore",
+      description: "Seed schema validation task.",
+      files: ["packages/shared/src/schemas"],
+      estimatedStoryPoints: 1,
+      priorityHint: 6,
+      dependsOnKeys: ["t5"],
+      relatedDocs: [],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: [],
+      apiTests: [],
+    },
+  ];
+
+  const tasks = await (service as any).generateTasksForStory(
+    { id: "agent-1", slug: "agent-1" },
+    "EP",
+    { key: "e1", title: "Build Shared" },
+    {
+      key: "us1",
+      localId: "us1",
+      epicLocalId: "e1",
+      title: "Implement shared runtime and schema surfaces",
+      userStory: "As an operator, I need the shared runtime and schema surfaces.",
+      description: "Implement runtime and schema surfaces.",
+      acceptanceCriteria: ["runtime exists", "schemas exist"],
+      relatedDocs: [],
+      priorityHint: 1,
+      tasks: [],
+    },
+    "Docs: none",
+    "Build the project in dependency order.",
+    false,
+    "job-1",
+    "cmd-1",
+    { compactSchema: true },
+  );
+
+  assert.equal(agentService.invocations.length, 2);
+  assert.match(agentService.invocations[0]?.input ?? "", /chunk 1\/2/i);
+  assert.match(agentService.invocations[1]?.input ?? "", /chunk 2\/2/i);
+  assert.equal(tasks.length, 6);
+  assert.deepEqual(
+    tasks.map((task: any) => task.localId),
+    ["t1", "t2", "t3", "t4", "t5", "t6"],
+  );
+});
+
 test("invokeAgentWithRetry retries timeout-like compact task calls without output schema", async () => {
   const agentService = new StubAgentService([
     new Error("AUTH_ERROR: codex CLI timed out after 120000ms"),
@@ -8652,6 +9267,57 @@ test("invokeAgentWithRetry prefers schema-free initial compact task calls after 
   );
 });
 
+test("invokeAgentWithRetry prefers schema-free initial compact task calls for oversized prompts", async () => {
+  const agentService = new StubAgentService([
+    JSON.stringify({
+      tasks: [
+        {
+          localId: "t1",
+          title: "Implement shared runtime module",
+          type: "feature",
+          description: "Implement packages/shared/src/runtime.ts.",
+          files: ["packages/shared/src/runtime.ts"],
+          estimatedStoryPoints: 2,
+          priorityHint: 1,
+          dependsOnKeys: [],
+        },
+      ],
+    }),
+  ]);
+  const jobService = new StubJobService();
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: jobService as any,
+    agentService: agentService as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const oversizedPrompt = `Prompt start\n${"compact-task ".repeat(7000)}\nPrompt end`;
+  const result = await (service as any).invokeAgentWithRetry(
+    { id: "agent-1", defaultModel: "stub" },
+    oversizedPrompt,
+    "tasks_compact",
+    false,
+    "job-1",
+    "cmd-1",
+    { storyKey: "us-compact-oversized" },
+  );
+
+  assert.ok(result.output.includes("\"tasks\""));
+  assert.equal(agentService.invocations.length, 1);
+  assert.equal(agentService.invocations[0]?.metadata?.outputSchema, undefined);
+  assert.equal(agentService.invocations[0]?.metadata?.schemaRetryMode, undefined);
+  assert.ok(
+    jobService.logs.some((line) => /prompt estimate .* exceeds structured reliability limit/i.test(line)),
+    `expected oversized prompt log, got ${jobService.logs.join("\n")}`,
+  );
+});
+
 test("invokeAgentWithRetry keeps compact task json repair schema after schema-free preference activates", async () => {
   const agentService = new StubAgentService([
     new Error("AUTH_ERROR: codex CLI timed out after 120000ms"),
@@ -8783,7 +9449,7 @@ test("invokeAgentWithRetry reuses original compact task prompt context during js
   assert.equal(agentService.invocations[1]?.metadata?.stage, "json_repair");
 });
 
-test("buildFallbackTasksForStory derives target-aware files from deterministic story hints", async () => {
+test("buildFallbackTasksForStory expands target-aware fallback seeds across grouped implementation and verification slices", async () => {
   const workspaceRepo = new StubWorkspaceRepo();
   const service = new CreateTasksService(workspace, {
     docdex: new StubDocdexTyped() as any,
@@ -8801,19 +9467,322 @@ test("buildFallbackTasksForStory derives target-aware files from deterministic s
     title: "Implement shared core",
     description: [
       "Implement the primary shared build targets for epic \"Build Shared\".",
-      "Primary implementation targets: packages/shared/src/index.ts, packages/shared/src/types.ts.",
-      "Supporting targets: packages/shared/src/runtime.ts.",
-      "Verification targets: packages/shared/test/runtime.test.ts.",
+      "Primary implementation targets: packages/shared/src/index.ts, packages/shared/src/types.ts, packages/shared/src/pricing/fees.ts, packages/shared/src/abi/index.ts.",
+      "Supporting targets: packages/shared/src/runtime.ts, packages/shared/src/contracts.ts.",
+      "Verification targets: packages/shared/test/runtime.test.ts, packages/shared/test/pricing.integration.test.ts.",
       "Verification surfaces: shared runtime tests.",
     ].join("\n"),
     acceptanceCriteria: ["shared runtime is buildable"],
     relatedDocs: ["docdex:doc-1"],
   });
 
-  assert.equal(tasks.length, 3);
+  assert.equal(tasks.length, 4);
   assert.deepEqual(tasks[0]?.files, ["packages/shared/src/index.ts", "packages/shared/src/types.ts"]);
-  assert.deepEqual(tasks[1]?.files, ["packages/shared/src/runtime.ts"]);
-  assert.deepEqual(tasks[2]?.files, ["packages/shared/test/runtime.test.ts"]);
+  assert.deepEqual(
+    [...(tasks[1]?.files ?? [])].sort(),
+    ["packages/shared/src/abi/index.ts", "packages/shared/src/pricing/fees.ts"].sort(),
+  );
+  assert.deepEqual(tasks[2]?.files, [
+    "packages/shared/src/runtime.ts",
+    "packages/shared/src/contracts.ts",
+  ]);
+  assert.deepEqual(tasks[3]?.files, [
+    "packages/shared/test/runtime.test.ts",
+    "packages/shared/test/pricing.integration.test.ts",
+  ]);
+  assert.ok(tasks[3]?.integrationTests.some((value: string) => value.includes("packages/shared/test/runtime.test.ts")));
+});
+
+test("buildFallbackTasksForStory prunes broad parent directories when more specific child targets are known", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const tasks = (service as any).buildFallbackTasksForStory({
+    localId: "us-core-2",
+    title: "Implement shared reason layer",
+    description: [
+      "Implement the shared reason layer.",
+      "Primary implementation targets: packages/shared/src, packages/shared/src/reasons, packages/shared/src/reasons/index.ts.",
+      "Supporting targets: packages/shared/src/schemas, packages/shared/src/schemas/index.ts.",
+      "Verification targets: packages/shared/test/reasons.test.ts, packages/shared/test/schemas.test.ts.",
+    ].join("\n"),
+    acceptanceCriteria: ["shared reason layer is buildable"],
+    relatedDocs: ["docdex:doc-1"],
+  });
+
+  assert.ok(tasks.length >= 3);
+  assert.ok(
+    tasks.every((task: { files?: string[] }) => !(task.files ?? []).includes("packages/shared/src")),
+    `expected broad parent directory to be pruned, got ${JSON.stringify(tasks.map((task: { files?: string[] }) => task.files))}`,
+  );
+  assert.ok(
+    tasks.some(
+      (task: { files?: string[] }) =>
+        JSON.stringify(task.files ?? []) === JSON.stringify(["packages/shared/src/reasons/index.ts"]),
+    ),
+  );
+});
+
+test("buildFallbackTasksForStory caps grouped fallback seeds so one story does not explode into too many compact rewrites", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const tasks = (service as any).buildFallbackTasksForStory({
+    localId: "us-core-3",
+    title: "Implement contracts core target group",
+    description: [
+      "Implement the contracts core target group.",
+      "Primary implementation targets: contracts/src/a.sol, contracts/src/b.sol, contracts/src/c.sol, contracts/src/d.sol, contracts/src/e.sol, contracts/src/f.sol.",
+      "Supporting targets: contracts/script/deploy.ts, contracts/script/publish.ts, contracts/src/interfaces/index.ts, contracts/src/libraries/math.ts.",
+      "Verification targets: contracts/test/a.t.sol, contracts/test/b.t.sol, contracts/test/c.t.sol, contracts/test/d.t.sol.",
+    ].join("\n"),
+    acceptanceCriteria: ["contracts core target group is buildable"],
+    relatedDocs: ["docdex:doc-1"],
+  });
+
+  assert.ok(tasks.length <= 4, `expected at most four fallback tasks, got ${tasks.length}`);
+  assert.ok(tasks.some((task: { title?: string }) => /Validate /.test(task.title ?? "")));
+  assert.ok(tasks.some((task: { title?: string }) => /Wire /.test(task.title ?? "")));
+  assert.ok(
+    tasks.some((task: { files?: string[] }) => (task.files ?? []).includes("contracts/src/a.sol")),
+    `expected primary concrete targets to be preserved, got ${JSON.stringify(tasks.map((task: { files?: string[] }) => task.files))}`,
+  );
+  assert.ok(
+    tasks.some((task: { files?: string[] }) => (task.files ?? []).includes("contracts/test/a.t.sol")),
+    `expected verification concrete targets to be preserved, got ${JSON.stringify(tasks.map((task: { files?: string[] }) => task.files))}`,
+  );
+});
+
+test("buildCompactTaskSeeds preserves related docs and verification metadata for compact rewrites", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const seeds = (service as any).buildCompactTaskSeeds([
+    {
+      localId: "t-fallback-1",
+      title: "Validate shared runtime",
+      type: "chore",
+      description: "Validate shared runtime readiness.",
+      files: ["packages/shared/test/runtime.test.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 30,
+      dependsOnKeys: ["t-fallback-0"],
+      relatedDocs: ["docdex:doc-1"],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: ["Execute packages/shared/test/runtime.test.ts for shared runtime."],
+      apiTests: [],
+      qa: null,
+    },
+  ]);
+
+  assert.deepEqual(seeds, [
+    {
+      localId: "t-fallback-1",
+      title: "Validate shared runtime",
+      type: "chore",
+      description: "Validate shared runtime readiness.",
+      files: ["packages/shared/test/runtime.test.ts"],
+      estimatedStoryPoints: 2,
+      priorityHint: 30,
+      dependsOnKeys: ["t-fallback-0"],
+      relatedDocs: ["docdex:doc-1"],
+      unitTests: [],
+      componentTests: [],
+      integrationTests: ["Execute packages/shared/test/runtime.test.ts for shared runtime."],
+      apiTests: [],
+    },
+  ]);
+});
+
+test("buildCompactTaskSeeds compacts verbose descriptions and prunes broad parent targets", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const verboseDescription = [
+    "Implement the shared reason modules and shared schema wiring for the story.",
+    "Create the initial files, wire exports, align contracts, preserve naming, and make the runtime available to downstream consumers.",
+    "Keep the story scoped, preserve dependency order, and ensure the task remains concrete enough for automated execution.",
+    "This sentence only exists to make the seed description obviously longer than the compact prompt should carry verbatim.",
+  ].join(" ");
+
+  const seeds = (service as any).buildCompactTaskSeeds([
+    {
+      localId: "t-fallback-1",
+      title: "Implement shared reason modules",
+      type: "feature",
+      description: verboseDescription,
+      files: ["packages/shared/src", "packages/shared/src/reasons", "packages/shared/src/reasons/index.ts"],
+      estimatedStoryPoints: 3,
+      priorityHint: 20,
+      dependsOnKeys: [],
+      relatedDocs: ["docdex:doc-1", "docdex:doc-2", "docdex:doc-3", "docdex:doc-4", "docdex:doc-5"],
+      unitTests: ["unit 1", "unit 2", "unit 3"],
+      componentTests: ["component 1", "component 2", "component 3"],
+      integrationTests: ["integration 1", "integration 2", "integration 3"],
+      apiTests: ["api 1", "api 2", "api 3"],
+      qa: null,
+    },
+  ]);
+
+  assert.deepEqual(seeds[0]?.files, ["packages/shared/src/reasons/index.ts"]);
+  assert.equal(seeds[0]?.relatedDocs?.length, 4);
+  assert.equal(seeds[0]?.unitTests?.length, 2);
+  assert.equal(seeds[0]?.componentTests?.length, 2);
+  assert.equal(seeds[0]?.integrationTests?.length, 2);
+  assert.equal(seeds[0]?.apiTests?.length, 2);
+  assert.ok((seeds[0]?.description ?? "").length < verboseDescription.length);
+  assert.ok((seeds[0]?.description ?? "").endsWith("..."));
+});
+
+test("mergeCompactTaskMetadata preserves seed file specificity when compact rewrite broadens targets", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const merged = (service as any).mergeCompactTaskMetadata(
+    [
+      {
+        localId: "t-fallback-1",
+        title: "Create shared scaffold",
+        type: "feature",
+        description: "Broadened by the compact rewrite.",
+        files: ["packages/shared/src", "packages/shared/src/abi"],
+        estimatedStoryPoints: 3,
+        priorityHint: 10,
+        dependsOnKeys: [],
+        relatedDocs: [],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+        qa: null,
+      },
+    ],
+    [
+      {
+        localId: "t-fallback-1",
+        title: "Create shared scaffold",
+        type: "feature",
+        description: "Seed task with concrete files.",
+        files: ["packages/shared/src/index.ts", "packages/shared/src/abi/index.ts"],
+        estimatedStoryPoints: 3,
+        priorityHint: 10,
+        dependsOnKeys: [],
+        relatedDocs: ["docdex:doc-1"],
+        unitTests: [],
+        componentTests: [],
+        integrationTests: [],
+        apiTests: [],
+        qa: null,
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    [...(merged[0]?.files ?? [])].sort(),
+    ["packages/shared/src/abi/index.ts", "packages/shared/src/index.ts"].sort(),
+  );
+});
+
+test("normalizeTaskFiles prefers specific descendants over broad parent directories", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const files = (service as any).normalizeTaskFiles({
+    files: [
+      "contracts/src",
+      "contracts/src/interfaces",
+      "contracts/src/interfaces/IListingRegistry.sol",
+      "contracts/src/libraries",
+      "contracts/src/libraries/FeeMath.sol",
+    ],
+    description: "",
+    unitTests: [],
+    componentTests: [],
+    integrationTests: [],
+    apiTests: [],
+  });
+
+  assert.deepEqual(
+    [...files].sort(),
+    ["contracts/src/interfaces/IListingRegistry.sol", "contracts/src/libraries/FeeMath.sol"].sort(),
+  );
+});
+
+test("tasks_compact schema retains related docs and test arrays", async () => {
+  const workspaceRepo = new StubWorkspaceRepo();
+  const service = new CreateTasksService(workspace, {
+    docdex: new StubDocdexTyped() as any,
+    jobService: new StubJobService() as any,
+    agentService: new StubAgentService([]) as any,
+    routingService: new StubRoutingService() as any,
+    repo: new StubRepo() as any,
+    workspaceRepo: workspaceRepo as any,
+    taskOrderingFactory: createOrderingFactory(workspaceRepo) as any,
+    taskSufficiencyFactory: async () => new StubTaskSufficiencyService() as any,
+  });
+
+  const schema = (service as any).outputSchemaForAction("tasks_compact");
+  const taskSchema = schema?.properties?.tasks?.items;
+  assert.ok(taskSchema?.properties?.relatedDocs);
+  assert.ok(taskSchema?.properties?.unitTests);
+  assert.ok(taskSchema?.properties?.componentTests);
+  assert.ok(taskSchema?.properties?.integrationTests);
+  assert.ok(taskSchema?.properties?.apiTests);
 });
 
 test("invokeAgentWithRetry retries timeout-like structured task calls without output schema", async () => {
@@ -9032,9 +10001,9 @@ test("createTasks keeps partial plan and applies story-level fallback when one s
   });
 
   assert.ok(result.tasks.some((task) => task.title === "Story One Task One"));
-  assert.ok(result.tasks.some((task) => task.title === "Implement core scope for Story Two"));
-  assert.ok(result.tasks.some((task) => task.title === "Integrate dependencies for Story Two"));
-  assert.ok(result.tasks.some((task) => task.title === "Validate Story Two regressions and readiness"));
+  const storyTwoFallbackTasks = result.tasks.filter((task) => /Story Two/i.test(task.title));
+  assert.ok(storyTwoFallbackTasks.length >= 1);
+  assert.ok(storyTwoFallbackTasks.some((task) => /^(Implement|Validate) /i.test(task.title)));
   assert.ok(!result.tasks.some((task) => task.title === "Summarize requirements"));
 });
 

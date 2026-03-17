@@ -259,19 +259,19 @@ test("zhipu-api invokes with configured baseUrl, model, and thinking", async () 
     adapter: "zhipu-api",
     defaultModel: "glm-4.7",
     capabilities: ["chat"],
-    config: { baseUrl: "https://api.z.ai/api/coding/paas/v4", thinking: true, temperature: 0.1 },
+    config: { baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4", thinking: true, temperature: 0.1 },
   });
   const encrypted = await CryptoHelper.encryptSecret("secret");
   await repo.setAgentAuth(agent.id, encrypted);
   global.fetch = async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
-    assert.match(url, /https:\/\/api\.z\.ai\/api\/coding\/paas\/v4\/chat\/completions/);
+    assert.match(url, /https:\/\/open\.bigmodel\.cn\/api\/coding\/paas\/v4\/chat\/completions/);
     assert.equal(init?.method, "POST");
     const headers = init?.headers as Record<string, string>;
     assert.equal(headers?.Authorization, "Bearer secret");
     const body = JSON.parse(String(init?.body ?? ""));
     assert.equal(body.model, "glm-4.7");
-    assert.equal(body.thinking, true);
+    assert.deepEqual(body.thinking, { type: "enabled" });
     assert.equal(body.temperature, 0.1);
     assert.equal(body.stream, false);
     const content = String(body.messages?.[0]?.content ?? "");

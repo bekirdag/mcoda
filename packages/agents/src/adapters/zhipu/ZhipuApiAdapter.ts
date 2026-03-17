@@ -2,6 +2,7 @@ import { AgentHealth } from "@mcoda/shared";
 import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
 
 const DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4";
+const DEFAULT_CODING_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4";
 const DEFAULT_TEMPERATURE = 0.1;
 
 const normalizeBaseUrl = (value?: unknown): string | undefined => {
@@ -13,6 +14,21 @@ const normalizeBaseUrl = (value?: unknown): string | undefined => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const usesCodingBaseUrl = (model?: string): boolean => {
+  if (!model) return false;
+  const normalized = model.trim().toLowerCase();
+  return normalized === "glm-4.7" || normalized.startsWith("glm-4.7-");
+};
+
+const defaultBaseUrlForModel = (model?: string): string =>
+  usesCodingBaseUrl(model) ? DEFAULT_CODING_BASE_URL : DEFAULT_BASE_URL;
+
+const normalizeThinking = (value: unknown): Record<string, unknown> | undefined => {
+  if (value === true) return { type: "enabled" };
+  if (value === false) return { type: "disabled" };
+  return isRecord(value) && Object.keys(value).length > 0 ? value : undefined;
+};
 
 const extractUsage = (usage: any) => {
   if (!usage || typeof usage !== "object") return undefined;
@@ -45,7 +61,7 @@ type ZhipuConfig = AdapterConfig & {
   baseUrl?: string;
   headers?: Record<string, string>;
   temperature?: number;
-  thinking?: boolean;
+  thinking?: boolean | Record<string, unknown>;
   extraBody?: Record<string, unknown>;
 };
 
@@ -53,14 +69,14 @@ export class ZhipuApiAdapter implements AgentAdapter {
   private baseUrl: string;
   private headers: Record<string, string> | undefined;
   private temperature: number | undefined;
-  private thinking: boolean | undefined;
+  private thinking: Record<string, unknown> | undefined;
   private extraBody: Record<string, unknown> | undefined;
 
   constructor(private config: ZhipuConfig) {
-    this.baseUrl = normalizeBaseUrl(config.baseUrl) ?? DEFAULT_BASE_URL;
+    this.baseUrl = normalizeBaseUrl(config.baseUrl) ?? defaultBaseUrlForModel(config.model);
     this.headers = isRecord((config as any).headers) ? ((config as any).headers as Record<string, string>) : undefined;
     this.temperature = typeof (config as any).temperature === "number" ? (config as any).temperature : undefined;
-    this.thinking = typeof (config as any).thinking === "boolean" ? (config as any).thinking : undefined;
+    this.thinking = normalizeThinking((config as any).thinking);
     this.extraBody = isRecord((config as any).extraBody) ? ((config as any).extraBody as Record<string, unknown>) : undefined;
     this.assertConfig();
   }
@@ -262,7 +278,7 @@ export class ZhipuApiAdapter implements AgentAdapter {
     };
     const temperature = this.temperature ?? DEFAULT_TEMPERATURE;
     if (typeof temperature === "number") body.temperature = temperature;
-    if (typeof this.thinking === "boolean") body.thinking = this.thinking;
+    if (this.thinking) body.thinking = this.thinking;
     if (this.extraBody) {
       for (const [key, value] of Object.entries(this.extraBody)) {
         if (body[key] === undefined) body[key] = value;
