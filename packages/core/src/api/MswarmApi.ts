@@ -7,6 +7,7 @@ import {
   type CreateAgentInput,
   type UpdateAgentInput,
 } from "@mcoda/shared";
+import { MswarmConfigStore } from "./MswarmConfigStore.js";
 
 export interface MswarmCloudAgent {
   slug: string;
@@ -139,18 +140,34 @@ const normalizePositiveInt = (value: number | undefined, label: string, fallback
   return Math.trunc(value);
 };
 
-const resolveOptions = (options: MswarmApiOptions = {}): ResolvedMswarmApiOptions => {
+const resolveOptions = async (options: MswarmApiOptions = {}): Promise<ResolvedMswarmApiOptions> => {
   const envTimeoutRaw = process.env.MCODA_MSWARM_TIMEOUT_MS;
   const envTimeout = envTimeoutRaw ? Number.parseInt(envTimeoutRaw, 10) : undefined;
+  const directBaseUrl = options.baseUrl ?? process.env.MCODA_MSWARM_BASE_URL;
+  const directApiKey = options.apiKey ?? process.env.MCODA_MSWARM_API_KEY;
+  const directTimeout = options.timeoutMs ?? envTimeout;
+  const directAgentSlugPrefix = options.agentSlugPrefix ?? process.env.MCODA_MSWARM_AGENT_SLUG_PREFIX;
+  const needsStoredFallback =
+    directBaseUrl === undefined ||
+    directApiKey === undefined ||
+    directTimeout === undefined ||
+    directAgentSlugPrefix === undefined;
+  const stored = needsStoredFallback ? await new MswarmConfigStore().readState() : {};
   return {
-    baseUrl: normalizeBaseUrl(options.baseUrl ?? process.env.MCODA_MSWARM_BASE_URL, "MCODA_MSWARM_BASE_URL"),
-    apiKey: resolveString(options.apiKey ?? process.env.MCODA_MSWARM_API_KEY) ?? (() => {
+    baseUrl: normalizeBaseUrl(
+      directBaseUrl ?? stored.baseUrl,
+      "MCODA_MSWARM_BASE_URL",
+    ),
+    apiKey: resolveString(directApiKey ?? stored.apiKey) ?? (() => {
       throw new Error("MCODA_MSWARM_API_KEY is required");
     })(),
-    timeoutMs: normalizePositiveInt(options.timeoutMs ?? envTimeout, "MCODA_MSWARM_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
+    timeoutMs: normalizePositiveInt(
+      directTimeout ?? stored.timeoutMs,
+      "MCODA_MSWARM_TIMEOUT_MS",
+      DEFAULT_TIMEOUT_MS,
+    ),
     agentSlugPrefix:
-      resolveString(options.agentSlugPrefix ?? process.env.MCODA_MSWARM_AGENT_SLUG_PREFIX) ??
-      DEFAULT_AGENT_SLUG_PREFIX,
+      resolveString(directAgentSlugPrefix ?? stored.agentSlugPrefix) ?? DEFAULT_AGENT_SLUG_PREFIX,
   };
 };
 
@@ -284,7 +301,7 @@ export class MswarmApi {
 
   static async create(options: MswarmApiOptions = {}): Promise<MswarmApi> {
     const repo = await GlobalRepository.create();
-    return new MswarmApi(repo, resolveOptions(options));
+    return new MswarmApi(repo, await resolveOptions(options));
   }
 
   async close(): Promise<void> {

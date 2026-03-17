@@ -1,5 +1,6 @@
 export * from "./api/AgentsApi.js";
 export * from "./api/MswarmApi.js";
+export * from "./api/MswarmConfigStore.js";
 export * from "./services/docs/DocsService.js";
 export * from "./services/openapi/OpenApiService.js";
 export * from "./services/jobs/JobService.js";

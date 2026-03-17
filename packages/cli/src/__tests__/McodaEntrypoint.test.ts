@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import packageJson from "../../package.json" with { type: "json" };
 import { McodaEntrypoint } from "../bin/McodaEntrypoint.js";
 import { CloudCommands } from "../commands/cloud/CloudCommands.js";
+import { ConfigCommands } from "../commands/config/ConfigCommands.js";
 import { SdsPreflightCommand } from "../commands/planning/SdsPreflightCommand.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 
@@ -84,6 +85,21 @@ test("McodaEntrypoint routes cloud agent commands", { concurrency: false }, asyn
     assert.equal(called, true);
   } finally {
     (CloudCommands as any).run = originalRun;
+  }
+});
+
+test("McodaEntrypoint routes config commands", { concurrency: false }, async () => {
+  const originalRun = ConfigCommands.run;
+  let called = false;
+  (ConfigCommands as any).run = async (argv: string[]) => {
+    called = true;
+    assert.deepEqual(argv, ["set", "mswarm-api-key", "cloud-key"]);
+  };
+  try {
+    await McodaEntrypoint.run(["config", "set", "mswarm-api-key", "cloud-key"]);
+    assert.equal(called, true);
+  } finally {
+    (ConfigCommands as any).run = originalRun;
   }
 });
 

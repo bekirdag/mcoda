@@ -28,6 +28,7 @@ Environment:
   MCODA_MSWARM_API_KEY
   MCODA_MSWARM_TIMEOUT_MS
   MCODA_MSWARM_AGENT_SLUG_PREFIX
+  Or persist the API key with: mcoda config set mswarm-api-key <KEY>
 
 Flags:
   --json                    Emit JSON for supported commands

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json" with { type: "json" };
 import { AgentsCommands } from "../commands/agents/AgentsCommands.js";
 import { CloudCommands } from "../commands/cloud/CloudCommands.js";
+import { ConfigCommands } from "../commands/config/ConfigCommands.js";
 import { GatewayAgentCommand } from "../commands/agents/GatewayAgentCommand.js";
 import { DocsCommands } from "../commands/docs/DocsCommands.js";
 import { JobsCommands } from "../commands/jobs/JobsCommands.js";
@@ -86,7 +87,8 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        "Usage: mcoda <agent|cloud|cloud-agent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
+        "Usage: mcoda <agent|cloud|cloud-agent|config|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n" +
+          "Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in ~/.mcoda/config.json.\n" +
           "Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n" +
           "Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n" +
           "Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n" +
@@ -100,6 +102,10 @@ export class McodaEntrypoint {
     }
     if (command === "cloud") {
       await CloudCommands.run(rest);
+      return;
+    }
+    if (command === "config") {
+      await ConfigCommands.run(rest);
       return;
     }
     if (command === "cloud-agent") {

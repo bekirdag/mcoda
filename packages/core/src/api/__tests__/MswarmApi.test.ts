@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { GlobalRepository } from "@mcoda/db";
 import { MswarmApi } from "../MswarmApi.js";
+import { MswarmConfigStore } from "../MswarmConfigStore.js";
 
 const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> => {
   const originalHome = process.env.HOME;
@@ -77,6 +78,26 @@ test("MswarmApi.listCloudAgents sends auth and query params", { concurrency: fal
         assert.equal(agents.length, 1);
         assert.equal(agents[0]?.slug, "openai/gpt-4.1-mini");
         assert.equal(agents[0]?.supports_tools, true);
+      } finally {
+        await api.close();
+      }
+    });
+  });
+});
+
+test("MswarmApi.create falls back to the stored encrypted API key", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const store = new MswarmConfigStore();
+    await store.saveApiKey("stored-cloud-key");
+    await withStubServer((req, res) => {
+      assert.equal(req.headers["x-api-key"], "stored-cloud-key");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ agents: [] }));
+    }, async (baseUrl) => {
+      const api = await MswarmApi.create({ baseUrl });
+      try {
+        const agents = await api.listCloudAgents();
+        assert.deepEqual(agents, []);
       } finally {
         await api.close();
       }
