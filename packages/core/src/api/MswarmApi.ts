@@ -45,6 +45,7 @@ export interface ListMswarmCloudAgentsOptions {
 
 export interface MswarmApiOptions {
   baseUrl?: string;
+  openAiBaseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
   agentSlugPrefix?: string;
@@ -52,6 +53,7 @@ export interface MswarmApiOptions {
 
 interface ResolvedMswarmApiOptions {
   baseUrl: string;
+  openAiBaseUrl?: string;
   apiKey: string;
   timeoutMs: number;
   agentSlugPrefix: string;
@@ -145,6 +147,7 @@ const resolveOptions = async (options: MswarmApiOptions = {}): Promise<ResolvedM
   const envTimeoutRaw = process.env.MCODA_MSWARM_TIMEOUT_MS;
   const envTimeout = envTimeoutRaw ? Number.parseInt(envTimeoutRaw, 10) : undefined;
   const directBaseUrl = options.baseUrl ?? process.env.MCODA_MSWARM_BASE_URL;
+  const directOpenAiBaseUrl = options.openAiBaseUrl ?? process.env.MCODA_MSWARM_OPENAI_BASE_URL;
   const directApiKey = options.apiKey ?? process.env.MCODA_MSWARM_API_KEY;
   const directTimeout = options.timeoutMs ?? envTimeout;
   const directAgentSlugPrefix = options.agentSlugPrefix ?? process.env.MCODA_MSWARM_AGENT_SLUG_PREFIX;
@@ -159,6 +162,9 @@ const resolveOptions = async (options: MswarmApiOptions = {}): Promise<ResolvedM
       directBaseUrl ?? stored.baseUrl ?? DEFAULT_BASE_URL,
       "MCODA_MSWARM_BASE_URL",
     ),
+    openAiBaseUrl: directOpenAiBaseUrl
+      ? normalizeBaseUrl(directOpenAiBaseUrl, "MCODA_MSWARM_OPENAI_BASE_URL")
+      : undefined,
     apiKey: resolveString(directApiKey ?? stored.apiKey) ?? (() => {
       throw new Error("MCODA_MSWARM_API_KEY is required");
     })(),
@@ -371,7 +377,7 @@ export class MswarmApi {
 
   async syncCloudAgents(options: ListMswarmCloudAgentsOptions = {}): Promise<MswarmSyncSummary> {
     const agents = await this.listCloudAgents(options);
-    const openAiBaseUrl = new URL("/v1/swarm/openai/", this.options.baseUrl).toString();
+    const openAiBaseUrl = this.options.openAiBaseUrl ?? new URL("/v1/swarm/openai/", this.options.baseUrl).toString();
     const syncedAt = new Date().toISOString();
     const encryptedApiKey = await CryptoHelper.encryptSecret(this.options.apiKey);
     const records: MswarmSyncRecord[] = [];

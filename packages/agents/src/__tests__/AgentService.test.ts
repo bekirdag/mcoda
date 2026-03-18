@@ -22,6 +22,24 @@ beforeEach(async () => {
   await GlobalMigrations.run(conn.db);
   repo = new GlobalRepository(conn.db, conn);
   service = new AgentService(repo);
+  global.fetch = async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
+    if (url.endsWith("/chat/completions")) {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      const content = String(body?.messages?.[0]?.content ?? "");
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content } }],
+          usage: { total_tokens: Math.max(content.length, 1) },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+    throw new Error(`Unexpected fetch in AgentService.test: ${url}`);
+  };
 });
 
 afterEach(async () => {
@@ -184,6 +202,7 @@ test("prompts and capabilities are surfaced to adapters", async () => {
   const agent = await repo.createAgent({
     slug: "prompted",
     adapter: "openai-api",
+    defaultModel: "gpt-4o",
     capabilities: ["chat"],
     prompts: { jobPrompt: "do work", characterPrompt: "be precise" },
   });
@@ -209,6 +228,7 @@ test("fills defaults when prompts are missing", async () => {
   const agent = await repo.createAgent({
     slug: "missing-prompts",
     adapter: "openai-api",
+    defaultModel: "gpt-4o",
     capabilities: ["chat"],
   });
   const encrypted = await CryptoHelper.encryptSecret("secret");

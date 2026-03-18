@@ -231,6 +231,53 @@ test("MswarmApi.syncCloudAgents materializes managed cloud agents into the regis
   });
 });
 
+test("MswarmApi.syncCloudAgents uses explicit openAiBaseUrl when provided", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await withStubServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname !== "/v1/swarm/cloud/agents") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          agents: [
+            {
+              slug: "openai/gpt-4.1-mini",
+              provider: "openrouter",
+              default_model: "openai/gpt-4.1-mini",
+              capabilities: ["code_write"],
+              supports_tools: true,
+            },
+          ],
+        }),
+      );
+    }, async (baseUrl) => {
+      const api = await MswarmApi.create({
+        baseUrl,
+        openAiBaseUrl: "http://127.0.0.1:18082/v1/swarm/openai/",
+        apiKey: "cloud-key",
+      });
+      try {
+        await api.syncCloudAgents();
+        const repo = await GlobalRepository.create();
+        try {
+          const agent = await repo.getAgentBySlug("mswarm-cloud-openai-gpt-4-1-mini");
+          assert.ok(agent);
+          assert.equal((agent.config as any)?.baseUrl, "http://127.0.0.1:18082/v1/swarm/openai/");
+          assert.equal((agent.config as any)?.apiBaseUrl, "http://127.0.0.1:18082/v1/swarm/openai/");
+        } finally {
+          await repo.close();
+        }
+      } finally {
+        await api.close();
+      }
+    });
+  });
+});
+
 test("MswarmApi.syncCloudAgents refuses to overwrite a non-managed agent with the same local slug", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const repo = await GlobalRepository.create();

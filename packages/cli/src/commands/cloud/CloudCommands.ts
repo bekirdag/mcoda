@@ -20,11 +20,13 @@ Subcommands:
 
 Connection options:
   --base-url <URL>          Override MCODA_MSWARM_BASE_URL (default: https://api.mswarm.org/)
+  --openai-base-url <URL>   Override MCODA_MSWARM_OPENAI_BASE_URL for synced managed-agent execution
   --api-key <KEY>           Override MCODA_MSWARM_API_KEY
   --timeout-ms <N>          Override MCODA_MSWARM_TIMEOUT_MS
 
 Environment:
   MCODA_MSWARM_BASE_URL
+  MCODA_MSWARM_OPENAI_BASE_URL
   MCODA_MSWARM_API_KEY
   MCODA_MSWARM_TIMEOUT_MS
   MCODA_MSWARM_AGENT_SLUG_PREFIX
@@ -206,6 +208,7 @@ export class CloudCommands {
     const parsed = parseArgs(rest);
     const api = await MswarmApi.create({
       baseUrl: resolveString(parsed.flags["base-url"]),
+      openAiBaseUrl: resolveString(parsed.flags["openai-base-url"]),
       apiKey: resolveString(parsed.flags["api-key"]),
       timeoutMs: resolvePositiveInt(parsed.flags["timeout-ms"], "--timeout-ms"),
       agentSlugPrefix: resolveString(parsed.flags["agent-slug-prefix"]),
