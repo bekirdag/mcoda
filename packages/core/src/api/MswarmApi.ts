@@ -1,13 +1,14 @@
-import { GlobalRepository } from "@mcoda/db";
+import { GlobalRepository } from '@mcoda/db';
 import {
   CryptoHelper,
+  type Agent,
   type AgentHealth,
   type AgentHealthStatus,
   type AgentModel,
   type CreateAgentInput,
   type UpdateAgentInput,
-} from "@mcoda/shared";
-import { MswarmConfigStore } from "./MswarmConfigStore.js";
+} from '@mcoda/shared';
+import { MswarmConfigStore } from './MswarmConfigStore.js';
 
 export interface MswarmCloudAgent {
   slug: string;
@@ -20,13 +21,20 @@ export interface MswarmCloudAgent {
   capabilities: string[];
   health_status?: string;
   context_window?: number;
+  max_output_tokens?: number;
   supports_tools: boolean;
+  best_usage?: string;
   model_id?: string;
   display_name?: string;
   description?: string;
   supports_reasoning?: boolean;
   pricing_snapshot_id?: string;
   pricing_version?: string;
+  rating_samples?: number;
+  rating_last_score?: number;
+  rating_updated_at?: string;
+  complexity_samples?: number;
+  complexity_updated_at?: string;
   sync?: Record<string, unknown>;
 }
 
@@ -41,6 +49,10 @@ export interface MswarmCloudAgentDetail extends MswarmCloudAgent {
 export interface ListMswarmCloudAgentsOptions {
   provider?: string;
   limit?: number;
+  maxCostPerMillion?: number;
+  minContextWindow?: number;
+  minReasoningRating?: number;
+  sortByCatalogRating?: boolean;
 }
 
 export interface MswarmApiOptions {
@@ -51,10 +63,46 @@ export interface MswarmApiOptions {
   agentSlugPrefix?: string;
 }
 
+export interface MswarmConsentResponse {
+  consent_token: string;
+  expires_in_seconds?: number;
+  consent_types?: string[];
+  issued_at_ms?: number;
+  client_id?: string;
+  client_type?: string;
+  tenant_id?: string;
+  upload_signing_secret?: string;
+}
+
+export interface RegisterFreeMcodaClientOptions {
+  clientId?: string;
+  policyVersion?: string;
+  productVersion: string;
+}
+
+export interface RequestMswarmDataDeletionInput {
+  consentToken: string;
+  product: string;
+  clientId?: string;
+  clientType?: string;
+  reason?: string;
+}
+
+export interface MswarmDataDeletionResponse {
+  accepted: boolean;
+  request_id: number;
+  product: string;
+  client_id?: string;
+  client_type?: string;
+  tenant_id?: string;
+  status: string;
+  requested_at?: string;
+}
+
 interface ResolvedMswarmApiOptions {
   baseUrl: string;
   openAiBaseUrl?: string;
-  apiKey: string;
+  apiKey?: string;
   timeoutMs: number;
   agentSlugPrefix: string;
 }
@@ -84,7 +132,7 @@ export interface ManagedMswarmAgentConfig extends Record<string, unknown> {
 export interface MswarmSyncRecord {
   remoteSlug: string;
   localSlug: string;
-  action: "created" | "updated";
+  action: 'created' | 'updated';
   provider: string;
   defaultModel: string;
   pricingVersion?: string;
@@ -100,25 +148,38 @@ interface ListMswarmCloudAgentsResponse {
   agents?: unknown;
 }
 
-const DEFAULT_BASE_URL = "https://api.mswarm.org/";
+const DEFAULT_BASE_URL = 'https://api.mswarm.org/';
 const DEFAULT_TIMEOUT_MS = 15_000;
-const DEFAULT_AGENT_SLUG_PREFIX = "mswarm-cloud";
+const DEFAULT_AGENT_SLUG_PREFIX = 'mswarm-cloud';
+export const MSWARM_CONSENT_POLICY_VERSION = '2026-03-18';
+export const MCODA_FREE_CLIENT_TYPE = 'free_mcoda_client';
+const MCODA_PRODUCT_SLUG = 'mcoda';
+const MCODA_CONSENT_TYPES = ['anonymous', 'non_anonymous'] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const resolveString = (value: unknown): string | undefined =>
-  typeof value === "string" && value.trim() ? value : undefined;
+  typeof value === 'string' && value.trim() ? value : undefined;
 
 const resolveNumber = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 const resolveBoolean = (value: unknown): boolean | undefined =>
-  typeof value === "boolean" ? value : undefined;
+  typeof value === 'boolean' ? value : undefined;
+
+const resolveTimestamp = (value: unknown): string | undefined => {
+  const candidate = resolveString(value);
+  if (!candidate) return undefined;
+  return Number.isNaN(Date.parse(candidate)) ? undefined : candidate;
+};
 
 const resolveStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  return value.filter(
+    (entry): entry is string =>
+      typeof entry === 'string' && entry.trim().length > 0
+  );
 };
 
 const normalizeBaseUrl = (value: string | undefined, label: string): string => {
@@ -135,7 +196,11 @@ const normalizeBaseUrl = (value: string | undefined, label: string): string => {
   return parsed.toString();
 };
 
-const normalizePositiveInt = (value: number | undefined, label: string, fallback: number): number => {
+const normalizePositiveInt = (
+  value: number | undefined,
+  label: string,
+  fallback: number
+): number => {
   if (value === undefined) return fallback;
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer`);
@@ -143,62 +208,226 @@ const normalizePositiveInt = (value: number | undefined, label: string, fallback
   return Math.trunc(value);
 };
 
-const resolveOptions = async (options: MswarmApiOptions = {}): Promise<ResolvedMswarmApiOptions> => {
+const normalizeOptionalPositiveInt = (
+  value: number | undefined,
+  label: string
+): number | undefined => {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return Math.trunc(value);
+};
+
+const normalizeOptionalNonNegativeNumber = (
+  value: number | undefined,
+  label: string
+): number | undefined => {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative number`);
+  }
+  return value;
+};
+
+const resolveOptions = async (
+  options: MswarmApiOptions = {}
+): Promise<ResolvedMswarmApiOptions> => {
   const envTimeoutRaw = process.env.MCODA_MSWARM_TIMEOUT_MS;
-  const envTimeout = envTimeoutRaw ? Number.parseInt(envTimeoutRaw, 10) : undefined;
+  const envTimeout = envTimeoutRaw
+    ? Number.parseInt(envTimeoutRaw, 10)
+    : undefined;
   const directBaseUrl = options.baseUrl ?? process.env.MCODA_MSWARM_BASE_URL;
-  const directOpenAiBaseUrl = options.openAiBaseUrl ?? process.env.MCODA_MSWARM_OPENAI_BASE_URL;
+  const directOpenAiBaseUrl =
+    options.openAiBaseUrl ?? process.env.MCODA_MSWARM_OPENAI_BASE_URL;
   const directApiKey = options.apiKey ?? process.env.MCODA_MSWARM_API_KEY;
   const directTimeout = options.timeoutMs ?? envTimeout;
-  const directAgentSlugPrefix = options.agentSlugPrefix ?? process.env.MCODA_MSWARM_AGENT_SLUG_PREFIX;
+  const directAgentSlugPrefix =
+    options.agentSlugPrefix ?? process.env.MCODA_MSWARM_AGENT_SLUG_PREFIX;
   const needsStoredFallback =
     directBaseUrl === undefined ||
     directApiKey === undefined ||
     directTimeout === undefined ||
     directAgentSlugPrefix === undefined;
-  const stored = needsStoredFallback ? await new MswarmConfigStore().readState() : {};
+  const stored = needsStoredFallback
+    ? await new MswarmConfigStore().readState()
+    : {};
   return {
     baseUrl: normalizeBaseUrl(
       directBaseUrl ?? stored.baseUrl ?? DEFAULT_BASE_URL,
-      "MCODA_MSWARM_BASE_URL",
+      'MCODA_MSWARM_BASE_URL'
     ),
     openAiBaseUrl: directOpenAiBaseUrl
-      ? normalizeBaseUrl(directOpenAiBaseUrl, "MCODA_MSWARM_OPENAI_BASE_URL")
+      ? normalizeBaseUrl(directOpenAiBaseUrl, 'MCODA_MSWARM_OPENAI_BASE_URL')
       : undefined,
-    apiKey: resolveString(directApiKey ?? stored.apiKey) ?? (() => {
-      throw new Error("MCODA_MSWARM_API_KEY is required");
-    })(),
+    apiKey: resolveString(directApiKey ?? stored.apiKey),
     timeoutMs: normalizePositiveInt(
       directTimeout ?? stored.timeoutMs,
-      "MCODA_MSWARM_TIMEOUT_MS",
-      DEFAULT_TIMEOUT_MS,
+      'MCODA_MSWARM_TIMEOUT_MS',
+      DEFAULT_TIMEOUT_MS
     ),
     agentSlugPrefix:
-      resolveString(directAgentSlugPrefix ?? stored.agentSlugPrefix) ?? DEFAULT_AGENT_SLUG_PREFIX,
+      resolveString(directAgentSlugPrefix ?? stored.agentSlugPrefix) ??
+      DEFAULT_AGENT_SLUG_PREFIX,
   };
 };
 
-const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+const uniqueStrings = (values: string[]): string[] =>
+  Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+
+const resolveFromRecordOrShape = <T>(
+  record: Record<string, unknown>,
+  keys: string[],
+  parser: (value: unknown) => T | undefined
+): T | undefined => {
+  const sources = [
+    record,
+    isRecord(record.mcoda_shape) ? record.mcoda_shape : undefined,
+  ].filter(isRecord);
+  for (const source of sources) {
+    for (const key of keys) {
+      const resolved = parser(source[key]);
+      if (resolved !== undefined) return resolved;
+    }
+  }
+  return undefined;
+};
+
+const resolveStringArrayFromRecordOrShape = (
+  record: Record<string, unknown>,
+  keys: string[]
+): string[] => {
+  const sources = [
+    record,
+    isRecord(record.mcoda_shape) ? record.mcoda_shape : undefined,
+  ].filter(isRecord);
+  const values = sources.flatMap((source) =>
+    keys.flatMap((key) => resolveStringArray(source[key]))
+  );
+  return uniqueStrings(values);
+};
+
+const hasCapabilityFragment = (
+  capabilities: string[],
+  fragments: string[]
+): boolean =>
+  capabilities.some((capability) =>
+    fragments.some((fragment) => capability.includes(fragment))
+  );
+
+const inferCloudBestUsage = (
+  agent: Pick<MswarmCloudAgent, 'capabilities' | 'default_model'>
+): string => {
+  const capabilities = agent.capabilities.map((capability) =>
+    capability.trim().toLowerCase()
+  );
+  const model = agent.default_model.trim().toLowerCase();
+  if (hasCapabilityFragment(capabilities, ['code_review', 'review']))
+    return 'code_review';
+  if (hasCapabilityFragment(capabilities, ['qa', 'test'])) return 'qa_testing';
+  if (hasCapabilityFragment(capabilities, ['research', 'search', 'discover']))
+    return 'deep_research';
+  if (
+    hasCapabilityFragment(capabilities, [
+      'code_write',
+      'coding',
+      'tool_runner',
+      'iterative_coding',
+      'structured_output',
+    ]) ||
+    model.includes('codex')
+  ) {
+    return 'code_write';
+  }
+  if (hasCapabilityFragment(capabilities, ['architect', 'plan']))
+    return 'system_architecture';
+  if (hasCapabilityFragment(capabilities, ['doc'])) return 'doc_generation';
+  return 'general';
+};
+
+const DEFAULT_CONTEXT_WINDOW = 8_192;
+const DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
+const DEFAULT_MAX_COMPLEXITY = 5;
+
+const toSyncedAgentInput = (
+  existing: Agent | undefined,
+  agent: MswarmCloudAgent,
+  localSlug: string,
+  config: Record<string, unknown>,
+  syncedAt: string
+): CreateAgentInput => {
+  const rating = existing?.rating ?? agent.rating;
+  const reasoningRating =
+    existing?.reasoningRating ?? agent.reasoning_rating ?? rating;
+  const maxComplexity =
+    existing?.maxComplexity ?? agent.max_complexity ?? DEFAULT_MAX_COMPLEXITY;
+  const ratingSamples = existing?.ratingSamples ?? agent.rating_samples ?? 0;
+  const ratingLastScore =
+    existing?.ratingLastScore ?? agent.rating_last_score ?? rating;
+  const ratingUpdatedAt =
+    existing?.ratingUpdatedAt ?? agent.rating_updated_at ?? syncedAt;
+  const complexitySamples =
+    existing?.complexitySamples ?? agent.complexity_samples ?? 0;
+  const complexityUpdatedAt =
+    existing?.complexityUpdatedAt ?? agent.complexity_updated_at ?? syncedAt;
+
+  return {
+    slug: localSlug,
+    adapter: 'openai-api',
+    defaultModel: agent.default_model,
+    openaiCompatible: true,
+    contextWindow:
+      agent.context_window ?? existing?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxOutputTokens:
+      agent.max_output_tokens ??
+      existing?.maxOutputTokens ??
+      DEFAULT_MAX_OUTPUT_TOKENS,
+    supportsTools: agent.supports_tools,
+    rating,
+    reasoningRating,
+    bestUsage:
+      agent.best_usage ?? existing?.bestUsage ?? inferCloudBestUsage(agent),
+    costPerMillion: agent.cost_per_million ?? existing?.costPerMillion,
+    maxComplexity,
+    ratingSamples,
+    ratingLastScore,
+    ratingUpdatedAt,
+    complexitySamples,
+    complexityUpdatedAt,
+    config,
+    capabilities: uniqueStrings(agent.capabilities),
+  };
+};
 
 const toManagedLocalSlug = (prefix: string, remoteSlug: string): string => {
   const normalized = remoteSlug
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `${prefix}-${normalized || "agent"}`;
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `${prefix}-${normalized || 'agent'}`;
 };
 
-const toHealthStatus = (value: string | undefined): AgentHealthStatus | undefined => {
+const toHealthStatus = (
+  value: string | undefined
+): AgentHealthStatus | undefined => {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return undefined;
-  if (normalized === "healthy") return "healthy";
-  if (normalized === "degraded" || normalized === "unknown" || normalized === "limited") return "degraded";
-  if (normalized === "unreachable" || normalized === "offline") return "unreachable";
+  if (normalized === 'healthy') return 'healthy';
+  if (
+    normalized === 'degraded' ||
+    normalized === 'unknown' ||
+    normalized === 'limited'
+  )
+    return 'degraded';
+  if (normalized === 'unreachable' || normalized === 'offline')
+    return 'unreachable';
   return undefined;
 };
 
-const isManagedMswarmConfig = (config: unknown): config is ManagedMswarmAgentConfig => {
+const isManagedMswarmConfig = (
+  config: unknown
+): config is ManagedMswarmAgentConfig => {
   if (!isRecord(config)) return false;
   if (!isRecord(config.mswarmCloud)) return false;
   return config.mswarmCloud.managed === true;
@@ -209,7 +438,7 @@ const toManagedConfig = (
   catalogBaseUrl: string,
   openAiBaseUrl: string,
   agent: MswarmCloudAgent,
-  syncedAt: string,
+  syncedAt: string
 ): ManagedMswarmAgentConfig => {
   const nextConfig: ManagedMswarmAgentConfig = {
     ...(existingConfig ?? {}),
@@ -236,33 +465,120 @@ const toManagedConfig = (
 
 const toCloudAgent = (value: unknown): MswarmCloudAgent => {
   if (!isRecord(value)) {
-    throw new Error("mswarm returned an invalid cloud-agent payload");
+    throw new Error('mswarm returned an invalid cloud-agent payload');
   }
-  const slug = resolveString(value.slug);
-  const provider = resolveString(value.provider);
-  const defaultModel = resolveString(value.default_model);
-  const supportsTools = resolveBoolean(value.supports_tools);
+  const slug = resolveFromRecordOrShape(value, ['slug'], resolveString);
+  const provider = resolveFromRecordOrShape(value, ['provider'], resolveString);
+  const defaultModel = resolveFromRecordOrShape(
+    value,
+    ['default_model', 'defaultModel'],
+    resolveString
+  );
+  const supportsTools = resolveFromRecordOrShape(
+    value,
+    ['supports_tools', 'supportsTools'],
+    resolveBoolean
+  );
   if (!slug || !provider || !defaultModel || supportsTools === undefined) {
-    throw new Error("mswarm cloud-agent payload is missing required fields");
+    throw new Error('mswarm cloud-agent payload is missing required fields');
   }
   return {
     slug,
     provider,
     default_model: defaultModel,
-    cost_per_million: resolveNumber(value.cost_per_million),
-    rating: resolveNumber(value.rating),
-    reasoning_rating: resolveNumber(value.reasoning_rating),
-    max_complexity: resolveNumber(value.max_complexity),
-    capabilities: resolveStringArray(value.capabilities),
-    health_status: resolveString(value.health_status),
-    context_window: resolveNumber(value.context_window),
+    cost_per_million: resolveFromRecordOrShape(
+      value,
+      ['cost_per_million', 'costPerMillion'],
+      resolveNumber
+    ),
+    rating: resolveFromRecordOrShape(value, ['rating'], resolveNumber),
+    reasoning_rating: resolveFromRecordOrShape(
+      value,
+      ['reasoning_rating', 'reasoningRating'],
+      resolveNumber
+    ),
+    max_complexity: resolveFromRecordOrShape(
+      value,
+      ['max_complexity', 'maxComplexity'],
+      resolveNumber
+    ),
+    capabilities: resolveStringArrayFromRecordOrShape(value, ['capabilities']),
+    health_status: resolveFromRecordOrShape(
+      value,
+      ['health_status', 'healthStatus'],
+      resolveString
+    ),
+    context_window: resolveFromRecordOrShape(
+      value,
+      ['context_window', 'contextWindow'],
+      resolveNumber
+    ),
+    max_output_tokens: resolveFromRecordOrShape(
+      value,
+      ['max_output_tokens', 'maxOutputTokens'],
+      resolveNumber
+    ),
     supports_tools: supportsTools,
-    model_id: resolveString(value.model_id),
-    display_name: resolveString(value.display_name),
-    description: resolveString(value.description),
-    supports_reasoning: resolveBoolean(value.supports_reasoning),
-    pricing_snapshot_id: resolveString(value.pricing_snapshot_id),
-    pricing_version: resolveString(value.pricing_version),
+    best_usage: resolveFromRecordOrShape(
+      value,
+      ['best_usage', 'bestUsage'],
+      resolveString
+    ),
+    model_id: resolveFromRecordOrShape(
+      value,
+      ['model_id', 'modelId'],
+      resolveString
+    ),
+    display_name: resolveFromRecordOrShape(
+      value,
+      ['display_name', 'displayName'],
+      resolveString
+    ),
+    description: resolveFromRecordOrShape(
+      value,
+      ['description'],
+      resolveString
+    ),
+    supports_reasoning: resolveFromRecordOrShape(
+      value,
+      ['supports_reasoning', 'supportsReasoning'],
+      resolveBoolean
+    ),
+    pricing_snapshot_id: resolveFromRecordOrShape(
+      value,
+      ['pricing_snapshot_id', 'pricingSnapshotId'],
+      resolveString
+    ),
+    pricing_version: resolveFromRecordOrShape(
+      value,
+      ['pricing_version', 'pricingVersion'],
+      resolveString
+    ),
+    rating_samples: resolveFromRecordOrShape(
+      value,
+      ['rating_samples', 'ratingSamples'],
+      resolveNumber
+    ),
+    rating_last_score: resolveFromRecordOrShape(
+      value,
+      ['rating_last_score', 'ratingLastScore'],
+      resolveNumber
+    ),
+    rating_updated_at: resolveFromRecordOrShape(
+      value,
+      ['rating_updated_at', 'ratingUpdatedAt'],
+      resolveTimestamp
+    ),
+    complexity_samples: resolveFromRecordOrShape(
+      value,
+      ['complexity_samples', 'complexitySamples'],
+      resolveNumber
+    ),
+    complexity_updated_at: resolveFromRecordOrShape(
+      value,
+      ['complexity_updated_at', 'complexityUpdatedAt'],
+      resolveTimestamp
+    ),
     sync: isRecord(value.sync) ? value.sync : undefined,
   };
 };
@@ -280,7 +596,78 @@ const toCloudAgentDetail = (value: unknown): MswarmCloudAgentDetail => {
   };
 };
 
-const toAgentModels = (agentId: string, entry: MswarmCloudAgent): AgentModel[] => [
+const hasAdvancedCloudAgentSelection = (
+  options: ListMswarmCloudAgentsOptions
+): boolean =>
+  options.maxCostPerMillion !== undefined ||
+  options.minContextWindow !== undefined ||
+  options.minReasoningRating !== undefined ||
+  options.sortByCatalogRating === true;
+
+const sortCloudAgentsByCatalogRating = (
+  agents: MswarmCloudAgent[]
+): MswarmCloudAgent[] =>
+  [...agents].sort((left, right) => {
+    const ratingDelta =
+      (right.rating ?? Number.NEGATIVE_INFINITY) -
+      (left.rating ?? Number.NEGATIVE_INFINITY);
+    if (ratingDelta !== 0) return ratingDelta;
+    return left.slug.localeCompare(right.slug);
+  });
+
+const applyCloudAgentListOptions = (
+  agents: MswarmCloudAgent[],
+  options: ListMswarmCloudAgentsOptions
+): MswarmCloudAgent[] => {
+  const maxCostPerMillion = normalizeOptionalNonNegativeNumber(
+    options.maxCostPerMillion,
+    'maxCostPerMillion'
+  );
+  const minContextWindow = normalizeOptionalPositiveInt(
+    options.minContextWindow,
+    'minContextWindow'
+  );
+  const minReasoningRating = normalizeOptionalNonNegativeNumber(
+    options.minReasoningRating,
+    'minReasoningRating'
+  );
+  const limit = normalizeOptionalPositiveInt(options.limit, 'limit');
+
+  let next = [...agents];
+  if (maxCostPerMillion !== undefined) {
+    next = next.filter(
+      (agent) =>
+        agent.cost_per_million !== undefined &&
+        agent.cost_per_million <= maxCostPerMillion
+    );
+  }
+  if (minContextWindow !== undefined) {
+    next = next.filter(
+      (agent) =>
+        agent.context_window !== undefined &&
+        agent.context_window >= minContextWindow
+    );
+  }
+  if (minReasoningRating !== undefined) {
+    next = next.filter(
+      (agent) =>
+        agent.reasoning_rating !== undefined &&
+        agent.reasoning_rating >= minReasoningRating
+    );
+  }
+  if (options.sortByCatalogRating) {
+    next = sortCloudAgentsByCatalogRating(next);
+  }
+  if (limit !== undefined) {
+    next = next.slice(0, limit);
+  }
+  return next;
+};
+
+const toAgentModels = (
+  agentId: string,
+  entry: MswarmCloudAgent
+): AgentModel[] => [
   {
     agentId,
     modelName: entry.default_model,
@@ -300,7 +687,7 @@ export class MswarmApi {
 
   constructor(
     private readonly repo: GlobalRepository,
-    private readonly options: ResolvedMswarmApiOptions,
+    private readonly options: ResolvedMswarmApiOptions
   ) {
     this.baseUrl = options.baseUrl;
     this.agentSlugPrefix = options.agentSlugPrefix;
@@ -315,9 +702,17 @@ export class MswarmApi {
     await this.repo.close();
   }
 
+  private requireApiKey(): string {
+    if (!this.options.apiKey) {
+      throw new Error('MCODA_MSWARM_API_KEY is required');
+    }
+    return this.options.apiKey;
+  }
+
   private async requestJson<T>(
     pathname: string,
     query?: Record<string, string | number | undefined>,
+    init?: { method?: string; body?: unknown; headers?: Record<string, string> }
   ): Promise<T> {
     const url = new URL(pathname, this.options.baseUrl);
     if (query) {
@@ -327,29 +722,47 @@ export class MswarmApi {
       }
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.options.timeoutMs);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      this.options.timeoutMs
+    );
     try {
+      const headers: Record<string, string> = {
+        accept: 'application/json',
+        ...(init?.headers ?? {}),
+      };
+      if (this.options.apiKey) {
+        headers['x-api-key'] = this.options.apiKey;
+      }
+      let body: string | undefined;
+      if (init?.body !== undefined) {
+        headers['content-type'] = 'application/json';
+        body = JSON.stringify(init.body);
+      }
       const response = await fetch(url.toString(), {
-        headers: {
-          accept: "application/json",
-          "x-api-key": this.options.apiKey,
-        },
+        method: init?.method ?? 'GET',
+        headers,
+        body,
         signal: controller.signal,
       });
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw new Error(`mswarm request failed (${response.status}): ${body || response.statusText}`);
+        const body = await response.text().catch(() => '');
+        throw new Error(
+          `mswarm request failed (${response.status}): ${body || response.statusText}`
+        );
       }
       try {
         return (await response.json()) as T;
       } catch (error) {
         throw new Error(
-          `mswarm response was not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+          `mswarm response was not valid JSON: ${error instanceof Error ? error.message : String(error)}`
         );
       }
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`mswarm request timed out after ${this.options.timeoutMs}ms`);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(
+          `mswarm request timed out after ${this.options.timeoutMs}ms`
+        );
       }
       throw error;
     } finally {
@@ -357,79 +770,94 @@ export class MswarmApi {
     }
   }
 
-  async listCloudAgents(options: ListMswarmCloudAgentsOptions = {}): Promise<MswarmCloudAgent[]> {
-    const payload = await this.requestJson<ListMswarmCloudAgentsResponse>("/v1/swarm/cloud/agents", {
-      shape: "mcoda",
-      provider: options.provider,
-      limit: options.limit,
-    });
+  async listCloudAgents(
+    options: ListMswarmCloudAgentsOptions = {}
+  ): Promise<MswarmCloudAgent[]> {
+    const remoteLimit = hasAdvancedCloudAgentSelection(options)
+      ? undefined
+      : options.limit;
+    const payload = await this.requestJson<ListMswarmCloudAgentsResponse>(
+      '/v1/swarm/cloud/agents',
+      {
+        shape: 'mcoda',
+        provider: options.provider,
+        limit: remoteLimit,
+      }
+    );
     const agents = Array.isArray(payload.agents) ? payload.agents : [];
-    return agents.map(toCloudAgent);
+    return applyCloudAgentListOptions(agents.map(toCloudAgent), options);
   }
 
   async getCloudAgent(slug: string): Promise<MswarmCloudAgentDetail> {
     if (!slug.trim()) {
-      throw new Error("Cloud-agent slug is required");
+      throw new Error('Cloud-agent slug is required');
     }
-    const payload = await this.requestJson<unknown>(`/v1/swarm/cloud/agents/${encodeURIComponent(slug)}`);
+    const payload = await this.requestJson<unknown>(
+      `/v1/swarm/cloud/agents/${encodeURIComponent(slug)}`
+    );
     return toCloudAgentDetail(payload);
   }
 
-  async syncCloudAgents(options: ListMswarmCloudAgentsOptions = {}): Promise<MswarmSyncSummary> {
+  async syncCloudAgents(
+    options: ListMswarmCloudAgentsOptions = {}
+  ): Promise<MswarmSyncSummary> {
     const agents = await this.listCloudAgents(options);
-    const openAiBaseUrl = this.options.openAiBaseUrl ?? new URL("/v1/swarm/openai/", this.options.baseUrl).toString();
+    const openAiBaseUrl =
+      this.options.openAiBaseUrl ??
+      new URL('/v1/swarm/openai/', this.options.baseUrl).toString();
     const syncedAt = new Date().toISOString();
-    const encryptedApiKey = await CryptoHelper.encryptSecret(this.options.apiKey);
+    const encryptedApiKey = await CryptoHelper.encryptSecret(
+      this.requireApiKey()
+    );
     const records: MswarmSyncRecord[] = [];
 
     for (const agent of agents) {
-      const localSlug = toManagedLocalSlug(this.options.agentSlugPrefix, agent.slug);
+      const localSlug = toManagedLocalSlug(
+        this.options.agentSlugPrefix,
+        agent.slug
+      );
       const existing = await this.repo.getAgentBySlug(localSlug);
-      if (existing && (!isManagedMswarmConfig(existing.config) || existing.config.mswarmCloud.remoteSlug !== agent.slug)) {
+      if (
+        existing &&
+        (!isManagedMswarmConfig(existing.config) ||
+          existing.config.mswarmCloud.remoteSlug !== agent.slug)
+      ) {
         throw new Error(`Refusing to overwrite non-mswarm agent ${localSlug}`);
       }
 
       const existingConfig =
-        existing && isRecord(existing.config) ? (existing.config as Record<string, unknown>) : undefined;
-      const nextConfig = toManagedConfig(existingConfig, this.options.baseUrl, openAiBaseUrl, agent, syncedAt);
-
-      const baseInput: Pick<
-        CreateAgentInput,
-        | "slug"
-        | "adapter"
-        | "defaultModel"
-        | "openaiCompatible"
-        | "contextWindow"
-        | "supportsTools"
-        | "rating"
-        | "reasoningRating"
-        | "costPerMillion"
-        | "maxComplexity"
-        | "config"
-        | "capabilities"
-      > = {
-        slug: localSlug,
-        adapter: "openai-api",
-        defaultModel: agent.default_model,
-        openaiCompatible: true,
-        contextWindow: agent.context_window,
-        supportsTools: agent.supports_tools,
-        rating: agent.rating,
-        reasoningRating: agent.reasoning_rating,
-        costPerMillion: agent.cost_per_million,
-        maxComplexity: agent.max_complexity,
-        config: nextConfig,
-        capabilities: uniqueStrings(agent.capabilities),
-      };
-
+        existing && isRecord(existing.config)
+          ? (existing.config as Record<string, unknown>)
+          : undefined;
+      const nextConfig = toManagedConfig(
+        existingConfig,
+        this.options.baseUrl,
+        openAiBaseUrl,
+        agent,
+        syncedAt
+      );
+      const createInput = toSyncedAgentInput(
+        existing,
+        agent,
+        localSlug,
+        nextConfig,
+        syncedAt
+      );
+      const { slug: _ignoredSlug, ...updateInput } = createInput;
       const stored = existing
-        ? await this.repo.updateAgent(existing.id, baseInput as UpdateAgentInput)
-        : await this.repo.createAgent(baseInput as CreateAgentInput);
+        ? await this.repo.updateAgent(
+            existing.id,
+            updateInput as UpdateAgentInput
+          )
+        : await this.repo.createAgent(createInput);
       if (!stored) {
         throw new Error(`Failed to persist synced agent ${localSlug}`);
       }
 
-      await this.repo.setAgentModels(stored.id, toAgentModels(stored.id, agent));
+      await this.repo.setAgentModels(
+        stored.id,
+        toAgentModels(stored.id, agent)
+      );
       await this.repo.setAgentAuth(stored.id, encryptedApiKey);
       const mappedHealth = toHealthStatus(agent.health_status);
       if (mappedHealth) {
@@ -438,7 +866,7 @@ export class MswarmApi {
           status: mappedHealth,
           lastCheckedAt: syncedAt,
           details: {
-            source: "mswarm",
+            source: 'mswarm',
             remoteSlug: agent.slug,
             remoteHealthStatus: agent.health_status,
           },
@@ -449,7 +877,7 @@ export class MswarmApi {
       records.push({
         remoteSlug: agent.slug,
         localSlug,
-        action: existing ? "updated" : "created",
+        action: existing ? 'updated' : 'created',
         provider: agent.provider,
         defaultModel: agent.default_model,
         pricingVersion: agent.pricing_version,
@@ -457,9 +885,88 @@ export class MswarmApi {
     }
 
     return {
-      created: records.filter((record) => record.action === "created").length,
-      updated: records.filter((record) => record.action === "updated").length,
+      created: records.filter((record) => record.action === 'created').length,
+      updated: records.filter((record) => record.action === 'updated').length,
       agents: records,
     };
+  }
+
+  async issuePaidConsent(
+    policyVersion = MSWARM_CONSENT_POLICY_VERSION
+  ): Promise<MswarmConsentResponse> {
+    const apiKey = this.requireApiKey();
+    return this.requestJson<MswarmConsentResponse>(
+      '/v1/swarm/consent/issue',
+      undefined,
+      {
+        method: 'POST',
+        body: {
+          consent_types: [...MCODA_CONSENT_TYPES],
+          policy_version: policyVersion,
+          timestamp_ms: Date.now(),
+          proof: {
+            type: 'api_key',
+            value: apiKey,
+          },
+        },
+      }
+    );
+  }
+
+  async registerFreeMcodaClient(
+    options: RegisterFreeMcodaClientOptions
+  ): Promise<MswarmConsentResponse> {
+    return this.requestJson<MswarmConsentResponse>(
+      '/v1/swarm/mcoda/free-client/register',
+      undefined,
+      {
+        method: 'POST',
+        body: {
+          client_id: options.clientId,
+          product: MCODA_PRODUCT_SLUG,
+          product_version: options.productVersion,
+          policy_version:
+            options.policyVersion ?? MSWARM_CONSENT_POLICY_VERSION,
+          timestamp_ms: Date.now(),
+          consent_types: [...MCODA_CONSENT_TYPES],
+        },
+      }
+    );
+  }
+
+  async revokeConsent(
+    consentToken: string,
+    reason?: string
+  ): Promise<{ revoked: boolean; revoked_at_ms?: number }> {
+    return this.requestJson<{ revoked: boolean; revoked_at_ms?: number }>(
+      '/v1/swarm/consent/revoke',
+      undefined,
+      {
+        method: 'POST',
+        body: {
+          consent_token: consentToken,
+          reason,
+        },
+      }
+    );
+  }
+
+  async requestDataDeletion(
+    input: RequestMswarmDataDeletionInput
+  ): Promise<MswarmDataDeletionResponse> {
+    return this.requestJson<MswarmDataDeletionResponse>(
+      '/v1/swarm/data/deletion-request',
+      undefined,
+      {
+        method: 'POST',
+        body: {
+          consent_token: input.consentToken,
+          product: input.product,
+          client_id: input.clientId,
+          client_type: input.clientType,
+          reason: input.reason,
+        },
+      }
+    );
   }
 }
