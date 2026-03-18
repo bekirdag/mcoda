@@ -5,10 +5,13 @@ mcoda is a local-first CLI for planning, documentation, and execution workflows 
 ## Install
 - Requires Node.js >= 20.
 - Global install: `npm i -g mcoda`
+- Interactive installs show the bundled mswarm data collection terms and require acceptance before setup can continue.
+- If install cannot prompt, complete the same mandatory consent flow with `mcoda setup` before other commands.
 - Verify: `mcoda --version`
 
 ## Quick start
 ```sh
+mcoda setup
 mcoda set-workspace --workspace-root .
 mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web.md --agent codex
 ```

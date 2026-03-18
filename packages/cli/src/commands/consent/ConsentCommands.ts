@@ -1,11 +1,12 @@
 import packageJson from '../../../package.json' with { type: 'json' };
 import {
-  MCODA_FREE_CLIENT_TYPE,
-  MswarmApi,
   MswarmConfigStore,
-  MSWARM_CONSENT_POLICY_VERSION,
   type MswarmConfigState,
 } from '@mcoda/core';
+import {
+  acceptMswarmConsent,
+  buildMswarmApi,
+} from './MswarmConsentFlow.js';
 
 const USAGE = `
 Usage: mcoda consent <show|accept|revoke|request-deletion> [options]
@@ -70,7 +71,13 @@ export class ConsentCommands {
     }
 
     if (parsed.subcommand === 'accept') {
-      const nextState = await acceptConsent(state, parsed.policyVersion);
+      const nextState = await acceptMswarmConsent({
+        state,
+        policyVersion: parsed.policyVersion,
+        productVersion: String(
+          (packageJson as { version?: string }).version ?? 'dev'
+        ),
+      });
       render(parsed.json, {
         consentAccepted: Boolean(nextState.consentAccepted),
         consentTokenSet: Boolean(nextState.consentToken?.trim()),
@@ -92,7 +99,7 @@ export class ConsentCommands {
           'No persisted mswarm consent token is available. Run `mcoda consent accept` first.'
         );
       }
-      const api = await buildApi(state);
+      const api = await buildMswarmApi(state);
       try {
         const response = await api.revokeConsent(consentToken, parsed.reason);
         await store.clearConsentState();
@@ -113,7 +120,7 @@ export class ConsentCommands {
           'No persisted mswarm consent token is available. Run `mcoda consent accept` first.'
         );
       }
-      const api = await buildApi(state);
+      const api = await buildMswarmApi(state);
       try {
         const response = await api.requestDataDeletion({
           consentToken,
@@ -188,76 +195,6 @@ export function parseConsentArgs(argv: string[]): ParsedConsentArgs {
   }
   parsed.subcommand = positionals[0];
   return parsed;
-}
-
-async function acceptConsent(
-  state: MswarmConfigState,
-  policyVersion?: string
-): Promise<MswarmConfigState> {
-  const store = new MswarmConfigStore();
-  const api = await buildApi(state);
-  try {
-    const effectivePolicyVersion =
-      policyVersion?.trim() ||
-      state.consentPolicyVersion ||
-      MSWARM_CONSENT_POLICY_VERSION;
-    if (state.apiKey?.trim()) {
-      const response = await api.issuePaidConsent(effectivePolicyVersion);
-      const clientId =
-        response.client_id || response.tenant_id || state.clientId;
-      const clientType = response.client_type || 'paid_mcoda_client';
-      if (!clientId) {
-        throw new Error(
-          'mswarm paid consent response did not include a client or tenant id'
-        );
-      }
-      return store.saveConsentState({
-        consentAccepted: true,
-        consentPolicyVersion: effectivePolicyVersion,
-        consentToken: response.consent_token,
-        clientId,
-        clientType,
-        registeredAtMs: response.issued_at_ms ?? Date.now(),
-        uploadSigningSecret: response.upload_signing_secret,
-        deletionRequestedAtMs: state.deletionRequestedAtMs,
-      });
-    }
-
-    const response = await api.registerFreeMcodaClient({
-      clientId: state.clientId,
-      policyVersion: effectivePolicyVersion,
-      productVersion: String(
-        (packageJson as { version?: string }).version ?? 'dev'
-      ),
-    });
-    const clientId = response.client_id || state.clientId;
-    if (!clientId) {
-      throw new Error(
-        'mswarm free-client registration did not return a client id'
-      );
-    }
-    return store.saveConsentState({
-      consentAccepted: true,
-      consentPolicyVersion: effectivePolicyVersion,
-      consentToken: response.consent_token,
-      clientId,
-      clientType: response.client_type || MCODA_FREE_CLIENT_TYPE,
-      registeredAtMs: response.issued_at_ms ?? Date.now(),
-      uploadSigningSecret: response.upload_signing_secret,
-      deletionRequestedAtMs: state.deletionRequestedAtMs,
-    });
-  } finally {
-    await api.close();
-  }
-}
-
-async function buildApi(state: MswarmConfigState): Promise<MswarmApi> {
-  return MswarmApi.create({
-    baseUrl: state.baseUrl,
-    apiKey: state.apiKey,
-    timeoutMs: state.timeoutMs,
-    agentSlugPrefix: state.agentSlugPrefix,
-  });
 }
 
 function render(json: boolean, payload: Record<string, unknown>): void {

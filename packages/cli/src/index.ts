@@ -21,5 +21,6 @@ export * from './commands/review/CodeReviewCommand.js';
 export * from './commands/planning/QaTasksCommand.js';
 export * from './commands/update/UpdateCommands.js';
 export * from './commands/routing/RoutingCommands.js';
+export * from './commands/setup/SetupCommand.js';
 export * from './commands/agents/TestAgentCommand.js';
 export * from './commands/workspace/ProjectGuidanceCommand.js';

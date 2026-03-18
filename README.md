@@ -36,10 +36,14 @@ Optional agent rating is available with `--rate-agents` to score outputs (qualit
 ## 🛠️ Quick start
 ```sh
 npm i -g mcoda
+mcoda setup
 mcoda set-workspace --workspace-root .
 mcoda project-guidance --workspace-root . --project <PROJECT_KEY>
 mcoda --help
 ```
+
+- Interactive installs show the bundled mswarm data collection terms and require acceptance before setup can continue.
+- If installation cannot prompt, run `mcoda setup` before any other mcoda command.
 
 ## 🧰 Docdex & QA
 - mcoda ships with the `docdex` CLI. Run `docdex setup` (or `docdexd browser install`) to configure docdex and install the headless Chromium browser used for web enrichment.

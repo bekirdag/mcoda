@@ -169,6 +169,20 @@ export const installLocalPackages = (rootDir, { binsOnly = false, dryRun = false
     run(pnpm, ["-C", pkg.relDir, "link", "--global"], { cwd: rootDir });
   }
 
+  const consentBootstrapScript = path.join(
+    rootDir,
+    "packages",
+    "cli",
+    "scripts",
+    "postinstall.js",
+  );
+  if (existsSync(consentBootstrapScript)) {
+    console.log("Checking mandatory mcoda telemetry consent...");
+    run(process.execPath, [consentBootstrapScript, "--install-local"], {
+      cwd: rootDir,
+    });
+  }
+
   const globalBinDir = readCommandOutput(pnpm, ["bin", "--global"])
     || `${readCommandOutput(pnpm, ["root", "--global"])}/.bin`;
   const linkedBins = packages.filter((pkg) => pkg.hasBin).map((pkg) => pkg.name);

@@ -5,6 +5,7 @@ import { McodaEntrypoint } from '../bin/McodaEntrypoint.js';
 import { CloudCommands } from '../commands/cloud/CloudCommands.js';
 import { ConfigCommands } from '../commands/config/ConfigCommands.js';
 import { ConsentCommands } from '../commands/consent/ConsentCommands.js';
+import { SetupCommand } from '../commands/setup/SetupCommand.js';
 import { SdsPreflightCommand } from '../commands/planning/SdsPreflightCommand.js';
 import { DocsCommands } from '../commands/docs/DocsCommands.js';
 import { MswarmConfigStore } from '@mcoda/core';
@@ -195,6 +196,25 @@ test(
       assert.equal(called, true);
     } finally {
       (ConsentCommands as any).run = originalRun;
+    }
+  }
+);
+
+test(
+  'McodaEntrypoint routes setup without prior consent',
+  { concurrency: false },
+  async () => {
+    const originalRun = SetupCommand.run;
+    let called = false;
+    (SetupCommand as any).run = async (argv: string[]) => {
+      called = true;
+      assert.deepEqual(argv, ['--json']);
+    };
+    try {
+      await McodaEntrypoint.run(['setup', '--json']);
+      assert.equal(called, true);
+    } finally {
+      (SetupCommand as any).run = originalRun;
     }
   }
 );

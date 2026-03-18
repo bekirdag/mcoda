@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Initial npm packaging scaffold for the mcoda CLI.
+- Added bundled mswarm consent terms plus guided `mcoda setup`/postinstall consent bootstrap for installed CLI packages.
 
 ## 0.1.9
 - Release v0.1.9.

@@ -23,7 +23,10 @@ const requiredPaths = [
   "README.md",
   "CHANGELOG.md",
   "LICENSE",
+  "MSWARM_DATA_COLLECTION_TERMS.md",
+  "scripts/postinstall.js",
   "dist/bin/McodaEntrypoint.js",
+  "dist/install/MswarmConsentBootstrap.js",
 ];
 
 const getPackList = () => {

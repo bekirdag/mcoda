@@ -27,6 +27,7 @@ import { QaTasksCommand } from '../commands/planning/QaTasksCommand.js';
 import { MigrateTasksCommand } from '../commands/planning/MigrateTasksCommand.js';
 import { UpdateCommands } from '../commands/update/UpdateCommands.js';
 import { RoutingCommands } from '../commands/routing/RoutingCommands.js';
+import { SetupCommand } from '../commands/setup/SetupCommand.js';
 import { TestAgentCommand } from '../commands/agents/TestAgentCommand.js';
 import { AgentRunCommand } from '../commands/agents/AgentRunCommand.js';
 import { SetWorkspaceCommand } from '../commands/workspace/SetWorkspaceCommand.js';
@@ -93,9 +94,10 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        'Usage: mcoda <agent|cloud|cloud-agent|config|consent|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
+        'Usage: mcoda <agent|cloud|cloud-agent|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
+          'Setup: use `mcoda setup` after installation (or accept the postinstall prompt) to complete the mandatory mswarm telemetry consent flow.\n' +
           'Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in the resolved global mcoda config file.\n' +
-          'Consent: use `mcoda consent accept` before other commands to persist mandatory mswarm telemetry consent.\n' +
+          'Consent: use `mcoda consent accept` before other commands if you need to complete consent outside the guided setup flow.\n' +
           'Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n' +
           'Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n' +
           'Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n' +
@@ -103,13 +105,13 @@ export class McodaEntrypoint {
           'Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.'
       );
     }
-    if (!['config', 'consent'].includes(command)) {
+    if (!['config', 'consent', 'setup'].includes(command)) {
       const consentState = await new MswarmConfigStore().readState();
       const consentAccepted = Boolean(consentState.consentAccepted);
       const consentTokenSet = Boolean(consentState.consentToken?.trim());
       if (!consentAccepted || !consentTokenSet) {
         throw new Error(
-          'Telemetry consent is required before using mcoda. Review the mswarm data collection terms and run `mcoda consent accept`.'
+          'Telemetry consent is required before using mcoda. Review the mswarm data collection terms and run `mcoda setup` or `mcoda consent accept`.'
         );
       }
     }
@@ -127,6 +129,10 @@ export class McodaEntrypoint {
     }
     if (command === 'consent') {
       await ConsentCommands.run(rest);
+      return;
+    }
+    if (command === 'setup') {
+      await SetupCommand.run(rest);
       return;
     }
     if (command === 'cloud-agent') {

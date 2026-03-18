@@ -5,9 +5,23 @@ This guide covers installation, workspace setup, and common CLI workflows.
 ## Install
 - Requires Node.js >= 20.
 - Global install: `npm i -g mcoda`
+- Interactive installs show the bundled mswarm data collection terms and require acceptance before setup can continue.
+- If installation cannot prompt, run `mcoda setup` before any other mcoda command.
 - Verify: `mcoda --version`
 - Repo-local global link of workspace packages: `pnpm run install:local`
 - Repo-local global link of CLI binaries only: `pnpm run install:local:bins`
+
+### Mandatory consent bootstrap
+
+mcoda requires acceptance of the bundled mswarm data collection terms before normal command use.
+
+```sh
+mcoda setup
+```
+
+- `mcoda setup` is the guided interactive path and is exempt from the normal consent gate.
+- `mcoda consent accept` remains available for explicit/manual acceptance and automation-friendly flows.
+- If consent is not accepted, mcoda blocks non-exempt commands.
 
 ## Docdex setup
 mcoda relies on docdex for document search/context and the headless Chromium browser used for web enrichment.
