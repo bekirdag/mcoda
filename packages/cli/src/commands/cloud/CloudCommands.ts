@@ -12,6 +12,12 @@ Subcommands:
   agent list                List mswarm cloud agents (supports --json)
     --provider <NAME>       Filter by provider
     --limit <N>             Limit returned agents
+    --max-cost-per-1m-token <N>
+                             Exclude agents above the given cost_per_million
+    --sorted-by-catalog-rating
+                             Sort results by the catalog rating field (descending)
+    --min-context <N>       Require at least this context window
+    --min-reasoning <N>     Require at least this reasoning rating
   agent details <SLUG>      Show a single mswarm cloud agent (supports --json)
   agent sync                Sync mswarm cloud agents into the local mcoda registry
     --provider <NAME>       Filter by provider before syncing
@@ -83,6 +89,19 @@ const resolvePositiveInt = (value: string | string[] | boolean | undefined, labe
   return parsed;
 };
 
+const resolveNonNegativeNumber = (
+  value: string | string[] | boolean | undefined,
+  label: string,
+): number | undefined => {
+  const raw = resolveString(value);
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${label}; expected a non-negative number`);
+  }
+  return parsed;
+};
+
 const formatNumber = (value: number | undefined): string =>
   value === undefined || Number.isNaN(value) ? "-" : String(value);
 
@@ -119,9 +138,10 @@ const printAgentList = (agents: MswarmCloudAgent[]): void => {
     "RATING",
     "REASON",
     "MAX CPLX",
+    "CTX",
+    "COST/$1M",
     "TOOLS",
     "HEALTH",
-    "PRICING",
     "CAPABILITIES",
   ];
   const rows = agents.map((agent) => [
@@ -131,9 +151,10 @@ const printAgentList = (agents: MswarmCloudAgent[]): void => {
     formatNumber(agent.rating),
     formatNumber(agent.reasoning_rating),
     formatNumber(agent.max_complexity),
+    formatNumber(agent.context_window),
+    formatNumber(agent.cost_per_million),
     formatBoolean(agent.supports_tools),
     agent.health_status ?? "-",
-    agent.pricing_version ?? "-",
     formatCapabilities(agent.capabilities),
   ]);
   // eslint-disable-next-line no-console
@@ -151,6 +172,7 @@ const printAgentDetails = (agent: MswarmCloudAgentDetail): void => {
     ["Rating", formatNumber(agent.rating)],
     ["Reasoning rating", formatNumber(agent.reasoning_rating)],
     ["Max complexity", formatNumber(agent.max_complexity)],
+    ["Cost / 1M tokens", formatNumber(agent.cost_per_million)],
     ["Context window", formatNumber(agent.context_window)],
     ["Supports tools", formatBoolean(agent.supports_tools)],
     ["Supports reasoning", formatBoolean(agent.supports_reasoning)],
@@ -223,6 +245,18 @@ export class CloudCommands {
           const agents = await api.listCloudAgents({
             provider: resolveString(parsed.flags.provider),
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
+            maxCostPerMillion: resolveNonNegativeNumber(
+              parsed.flags["max-cost-per-1m-token"],
+              "--max-cost-per-1m-token",
+            ),
+            minContextWindow: resolvePositiveInt(parsed.flags["min-context"], "--min-context"),
+            minReasoningRating: resolveNonNegativeNumber(
+              parsed.flags["min-reasoning"],
+              "--min-reasoning",
+            ),
+            sortByCatalogRating: Boolean(
+              parsed.flags["sorted-by-catalog-rating"] || parsed.flags["sort-by-catalog-rating"],
+            ),
           });
           if (parsed.flags.json) {
             // eslint-disable-next-line no-console
@@ -249,8 +283,8 @@ export class CloudCommands {
         case "sync": {
           const summary = await api.syncCloudAgents({
             provider: resolveString(parsed.flags.provider),
-            pruneMissing: Boolean(parsed.flags.prune),
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
+            pruneMissing: Boolean(parsed.flags.prune),
           });
           if (parsed.flags.json) {
             // eslint-disable-next-line no-console

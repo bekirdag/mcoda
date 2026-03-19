@@ -102,6 +102,83 @@ test("cloud agent list supports JSON output", { concurrency: false }, async () =
   });
 });
 
+test("cloud agent list supports advanced filters and catalog sorting", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await withStubServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      assert.equal(req.headers["x-api-key"], "cloud-key");
+      assert.equal(url.pathname, "/v1/swarm/cloud/agents");
+      assert.equal(url.searchParams.get("limit"), null);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          agents: [
+            {
+              slug: "openai/gpt-4.1-mini",
+              provider: "openrouter",
+              default_model: "openai/gpt-4.1-mini",
+              capabilities: ["code_write"],
+              supports_tools: true,
+              rating: 8.2,
+              reasoning_rating: 8.6,
+              context_window: 128000,
+              cost_per_million: 0.9,
+            },
+            {
+              slug: "anthropic/claude-3.7-sonnet",
+              provider: "openrouter",
+              default_model: "anthropic/claude-3.7-sonnet",
+              capabilities: ["code_write", "plan"],
+              supports_tools: true,
+              rating: 9.3,
+              reasoning_rating: 9.1,
+              context_window: 200000,
+              cost_per_million: 1.1,
+            },
+            {
+              slug: "meta/llama-3.3",
+              provider: "openrouter",
+              default_model: "meta/llama-3.3",
+              capabilities: ["chat"],
+              supports_tools: false,
+              rating: 7.0,
+              reasoning_rating: 7.2,
+              context_window: 32000,
+              cost_per_million: 0.2,
+            },
+          ],
+        }),
+      );
+    }, async (baseUrl) => {
+      const logs = await captureLogs(() =>
+        CloudCommands.run([
+          "agent",
+          "list",
+          "--json",
+          "--base-url",
+          baseUrl,
+          "--api-key",
+          "cloud-key",
+          "--max-cost-per-1m-token",
+          "1.1",
+          "--min-context",
+          "100000",
+          "--min-reasoning",
+          "8.5",
+          "--sorted-by-catalog-rating",
+          "--limit",
+          "2",
+        ]),
+      );
+      const parsed = JSON.parse(logs.join("\n"));
+      assert.deepEqual(
+        parsed.map((agent: { slug: string }) => agent.slug),
+        ["anthropic/claude-3.7-sonnet", "openai/gpt-4.1-mini"],
+      );
+    });
+  });
+});
+
 test("cloud agent sync writes managed agents into the local registry", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await withStubServer((req, res) => {
