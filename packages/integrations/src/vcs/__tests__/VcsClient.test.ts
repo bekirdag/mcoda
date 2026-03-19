@@ -14,6 +14,7 @@ const setupRepo = async (): Promise<string> => {
   git(dir, ["init"]);
   git(dir, ["config", "user.email", "mcoda@example.test"]);
   git(dir, ["config", "user.name", "mcoda test"]);
+  git(dir, ["config", "core.autocrlf", "false"]);
   await fs.writeFile(path.join(dir, "sample.txt"), "base\n", "utf8");
   git(dir, ["add", "sample.txt"]);
   git(dir, ["commit", "-m", "init"]);
