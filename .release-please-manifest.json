@@ -1,6 +1,6 @@
 {
-  "packages/cli": "0.1.38",
-  "packages/core": "0.1.38",
+  "packages/cli": "0.2.0",
+  "packages/core": "0.2.0",
   "packages/shared": "0.1.38",
   "packages/db": "0.1.38",
   "packages/integrations": "0.1.38",
