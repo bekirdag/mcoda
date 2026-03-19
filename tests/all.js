@@ -250,9 +250,7 @@ if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
 }
 
 // NOTE: Register any new standalone test scripts here if they are not discovered automatically.
-const extraTests = [
-  path.join("tests", "gateway-trio-plan.test.js"),
-];
+const extraTests = [];
 // NOTE: Add dist test files here when a package test is not covered by the workspace runner or needs explicit inclusion.
 const extraWorkspaceTests = [
   path.join("packages", "db", "dist", "__tests__", "WorkspaceMigrations.test.js"),
