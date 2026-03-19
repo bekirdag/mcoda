@@ -43,7 +43,7 @@ pnpm run install:local:bins
 ## Releases
 - Releases are tagged as `vX.Y.Z` on `main`.
 - GitHub Actions runs release workflows and publishes to npm using trusted publishing (OIDC).
-- Release-please manages version bumps and changelogs.
+- Releases are handled manually by bumping versions in the repo and pushing a `vX.Y.Z` tag.
 
 ## Reporting issues
 - Include repro steps, expected/actual behavior, and environment details.
