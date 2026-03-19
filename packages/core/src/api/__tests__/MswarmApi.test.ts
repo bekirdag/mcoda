@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { GlobalRepository } from '@mcoda/db';
+import { CryptoHelper } from '@mcoda/shared';
 import { MswarmApi } from '../MswarmApi.js';
 import { MswarmConfigStore } from '../MswarmConfigStore.js';
 
@@ -424,6 +425,85 @@ test(
 );
 
 test(
+  'MswarmApi.refreshManagedAgentAuth updates synced managed agents only',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      const repo = await GlobalRepository.create();
+      try {
+        const managed = await repo.createAgent({
+          slug: 'mswarm-cloud-openai-gpt-4-1-mini',
+          adapter: 'openai-api',
+          defaultModel: 'openai/gpt-4.1-mini',
+          openaiCompatible: true,
+          config: {
+            baseUrl: 'https://mswarm.example/v1/swarm/openai/',
+            apiBaseUrl: 'https://mswarm.example/v1/swarm/openai/',
+            mswarmCloud: {
+              managed: true,
+              remoteSlug: 'openai/gpt-4.1-mini',
+              provider: 'openrouter',
+              catalogBaseUrl: 'https://api.mswarm.org/',
+              openAiBaseUrl: 'https://mswarm.example/v1/swarm/openai/',
+              syncedAt: new Date().toISOString(),
+            },
+          },
+        });
+        const unmanaged = await repo.createAgent({
+          slug: 'local-openai',
+          adapter: 'openai-api',
+          defaultModel: 'gpt-4o',
+          openaiCompatible: true,
+        });
+        await repo.setAgentAuth(
+          managed.id,
+          await CryptoHelper.encryptSecret('old-managed-key')
+        );
+        await repo.setAgentAuth(
+          unmanaged.id,
+          await CryptoHelper.encryptSecret('local-key')
+        );
+      } finally {
+        await repo.close();
+      }
+
+      const summary = await MswarmApi.refreshManagedAgentAuth('fresh-cloud-key');
+      assert.equal(summary.updated, 1);
+      assert.deepEqual(summary.agents, ['mswarm-cloud-openai-gpt-4-1-mini']);
+
+      const repoAfter = await GlobalRepository.create();
+      try {
+        const managed = await repoAfter.getAgentBySlug(
+          'mswarm-cloud-openai-gpt-4-1-mini'
+        );
+        const managedSecret = managed
+          ? await repoAfter.getAgentAuthSecret(managed.id)
+          : undefined;
+        assert.equal(
+          managedSecret?.encryptedSecret
+            ? await CryptoHelper.decryptSecret(managedSecret.encryptedSecret)
+            : undefined,
+          'fresh-cloud-key'
+        );
+
+        const unmanaged = await repoAfter.getAgentBySlug('local-openai');
+        const unmanagedSecret = unmanaged
+          ? await repoAfter.getAgentAuthSecret(unmanaged.id)
+          : undefined;
+        assert.equal(
+          unmanagedSecret?.encryptedSecret
+            ? await CryptoHelper.decryptSecret(unmanagedSecret.encryptedSecret)
+            : undefined,
+          'local-key'
+        );
+      } finally {
+        await repoAfter.close();
+      }
+    });
+  }
+);
+
+test(
   'MswarmApi.syncCloudAgents materializes managed cloud agents into the registry',
   { concurrency: false },
   async () => {
@@ -526,6 +606,78 @@ test(
               assert.equal((health?.details as any)?.source, 'mswarm');
             } finally {
               await repo.close();
+            }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncCloudAgents preserves locally probed health on resync',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/cloud/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'openai/gpt-4.1-mini',
+                  provider: 'openrouter',
+                  default_model: 'openai/gpt-4.1-mini',
+                  capabilities: ['code_write'],
+                  supports_tools: true,
+                  health_status: 'degraded',
+                },
+              ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'cloud-key' });
+          try {
+            await api.syncCloudAgents();
+            const repo = await GlobalRepository.create();
+            try {
+              const agent = await repo.getAgentBySlug(
+                'mswarm-cloud-openai-gpt-4-1-mini'
+              );
+              assert.ok(agent);
+              await repo.setAgentHealth({
+                agentId: agent.id,
+                status: 'healthy',
+                lastCheckedAt: new Date().toISOString(),
+                details: { source: 'openai_probe' },
+              });
+            } finally {
+              await repo.close();
+            }
+
+            await api.syncCloudAgents();
+
+            const repoAfter = await GlobalRepository.create();
+            try {
+              const agent = await repoAfter.getAgentBySlug(
+                'mswarm-cloud-openai-gpt-4-1-mini'
+              );
+              assert.ok(agent);
+              const health = await repoAfter.getAgentHealth(agent.id);
+              assert.equal(health?.status, 'healthy');
+              assert.equal((health?.details as any)?.source, 'openai_probe');
+            } finally {
+              await repoAfter.close();
             }
           } finally {
             await api.close();
@@ -641,6 +793,117 @@ test(
             } finally {
               await repoAfter.close();
             }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncCloudAgents can prune missing managed agents',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      let phase = 1;
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/cloud/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents:
+                phase === 1
+                  ? [
+                      {
+                        slug: 'openai/gpt-4.1-mini',
+                        provider: 'openrouter',
+                        default_model: 'openai/gpt-4.1-mini',
+                        capabilities: ['code_write'],
+                        supports_tools: true,
+                      },
+                      {
+                        slug: 'anthropic/claude-3.7-sonnet',
+                        provider: 'openrouter',
+                        default_model: 'anthropic/claude-3.7-sonnet',
+                        capabilities: ['plan'],
+                        supports_tools: true,
+                      },
+                    ]
+                  : [
+                      {
+                        slug: 'openai/gpt-4.1-mini',
+                        provider: 'openrouter',
+                        default_model: 'openai/gpt-4.1-mini',
+                        capabilities: ['code_write'],
+                        supports_tools: true,
+                      },
+                    ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'cloud-key' });
+          try {
+            const first = await api.syncCloudAgents();
+            assert.equal(first.created, 2);
+            phase = 2;
+            const second = await api.syncCloudAgents({ pruneMissing: true });
+            assert.equal(second.deleted, 1);
+            assert.ok(
+              second.agents.some(
+                (record) =>
+                  record.action === 'deleted' &&
+                  record.remoteSlug === 'anthropic/claude-3.7-sonnet'
+              )
+            );
+
+            const repo = await GlobalRepository.create();
+            try {
+              const retained = await repo.getAgentBySlug(
+                'mswarm-cloud-openai-gpt-4-1-mini'
+              );
+              const pruned = await repo.getAgentBySlug(
+                'mswarm-cloud-anthropic-claude-3-7-sonnet'
+              );
+              assert.ok(retained);
+              assert.equal(pruned, undefined);
+            } finally {
+              await repo.close();
+            }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncCloudAgents rejects pruneMissing with partial filters',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ agents: [] }));
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'cloud-key' });
+          try {
+            await assert.rejects(
+              () => api.syncCloudAgents({ pruneMissing: true, limit: 1 }),
+              /pruneMissing cannot be combined/i
+            );
           } finally {
             await api.close();
           }

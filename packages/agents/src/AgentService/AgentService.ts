@@ -72,6 +72,20 @@ const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   other: 60 * 60 * 1000,
 };
 
+const isManagedMswarmCloudAgent = (agent: Agent): boolean => {
+  const config = agent.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return false;
+  }
+  const managed = (config as Record<string, unknown>).mswarmCloud;
+  return Boolean(
+    managed &&
+      typeof managed === "object" &&
+      !Array.isArray(managed) &&
+      (managed as Record<string, unknown>).managed === true,
+  );
+};
+
 const isIoEnabled = (): boolean => {
   const raw = process.env[IO_ENV];
   if (!raw) return false;
@@ -302,6 +316,12 @@ export class AgentService {
 
     if (adapterType.endsWith("-api")) {
       if (hasSecret) return adapterType;
+      if (adapterType === "openai-api" && isManagedMswarmCloudAgent(agent)) {
+        const label = agent.slug ?? agent.id;
+        throw new Error(
+          `AUTH_REQUIRED: Managed mswarm cloud agent ${label} is missing the synced API key; run \`mcoda config set mswarm-api-key <KEY>\` and \`mcoda cloud agent sync\`.`,
+        );
+      }
       if (adapterType === "codex-api" || adapterType === "openai-api") {
         // Default to the codex CLI when API creds are missing.
         adapterType = "codex-cli";

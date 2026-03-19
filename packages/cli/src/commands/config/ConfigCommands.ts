@@ -1,4 +1,4 @@
-import { MswarmConfigStore } from "@mcoda/core";
+import { MswarmApi, MswarmConfigStore } from "@mcoda/core";
 
 const USAGE = `
 Usage: mcoda config set mswarm-api-key <KEY>
@@ -30,7 +30,10 @@ export class ConfigCommands {
 
     const store = new MswarmConfigStore();
     await store.saveApiKey(value);
+    const refresh = await MswarmApi.refreshManagedAgentAuth(value);
     // eslint-disable-next-line no-console
-    console.log(`Saved encrypted mswarm API key to ${store.configPath()}.`);
+    console.log(
+      `Saved encrypted mswarm API key to ${store.configPath()}. Refreshed managed cloud-agent auth for ${refresh.updated} agents.`,
+    );
   }
 }

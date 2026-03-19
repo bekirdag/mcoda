@@ -53,6 +53,7 @@ export interface ListMswarmCloudAgentsOptions {
   minContextWindow?: number;
   minReasoningRating?: number;
   sortByCatalogRating?: boolean;
+  pruneMissing?: boolean;
 }
 
 export interface MswarmApiOptions {
@@ -132,7 +133,7 @@ export interface ManagedMswarmAgentConfig extends Record<string, unknown> {
 export interface MswarmSyncRecord {
   remoteSlug: string;
   localSlug: string;
-  action: 'created' | 'updated';
+  action: 'created' | 'updated' | 'deleted';
   provider: string;
   defaultModel: string;
   pricingVersion?: string;
@@ -141,7 +142,13 @@ export interface MswarmSyncRecord {
 export interface MswarmSyncSummary {
   created: number;
   updated: number;
+  deleted: number;
   agents: MswarmSyncRecord[];
+}
+
+export interface MswarmManagedAuthRefreshSummary {
+  updated: number;
+  agents: string[];
 }
 
 interface ListMswarmCloudAgentsResponse {
@@ -425,6 +432,29 @@ const toHealthStatus = (
   return undefined;
 };
 
+const isSyncManagedHealth = (health: AgentHealth | undefined): boolean =>
+  isRecord(health?.details) &&
+  (health.details.source === 'mswarm' ||
+    health.details.source === 'mswarm_catalog');
+
+const isAuthMissingManagedHealth = (
+  health: AgentHealth | undefined
+): boolean => {
+  if (!isRecord(health?.details)) return false;
+  const reason = resolveString(health.details.reason);
+  const error = resolveString(health.details.error) ?? '';
+  return (
+    reason === 'missing_api_key' ||
+    /AUTH_REQUIRED/i.test(error) ||
+    /missing the synced API key/i.test(error)
+  );
+};
+
+const shouldReplaceManagedHealth = (
+  health: AgentHealth | undefined
+): boolean =>
+  !health || isSyncManagedHealth(health) || isAuthMissingManagedHealth(health);
+
 const isManagedMswarmConfig = (
   config: unknown
 ): config is ManagedMswarmAgentConfig => {
@@ -462,6 +492,20 @@ const toManagedConfig = (
   };
   return nextConfig;
 };
+
+const toManagedSyncRecord = (
+  config: ManagedMswarmAgentConfig,
+  localSlug: string,
+  defaultModel: string,
+  action: MswarmSyncRecord['action']
+): MswarmSyncRecord => ({
+  remoteSlug: config.mswarmCloud.remoteSlug,
+  localSlug,
+  action,
+  provider: config.mswarmCloud.provider,
+  defaultModel,
+  pricingVersion: config.mswarmCloud.pricingVersion,
+});
 
 const toCloudAgent = (value: unknown): MswarmCloudAgent => {
   if (!isRecord(value)) {
@@ -698,8 +742,38 @@ export class MswarmApi {
     return new MswarmApi(repo, await resolveOptions(options));
   }
 
+  static async refreshManagedAgentAuth(
+    apiKey: string
+  ): Promise<MswarmManagedAuthRefreshSummary> {
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      throw new Error('mswarm api key is required');
+    }
+    const repo = await GlobalRepository.create();
+    try {
+      const encryptedApiKey = await CryptoHelper.encryptSecret(trimmed);
+      const agents = await repo.listAgents();
+      const managedAgents = agents.filter((agent) =>
+        isManagedMswarmConfig(agent.config)
+      );
+      for (const agent of managedAgents) {
+        await repo.setAgentAuth(agent.id, encryptedApiKey);
+      }
+      return {
+        updated: managedAgents.length,
+        agents: managedAgents.map((agent) => agent.slug),
+      };
+    } finally {
+      await repo.close();
+    }
+  }
+
   async close(): Promise<void> {
     await this.repo.close();
+  }
+
+  async refreshManagedAgentAuth(): Promise<MswarmManagedAuthRefreshSummary> {
+    return MswarmApi.refreshManagedAgentAuth(this.requireApiKey());
   }
 
   private requireApiKey(): string {
@@ -801,6 +875,14 @@ export class MswarmApi {
   async syncCloudAgents(
     options: ListMswarmCloudAgentsOptions = {}
   ): Promise<MswarmSyncSummary> {
+    if (
+      options.pruneMissing &&
+      (options.limit !== undefined || hasAdvancedCloudAgentSelection(options))
+    ) {
+      throw new Error(
+        'pruneMissing cannot be combined with limit or advanced cloud-agent filters'
+      );
+    }
     const agents = await this.listCloudAgents(options);
     const openAiBaseUrl =
       this.options.openAiBaseUrl ??
@@ -859,8 +941,11 @@ export class MswarmApi {
         toAgentModels(stored.id, agent)
       );
       await this.repo.setAgentAuth(stored.id, encryptedApiKey);
+      const existingHealth = existing
+        ? await this.repo.getAgentHealth(existing.id)
+        : undefined;
       const mappedHealth = toHealthStatus(agent.health_status);
-      if (mappedHealth) {
+      if (mappedHealth && shouldReplaceManagedHealth(existingHealth)) {
         const health: AgentHealth = {
           agentId: stored.id,
           status: mappedHealth,
@@ -874,19 +959,47 @@ export class MswarmApi {
         await this.repo.setAgentHealth(health);
       }
 
-      records.push({
-        remoteSlug: agent.slug,
-        localSlug,
-        action: existing ? 'updated' : 'created',
-        provider: agent.provider,
-        defaultModel: agent.default_model,
-        pricingVersion: agent.pricing_version,
-      });
+      records.push(
+        toManagedSyncRecord(
+          nextConfig,
+          localSlug,
+          agent.default_model,
+          existing ? 'updated' : 'created'
+        )
+      );
+    }
+
+    if (options.pruneMissing) {
+      const remoteSlugs = new Set(agents.map((agent) => agent.slug));
+      const localAgents = await this.repo.listAgents();
+      for (const localAgent of localAgents) {
+        const managedConfig = isManagedMswarmConfig(localAgent.config)
+          ? localAgent.config
+          : undefined;
+        if (!managedConfig) continue;
+        if (
+          options.provider &&
+          managedConfig.mswarmCloud.provider !== options.provider
+        ) {
+          continue;
+        }
+        if (remoteSlugs.has(managedConfig.mswarmCloud.remoteSlug)) continue;
+        await this.repo.deleteAgent(localAgent.id);
+        records.push(
+          toManagedSyncRecord(
+            managedConfig,
+            localAgent.slug,
+            localAgent.defaultModel ?? managedConfig.mswarmCloud.modelId ?? '-',
+            'deleted'
+          )
+        );
+      }
     }
 
     return {
       created: records.filter((record) => record.action === 'created').length,
       updated: records.filter((record) => record.action === 'updated').length,
+      deleted: records.filter((record) => record.action === 'deleted').length,
       agents: records,
     };
   }

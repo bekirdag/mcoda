@@ -16,6 +16,7 @@ Subcommands:
   agent sync                Sync mswarm cloud agents into the local mcoda registry
     --provider <NAME>       Filter by provider before syncing
     --limit <N>             Limit synced agents
+    --prune                 Remove previously synced managed agents missing from the current catalog result
     --agent-slug-prefix <P> Override the local managed-agent slug prefix
 
 Connection options:
@@ -167,7 +168,9 @@ const printAgentDetails = (agent: MswarmCloudAgentDetail): void => {
 
 const printSyncSummary = (summary: MswarmSyncSummary): void => {
   // eslint-disable-next-line no-console
-  console.log(`Synced ${summary.agents.length} cloud agents (created=${summary.created}, updated=${summary.updated}).`);
+  console.log(
+    `Synced ${summary.agents.length} cloud agents (created=${summary.created}, updated=${summary.updated}, deleted=${summary.deleted}).`,
+  );
   if (summary.agents.length === 0) {
     return;
   }
@@ -246,6 +249,7 @@ export class CloudCommands {
         case "sync": {
           const summary = await api.syncCloudAgents({
             provider: resolveString(parsed.flags.provider),
+            pruneMissing: Boolean(parsed.flags.prune),
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
           });
           if (parsed.flags.json) {

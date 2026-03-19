@@ -224,6 +224,32 @@ test("falls back to codex CLI when API secret is missing", async () => {
   assert.equal(result.adapter, "codex-cli");
 });
 
+test("managed mswarm agents fail closed when synced auth is missing", async () => {
+  const agent = await repo.createAgent({
+    slug: "mswarm-cloud-openai-gpt-4-1-mini",
+    adapter: "openai-api",
+    defaultModel: "openai/gpt-4.1-mini",
+    openaiCompatible: true,
+    capabilities: ["chat"],
+    prompts: { jobPrompt: "job", characterPrompt: "character" },
+    config: {
+      baseUrl: "https://mswarm.example/v1/swarm/openai/",
+      mswarmCloud: {
+        managed: true,
+        remoteSlug: "openai/gpt-4.1-mini",
+        provider: "openrouter",
+        catalogBaseUrl: "https://api.mswarm.org/",
+        openAiBaseUrl: "https://mswarm.example/v1/swarm/openai/",
+        syncedAt: new Date().toISOString(),
+      },
+    },
+  });
+  await assert.rejects(
+    () => service.invoke(agent.id, { input: "hello" }),
+    /Managed mswarm cloud agent .*missing the synced API key/i,
+  );
+});
+
 test("fills defaults when prompts are missing", async () => {
   const agent = await repo.createAgent({
     slug: "missing-prompts",

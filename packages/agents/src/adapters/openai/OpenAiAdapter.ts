@@ -154,16 +154,78 @@ export class OpenAiAdapter implements AgentAdapter {
         agentId: this.config.agent.id,
         status: "unreachable",
         lastCheckedAt: new Date().toISOString(),
-        details: { reason: "missing_api_key" },
+        details: {
+          adapter: "openai-api",
+          source: "openai_probe",
+          model: this.config.model,
+          baseUrl: this.baseUrl,
+          reason: "missing_api_key",
+        },
       };
     }
-    return {
-      agentId: this.config.agent.id,
-      status: "healthy",
-      lastCheckedAt: new Date().toISOString(),
-      latencyMs: 0,
-      details: { adapter: "openai-api", model: this.config.model, baseUrl: this.baseUrl },
-    };
+    const startedAt = Date.now();
+    try {
+      const model = this.ensureModel();
+      const apiKey = this.ensureApiKey();
+      const url = this.ensureBaseUrl();
+      const response = await fetch(`${url}/chat/completions`, {
+        method: "POST",
+        headers: this.buildHeaders(apiKey, false),
+        body: JSON.stringify(this.buildHealthCheckBody(model)),
+      });
+      const responseText = await response.text().catch(() => "");
+      const latencyMs = Date.now() - startedAt;
+      if (!response.ok) {
+        return {
+          agentId: this.config.agent.id,
+          status: response.status === 429 ? "degraded" : "unreachable",
+          lastCheckedAt: new Date().toISOString(),
+          latencyMs,
+          details: {
+            adapter: "openai-api",
+            source: "openai_probe",
+            model,
+            baseUrl: url,
+            reason: "http_error",
+            httpStatus: response.status,
+            response: responseText.slice(0, 500),
+          },
+        };
+      }
+      return {
+        agentId: this.config.agent.id,
+        status: "healthy",
+        lastCheckedAt: new Date().toISOString(),
+        latencyMs,
+        details: {
+          adapter: "openai-api",
+          source: "openai_probe",
+          model,
+          baseUrl: url,
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const reason = /model is not configured/i.test(message)
+        ? "missing_model"
+        : /missing api key/i.test(message)
+          ? "missing_api_key"
+          : "probe_failed";
+      return {
+        agentId: this.config.agent.id,
+        status: "unreachable",
+        lastCheckedAt: new Date().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        details: {
+          adapter: "openai-api",
+          source: "openai_probe",
+          model: this.config.model,
+          baseUrl: this.baseUrl,
+          reason,
+          error: message,
+        },
+      };
+    }
   }
 
   async invoke(request: InvocationRequest): Promise<InvocationResult> {
@@ -345,6 +407,17 @@ export class OpenAiAdapter implements AgentAdapter {
     }
     if (stream && body.stream_options === undefined) {
       body.stream_options = { include_usage: true };
+    }
+    return body;
+  }
+
+  private buildHealthCheckBody(model: string): Record<string, unknown> {
+    const body = this.buildBody("healthcheck", model, false);
+    if (body.max_tokens === undefined && body.max_completion_tokens === undefined) {
+      body.max_tokens = 1;
+    }
+    if (body.temperature === undefined) {
+      body.temperature = 0;
     }
     return body;
   }

@@ -24,6 +24,56 @@ test("OpenAiAdapter healthCheck reflects missing api key", async () => {
   assert.equal(health.details?.reason, "missing_api_key");
 });
 
+test("OpenAiAdapter healthCheck probes the configured endpoint", async () => {
+  global.fetch = async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String(input?.url ?? "");
+    assert.equal(url, "https://api.example.com/v1/chat/completions");
+    assert.equal(init?.method, "POST");
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer secret");
+    const body = JSON.parse(String(init?.body ?? ""));
+    assert.equal(body.model, "gpt-4o");
+    assert.equal(body.max_tokens, 1);
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent,
+    capabilities: ["chat"],
+    model: "gpt-4o",
+    apiKey: "secret",
+    baseUrl: "https://api.example.com/v1",
+  });
+  const health = await adapter.healthCheck();
+  assert.equal(health.status, "healthy");
+  assert.equal((health.details as any)?.source, "openai_probe");
+});
+
+test("OpenAiAdapter healthCheck marks HTTP failures unreachable", async () => {
+  global.fetch = async () =>
+    new Response(JSON.stringify({ error: { message: "bad gateway" } }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+
+  const adapter = new OpenAiAdapter({
+    agent,
+    capabilities: ["chat"],
+    model: "gpt-4o",
+    apiKey: "secret",
+    baseUrl: "https://api.example.com/v1",
+  });
+  const health = await adapter.healthCheck();
+  assert.equal(health.status, "unreachable");
+  assert.equal((health.details as any)?.reason, "http_error");
+  assert.equal((health.details as any)?.httpStatus, 502);
+});
+
 test("OpenAiAdapter invoke posts to the configured endpoint and parses output", async () => {
   global.fetch = async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : String(input?.url ?? "");

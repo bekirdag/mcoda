@@ -160,3 +160,93 @@ test("cloud agent sync writes managed agents into the local registry", { concurr
     });
   });
 });
+
+test("cloud agent sync prunes missing managed agents when requested", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    let phase = 1;
+    await withStubServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname !== "/v1/swarm/cloud/agents") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          agents:
+            phase === 1
+              ? [
+                  {
+                    slug: "openai/gpt-4.1-mini",
+                    provider: "openrouter",
+                    default_model: "openai/gpt-4.1-mini",
+                    capabilities: ["plan", "code_write"],
+                    supports_tools: true,
+                  },
+                  {
+                    slug: "anthropic/claude-3.7-sonnet",
+                    provider: "openrouter",
+                    default_model: "anthropic/claude-3.7-sonnet",
+                    capabilities: ["plan"],
+                    supports_tools: true,
+                  },
+                ]
+              : [
+                  {
+                    slug: "openai/gpt-4.1-mini",
+                    provider: "openrouter",
+                    default_model: "openai/gpt-4.1-mini",
+                    capabilities: ["plan", "code_write"],
+                    supports_tools: true,
+                  },
+                ],
+        }),
+      );
+    }, async (baseUrl) => {
+      await captureLogs(() =>
+        CloudCommands.run([
+          "agent",
+          "sync",
+          "--json",
+          "--base-url",
+          baseUrl,
+          "--api-key",
+          "cloud-key",
+        ]),
+      );
+      phase = 2;
+      const logs = await captureLogs(() =>
+        CloudCommands.run([
+          "agent",
+          "sync",
+          "--json",
+          "--prune",
+          "--base-url",
+          baseUrl,
+          "--api-key",
+          "cloud-key",
+        ]),
+      );
+      const parsed = JSON.parse(logs.join("\n"));
+      assert.equal(parsed.deleted, 1);
+      assert.ok(
+        parsed.agents.some(
+          (record: { action: string; remoteSlug: string }) =>
+            record.action === "deleted" &&
+            record.remoteSlug === "anthropic/claude-3.7-sonnet",
+        ),
+      );
+
+      const repo = await GlobalRepository.create();
+      try {
+        const retained = await repo.getAgentBySlug("mswarm-cloud-openai-gpt-4-1-mini");
+        const pruned = await repo.getAgentBySlug("mswarm-cloud-anthropic-claude-3-7-sonnet");
+        assert.ok(retained);
+        assert.equal(pruned, undefined);
+      } finally {
+        await repo.close();
+      }
+    });
+  });
+});
