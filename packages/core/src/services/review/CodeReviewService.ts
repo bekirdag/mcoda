@@ -35,12 +35,12 @@ import {
   loadProjectGuidance,
   normalizeDocType,
 } from "../shared/ProjectGuidance.js";
+import { resolveWorkspaceBaseBranch } from "../shared/GitBranch.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from "../shared/AuthErrors.js";
 import { normalizeReviewOutput } from "./ReviewNormalizer.js";
 
-const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const REVIEW_DIR = (mcodaDir: string, jobId: string) => path.join(mcodaDir, "jobs", jobId, "review");
 const STATE_PATH = (mcodaDir: string, jobId: string) => path.join(REVIEW_DIR(mcodaDir, jobId), "state.json");
 const REVIEW_PROMPT_LIMITS = {
@@ -1851,7 +1851,7 @@ export class CodeReviewService {
   async reviewTasks(request: CodeReviewRequest): Promise<CodeReviewResult> {
     await this.ensureMcoda();
     const agentStream = request.agentStream !== false;
-    const baseRef = request.baseRef ?? this.workspace.config?.branch ?? DEFAULT_BASE_BRANCH;
+    const baseRef = await resolveWorkspaceBaseBranch(this.workspace, request.baseRef);
     let executionContextPolicy = normalizeExecutionContextPolicy(request.executionContextPolicy);
     let emptyDiffApprovalPolicy = normalizeEmptyDiffApprovalPolicy(request.emptyDiffApprovalPolicy, "complete");
     const ignoreStatusFilter = Boolean(request.taskKeys?.length) || request.ignoreStatusFilter === true;

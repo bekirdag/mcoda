@@ -1,9 +1,8 @@
-import { exec as execCb, execFile as execFileCb, type ExecOptions } from "node:child_process";
+import { execFile as execFileCb, spawn, type ExecOptions } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const exec = promisify(execCb);
 const execFile = promisify(execFileCb);
 
 export class VcsClient {
@@ -17,6 +16,50 @@ export class VcsClient {
       stdout: typeof stdout === "string" ? stdout : stdout?.toString?.() ?? "",
       stderr: typeof stderr === "string" ? stderr : stderr?.toString?.() ?? "",
     };
+  }
+
+  private async runGitWithInput(cwd: string, args: string[], input: string): Promise<{ stdout: string; stderr: string }> {
+    return await new Promise((resolve, reject) => {
+      const child = spawn("git", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+
+      const rejectOnce = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+
+      const resolveOnce = (result: { stdout: string; stderr: string }) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => {
+        rejectOnce(error);
+      });
+      child.stdin.on("error", (error) => {
+        rejectOnce(error);
+      });
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolveOnce({ stdout, stderr });
+          return;
+        }
+        const summary = stderr.trim() || stdout.trim() || `git ${args.join(" ")} failed with code ${code ?? "unknown"}`;
+        const error = Object.assign(new Error(summary), { stdout, stderr, code });
+        rejectOnce(error);
+      });
+      child.stdin.end(input);
+    });
   }
 
   private async gitDirExists(cwd: string): Promise<boolean> {
@@ -146,22 +189,18 @@ export class VcsClient {
   }
 
   async applyPatch(cwd: string, patch: string): Promise<void> {
-    const opts: ExecOptions = { cwd, shell: true } as any;
-    const applyCmd = `cat <<'__PATCH__' | git apply --whitespace=nowarn\n${patch}\n__PATCH__`;
     try {
-      await exec(applyCmd, opts as any);
+      await this.runGitWithInput(cwd, ["apply", "--whitespace=nowarn"], patch);
       return;
     } catch (error) {
       // Retry with 3-way merge for drifted files.
-      const apply3wayCmd = `cat <<'__PATCH__' | git apply --3way --whitespace=nowarn\n${patch}\n__PATCH__`;
       try {
-        await exec(apply3wayCmd, opts as any);
+        await this.runGitWithInput(cwd, ["apply", "--3way", "--whitespace=nowarn"], patch);
         return;
       } catch {
         // If the patch is already applied, a reverse --check succeeds; treat that as a no-op.
-        const reverseCheckCmd = `cat <<'__PATCH__' | git apply --reverse --check --whitespace=nowarn\n${patch}\n__PATCH__`;
         try {
-          await exec(reverseCheckCmd, opts as any);
+          await this.runGitWithInput(cwd, ["apply", "--reverse", "--check", "--whitespace=nowarn"], patch);
           return;
         } catch {
           throw error;
@@ -171,14 +210,9 @@ export class VcsClient {
   }
 
   async applyPatchWithReject(cwd: string, patch: string): Promise<{ stdout?: string; stderr?: string; error?: string }> {
-    const opts: ExecOptions = { cwd, shell: true } as any;
-    const applyCmd = `cat <<'__PATCH__' | git apply --reject --whitespace=nowarn\n${patch}\n__PATCH__`;
     try {
-      const { stdout, stderr } = await exec(applyCmd, opts as any);
-      return {
-        stdout: typeof stdout === "string" ? stdout : stdout?.toString?.() ?? "",
-        stderr: typeof stderr === "string" ? stderr : stderr?.toString?.() ?? "",
-      };
+      const { stdout, stderr } = await this.runGitWithInput(cwd, ["apply", "--reject", "--whitespace=nowarn"], patch);
+      return { stdout, stderr };
     } catch (error: any) {
       const stdout = typeof error?.stdout === "string" ? error.stdout : error?.stdout?.toString?.() ?? "";
       const stderr = typeof error?.stderr === "string" ? error.stderr : error?.stderr?.toString?.() ?? "";

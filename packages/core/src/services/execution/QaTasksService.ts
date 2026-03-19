@@ -37,6 +37,7 @@ import {
   loadProjectGuidance,
   normalizeDocType,
 } from '../shared/ProjectGuidance.js';
+import { resolveWorkspaceBaseBranch } from '../shared/GitBranch.js';
 import { buildDocdexUsageGuidance } from '../shared/DocdexGuidance.js';
 import { createTaskCommentSlug, formatTaskCommentBody } from '../tasks/TaskCommentFormatter.js';
 import { AUTH_ERROR_REASON, isAuthErrorMessage } from '../shared/AuthErrors.js';
@@ -845,7 +846,7 @@ export class QaTasksService {
           return { ok: false, message: `Task branch ${branch} not found` };
         }
       } else {
-        const base = this.workspace.config?.branch ?? 'mcoda-dev';
+        const base = await resolveWorkspaceBaseBranch(this.workspace);
         await this.vcs.ensureBaseBranch(repoRoot, base);
         branch = base;
       }
@@ -3498,7 +3499,7 @@ export class QaTasksService {
     const qaWorkspaceRoot = branchCheck.workspaceRoot ?? this.workspace.workspaceRoot;
     const cleanupWorktree = branchCheck.cleanup;
     let serverHandle: QaServerHandle | undefined;
-    const baseBranch = this.workspace.config?.branch ?? 'mcoda-dev';
+    const baseBranch = await resolveWorkspaceBaseBranch(this.workspace);
     const taskBranch = branchCheck.branch ?? baseBranch;
     let qaPrepared = false;
     const ensureQaPrepared = async (): Promise<{ ok: boolean; message?: string }> => {

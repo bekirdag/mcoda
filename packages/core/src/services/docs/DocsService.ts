@@ -28,6 +28,7 @@ import {
   type DocPatchApplyResult,
   type DocPatchRequest,
 } from "./patch/DocPatchEngine.js";
+import { readGitBranch } from "../shared/GitBranch.js";
 import { runApiPathConsistencyGate } from "./review/gates/ApiPathConsistencyGate.js";
 import { runOpenApiCoverageGate } from "./review/gates/OpenApiCoverageGate.js";
 import { runBuildReadyCompletenessGate } from "./review/gates/BuildReadyCompletenessGate.js";
@@ -1878,17 +1879,6 @@ const ensureHeadingContent = (draft: string, title: string, fallback: string): s
   const body = match[2].trim();
   if (body.length > 0) return draft;
   return draft.replace(regex, `${match[1]}\n\n${fallback}\n\n${match[3] ?? ""}`);
-};
-
-const readGitBranch = async (workspaceRoot: string): Promise<string | undefined> => {
-  const headPath = path.join(workspaceRoot, ".git", "HEAD");
-  try {
-    const content = await fs.readFile(headPath, "utf8");
-    const match = content.match(/ref: refs\/heads\/(.+)/);
-    return match ? match[1].trim() : content.trim();
-  } catch {
-    return undefined;
-  }
 };
 
 export class DocsService {

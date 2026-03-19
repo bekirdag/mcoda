@@ -12,6 +12,7 @@ import { RoutingService } from "../agents/RoutingService.js";
 import { AgentRatingService } from "../agents/AgentRatingService.js";
 import { buildDocInventory } from "../docs/DocInventory.js";
 import type { DocArtifactRecord } from "../docs/DocgenRunContext.js";
+import { readGitBranch } from "../shared/GitBranch.js";
 
 export interface GenerateOpenapiOptions {
   workspace: WorkspaceResolution;
@@ -402,17 +403,6 @@ const fileExists = async (candidate: string): Promise<boolean> => {
     return true;
   } catch {
     return false;
-  }
-};
-
-const readGitBranch = async (workspaceRoot: string): Promise<string | undefined> => {
-  const headPath = path.join(workspaceRoot, ".git", "HEAD");
-  try {
-    const content = await fs.readFile(headPath, "utf8");
-    const match = content.match(/ref: refs\/heads\/(.+)/);
-    return match ? match[1].trim() : content.trim();
-  } catch {
-    return undefined;
   }
 };
 

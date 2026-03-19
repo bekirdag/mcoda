@@ -4,10 +4,10 @@ import { WorkspaceRepository } from "@mcoda/db";
 import { VcsClient } from "@mcoda/integrations";
 import { PathHelper, WORK_ALLOWED_STATUSES, filterTaskStatuses } from "@mcoda/shared";
 import { WorkspaceResolution } from "../../workspace/WorkspaceManager.js";
+import { resolveWorkspaceBaseBranch } from "../shared/GitBranch.js";
 import { QaTestCommandBuilder } from "./QaTestCommandBuilder.js";
 import { TaskSelectionFilters, TaskSelectionService, type TaskSelectionPlan } from "./TaskSelectionService.js";
 
-const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const MISSING_HARNESS_BLOCKER = /No runnable test harness discovered/i;
 const FALLBACK_BOOTSTRAP_COMMAND = "node -e \"console.log('mcoda add-tests bootstrap placeholder')\"";
 
@@ -325,7 +325,7 @@ export class AddTestsService {
     let runAllCommand = runAllScriptPath ? buildRunAllTestsCommand(runAllScriptPath) : undefined;
     let commitBranch: string | undefined;
     let commitSha: string | undefined;
-    const baseBranch = (request.baseBranch ?? this.workspace.config?.branch ?? DEFAULT_BASE_BRANCH).trim() || DEFAULT_BASE_BRANCH;
+    const baseBranch = await resolveWorkspaceBaseBranch(this.workspace, request.baseBranch);
 
     const seedRequirements = requiringTests[0]?.commands.requirements ?? {
       unit: [],

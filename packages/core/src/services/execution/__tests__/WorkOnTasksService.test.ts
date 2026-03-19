@@ -3758,7 +3758,7 @@ test("workOnTasks honors workspace config base branch when provided", async () =
   }
 });
 
-test("workOnTasks defaults base branch to mcoda-dev when config missing", async () => {
+test("workOnTasks defaults base branch to main when config missing", async () => {
   const { dir, workspace, repo } = await setupWorkspace();
   workspace.config = { ...(workspace.config ?? {}), branch: undefined };
   const jobService = new JobService(workspace.workspaceRoot, repo);
@@ -3786,7 +3786,7 @@ test("workOnTasks defaults base branch to mcoda-dev when config missing", async 
       noCommit: true,
       limit: 1,
     });
-    assert.ok(vcs.bases.includes("mcoda-dev"));
+    assert.ok(vcs.bases.includes("main"));
   } finally {
     await service.close();
     await cleanupWorkspace(dir, repo);
@@ -5570,7 +5570,7 @@ test("workOnTasks merges even when autoMerge disabled", async () => {
     const db = repo.getDb();
     const logs = await db.all<{ message: string | null }[]>("SELECT message FROM task_logs WHERE source = 'vcs'");
     assert.ok(logs.some((log) => (log.message ?? "").includes("Auto-merge setting ignored (auto_merge_disabled)")));
-    assert.ok(output.includes("Merge→mcoda-dev:   merged"));
+    assert.ok(output.includes("Merge→main:   merged"));
     assert.ok(output.includes("auto_merge_disabled_forced"));
   } finally {
     await service.close();

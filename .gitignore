@@ -16,3 +16,6 @@ tests/results/
 .mcoda/
 /.docdex-state/
 docs/codali-sds
+docs/planning/*
+!docs/planning/.gitkeep
+packages/**/*.tgz

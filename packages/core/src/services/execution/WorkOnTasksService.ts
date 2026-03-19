@@ -23,11 +23,11 @@ import {
   loadProjectGuidance,
   normalizeDocType,
 } from "../shared/ProjectGuidance.js";
+import { resolveWorkspaceBaseBranch } from "../shared/GitBranch.js";
 import { buildDocdexUsageGuidance } from "../shared/DocdexGuidance.js";
 import { createTaskCommentSlug, formatTaskCommentBody } from "../tasks/TaskCommentFormatter.js";
 
 const exec = promisify(execCb);
-const DEFAULT_BASE_BRANCH = "mcoda-dev";
 const DEFAULT_TASK_BRANCH_PREFIX = "mcoda/task/";
 const TASK_LOCK_TTL_SECONDS = 60 * 60;
 const MAX_TEST_FIX_ATTEMPTS = 3;
@@ -4033,11 +4033,7 @@ export class WorkOnTasksService {
     const executionContextPolicy: ExecutionContextPolicy =
       requestedExecutionContextPolicy ?? DEFAULT_EXECUTION_CONTEXT_POLICY;
     const baseCodaliEnvOverrides = codaliRequired ? buildCodaliEnvOverrides() : {};
-    const configuredBaseBranch = this.workspace.config?.branch;
-    const requestedBaseBranch = request.baseBranch;
-    const resolvedBaseBranch = (requestedBaseBranch ?? configuredBaseBranch ?? DEFAULT_BASE_BRANCH).trim();
-    const normalizedBaseBranch = resolvedBaseBranch === "dev" ? DEFAULT_BASE_BRANCH : resolvedBaseBranch;
-    const baseBranch = normalizedBaseBranch || DEFAULT_BASE_BRANCH;
+    const baseBranch = await resolveWorkspaceBaseBranch(this.workspace, request.baseBranch);
     const configuredAutoMerge = this.workspace.config?.autoMerge;
     const configuredAutoPush = this.workspace.config?.autoPush;
     const autoMerge = request.autoMerge ?? configuredAutoMerge ?? true;
