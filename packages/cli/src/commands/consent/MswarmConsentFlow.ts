@@ -23,11 +23,6 @@ export async function acceptMswarmConsent(options: {
       const response = await api.issuePaidConsent(effectivePolicyVersion);
       const clientId = response.client_id || response.tenant_id || state.clientId;
       const clientType = response.client_type || 'paid_mcoda_client';
-      if (!clientId) {
-        throw new Error(
-          'mswarm paid consent response did not include a client or tenant id'
-        );
-      }
       return store.saveConsentState({
         consentAccepted: true,
         consentPolicyVersion: effectivePolicyVersion,
