@@ -155,20 +155,37 @@ test("AgentsApi.listAgentUsageLimits exposes reset precision metadata", { concur
   });
 });
 
-test("AgentsApi.listAgents refreshHealth option refreshes health snapshot", { concurrency: false }, async () => {
+test("AgentsApi.listAgents refreshHealth option skips managed mswarm cloud probes", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const repo = await GlobalRepository.create();
     const agent = await repo.createAgent({ slug: "refresh-agent", adapter: "qa-cli" });
+    const managedCloudAgent = await repo.createAgent({
+      slug: "mswarm-cloud-openai-gpt-4-1-mini",
+      adapter: "openai-api",
+      config: {
+        baseUrl: "https://mswarm.example/v1/swarm/openai",
+        mswarmCloud: {
+          managed: true,
+          provider: "openai",
+          remoteSlug: "openai/gpt-4.1-mini",
+        },
+      },
+    });
     await repo.setAgentHealth({
       agentId: agent.id,
       status: "unreachable",
       lastCheckedAt: "2026-03-01T00:00:00.000Z",
     });
+    await repo.setAgentHealth({
+      agentId: managedCloudAgent.id,
+      status: "unreachable",
+      lastCheckedAt: "2026-03-01T00:00:00.000Z",
+    });
 
     const fakeService = {
-      healthCheckCalls: 0,
+      healthCheckCalls: [] as string[],
       healthCheck: async (agentId: string) => {
-        fakeService.healthCheckCalls += 1;
+        fakeService.healthCheckCalls.push(agentId);
         const health = {
           agentId,
           status: "healthy" as const,
@@ -184,16 +201,23 @@ test("AgentsApi.listAgents refreshHealth option refreshes health snapshot", { co
     try {
       const withoutRefresh = await api.listAgents();
       const baseline = withoutRefresh.find((entry) => entry.slug === "refresh-agent");
+      const managedBaseline = withoutRefresh.find((entry) => entry.slug === "mswarm-cloud-openai-gpt-4-1-mini");
       assert.ok(baseline);
+      assert.ok(managedBaseline);
       assert.equal(baseline.health?.status, "unreachable");
-      assert.equal(fakeService.healthCheckCalls, 0);
+      assert.equal(managedBaseline.health?.status, "unreachable");
+      assert.deepEqual(fakeService.healthCheckCalls, []);
 
       const withRefresh = await api.listAgents({ refreshHealth: true });
       const refreshed = withRefresh.find((entry) => entry.slug === "refresh-agent");
+      const managedRefreshed = withRefresh.find((entry) => entry.slug === "mswarm-cloud-openai-gpt-4-1-mini");
       assert.ok(refreshed);
-      assert.equal(fakeService.healthCheckCalls, 1);
+      assert.ok(managedRefreshed);
+      assert.deepEqual(fakeService.healthCheckCalls, [agent.id]);
       assert.equal(refreshed.health?.status, "healthy");
       assert.equal(refreshed.health?.lastCheckedAt, "2026-03-07T00:00:00.000Z");
+      assert.equal(managedRefreshed.health?.status, "unreachable");
+      assert.equal(managedRefreshed.health?.lastCheckedAt, "2026-03-01T00:00:00.000Z");
     } finally {
       await api.close();
     }

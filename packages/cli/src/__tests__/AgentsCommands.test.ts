@@ -351,7 +351,7 @@ test("agent ratings lists recent run scores", { concurrency: false }, async () =
   });
 });
 
-test("agent list forwards refresh-health policy to AgentsApi.listAgents", { concurrency: false }, async () => {
+test("agent list forwards refresh-health only when explicitly requested", { concurrency: false }, async () => {
   const originalCreate = (AgentsApi as any).create;
   const listOptions: Array<{ refreshHealth?: boolean }> = [];
   const fakeApi = {
@@ -391,7 +391,7 @@ test("agent list forwards refresh-health policy to AgentsApi.listAgents", { conc
 
   assert.equal(listOptions.length, 4);
   assert.equal(listOptions[0].refreshHealth, false);
-  assert.equal(listOptions[1].refreshHealth, true);
+  assert.equal(listOptions[1].refreshHealth, false);
   assert.equal(listOptions[2].refreshHealth, false);
   assert.equal(listOptions[3].refreshHealth, true);
 });

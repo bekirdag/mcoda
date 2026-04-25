@@ -32,6 +32,22 @@ export interface ListAgentsOptions {
   refreshHealth?: boolean;
 }
 
+const isManagedMswarmCloudAgent = (agent: Agent): boolean => {
+  const config = agent.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return false;
+  }
+  const managed = (config as Record<string, unknown>).mswarmCloud;
+  return Boolean(
+    managed &&
+      typeof managed === "object" &&
+      !Array.isArray(managed) &&
+      (managed as Record<string, unknown>).managed === true,
+  );
+};
+
+const shouldRefreshInventoryHealth = (agent: Agent): boolean => !isManagedMswarmCloudAgent(agent);
+
 const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   rolling_5h: 5 * 60 * 60 * 1000,
   daily: 24 * 60 * 60 * 1000,
@@ -94,7 +110,8 @@ export class AgentsApi {
   async listAgents(options: ListAgentsOptions = {}): Promise<AgentResponse[]> {
     const agents = await this.repo.listAgents();
     if (options.refreshHealth) {
-      await Promise.all(agents.map((agent) => this.agentService.healthCheck(agent.id)));
+      const refreshableAgents = agents.filter((agent) => shouldRefreshInventoryHealth(agent));
+      await Promise.all(refreshableAgents.map((agent) => this.agentService.healthCheck(agent.id)));
     }
     const health = await this.repo.listAgentHealthSummary();
     const healthById = new Map(health.map((h) => [h.agentId, h]));

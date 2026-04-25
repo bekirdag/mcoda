@@ -48,9 +48,9 @@ Usage: mcoda agent <list|details|limits|add|update|delete|remove|auth|auth-statu
 
 Subcommands:
   list                       List agents (supports --json)
-    --refresh-health         Force health checks before listing
-    --no-refresh-health      Skip health checks before listing
-                             (default: enabled for --json, disabled for table output)
+    --refresh-health         Refresh non-billable health checks before listing
+    --no-refresh-health      Use cached health only
+                             (default: disabled; managed cloud agents always stay cached here)
   details <NAME>             Show agent details (supports --json)
   limits                     Show tracked usage-limit windows/reset times
     --agent <NAME>           Filter by agent slug/id
@@ -172,7 +172,7 @@ const resolveListRefreshHealth = (flags: Record<string, string | boolean | strin
   }
   if (noRefreshHealth === true) return false;
   if (refreshHealth === true) return true;
-  return Boolean(flags.json);
+  return false;
 };
 
 const parseCostPerMillion = (value: string | string[] | boolean | undefined): number | undefined => {
