@@ -1,7 +1,16 @@
 import { AgentHealth } from "@mcoda/shared";
 import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
+import { parseUsageLimitError } from "../../AgentService/UsageLimitParser.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const MAX_RESPONSE_DETAIL_CHARS = 500;
+const RATE_LIMIT_HEADER_NAMES = [
+  "retry-after",
+  "x-ratelimit-reset-after",
+  "x-ratelimit-reset",
+  "x-ratelimit-reset-at",
+  "x-ratelimit-remaining",
+] as const;
 
 const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
@@ -17,6 +26,38 @@ const normalizeBaseUrl = (value?: unknown): string | undefined => {
   const str = resolveString(value);
   if (!str) return undefined;
   return str.endsWith("/") ? str.slice(0, -1) : str;
+};
+
+const buildRateLimitProbeMessage = (response: Response, responseText: string): string => {
+  const parts = [`openai_probe http ${response.status}`];
+  const retryAfter = response.headers.get("retry-after")?.trim();
+  if (retryAfter) {
+    const retryAfterSeconds = Number.parseInt(retryAfter, 10);
+    parts.push(
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? `Retry after ${retryAfterSeconds} seconds`
+        : `Retry after ${retryAfter}`,
+    );
+  }
+  for (const headerName of RATE_LIMIT_HEADER_NAMES) {
+    if (headerName === "retry-after") continue;
+    const headerValue = response.headers.get(headerName)?.trim();
+    if (headerValue) {
+      parts.push(`${headerName}: ${headerValue}`);
+    }
+  }
+  const trimmedResponse = responseText.trim();
+  if (trimmedResponse) {
+    parts.push(trimmedResponse);
+  }
+  return parts.join(". ");
+};
+
+const resolveRetryAfterMs = (resetAt: string | undefined, nowMs: number): number | undefined => {
+  if (!resetAt) return undefined;
+  const timestampMs = Date.parse(resetAt);
+  if (!Number.isFinite(timestampMs)) return undefined;
+  return Math.max(0, timestampMs - nowMs);
 };
 
 const resolveBaseUrl = (config: AdapterConfig): string => {
@@ -174,12 +215,41 @@ export class OpenAiAdapter implements AgentAdapter {
         body: JSON.stringify(this.buildHealthCheckBody(model)),
       });
       const responseText = await response.text().catch(() => "");
-      const latencyMs = Date.now() - startedAt;
+      const checkedAtMs = Date.now();
+      const lastCheckedAt = new Date(checkedAtMs).toISOString();
+      const latencyMs = checkedAtMs - startedAt;
       if (!response.ok) {
+        if (response.status === 429) {
+          const parsedLimit = parseUsageLimitError(
+            new Error(buildRateLimitProbeMessage(response, responseText)),
+            checkedAtMs,
+          );
+          return {
+            agentId: this.config.agent.id,
+            status: "healthy",
+            lastCheckedAt,
+            latencyMs,
+            details: {
+              adapter: "openai-api",
+              source: "openai_probe",
+              model,
+              baseUrl: url,
+              reason: "rate_limited",
+              transient: true,
+              rateLimited: true,
+              httpStatus: response.status,
+              response: responseText.slice(0, MAX_RESPONSE_DETAIL_CHARS),
+              resetAt: parsedLimit?.resetAt,
+              resetAtSource: parsedLimit?.resetAtSource,
+              retryAfterMs: resolveRetryAfterMs(parsedLimit?.resetAt, checkedAtMs),
+              windowTypes: parsedLimit?.windowTypes,
+            },
+          };
+        }
         return {
           agentId: this.config.agent.id,
-          status: response.status === 429 ? "degraded" : "unreachable",
-          lastCheckedAt: new Date().toISOString(),
+          status: "unreachable",
+          lastCheckedAt,
           latencyMs,
           details: {
             adapter: "openai-api",
@@ -188,14 +258,14 @@ export class OpenAiAdapter implements AgentAdapter {
             baseUrl: url,
             reason: "http_error",
             httpStatus: response.status,
-            response: responseText.slice(0, 500),
+            response: responseText.slice(0, MAX_RESPONSE_DETAIL_CHARS),
           },
         };
       }
       return {
         agentId: this.config.agent.id,
         status: "healthy",
-        lastCheckedAt: new Date().toISOString(),
+        lastCheckedAt,
         latencyMs,
         details: {
           adapter: "openai-api",

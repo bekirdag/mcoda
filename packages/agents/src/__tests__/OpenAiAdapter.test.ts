@@ -54,6 +54,35 @@ test("OpenAiAdapter healthCheck probes the configured endpoint", async () => {
   assert.equal((health.details as any)?.source, "openai_probe");
 });
 
+test("OpenAiAdapter healthCheck keeps probe 429s non-blocking and records retry metadata", async () => {
+  global.fetch = async () =>
+    new Response(JSON.stringify({ error: { message: "Rate limit exceeded" } }), {
+      status: 429,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": "120",
+        "x-ratelimit-reset-after": "120",
+      },
+    });
+
+  const adapter = new OpenAiAdapter({
+    agent,
+    capabilities: ["chat"],
+    model: "gpt-4o",
+    apiKey: "secret",
+    baseUrl: "https://api.example.com/v1",
+  });
+  const health = await adapter.healthCheck();
+  assert.equal(health.status, "healthy");
+  assert.equal((health.details as any)?.reason, "rate_limited");
+  assert.equal((health.details as any)?.rateLimited, true);
+  assert.equal((health.details as any)?.transient, true);
+  assert.equal((health.details as any)?.httpStatus, 429);
+  assert.equal((health.details as any)?.resetAtSource, "header");
+  assert.equal((health.details as any)?.retryAfterMs, 120_000);
+  assert.deepEqual((health.details as any)?.windowTypes, ["other"]);
+});
+
 test("OpenAiAdapter healthCheck marks HTTP failures unreachable", async () => {
   global.fetch = async () =>
     new Response(JSON.stringify({ error: { message: "bad gateway" } }), {
