@@ -60,8 +60,45 @@ fsp.rm = rmWithRetries;
 fs.promises.rm = rmWithRetries;
 fs.rmSync = rmSyncWithRetries;
 
-const unlinkWithRetries = async (target) => rmWithRetries(target, { force: true });
-const unlinkSyncWithRetries = (target) => rmSyncWithRetries(target, { force: true });
+const unlinkWithRetries = async (target) => {
+  let lastError;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      return await origUnlink(target);
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetry(error) || attempt === retries - 1) {
+        throw error;
+      }
+      await delay(baseDelayMs * (attempt + 1));
+    }
+  }
+  throw lastError;
+};
+
+const unlinkSyncWithRetries = (target) => {
+  if (!origUnlinkSync) {
+    throw new Error("fs.unlinkSync is not available in this Node version");
+  }
+  let lastError;
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      origUnlinkSync(target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetry(error) || attempt === retries - 1) {
+        throw error;
+      }
+      const wait = baseDelayMs * (attempt + 1);
+      const end = Date.now() + wait;
+      while (Date.now() < end) {
+        // busy wait to avoid async in sync path
+      }
+    }
+  }
+  throw lastError;
+};
 
 fsp.unlink = unlinkWithRetries;
 fs.promises.unlink = unlinkWithRetries;
