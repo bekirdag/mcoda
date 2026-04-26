@@ -145,6 +145,5 @@ jobs:
       - name: Publish packages (OIDC)
         env:
           NPM_CONFIG_PROVENANCE: "true"
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           pnpm run release:publish:npm
