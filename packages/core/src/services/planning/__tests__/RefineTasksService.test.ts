@@ -36,6 +36,16 @@ const removeWithRetries = async (target?: string): Promise<void> => {
   }
 };
 
+const closeQuietly = async (target: unknown): Promise<void> => {
+  try {
+    if ((target as any)?.close) {
+      await (target as any).close();
+    }
+  } catch {
+    // Ignore cleanup failures in tests.
+  }
+};
+
 describe("RefineTasksService", () => {
   let workspaceDir: string;
   let repo: WorkspaceRepository;
@@ -48,6 +58,7 @@ describe("RefineTasksService", () => {
   let tempHome: string | undefined;
   let originalHome: string | undefined;
   let originalProfile: string | undefined;
+  let originalServiceResources: unknown[] = [];
 
   beforeEach(async () => {
     originalHome = process.env.HOME;
@@ -76,6 +87,11 @@ describe("RefineTasksService", () => {
     workspace = await WorkspaceResolver.resolveWorkspace({ cwd: workspaceDir, explicitWorkspace: workspaceDir });
     service = await RefineTasksService.create(workspace);
     repo = (service as any).workspaceRepo as WorkspaceRepository;
+    originalServiceResources = [
+      (service as any).agentService,
+      (service as any).repo,
+      (service as any).routingService,
+    ];
 
     const project = await repo.createProjectIfMissing({ key: "demo", name: "demo" });
     const [epic] = await repo.insertEpics([
@@ -111,6 +127,8 @@ describe("RefineTasksService", () => {
 
   afterEach(async () => {
     await service?.close();
+    await Promise.all(originalServiceResources.map(closeQuietly));
+    originalServiceResources = [];
     await removeWithRetries(workspaceDir);
     await removeWithRetries(tempHome);
     if (originalHome === undefined) {
