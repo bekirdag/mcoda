@@ -20,6 +20,8 @@
       "@mcoda/generators/*": ["packages/generators/src/*"],
       "@mcoda/cli": ["packages/cli/src/index.ts"],
       "@mcoda/cli/*": ["packages/cli/src/*"],
+      "@mcoda/mswarm": ["packages/mswarm/src/server.ts"],
+      "@mcoda/mswarm/*": ["packages/mswarm/src/*"],
       "@mcoda/testing": ["packages/testing/src/index.ts"],
       "@mcoda/testing/*": ["packages/testing/src/*"]
     },

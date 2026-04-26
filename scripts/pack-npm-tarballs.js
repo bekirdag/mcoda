@@ -13,6 +13,7 @@ const packages = [
   "packages/integrations",
   "packages/core",
   "packages/cli",
+  "packages/mswarm",
 ];
 
 mkdirSync(dest, { recursive: true });

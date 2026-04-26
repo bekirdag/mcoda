@@ -1,0 +1,53 @@
+{
+  "name": "@mcoda/mswarm",
+  "version": "0.1.44",
+  "description": "Owner-run mswarm node for exposing local mcoda agents through the mswarm self-hosted gateway.",
+  "type": "module",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "bin": {
+    "mswarm-self-hosted-node": "dist/server.js",
+    "mswarm": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git",
+    "directory": "packages/mswarm"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda/tree/main/packages/mswarm#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "keywords": [
+    "mcoda",
+    "mswarm",
+    "self-hosted",
+    "daemon",
+    "cli",
+    "agents",
+    "ollama"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "fastify": "^5.7.4"
+  }
+}

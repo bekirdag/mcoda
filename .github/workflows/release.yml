@@ -116,7 +116,8 @@ jobs:
             'packages/generators',
             'packages/integrations',
             'packages/core',
-            'packages/cli'
+            'packages/cli',
+            'packages/mswarm'
           ];
 
           const mismatches = [];
@@ -145,6 +146,7 @@ jobs:
         env:
           NPM_CONFIG_PROVENANCE: "true"
         run: |
+          pnpm --filter "./packages/mswarm" publish --access public --no-git-checks
           pnpm --filter "./packages/shared" publish --access public --no-git-checks
           pnpm --filter "./packages/db" publish --access public --no-git-checks
           pnpm --filter "./packages/agents" publish --access public --no-git-checks
