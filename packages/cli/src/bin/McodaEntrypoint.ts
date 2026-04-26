@@ -102,6 +102,7 @@ export class McodaEntrypoint {
           'Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n' +
           'Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n' +
           'Self-hosted agents: use `mcoda self-hosted agent list|details|sync` to discover and materialize owner-hosted mswarm agents.\n' +
+          'Expose this machine: install `@mcoda/mswarm`, then run `mswarm setup --api-key <KEY>`.\n' +
           'Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n' +
           'Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n' +
           'Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.'

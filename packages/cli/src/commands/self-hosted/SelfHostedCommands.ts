@@ -46,6 +46,10 @@ Environment:
   MCODA_MSWARM_SELF_HOSTED_AGENT_SLUG_PREFIX
   Or persist the API key with: mcoda config set mswarm-api-key <KEY>
 
+To expose this machine's local agents:
+  npm install -g @mcoda/mswarm
+  mswarm setup --api-key <KEY>
+
 Flags:
   --json                    Emit JSON for supported commands
   --help                    Show this help

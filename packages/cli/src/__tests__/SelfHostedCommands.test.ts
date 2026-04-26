@@ -57,7 +57,10 @@ const withStubServer = async (
 
 test("self-hosted --help prints usage", { concurrency: false }, async () => {
   const logs = await captureLogs(() => SelfHostedCommands.run(["--help"]));
-  assert.match(logs.join("\n"), /Usage: mcoda self-hosted agent/);
+  const output = logs.join("\n");
+  assert.match(output, /Usage: mcoda self-hosted agent/);
+  assert.match(output, /npm install -g @mcoda\/mswarm/);
+  assert.match(output, /mswarm setup --api-key <KEY>/);
 });
 
 test("self-hosted agent list supports JSON output", { concurrency: false }, async () => {
