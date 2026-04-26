@@ -40,6 +40,8 @@
     "install:local": "node scripts/install-local-packages.js",
     "install:local:bins": "node scripts/install-local-packages.js --bins-only",
     "lint": "pnpm -r run lint",
+    "release:publish:npm": "node scripts/publish-npm-packages.js",
+    "release:publish:npm:dry-run": "node scripts/publish-npm-packages.js --dry-run",
     "test": "node tests/all.js",
     "test:repo": "node --input-type=module -e \"process.env.MCODA_SKIP_WORKSPACE_TESTS='1'; import('./tests/all.js');\"",
     "test:workspaces": "pnpm -r run test"

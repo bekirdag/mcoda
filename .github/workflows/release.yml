@@ -145,12 +145,6 @@ jobs:
       - name: Publish packages (OIDC)
         env:
           NPM_CONFIG_PROVENANCE: "true"
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          pnpm --filter "./packages/mswarm" publish --access public --no-git-checks
-          pnpm --filter "./packages/shared" publish --access public --no-git-checks
-          pnpm --filter "./packages/db" publish --access public --no-git-checks
-          pnpm --filter "./packages/agents" publish --access public --no-git-checks
-          pnpm --filter "./packages/generators" publish --access public --no-git-checks
-          pnpm --filter "./packages/integrations" publish --access public --no-git-checks
-          pnpm --filter "./packages/core" publish --access public --no-git-checks
-          pnpm --filter "./packages/cli" publish --access public --no-git-checks
+          pnpm run release:publish:npm
