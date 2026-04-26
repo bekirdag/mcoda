@@ -38,6 +38,14 @@ export interface MswarmCloudAgent {
   sync?: Record<string, unknown>;
 }
 
+export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
+  agent_slug?: string;
+  remote_slug?: string;
+  adapter?: string;
+  source_agent_id?: string;
+  source_agent_slug?: string;
+}
+
 export interface MswarmCloudAgentDetail extends MswarmCloudAgent {
   pricing?: Record<string, unknown>;
   supported_parameters?: string[];
@@ -45,6 +53,10 @@ export interface MswarmCloudAgentDetail extends MswarmCloudAgent {
   moderation_status?: string;
   mcoda_shape?: Record<string, unknown>;
 }
+
+export interface MswarmSelfHostedAgentDetail
+  extends MswarmSelfHostedAgent,
+    Omit<MswarmCloudAgentDetail, keyof MswarmCloudAgent> {}
 
 export interface ListMswarmCloudAgentsOptions {
   provider?: string;
@@ -56,12 +68,18 @@ export interface ListMswarmCloudAgentsOptions {
   pruneMissing?: boolean;
 }
 
+export interface ListMswarmSelfHostedAgentsOptions
+  extends ListMswarmCloudAgentsOptions {
+  includeUnreachable?: boolean;
+}
+
 export interface MswarmApiOptions {
   baseUrl?: string;
   openAiBaseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
   agentSlugPrefix?: string;
+  selfHostedAgentSlugPrefix?: string;
 }
 
 export interface MswarmConsentResponse {
@@ -106,6 +124,7 @@ interface ResolvedMswarmApiOptions {
   apiKey?: string;
   timeoutMs: number;
   agentSlugPrefix: string;
+  selfHostedAgentSlugPrefix: string;
 }
 
 export interface ManagedMswarmCloudConfig {
@@ -128,6 +147,32 @@ export interface ManagedMswarmAgentConfig extends Record<string, unknown> {
   baseUrl: string;
   apiBaseUrl: string;
   mswarmCloud: ManagedMswarmCloudConfig;
+}
+
+export interface ManagedMswarmSelfHostedConfig {
+  managed: true;
+  remoteSlug: string;
+  agentSlug: string;
+  provider: string;
+  adapter?: string;
+  sourceAgentSlug?: string;
+  nodeId?: string;
+  serverName?: string;
+  modelId?: string;
+  displayName?: string;
+  description?: string;
+  supportsReasoning?: boolean;
+  catalogBaseUrl: string;
+  openAiBaseUrl: string;
+  sync?: Record<string, unknown>;
+  syncedAt: string;
+}
+
+export interface ManagedMswarmSelfHostedAgentConfig
+  extends Record<string, unknown> {
+  baseUrl: string;
+  apiBaseUrl: string;
+  mswarmSelfHosted: ManagedMswarmSelfHostedConfig;
 }
 
 export interface MswarmSyncRecord {
@@ -158,6 +203,7 @@ interface ListMswarmCloudAgentsResponse {
 const DEFAULT_BASE_URL = 'https://api.mswarm.org/';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_SLUG_PREFIX = 'mswarm-cloud';
+const DEFAULT_SELF_HOSTED_AGENT_SLUG_PREFIX = 'mswarm-self-hosted';
 export const MSWARM_CONSENT_POLICY_VERSION = '2026-03-18';
 export const MCODA_FREE_CLIENT_TYPE = 'free_mcoda_client';
 const MCODA_PRODUCT_SLUG = 'mcoda';
@@ -251,11 +297,15 @@ const resolveOptions = async (
   const directTimeout = options.timeoutMs ?? envTimeout;
   const directAgentSlugPrefix =
     options.agentSlugPrefix ?? process.env.MCODA_MSWARM_AGENT_SLUG_PREFIX;
+  const directSelfHostedAgentSlugPrefix =
+    options.selfHostedAgentSlugPrefix ??
+    process.env.MCODA_MSWARM_SELF_HOSTED_AGENT_SLUG_PREFIX;
   const needsStoredFallback =
     directBaseUrl === undefined ||
     directApiKey === undefined ||
     directTimeout === undefined ||
-    directAgentSlugPrefix === undefined;
+    directAgentSlugPrefix === undefined ||
+    directSelfHostedAgentSlugPrefix === undefined;
   const stored = needsStoredFallback
     ? await new MswarmConfigStore().readState()
     : {};
@@ -276,6 +326,9 @@ const resolveOptions = async (
     agentSlugPrefix:
       resolveString(directAgentSlugPrefix ?? stored.agentSlugPrefix) ??
       DEFAULT_AGENT_SLUG_PREFIX,
+    selfHostedAgentSlugPrefix:
+      resolveString(directSelfHostedAgentSlugPrefix) ??
+      DEFAULT_SELF_HOSTED_AGENT_SLUG_PREFIX,
   };
 };
 
@@ -435,7 +488,8 @@ const toHealthStatus = (
 const isSyncManagedHealth = (health: AgentHealth | undefined): boolean =>
   isRecord(health?.details) &&
   (health.details.source === 'mswarm' ||
-    health.details.source === 'mswarm_catalog');
+    health.details.source === 'mswarm_catalog' ||
+    health.details.source === 'mswarm_self_hosted');
 
 const isAuthMissingManagedHealth = (
   health: AgentHealth | undefined
@@ -455,13 +509,26 @@ const shouldReplaceManagedHealth = (
 ): boolean =>
   !health || isSyncManagedHealth(health) || isAuthMissingManagedHealth(health);
 
-const isManagedMswarmConfig = (
+const isManagedMswarmCloudConfig = (
   config: unknown
 ): config is ManagedMswarmAgentConfig => {
   if (!isRecord(config)) return false;
   if (!isRecord(config.mswarmCloud)) return false;
   return config.mswarmCloud.managed === true;
 };
+
+const isManagedMswarmSelfHostedConfig = (
+  config: unknown
+): config is ManagedMswarmSelfHostedAgentConfig => {
+  if (!isRecord(config)) return false;
+  if (!isRecord(config.mswarmSelfHosted)) return false;
+  return config.mswarmSelfHosted.managed === true;
+};
+
+const isManagedMswarmConfig = (
+  config: unknown
+): config is ManagedMswarmAgentConfig | ManagedMswarmSelfHostedAgentConfig =>
+  isManagedMswarmCloudConfig(config) || isManagedMswarmSelfHostedConfig(config);
 
 const toManagedConfig = (
   existingConfig: Record<string, unknown> | undefined,
@@ -493,6 +560,40 @@ const toManagedConfig = (
   return nextConfig;
 };
 
+const toManagedSelfHostedConfig = (
+  existingConfig: Record<string, unknown> | undefined,
+  catalogBaseUrl: string,
+  openAiBaseUrl: string,
+  agent: MswarmSelfHostedAgent,
+  syncedAt: string
+): ManagedMswarmSelfHostedAgentConfig => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  const nextConfig: ManagedMswarmSelfHostedAgentConfig = {
+    ...(existingConfig ?? {}),
+    baseUrl: openAiBaseUrl,
+    apiBaseUrl: openAiBaseUrl,
+    mswarmSelfHosted: {
+      managed: true,
+      remoteSlug: agent.remote_slug ?? agent.slug,
+      agentSlug: agent.agent_slug ?? agent.slug,
+      provider: agent.provider,
+      adapter: agent.adapter,
+      sourceAgentSlug: agent.source_agent_slug,
+      nodeId: resolveString(sync.node_id),
+      serverName: resolveString(sync.server_name),
+      modelId: agent.model_id,
+      displayName: agent.display_name,
+      description: agent.description,
+      supportsReasoning: agent.supports_reasoning,
+      catalogBaseUrl,
+      openAiBaseUrl,
+      sync: Object.keys(sync).length > 0 ? sync : undefined,
+      syncedAt,
+    },
+  };
+  return nextConfig;
+};
+
 const toManagedSyncRecord = (
   config: ManagedMswarmAgentConfig,
   localSlug: string,
@@ -505,6 +606,19 @@ const toManagedSyncRecord = (
   provider: config.mswarmCloud.provider,
   defaultModel,
   pricingVersion: config.mswarmCloud.pricingVersion,
+});
+
+const toManagedSelfHostedSyncRecord = (
+  config: ManagedMswarmSelfHostedAgentConfig,
+  localSlug: string,
+  defaultModel: string,
+  action: MswarmSyncRecord['action']
+): MswarmSyncRecord => ({
+  remoteSlug: config.mswarmSelfHosted.remoteSlug,
+  localSlug,
+  action,
+  provider: config.mswarmSelfHosted.provider,
+  defaultModel,
 });
 
 const toCloudAgent = (value: unknown): MswarmCloudAgent => {
@@ -640,6 +754,34 @@ const toCloudAgentDetail = (value: unknown): MswarmCloudAgentDetail => {
   };
 };
 
+const toSelfHostedAgent = (value: unknown): MswarmSelfHostedAgent => {
+  const agent = toCloudAgent(value);
+  const record = isRecord(value) ? value : {};
+  return {
+    ...agent,
+    agent_slug: resolveString(record.agent_slug),
+    remote_slug: resolveString(record.remote_slug),
+    adapter: resolveString(record.adapter),
+    source_agent_id: resolveString(record.source_agent_id),
+    source_agent_slug: resolveString(record.source_agent_slug),
+  };
+};
+
+const toSelfHostedAgentDetail = (
+  value: unknown
+): MswarmSelfHostedAgentDetail => {
+  const agent = toSelfHostedAgent(value);
+  const record = isRecord(value) ? value : {};
+  return {
+    ...agent,
+    pricing: isRecord(record.pricing) ? record.pricing : undefined,
+    supported_parameters: resolveStringArray(record.supported_parameters),
+    status: resolveString(record.status),
+    moderation_status: resolveString(record.moderation_status),
+    mcoda_shape: isRecord(record.mcoda_shape) ? record.mcoda_shape : undefined,
+  };
+};
+
 const hasAdvancedCloudAgentSelection = (
   options: ListMswarmCloudAgentsOptions
 ): boolean =>
@@ -728,6 +870,7 @@ const toAgentModels = (
 export class MswarmApi {
   readonly baseUrl: string;
   readonly agentSlugPrefix: string;
+  readonly selfHostedAgentSlugPrefix: string;
 
   constructor(
     private readonly repo: GlobalRepository,
@@ -735,6 +878,7 @@ export class MswarmApi {
   ) {
     this.baseUrl = options.baseUrl;
     this.agentSlugPrefix = options.agentSlugPrefix;
+    this.selfHostedAgentSlugPrefix = options.selfHostedAgentSlugPrefix;
   }
 
   static async create(options: MswarmApiOptions = {}): Promise<MswarmApi> {
@@ -872,6 +1016,42 @@ export class MswarmApi {
     return toCloudAgentDetail(payload);
   }
 
+  async listSelfHostedAgents(
+    options: ListMswarmSelfHostedAgentsOptions = {}
+  ): Promise<MswarmSelfHostedAgent[]> {
+    const remoteLimit = hasAdvancedCloudAgentSelection(options)
+      ? undefined
+      : options.limit;
+    const payload = await this.requestJson<ListMswarmCloudAgentsResponse>(
+      '/v1/swarm/self-hosted/agents',
+      {
+        shape: 'mcoda',
+        provider: options.provider,
+        limit: remoteLimit,
+        include_unreachable: options.includeUnreachable ? 'true' : undefined,
+      }
+    );
+    let agents = (Array.isArray(payload.agents) ? payload.agents : []).map(
+      toSelfHostedAgent
+    );
+    if (options.provider) {
+      agents = agents.filter((agent) => agent.provider === options.provider);
+    }
+    return applyCloudAgentListOptions(agents, options);
+  }
+
+  async getSelfHostedAgent(
+    slug: string
+  ): Promise<MswarmSelfHostedAgentDetail> {
+    if (!slug.trim()) {
+      throw new Error('Self-hosted agent slug is required');
+    }
+    const payload = await this.requestJson<unknown>(
+      `/v1/swarm/self-hosted/agents/${encodeURIComponent(slug)}`
+    );
+    return toSelfHostedAgentDetail(payload);
+  }
+
   async syncCloudAgents(
     options: ListMswarmCloudAgentsOptions = {}
   ): Promise<MswarmSyncSummary> {
@@ -901,7 +1081,7 @@ export class MswarmApi {
       const existing = await this.repo.getAgentBySlug(localSlug);
       if (
         existing &&
-        (!isManagedMswarmConfig(existing.config) ||
+        (!isManagedMswarmCloudConfig(existing.config) ||
           existing.config.mswarmCloud.remoteSlug !== agent.slug)
       ) {
         throw new Error(`Refusing to overwrite non-mswarm agent ${localSlug}`);
@@ -973,7 +1153,7 @@ export class MswarmApi {
       const remoteSlugs = new Set(agents.map((agent) => agent.slug));
       const localAgents = await this.repo.listAgents();
       for (const localAgent of localAgents) {
-        const managedConfig = isManagedMswarmConfig(localAgent.config)
+        const managedConfig = isManagedMswarmCloudConfig(localAgent.config)
           ? localAgent.config
           : undefined;
         if (!managedConfig) continue;
@@ -990,6 +1170,145 @@ export class MswarmApi {
             managedConfig,
             localAgent.slug,
             localAgent.defaultModel ?? managedConfig.mswarmCloud.modelId ?? '-',
+            'deleted'
+          )
+        );
+      }
+    }
+
+    return {
+      created: records.filter((record) => record.action === 'created').length,
+      updated: records.filter((record) => record.action === 'updated').length,
+      deleted: records.filter((record) => record.action === 'deleted').length,
+      agents: records,
+    };
+  }
+
+  async syncSelfHostedAgents(
+    options: ListMswarmSelfHostedAgentsOptions = {}
+  ): Promise<MswarmSyncSummary> {
+    if (
+      options.pruneMissing &&
+      (options.limit !== undefined || hasAdvancedCloudAgentSelection(options))
+    ) {
+      throw new Error(
+        'pruneMissing cannot be combined with limit or advanced self-hosted agent filters'
+      );
+    }
+    const agents = await this.listSelfHostedAgents(options);
+    const openAiBaseUrl =
+      this.options.openAiBaseUrl ??
+      new URL('/v1/swarm/self-hosted/openai/', this.options.baseUrl).toString();
+    const syncedAt = new Date().toISOString();
+    const encryptedApiKey = await CryptoHelper.encryptSecret(
+      this.requireApiKey()
+    );
+    const records: MswarmSyncRecord[] = [];
+
+    for (const agent of agents) {
+      const localSlug = toManagedLocalSlug(
+        this.options.selfHostedAgentSlugPrefix,
+        agent.slug
+      );
+      const existing = await this.repo.getAgentBySlug(localSlug);
+      const remoteSlug = agent.remote_slug ?? agent.slug;
+      if (
+        existing &&
+        (!isManagedMswarmSelfHostedConfig(existing.config) ||
+          existing.config.mswarmSelfHosted.remoteSlug !== remoteSlug)
+      ) {
+        throw new Error(`Refusing to overwrite non-mswarm agent ${localSlug}`);
+      }
+
+      const existingConfig =
+        existing && isRecord(existing.config)
+          ? (existing.config as Record<string, unknown>)
+          : undefined;
+      const nextConfig = toManagedSelfHostedConfig(
+        existingConfig,
+        this.options.baseUrl,
+        openAiBaseUrl,
+        agent,
+        syncedAt
+      );
+      const createInput = toSyncedAgentInput(
+        existing,
+        agent,
+        localSlug,
+        nextConfig,
+        syncedAt
+      );
+      const { slug: _ignoredSlug, ...updateInput } = createInput;
+      const stored = existing
+        ? await this.repo.updateAgent(
+            existing.id,
+            updateInput as UpdateAgentInput
+          )
+        : await this.repo.createAgent(createInput);
+      if (!stored) {
+        throw new Error(`Failed to persist synced agent ${localSlug}`);
+      }
+
+      await this.repo.setAgentModels(
+        stored.id,
+        toAgentModels(stored.id, agent)
+      );
+      await this.repo.setAgentAuth(stored.id, encryptedApiKey);
+      const existingHealth = existing
+        ? await this.repo.getAgentHealth(existing.id)
+        : undefined;
+      const mappedHealth = toHealthStatus(agent.health_status);
+      if (mappedHealth && shouldReplaceManagedHealth(existingHealth)) {
+        const health: AgentHealth = {
+          agentId: stored.id,
+          status: mappedHealth,
+          lastCheckedAt: syncedAt,
+          details: {
+            source: 'mswarm_self_hosted',
+            remoteSlug,
+            agentSlug: agent.agent_slug ?? agent.slug,
+            provider: agent.provider,
+            remoteHealthStatus: agent.health_status,
+          },
+        };
+        await this.repo.setAgentHealth(health);
+      }
+
+      records.push(
+        toManagedSelfHostedSyncRecord(
+          nextConfig,
+          localSlug,
+          agent.default_model,
+          existing ? 'updated' : 'created'
+        )
+      );
+    }
+
+    if (options.pruneMissing) {
+      const remoteSlugs = new Set(
+        agents.map((agent) => agent.remote_slug ?? agent.slug)
+      );
+      const localAgents = await this.repo.listAgents();
+      for (const localAgent of localAgents) {
+        const managedConfig = isManagedMswarmSelfHostedConfig(localAgent.config)
+          ? localAgent.config
+          : undefined;
+        if (!managedConfig) continue;
+        if (
+          options.provider &&
+          managedConfig.mswarmSelfHosted.provider !== options.provider
+        ) {
+          continue;
+        }
+        if (remoteSlugs.has(managedConfig.mswarmSelfHosted.remoteSlug)) continue;
+        await this.repo.deleteAgent(localAgent.id);
+        records.push(
+          toManagedSelfHostedSyncRecord(
+            managedConfig,
+            localAgent.slug,
+            localAgent.defaultModel ??
+              managedConfig.mswarmSelfHosted.modelId ??
+              '-',
             'deleted'
           )
         );

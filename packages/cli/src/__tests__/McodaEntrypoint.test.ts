@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import packageJson from '../../package.json' with { type: 'json' };
 import { McodaEntrypoint } from '../bin/McodaEntrypoint.js';
 import { CloudCommands } from '../commands/cloud/CloudCommands.js';
+import { SelfHostedCommands } from '../commands/self-hosted/SelfHostedCommands.js';
 import { ConfigCommands } from '../commands/config/ConfigCommands.js';
 import { ConsentCommands } from '../commands/consent/ConsentCommands.js';
 import { SetupCommand } from '../commands/setup/SetupCommand.js';
@@ -153,6 +154,28 @@ test(
       assert.equal(called, true);
     } finally {
       (CloudCommands as any).run = originalRun;
+    }
+  }
+);
+
+test(
+  'McodaEntrypoint routes self-hosted agent commands',
+  { concurrency: false },
+  async () => {
+    const originalRun = SelfHostedCommands.run;
+    let called = false;
+    (SelfHostedCommands as any).run = async (argv: string[]) => {
+      called = true;
+      assert.deepEqual(argv, ['agent', 'sync', '--json']);
+    };
+    try {
+      await withConsentState(
+        { consentAccepted: true, consentToken: 'token-123' },
+        () => McodaEntrypoint.run(['self-hosted', 'agent', 'sync', '--json'])
+      );
+      assert.equal(called, true);
+    } finally {
+      (SelfHostedCommands as any).run = originalRun;
     }
   }
 );

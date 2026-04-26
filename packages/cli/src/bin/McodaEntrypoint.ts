@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import packageJson from '../../package.json' with { type: 'json' };
 import { AgentsCommands } from '../commands/agents/AgentsCommands.js';
 import { CloudCommands } from '../commands/cloud/CloudCommands.js';
+import { SelfHostedCommands } from '../commands/self-hosted/SelfHostedCommands.js';
 import { ConfigCommands } from '../commands/config/ConfigCommands.js';
 import { ConsentCommands } from '../commands/consent/ConsentCommands.js';
 import { GatewayAgentCommand } from '../commands/agents/GatewayAgentCommand.js';
@@ -94,12 +95,13 @@ export class McodaEntrypoint {
     }
     if (!command) {
       throw new Error(
-        'Usage: mcoda <agent|cloud|cloud-agent|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
+        'Usage: mcoda <agent|cloud|cloud-agent|self-hosted|self-hosted-agent|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
           'Setup: use `mcoda setup` after installation (or accept the postinstall prompt) to complete the mandatory mswarm telemetry consent flow.\n' +
           'Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in the resolved global mcoda config file.\n' +
           'Consent: use `mcoda consent accept` before other commands if you need to complete consent outside the guided setup flow.\n' +
           'Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n' +
           'Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n' +
+          'Self-hosted agents: use `mcoda self-hosted agent list|details|sync` to discover and materialize owner-hosted mswarm agents.\n' +
           'Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n' +
           'Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n' +
           'Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.'
@@ -123,6 +125,10 @@ export class McodaEntrypoint {
       await CloudCommands.run(rest);
       return;
     }
+    if (command === 'self-hosted' || command === 'selfhosted') {
+      await SelfHostedCommands.run(rest);
+      return;
+    }
     if (command === 'config') {
       await ConfigCommands.run(rest);
       return;
@@ -137,6 +143,10 @@ export class McodaEntrypoint {
     }
     if (command === 'cloud-agent') {
       await CloudCommands.run(['agent', ...rest]);
+      return;
+    }
+    if (command === 'self-hosted-agent' || command === 'selfhosted-agent') {
+      await SelfHostedCommands.run(['agent', ...rest]);
       return;
     }
     if (command === 'gateway-agent') {

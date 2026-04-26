@@ -32,21 +32,24 @@ export interface ListAgentsOptions {
   refreshHealth?: boolean;
 }
 
-const isManagedMswarmCloudAgent = (agent: Agent): boolean => {
+const isManagedMswarmAgent = (agent: Agent): boolean => {
   const config = agent.config;
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     return false;
   }
-  const managed = (config as Record<string, unknown>).mswarmCloud;
-  return Boolean(
-    managed &&
-      typeof managed === "object" &&
-      !Array.isArray(managed) &&
-      (managed as Record<string, unknown>).managed === true,
-  );
+  const record = config as Record<string, unknown>;
+  return ["mswarmCloud", "mswarmSelfHosted"].some((key) => {
+    const managed = record[key];
+    return Boolean(
+      managed &&
+        typeof managed === "object" &&
+        !Array.isArray(managed) &&
+        (managed as Record<string, unknown>).managed === true,
+    );
+  });
 };
 
-const shouldRefreshInventoryHealth = (agent: Agent): boolean => !isManagedMswarmCloudAgent(agent);
+const shouldRefreshInventoryHealth = (agent: Agent): boolean => !isManagedMswarmAgent(agent);
 
 const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   rolling_5h: 5 * 60 * 60 * 1000,

@@ -33,7 +33,7 @@ export class ConfigCommands {
     const refresh = await MswarmApi.refreshManagedAgentAuth(value);
     // eslint-disable-next-line no-console
     console.log(
-      `Saved encrypted mswarm API key to ${store.configPath()}. Refreshed managed cloud-agent auth for ${refresh.updated} agents.`,
+      `Saved encrypted mswarm API key to ${store.configPath()}. Refreshed managed mswarm-agent auth for ${refresh.updated} agents.`,
     );
   }
 }

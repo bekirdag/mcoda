@@ -72,18 +72,31 @@ const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   other: 60 * 60 * 1000,
 };
 
-const isManagedMswarmCloudAgent = (agent: Agent): boolean => {
+const getManagedMswarmKind = (agent: Agent): "cloud" | "self-hosted" | undefined => {
   const config = agent.config;
   if (!config || typeof config !== "object" || Array.isArray(config)) {
-    return false;
+    return undefined;
   }
-  const managed = (config as Record<string, unknown>).mswarmCloud;
-  return Boolean(
-    managed &&
-      typeof managed === "object" &&
-      !Array.isArray(managed) &&
-      (managed as Record<string, unknown>).managed === true,
-  );
+  const record = config as Record<string, unknown>;
+  const cloud = record.mswarmCloud;
+  if (
+    cloud &&
+    typeof cloud === "object" &&
+    !Array.isArray(cloud) &&
+    (cloud as Record<string, unknown>).managed === true
+  ) {
+    return "cloud";
+  }
+  const selfHosted = record.mswarmSelfHosted;
+  if (
+    selfHosted &&
+    typeof selfHosted === "object" &&
+    !Array.isArray(selfHosted) &&
+    (selfHosted as Record<string, unknown>).managed === true
+  ) {
+    return "self-hosted";
+  }
+  return undefined;
 };
 
 const isIoEnabled = (): boolean => {
@@ -316,10 +329,15 @@ export class AgentService {
 
     if (adapterType.endsWith("-api")) {
       if (hasSecret) return adapterType;
-      if (adapterType === "openai-api" && isManagedMswarmCloudAgent(agent)) {
+      const managedMswarmKind = adapterType === "openai-api" ? getManagedMswarmKind(agent) : undefined;
+      if (managedMswarmKind) {
         const label = agent.slug ?? agent.id;
+        const syncCommand =
+          managedMswarmKind === "self-hosted"
+            ? "mcoda self-hosted agent sync"
+            : "mcoda cloud agent sync";
         throw new Error(
-          `AUTH_REQUIRED: Managed mswarm cloud agent ${label} is missing the synced API key; run \`mcoda config set mswarm-api-key <KEY>\` and \`mcoda cloud agent sync\`.`,
+          `AUTH_REQUIRED: Managed mswarm ${managedMswarmKind} agent ${label} is missing the synced API key; run \`mcoda config set mswarm-api-key <KEY>\` and \`${syncCommand}\`.`,
         );
       }
       if (adapterType === "codex-api" || adapterType === "openai-api") {

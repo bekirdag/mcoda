@@ -425,6 +425,80 @@ test(
 );
 
 test(
+  'MswarmApi.listSelfHostedAgents sends auth and maps mcoda metadata',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          assert.equal(url.pathname, '/v1/swarm/self-hosted/agents');
+          assert.equal(url.searchParams.get('shape'), 'mcoda');
+          assert.equal(url.searchParams.get('provider'), 'mcoda');
+          assert.equal(url.searchParams.get('limit'), '3');
+          assert.equal(url.searchParams.get('include_unreachable'), 'true');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'mcoda-lab-claude-sonnet',
+                  agent_slug: 'mcoda-lab-claude-sonnet',
+                  remote_slug: 'mcoda/lab/claude-sonnet',
+                  provider: 'mcoda',
+                  adapter: 'claude-cli',
+                  source_agent_slug: 'claude-sonnet',
+                  default_model: 'mcoda-lab-claude-sonnet',
+                  cost_per_million: 0,
+                  rating: 7.5,
+                  reasoning_rating: 8,
+                  max_complexity: 7,
+                  capabilities: ['chat', 'code_write'],
+                  health_status: 'healthy',
+                  context_window: 200000,
+                  supports_tools: true,
+                  best_usage: 'code_write',
+                  model_id: 'sonnet',
+                  display_name: 'Claude Sonnet on lab',
+                  supports_reasoning: true,
+                  sync: {
+                    source: 'self_hosted',
+                    node_id: 'shn_lab',
+                    server_name: 'lab',
+                    remote_slug: 'mcoda/lab/claude-sonnet',
+                  },
+                },
+              ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const agents = await api.listSelfHostedAgents({
+              provider: 'mcoda',
+              limit: 3,
+              includeUnreachable: true,
+            });
+            assert.equal(agents.length, 1);
+            assert.equal(agents[0]?.slug, 'mcoda-lab-claude-sonnet');
+            assert.equal(agents[0]?.remote_slug, 'mcoda/lab/claude-sonnet');
+            assert.equal(agents[0]?.adapter, 'claude-cli');
+            assert.equal(agents[0]?.source_agent_slug, 'claude-sonnet');
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
   'MswarmApi.refreshManagedAgentAuth updates synced managed agents only',
   { concurrency: false },
   async () => {
@@ -449,6 +523,25 @@ test(
             },
           },
         });
+        const selfHosted = await repo.createAgent({
+          slug: 'mswarm-self-hosted-mcoda-lab-claude-sonnet',
+          adapter: 'openai-api',
+          defaultModel: 'mcoda-lab-claude-sonnet',
+          openaiCompatible: true,
+          config: {
+            baseUrl: 'https://mswarm.example/v1/swarm/self-hosted/openai/',
+            apiBaseUrl: 'https://mswarm.example/v1/swarm/self-hosted/openai/',
+            mswarmSelfHosted: {
+              managed: true,
+              remoteSlug: 'mcoda/lab/claude-sonnet',
+              agentSlug: 'mcoda-lab-claude-sonnet',
+              provider: 'mcoda',
+              catalogBaseUrl: 'https://api.mswarm.org/',
+              openAiBaseUrl: 'https://mswarm.example/v1/swarm/self-hosted/openai/',
+              syncedAt: new Date().toISOString(),
+            },
+          },
+        });
         const unmanaged = await repo.createAgent({
           slug: 'local-openai',
           adapter: 'openai-api',
@@ -460,6 +553,10 @@ test(
           await CryptoHelper.encryptSecret('old-managed-key')
         );
         await repo.setAgentAuth(
+          selfHosted.id,
+          await CryptoHelper.encryptSecret('old-self-hosted-key')
+        );
+        await repo.setAgentAuth(
           unmanaged.id,
           await CryptoHelper.encryptSecret('local-key')
         );
@@ -468,8 +565,11 @@ test(
       }
 
       const summary = await MswarmApi.refreshManagedAgentAuth('fresh-cloud-key');
-      assert.equal(summary.updated, 1);
-      assert.deepEqual(summary.agents, ['mswarm-cloud-openai-gpt-4-1-mini']);
+      assert.equal(summary.updated, 2);
+      assert.deepEqual(summary.agents.sort(), [
+        'mswarm-cloud-openai-gpt-4-1-mini',
+        'mswarm-self-hosted-mcoda-lab-claude-sonnet',
+      ]);
 
       const repoAfter = await GlobalRepository.create();
       try {
@@ -482,6 +582,19 @@ test(
         assert.equal(
           managedSecret?.encryptedSecret
             ? await CryptoHelper.decryptSecret(managedSecret.encryptedSecret)
+            : undefined,
+          'fresh-cloud-key'
+        );
+
+        const selfHosted = await repoAfter.getAgentBySlug(
+          'mswarm-self-hosted-mcoda-lab-claude-sonnet'
+        );
+        const selfHostedSecret = selfHosted
+          ? await repoAfter.getAgentAuthSecret(selfHosted.id)
+          : undefined;
+        assert.equal(
+          selfHostedSecret?.encryptedSecret
+            ? await CryptoHelper.decryptSecret(selfHostedSecret.encryptedSecret)
             : undefined,
           'fresh-cloud-key'
         );
@@ -604,6 +717,130 @@ test(
               const health = await repo.getAgentHealth(agent.id);
               assert.equal(health?.status, 'healthy');
               assert.equal((health?.details as any)?.source, 'mswarm');
+            } finally {
+              await repo.close();
+            }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncSelfHostedAgents materializes managed self-hosted agents into the registry',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/self-hosted/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'mcoda-lab-claude-sonnet',
+                  agent_slug: 'mcoda-lab-claude-sonnet',
+                  remote_slug: 'mcoda/lab/claude-sonnet',
+                  provider: 'mcoda',
+                  adapter: 'claude-cli',
+                  source_agent_slug: 'claude-sonnet',
+                  default_model: 'mcoda-lab-claude-sonnet',
+                  cost_per_million: 0,
+                  rating: 7.5,
+                  reasoning_rating: 8,
+                  max_complexity: 7,
+                  capabilities: ['chat', 'code_write'],
+                  health_status: 'healthy',
+                  context_window: 200000,
+                  max_output_tokens: 64000,
+                  supports_tools: true,
+                  best_usage: 'code_write',
+                  model_id: 'sonnet',
+                  display_name: 'Claude Sonnet on lab',
+                  description: 'Self-hosted mcoda local agent',
+                  supports_reasoning: true,
+                  sync: {
+                    source: 'self_hosted',
+                    node_id: 'shn_lab',
+                    server_name: 'lab',
+                    remote_slug: 'mcoda/lab/claude-sonnet',
+                    relay_mode: 'direct',
+                  },
+                },
+              ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const summary = await api.syncSelfHostedAgents();
+            assert.equal(summary.created, 1);
+            assert.equal(summary.updated, 0);
+            assert.equal(
+              summary.agents[0]?.localSlug,
+              'mswarm-self-hosted-mcoda-lab-claude-sonnet'
+            );
+
+            const repo = await GlobalRepository.create();
+            try {
+              const agent = await repo.getAgentBySlug(
+                'mswarm-self-hosted-mcoda-lab-claude-sonnet'
+              );
+              assert.ok(agent);
+              assert.equal(agent.adapter, 'openai-api');
+              assert.equal(agent.defaultModel, 'mcoda-lab-claude-sonnet');
+              assert.equal(agent.openaiCompatible, true);
+              assert.equal(agent.contextWindow, 200000);
+              assert.equal(agent.maxOutputTokens, 64000);
+              assert.equal(agent.supportsTools, true);
+              assert.equal(agent.costPerMillion, 0);
+              assert.equal(agent.rating, 7.5);
+              assert.equal(agent.reasoningRating, 8);
+              assert.equal(agent.bestUsage, 'code_write');
+              assert.equal(
+                (agent.config as any)?.baseUrl,
+                new URL('/v1/swarm/self-hosted/openai/', baseUrl).toString()
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.managed,
+                true
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.remoteSlug,
+                'mcoda/lab/claude-sonnet'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.sourceAgentSlug,
+                'claude-sonnet'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.nodeId,
+                'shn_lab'
+              );
+
+              const auth = await repo.getAgentAuthMetadata(agent.id);
+              assert.equal(auth.configured, true);
+
+              const capabilities = await repo.getAgentCapabilities(agent.id);
+              assert.deepEqual(capabilities, ['chat', 'code_write']);
+
+              const health = await repo.getAgentHealth(agent.id);
+              assert.equal(health?.status, 'healthy');
+              assert.equal((health?.details as any)?.source, 'mswarm_self_hosted');
             } finally {
               await repo.close();
             }
