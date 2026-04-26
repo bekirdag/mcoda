@@ -54,7 +54,7 @@ test('McodaEntrypoint prints version', { concurrency: false }, async () => {
 test('McodaEntrypoint no-command usage mentions self-hosted setup', async () => {
   await assert.rejects(
     () => McodaEntrypoint.run([]),
-    /Expose this machine: install `@mcoda\/mswarm`, then run `mswarm setup --api-key <KEY>`/
+    /Expose this machine: install `@mcoda\/mswarm`, then run `mswarm install <KEY>`/
   );
 });
 

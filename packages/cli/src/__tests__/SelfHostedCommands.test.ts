@@ -60,7 +60,7 @@ test("self-hosted --help prints usage", { concurrency: false }, async () => {
   const output = logs.join("\n");
   assert.match(output, /Usage: mcoda self-hosted agent/);
   assert.match(output, /npm install -g @mcoda\/mswarm/);
-  assert.match(output, /mswarm setup --api-key <KEY>/);
+  assert.match(output, /mswarm install <KEY>/);
 });
 
 test("self-hosted agent list supports JSON output", { concurrency: false }, async () => {

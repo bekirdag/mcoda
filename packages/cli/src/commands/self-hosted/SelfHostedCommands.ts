@@ -48,7 +48,7 @@ Environment:
 
 To expose this machine's local agents:
   npm install -g @mcoda/mswarm
-  mswarm setup --api-key <KEY>
+  mswarm install <KEY>
 
 Flags:
   --json                    Emit JSON for supported commands
