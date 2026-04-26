@@ -105,7 +105,7 @@ test("config set mswarm-api-key refreshes managed agent auth", { concurrency: fa
     const logs = await captureLogs(() =>
       ConfigCommands.run(["set", "mswarm-api-key", "fresh-cloud-key"]),
     );
-    assert.match(logs.join("\n"), /Refreshed managed cloud-agent auth for 1 agents/);
+    assert.match(logs.join("\n"), /Refreshed managed mswarm-agent auth for 1 agents/);
 
     const repoAfter = await GlobalRepository.create();
     try {
