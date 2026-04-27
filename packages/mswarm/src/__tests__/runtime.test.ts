@@ -360,9 +360,9 @@ describe("self-hosted node runtime", () => {
   it("installs a launchd daemon service without persisting owner or runtime secrets", async () => {
     const statePath = tempStatePath();
     const homeDir = dirname(statePath);
-    const commands: Array<{ command: string; args: string[] }> = [];
-    const runner: CommandRunner = async (command, args) => {
-      commands.push({ command, args });
+    const commands: Array<{ command: string; args: string[]; timeoutMs: number }> = [];
+    const runner: CommandRunner = async (command, args, options) => {
+      commands.push({ command, args, timeoutMs: options.timeoutMs });
       return { stdout: "", stderr: "" };
     };
 
@@ -383,9 +383,12 @@ describe("self-hosted node runtime", () => {
     expect(result.manager).toBe("launchd");
     expect(result.servicePath).toBe(join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist"));
     expect(plist).toContain("<string>com.mcoda.mswarm.self-hosted-node</string>");
+    expect(plist).toContain("<string>/usr/bin/env</string>");
+    expect(plist).toContain("<string>-i</string>");
     expect(plist).toContain("<string>/usr/local/bin/node</string>");
     expect(plist).toContain("<string>/opt/mcoda/mswarm/dist/server.js</string>");
     expect(plist).toContain("<string>start</string>");
+    expect(plist).not.toContain("<key>EnvironmentVariables</key>");
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(plist).toContain("<key>RunAtLoad</key>");
     expect(plist).toContain("MSWARM_SELF_HOSTED_NODE_KEY_PATH");
@@ -395,6 +398,7 @@ describe("self-hosted node runtime", () => {
     expect(plist).not.toContain("signing-secret-should-not-be-written");
     expect(commands.some((entry) => entry.command === "launchctl" && entry.args[0] === "bootstrap")).toBe(true);
     expect(commands.some((entry) => entry.command === "launchctl" && entry.args[0] === "kickstart")).toBe(true);
+    expect(commands.every((entry) => entry.timeoutMs >= 60_000)).toBe(true);
   });
 
   it("installs a systemd user service with restart policy and without owner or runtime secrets", async () => {
@@ -423,9 +427,11 @@ describe("self-hosted node runtime", () => {
     const service = await readFile(result.servicePath, "utf8");
     expect(result.manager).toBe("systemd");
     expect(result.servicePath).toBe(join(homeDir, ".config", "systemd", "user", "mswarm-self-hosted-node.service"));
-    expect(service).toContain("ExecStart=\"/usr/bin/node\" \"/opt/mcoda/mswarm/dist/server.js\" start");
+    expect(service).toContain("ExecStart=/usr/bin/env -i");
+    expect(service).toContain("\"/usr/bin/node\" \"/opt/mcoda/mswarm/dist/server.js\" start");
     expect(service).toContain("Restart=always");
-    expect(service).toContain('Environment="MSWARM_GATEWAY_BASE_URL=https://gateway.test"');
+    expect(service).toContain('"MSWARM_GATEWAY_BASE_URL=https://gateway.test"');
+    expect(service).not.toContain("Environment=");
     expect(service).toContain("MSWARM_SELF_HOSTED_NODE_KEY_PATH");
     expect(service).not.toContain("msw_owner");
     expect(service).not.toContain("runtime-token-should-not-be-written");
@@ -467,6 +473,8 @@ describe("self-hosted node runtime", () => {
     expect(result.servicePath).toBe(join(homeDir, ".mswarm", "self-hosted-node", "mswarm-self-hosted-node.ps1"));
     expect(script).toContain(`$nodePath = '${nodePath}'`);
     expect(script).toContain(`$commandArguments = @('${commandPath}', 'start')`);
+    expect(script).toContain("$allowedInheritedEnvironment = @(");
+    expect(script).toContain("Remove-Item -Path (\"Env:\" + $_.Name) -ErrorAction SilentlyContinue");
     expect(script).toContain("& $nodePath @commandArguments");
     expect(script).toContain("while ($true)");
     expect(script).toContain("Start-Sleep -Seconds 5");
@@ -500,6 +508,29 @@ describe("self-hosted node runtime", () => {
         args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Start-ScheduledTask -TaskName 'MswarmSelfHostedNode'"]
       }
     ]);
+  });
+
+  it("redacts sensitive service-manager status output", async () => {
+    const statePath = tempStatePath();
+    const homeDir = dirname(statePath);
+    const runner: CommandRunner = async () => ({
+      stdout: [
+        "\tOPENAI_API_KEY => sk-do-not-print",
+        "\tMSWARM_SELF_HOSTED_NODE_KEY_PATH => /Users/ada/.mswarm/self-hosted-node/node.key",
+        "\tMSWARM_SELF_HOSTED_RUNTIME_TOKEN => runtime-do-not-print"
+      ].join("\n"),
+      stderr: "\tSERVICE_SECRET: service-do-not-print"
+    });
+
+    const status = await controlSelfHostedNodeService("status", { platform: "darwin", homeDir, runner });
+
+    expect(status.stdout).toContain("OPENAI_API_KEY => [redacted]");
+    expect(status.stdout).toContain("MSWARM_SELF_HOSTED_NODE_KEY_PATH => /Users/ada/.mswarm/self-hosted-node/node.key");
+    expect(status.stdout).toContain("MSWARM_SELF_HOSTED_RUNTIME_TOKEN => [redacted]");
+    expect(status.stderr).toContain("SERVICE_SECRET: [redacted]");
+    expect(status.stdout).not.toContain("sk-do-not-print");
+    expect(status.stdout).not.toContain("runtime-do-not-print");
+    expect(status.stderr).not.toContain("service-do-not-print");
   });
 
   it("controls Linux user daemon lifecycle through systemd", async () => {

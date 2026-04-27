@@ -327,6 +327,7 @@ const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MCODA_BIN = "mcoda";
 const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
@@ -644,6 +645,10 @@ function quoteSystemdValue(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function quoteEnvAssignment(key: string, value: string): string {
+  return `${key}=${value}`;
+}
+
 function serviceLogDir(homeDir: string): string {
   return join(homeDir, ".mswarm", "self-hosted-node");
 }
@@ -681,8 +686,15 @@ function buildLaunchdPlist(input: {
   errorLogPath: string;
   env: Record<string, string>;
 }): string {
-  const env = Object.entries(input.env)
-    .map(([key, value]) => `    <key>${escapeXml(key)}</key>\n    <string>${escapeXml(value)}</string>`)
+  const args = [
+    "/usr/bin/env",
+    "-i",
+    ...Object.entries(input.env).map(([key, value]) => quoteEnvAssignment(key, value)),
+    input.nodePath,
+    input.commandPath,
+    "start"
+  ]
+    .map((value) => `    <string>${escapeXml(value)}</string>`)
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -692,14 +704,8 @@ function buildLaunchdPlist(input: {
   <string>${escapeXml(input.label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escapeXml(input.nodePath)}</string>
-    <string>${escapeXml(input.commandPath)}</string>
-    <string>start</string>
+${args}
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-${env}
-  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -720,9 +726,9 @@ function buildSystemdUserService(input: {
   errorLogPath: string;
   env: Record<string, string>;
 }): string {
-  const env = Object.entries(input.env)
-    .map(([key, value]) => `Environment=${quoteSystemdValue(`${key}=${value}`)}`)
-    .join("\n");
+  const envArgs = Object.entries(input.env)
+    .map(([key, value]) => quoteSystemdValue(quoteEnvAssignment(key, value)))
+    .join(" ");
   return `[Unit]
 Description=mswarm self-hosted node
 After=network-online.target
@@ -730,12 +736,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${quoteSystemdValue(input.nodePath)} ${quoteSystemdValue(input.commandPath)} start
+ExecStart=/usr/bin/env -i ${envArgs} ${quoteSystemdValue(input.nodePath)} ${quoteSystemdValue(input.commandPath)} start
 Restart=always
 RestartSec=5
 StandardOutput=append:${input.logPath}
 StandardError=append:${input.errorLogPath}
-${env}
 
 [Install]
 WantedBy=default.target
@@ -766,8 +771,13 @@ $logPath = ${quotePowerShellValue(input.logPath)}
 $errorLogPath = ${quotePowerShellValue(input.errorLogPath)}
 $nodePath = ${quotePowerShellValue(input.nodePath)}
 $commandArguments = @(${quotePowerShellValue(input.commandPath)}, 'start')
+$allowedInheritedEnvironment = @('SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'PSModulePath', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'TEMP', 'TMP')
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+
+Get-ChildItem Env: | Where-Object { $allowedInheritedEnvironment -notcontains $_.Name } | ForEach-Object {
+  Remove-Item -Path ("Env:" + $_.Name) -ErrorAction SilentlyContinue
+}
 
 ${env}
 
@@ -874,10 +884,24 @@ function serviceControlResult(
     errorLogPath: layout.errorLogPath,
     action,
     ok,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdout: redactServiceManagerOutput(result.stdout),
+    stderr: redactServiceManagerOutput(result.stderr),
     ...(message ? { message } : {})
   };
+}
+
+function serviceCommandTimeoutMs(timeoutMs?: number): number {
+  return Math.max(
+    Number.isFinite(timeoutMs) && typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 0,
+    DEFAULT_SERVICE_COMMAND_TIMEOUT_MS
+  );
+}
+
+function redactServiceManagerOutput(value: string): string {
+  return value.replace(
+    /^(\s*[\w.-]*(?:API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)[\w.-]*\s*(?:=>|=|:)\s*).*$/gim,
+    "$1[redacted]"
+  );
 }
 
 async function runServiceCommand(
@@ -899,6 +923,7 @@ export async function installSelfHostedNodeService(
   const env = serviceEnvironment(config, options.env || process.env, homeDir);
   const nodePath = options.nodePath || process.execPath;
   const runner = options.runner || defaultCommandRunner;
+  const serviceTimeoutMs = serviceCommandTimeoutMs(config.requestTimeoutMs);
   await mkdir(logDir, { recursive: true });
 
   if (layout.platform === "darwin") {
@@ -917,19 +942,19 @@ export async function installSelfHostedNodeService(
     );
     const domain = launchdDomain();
     await runner("launchctl", ["bootout", `${domain}/${SERVICE_LABEL}`], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     }).catch(() => undefined);
     await runner("launchctl", ["bootstrap", domain, layout.servicePath], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     });
     await runner("launchctl", ["enable", `${domain}/${SERVICE_LABEL}`], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     }).catch(() => undefined);
     await runner("launchctl", ["kickstart", "-k", `${domain}/${SERVICE_LABEL}`], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     });
     return { ...layout, started: true };
@@ -949,19 +974,19 @@ export async function installSelfHostedNodeService(
       "utf8"
     );
     await runner("systemctl", ["--user", "daemon-reload"], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     });
     await runner("systemctl", ["--user", "enable", SYSTEMD_SERVICE_NAME], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     });
     await runner("loginctl", ["enable-linger", options.env?.USER || options.env?.USERNAME || userInfo().username], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     }).catch(() => undefined);
     await runner("systemctl", ["--user", "restart", SYSTEMD_SERVICE_NAME], {
-      timeoutMs: config.requestTimeoutMs,
+      timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     });
     return { ...layout, started: true };
@@ -983,7 +1008,7 @@ export async function installSelfHostedNodeService(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", buildWindowsTaskRegistrationCommand(layout.servicePath)],
       {
-        timeoutMs: config.requestTimeoutMs,
+        timeoutMs: serviceTimeoutMs,
         maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
       }
     );
@@ -991,7 +1016,7 @@ export async function installSelfHostedNodeService(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", windowsTaskCommand("Start-ScheduledTask")],
       {
-        timeoutMs: config.requestTimeoutMs,
+        timeoutMs: serviceTimeoutMs,
         maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
       }
     );
@@ -1007,7 +1032,7 @@ export async function controlSelfHostedNodeService(
 ): Promise<SelfHostedNodeServiceControlResult> {
   const layout = resolveSelfHostedNodeServiceLayout(options);
   const runner = options.runner || defaultCommandRunner;
-  const timeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+  const timeoutMs = serviceCommandTimeoutMs(options.requestTimeoutMs);
   try {
     if (layout.manager === "launchd") {
       const domain = launchdDomain();
@@ -1072,7 +1097,7 @@ export async function uninstallSelfHostedNodeService(
 ): Promise<SelfHostedNodeServiceControlResult> {
   const layout = resolveSelfHostedNodeServiceLayout(options);
   const runner = options.runner || defaultCommandRunner;
-  const timeoutMs = options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+  const timeoutMs = serviceCommandTimeoutMs(options.requestTimeoutMs);
   if (layout.manager === "launchd") {
     await runServiceCommand(runner, "launchctl", ["bootout", `${launchdDomain()}/${SERVICE_LABEL}`], timeoutMs).catch(() => undefined);
     await rm(layout.servicePath, { force: true });
