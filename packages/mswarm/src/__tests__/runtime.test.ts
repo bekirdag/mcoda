@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
@@ -103,6 +103,10 @@ async function packageVersion(): Promise<string> {
   const raw = await readFile(new URL("../../package.json", import.meta.url), "utf8");
   const parsed = JSON.parse(raw) as { version?: string };
   return parsed.version || "";
+}
+
+function testLaunchdDomain(): string {
+  return `gui/${userInfo().uid}`;
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -542,7 +546,7 @@ describe("self-hosted node runtime", () => {
   it("starts an already loaded launchd daemon after proving it is bootstrapped", async () => {
     const statePath = tempStatePath();
     const homeDir = dirname(statePath);
-    const domain = `gui/${process.getuid?.() ?? 501}`;
+    const domain = testLaunchdDomain();
     const serviceTarget = `${domain}/com.mcoda.mswarm.self-hosted-node`;
     const commands: Array<{ command: string; args: string[] }> = [];
     const runner: CommandRunner = async (command, args) => {
@@ -570,7 +574,7 @@ describe("self-hosted node runtime", () => {
   it("does not hide launchd bootstrap failures during restart", async () => {
     const statePath = tempStatePath();
     const homeDir = dirname(statePath);
-    const domain = `gui/${process.getuid?.() ?? 501}`;
+    const domain = testLaunchdDomain();
     const serviceTarget = `${domain}/com.mcoda.mswarm.self-hosted-node`;
     const commands: Array<{ command: string; args: string[] }> = [];
     const runner: CommandRunner = async (command, args) => {
