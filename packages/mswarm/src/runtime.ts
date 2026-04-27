@@ -65,6 +65,7 @@ export interface SelfHostedNodeConfig {
   nodeVersion: string;
   heartbeatIntervalSeconds: number;
   requestTimeoutMs: number;
+  jobTimeoutMs: number;
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
@@ -89,6 +90,7 @@ export interface SelfHostedNodeState {
   mcoda_list_args?: string[];
   node_version?: string;
   request_timeout_ms?: number;
+  job_timeout_ms?: number;
   expose_all_models?: boolean;
   exposure_policy?: SelfHostedExposurePolicy;
   model_allowlist?: string[];
@@ -111,6 +113,7 @@ export interface SelfHostedOwnerSetupConfig {
   nodeVersion: string;
   heartbeatIntervalSeconds: number;
   requestTimeoutMs: number;
+  jobTimeoutMs: number;
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
@@ -330,8 +333,9 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.52";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.53";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MCODA_BIN = "mcoda";
 const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
@@ -758,7 +762,8 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
     MSWARM_SELF_HOSTED_MODEL_ALLOWLIST: config.modelAllowlist.join(","),
     MSWARM_SELF_HOSTED_MODEL_BLOCKLIST: config.modelBlocklist.join(","),
     MSWARM_SELF_HOSTED_HEARTBEAT_INTERVAL_SECONDS: String(config.heartbeatIntervalSeconds),
-    MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS: String(config.requestTimeoutMs)
+    MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS: String(config.requestTimeoutMs),
+    MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: String(config.jobTimeoutMs)
   };
   return Object.fromEntries(
     Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "")
@@ -1316,6 +1321,10 @@ export async function readSelfHostedNodeConfig(
       env.MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS,
       state.request_timeout_ms || DEFAULT_REQUEST_TIMEOUT_MS
     ),
+    jobTimeoutMs: parsePositiveInteger(
+      env.MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS,
+      state.job_timeout_ms || DEFAULT_JOB_TIMEOUT_MS
+    ),
     exposeAllModels: resolveDaemonExposeAllModels(env, state),
     modelAllowlist: parseList(env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST || state.model_allowlist),
     modelBlocklist: parseList(env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST || state.model_blocklist)
@@ -1377,6 +1386,10 @@ export async function readOwnerSetupConfig(
     requestTimeoutMs: parsePositiveInteger(
       env.MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS,
       DEFAULT_REQUEST_TIMEOUT_MS
+    ),
+    jobTimeoutMs: parsePositiveInteger(
+      options["job-timeout-ms"] || env.MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS,
+      DEFAULT_JOB_TIMEOUT_MS
     ),
     exposeAllModels: resolveOwnerSetupExposeAllModels(options, env),
     modelAllowlist: allowlist,
@@ -1722,7 +1735,7 @@ export class McodaLocalAgentExecutor {
 
   constructor(input: { command?: string; timeoutMs?: number; runner?: CommandRunner }) {
     this.command = input.command || DEFAULT_MCODA_BIN;
-    this.timeoutMs = input.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+    this.timeoutMs = input.timeoutMs || DEFAULT_JOB_TIMEOUT_MS;
     this.runner = input.runner || defaultCommandRunner;
   }
 
@@ -1882,6 +1895,7 @@ export class SelfHostedNodeRuntime {
   private readonly mcoda: McodaAgentInventoryClient;
   private readonly mcodaExecutor: McodaLocalAgentExecutor;
   private readonly ollama: OllamaClient;
+  private readonly jobOllama: OllamaClient;
 
   constructor(
     config: SelfHostedNodeConfig,
@@ -1912,7 +1926,7 @@ export class SelfHostedNodeRuntime {
       deps?.mcodaExecutor ||
       new McodaLocalAgentExecutor({
         command: config.mcodaBin,
-        timeoutMs: config.requestTimeoutMs
+        timeoutMs: config.jobTimeoutMs
       });
     this.ollama =
       deps?.ollama ||
@@ -1920,6 +1934,13 @@ export class SelfHostedNodeRuntime {
         baseUrl: config.ollamaBaseUrl,
         fetchImpl: deps?.fetchImpl,
         timeoutMs: config.requestTimeoutMs
+      });
+    this.jobOllama =
+      deps?.ollama ||
+      new OllamaClient({
+        baseUrl: config.ollamaBaseUrl,
+        fetchImpl: deps?.fetchImpl,
+        timeoutMs: config.jobTimeoutMs
       });
   }
 
@@ -1981,6 +2002,7 @@ export class SelfHostedNodeRuntime {
       mcoda_list_args: setupConfig.mcodaListArgs,
       node_version: setupConfig.nodeVersion,
       request_timeout_ms: setupConfig.requestTimeoutMs,
+      job_timeout_ms: setupConfig.jobTimeoutMs,
       expose_all_models: setupConfig.exposeAllModels,
       exposure_policy: setupConfig.exposeAllModels ? "all" : "none",
       model_allowlist: setupConfig.modelAllowlist,
@@ -2010,6 +2032,7 @@ export class SelfHostedNodeRuntime {
         nodeVersion: setupConfig.nodeVersion,
         heartbeatIntervalSeconds: heartbeatInterval,
         requestTimeoutMs: setupConfig.requestTimeoutMs,
+        jobTimeoutMs: setupConfig.jobTimeoutMs,
         exposeAllModels: setupConfig.exposeAllModels,
         modelAllowlist: setupConfig.modelAllowlist,
         modelBlocklist: setupConfig.modelBlocklist
@@ -2078,6 +2101,7 @@ export class SelfHostedNodeRuntime {
       mcoda_list_args: this.config.mcodaListArgs,
       node_version: this.config.nodeVersion,
       request_timeout_ms: this.config.requestTimeoutMs,
+      job_timeout_ms: this.config.jobTimeoutMs,
       expose_all_models: this.config.exposeAllModels,
       exposure_policy: this.config.exposeAllModels ? "all" : "none",
       model_allowlist: this.config.modelAllowlist,
@@ -2113,7 +2137,7 @@ export class SelfHostedNodeRuntime {
         if (job.openai_request.top_p !== undefined) options.top_p = job.openai_request.top_p;
         if (job.openai_request.max_tokens !== undefined) options.num_predict = job.openai_request.max_tokens;
         if (job.openai_request.stop !== undefined) options.stop = job.openai_request.stop;
-        const result = await this.ollama.chat({
+        const result = await this.jobOllama.chat({
           model: job.model || job.openai_request.model,
           messages: job.openai_request.messages,
           options

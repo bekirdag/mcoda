@@ -10,6 +10,7 @@ import {
   type CommandRunner,
   type SelfHostedNodeConfig,
   McodaAgentInventoryClient,
+  McodaLocalAgentExecutor,
   controlSelfHostedNodeService,
   installSelfHostedNodeService,
   machineFingerprintFromId,
@@ -142,6 +143,7 @@ function serviceConfigFor(statePath: string): SelfHostedNodeConfig {
     nodeVersion: "test-node",
     heartbeatIntervalSeconds: 30,
     requestTimeoutMs: 1000,
+    jobTimeoutMs: 3_600_000,
     exposeAllModels: true,
     modelAllowlist: ["phi3-reviewer"],
     modelBlocklist: ["nomic-embed-text:latest"]
@@ -291,8 +293,42 @@ describe("self-hosted node runtime", () => {
     expect(firstConfig.nodeId).toBe("shn_env");
     expect(firstConfig.discoveryMode).toBe("mcoda");
     expect(firstConfig.mcodaBin).toBe("mcoda");
+    expect(firstConfig.requestTimeoutMs).toBe(10_000);
+    expect(firstConfig.jobTimeoutMs).toBe(3_600_000);
     expect(firstConfig.exposeAllModels).toBe(false);
     expect(firstConfig.modelAllowlist).toEqual(["phi3.5:3.8b", "llama3.1:8b"]);
+  });
+
+  it("keeps legacy request timeout state from limiting long local jobs", async () => {
+    const statePath = tempStatePath();
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        node_id: "shn_legacy_timeout",
+        gateway_base_url: "https://gateway.test",
+        request_timeout_ms: 10_000
+      }),
+      "utf8"
+    );
+
+    const config = await readSelfHostedNodeConfig({
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath)
+    } as NodeJS.ProcessEnv);
+
+    expect(config.requestTimeoutMs).toBe(10_000);
+    expect(config.jobTimeoutMs).toBe(3_600_000);
+  });
+
+  it("honors explicit self-hosted job timeout overrides", async () => {
+    const statePath = tempStatePath();
+    const config = await readSelfHostedNodeConfig({
+      MSWARM_SELF_HOSTED_NODE_ID: "shn_job_timeout",
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: "7200000"
+    } as NodeJS.ProcessEnv);
+
+    expect(config.jobTimeoutMs).toBe(7_200_000);
   });
 
   it("migrates legacy daemon exposure false to the new exposed-by-default policy", async () => {
@@ -360,6 +396,7 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.gatewayBaseUrl).toBe("https://gateway.test");
     expect(setupConfig.serverName).toBe("bekir-macbook-pro");
     expect(setupConfig.relayMode).toBe("outbound");
+    expect(setupConfig.jobTimeoutMs).toBe(3_600_000);
     expect(setupConfig.exposeAllModels).toBe(true);
     expect(setupConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
 
@@ -405,6 +442,27 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.gatewayBaseUrl).toBe("https://gateway.test");
     expect(setupConfig.serverName).toBe("bekir-macbook-pro");
     expect(setupConfig.exposeAllModels).toBe(true);
+  });
+
+  it("uses one hour as the default mcoda job execution timeout", async () => {
+    let timeoutMs = 0;
+    let stdin = "";
+    const executor = new McodaLocalAgentExecutor({
+      runner: async (_command, _args, options) => {
+        timeoutMs = options.timeoutMs || 0;
+        stdin = options.input || "";
+        return {
+          stdout: JSON.stringify({ responses: [{ output: "pong" }] }),
+          stderr: ""
+        };
+      }
+    });
+
+    const result = await executor.invoke("codex-agent", "ping");
+
+    expect(result.output).toBe("pong");
+    expect(timeoutMs).toBe(3_600_000);
+    expect(stdin).toBe("ping");
   });
 
   it("normalizes node subcommands while preserving top-level compatibility aliases", () => {
@@ -855,12 +913,14 @@ describe("self-hosted node runtime", () => {
     expect(savedState.runtime_token).toBeUndefined();
     expect(savedState.machine_fingerprint).toMatch(/^sha256:/);
     expect(savedState.exposure_policy).toBe("all");
+    expect(savedState.job_timeout_ms).toBe(3_600_000);
     expect((await readFile(tempRuntimeTokenPath(statePath), "utf8")).trim()).toBe("msn_setup");
     const daemonConfig = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
       MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath)
     } as NodeJS.ProcessEnv);
     expect(daemonConfig.exposeAllModels).toBe(true);
+    expect(daemonConfig.jobTimeoutMs).toBe(3_600_000);
     expect(daemonConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
     expect(daemonConfig.discoveryMode).toBe("mcoda");
     expect(daemonConfig.nodeVersion).toBe(await packageVersion());
@@ -959,6 +1019,7 @@ describe("self-hosted node runtime", () => {
         nodeVersion: "test-node",
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
+        jobTimeoutMs: 3_600_000,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
@@ -993,6 +1054,7 @@ describe("self-hosted node runtime", () => {
         nodeVersion: "test-node",
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
+        jobTimeoutMs: 3_600_000,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
@@ -1065,6 +1127,7 @@ describe("self-hosted node runtime", () => {
         nodeVersion: "test-node",
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
+        jobTimeoutMs: 3_600_000,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
@@ -1128,6 +1191,7 @@ describe("self-hosted node runtime", () => {
         nodeVersion: "test-node",
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
+        jobTimeoutMs: 3_600_000,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
