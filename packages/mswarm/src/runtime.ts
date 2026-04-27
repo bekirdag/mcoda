@@ -326,6 +326,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.47";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MCODA_BIN = "mcoda";
@@ -630,6 +631,21 @@ export async function readSelfHostedRuntimeToken(tokenPath: string): Promise<str
 export async function writeSelfHostedRuntimeToken(tokenPath: string, runtimeToken: string): Promise<void> {
   await mkdir(dirname(tokenPath), { recursive: true });
   await writeFile(tokenPath, `${runtimeToken.trim()}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+let resolvedPackageNodeVersion: Promise<string> | null = null;
+
+async function readPackageNodeVersion(): Promise<string> {
+  resolvedPackageNodeVersion ??= (async () => {
+    try {
+      const raw = await readFile(new URL("../package.json", import.meta.url), "utf8");
+      const parsed = JSON.parse(raw) as { version?: unknown };
+      return optionalText(parsed.version) || DEFAULT_SELF_HOSTED_NODE_VERSION;
+    } catch {
+      return DEFAULT_SELF_HOSTED_NODE_VERSION;
+    }
+  })();
+  return resolvedPackageNodeVersion;
 }
 
 function escapeXml(value: string): string {
@@ -1136,6 +1152,7 @@ export async function readSelfHostedNodeConfig(
     state.ollama_base_url ||
     optionalText(env.OLLAMA_HOST) ||
     DEFAULT_OLLAMA_BASE_URL;
+  const packageNodeVersion = await readPackageNodeVersion();
   return {
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
     nodeId,
@@ -1158,7 +1175,11 @@ export async function readSelfHostedNodeConfig(
       optionalText(env.MSWARM_SELF_HOSTED_RELAY_SIGNING_SECRET),
     listenHost: optionalText(env.MSWARM_SELF_HOSTED_LISTEN_HOST) || DEFAULT_LISTEN_HOST,
     listenPort: parsePositiveInteger(env.MSWARM_SELF_HOSTED_LISTEN_PORT, DEFAULT_LISTEN_PORT),
-    nodeVersion: optionalText(env.MSWARM_SELF_HOSTED_NODE_VERSION) || state.node_version || "0.1.1",
+    nodeVersion:
+      optionalText(env.MSWARM_SELF_HOSTED_NODE_VERSION) ||
+      packageNodeVersion ||
+      state.node_version ||
+      DEFAULT_SELF_HOSTED_NODE_VERSION,
     heartbeatIntervalSeconds: parsePositiveInteger(
       env.MSWARM_SELF_HOSTED_HEARTBEAT_INTERVAL_SECONDS,
       state.heartbeat_interval_seconds || DEFAULT_HEARTBEAT_INTERVAL_SECONDS
@@ -1205,6 +1226,7 @@ export async function readOwnerSetupConfig(
     DEFAULT_OLLAMA_BASE_URL;
   const allowlist = parseList(options.allow || env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST);
   const blocklist = parseList(options.block || env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST);
+  const packageNodeVersion = await readPackageNodeVersion();
   return {
     apiKey,
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
@@ -1222,7 +1244,7 @@ export async function readOwnerSetupConfig(
     mcodaBin: optionalText(env.MSWARM_SELF_HOSTED_MCODA_BIN) || DEFAULT_MCODA_BIN,
     mcodaListArgs: parseArgs(env.MSWARM_SELF_HOSTED_MCODA_LIST_ARGS, DEFAULT_MCODA_LIST_ARGS),
     ollamaBaseUrl: trimTrailingSlash(ollamaBaseUrl),
-    nodeVersion: optionalText(env.MSWARM_SELF_HOSTED_NODE_VERSION) || "0.1.1",
+    nodeVersion: optionalText(env.MSWARM_SELF_HOSTED_NODE_VERSION) || packageNodeVersion,
     heartbeatIntervalSeconds: parsePositiveInteger(
       env.MSWARM_SELF_HOSTED_HEARTBEAT_INTERVAL_SECONDS,
       DEFAULT_HEARTBEAT_INTERVAL_SECONDS

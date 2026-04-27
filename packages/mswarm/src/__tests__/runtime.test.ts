@@ -99,6 +99,12 @@ function tempRuntimeTokenPath(statePath: string): string {
   return join(dirname(statePath), "node.key");
 }
 
+async function packageVersion(): Promise<string> {
+  const raw = await readFile(new URL("../../package.json", import.meta.url), "utf8");
+  const parsed = JSON.parse(raw) as { version?: string };
+  return parsed.version || "";
+}
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
@@ -650,6 +656,7 @@ describe("self-hosted node runtime", () => {
         MSWARM_SELF_HOSTED_MACHINE_ID_PATH: join(dirname(statePath), "machine.id")
       } as NodeJS.ProcessEnv
     );
+    expect(setupConfig.nodeVersion).toBe(await packageVersion());
     const result = await SelfHostedNodeRuntime.setup(setupConfig, { fetchImpl, mcoda });
     expect(result.nodeId).toBe("shn_setup");
     expect(result.modelCount).toBe(1);
@@ -665,9 +672,32 @@ describe("self-hosted node runtime", () => {
     expect(daemonConfig.exposeAllModels).toBe(true);
     expect(daemonConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
     expect(daemonConfig.discoveryMode).toBe("mcoda");
-    expect(daemonConfig.nodeVersion).toBe("0.1.1");
+    expect(daemonConfig.nodeVersion).toBe(await packageVersion());
     expect(calls.filter((call) => call.url.endsWith("/node/bootstrap"))).toHaveLength(1);
     expect(calls.filter((call) => call.url.endsWith("/node/heartbeat"))).toHaveLength(1);
+  });
+
+  it("reports the installed package version instead of stale persisted node metadata", async () => {
+    const statePath = tempStatePath();
+    const runtimeTokenPath = tempRuntimeTokenPath(statePath);
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        node_id: "shn_stale",
+        node_version: "0.1.1",
+        gateway_base_url: "https://gateway.test",
+        discovery_mode: "mcoda"
+      }),
+      "utf8"
+    );
+    writeFileSync(runtimeTokenPath, "runtime-token\n", "utf8");
+
+    const config = await readSelfHostedNodeConfig({
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: runtimeTokenPath
+    } as NodeJS.ProcessEnv);
+
+    expect(config.nodeVersion).toBe(await packageVersion());
   });
 
   it("enrolls once, stores runtime token, and sends heartbeat with Ollama inventory", async () => {
