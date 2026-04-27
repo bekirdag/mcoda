@@ -326,7 +326,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.47";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.48";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MCODA_BIN = "mcoda";
@@ -929,6 +929,26 @@ async function runServiceCommand(
   return runner(command, args, { timeoutMs, maxBuffer: DEFAULT_COMMAND_MAX_BUFFER });
 }
 
+async function ensureLaunchdServiceBootstrapped(
+  runner: CommandRunner,
+  domain: string,
+  serviceTarget: string,
+  servicePath: string,
+  timeoutMs: number
+): Promise<void> {
+  try {
+    await runServiceCommand(runner, "launchctl", ["bootstrap", domain, servicePath], timeoutMs);
+    return;
+  } catch (error) {
+    try {
+      await runServiceCommand(runner, "launchctl", ["print", serviceTarget], timeoutMs);
+      return;
+    } catch {
+      throw error;
+    }
+  }
+}
+
 export async function installSelfHostedNodeService(
   config: SelfHostedNodeConfig,
   options: SelfHostedNodeServiceInstallOptions
@@ -1064,7 +1084,7 @@ export async function controlSelfHostedNodeService(
       if (action === "restart") {
         await runServiceCommand(runner, "launchctl", ["bootout", serviceTarget], timeoutMs).catch(() => undefined);
       }
-      await runServiceCommand(runner, "launchctl", ["bootstrap", domain, layout.servicePath], timeoutMs).catch(() => undefined);
+      await ensureLaunchdServiceBootstrapped(runner, domain, serviceTarget, layout.servicePath, timeoutMs);
       await runServiceCommand(runner, "launchctl", ["enable", serviceTarget], timeoutMs).catch(() => undefined);
       const result = await runServiceCommand(runner, "launchctl", ["kickstart", "-k", serviceTarget], timeoutMs);
       return serviceControlResult(layout, action, result);

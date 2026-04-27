@@ -539,6 +539,66 @@ describe("self-hosted node runtime", () => {
     expect(status.stderr).not.toContain("service-do-not-print");
   });
 
+  it("starts an already loaded launchd daemon after proving it is bootstrapped", async () => {
+    const statePath = tempStatePath();
+    const homeDir = dirname(statePath);
+    const domain = `gui/${process.getuid?.() ?? 501}`;
+    const serviceTarget = `${domain}/com.mcoda.mswarm.self-hosted-node`;
+    const commands: Array<{ command: string; args: string[] }> = [];
+    const runner: CommandRunner = async (command, args) => {
+      commands.push({ command, args });
+      if (args[0] === "bootstrap") {
+        throw new Error("Bootstrap failed: 5: Input/output error");
+      }
+      return { stdout: args[0] === "print" ? "service = com.mcoda.mswarm.self-hosted-node" : "", stderr: "" };
+    };
+
+    const start = await controlSelfHostedNodeService("start", { platform: "darwin", homeDir, runner });
+
+    expect(start.ok).toBe(true);
+    expect(commands).toEqual([
+      {
+        command: "launchctl",
+        args: ["bootstrap", domain, join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist")]
+      },
+      { command: "launchctl", args: ["print", serviceTarget] },
+      { command: "launchctl", args: ["enable", serviceTarget] },
+      { command: "launchctl", args: ["kickstart", "-k", serviceTarget] }
+    ]);
+  });
+
+  it("does not hide launchd bootstrap failures during restart", async () => {
+    const statePath = tempStatePath();
+    const homeDir = dirname(statePath);
+    const domain = `gui/${process.getuid?.() ?? 501}`;
+    const serviceTarget = `${domain}/com.mcoda.mswarm.self-hosted-node`;
+    const commands: Array<{ command: string; args: string[] }> = [];
+    const runner: CommandRunner = async (command, args) => {
+      commands.push({ command, args });
+      if (args[0] === "bootstrap") {
+        throw new Error("Bootstrap failed: 5: Input/output error");
+      }
+      if (args[0] === "print") {
+        throw new Error("Could not find service");
+      }
+      return { stdout: "", stderr: "" };
+    };
+
+    await assert.rejects(
+      () => controlSelfHostedNodeService("restart", { platform: "darwin", homeDir, runner }),
+      /Bootstrap failed/
+    );
+
+    expect(commands).toEqual([
+      { command: "launchctl", args: ["bootout", serviceTarget] },
+      {
+        command: "launchctl",
+        args: ["bootstrap", domain, join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist")]
+      },
+      { command: "launchctl", args: ["print", serviceTarget] }
+    ]);
+  });
+
   it("controls Linux user daemon lifecycle through systemd", async () => {
     const statePath = tempStatePath();
     const homeDir = dirname(statePath);
