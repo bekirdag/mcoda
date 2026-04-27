@@ -333,7 +333,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.53";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.54";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
@@ -742,10 +742,23 @@ function serviceLogDir(homeDir: string): string {
   return join(homeDir, ".mswarm", "self-hosted-node");
 }
 
+function serviceUserEnvironment(env: NodeJS.ProcessEnv): Record<string, string | null | undefined> {
+  const fallbackUsername = userInfo().username;
+  const username = env.USER || env.LOGNAME || env.USERNAME || fallbackUsername;
+  return {
+    USER: env.USER || username,
+    LOGNAME: env.LOGNAME || username,
+    USERNAME: env.USERNAME || username,
+    SHELL: env.SHELL,
+    TMPDIR: env.TMPDIR || env.TMP || env.TEMP
+  };
+}
+
 function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv, homeDir: string): Record<string, string> {
   const values: Record<string, string | null | undefined> = {
     HOME: env.HOME || homeDir,
     PATH: env.PATH || env.Path || env.path || "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+    ...serviceUserEnvironment(env),
     MSWARM_SELF_HOSTED_PROCESS_TITLE: DAEMON_PROCESS_NAME,
     MSWARM_GATEWAY_BASE_URL: config.gatewayBaseUrl,
     MSWARM_SELF_HOSTED_NODE_STATE_PATH: config.statePath,

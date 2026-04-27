@@ -522,6 +522,9 @@ describe("self-hosted node runtime", () => {
     expect(plist).not.toContain("runtime-token-should-not-be-written");
     expect(plist).not.toContain("signing-secret-should-not-be-written");
     expect(wrapper).toContain("exec /usr/bin/env -i");
+    expect(wrapper).toContain(`'USER=${userInfo().username}'`);
+    expect(wrapper).toContain(`'LOGNAME=${userInfo().username}'`);
+    expect(wrapper).toContain(`'USERNAME=${userInfo().username}'`);
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_EXPOSURE_POLICY=all'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_NODE_KEY_PATH=");
@@ -614,6 +617,9 @@ describe("self-hosted node runtime", () => {
     expect(service).not.toContain("runtime-token-should-not-be-written");
     expect(service).not.toContain("signing-secret-should-not-be-written");
     expect(wrapper).toContain("exec /usr/bin/env -i");
+    expect(wrapper).toContain("'USER=ada'");
+    expect(wrapper).toContain("'LOGNAME=ada'");
+    expect(wrapper).toContain("'USERNAME=ada'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_EXPOSURE_POLICY=all'");
     expect(wrapper).toContain("'MSWARM_GATEWAY_BASE_URL=https://gateway.test'");
