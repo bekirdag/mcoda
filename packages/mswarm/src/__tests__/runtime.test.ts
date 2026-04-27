@@ -87,6 +87,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function quoteSystemdValueForTest(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 const tempDirs: string[] = [];
 
 function tempStatePath(): string {
@@ -488,7 +492,7 @@ describe("self-hosted node runtime", () => {
     expect(result.manager).toBe("systemd");
     expect(result.servicePath).toBe(join(homeDir, ".config", "systemd", "user", "mswarm-self-hosted-node.service"));
     expect(result.wrapperPath).toBe(join(homeDir, ".mswarm", "self-hosted-node", "mswarm-node"));
-    expect(service).toContain(`ExecStart="${result.wrapperPath}"`);
+    expect(service).toContain(`ExecStart=${quoteSystemdValueForTest(result.wrapperPath)}`);
     expect(service).not.toContain("ExecStart=/usr/bin/env -i");
     expect(service).not.toContain("/opt/mcoda/mswarm/dist/server.js");
     expect(service).toContain("Restart=always");
