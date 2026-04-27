@@ -65,6 +65,7 @@ Environment:
   MSWARM_SELF_HOSTED_LISTEN_PORT           Direct node bind port, defaults to 18083
   MSWARM_SELF_HOSTED_MODEL_ALLOWLIST       Comma-separated local agent slugs/model names to expose
   MSWARM_SELF_HOSTED_MODEL_BLOCKLIST       Comma-separated local agent slugs/model names to hide
+  MSWARM_SELF_HOSTED_EXPOSURE_POLICY       all or none, defaults to all
 
 Setup options:
   node install <KEY>       Quick setup flow; avoids shell-exporting the API key
@@ -76,7 +77,8 @@ Setup options:
   --direct-url <URL>        Required only for direct mode
   --allow <SLUGS>           Comma-separated allowlist
   --block <SLUGS>           Comma-separated blocklist
-  --expose-all              Expose all healthy non-embedding local agents
+  --expose-all              Expose all healthy non-embedding local agents (default)
+  --no-expose-all           Expose only allowlisted local agents
   --start                   Start foreground daemon after setup
 
 Log options:

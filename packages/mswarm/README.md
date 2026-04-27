@@ -36,6 +36,7 @@ The default setup values are:
 - server name: normalized `os.hostname()`
 - relay mode: `outbound`
 - discovery mode: `mcoda`
+- exposure policy: expose all healthy non-embedding local agents
 - machine fingerprint: `sha256` of a random local machine ID
 
 Runtime state is written under `~/.mswarm/self-hosted-node/`:
@@ -77,7 +78,7 @@ mswarm node uninstall
 
 ## Advanced Setup
 
-Expose only selected local agents:
+By default, the node exposes all healthy non-embedding local agents. Expose only selected local agents:
 
 ```sh
 mswarm node install <MSWARM_API_KEY> --allow phi3-reviewer,llama-local
@@ -89,10 +90,10 @@ Hide selected local agents:
 mswarm node install <MSWARM_API_KEY> --block experimental-agent
 ```
 
-Expose all healthy non-embedding local agents:
+Keep discovery running but expose only allowlisted agents:
 
 ```sh
-mswarm node install <MSWARM_API_KEY> --expose-all
+mswarm node install <MSWARM_API_KEY> --no-expose-all
 ```
 
 Use direct mode only when the node has a public HTTPS or tunnel URL:
@@ -126,4 +127,4 @@ The legacy aliases `mswarm install <MSWARM_API_KEY>`, `mswarm start`, `mswarm do
 
 ## Environment
 
-`MSWARM_API_KEY` can replace `--api-key` during legacy `setup`, but the preferred flow is `mswarm node install <MSWARM_API_KEY>` or `mswarm node install --api-key-stdin` so the key is never exported into the shell environment. `MSWARM_GATEWAY_BASE_URL` overrides the gateway. The default discovery mode is `mcoda`, so the node reads `mcoda agent list --json --refresh-health`; set `MSWARM_SELF_HOSTED_DISCOVERY_MODE=ollama` only for raw Ollama fallback discovery.
+`MSWARM_API_KEY` can replace `--api-key` during legacy `setup`, but the preferred flow is `mswarm node install <MSWARM_API_KEY>` or `mswarm node install --api-key-stdin` so the key is never exported into the shell environment. `MSWARM_GATEWAY_BASE_URL` overrides the gateway. The default discovery mode is `mcoda`, so the node reads `mcoda agent list --json --refresh-health`; set `MSWARM_SELF_HOSTED_DISCOVERY_MODE=ollama` only for raw Ollama fallback discovery. `MSWARM_SELF_HOSTED_EXPOSURE_POLICY=none` disables default exposure while keeping allowlists/blocklists available.

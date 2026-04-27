@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 export type FetchLike = typeof fetch;
 export type SelfHostedDiscoveryMode = "mcoda" | "ollama";
 export type SelfHostedRelayMode = "outbound" | "direct";
+export type SelfHostedExposurePolicy = "all" | "none";
 export type CommandRunner = (
   command: string,
   args: string[],
@@ -89,6 +90,7 @@ export interface SelfHostedNodeState {
   node_version?: string;
   request_timeout_ms?: number;
   expose_all_models?: boolean;
+  exposure_policy?: SelfHostedExposurePolicy;
   model_allowlist?: string[];
   model_blocklist?: string[];
 }
@@ -328,7 +330,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.51";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.52";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MCODA_BIN = "mcoda";
@@ -341,6 +343,7 @@ const WINDOWS_TASK_NAME = "MswarmSelfHostedNode";
 const DAEMON_PROCESS_NAME = "mswarm-node";
 const POSIX_WRAPPER_SCRIPT_NAME = DAEMON_PROCESS_NAME;
 const WINDOWS_WRAPPER_SCRIPT_NAME = "mswarm-self-hosted-node.ps1";
+const DEFAULT_EXPOSE_ALL_MODELS = true;
 
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -361,6 +364,64 @@ function parseBoolean(value: unknown, fallback: boolean): boolean {
   if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
   if (normalized === "0" || normalized === "false" || normalized === "no") return false;
   return fallback;
+}
+
+function parseExposurePolicy(value: unknown): SelfHostedExposurePolicy | null {
+  const normalized = optionalText(value)?.toLowerCase().replace(/_/g, "-");
+  if (!normalized) return null;
+  if (["all", "expose-all", "exposed", "true", "1", "yes"].includes(normalized)) return "all";
+  if (["none", "off", "disabled", "false", "0", "no"].includes(normalized)) return "none";
+  return null;
+}
+
+function exposurePolicyToBoolean(policy: SelfHostedExposurePolicy | null): boolean | null {
+  if (policy === "all") return true;
+  if (policy === "none") return false;
+  return null;
+}
+
+function resolveDaemonExposeAllModels(env: NodeJS.ProcessEnv, state: SelfHostedNodeState): boolean {
+  const policy = exposurePolicyToBoolean(
+    parseExposurePolicy(env.MSWARM_SELF_HOSTED_EXPOSURE_POLICY) || parseExposurePolicy(state.exposure_policy)
+  );
+  if (policy !== null) {
+    return policy;
+  }
+
+  if (parseBoolean(env.MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS, false) === true) {
+    return true;
+  }
+
+  if (state.expose_all_models === true) {
+    return true;
+  }
+
+  return DEFAULT_EXPOSE_ALL_MODELS;
+}
+
+function resolveOwnerSetupExposeAllModels(
+  options: Record<string, string | boolean>,
+  env: NodeJS.ProcessEnv
+): boolean {
+  if (options["no-expose-all"] === true) {
+    return false;
+  }
+
+  const optionPolicy = exposurePolicyToBoolean(parseExposurePolicy(options["exposure-policy"]));
+  if (optionPolicy !== null) {
+    return optionPolicy;
+  }
+
+  if (options["expose-all"] === true) {
+    return true;
+  }
+
+  const envPolicy = exposurePolicyToBoolean(parseExposurePolicy(env.MSWARM_SELF_HOSTED_EXPOSURE_POLICY));
+  if (envPolicy !== null) {
+    return envPolicy;
+  }
+
+  return parseBoolean(env.MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS, DEFAULT_EXPOSE_ALL_MODELS);
 }
 
 function parseList(value: unknown): string[] {
@@ -692,6 +753,7 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
     MSWARM_SELF_HOSTED_MCODA_LIST_ARGS: config.mcodaListArgs.join(","),
     MSWARM_SELF_HOSTED_OLLAMA_BASE_URL: config.ollamaBaseUrl,
     MSWARM_SELF_HOSTED_NODE_VERSION: config.nodeVersion,
+    MSWARM_SELF_HOSTED_EXPOSURE_POLICY: config.exposeAllModels ? "all" : "none",
     MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS: config.exposeAllModels ? "true" : "false",
     MSWARM_SELF_HOSTED_MODEL_ALLOWLIST: config.modelAllowlist.join(","),
     MSWARM_SELF_HOSTED_MODEL_BLOCKLIST: config.modelBlocklist.join(","),
@@ -1242,8 +1304,8 @@ export async function readSelfHostedNodeConfig(
     listenHost: optionalText(env.MSWARM_SELF_HOSTED_LISTEN_HOST) || DEFAULT_LISTEN_HOST,
     listenPort: parsePositiveInteger(env.MSWARM_SELF_HOSTED_LISTEN_PORT, DEFAULT_LISTEN_PORT),
     nodeVersion:
-      optionalText(env.MSWARM_SELF_HOSTED_NODE_VERSION) ||
       packageNodeVersion ||
+      optionalText(env.MSWARM_SELF_HOSTED_NODE_VERSION) ||
       state.node_version ||
       DEFAULT_SELF_HOSTED_NODE_VERSION,
     heartbeatIntervalSeconds: parsePositiveInteger(
@@ -1254,10 +1316,7 @@ export async function readSelfHostedNodeConfig(
       env.MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS,
       state.request_timeout_ms || DEFAULT_REQUEST_TIMEOUT_MS
     ),
-    exposeAllModels: parseBoolean(
-      env.MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS,
-      typeof state.expose_all_models === "boolean" ? state.expose_all_models : false
-    ),
+    exposeAllModels: resolveDaemonExposeAllModels(env, state),
     modelAllowlist: parseList(env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST || state.model_allowlist),
     modelBlocklist: parseList(env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST || state.model_blocklist)
   };
@@ -1319,8 +1378,7 @@ export async function readOwnerSetupConfig(
       env.MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS,
       DEFAULT_REQUEST_TIMEOUT_MS
     ),
-    exposeAllModels:
-      options["expose-all"] === true || parseBoolean(env.MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS, false),
+    exposeAllModels: resolveOwnerSetupExposeAllModels(options, env),
     modelAllowlist: allowlist,
     modelBlocklist: blocklist,
     start: options.start === true
@@ -1924,6 +1982,7 @@ export class SelfHostedNodeRuntime {
       node_version: setupConfig.nodeVersion,
       request_timeout_ms: setupConfig.requestTimeoutMs,
       expose_all_models: setupConfig.exposeAllModels,
+      exposure_policy: setupConfig.exposeAllModels ? "all" : "none",
       model_allowlist: setupConfig.modelAllowlist,
       model_blocklist: setupConfig.modelBlocklist
     };
@@ -2020,6 +2079,7 @@ export class SelfHostedNodeRuntime {
       node_version: this.config.nodeVersion,
       request_timeout_ms: this.config.requestTimeoutMs,
       expose_all_models: this.config.exposeAllModels,
+      exposure_policy: this.config.exposeAllModels ? "all" : "none",
       model_allowlist: this.config.modelAllowlist,
       model_blocklist: this.config.modelBlocklist
     };
@@ -2170,12 +2230,13 @@ export class SelfHostedNodeRuntime {
       models
     };
     const heartbeatResponse = await this.gateway.heartbeat(enrollment.runtimeToken, heartbeatPayload);
+    const exposedModelCount = models.filter((model) => model.exposed !== false).length;
     return {
       enrolled: enrollment.enrolled,
       status,
-      model_count: models.length,
+      model_count: exposedModelCount,
       discovery_source: discoverySource,
-      mcoda_agent_count: discoverySource === "mcoda" ? models.length : undefined,
+      mcoda_agent_count: discoverySource === "mcoda" ? exposedModelCount : undefined,
       ollama_version: version,
       heartbeat_response: heartbeatResponse
     };
@@ -2189,7 +2250,7 @@ export class SelfHostedNodeRuntime {
       node_id: this.config.nodeId,
       models
     });
-    return { count: models.length, response };
+    return { count: models.filter((model) => model.exposed !== false).length, response };
   }
 
   async pollAndExecuteJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<{

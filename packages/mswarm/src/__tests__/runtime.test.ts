@@ -286,13 +286,55 @@ describe("self-hosted node runtime", () => {
       MSWARM_SELF_HOSTED_NODE_ID: "shn_env",
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
       MSWARM_SELF_HOSTED_MODEL_ALLOWLIST: "phi3.5:3.8b,llama3.1:8b",
-      MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS: "false"
+      MSWARM_SELF_HOSTED_EXPOSURE_POLICY: "none"
     } as NodeJS.ProcessEnv);
     expect(firstConfig.nodeId).toBe("shn_env");
     expect(firstConfig.discoveryMode).toBe("mcoda");
     expect(firstConfig.mcodaBin).toBe("mcoda");
     expect(firstConfig.exposeAllModels).toBe(false);
     expect(firstConfig.modelAllowlist).toEqual(["phi3.5:3.8b", "llama3.1:8b"]);
+  });
+
+  it("migrates legacy daemon exposure false to the new exposed-by-default policy", async () => {
+    const statePath = tempStatePath();
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        node_id: "shn_legacy",
+        expose_all_models: false,
+        gateway_base_url: "https://gateway.test"
+      }),
+      "utf8"
+    );
+
+    const config = await readSelfHostedNodeConfig({
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath),
+      MSWARM_SELF_HOSTED_EXPOSE_ALL_MODELS: "false"
+    } as NodeJS.ProcessEnv);
+
+    expect(config.exposeAllModels).toBe(true);
+  });
+
+  it("honors explicit daemon exposure opt-out policy", async () => {
+    const statePath = tempStatePath();
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        node_id: "shn_policy_none",
+        expose_all_models: true,
+        exposure_policy: "none",
+        gateway_base_url: "https://gateway.test"
+      }),
+      "utf8"
+    );
+
+    const config = await readSelfHostedNodeConfig({
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath)
+    } as NodeJS.ProcessEnv);
+
+    expect(config.exposeAllModels).toBe(false);
   });
 
   it("parses owner setup config and derives a stable local machine fingerprint", async () => {
@@ -307,8 +349,7 @@ describe("self-hosted node runtime", () => {
         "--server-name",
         "Bekir MacBook Pro",
         "--allow",
-        "phi3-reviewer",
-        "--expose-all"
+        "phi3-reviewer"
       ],
       {
         MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
@@ -328,6 +369,20 @@ describe("self-hosted node runtime", () => {
     expect(machineFingerprintFromId(firstMachineId)).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
+  it("parses owner setup exposure opt-out", async () => {
+    const statePath = tempStatePath();
+    const setupConfig = await readOwnerSetupConfig(
+      ["--api-key", "msw_owner", "--no-expose-all"],
+      {
+        MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+        MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath),
+        MSWARM_SELF_HOSTED_MACHINE_ID_PATH: join(dirname(statePath), "machine.id")
+      } as NodeJS.ProcessEnv
+    );
+
+    expect(setupConfig.exposeAllModels).toBe(false);
+  });
+
   it("parses install positional API key without requiring an exported shell key", async () => {
     const statePath = tempStatePath();
     const machinePath = join(dirname(statePath), "machine.id");
@@ -336,8 +391,7 @@ describe("self-hosted node runtime", () => {
       "--gateway",
       "https://gateway.test/",
       "--server-name",
-      "Bekir MacBook Pro",
-      "--expose-all"
+      "Bekir MacBook Pro"
     ]);
 
     expect(setupArgs.slice(0, 2)).toEqual(["--api-key", "msw_owner"]);
@@ -411,6 +465,7 @@ describe("self-hosted node runtime", () => {
     expect(plist).not.toContain("signing-secret-should-not-be-written");
     expect(wrapper).toContain("exec /usr/bin/env -i");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_EXPOSURE_POLICY=all'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_NODE_KEY_PATH=");
     expect(wrapper).toContain("'MSWARM_GATEWAY_BASE_URL=https://gateway.test'");
     expect(wrapper).toContain("'/usr/local/bin/node'");
@@ -502,6 +557,7 @@ describe("self-hosted node runtime", () => {
     expect(service).not.toContain("signing-secret-should-not-be-written");
     expect(wrapper).toContain("exec /usr/bin/env -i");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_EXPOSURE_POLICY=all'");
     expect(wrapper).toContain("'MSWARM_GATEWAY_BASE_URL=https://gateway.test'");
     expect(wrapper).toContain("'/usr/bin/node'");
     expect(wrapper).toContain("'/opt/mcoda/mswarm/dist/server.js'");
@@ -552,6 +608,7 @@ describe("self-hosted node runtime", () => {
     expect(script).toContain("while ($true)");
     expect(script).toContain("Start-Sleep -Seconds 5");
     expect(script).toContain("$env:MSWARM_SELF_HOSTED_PROCESS_TITLE = 'mswarm-node'");
+    expect(script).toContain("$env:MSWARM_SELF_HOSTED_EXPOSURE_POLICY = 'all'");
     expect(script).toContain("$env:MSWARM_SELF_HOSTED_NODE_KEY_PATH");
     expect(script).toContain("$env:MSWARM_GATEWAY_BASE_URL");
     expect(script).not.toContain("msw_owner");
@@ -797,6 +854,7 @@ describe("self-hosted node runtime", () => {
     expect(savedState.node_id).toBe("shn_setup");
     expect(savedState.runtime_token).toBeUndefined();
     expect(savedState.machine_fingerprint).toMatch(/^sha256:/);
+    expect(savedState.exposure_policy).toBe("all");
     expect((await readFile(tempRuntimeTokenPath(statePath), "utf8")).trim()).toBe("msn_setup");
     const daemonConfig = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
@@ -827,7 +885,8 @@ describe("self-hosted node runtime", () => {
 
     const config = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
-      MSWARM_SELF_HOSTED_NODE_KEY_PATH: runtimeTokenPath
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: runtimeTokenPath,
+      MSWARM_SELF_HOSTED_NODE_VERSION: "0.1.1"
     } as NodeJS.ProcessEnv);
 
     expect(config.nodeVersion).toBe(await packageVersion());
@@ -974,6 +1033,14 @@ describe("self-hosted node runtime", () => {
             maxComplexity: 5,
             capabilities: ["code_review", "plan"],
             health: { status: "healthy" }
+          },
+          {
+            id: "agent-embed",
+            slug: "nomic-embed-text",
+            adapter: "ollama-remote",
+            defaultModel: "nomic-embed-text:latest",
+            bestUsage: "embedding",
+            health: { status: "healthy" }
           }
         ]),
         stderr: ""
@@ -1009,14 +1076,22 @@ describe("self-hosted node runtime", () => {
     expect(result.status).toBe("online");
     expect(result.discovery_source).toBe("mcoda");
     expect(result.model_count).toBe(1);
+    expect(result.mcoda_agent_count).toBe(1);
     expect(heartbeatBodies[0].discovery).toMatchObject({ source: "mcoda", mcoda_status: "ok" });
     const models = heartbeatBodies[0].models as Array<Record<string, unknown>>;
+    expect(models).toHaveLength(2);
     expect(models[0]).toMatchObject({
       name: "phi3-reviewer",
       provider: "mcoda",
       adapter: "ollama-remote",
       source_agent_slug: "phi3-reviewer",
       model_id: "phi3.5:latest"
+    });
+    expect(models[0].exposed).toBe(true);
+    expect(models[1]).toMatchObject({
+      name: "nomic-embed-text",
+      exposed: false,
+      best_usage: "embedding"
     });
   });
 
