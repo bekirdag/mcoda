@@ -18,7 +18,7 @@ const CODEX_EXIT_GRACE_ENV = "MCODA_CODEX_EXIT_GRACE_MS";
 const CODEX_DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const CODEX_DEFAULT_EXIT_GRACE_MS = 5_000;
 
-type AssistantTextEvent = { text: string; kind: "delta" | "final" };
+type AssistantTextEvent = { text: string; kind: "delta" | "final"; terminal: boolean };
 type StreamLine = { text: string; indent?: number; color?: keyof typeof ANSI; bold?: boolean };
 
 const ANSI = {
@@ -605,10 +605,10 @@ const extractAssistantText = (parsed: any): AssistantTextEvent | null => {
   if (!parsed || typeof parsed !== "object") return null;
   const type = typeof parsed.type === "string" ? parsed.type : "";
   if (type.includes("output_text.delta") && typeof parsed.delta === "string") {
-    return { text: parsed.delta, kind: "delta" };
+    return { text: parsed.delta, kind: "delta", terminal: false };
   }
   if (type.includes("output_text.done") && typeof parsed.text === "string") {
-    return { text: parsed.text, kind: "final" };
+    return { text: parsed.text, kind: "final", terminal: true };
   }
   const item = parsed.item;
   const itemType = item?.item_type ?? item?.itemType ?? item?.type;
@@ -616,7 +616,7 @@ const extractAssistantText = (parsed: any): AssistantTextEvent | null => {
   const normalizedType = String(itemType).toLowerCase();
   if (normalizedType !== "assistant_message" && normalizedType !== "agent_message") return null;
   if (typeof item.delta === "string") {
-    return { text: item.delta, kind: "delta" };
+    return { text: item.delta, kind: "delta", terminal: false };
   }
   if (Array.isArray(item.delta)) {
     const parts = item.delta
@@ -624,12 +624,12 @@ const extractAssistantText = (parsed: any): AssistantTextEvent | null => {
       .filter(Boolean)
       .join("");
     if (parts) {
-      return { text: parts, kind: "delta" };
+      return { text: parts, kind: "delta", terminal: false };
     }
   }
   const isFinal = type.includes("completed") || type.includes("done");
   if (typeof item.text === "string" && isFinal) {
-    return { text: item.text, kind: "final" };
+    return { text: item.text, kind: "final", terminal: false };
   }
   if (Array.isArray(item.content) && isFinal) {
     const parts = item.content
@@ -637,7 +637,7 @@ const extractAssistantText = (parsed: any): AssistantTextEvent | null => {
       .filter(Boolean)
       .join("");
     if (parts) {
-      return { text: parts, kind: "final" };
+      return { text: parts, kind: "final", terminal: false };
     }
   }
   return null;
@@ -767,7 +767,9 @@ const invokeCodexProcess = async (
             message += event.text;
           } else {
             message = event.text;
-            scheduleCompletionGrace();
+            if (event.terminal) {
+              scheduleCompletionGrace();
+            }
           }
           options?.hooks?.onAssistantEvent?.(event, normalized);
         }

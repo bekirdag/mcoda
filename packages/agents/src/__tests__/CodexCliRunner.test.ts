@@ -190,6 +190,66 @@ process.stdin.on("error", () => {});
   }
 });
 
+test("Codex CLI runner waits past progress agent messages before resolving", { concurrency: false }, async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-runner-progress-final-"));
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
+  const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
+  const originalTimeout = process.env[CODEX_TIMEOUT_ENV];
+  const originalExitGrace = process.env[CODEX_EXIT_GRACE_ENV];
+  try {
+    const scriptPath = await writeFakeCodexScript(
+      tempDir,
+      `
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", () => {});
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    type: "item.completed",
+    item: {
+      id: "item_0",
+      type: "agent_message",
+      text: "I am checking repo context before answering.",
+    },
+  }) + "\\n");
+  setTimeout(() => {
+    process.stdout.write(JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_1",
+        type: "agent_message",
+        text: "complete final answer",
+      },
+    }) + "\\n");
+    process.stdout.write(JSON.stringify({
+      type: "turn.completed",
+      usage: { input_tokens: 10, output_tokens: 4 },
+    }) + "\\n");
+    setTimeout(() => {}, 5000);
+  }, 100);
+});
+process.stdin.on("error", () => {});
+`,
+    );
+    process.env.MCODA_SKIP_CLI_CHECKS = "1";
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
+    process.env[CODEX_TIMEOUT_ENV] = "1000";
+    process.env[CODEX_EXIT_GRACE_ENV] = "25";
+
+    const result = await runCodexExec("hello");
+    assert.equal(result.output, "complete final answer");
+    assert.match(result.raw, /checking repo context/);
+  } finally {
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
+    restoreEnvVar("MCODA_SKIP_CLI_CHECKS", originalSkip);
+    restoreEnvVar(CODEX_TIMEOUT_ENV, originalTimeout);
+    restoreEnvVar(CODEX_EXIT_GRACE_ENV, originalExitGrace);
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("Codex CLI runner passes output schema files to codex exec when provided", { concurrency: false }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-runner-schema-"));
   const originalCommand = process.env[CODEX_COMMAND_ENV];
