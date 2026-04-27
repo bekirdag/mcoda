@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname, homedir, platform, userInfo } from "node:os";
 import { spawn } from "node:child_process";
@@ -225,6 +225,7 @@ export interface SelfHostedNodeServiceInstallResult {
   manager: SelfHostedNodeServiceManager;
   serviceName: string;
   servicePath: string;
+  wrapperPath: string;
   logPath: string;
   errorLogPath: string;
   started: boolean;
@@ -255,6 +256,7 @@ export interface SelfHostedNodeServiceLayout {
   manager: SelfHostedNodeServiceManager;
   serviceName: string;
   servicePath: string;
+  wrapperPath: string;
   logPath: string;
   errorLogPath: string;
 }
@@ -326,7 +328,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.49";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.50";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_MCODA_BIN = "mcoda";
@@ -336,6 +338,8 @@ const DEFAULT_JOB_POLL_WAIT_MS = 25_000;
 const SERVICE_LABEL = "com.mcoda.mswarm.self-hosted-node";
 const SYSTEMD_SERVICE_NAME = "mswarm-self-hosted-node.service";
 const WINDOWS_TASK_NAME = "MswarmSelfHostedNode";
+const DAEMON_PROCESS_NAME = "mswarm-node";
+const POSIX_WRAPPER_SCRIPT_NAME = DAEMON_PROCESS_NAME;
 const WINDOWS_WRAPPER_SCRIPT_NAME = "mswarm-self-hosted-node.ps1";
 
 function optionalText(value: unknown): string | null {
@@ -661,6 +665,10 @@ function quoteSystemdValue(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function quotePosixShellValue(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function quoteEnvAssignment(key: string, value: string): string {
   return `${key}=${value}`;
 }
@@ -673,6 +681,7 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
   const values: Record<string, string | null | undefined> = {
     HOME: env.HOME || homeDir,
     PATH: env.PATH || env.Path || env.path || "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+    MSWARM_SELF_HOSTED_PROCESS_TITLE: DAEMON_PROCESS_NAME,
     MSWARM_GATEWAY_BASE_URL: config.gatewayBaseUrl,
     MSWARM_SELF_HOSTED_NODE_STATE_PATH: config.statePath,
     MSWARM_SELF_HOSTED_NODE_KEY_PATH: config.runtimeTokenPath,
@@ -696,20 +705,11 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
 
 function buildLaunchdPlist(input: {
   label: string;
-  nodePath: string;
-  commandPath: string;
+  wrapperPath: string;
   logPath: string;
   errorLogPath: string;
-  env: Record<string, string>;
 }): string {
-  const args = [
-    "/usr/bin/env",
-    "-i",
-    ...Object.entries(input.env).map(([key, value]) => quoteEnvAssignment(key, value)),
-    input.nodePath,
-    input.commandPath,
-    "start"
-  ]
+  const args = [input.wrapperPath]
     .map((value) => `    <string>${escapeXml(value)}</string>`)
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -736,15 +736,10 @@ ${args}
 }
 
 function buildSystemdUserService(input: {
-  nodePath: string;
-  commandPath: string;
+  wrapperPath: string;
   logPath: string;
   errorLogPath: string;
-  env: Record<string, string>;
 }): string {
-  const envArgs = Object.entries(input.env)
-    .map(([key, value]) => quoteSystemdValue(quoteEnvAssignment(key, value)))
-    .join(" ");
   return `[Unit]
 Description=mswarm self-hosted node
 After=network-online.target
@@ -752,7 +747,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/env -i ${envArgs} ${quoteSystemdValue(input.nodePath)} ${quoteSystemdValue(input.commandPath)} start
+ExecStart=${quoteSystemdValue(input.wrapperPath)}
 Restart=always
 RestartSec=5
 StandardOutput=append:${input.logPath}
@@ -760,6 +755,23 @@ StandardError=append:${input.errorLogPath}
 
 [Install]
 WantedBy=default.target
+`;
+}
+
+function buildPosixDaemonWrapperScript(input: {
+  nodePath: string;
+  commandPath: string;
+  env: Record<string, string>;
+}): string {
+  const args = [
+    ...Object.entries(input.env).map(([key, value]) => quotePosixShellValue(quoteEnvAssignment(key, value))),
+    quotePosixShellValue(input.nodePath),
+    quotePosixShellValue(input.commandPath),
+    quotePosixShellValue("start")
+  ].join(" \\\n  ");
+  return `#!/bin/sh
+exec /usr/bin/env -i \\
+  ${args}
 `;
 }
 
@@ -852,12 +864,14 @@ export function resolveSelfHostedNodeServiceLayout(input: {
   const logDir = serviceLogDir(homeDir);
   const logPath = join(logDir, "daemon.log");
   const errorLogPath = join(logDir, "daemon.err.log");
+  const posixWrapperPath = join(logDir, POSIX_WRAPPER_SCRIPT_NAME);
   if (targetPlatform === "darwin") {
     return {
       platform: targetPlatform,
       manager: "launchd",
       serviceName: SERVICE_LABEL,
       servicePath: join(homeDir, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`),
+      wrapperPath: posixWrapperPath,
       logPath,
       errorLogPath
     };
@@ -868,16 +882,19 @@ export function resolveSelfHostedNodeServiceLayout(input: {
       manager: "systemd",
       serviceName: SYSTEMD_SERVICE_NAME,
       servicePath: join(homeDir, ".config", "systemd", "user", SYSTEMD_SERVICE_NAME),
+      wrapperPath: posixWrapperPath,
       logPath,
       errorLogPath
     };
   }
   if (targetPlatform === "win32") {
+    const wrapperPath = join(logDir, WINDOWS_WRAPPER_SCRIPT_NAME);
     return {
       platform: targetPlatform,
       manager: "windows-task-scheduler",
       serviceName: WINDOWS_TASK_NAME,
-      servicePath: join(logDir, WINDOWS_WRAPPER_SCRIPT_NAME),
+      servicePath: wrapperPath,
+      wrapperPath,
       logPath,
       errorLogPath
     };
@@ -929,6 +946,10 @@ async function runServiceCommand(
   return runner(command, args, { timeoutMs, maxBuffer: DEFAULT_COMMAND_MAX_BUFFER });
 }
 
+async function waitForLaunchdSettle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
 async function ensureLaunchdServiceBootstrapped(
   runner: CommandRunner,
   domain: string,
@@ -936,17 +957,24 @@ async function ensureLaunchdServiceBootstrapped(
   servicePath: string,
   timeoutMs: number
 ): Promise<void> {
-  try {
-    await runServiceCommand(runner, "launchctl", ["bootstrap", domain, servicePath], timeoutMs);
-    return;
-  } catch (error) {
+  let lastBootstrapError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      await runServiceCommand(runner, "launchctl", ["print", serviceTarget], timeoutMs);
+      await runServiceCommand(runner, "launchctl", ["bootstrap", domain, servicePath], timeoutMs);
       return;
-    } catch {
-      throw error;
+    } catch (error) {
+      lastBootstrapError = error;
+      try {
+        await runServiceCommand(runner, "launchctl", ["print", serviceTarget], timeoutMs);
+        return;
+      } catch {
+        if (attempt === 0) {
+          await waitForLaunchdSettle();
+        }
+      }
     }
   }
+  throw lastBootstrapError instanceof Error ? lastBootstrapError : new Error(String(lastBootstrapError));
 }
 
 export async function installSelfHostedNodeService(
@@ -965,31 +993,41 @@ export async function installSelfHostedNodeService(
   if (layout.platform === "darwin") {
     await mkdir(dirname(layout.servicePath), { recursive: true });
     await writeFile(
-      layout.servicePath,
-      buildLaunchdPlist({
-        label: SERVICE_LABEL,
+      layout.wrapperPath,
+      buildPosixDaemonWrapperScript({
         nodePath,
         commandPath: options.commandPath,
-        logPath: layout.logPath,
-        errorLogPath: layout.errorLogPath,
         env
       }),
       "utf8"
     );
+    await chmod(layout.wrapperPath, 0o755);
+    await writeFile(
+      layout.servicePath,
+      buildLaunchdPlist({
+        label: SERVICE_LABEL,
+        wrapperPath: layout.wrapperPath,
+        logPath: layout.logPath,
+        errorLogPath: layout.errorLogPath
+      }),
+      "utf8"
+    );
     const domain = launchdDomain();
-    await runner("launchctl", ["bootout", `${domain}/${SERVICE_LABEL}`], {
+    const serviceTarget = `${domain}/${SERVICE_LABEL}`;
+    await runner("launchctl", ["bootout", serviceTarget], {
       timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     }).catch(() => undefined);
-    await runner("launchctl", ["bootstrap", domain, layout.servicePath], {
-      timeoutMs: serviceTimeoutMs,
-      maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
-    });
-    await runner("launchctl", ["enable", `${domain}/${SERVICE_LABEL}`], {
+    await runner("launchctl", ["bootout", domain, layout.servicePath], {
       timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     }).catch(() => undefined);
-    await runner("launchctl", ["kickstart", "-k", `${domain}/${SERVICE_LABEL}`], {
+    await ensureLaunchdServiceBootstrapped(runner, domain, serviceTarget, layout.servicePath, serviceTimeoutMs);
+    await runner("launchctl", ["enable", serviceTarget], {
+      timeoutMs: serviceTimeoutMs,
+      maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
+    }).catch(() => undefined);
+    await runner("launchctl", ["kickstart", "-k", serviceTarget], {
       timeoutMs: serviceTimeoutMs,
       maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
     });
@@ -999,13 +1037,21 @@ export async function installSelfHostedNodeService(
   if (layout.platform === "linux") {
     await mkdir(dirname(layout.servicePath), { recursive: true });
     await writeFile(
-      layout.servicePath,
-      buildSystemdUserService({
+      layout.wrapperPath,
+      buildPosixDaemonWrapperScript({
         nodePath,
         commandPath: options.commandPath,
-        logPath: layout.logPath,
-        errorLogPath: layout.errorLogPath,
         env
+      }),
+      "utf8"
+    );
+    await chmod(layout.wrapperPath, 0o755);
+    await writeFile(
+      layout.servicePath,
+      buildSystemdUserService({
+        wrapperPath: layout.wrapperPath,
+        logPath: layout.logPath,
+        errorLogPath: layout.errorLogPath
       }),
       "utf8"
     );

@@ -20,6 +20,13 @@ import {
   type SelfHostedNodeInvocationJob
 } from "./runtime.js";
 
+const SELF_HOSTED_NODE_PROCESS_TITLE = "mswarm-node";
+
+function applySelfHostedNodeProcessTitle(): void {
+  const title = process.env.MSWARM_SELF_HOSTED_PROCESS_TITLE?.trim() || SELF_HOSTED_NODE_PROCESS_TITLE;
+  process.title = title;
+}
+
 function printUsage(): void {
   console.log(`Usage: mswarm <node|install|setup|start|doctor|once|daemon|serve|enroll|models|agents|status>
 
@@ -354,6 +361,7 @@ async function runNodeLogs(args: string[]): Promise<void> {
 }
 
 async function runNodeForeground(label = "run"): Promise<void> {
+  applySelfHostedNodeProcessTitle();
   const { config, runtime } = await loadNodeRuntime();
   if (config.relayMode === "direct") {
     if (!config.invocationSigningSecret) {
@@ -371,6 +379,7 @@ async function runNodeForeground(label = "run"): Promise<void> {
 }
 
 async function runNodeServerOnly(): Promise<void> {
+  applySelfHostedNodeProcessTitle();
   const { config, runtime } = await loadNodeRuntime();
   if (!config.invocationSigningSecret) {
     throw new Error("MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET is required for serve");

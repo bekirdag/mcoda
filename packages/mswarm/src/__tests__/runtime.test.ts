@@ -390,25 +390,74 @@ describe("self-hosted node runtime", () => {
     });
 
     const plist = await readFile(result.servicePath, "utf8");
+    const wrapper = await readFile(result.wrapperPath, "utf8");
     expect(result.manager).toBe("launchd");
     expect(result.servicePath).toBe(join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist"));
+    expect(result.wrapperPath).toBe(join(homeDir, ".mswarm", "self-hosted-node", "mswarm-node"));
     expect(plist).toContain("<string>com.mcoda.mswarm.self-hosted-node</string>");
-    expect(plist).toContain("<string>/usr/bin/env</string>");
-    expect(plist).toContain("<string>-i</string>");
-    expect(plist).toContain("<string>/usr/local/bin/node</string>");
-    expect(plist).toContain("<string>/opt/mcoda/mswarm/dist/server.js</string>");
-    expect(plist).toContain("<string>start</string>");
+    expect(plist).toContain(`<string>${result.wrapperPath}</string>`);
+    expect(plist).not.toContain("<string>/usr/bin/env</string>");
+    expect(plist).not.toContain("<string>/usr/local/bin/node</string>");
+    expect(plist).not.toContain("<string>/opt/mcoda/mswarm/dist/server.js</string>");
     expect(plist).not.toContain("<key>EnvironmentVariables</key>");
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(plist).toContain("<key>RunAtLoad</key>");
-    expect(plist).toContain("MSWARM_SELF_HOSTED_NODE_KEY_PATH");
-    expect(plist).toContain("MSWARM_GATEWAY_BASE_URL");
     expect(plist).not.toContain("msw_owner");
     expect(plist).not.toContain("runtime-token-should-not-be-written");
     expect(plist).not.toContain("signing-secret-should-not-be-written");
+    expect(wrapper).toContain("exec /usr/bin/env -i");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_NODE_KEY_PATH=");
+    expect(wrapper).toContain("'MSWARM_GATEWAY_BASE_URL=https://gateway.test'");
+    expect(wrapper).toContain("'/usr/local/bin/node'");
+    expect(wrapper).toContain("'/opt/mcoda/mswarm/dist/server.js'");
+    expect(wrapper).toContain("'start'");
+    expect(wrapper).not.toContain("msw_owner");
+    expect(wrapper).not.toContain("runtime-token-should-not-be-written");
+    expect(wrapper).not.toContain("signing-secret-should-not-be-written");
     expect(commands.some((entry) => entry.command === "launchctl" && entry.args[0] === "bootstrap")).toBe(true);
     expect(commands.some((entry) => entry.command === "launchctl" && entry.args[0] === "kickstart")).toBe(true);
     expect(commands.every((entry) => entry.timeoutMs >= 60_000)).toBe(true);
+  });
+
+  it("treats launchd install bootstrap error 5 as success when the service is already loaded", async () => {
+    const statePath = tempStatePath();
+    const homeDir = dirname(statePath);
+    const domain = testLaunchdDomain();
+    const serviceTarget = `${domain}/com.mcoda.mswarm.self-hosted-node`;
+    const commands: Array<{ command: string; args: string[] }> = [];
+    const runner: CommandRunner = async (command, args) => {
+      commands.push({ command, args });
+      if (args[0] === "bootstrap") {
+        throw new Error("Bootstrap failed: 5: Input/output error");
+      }
+      return { stdout: args[0] === "print" ? "service = com.mcoda.mswarm.self-hosted-node" : "", stderr: "" };
+    };
+
+    const result = await installSelfHostedNodeService(serviceConfigFor(statePath), {
+      commandPath: "/opt/mcoda/mswarm/dist/server.js",
+      nodePath: "/usr/local/bin/node",
+      platform: "darwin",
+      homeDir,
+      env: { HOME: homeDir, PATH: "/usr/local/bin:/usr/bin" } as NodeJS.ProcessEnv,
+      runner
+    });
+
+    expect(result.started).toBe(true);
+    expect(commands).toEqual([
+      { command: "launchctl", args: ["bootout", serviceTarget] },
+      {
+        command: "launchctl",
+        args: ["bootout", domain, join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist")]
+      },
+      {
+        command: "launchctl",
+        args: ["bootstrap", domain, join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist")]
+      },
+      { command: "launchctl", args: ["print", serviceTarget] },
+      { command: "launchctl", args: ["enable", serviceTarget] },
+      { command: "launchctl", args: ["kickstart", "-k", serviceTarget] }
+    ]);
   });
 
   it("installs a systemd user service with restart policy and without owner or runtime secrets", async () => {
@@ -435,17 +484,27 @@ describe("self-hosted node runtime", () => {
     });
 
     const service = await readFile(result.servicePath, "utf8");
+    const wrapper = await readFile(result.wrapperPath, "utf8");
     expect(result.manager).toBe("systemd");
     expect(result.servicePath).toBe(join(homeDir, ".config", "systemd", "user", "mswarm-self-hosted-node.service"));
-    expect(service).toContain("ExecStart=/usr/bin/env -i");
-    expect(service).toContain("\"/usr/bin/node\" \"/opt/mcoda/mswarm/dist/server.js\" start");
+    expect(result.wrapperPath).toBe(join(homeDir, ".mswarm", "self-hosted-node", "mswarm-node"));
+    expect(service).toContain(`ExecStart="${result.wrapperPath}"`);
+    expect(service).not.toContain("ExecStart=/usr/bin/env -i");
+    expect(service).not.toContain("/opt/mcoda/mswarm/dist/server.js");
     expect(service).toContain("Restart=always");
-    expect(service).toContain('"MSWARM_GATEWAY_BASE_URL=https://gateway.test"');
     expect(service).not.toContain("Environment=");
-    expect(service).toContain("MSWARM_SELF_HOSTED_NODE_KEY_PATH");
     expect(service).not.toContain("msw_owner");
     expect(service).not.toContain("runtime-token-should-not-be-written");
     expect(service).not.toContain("signing-secret-should-not-be-written");
+    expect(wrapper).toContain("exec /usr/bin/env -i");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
+    expect(wrapper).toContain("'MSWARM_GATEWAY_BASE_URL=https://gateway.test'");
+    expect(wrapper).toContain("'/usr/bin/node'");
+    expect(wrapper).toContain("'/opt/mcoda/mswarm/dist/server.js'");
+    expect(wrapper).toContain("'start'");
+    expect(wrapper).not.toContain("msw_owner");
+    expect(wrapper).not.toContain("runtime-token-should-not-be-written");
+    expect(wrapper).not.toContain("signing-secret-should-not-be-written");
     expect(commands).toEqual([
       { command: "systemctl", args: ["--user", "daemon-reload"] },
       { command: "systemctl", args: ["--user", "enable", "mswarm-self-hosted-node.service"] },
@@ -488,6 +547,7 @@ describe("self-hosted node runtime", () => {
     expect(script).toContain("& $nodePath @commandArguments");
     expect(script).toContain("while ($true)");
     expect(script).toContain("Start-Sleep -Seconds 5");
+    expect(script).toContain("$env:MSWARM_SELF_HOSTED_PROCESS_TITLE = 'mswarm-node'");
     expect(script).toContain("$env:MSWARM_SELF_HOSTED_NODE_KEY_PATH");
     expect(script).toContain("$env:MSWARM_GATEWAY_BASE_URL");
     expect(script).not.toContain("msw_owner");
@@ -595,6 +655,11 @@ describe("self-hosted node runtime", () => {
 
     expect(commands).toEqual([
       { command: "launchctl", args: ["bootout", serviceTarget] },
+      {
+        command: "launchctl",
+        args: ["bootstrap", domain, join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist")]
+      },
+      { command: "launchctl", args: ["print", serviceTarget] },
       {
         command: "launchctl",
         args: ["bootstrap", domain, join(homeDir, "Library", "LaunchAgents", "com.mcoda.mswarm.self-hosted-node.plist")]
