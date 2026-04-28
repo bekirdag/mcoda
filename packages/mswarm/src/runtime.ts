@@ -172,6 +172,7 @@ export interface SelfHostedNodeInvocationJob {
     top_p?: number;
     max_tokens?: number;
     stop?: string | string[];
+    response_format?: Record<string, unknown> | null;
   };
   policy?: {
     max_runtime_ms?: number;
@@ -333,7 +334,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.55";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.56";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
@@ -1649,6 +1650,7 @@ export class OllamaClient {
     model: string;
     messages: SelfHostedOpenAIChatMessage[];
     options?: Record<string, unknown>;
+    format?: unknown;
   }): Promise<{ content: string; promptTokens: number | null; completionTokens: number | null; raw: unknown }> {
     const response = await fetchJson<{
       message?: { content?: string };
@@ -1667,6 +1669,7 @@ export class OllamaClient {
             content: openAIMessageContentToText(message.content)
           })),
           stream: false,
+          ...(input.format !== undefined ? { format: input.format } : {}),
           ...(input.options && Object.keys(input.options).length > 0 ? { options: input.options } : {})
         })
       },
@@ -1701,6 +1704,42 @@ function messagesToPrompt(messages: SelfHostedOpenAIChatMessage[]): string {
     .filter(Boolean)
     .join("\n\n")
     .trim();
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function resolveOllamaResponseFormat(responseFormat: unknown): unknown {
+  const format = objectRecord(responseFormat);
+  if (!format) {
+    return undefined;
+  }
+  if (format.type === "json_object") {
+    return "json";
+  }
+  if (format.type === "json_schema") {
+    const jsonSchema = objectRecord(format.json_schema);
+    const schema = objectRecord(jsonSchema?.schema) || objectRecord(format.schema) || jsonSchema;
+    return schema || "json";
+  }
+  return undefined;
+}
+
+function applyResponseFormatInstruction(prompt: string, responseFormat: unknown): string {
+  const format = resolveOllamaResponseFormat(responseFormat);
+  if (format === undefined) {
+    return prompt;
+  }
+  const baseInstruction = [
+    "Output format constraint:",
+    "Return exactly one valid JSON object.",
+    "Do not include markdown fences, reasoning, commentary, or any text outside the JSON object."
+  ];
+  if (format !== "json") {
+    baseInstruction.splice(2, 0, `The JSON object must match this schema: ${JSON.stringify(format)}`);
+  }
+  return `${prompt}\n\n${baseInstruction.join("\n")}`;
 }
 
 function positiveInteger(value: unknown): number | null {
@@ -2153,7 +2192,8 @@ export class SelfHostedNodeRuntime {
         const result = await this.jobOllama.chat({
           model: job.model || job.openai_request.model,
           messages: job.openai_request.messages,
-          options
+          options,
+          format: resolveOllamaResponseFormat(job.openai_request.response_format)
         });
         return {
           job_id: job.job_id,
@@ -2174,10 +2214,11 @@ export class SelfHostedNodeRuntime {
       if (!agentSlug) {
         throw new Error("mcoda source agent slug is required");
       }
-      const prompt = messagesToPrompt(job.openai_request.messages);
-      if (!prompt) {
+      const basePrompt = messagesToPrompt(job.openai_request.messages);
+      if (!basePrompt) {
         throw new Error("mcoda invocation prompt is empty");
       }
+      const prompt = applyResponseFormatInstruction(basePrompt, job.openai_request.response_format);
       const response = await this.mcodaExecutor.invoke(agentSlug, prompt);
       const metadata = response.metadata || {};
       const promptTokens = positiveInteger(metadata.tokensPrompt ?? metadata.tokens_prompt);

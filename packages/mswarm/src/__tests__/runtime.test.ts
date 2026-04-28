@@ -465,6 +465,99 @@ describe("self-hosted node runtime", () => {
     expect(stdin).toBe("ping");
   });
 
+  it("passes JSON response format to Ollama invocation jobs", async () => {
+    const statePath = tempStatePath();
+    let chatBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "http://ollama.test/api/chat") {
+        chatBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          message: { content: "{\"decision\":\"approve\"}" },
+          prompt_eval_count: 9,
+          eval_count: 4
+        });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath), { fetchImpl });
+
+    const result = await runtime.executeJob({
+      job_id: "job-json",
+      request_id: "req-json",
+      node_id: "shn_service",
+      agent_slug: "phi3-reviewer",
+      provider: "ollama",
+      model: "phi3.5:latest",
+      openai_request: {
+        model: "phi3.5:latest",
+        messages: [{ role: "user", content: "Return a decision object." }],
+        response_format: { type: "json_object" }
+      }
+    });
+
+    expect(result.status).toBe("success");
+    assert.ok(chatBody);
+    expect((chatBody as Record<string, unknown>).format).toBe("json");
+    expect((chatBody as Record<string, unknown>).stream).toBe(false);
+  });
+
+  it("adds strict JSON instructions to mcoda invocation jobs", async () => {
+    const statePath = tempStatePath();
+    let stdin = "";
+    const executor = new McodaLocalAgentExecutor({
+      runner: async (_command, args, options) => {
+        expect(args).toEqual(["agent-run", "qwen-reviewer", "--json", "--stdin"]);
+        stdin = options.input || "";
+        return {
+          stdout: JSON.stringify({
+            responses: [
+              {
+                output: "{\"decision\":\"approve\"}",
+                adapter: "ollama-remote",
+                model: "qwen3.5:35b"
+              }
+            ]
+          }),
+          stderr: ""
+        };
+      }
+    });
+    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath), { mcodaExecutor: executor });
+
+    const result = await runtime.executeJob({
+      job_id: "job-mcoda-json",
+      request_id: "req-mcoda-json",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "Review this log." }],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "review_decision",
+            schema: {
+              type: "object",
+              required: ["decision"],
+              properties: { decision: { type: "string" } }
+            }
+          }
+        }
+      }
+    });
+
+    expect(result.status).toBe("success");
+    expect(stdin).toContain("user: Review this log.");
+    expect(stdin).toContain("Output format constraint:");
+    expect(stdin).toContain("Return exactly one valid JSON object.");
+    expect(stdin).toContain("\"required\":[\"decision\"]");
+    expect(stdin).toContain("Do not include markdown fences, reasoning, commentary, or any text outside the JSON object.");
+  });
+
   it("normalizes node subcommands while preserving top-level compatibility aliases", () => {
     expect(normalizeMswarmCommand(["node", "mswarm", "node", "install", "--api-key", "msw_owner"])).toEqual({
       namespace: "node",
