@@ -1051,6 +1051,48 @@ describe("self-hosted node runtime", () => {
     expect(config.nodeVersion).toBe(await packageVersion());
   });
 
+  it("notifies the gateway when uninstalling a configured node", async () => {
+    const statePath = tempStatePath();
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      calls.push({ url: target, init: init || {} });
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/uninstall") {
+        expect((init?.headers as Record<string, string>).authorization).toBe(
+          "Bearer runtime-token-should-not-be-written"
+        );
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          node_id: "shn_service",
+          reason: "node_uninstall",
+          source: "mswarm_node_uninstall",
+          node_version: "test-node",
+          service_manager: "launchd"
+        });
+        return jsonResponse({ accepted: true, node: { node_id: "shn_service", status: "unreachable" } });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+
+    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath), { fetchImpl });
+    const result = await runtime.notifyUninstall({ serviceManager: "launchd" });
+
+    expect(result.notified).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not block local uninstall when gateway notification fails", async () => {
+    const statePath = tempStatePath();
+    const fetchImpl = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+
+    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath), { fetchImpl });
+    const result = await runtime.notifyUninstall({ serviceManager: "systemd" });
+
+    expect(result.notified).toBe(false);
+    expect(result.error).toContain("network down");
+  });
+
   it("enrolls once, stores runtime token, and sends heartbeat with Ollama inventory", async () => {
     const statePath = tempStatePath();
     const calls: Array<{ url: string; init: RequestInit }> = [];

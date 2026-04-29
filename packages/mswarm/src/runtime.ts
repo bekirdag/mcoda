@@ -149,6 +149,12 @@ export interface SelfHostedNodeSetupResult {
   start: boolean;
 }
 
+export interface SelfHostedNodeUninstallNotificationResult {
+  notified: boolean;
+  response?: unknown;
+  error?: string;
+}
+
 export interface SelfHostedOpenAIChatMessage {
   role: string;
   content: string | Array<{ type: string; text?: string }>;
@@ -1885,6 +1891,22 @@ export class MswarmSelfHostedNodeClient {
     );
   }
 
+  async uninstall(runtimeToken: string, payload: Record<string, unknown>): Promise<unknown> {
+    return fetchJson<unknown>(
+      this.fetchImpl,
+      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/uninstall`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${runtimeToken}`
+        },
+        body: JSON.stringify(payload)
+      },
+      this.timeoutMs
+    );
+  }
+
   async pushModels(runtimeToken: string, payload: { node_id: string; models: SelfHostedModelInput[] }): Promise<unknown> {
     return fetchJson<unknown>(
       this.fetchImpl,
@@ -2318,6 +2340,29 @@ export class SelfHostedNodeRuntime {
       ollama_version: version,
       heartbeat_response: heartbeatResponse
     };
+  }
+
+  async notifyUninstall(input?: {
+    reason?: string;
+    source?: string;
+    serviceManager?: string | null;
+  }): Promise<SelfHostedNodeUninstallNotificationResult> {
+    const runtimeToken = this.config.runtimeToken || (await readSelfHostedRuntimeToken(this.config.runtimeTokenPath));
+    if (!runtimeToken) {
+      return { notified: false, error: "missing runtime token" };
+    }
+    try {
+      const response = await this.gateway.uninstall(runtimeToken, {
+        node_id: this.config.nodeId,
+        reason: input?.reason || "node_uninstall",
+        source: input?.source || "mswarm_node_uninstall",
+        node_version: this.config.nodeVersion,
+        service_manager: input?.serviceManager || null
+      });
+      return { notified: true, response };
+    } catch (error) {
+      return { notified: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   async pushModelsOnly(): Promise<{ count: number; response: unknown }> {

@@ -74,7 +74,7 @@ mswarm node logs --error
 mswarm node uninstall
 ```
 
-`node start`, `node stop`, and `node restart` control the installed macOS launchd agent, Linux systemd user service, or Windows scheduled task. `node status` reports the service manager status plus the stored node config. `node health` and `node doctor` check local config, the runtime token, gateway health, heartbeat authorization, and local agent discovery.
+`node start`, `node stop`, and `node restart` control the installed macOS launchd agent, Linux systemd user service, or Windows scheduled task. `node uninstall` also sends a best-effort runtime-token signal to the gateway after stopping the local daemon so the server is immediately marked unreachable. `node status` reports the service manager status plus the stored node config. `node health` and `node doctor` check local config, the runtime token, gateway health, heartbeat authorization, and local agent discovery.
 
 ## Advanced Setup
 

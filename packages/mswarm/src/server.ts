@@ -39,7 +39,7 @@ Commands:
   node health              Run node health checks
   node doctor              Run deep node diagnostics
   node logs [options]      Print daemon logs
-  node uninstall           Remove the installed daemon but keep runtime state
+  node uninstall           Remove the installed daemon, then mark the gateway node unreachable
   node run                 Run the node in the foreground
 
 Compatibility aliases:
@@ -362,6 +362,32 @@ async function runNodeLogs(args: string[]): Promise<void> {
   console.log(lastLines(content, lines));
 }
 
+async function runNodeUninstall(): Promise<void> {
+  const layout = resolveSelfHostedNodeServiceLayout();
+  let runtime: SelfHostedNodeRuntime | null = null;
+  let configError: string | null = null;
+  try {
+    runtime = (await loadNodeRuntime()).runtime;
+  } catch (error) {
+    configError = error instanceof Error ? error.message : String(error);
+  }
+  const result = await uninstallSelfHostedNodeService();
+  let gatewayNotification: Awaited<ReturnType<SelfHostedNodeRuntime["notifyUninstall"]>>;
+  if (!runtime) {
+    gatewayNotification = {
+      notified: false,
+      error: configError || "missing node runtime config"
+    };
+  } else {
+    gatewayNotification = await runtime.notifyUninstall({
+      reason: "node_uninstall",
+      source: "mswarm_node_uninstall",
+      serviceManager: layout.manager
+    });
+  }
+  console.log(JSON.stringify({ ...result, gateway_notification: gatewayNotification }, null, 2));
+}
+
 async function runNodeForeground(label = "run"): Promise<void> {
   applySelfHostedNodeProcessTitle();
   const { config, runtime } = await loadNodeRuntime();
@@ -420,8 +446,7 @@ async function handleNodeCommand(command: string, args: string[], argv: string[]
     return;
   }
   if (command === "uninstall") {
-    const result = await uninstallSelfHostedNodeService();
-    console.log(JSON.stringify(result, null, 2));
+    await runNodeUninstall();
     return;
   }
   if (command === "run" || command === "daemon") {
