@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MswarmCodaliExecutor } from "../codali-executor.js";
-import type { CodaliRuntimeInput, CodaliRuntimeResult } from "@mcoda/codali";
+import {
+  MswarmCodaliExecutor,
+  type CodaliRuntimeInput,
+  type CodaliRuntimeResult,
+} from "../codali-executor.js";
+
+process.env.MSWARM_CODALI_VENDOR_ONLY = "1";
 
 test("MswarmCodaliExecutor maps jobs to Codali and emits OpenAI stream chunks", async () => {
   const executor = new MswarmCodaliExecutor();

@@ -127,7 +127,7 @@ The legacy aliases `mswarm install <MSWARM_API_KEY>`, `mswarm start`, `mswarm do
 
 ## Codali Execution
 
-Self-hosted jobs for local `mcoda` agents run through the `@mcoda/codali` runtime. The node resolves the requested `source_agent_slug` or model from local `mcoda agent list --json --refresh-health` inventory, maps the selected local adapter and model into Codali, and enforces the job policy before running tools.
+Self-hosted jobs for local `mcoda` agents run through the vendored Codali runtime shipped with `@mcoda/mswarm`. The node resolves the requested `source_agent_slug` or model from local `mcoda agent list --json --refresh-health` inventory, maps the selected local adapter and model into Codali, and enforces the job policy before running tools.
 
 Direct-mode `stream: true` jobs are returned as OpenAI-compatible Server-Sent Events:
 

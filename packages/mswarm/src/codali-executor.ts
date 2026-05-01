@@ -1,15 +1,173 @@
-import {
-  codaliEventToOpenAIChatCompletionChunk,
-  runCodaliTask,
-  type CodaliRuntimeAgentInput,
-  type CodaliRuntimeEvent,
-  type CodaliRuntimeInput,
-  type CodaliRuntimeResult,
-  type CodaliRuntimeSessionInput,
-  type CodaliRuntimeSubagentsInput,
-  type ProviderMessage,
-  type ProviderUsage,
-} from "@mcoda/codali";
+export type ProviderRole = "system" | "user" | "assistant" | "tool";
+
+export interface ProviderMessage {
+  role: ProviderRole;
+  content: string;
+  name?: string;
+  toolCallId?: string;
+}
+
+export interface ProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
+export interface CodaliRuntimeWorkspace {
+  root: string;
+  readOnly?: boolean;
+}
+
+export interface CodaliRuntimeProviderInput {
+  name: "openai-compatible" | "ollama-remote" | "codex-cli" | string;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+}
+
+export interface CodaliRuntimeDocdexInput {
+  baseUrl?: string;
+  repoRoot?: string;
+  repoId?: string;
+  dagSessionId?: string;
+  initialize?: boolean;
+  allowWeb?: boolean;
+  allowMemoryWrite?: boolean;
+  allowProfileWrite?: boolean;
+  allowIndexRebuild?: boolean;
+}
+
+export interface CodaliRuntimeAgentInput {
+  slug: string;
+  adapter: string;
+  provider?: string;
+  model: string;
+  baseUrl?: string;
+  supportsTools?: boolean;
+  capabilities?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+export interface CodaliRuntimePolicy {
+  allowWrites: boolean;
+  allowShell: boolean;
+  allowDestructiveOperations: boolean;
+  allowOutsideWorkspace: boolean;
+  allowedTools?: string[];
+  deniedTools?: string[];
+  maxSteps: number;
+  maxToolCalls: number;
+  maxTokens?: number;
+  timeoutMs: number;
+  mode: "tool_loop" | "protocol_loop" | "smart_pipeline" | "patch_json" | "freeform";
+}
+
+export interface CodaliRuntimeSubagentsInput {
+  enabled?: boolean;
+  maxParallel?: number;
+  maxSubagents?: number;
+  defaultTimeoutMs?: number;
+  allowWrites?: boolean;
+  defaultTools?: string[];
+}
+
+export interface CodaliRuntimeSessionInput {
+  id?: string;
+  storageDir?: string;
+  resume?: boolean;
+  compactOnFinish?: boolean;
+  loadInstructions?: boolean;
+  includeLocalInstructions?: boolean;
+  focusPaths?: string[];
+}
+
+export type CodaliRuntimeEvent =
+  | { type: "status"; phase: string; message?: string; at: string }
+  | { type: "token"; content: string; at: string }
+  | { type: "tool_call"; id: string; name: string; args: unknown; at: string }
+  | {
+      type: "tool_result";
+      id: string;
+      name: string;
+      ok: boolean;
+      output: string;
+      errorCode?: string;
+      retryable?: boolean;
+      at: string;
+    }
+  | { type: "usage"; usage: ProviderUsage; at: string }
+  | { type: "subagent_start"; id: string; role: string; goal: string; at: string }
+  | {
+      type: "subagent_result";
+      id: string;
+      role: string;
+      status: string;
+      summary: string;
+      at: string;
+    }
+  | { type: "final"; content: string; at: string }
+  | { type: "error"; message: string; code?: string; retryable?: boolean; at: string };
+
+export interface CodaliRuntimeInput {
+  task: string;
+  messages?: ProviderMessage[];
+  workspace: CodaliRuntimeWorkspace;
+  provider: CodaliRuntimeProviderInput;
+  agent?: CodaliRuntimeAgentInput;
+  docdex?: CodaliRuntimeDocdexInput;
+  policy: CodaliRuntimePolicy;
+  response?: {
+    format?: "text" | "json" | "json_schema" | "gbnf";
+    schema?: Record<string, unknown>;
+    grammar?: string;
+  };
+  streaming?: {
+    enabled: boolean;
+    flushEveryMs?: number;
+  };
+  metadata?: {
+    jobId?: string;
+    requestId?: string;
+    tenantId?: string;
+    ownerUserId?: string;
+    apiKeyId?: string;
+    agentSlug?: string;
+  };
+  subagents?: CodaliRuntimeSubagentsInput;
+  session?: CodaliRuntimeSessionInput;
+  onEvent?: (event: CodaliRuntimeEvent) => void | Promise<void>;
+  providerInstance?: unknown;
+  toolRegistry?: unknown;
+  tools?: unknown[];
+  toolContext?: Record<string, unknown>;
+  logger?: unknown;
+}
+
+export interface CodaliRuntimeResult {
+  finalMessage: string;
+  messages: ProviderMessage[];
+  toolCallsExecuted: number;
+  usage?: ProviderUsage;
+  touchedFiles: string[];
+  warnings: string[];
+  events: CodaliRuntimeEvent[];
+  runId: string;
+  session?: {
+    id: string;
+    summaryRefs: string[];
+    instructionSources: string[];
+  };
+}
+
+interface CodaliModule {
+  runCodaliTask(input: CodaliRuntimeInput): Promise<CodaliRuntimeResult>;
+  codaliEventToOpenAIChatCompletionChunk(
+    event: CodaliRuntimeEvent,
+    options: { requestId: string; model: string },
+  ): Record<string, unknown> | undefined;
+}
 
 export interface MswarmCodaliChatMessage {
   role: string;
@@ -105,6 +263,31 @@ const DEFAULT_RUNTIME_MS = 3_600_000;
 const DEFAULT_MAX_STEPS = 24;
 const DEFAULT_MAX_TOOL_CALLS = 40;
 const DEFAULT_DOCDEX_BASE_URL = "http://127.0.0.1:28491";
+const dynamicImport = new Function("specifier", "return import(specifier)") as (
+  specifier: string,
+) => Promise<unknown>;
+let codaliModulePromise: Promise<CodaliModule> | undefined;
+
+async function importCodaliModule(specifier: string): Promise<CodaliModule> {
+  return (await dynamicImport(specifier)) as CodaliModule;
+}
+
+async function loadCodaliModule(): Promise<CodaliModule> {
+  if (!codaliModulePromise) {
+    codaliModulePromise = (async () => {
+      if (process.env.MSWARM_CODALI_VENDOR_ONLY !== "1") {
+        try {
+          return await importCodaliModule("@mcoda/codali");
+        } catch {
+          // Fall through to the vendored copy included in the published mswarm tarball.
+        }
+      }
+      const vendorUrl = new URL("./vendor/codali/index.js", import.meta.url).href;
+      return importCodaliModule(vendorUrl);
+    })();
+  }
+  return codaliModulePromise;
+}
 
 function optionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -272,6 +455,7 @@ function openAIChunkOptions(input: MswarmCodaliInvocationInput): {
 
 export class MswarmCodaliExecutor {
   async invoke(input: MswarmCodaliInvocationInput): Promise<MswarmCodaliInvocationResult> {
+    const codali = await loadCodaliModule();
     const workspace: MswarmCodaliWorkspace = input.workspace ?? {
       root: process.cwd(),
       readOnly: true,
@@ -283,7 +467,7 @@ export class MswarmCodaliExecutor {
       openAIChunks.push(chunk);
       await input.onOpenAIChunk?.(chunk);
     };
-    const runCodali = input.runCodali ?? runCodaliTask;
+    const runCodali = input.runCodali ?? codali.runCodaliTask;
     const runtimeResult = await runCodali({
       task: messagesToTask(input.messages),
       messages: toProviderMessages(input.messages),
@@ -310,7 +494,10 @@ export class MswarmCodaliExecutor {
       onEvent: async (event: CodaliRuntimeEvent) => {
         await input.onRuntimeEvent?.(event);
         if (input.stream) {
-          const chunk = codaliEventToOpenAIChatCompletionChunk(event, openAIChunkOptions(input));
+          const chunk = codali.codaliEventToOpenAIChatCompletionChunk(
+            event,
+            openAIChunkOptions(input),
+          );
           if (chunk) {
             await emitChunk(chunk);
           }

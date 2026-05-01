@@ -11,7 +11,8 @@ const packageDirs = [
   'packages/integrations',
   'packages/core',
   'packages/cli',
-  'packages/codali',
+  // Codali is vendored into @mcoda/mswarm until npm scope permissions allow
+  // creating the public @mcoda/codali package.
   'packages/mswarm'
 ];
 
