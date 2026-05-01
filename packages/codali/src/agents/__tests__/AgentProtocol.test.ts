@@ -38,6 +38,29 @@ test("parseAgentRequest rejects missing request_id", () => {
   assert.throws(() => parseAgentRequest("AGENT_REQUEST v1\nneeds:\n  - type: docdex.search\n    query: test"));
 });
 
+test("parseAgentRequest accepts late top-level request_id", () => {
+  const parsed = parseAgentRequest(`AGENT_REQUEST v1
+needs:
+  - type: docdex.search
+    query: test
+    limit: 1
+request_id: late-id`);
+  assert.equal(parsed.request_id, "late-id");
+  assert.equal(parsed.needs.length, 1);
+  assert.equal(parsed.needs[0].type, "docdex.search");
+});
+
+test("parseAgentRequest can repair missing request_id for protocol loops", () => {
+  const parsed = parseAgentRequest(
+    `AGENT_REQUEST v1
+needs:
+  - type: docdex.search
+    query: test`,
+    { defaultRequestId: "auto-step-1" },
+  );
+  assert.equal(parsed.request_id, "auto-step-1");
+});
+
 test("normalizeAgentRequest maps needs to tools", () => {
   const parsed = parseAgentRequest(`AGENT_REQUEST v1
 role: architect
@@ -95,6 +118,68 @@ needs:
     {
       tool: "docdex.tree",
       params: { path: ".", max_depth: 3, dirs_only: true, include_hidden: true },
+    },
+  ]);
+});
+
+test("parseAgentRequest supports agent.delegate", () => {
+  const input = `AGENT_REQUEST v1
+role: architect
+request_id: req-delegate
+needs:
+  - type: agent.delegate
+    role: explorer
+    goal: "Find relevant runtime files"
+    tools: docdex.search, file.read
+    allowed_paths: packages/codali/src, packages/mswarm/src
+    read_only: true
+    max_steps: 3
+    max_tool_calls: 4
+    timeout_ms: 10000`;
+  const parsed = parseAgentRequest(input);
+  const normalized = normalizeAgentRequest(parsed);
+  assert.deepEqual(normalized, [
+    {
+      tool: "agent.delegate",
+      params: {
+        role: "explorer",
+        goal: "Find relevant runtime files",
+        tools: ["docdex.search", "file.read"],
+        allowed_paths: ["packages/codali/src", "packages/mswarm/src"],
+        write_paths: undefined,
+        read_only: true,
+        max_steps: 3,
+        max_tool_calls: 4,
+        timeout_ms: 10000,
+      },
+    },
+  ]);
+});
+
+test("parseAgentRequest supports bracketed delegate tool lists", () => {
+  const parsed = parseAgentRequest(`AGENT_REQUEST v1
+request_id: req-delegate-brackets
+needs:
+  - type: agent.delegate
+    role: explorer
+    goal: "Find relevant runtime files"
+    tools: [docdex.search, file.read]
+    allowed_paths: [packages/codali/src, packages/mswarm/src]`);
+  const normalized = normalizeAgentRequest(parsed);
+  assert.deepEqual(normalized, [
+    {
+      tool: "agent.delegate",
+      params: {
+        role: "explorer",
+        goal: "Find relevant runtime files",
+        tools: ["docdex.search", "file.read"],
+        allowed_paths: ["packages/codali/src", "packages/mswarm/src"],
+        write_paths: undefined,
+        read_only: undefined,
+        max_steps: undefined,
+        max_tool_calls: undefined,
+        timeout_ms: undefined,
+      },
     },
   ]);
 });

@@ -125,6 +125,25 @@ mswarm serve
 
 The legacy aliases `mswarm install <MSWARM_API_KEY>`, `mswarm start`, `mswarm doctor`, and `mswarm status` remain available. `mswarm start` is a foreground run alias; use `mswarm node start` to start the installed daemon. `mswarm status` keeps the old one-shot heartbeat/status behavior; use `mswarm node status` for service manager status. The package also installs `mswarm-self-hosted-node`; it accepts the same commands.
 
+## Codali Execution
+
+Self-hosted jobs for local `mcoda` agents run through the `@mcoda/codali` runtime. The node resolves the requested `source_agent_slug` or model from local `mcoda agent list --json --refresh-health` inventory, maps the selected local adapter and model into Codali, and enforces the job policy before running tools.
+
+Direct-mode `stream: true` jobs are returned as OpenAI-compatible Server-Sent Events:
+
+```text
+data: {"object":"chat.completion.chunk",...}
+data: [DONE]
+```
+
+Codali status and tool events are tracked internally, but tool outputs are not emitted as assistant stream content. Raw `provider: "ollama"` jobs remain available as a minimal no-tool fallback path.
+
+Jobs can additionally scope execution with:
+
+- `workspace.root` and `workspace.read_only`
+- `docdex.base_url`, `docdex.repo_root`, `docdex.repo_id`, and Docdex write/web/index flags
+- `policy.allow_tools`, `policy.allowed_tools`, `policy.denied_tools`, write/shell/destructive flags, `policy.max_runtime_ms`, and `policy.max_tool_calls`
+
 ## Environment
 
 `MSWARM_API_KEY` can replace `--api-key` during legacy `setup`, but the preferred flow is `mswarm node install <MSWARM_API_KEY>` or `mswarm node install --api-key-stdin` so the key is never exported into the shell environment. `MSWARM_GATEWAY_BASE_URL` overrides the gateway. The default discovery mode is `mcoda`, so the node reads `mcoda agent list --json --refresh-health`; set `MSWARM_SELF_HOSTED_DISCOVERY_MODE=ollama` only for raw Ollama fallback discovery. `MSWARM_SELF_HOSTED_EXPOSURE_POLICY=none` disables default exposure while keeping allowlists/blocklists available. `MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS` controls short gateway and inventory requests; self-hosted execution jobs default to one hour and can be overridden with `MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS` or `--job-timeout-ms` during install.

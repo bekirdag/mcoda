@@ -165,6 +165,14 @@ function assertJobMatchesClaims(job: SelfHostedNodeInvocationJob, claims: SelfHo
   }
 }
 
+function writeSelfHostedSseChunk(raw: { write: (chunk: string) => unknown }, chunk: Record<string, unknown>): void {
+  raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+}
+
+function writeSelfHostedSseDone(raw: { write: (chunk: string) => unknown }): void {
+  raw.write("data: [DONE]\n\n");
+}
+
 export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: SelfHostedNodeConfig) {
   const app = Fastify({ logger: false });
 
@@ -213,6 +221,52 @@ export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: S
         code: "validation_failed",
         message: error instanceof Error ? error.message : "Invalid invocation job"
       });
+      return;
+    }
+    if (job.openai_request?.stream === true) {
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no"
+      });
+      const keepAlive = setInterval(() => {
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.write(": keep-alive\n\n");
+        }
+      }, 15_000);
+      try {
+        const result = await runtime.executeJob(job, {
+          onOpenAIChunk: async (chunk) => {
+            writeSelfHostedSseChunk(reply.raw, chunk);
+          }
+        });
+        if (result.status !== "success") {
+          writeSelfHostedSseChunk(reply.raw, {
+            object: "error",
+            error: result.error ?? {
+              code: "upstream_error",
+              message: "Self-hosted job failed"
+            }
+          });
+        }
+        writeSelfHostedSseDone(reply.raw);
+      } catch (error) {
+        writeSelfHostedSseChunk(reply.raw, {
+          object: "error",
+          error: {
+            code: "upstream_error",
+            message: error instanceof Error ? error.message : String(error)
+          }
+        });
+        writeSelfHostedSseDone(reply.raw);
+      } finally {
+        clearInterval(keepAlive);
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.end();
+        }
+      }
       return;
     }
     const result = await runtime.executeJob(job);

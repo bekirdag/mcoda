@@ -18,6 +18,34 @@ const toRelative = (context: ToolContext, targetPath: string): string => {
   return path.relative(context.workspaceRoot, targetPath) || ".";
 };
 
+const normalizeScope = (value: string): string => {
+  const normalized = path.posix.normalize(value.replace(/\\/g, "/")).replace(/^\/+/, "");
+  if (!normalized || normalized === ".") return ".";
+  if (normalized === ".." || normalized.startsWith("../")) {
+    throw new Error("Path scope is outside the workspace root");
+  }
+  return normalized;
+};
+
+const isWithinScope = (relativePath: string, scope: string): boolean => {
+  if (scope === ".") return true;
+  return relativePath === scope || relativePath.startsWith(`${scope}/`);
+};
+
+const assertPathScope = (
+  context: ToolContext,
+  resolvedPath: string,
+  scopes: string[] | undefined,
+  action: "read" | "write",
+): void => {
+  if (!scopes?.length) return;
+  const relativePath = normalizeScope(toRelative(context, resolvedPath));
+  const normalizedScopes = scopes.map(normalizeScope);
+  if (!normalizedScopes.some((scope) => isWithinScope(relativePath, scope))) {
+    throw new Error(`Path is outside allowed ${action} scopes`);
+  }
+};
+
 const listFilesRecursive = async (
   basePath: string,
   maxDepth: number,
@@ -51,6 +79,7 @@ export const createFileTools = (): ToolDefinition[] => {
       handler: async (args, context) => {
         const { path: target } = args as { path: string };
         const resolved = resolveWorkspacePath(context, target);
+        assertPathScope(context, resolved, context.allowedReadPaths, "read");
         const content = await fs.readFile(resolved, "utf8");
         return { output: content };
       },
@@ -69,6 +98,7 @@ export const createFileTools = (): ToolDefinition[] => {
       handler: async (args, context) => {
         const { path: target, content } = args as { path: string; content: string };
         const resolved = resolveWorkspacePath(context, target);
+        assertPathScope(context, resolved, context.allowedWritePaths, "write");
         await fs.mkdir(path.dirname(resolved), { recursive: true });
         await fs.writeFile(resolved, content, "utf8");
         if (context.recordTouchedFile) {
@@ -90,6 +120,7 @@ export const createFileTools = (): ToolDefinition[] => {
       handler: async (args, context) => {
         const { path: target = ".", maxDepth = 2 } = (args as { path?: string; maxDepth?: number }) ?? {};
         const resolved = resolveWorkspacePath(context, target);
+        assertPathScope(context, resolved, context.allowedReadPaths, "read");
         const entries = await listFilesRecursive(resolved, maxDepth);
         const relativeEntries = entries.map((entry) => toRelative(context, entry));
         return { output: relativeEntries.join("\n"), data: { entries: relativeEntries } };
@@ -108,6 +139,7 @@ export const createFileTools = (): ToolDefinition[] => {
       handler: async (args, context) => {
         const { path: target } = args as { path: string };
         const resolved = resolveWorkspacePath(context, target);
+        assertPathScope(context, resolved, context.allowedReadPaths, "read");
         const stats = await fs.stat(resolved);
         const info = {
           path: toRelative(context, resolved),

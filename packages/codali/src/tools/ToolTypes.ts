@@ -3,6 +3,8 @@ export interface ToolContext {
   runId?: string;
   recordTouchedFile?: (path: string) => void;
   allowOutsideWorkspace?: boolean;
+  allowedReadPaths?: string[];
+  allowedWritePaths?: string[];
   allowShell?: boolean;
   allowDestructiveOperations?: boolean;
   shellAllowlist?: string[];

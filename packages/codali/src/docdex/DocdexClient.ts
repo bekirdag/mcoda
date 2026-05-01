@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type {
   DocdexCapabilityMap,
   DocdexCapabilitySnapshot,
@@ -79,6 +80,7 @@ export class DocdexClient {
   private repoId?: string;
   private dagSessionId?: string;
   private healthChecked = false;
+  private repoInitializeAttempted = false;
   private capabilitySnapshot?: DocdexCapabilitySnapshot;
 
   constructor(private options: DocdexClientOptions) {
@@ -157,6 +159,17 @@ export class DocdexClient {
     return { repoId, repoRoot };
   }
 
+  private async ensureRepoInitialized(): Promise<void> {
+    if (this.repoId || this.repoInitializeAttempted || !this.options.repoRoot) return;
+    this.repoInitializeAttempted = true;
+    try {
+      await this.initialize(pathToFileURL(path.resolve(this.options.repoRoot)).toString());
+    } catch {
+      // Keep endpoint-specific calls responsible for reporting the final failure.
+      // Single-repo daemons can still accept repo_root without a prior initialize.
+    }
+  }
+
   private withRepoId(params: URLSearchParams): void {
     if (this.repoId) params.set("repo_id", this.repoId);
     if (this.options.repoRoot) params.set("repo_root", path.resolve(this.options.repoRoot));
@@ -164,6 +177,7 @@ export class DocdexClient {
 
   async search(query: string, options: DocdexSearchOptions = {}): Promise<unknown> {
     await this.ensureHealth();
+    await this.ensureRepoInitialized();
     const params = new URLSearchParams({ q: query });
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     const dagSessionId = options.dagSessionId ?? this.dagSessionId;
@@ -181,6 +195,7 @@ export class DocdexClient {
 
   async openSnippet(docId: string, options: DocdexSnippetOptions = {}): Promise<unknown> {
     await this.ensureHealth();
+    await this.ensureRepoInitialized();
     const params = new URLSearchParams();
     if (options.window !== undefined) params.set("window", String(options.window));
     if (options.textOnly) params.set("text_only", "true");
@@ -201,6 +216,7 @@ export class DocdexClient {
 
   async impactGraph(file: string, options: DocdexImpactOptions = {}): Promise<unknown> {
     await this.ensureHealth();
+    await this.ensureRepoInitialized();
     const params = new URLSearchParams({ file });
     if (options.maxDepth !== undefined) params.set("max_depth", String(options.maxDepth));
     if (options.maxEdges !== undefined) params.set("max_edges", String(options.maxEdges));
@@ -218,6 +234,7 @@ export class DocdexClient {
 
   async impactDiagnostics(options: DocdexImpactDiagnosticsOptions = {}): Promise<unknown> {
     await this.ensureHealth();
+    await this.ensureRepoInitialized();
     const params = new URLSearchParams();
     if (options.file) params.set("file", options.file);
     if (options.limit !== undefined) params.set("limit", String(options.limit));
@@ -291,6 +308,7 @@ export class DocdexClient {
 
   async dagExport(sessionId: string, options: DocdexDagOptions = {}): Promise<unknown> {
     await this.ensureHealth();
+    await this.ensureRepoInitialized();
     const params = new URLSearchParams({ session_id: sessionId });
     if (options.format) params.set("format", options.format);
     if (options.maxNodes !== undefined) params.set("max_nodes", String(options.maxNodes));
@@ -539,7 +557,32 @@ export class DocdexClient {
         web_limit: options.webLimit,
         no_cache: options.noCache,
       }),
-    );
+    ).catch(() => this.webResearchHttp(query, options));
+  }
+
+  private async webResearchHttp(query: string, options: DocdexWebResearchOptions = {}): Promise<unknown> {
+    await this.ensureHealth();
+    await this.ensureRepoInitialized();
+    const params = new URLSearchParams({ q: query });
+    params.set("force_web", String(options.forceWeb ?? true));
+    if (options.skipLocalSearch !== undefined) {
+      params.set("skip_local_search", String(options.skipLocalSearch));
+    }
+    if (options.webLimit !== undefined) {
+      params.set("max_web_results", String(options.webLimit));
+    }
+    if (options.noCache !== undefined) {
+      params.set("no_cache", String(options.noCache));
+    }
+    this.withRepoId(params);
+    const response = await fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
+      headers: this.buildHeaders(this.dagSessionId),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Docdex web research failed (${response.status}): ${body}`);
+    }
+    return response.json();
   }
 
   rerank(query: string, candidates: unknown[], limit?: number): Promise<unknown> {

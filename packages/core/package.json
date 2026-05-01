@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/core",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "description": "Core services and APIs for the mcoda CLI.",
   "type": "module",
   "main": "dist/index.js",

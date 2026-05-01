@@ -3,9 +3,15 @@ import { readFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { buildInstallSetupArgs, isSelfHostedNodeDirectRun, normalizeMswarmCommand } from "../server.js";
+import { buildInstallSetupArgs, buildSelfHostedNodeApp, isSelfHostedNodeDirectRun, normalizeMswarmCommand } from "../server.js";
+import {
+  MswarmCodaliExecutor,
+  type MswarmCodaliInvocationInput,
+  type MswarmCodaliInvocationResult
+} from "../codali-executor.js";
 import {
   type CommandRunner,
   type SelfHostedNodeConfig,
@@ -148,6 +154,111 @@ function serviceConfigFor(statePath: string): SelfHostedNodeConfig {
     modelAllowlist: ["phi3-reviewer"],
     modelBlocklist: ["nomic-embed-text:latest"]
   };
+}
+
+function permissiveServiceConfigFor(statePath: string): SelfHostedNodeConfig {
+  return {
+    ...serviceConfigFor(statePath),
+    modelAllowlist: []
+  };
+}
+
+function mcodaAgentListClient(agents: unknown[]): McodaAgentInventoryClient {
+  return new McodaAgentInventoryClient({
+    runner: async () => ({
+      stdout: JSON.stringify(agents),
+      stderr: ""
+    })
+  });
+}
+
+function healthyMcodaAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    slug: "qwen-reviewer",
+    adapter: "ollama-remote",
+    defaultModel: "qwen3.5:35b",
+    supportsTools: true,
+    contextWindow: 131_072,
+    maxOutputTokens: 8192,
+    capabilities: ["code_write", "code_review"],
+    health: { status: "healthy" },
+    config: {
+      baseUrl: "http://ollama.test"
+    },
+    ...overrides
+  };
+}
+
+function successfulCodaliInvocation(
+  input: MswarmCodaliInvocationInput,
+  output = "{\"decision\":\"approve\"}"
+): MswarmCodaliInvocationResult {
+  return {
+    output,
+    usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13 },
+    runtimeResult: {
+      finalMessage: output,
+      messages: [{ role: "assistant", content: output }],
+      toolCallsExecuted: 0,
+      usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13 },
+      touchedFiles: [],
+      warnings: [],
+      events: [],
+      runId: `run-${input.requestId}`
+    },
+    openAIChunks: [],
+    metadata: {
+      provider: input.agent.provider || "ollama-remote",
+      adapter: input.agent.adapter,
+      local_model: input.agent.model,
+      agent_slug: input.agent.slug,
+      run_id: `run-${input.requestId}`,
+      tool_calls_executed: 0,
+      touched_files: [],
+      warnings: [],
+      mode: input.policy?.allowTools === false ? "freeform" : "tool_loop"
+    }
+  };
+}
+
+class StubCodaliExecutor extends MswarmCodaliExecutor {
+  constructor(private readonly handler: (input: MswarmCodaliInvocationInput) => Promise<MswarmCodaliInvocationResult>) {
+    super();
+  }
+
+  override async invoke(input: MswarmCodaliInvocationInput): Promise<MswarmCodaliInvocationResult> {
+    return this.handler(input);
+  }
+}
+
+function base64Url(input: Buffer | string): string {
+  return Buffer.from(input).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function signInvocationToken(input: {
+  secret: string;
+  nodeId: string;
+  jobId: string;
+  requestId: string;
+  model: string;
+}): string {
+  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64Url(
+    JSON.stringify({
+      node_id: input.nodeId,
+      job_id: input.jobId,
+      request_id: input.requestId,
+      model: input.model,
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      scope: "self_hosted.invoke",
+      iat: now,
+      exp: now + 60
+    })
+  );
+  const signingInput = `${header}.${payload}`;
+  const signature = base64Url(createHmac("sha256", input.secret).update(signingInput).digest());
+  return `${signingInput}.${signature}`;
 }
 
 afterEach(() => {
@@ -502,28 +613,16 @@ describe("self-hosted node runtime", () => {
     expect((chatBody as Record<string, unknown>).stream).toBe(false);
   });
 
-  it("adds strict JSON instructions to mcoda invocation jobs", async () => {
+  it("routes mcoda invocation jobs through Codali with agent metadata and response format", async () => {
     const statePath = tempStatePath();
-    let stdin = "";
-    const executor = new McodaLocalAgentExecutor({
-      runner: async (_command, args, options) => {
-        expect(args).toEqual(["agent-run", "qwen-reviewer", "--json", "--stdin"]);
-        stdin = options.input || "";
-        return {
-          stdout: JSON.stringify({
-            responses: [
-              {
-                output: "{\"decision\":\"approve\"}",
-                adapter: "ollama-remote",
-                model: "qwen3.5:35b"
-              }
-            ]
-          }),
-          stderr: ""
-        };
-      }
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        return successfulCodaliInvocation(input);
+      })
     });
-    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath), { mcodaExecutor: executor });
 
     const result = await runtime.executeJob({
       job_id: "job-mcoda-json",
@@ -551,11 +650,199 @@ describe("self-hosted node runtime", () => {
     });
 
     expect(result.status).toBe("success");
-    expect(stdin).toContain("user: Review this log.");
-    expect(stdin).toContain("Output format constraint:");
-    expect(stdin).toContain("Return exactly one valid JSON object.");
-    expect(stdin).toContain("\"required\":[\"decision\"]");
-    expect(stdin).toContain("Do not include markdown fences, reasoning, commentary, or any text outside the JSON object.");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.agent.slug).toBe("qwen-reviewer");
+    expect(capturedInput.agent.adapter).toBe("ollama-remote");
+    expect(capturedInput.agent.model).toBe("qwen3.5:35b");
+    expect(capturedInput.agent.baseUrl).toBe("http://ollama.test");
+    expect(capturedInput.policy?.allowTools).toBe(true);
+    expect(capturedInput.responseFormat?.type).toBe("json_schema");
+    expect(capturedInput.messages[0]?.content).toBe("Review this log.");
+    expect((result.openai_response?.choices as Array<{ message?: { content?: string } }>)[0]?.message?.content).toBe(
+      "{\"decision\":\"approve\"}"
+    );
+    expect(((result.openai_response?.metadata as Record<string, unknown>) || {}).codali_run_id).toBe("run-req-mcoda-json");
+  });
+
+  it("maps Codali policy denials to self-hosted job failures", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async () => {
+        throw new Error("policy denied: docdex_memory_save is not allowed");
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-policy",
+      request_id: "req-policy",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "Save this memory." }]
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("policy_denied");
+  });
+
+  it("maps Codali timeout failures to self-hosted job failures", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async () => {
+        throw new Error("runner timeout exceeded");
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-timeout",
+      request_id: "req-timeout",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "Write a large app." }]
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("timeout");
+  });
+
+  it("preserves OpenAI-compatible stream chunks from Codali jobs", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        await input.onOpenAIChunk?.({
+          id: "chatcmpl-req-stream",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: input.model,
+          choices: [{ index: 0, delta: { content: "<canvas>" }, finish_reason: null }]
+        });
+        await input.onOpenAIChunk?.({
+          id: "chatcmpl-req-stream",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: input.model,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
+        });
+        return successfulCodaliInvocation(input, "<canvas></canvas>");
+      })
+    });
+
+    const emitted: Record<string, unknown>[] = [];
+    const result = await runtime.executeJob(
+      {
+        job_id: "job-stream",
+        request_id: "req-stream",
+        node_id: "shn_service",
+        agent_slug: "qwen-reviewer",
+        source_agent_slug: "qwen-reviewer",
+        provider: "mcoda",
+        model: "mcoda-qwen-reviewer",
+        openai_request: {
+          model: "mcoda-qwen-reviewer",
+          stream: true,
+          messages: [{ role: "user", content: "Write ping pong HTML." }]
+        }
+      },
+      {
+        onOpenAIChunk: async (chunk) => {
+          emitted.push(chunk);
+        }
+      }
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.stream_events?.length).toBe(2);
+    expect(emitted.length).toBe(2);
+    expect(
+      (emitted[0]?.choices as Array<{ delta?: { content?: string } }> | undefined)?.[0]?.delta?.content
+    ).toBe("<canvas>");
+  });
+
+  it("serves direct stream jobs as OpenAI-compatible SSE", async () => {
+    const statePath = tempStatePath();
+    const config = serviceConfigFor(statePath);
+    const job = {
+      job_id: "job-sse",
+      request_id: "req-sse",
+      node_id: config.nodeId,
+      agent_slug: "qwen-reviewer",
+      provider: "mcoda" as const,
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        stream: true,
+        messages: [{ role: "user", content: "Write ping pong HTML." }]
+      }
+    };
+    const runtime = {
+      executeJob: async (
+        _job: unknown,
+        options?: { onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void> }
+      ) => {
+        await options?.onOpenAIChunk?.({
+          id: "chatcmpl-req-sse",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "mcoda-qwen-reviewer",
+          choices: [{ index: 0, delta: { content: "pong" }, finish_reason: null }]
+        });
+        await options?.onOpenAIChunk?.({
+          id: "chatcmpl-req-sse",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "mcoda-qwen-reviewer",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
+        });
+        return {
+          job_id: job.job_id,
+          request_id: job.request_id,
+          status: "success" as const,
+          openai_response: {}
+        };
+      }
+    } as unknown as SelfHostedNodeRuntime;
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/jobs",
+        headers: {
+          authorization: `Bearer ${signInvocationToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: job.job_id,
+            requestId: job.request_id,
+            model: job.openai_request.model
+          })}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("text/event-stream");
+      expect(response.payload).toContain("data: {");
+      expect(response.payload).toContain("\"object\":\"chat.completion.chunk\"");
+      expect(response.payload).toContain("\"content\":\"pong\"");
+      expect(response.payload).toContain("data: [DONE]");
+    } finally {
+      await app.close();
+    }
   });
 
   it("normalizes node subcommands while preserving top-level compatibility aliases", () => {

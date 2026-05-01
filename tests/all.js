@@ -115,6 +115,8 @@ if (testHomeDir) {
   });
 }
 
+const ignoredTestDiscoveryDirs = new Set(["node_modules", ".git", ".pnpm", "results"]);
+
 const collectTests = (dir) => {
   const entries = readdirSync(dir);
   const files = [];
@@ -122,7 +124,7 @@ const collectTests = (dir) => {
     const fullPath = path.join(dir, entry);
     const stat = statSync(fullPath);
     if (stat.isDirectory()) {
-      if (entry === "results") continue;
+      if (ignoredTestDiscoveryDirs.has(entry)) continue;
       files.push(...collectTests(fullPath));
     } else if (entry.endsWith(".test.js")) {
       files.push(fullPath);

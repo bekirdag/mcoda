@@ -49,6 +49,45 @@ const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>):
   }
 };
 
+test("DocdexClient initializes repo before HTTP search when repo id is missing", {
+  concurrency: false,
+}, async () => {
+  const calls: string[] = [];
+  await withStubbedFetch((url, init) => {
+    calls.push(url);
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.endsWith("/v1/initialize")) {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      assert.match(String(body.rootUri), /^file:\/\//);
+      return makeJsonResponse({ repo_id: "repo-123", repo_root: process.cwd() });
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get("repo_id"), "repo-123");
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.["x-docdex-repo-id"], "repo-123");
+      return makeJsonResponse({ results: [{ rel_path: "src/index.ts" }] });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoRoot: process.cwd(),
+    });
+    const result = await client.search("runtime protocol loop", { limit: 1 });
+    assert.deepEqual(result, { results: [{ rel_path: "src/index.ts" }] });
+    assert.equal(client.getRepoId(), "repo-123");
+  });
+
+  assert.deepEqual(calls.map((url) => new URL(url).pathname), [
+    "/healthz",
+    "/v1/initialize",
+    "/search",
+  ]);
+});
+
 test("DocdexClient caches capability probe results", { concurrency: false }, async () => {
   let probeCalls = 0;
   await withStubbedFetch((url, init) => {
@@ -130,6 +169,57 @@ test("DocdexClient capability probe falls back when MCP probe is unavailable", {
     assert.equal(snapshot.capabilities.batch_search, "unavailable");
     assert.ok((snapshot.warnings?.[0] ?? "").startsWith("probe_failed:"));
   });
+});
+
+test("DocdexClient falls back to HTTP search for web research when MCP fails", {
+  concurrency: false,
+}, async () => {
+  const calls: string[] = [];
+  await withStubbedFetch((url, init) => {
+    calls.push(url);
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.endsWith("/v1/mcp")) {
+      const body = typeof init?.body === "string" ? init.body : "{}";
+      const payload = JSON.parse(body) as { method?: string };
+      if (payload.method === "docdex_web_research") {
+        return makeErrorResponse(500, "mcp proxy timeout");
+      }
+      return makeJsonResponse({ jsonrpc: "2.0", result: { ok: true } });
+    }
+    if (url.endsWith("/v1/initialize")) {
+      return makeJsonResponse({ repo_id: "repo-web", repo_root: process.cwd() });
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get("q"), "codex cli local loop");
+      assert.equal(parsed.searchParams.get("force_web"), "true");
+      assert.equal(parsed.searchParams.get("max_web_results"), "1");
+      assert.equal(parsed.searchParams.get("no_cache"), "true");
+      assert.equal(parsed.searchParams.get("repo_id"), "repo-web");
+      return makeJsonResponse({ results: [{ title: "Codex CLI" }] });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoRoot: process.cwd(),
+    });
+    const result = await client.webResearch("codex cli local loop", {
+      forceWeb: true,
+      webLimit: 1,
+      noCache: true,
+    });
+    assert.deepEqual(result, { results: [{ title: "Codex CLI" }] });
+  });
+
+  assert.deepEqual(calls.map((url) => new URL(url).pathname), [
+    "/healthz",
+    "/v1/mcp",
+    "/v1/initialize",
+    "/search",
+  ]);
 });
 
 test("DocdexClient forwards metadata for memorySave and savePreference", {

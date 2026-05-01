@@ -30,7 +30,7 @@ import { DocdexClient } from "../docdex/DocdexClient.js";
 import { createDocdexTools } from "../tools/docdex/DocdexTools.js";
 import { RunContext } from "../runtime/RunContext.js";
 import { WorkspaceLock } from "../runtime/WorkspaceLock.js";
-import { Runner } from "../runtime/Runner.js";
+import { runCodaliTask } from "../runtime/CodaliRuntime.js";
 import { RunLogger } from "../runtime/RunLogger.js";
 import { RunLogReader } from "../runtime/RunLogReader.js";
 import { registerProvider } from "../providers/ProviderRegistry.js";
@@ -2372,23 +2372,70 @@ export class RunCommand {
           timeoutMs: config.limits.timeoutMs,
         });
 
-        const runner = new Runner({
-          provider,
-          tools: registry,
-          context: toolContext,
-          maxSteps: config.limits.maxSteps,
-          maxToolCalls: config.limits.maxToolCalls,
-          maxTokens: config.limits.maxTokens,
-          timeoutMs: config.limits.timeoutMs,
-          stream: config.streaming.enabled,
-          onEvent: streamState.onEvent,
-          onToken: streamState.onToken,
-          streamFlushMs: config.streaming.flushEveryMs,
+        const result = await runCodaliTask({
+          task: workflowTaskInput,
+          workspace: { root: config.workspaceRoot },
+          provider: {
+            name: config.provider,
+            model: config.model,
+            apiKey: config.apiKey,
+            baseUrl: config.baseUrl,
+            timeoutMs: config.limits.timeoutMs,
+          },
+          docdex: {
+            baseUrl: config.docdex.baseUrl,
+            repoId: config.docdex.repoId,
+            repoRoot: config.docdex.repoRoot ?? config.workspaceRoot,
+            dagSessionId: runId,
+          },
+          policy: {
+            allowWrites: writesAllowed,
+            allowShell: config.tools.allowShell ?? false,
+            allowDestructiveOperations: config.tools.allowDestructiveOperations ?? false,
+            allowOutsideWorkspace: config.tools.allowOutsideWorkspace ?? false,
+            maxSteps: config.limits.maxSteps,
+            maxToolCalls: config.limits.maxToolCalls,
+            maxTokens: config.limits.maxTokens,
+            timeoutMs: config.limits.timeoutMs,
+            mode: "tool_loop",
+          },
+          streaming: config.streaming,
+          metadata: {
+            jobId: config.jobId,
+            requestId: runId,
+            tenantId: config.project,
+            agentSlug: config.agentSlug,
+          },
+          providerInstance: provider,
+          toolRegistry: registry,
+          toolContext,
           logger,
+          onEvent: (event) => {
+            if (event.type === "usage" || event.type === "final") {
+              return;
+            }
+            if (event.type === "subagent_start" || event.type === "subagent_result") {
+              return;
+            }
+            if (event.type === "tool_call") {
+              streamState.onEvent({ type: "tool_call", name: event.name, args: event.args });
+              return;
+            }
+            if (event.type === "tool_result") {
+              streamState.onEvent({
+                type: "tool_result",
+                name: event.name,
+                output: event.output,
+                ok: event.ok,
+                errorCode: event.errorCode,
+                retryable: event.retryable,
+              });
+              return;
+            }
+            streamState.onEvent(event);
+          },
         });
-
-        const result = await runner.run([{ role: "user", content: workflowTaskInput }]);
-        finalMessageContent = result.finalMessage.content;
+        finalMessageContent = result.finalMessage;
         usage = result.usage;
         toolCallsExecuted = result.toolCallsExecuted;
       }

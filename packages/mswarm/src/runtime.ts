@@ -3,6 +3,13 @@ import { dirname, join } from "node:path";
 import { hostname, homedir, platform, userInfo } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  MswarmCodaliExecutor,
+  type MswarmCodaliAgent,
+  type MswarmCodaliDocdex,
+  type MswarmCodaliPolicy,
+  type MswarmCodaliWorkspace
+} from "./codali-executor.js";
 
 export type FetchLike = typeof fetch;
 export type SelfHostedDiscoveryMode = "mcoda" | "ollama";
@@ -167,9 +174,25 @@ export interface SelfHostedNodeInvocationJob {
   agent_slug: string;
   remote_slug?: string;
   provider?: "mcoda" | "ollama";
+  execution_runtime?: "codali" | "raw" | string;
   adapter?: string | null;
   source_agent_slug?: string | null;
   model?: string | null;
+  workspace?: {
+    root?: string;
+    read_only?: boolean;
+  };
+  docdex?: {
+    base_url?: string;
+    repo_root?: string;
+    repo_id?: string;
+    dag_session_id?: string;
+    initialize?: boolean;
+    allow_web?: boolean;
+    allow_memory_write?: boolean;
+    allow_profile_write?: boolean;
+    allow_index_rebuild?: boolean;
+  };
   openai_request: {
     model: string;
     messages: SelfHostedOpenAIChatMessage[];
@@ -185,6 +208,13 @@ export interface SelfHostedNodeInvocationJob {
     max_output_tokens?: number;
     allow_tools?: boolean;
     allow_images?: boolean;
+    allowed_tools?: string[];
+    denied_tools?: string[];
+    allow_shell?: boolean;
+    allow_writes?: boolean;
+    allow_outside_workspace?: boolean;
+    allow_destructive_operations?: boolean;
+    max_tool_calls?: number;
   };
 }
 
@@ -193,6 +223,8 @@ export interface SelfHostedNodeInvocationResult {
   request_id: string;
   status: "success" | "failed";
   openai_response?: Record<string, unknown>;
+  stream_events?: Record<string, unknown>[];
+  progress_events?: Record<string, unknown>[];
   error?: {
     code: string;
     message: string;
@@ -200,6 +232,11 @@ export interface SelfHostedNodeInvocationResult {
   timing?: {
     local_latency_ms: number;
   };
+}
+
+export interface SelfHostedJobExecutionOptions {
+  onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
+  onProgress?: (event: Record<string, unknown>) => void | Promise<void>;
 }
 
 export interface SelfHostedNodeHeartbeatResult {
@@ -1595,9 +1632,7 @@ export class McodaAgentInventoryClient {
     this.runner = input.runner || defaultCommandRunner;
   }
 
-  async listAgents(
-    config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
-  ): Promise<SelfHostedModelInput[]> {
+  async listRawAgents(): Promise<McodaAgentListEntry[]> {
     let stdout: string;
     try {
       stdout = (await this.runner(this.command, this.args, {
@@ -1613,7 +1648,13 @@ export class McodaAgentInventoryClient {
         maxBuffer: DEFAULT_COMMAND_MAX_BUFFER
       })).stdout;
     }
-    return parseMcodaAgentListOutput(stdout)
+    return parseMcodaAgentListOutput(stdout);
+  }
+
+  async listAgents(
+    config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
+  ): Promise<SelfHostedModelInput[]> {
+    return (await this.listRawAgents())
       .map((agent) => mapMcodaAgentToSelfHostedModel(agent, config))
       .filter((model): model is SelfHostedModelInput => Boolean(model));
   }
@@ -1783,6 +1824,114 @@ function buildOpenAIChatCompletion(input: {
       cost_cents: 0
     },
     metadata: input.metadata
+  };
+}
+
+function configText(config: Record<string, unknown> | null | undefined, ...keys: string[]): string | undefined {
+  if (!config) return undefined;
+  for (const key of keys) {
+    const value = optionalText(config[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function mcodaAgentDefaultModel(agent: McodaAgentListEntry): string | null {
+  return (
+    optionalText(agent.defaultModel) ||
+    optionalText(agent.default_model) ||
+    optionalText(agent.models?.find((model) => model.isDefault === true || model.is_default === true)?.modelName) ||
+    optionalText(agent.models?.find((model) => model.isDefault === true || model.is_default === true)?.model_name) ||
+    null
+  );
+}
+
+function resolveCodaliProviderForAgent(agent: McodaAgentListEntry): string | undefined {
+  const adapter = optionalText(agent.adapter);
+  if (adapter === "ollama-remote" || adapter === "ollama") return "ollama-remote";
+  if (adapter === "openai" || adapter === "openai-compatible" || adapter === "openai-cli") {
+    return "openai-compatible";
+  }
+  if (adapter === "codex-cli") return "codex-cli";
+  return adapter || undefined;
+}
+
+function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: string): MswarmCodaliAgent {
+  const adapter = optionalText(agent.adapter) || "unknown";
+  const model = mcodaAgentDefaultModel(agent) || fallbackSlug;
+  const config = agent.config ?? null;
+  return {
+    slug: optionalText(agent.slug) || fallbackSlug,
+    adapter,
+    provider: resolveCodaliProviderForAgent(agent),
+    model,
+    baseUrl: configText(config, "baseUrl", "base_url", "apiBaseUrl", "api_base_url"),
+    apiKey: configText(config, "apiKey", "api_key"),
+    supportsTools: optionalBoolean(agent.supportsTools, agent.supports_tools) === true,
+    capabilities: normalizeCapabilities(agent.capabilities),
+    contextWindow: optionalNumber(agent.contextWindow, agent.context_window) ?? undefined,
+    maxOutputTokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens) ?? undefined,
+  };
+}
+
+function isExposedLocalAgent(
+  agent: McodaAgentListEntry,
+  config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
+): boolean {
+  const mapped = mapMcodaAgentToSelfHostedModel(agent, config);
+  return Boolean(mapped?.exposed);
+}
+
+function buildCodaliWorkspace(job: SelfHostedNodeInvocationJob): MswarmCodaliWorkspace | undefined {
+  const root = optionalText(job.workspace?.root);
+  if (!root) {
+    return undefined;
+  }
+  return {
+    root,
+    readOnly: job.workspace?.read_only !== false,
+  };
+}
+
+function buildCodaliDocdex(job: SelfHostedNodeInvocationJob): MswarmCodaliDocdex | undefined {
+  if (!job.docdex) {
+    return undefined;
+  }
+  return {
+    baseUrl: optionalText(job.docdex.base_url) || undefined,
+    repoRoot: optionalText(job.docdex.repo_root) || optionalText(job.workspace?.root) || undefined,
+    repoId: optionalText(job.docdex.repo_id) || undefined,
+    dagSessionId: optionalText(job.docdex.dag_session_id) || job.request_id,
+    initialize: job.docdex.initialize,
+    allowWeb: job.docdex.allow_web === true,
+    allowMemoryWrite: job.docdex.allow_memory_write === true,
+    allowProfileWrite: job.docdex.allow_profile_write === true,
+    allowIndexRebuild: job.docdex.allow_index_rebuild === true,
+  };
+}
+
+function buildCodaliPolicy(job: SelfHostedNodeInvocationJob): MswarmCodaliPolicy {
+  return {
+    allowTools: job.policy?.allow_tools !== false,
+    allowedTools: job.policy?.allowed_tools,
+    deniedTools: job.policy?.denied_tools,
+    allowShell: job.policy?.allow_shell === true,
+    allowWrites: job.policy?.allow_writes === true,
+    allowDestructiveOperations: job.policy?.allow_destructive_operations === true,
+    allowOutsideWorkspace: job.policy?.allow_outside_workspace === true,
+    maxRuntimeMs: job.policy?.max_runtime_ms,
+    maxToolCalls: job.policy?.max_tool_calls,
+    maxOutputTokens: job.policy?.max_output_tokens ?? job.openai_request.max_tokens,
+  };
+}
+
+function usageTokens(usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined): {
+  promptTokens: number | null;
+  completionTokens: number | null;
+} {
+  return {
+    promptTokens: positiveInteger(usage?.inputTokens),
+    completionTokens: positiveInteger(usage?.outputTokens),
   };
 }
 
@@ -1968,6 +2117,7 @@ export class SelfHostedNodeRuntime {
   private readonly gateway: MswarmSelfHostedNodeClient;
   private readonly mcoda: McodaAgentInventoryClient;
   private readonly mcodaExecutor: McodaLocalAgentExecutor;
+  private readonly codaliExecutor: MswarmCodaliExecutor;
   private readonly ollama: OllamaClient;
   private readonly jobOllama: OllamaClient;
 
@@ -1977,6 +2127,7 @@ export class SelfHostedNodeRuntime {
       gateway?: MswarmSelfHostedNodeClient;
       mcoda?: McodaAgentInventoryClient;
       mcodaExecutor?: McodaLocalAgentExecutor;
+      codaliExecutor?: MswarmCodaliExecutor;
       ollama?: OllamaClient;
       fetchImpl?: FetchLike;
     }
@@ -2002,6 +2153,7 @@ export class SelfHostedNodeRuntime {
         command: config.mcodaBin,
         timeoutMs: config.jobTimeoutMs
       });
+    this.codaliExecutor = deps?.codaliExecutor || new MswarmCodaliExecutor();
     this.ollama =
       deps?.ollama ||
       new OllamaClient({
@@ -2024,6 +2176,7 @@ export class SelfHostedNodeRuntime {
       gateway?: MswarmSelfHostedNodeClient;
       mcoda?: McodaAgentInventoryClient;
       mcodaExecutor?: McodaLocalAgentExecutor;
+      codaliExecutor?: MswarmCodaliExecutor;
       ollama?: OllamaClient;
       fetchImpl?: FetchLike;
     }
@@ -2186,22 +2339,48 @@ export class SelfHostedNodeRuntime {
     return { runtimeToken, state: nextState, enrolled: true };
   }
 
-  async executeJob(job: SelfHostedNodeInvocationJob): Promise<SelfHostedNodeInvocationResult> {
+  private async resolveMcodaAgentForJob(job: SelfHostedNodeInvocationJob): Promise<MswarmCodaliAgent> {
+    const selected =
+      optionalText(job.source_agent_slug) ||
+      optionalText(job.agent_slug) ||
+      optionalText(job.model) ||
+      optionalText(job.openai_request.model);
+    if (!selected) {
+      throw new Error("mcoda source agent slug is required");
+    }
+    const rawAgents = await this.mcoda.listRawAgents();
+    const agent = rawAgents.find((entry) => {
+      const slug = optionalText(entry.slug);
+      const defaultModel = mcodaAgentDefaultModel(entry);
+      return slug === selected || defaultModel === selected;
+    });
+    if (!agent || !isExposedLocalAgent(agent, this.config)) {
+      throw new Error("selected local mcoda agent is not exposed by this node");
+    }
+    return mapMcodaAgentToCodaliAgent(agent, selected);
+  }
+
+  async executeJob(
+    job: SelfHostedNodeInvocationJob,
+    options: SelfHostedJobExecutionOptions = {}
+  ): Promise<SelfHostedNodeInvocationResult> {
     const startedAt = Date.now();
+    const progressEvents: Record<string, unknown>[] = [];
+    const streamEvents: Record<string, unknown>[] = [];
+    const recordProgress = async (event: Record<string, unknown>) => {
+      progressEvents.push(event);
+      await options.onProgress?.(event);
+    };
+    const emitOpenAIChunk = async (chunk: Record<string, unknown>) => {
+      streamEvents.push(chunk);
+      await options.onOpenAIChunk?.(chunk);
+    };
     if (job.node_id !== this.config.nodeId) {
       return {
         job_id: job.job_id,
         request_id: job.request_id,
         status: "failed",
         error: { code: "validation_failed", message: "job node_id does not match this node" }
-      };
-    }
-    if (job.openai_request.stream) {
-      return {
-        job_id: job.job_id,
-        request_id: job.request_id,
-        status: "failed",
-        error: { code: "validation_failed", message: "streaming relay jobs are not supported by this node yet" }
       };
     }
     try {
@@ -2217,6 +2396,26 @@ export class SelfHostedNodeRuntime {
           options,
           format: resolveOllamaResponseFormat(job.openai_request.response_format)
         });
+        if (job.openai_request.stream) {
+          await emitOpenAIChunk({
+            id: `chatcmpl-${job.request_id}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: job.openai_request.model,
+            choices: [
+              { index: 0, delta: { content: result.content }, finish_reason: null }
+            ]
+          });
+          await emitOpenAIChunk({
+            id: `chatcmpl-${job.request_id}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: job.openai_request.model,
+            choices: [
+              { index: 0, delta: {}, finish_reason: "stop" }
+            ]
+          });
+        }
         return {
           job_id: job.job_id,
           request_id: job.request_id,
@@ -2229,22 +2428,53 @@ export class SelfHostedNodeRuntime {
             completionTokens: result.completionTokens,
             metadata: { provider: "ollama", raw: result.raw }
           }),
+          ...(streamEvents.length ? { stream_events: streamEvents } : {}),
+          ...(progressEvents.length ? { progress_events: progressEvents } : {}),
           timing: { local_latency_ms: Date.now() - startedAt }
         };
       }
-      const agentSlug = optionalText(job.source_agent_slug) || optionalText(job.model) || optionalText(job.agent_slug);
-      if (!agentSlug) {
-        throw new Error("mcoda source agent slug is required");
-      }
-      const basePrompt = messagesToPrompt(job.openai_request.messages);
-      if (!basePrompt) {
+      const taskPreview = messagesToPrompt(job.openai_request.messages);
+      if (!taskPreview) {
         throw new Error("mcoda invocation prompt is empty");
       }
-      const prompt = applyResponseFormatInstruction(basePrompt, job.openai_request.response_format);
-      const response = await this.mcodaExecutor.invoke(agentSlug, prompt);
-      const metadata = response.metadata || {};
-      const promptTokens = positiveInteger(metadata.tokensPrompt ?? metadata.tokens_prompt);
-      const completionTokens = positiveInteger(metadata.tokensCompletion ?? metadata.tokens_completion);
+      const agent = await this.resolveMcodaAgentForJob(job);
+      await recordProgress({
+        type: "agent_selected",
+        job_id: job.job_id,
+        request_id: job.request_id,
+        agent_slug: agent.slug,
+        adapter: agent.adapter,
+        supports_tools: agent.supportsTools === true
+      });
+      const response = await this.codaliExecutor.invoke({
+        jobId: job.job_id,
+        requestId: job.request_id,
+        model: job.openai_request.model,
+        messages: job.openai_request.messages,
+        agent,
+        workspace: buildCodaliWorkspace(job),
+        docdex: buildCodaliDocdex(job),
+        policy: buildCodaliPolicy(job),
+        temperature: job.openai_request.temperature,
+        responseFormat: job.openai_request.response_format ?? null,
+        stream: job.openai_request.stream === true,
+        onOpenAIChunk: emitOpenAIChunk,
+        onRuntimeEvent: async (event) => {
+          if (event.type === "status" || event.type === "tool_call" || event.type === "tool_result" || event.type === "error") {
+            await recordProgress({
+              type: event.type,
+              job_id: job.job_id,
+              request_id: job.request_id,
+              ...(event.type === "status" ? { phase: event.phase, message: event.message } : {}),
+              ...(event.type === "tool_call" ? { name: event.name } : {}),
+              ...(event.type === "tool_result" ? { name: event.name, ok: event.ok, error_code: event.errorCode } : {}),
+              ...(event.type === "error" ? { message: event.message, code: event.code } : {}),
+              at: event.at
+            });
+          }
+        }
+      });
+      const tokens = usageTokens(response.usage);
       return {
         job_id: job.job_id,
         request_id: job.request_id,
@@ -2253,26 +2483,44 @@ export class SelfHostedNodeRuntime {
           requestId: job.request_id,
           model: job.openai_request.model,
           content: response.output,
-          promptTokens,
-          completionTokens,
+          promptTokens: tokens.promptTokens,
+          completionTokens: tokens.completionTokens,
           metadata: {
-            provider: "mcoda",
-            adapter: response.adapter,
-            local_model: response.model,
-            mcoda_metadata: metadata
+            provider: response.metadata.provider,
+            adapter: response.metadata.adapter,
+            local_model: response.metadata.local_model,
+            agent_slug: response.metadata.agent_slug,
+            codali_run_id: response.metadata.run_id,
+            tool_calls_executed: response.metadata.tool_calls_executed,
+            touched_files: response.metadata.touched_files,
+            warnings: response.metadata.warnings,
+            mode: response.metadata.mode
           }
         }),
+        ...(streamEvents.length ? { stream_events: streamEvents } : {}),
+        ...(progressEvents.length ? { progress_events: progressEvents } : {}),
         timing: { local_latency_ms: Date.now() - startedAt }
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code =
+        /timeout/i.test(message)
+          ? "timeout"
+          : /not exposed|validation|required|empty/i.test(message)
+            ? "validation_failed"
+            : /permission|policy|denied/i.test(message)
+              ? "policy_denied"
+              : "upstream_error";
       return {
         job_id: job.job_id,
         request_id: job.request_id,
         status: "failed",
         error: {
-          code: "upstream_error",
-          message: error instanceof Error ? error.message : String(error)
+          code,
+          message
         },
+        ...(streamEvents.length ? { stream_events: streamEvents } : {}),
+        ...(progressEvents.length ? { progress_events: progressEvents } : {}),
         timing: { local_latency_ms: Date.now() - startedAt }
       };
     }

@@ -1,0 +1,237 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { MswarmCodaliExecutor } from "../codali-executor.js";
+import type { CodaliRuntimeInput, CodaliRuntimeResult } from "@mcoda/codali";
+
+test("MswarmCodaliExecutor maps jobs to Codali and emits OpenAI stream chunks", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const chunks: Record<string, unknown>[] = [];
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  const result = await executor.invoke({
+    jobId: "job-stream",
+    requestId: "req-stream",
+    model: "mcoda-qwen",
+    messages: [
+      { role: "system", content: "Be concise." },
+      { role: "user", content: "Write ping pong HTML." },
+    ],
+    agent: {
+      slug: "qwen-coder",
+      adapter: "ollama-remote",
+      model: "qwen3-coder:latest",
+      baseUrl: "http://ollama.test",
+      supportsTools: false,
+      maxOutputTokens: 2048,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "http://docdex.test",
+      repoRoot: "/tmp/workspace",
+      allowWeb: false,
+      allowMemoryWrite: false,
+      allowProfileWrite: false,
+      allowIndexRebuild: false,
+    },
+    policy: {
+      allowTools: false,
+      allowShell: false,
+      allowWrites: false,
+      maxRuntimeMs: 30_000,
+    },
+    responseFormat: {
+      type: "json_schema",
+      json_schema: {
+        schema: {
+          type: "object",
+          required: ["html"],
+          properties: { html: { type: "string" } },
+        },
+      },
+    },
+    stream: true,
+    onOpenAIChunk: async (chunk) => {
+      chunks.push(chunk);
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      await input.onEvent?.({
+        type: "token",
+        content: "{\"html\":\"",
+        at: "2026-04-30T00:00:00.000Z",
+      });
+      await input.onEvent?.({
+        type: "tool_result",
+        id: "call-1",
+        name: "docdex_search",
+        ok: true,
+        output: "internal tool output",
+        at: "2026-04-30T00:00:00.000Z",
+      });
+      await input.onEvent?.({
+        type: "final",
+        content: "{\"html\":\"<canvas></canvas>\"}",
+        at: "2026-04-30T00:00:00.000Z",
+      });
+      return {
+        finalMessage: "{\"html\":\"<canvas></canvas>\"}",
+        messages: [{ role: "assistant", content: "{\"html\":\"<canvas></canvas>\"}" }],
+        toolCallsExecuted: 0,
+        usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-stream",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.provider.name, "ollama-remote");
+  assert.equal(capturedInput.provider.model, "qwen3-coder:latest");
+  assert.equal(capturedInput.provider.baseUrl, "http://ollama.test");
+  assert.equal(capturedInput.policy.mode, "freeform");
+  assert.equal(capturedInput.policy.maxToolCalls, 0);
+  assert.deepEqual(capturedInput.response?.schema, {
+    type: "object",
+    required: ["html"],
+    properties: { html: { type: "string" } },
+  });
+  assert.equal(result.output, "{\"html\":\"<canvas></canvas>\"}");
+  assert.equal(result.metadata.provider, "ollama-remote");
+  assert.equal(result.metadata.local_model, "qwen3-coder:latest");
+  assert.equal(chunks.length, 2);
+  assert.equal(JSON.stringify(chunks).includes("internal tool output"), false);
+  assert.equal(
+    (chunks[0]?.choices as Array<{ delta?: { content?: string } }> | undefined)?.[0]?.delta?.content,
+    "{\"html\":\"",
+  );
+  assert.equal(
+    (chunks[1]?.choices as Array<{ finish_reason?: string }> | undefined)?.[0]?.finish_reason,
+    "stop",
+  );
+});
+
+test("MswarmCodaliExecutor routes non-tool agents to protocol_loop when tools are allowed", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  const result = await executor.invoke({
+    jobId: "job-protocol",
+    requestId: "req-protocol",
+    model: "mcoda-local",
+    messages: [{ role: "user", content: "Search Docdex before answering." }],
+    agent: {
+      slug: "local-ollama",
+      adapter: "ollama-remote",
+      model: "llama-local:latest",
+      baseUrl: "http://ollama.test",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "http://docdex.test",
+      repoRoot: "/tmp/workspace",
+      allowWeb: true,
+      allowMemoryWrite: false,
+      allowProfileWrite: false,
+      allowIndexRebuild: false,
+    },
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      maxToolCalls: 7,
+      allowedTools: ["docdex_search", "docdex_web_research", "read_file"],
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "done",
+        messages: [{ role: "assistant", content: "done" }],
+        toolCallsExecuted: 2,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-protocol",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.policy.mode, "protocol_loop");
+  assert.equal(capturedInput.policy.maxSteps, 24);
+  assert.equal(capturedInput.policy.maxToolCalls, 7);
+  assert.deepEqual(capturedInput.policy.allowedTools, [
+    "docdex_search",
+    "docdex_web_research",
+    "read_file",
+  ]);
+  assert.equal(capturedInput.docdex?.allowWeb, true);
+  assert.equal(result.metadata.mode, "protocol_loop");
+  assert.equal(result.metadata.tool_calls_executed, 2);
+});
+
+test("MswarmCodaliExecutor passes session and subagent settings to Codali", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  const result = await executor.invoke({
+    jobId: "job-session",
+    requestId: "req-session",
+    model: "mcoda-local",
+    messages: [{ role: "user", content: "Resume and delegate." }],
+    agent: {
+      slug: "local-ollama",
+      adapter: "ollama-remote",
+      model: "llama-local:latest",
+      baseUrl: "http://ollama.test",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    session: {
+      id: "session-123",
+      resume: true,
+      focusPaths: ["packages/codali/src/runtime/CodaliRuntime.ts"],
+    },
+    subagents: {
+      enabled: true,
+      maxParallel: 2,
+      maxSubagents: 3,
+      defaultTools: ["docdex.search", "file.read"],
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "done",
+        messages: [{ role: "assistant", content: "done" }],
+        toolCallsExecuted: 0,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-session",
+        session: {
+          id: "session-123",
+          summaryRefs: ["summaries/summary.json"],
+          instructionSources: ["AGENTS.md"],
+        },
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.deepEqual(capturedInput.session, {
+    id: "session-123",
+    resume: true,
+    focusPaths: ["packages/codali/src/runtime/CodaliRuntime.ts"],
+  });
+  assert.deepEqual(capturedInput.subagents, {
+    enabled: true,
+    maxParallel: 2,
+    maxSubagents: 3,
+    defaultTools: ["docdex.search", "file.read"],
+  });
+  assert.equal(result.metadata.session_id, "session-123");
+});

@@ -11,7 +11,19 @@ export type AgentNeed =
   | { type: "docdex.dag_export"; session_id?: string; format?: "json" | "text" | "dot"; max_nodes?: number }
   | { type: "file.read"; path: string }
   | { type: "file.list"; root: string; pattern?: string }
-  | { type: "file.diff"; paths?: string[] };
+  | { type: "file.diff"; paths?: string[] }
+  | {
+      type: "agent.delegate";
+      role?: "explorer" | "reviewer" | "worker" | "verifier" | "custom";
+      goal: string;
+      tools?: string[];
+      allowed_paths?: string[];
+      write_paths?: string[];
+      read_only?: boolean;
+      max_steps?: number;
+      max_tool_calls?: number;
+      timeout_ms?: number;
+    };
 
 export type AgentRequest = {
   version: "v1";
@@ -21,6 +33,10 @@ export type AgentRequest = {
   context?: {
     summary?: string;
   };
+};
+
+export type ParseAgentRequestOptions = {
+  defaultRequestId?: string;
 };
 
 export type CodaliResponseResult =
@@ -37,6 +53,7 @@ export type CodaliResponseResult =
   | { type: "file.read"; path: string; content: string }
   | { type: "file.list"; root: string; files: string[] }
   | { type: "file.diff"; paths?: string[]; diff: string }
+  | { type: "agent.delegate"; role: string; goal: string; results: unknown[] }
   | {
       type: "patch.apply_failure";
       error: string;
@@ -110,7 +127,21 @@ export type NormalizedNeed =
     }
   | { tool: "file.read"; params: { path: string } }
   | { tool: "file.list"; params: { root: string; pattern?: string } }
-  | { tool: "file.diff"; params: { paths?: string[] } };
+  | { tool: "file.diff"; params: { paths?: string[] } }
+  | {
+      tool: "agent.delegate";
+      params: {
+        role: "explorer" | "reviewer" | "worker" | "verifier" | "custom";
+        goal: string;
+        tools?: string[];
+        allowed_paths?: string[];
+        write_paths?: string[];
+        read_only?: boolean;
+        max_steps?: number;
+        max_tool_calls?: number;
+        timeout_ms?: number;
+      };
+    };
 
 const parseQuotedValue = (value: string): string => {
   const trimmed = value.trim();
@@ -141,6 +172,16 @@ const parseOptionalNumber = (value?: string): number | undefined => {
 const parseOptionalBoolean = (value?: string): boolean | undefined => {
   if (value === undefined) return undefined;
   return value.trim().toLowerCase() === "true";
+};
+
+const parseOptionalStringList = (value?: string): string[] | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().replace(/^\[/, "").replace(/\]$/, "");
+  const parsed = normalized
+    .split(",")
+    .map((entry) => parseQuotedValue(entry.trim()))
+    .filter(Boolean);
+  return parsed.length ? parsed : undefined;
 };
 
 const coerceNeed = (need: Record<string, string>): AgentNeed => {
@@ -183,7 +224,7 @@ const coerceNeed = (need: Record<string, string>): AgentNeed => {
   if (type === "docdex.web") {
     const query = need.query?.trim();
     if (!query) throw new Error("docdex.web requires query");
-    const force_web = need.force_web === "true";
+    const force_web = parseOptionalBoolean(need.force_web);
     return { type, query, force_web };
   }
   if (type === "docdex.impact") {
@@ -238,10 +279,34 @@ const coerceNeed = (need: Record<string, string>): AgentNeed => {
       : undefined;
     return { type, paths };
   }
+  if (type === "agent.delegate") {
+    const goal = need.goal?.trim();
+    if (!goal) throw new Error("agent.delegate requires goal");
+    const roleValue = need.role?.trim();
+    const role =
+      roleValue && ["explorer", "reviewer", "worker", "verifier", "custom"].includes(roleValue)
+        ? (roleValue as "explorer" | "reviewer" | "worker" | "verifier" | "custom")
+        : undefined;
+    if (roleValue && !role) {
+      throw new Error("agent.delegate role must be explorer, reviewer, worker, verifier, or custom");
+    }
+    return {
+      type,
+      role,
+      goal,
+      tools: parseOptionalStringList(need.tools),
+      allowed_paths: parseOptionalStringList(need.allowed_paths),
+      write_paths: parseOptionalStringList(need.write_paths),
+      read_only: parseOptionalBoolean(need.read_only),
+      max_steps: parseOptionalNumber(need.max_steps),
+      max_tool_calls: parseOptionalNumber(need.max_tool_calls),
+      timeout_ms: parseOptionalNumber(need.timeout_ms),
+    };
+  }
   throw new Error(`Unsupported need type: ${type}`);
 };
 
-export const parseAgentRequest = (input: string): AgentRequest => {
+export const parseAgentRequest = (input: string, options: ParseAgentRequestOptions = {}): AgentRequest => {
   const trimmed = input.trim();
   if (!trimmed) {
     throw new Error("Agent request is empty");
@@ -249,14 +314,14 @@ export const parseAgentRequest = (input: string): AgentRequest => {
 
   if (trimmed.startsWith("{")) {
     const parsed = JSON.parse(trimmed) as Partial<AgentRequest>;
-    if (!parsed.request_id) throw new Error("Agent request missing request_id");
+    if (!parsed.request_id && !options.defaultRequestId) throw new Error("Agent request missing request_id");
     if (!parsed.needs || !Array.isArray(parsed.needs) || parsed.needs.length === 0) {
       throw new Error("Agent request needs must be a non-empty array");
     }
     return {
       version: "v1",
       role: parsed.role ?? "unknown",
-      request_id: parsed.request_id,
+      request_id: parsed.request_id ?? options.defaultRequestId!,
       needs: parsed.needs as AgentNeed[],
       context: parsed.context,
     };
@@ -279,12 +344,14 @@ export const parseAgentRequest = (input: string): AgentRequest => {
   for (const rawLine of lines) {
     const line = rawLine.trimEnd();
     if (!line.trim()) continue;
+    const trimmedLine = line.trim();
+    const isTopLevel = !/^\s/.test(rawLine);
 
-    if (line.startsWith("needs:")) {
+    if (trimmedLine.startsWith("needs:")) {
       mode = "needs";
       continue;
     }
-    if (line.startsWith("context:")) {
+    if (trimmedLine.startsWith("context:")) {
       if (currentNeed) {
         needs.push(coerceNeed(currentNeed));
         currentNeed = null;
@@ -293,8 +360,21 @@ export const parseAgentRequest = (input: string): AgentRequest => {
       continue;
     }
 
+    if (isTopLevel) {
+      const kv = parseYamlKeyValue(trimmedLine);
+      if (kv && (kv.key === "role" || kv.key === "request_id")) {
+        if (currentNeed) {
+          needs.push(coerceNeed(currentNeed));
+          currentNeed = null;
+        }
+        if (kv.key === "role") role = parseQuotedValue(kv.value);
+        if (kv.key === "request_id") request_id = parseQuotedValue(kv.value);
+        continue;
+      }
+    }
+
     if (mode === "needs") {
-      if (line.trim().startsWith("-")) {
+      if (trimmedLine.startsWith("-")) {
         if (currentNeed) {
           needs.push(coerceNeed(currentNeed));
         }
@@ -309,7 +389,7 @@ export const parseAgentRequest = (input: string): AgentRequest => {
         continue;
       }
       if (currentNeed) {
-        const kv = parseYamlKeyValue(line.trim());
+        const kv = parseYamlKeyValue(trimmedLine);
         if (kv) {
           currentNeed[kv.key] = parseQuotedValue(kv.value);
         }
@@ -318,14 +398,14 @@ export const parseAgentRequest = (input: string): AgentRequest => {
     }
 
     if (mode === "context") {
-      const kv = parseYamlKeyValue(line.trim());
+      const kv = parseYamlKeyValue(trimmedLine);
       if (kv && kv.key === "summary") {
         contextSummary = parseQuotedValue(kv.value);
       }
       continue;
     }
 
-    const kv = parseYamlKeyValue(line.trim());
+    const kv = parseYamlKeyValue(trimmedLine);
     if (!kv) continue;
     if (kv.key === "role") role = parseQuotedValue(kv.value);
     if (kv.key === "request_id") request_id = parseQuotedValue(kv.value);
@@ -335,7 +415,10 @@ export const parseAgentRequest = (input: string): AgentRequest => {
     needs.push(coerceNeed(currentNeed));
   }
 
-  if (!request_id) throw new Error("Agent request missing request_id");
+  if (!request_id) {
+    if (!options.defaultRequestId) throw new Error("Agent request missing request_id");
+    request_id = options.defaultRequestId;
+  }
   if (needs.length === 0) throw new Error("Agent request needs must be a non-empty array");
 
   return {
@@ -407,6 +490,22 @@ export const normalizeAgentRequest = (request: AgentRequest): NormalizedNeed[] =
     }
     if (need.type === "file.diff") {
       return { tool: "file.diff", params: { paths: need.paths } };
+    }
+    if (need.type === "agent.delegate") {
+      return {
+        tool: "agent.delegate",
+        params: {
+          role: need.role ?? "explorer",
+          goal: need.goal,
+          tools: need.tools,
+          allowed_paths: need.allowed_paths,
+          write_paths: need.write_paths,
+          read_only: need.read_only,
+          max_steps: need.max_steps,
+          max_tool_calls: need.max_tool_calls,
+          timeout_ms: need.timeout_ms,
+        },
+      };
     }
     return { tool: "file.read", params: { path: need.path } };
   });

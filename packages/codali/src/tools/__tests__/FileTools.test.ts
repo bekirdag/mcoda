@@ -44,3 +44,35 @@ test("FileTools blocks paths outside workspace", { concurrency: false }, async (
   assert.equal(result.error?.code, "tool_permission_denied");
   assert.match(result.error?.message ?? "", /outside the workspace/);
 });
+
+test("FileTools enforces read and write scopes", { concurrency: false }, async () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-files-"));
+  const registry = createRegistry();
+  writeFileSync(path.join(workspaceRoot, "allowed.txt"), "ok");
+  writeFileSync(path.join(workspaceRoot, "blocked.txt"), "no");
+
+  const allowedRead = await registry.execute(
+    "read_file",
+    { path: "allowed.txt" },
+    { workspaceRoot, allowedReadPaths: ["allowed.txt"] },
+  );
+  assert.equal(allowedRead.ok, true);
+
+  const blockedRead = await registry.execute(
+    "read_file",
+    { path: "blocked.txt" },
+    { workspaceRoot, allowedReadPaths: ["allowed.txt"] },
+  );
+  assert.equal(blockedRead.ok, false);
+  assert.equal(blockedRead.error?.code, "tool_permission_denied");
+  assert.match(blockedRead.error?.message ?? "", /outside allowed read scopes/);
+
+  const blockedWrite = await registry.execute(
+    "write_file",
+    { path: "blocked.txt", content: "new" },
+    { workspaceRoot, allowedWritePaths: ["allowed.txt"] },
+  );
+  assert.equal(blockedWrite.ok, false);
+  assert.equal(blockedWrite.error?.code, "tool_permission_denied");
+  assert.match(blockedWrite.error?.message ?? "", /outside allowed write scopes/);
+});

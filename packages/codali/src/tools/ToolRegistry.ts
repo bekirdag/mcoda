@@ -216,6 +216,7 @@ const validateValue = (
 
 const PERMISSION_DENIED_PATTERNS = [
   "outside the workspace",
+  "outside allowed",
   "not allowed",
   "disallowed",
   "permission",

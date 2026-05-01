@@ -13,6 +13,7 @@ const packages = [
   "packages/integrations",
   "packages/core",
   "packages/cli",
+  "packages/codali",
   "packages/mswarm",
 ];
 

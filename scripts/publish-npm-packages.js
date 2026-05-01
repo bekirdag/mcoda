@@ -4,14 +4,15 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const packageDirs = [
-  'packages/mswarm',
   'packages/shared',
   'packages/db',
   'packages/agents',
   'packages/generators',
   'packages/integrations',
   'packages/core',
-  'packages/cli'
+  'packages/cli',
+  'packages/codali',
+  'packages/mswarm'
 ];
 
 const args = new Set(process.argv.slice(2));
