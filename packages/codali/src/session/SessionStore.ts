@@ -140,6 +140,7 @@ const summarizeEvents = (
 export class SessionStore {
   readonly workspaceRoot: string;
   readonly storageDir: string;
+  private lastTimestampMs = 0;
 
   constructor(options: SessionStoreOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
@@ -171,9 +172,20 @@ export class SessionStore {
     return path.join(this.sessionDir(sessionId), "summaries");
   }
 
+  private nextTimestampIso(after?: string): string {
+    const afterMs = after ? Date.parse(after) : Number.NaN;
+    const timestampMs = Math.max(
+      Date.now(),
+      this.lastTimestampMs + 1,
+      Number.isFinite(afterMs) ? afterMs + 1 : 0,
+    );
+    this.lastTimestampMs = timestampMs;
+    return new Date(timestampMs).toISOString();
+  }
+
   async createSession(input: CreateSessionInput): Promise<CodaliSessionMetadata> {
     const sessionId = input.sessionId ? safeId(input.sessionId) : randomUUID();
-    const createdAt = nowIso();
+    const createdAt = this.nextTimestampIso();
     const metadata: CodaliSessionMetadata = {
       schemaVersion: 1,
       sessionId,
@@ -226,7 +238,7 @@ export class SessionStore {
       summaryRefs: patch.summaryRefs ?? current.summaryRefs,
       contextLaneRefs: patch.contextLaneRefs ?? current.contextLaneRefs,
       instructionSources: patch.instructionSources ?? current.instructionSources,
-      updatedAt: nowIso(),
+      updatedAt: this.nextTimestampIso(current.updatedAt),
     };
     await fs.writeFile(this.metadataPath(sessionId), `${JSON.stringify(next, null, 2)}\n`, "utf8");
     return next;
