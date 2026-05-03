@@ -107,6 +107,24 @@ function hasApiKeyArg(argv: string[]): boolean {
   return argv.some((entry, index) => entry === "--api-key" && typeof argv[index + 1] === "string");
 }
 
+function headerText(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
+  const value = headers[name.toLowerCase()];
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : undefined;
+}
+
+function extractAttachedMswarmApiKey(
+  headers: Record<string, string | string[] | undefined>,
+): string | undefined {
+  return (
+    headerText(headers, "x-mswarm-attached-api-key") ??
+    headerText(headers, "x-attached-mswarm-api-key")
+  );
+}
+
 async function readApiKeyFromStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
@@ -223,6 +241,9 @@ export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: S
       });
       return;
     }
+    const attachedMswarmApiKey = extractAttachedMswarmApiKey(
+      request.headers as Record<string, string | string[] | undefined>,
+    );
     if (job.openai_request?.stream === true) {
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -240,7 +261,8 @@ export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: S
         const result = await runtime.executeJob(job, {
           onOpenAIChunk: async (chunk) => {
             writeSelfHostedSseChunk(reply.raw, chunk);
-          }
+          },
+          attachedMswarmApiKey,
         });
         if (result.status !== "success") {
           writeSelfHostedSseChunk(reply.raw, {
@@ -269,7 +291,7 @@ export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: S
       }
       return;
     }
-    const result = await runtime.executeJob(job);
+    const result = await runtime.executeJob(job, { attachedMswarmApiKey });
     if (result.status !== "success") {
       reply.status(502).send(result);
       return;

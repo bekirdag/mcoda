@@ -187,6 +187,10 @@ export interface SelfHostedNodeInvocationJob {
     repo_root?: string;
     repo_id?: string;
     dag_session_id?: string;
+    required?: boolean;
+    allowed_operations?: string[];
+    credential_source?: "attached_mswarm_api_key" | string;
+    capabilities?: Record<string, boolean | undefined>;
     initialize?: boolean;
     allow_web?: boolean;
     allow_memory_write?: boolean;
@@ -237,6 +241,12 @@ export interface SelfHostedNodeInvocationResult {
 export interface SelfHostedJobExecutionOptions {
   onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
   onProgress?: (event: Record<string, unknown>) => void | Promise<void>;
+  /**
+   * Per-invocation owner key attached by the mswarm execution envelope for
+   * encrypted Docdex access. This must never be read from local model/provider
+   * agent config or serialized into job/result payloads.
+   */
+  attachedMswarmApiKey?: string;
 }
 
 export interface SelfHostedNodeHeartbeatResult {
@@ -1893,21 +1903,118 @@ function buildCodaliWorkspace(job: SelfHostedNodeInvocationJob): MswarmCodaliWor
   };
 }
 
+const ATTACHED_MSWARM_API_KEY_CREDENTIAL_SOURCE = "attached_mswarm_api_key";
+const DOCDEX_JOB_ERROR_CODES = new Set([
+  "docdex_context_missing",
+  "docdex_api_key_missing",
+  "docdex_operation_not_allowed",
+  "docdex_auth_failed",
+  "docdex_repo_access_denied",
+  "docdex_unavailable",
+]);
+
+class SelfHostedDocdexJobError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = code;
+    this.code = code;
+  }
+}
+
+function normalizeDocdexCapabilityMap(value: unknown): Record<string, boolean | undefined> | undefined {
+  const record = objectRecord(value);
+  if (!record) return undefined;
+  const output: Record<string, boolean | undefined> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if (typeof entry === "boolean") {
+      output[key] = entry;
+    }
+  }
+  return Object.keys(output).length ? output : undefined;
+}
+
 function buildCodaliDocdex(job: SelfHostedNodeInvocationJob): MswarmCodaliDocdex | undefined {
   if (!job.docdex) {
     return undefined;
   }
+  const allowedOperations = normalizeCapabilities(job.docdex.allowed_operations);
   return {
     baseUrl: optionalText(job.docdex.base_url) || undefined,
     repoRoot: optionalText(job.docdex.repo_root) || optionalText(job.workspace?.root) || undefined,
     repoId: optionalText(job.docdex.repo_id) || undefined,
     dagSessionId: optionalText(job.docdex.dag_session_id) || job.request_id,
+    required: job.docdex.required === true,
+    allowedOperations: allowedOperations.length ? allowedOperations : undefined,
+    credentialSource: optionalText(job.docdex.credential_source) || undefined,
+    capabilities: normalizeDocdexCapabilityMap(job.docdex.capabilities),
     initialize: job.docdex.initialize,
     allowWeb: job.docdex.allow_web === true,
     allowMemoryWrite: job.docdex.allow_memory_write === true,
     allowProfileWrite: job.docdex.allow_profile_write === true,
     allowIndexRebuild: job.docdex.allow_index_rebuild === true,
   };
+}
+
+function attachedMswarmApiKeyForDocdex(
+  job: SelfHostedNodeInvocationJob,
+  attachedMswarmApiKey: string | undefined,
+): string | undefined {
+  if (job.docdex?.credential_source !== ATTACHED_MSWARM_API_KEY_CREDENTIAL_SOURCE) {
+    return undefined;
+  }
+  return optionalText(attachedMswarmApiKey) || undefined;
+}
+
+function validateRequiredDocdexContext(
+  job: SelfHostedNodeInvocationJob,
+  attachedMswarmApiKey: string | undefined,
+): void {
+  if (job.docdex?.required !== true) {
+    return;
+  }
+  if (!optionalText(job.docdex.base_url) || !optionalText(job.docdex.repo_id)) {
+    throw new SelfHostedDocdexJobError(
+      "docdex_context_missing",
+      "Required Docdex runtime context must include base_url and repo_id.",
+    );
+  }
+  if (job.docdex.credential_source !== ATTACHED_MSWARM_API_KEY_CREDENTIAL_SOURCE) {
+    throw new SelfHostedDocdexJobError(
+      "docdex_context_missing",
+      "Required Docdex runtime context must use credential_source attached_mswarm_api_key.",
+    );
+  }
+  if (!attachedMswarmApiKeyForDocdex(job, attachedMswarmApiKey)) {
+    throw new SelfHostedDocdexJobError(
+      "docdex_api_key_missing",
+      "Required Docdex runtime context did not receive an attached mswarm API key.",
+    );
+  }
+}
+
+function selfHostedErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && DOCDEX_JOB_ERROR_CODES.has(code)) {
+    return code;
+  }
+  const name = (error as { name?: unknown }).name;
+  return typeof name === "string" && DOCDEX_JOB_ERROR_CODES.has(name) ? name : undefined;
+}
+
+function redactRuntimeSecretValues(value: string, secrets: Array<string | undefined>): string {
+  let output = value;
+  for (const secret of secrets) {
+    if (typeof secret === "string" && secret.length >= 4) {
+      output = output.split(secret).join("[redacted]");
+    }
+  }
+  return output.replace(
+    /((?:x-api-key|authorization|api[_-]?key|token|secret)\s*[:=]\s*)(?:Bearer\s+)?[^\s,;}]+/gi,
+    "$1[redacted]"
+  );
 }
 
 function buildCodaliPolicy(job: SelfHostedNodeInvocationJob): MswarmCodaliPolicy {
@@ -2365,6 +2472,7 @@ export class SelfHostedNodeRuntime {
     options: SelfHostedJobExecutionOptions = {}
   ): Promise<SelfHostedNodeInvocationResult> {
     const startedAt = Date.now();
+    let selectedAgent: MswarmCodaliAgent | undefined;
     const progressEvents: Record<string, unknown>[] = [];
     const streamEvents: Record<string, unknown>[] = [];
     const recordProgress = async (event: Record<string, unknown>) => {
@@ -2438,6 +2546,9 @@ export class SelfHostedNodeRuntime {
         throw new Error("mcoda invocation prompt is empty");
       }
       const agent = await this.resolveMcodaAgentForJob(job);
+      selectedAgent = agent;
+      validateRequiredDocdexContext(job, options.attachedMswarmApiKey);
+      const attachedMswarmApiKey = attachedMswarmApiKeyForDocdex(job, options.attachedMswarmApiKey);
       await recordProgress({
         type: "agent_selected",
         job_id: job.job_id,
@@ -2454,6 +2565,7 @@ export class SelfHostedNodeRuntime {
         agent,
         workspace: buildCodaliWorkspace(job),
         docdex: buildCodaliDocdex(job),
+        attachedMswarmApiKey,
         policy: buildCodaliPolicy(job),
         temperature: job.openai_request.temperature,
         responseFormat: job.openai_request.response_format ?? null,
@@ -2502,15 +2614,20 @@ export class SelfHostedNodeRuntime {
         timing: { local_latency_ms: Date.now() - startedAt }
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = redactRuntimeSecretValues(
+        error instanceof Error ? error.message : String(error),
+        [selectedAgent?.apiKey, options.attachedMswarmApiKey],
+      );
+      const explicitCode = selfHostedErrorCode(error);
       const code =
-        /timeout/i.test(message)
+        explicitCode ??
+        (/timeout/i.test(message)
           ? "timeout"
           : /not exposed|validation|required|empty/i.test(message)
             ? "validation_failed"
             : /permission|policy|denied/i.test(message)
               ? "policy_denied"
-              : "upstream_error";
+              : "upstream_error");
       return {
         job_id: job.job_id,
         request_id: job.request_id,

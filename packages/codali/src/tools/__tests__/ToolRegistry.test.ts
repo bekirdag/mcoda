@@ -146,6 +146,31 @@ test("ToolRegistry preserves explicit tool execution error metadata", { concurre
   assert.equal(result.error?.retryable, false);
 });
 
+test("ToolRegistry preserves Docdex runtime error codes", { concurrency: false }, async () => {
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "docdex_policy_error",
+    description: "docdex policy",
+    inputSchema: { type: "object", properties: {} },
+    handler: async () => {
+      const error = new Error("Docdex operation is not allowed by this job: open");
+      Object.assign(error, {
+        code: "docdex_operation_not_allowed",
+        retryable: false,
+        details: { operation: "open" },
+      });
+      throw error;
+    },
+  });
+
+  const result = await registry.execute("docdex_policy_error", {}, context);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, "docdex_operation_not_allowed");
+  assert.equal(result.error?.category, "permission");
+  assert.equal(result.error?.retryable, false);
+  assert.deepEqual(result.error?.details, { operation: "open" });
+});
+
 test("ToolRegistry normalizes generic timeout errors", { concurrency: false }, async () => {
   const registry = new ToolRegistry();
   registry.register({

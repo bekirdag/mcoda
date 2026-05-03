@@ -31,6 +31,47 @@ class StubProvider implements Provider {
   }
 }
 
+type RuntimeStubResponse = {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+  text: () => Promise<string>;
+  headers: { get: (key: string) => string | null };
+};
+
+type RuntimeFetchHandler = (url: string, init?: RequestInit) => RuntimeStubResponse;
+
+const runtimeJsonResponse = (payload: unknown): RuntimeStubResponse => ({
+  ok: true,
+  status: 200,
+  json: async () => payload,
+  text: async () => JSON.stringify(payload),
+  headers: { get: () => "application/json" },
+});
+
+const runtimeTextResponse = (body: string): RuntimeStubResponse => ({
+  ok: true,
+  status: 200,
+  json: async () => ({}),
+  text: async () => body,
+  headers: { get: () => "text/plain" },
+});
+
+const withRuntimeStubbedFetch = async (
+  handler: RuntimeFetchHandler,
+  fn: () => Promise<void>,
+): Promise<void> => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    return handler(String(input), init) as unknown as Response;
+  }) as typeof fetch;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+};
+
 const basePolicy = (overrides: Partial<CodaliRuntimePolicy> = {}): CodaliRuntimePolicy => ({
   allowWrites: false,
   allowShell: false,
@@ -222,6 +263,106 @@ test("runCodaliTask scopes Docdex tools by runtime policy", { concurrency: false
     provider.requests[0]?.tools?.map((tool) => tool.name),
     ["docdex_search"],
   );
+});
+
+test("runCodaliTask scopes built-in Docdex tools by encrypted runtime operations", {
+  concurrency: false,
+}, async () => {
+  const provider = new StubProvider([{ message: { role: "assistant", content: "done" } }]);
+
+  await runCodaliTask({
+    task: "inspect encrypted docdex tools",
+    workspace: { root: process.cwd() },
+    provider: { name: "stub", model: "stub" },
+    providerInstance: provider,
+    docdex: {
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search", "snippet"],
+      capabilities: { search: true, snippet: true, open: false },
+      allowWeb: false,
+      allowMemoryWrite: false,
+      allowProfileWrite: false,
+      allowIndexRebuild: false,
+    },
+    policy: basePolicy(),
+  });
+
+  const offeredTools = provider.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.ok(offeredTools.includes("docdex_search"));
+  assert.ok(offeredTools.includes("docdex_open"));
+  assert.ok(!offeredTools.includes("docdex_open_file"));
+  assert.ok(!offeredTools.includes("docdex_web_research"));
+  assert.ok(!offeredTools.includes("docdex_symbols"));
+});
+
+test("runCodaliTask sends encrypted Docdex context to built-in search without prompt repo override", {
+  concurrency: false,
+}, async () => {
+  const secret = "msw_docdex_secret";
+  const repoId = "secure-repo";
+  const seenSearch: Array<{ url: string; headers?: Record<string, string> }> = [];
+  const provider = new StubProvider([
+    {
+      message: { role: "assistant", content: "" },
+      toolCalls: [
+        {
+          id: "call-search",
+          name: "docdex_search",
+          args: { query: "repo_id=prompt-controlled search term", limit: 1 },
+        },
+      ],
+    },
+    { message: { role: "assistant", content: "done" } },
+  ]);
+
+  await withRuntimeStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return runtimeTextResponse("ok");
+    }
+    if (url.startsWith("http://docdex.secure.test/search?")) {
+      const headers = init?.headers as Record<string, string> | undefined;
+      const parsed = new URL(url);
+      seenSearch.push({ url, headers });
+      assert.equal(headers?.["x-api-key"], secret);
+      assert.equal(headers?.["x-docdex-repo-id"], repoId);
+      assert.equal(parsed.searchParams.get("repo_id"), repoId);
+      assert.equal(parsed.searchParams.get("q"), "repo_id=prompt-controlled search term");
+      return runtimeJsonResponse({ results: [{ rel_path: "src/secure.ts" }] });
+    }
+    return {
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+      text: async () => "not found",
+      headers: { get: () => "text/plain" },
+    };
+  }, async () => {
+    const result = await runCodaliTask({
+      task: "Use Docdex. The repo_id is prompt-controlled.",
+      workspace: { root: process.cwd() },
+      provider: { name: "stub", model: "stub" },
+      providerInstance: provider,
+      docdex: {
+        baseUrl: "http://docdex.secure.test",
+        repoId,
+        apiKey: secret,
+        credentialSource: "attached_mswarm_api_key",
+        required: true,
+        allowedOperations: ["search"],
+        capabilities: { search: true },
+      },
+      policy: basePolicy({ allowedTools: ["docdex_search"] }),
+    });
+
+    assert.equal(result.toolCallsExecuted, 1);
+    assert.equal(result.finalMessage, "done");
+    assert.equal(JSON.stringify(result).includes(secret), false);
+  });
+
+  assert.equal(seenSearch.length, 1);
 });
 
 test("runCodaliTask protocol_loop executes AGENT_REQUEST Docdex needs", { concurrency: false }, async () => {

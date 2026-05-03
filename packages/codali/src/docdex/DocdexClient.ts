@@ -12,7 +12,75 @@ export interface DocdexClientOptions {
   repoRoot?: string;
   repoId?: string;
   authToken?: string;
+  apiKey?: string;
+  credentialSource?: "attached_mswarm_api_key" | string;
+  required?: boolean;
+  allowedOperations?: readonly string[];
+  capabilities?: Record<string, boolean | undefined>;
   dagSessionId?: string;
+}
+
+export type DocdexRuntimeErrorCode =
+  | "docdex_context_missing"
+  | "docdex_api_key_missing"
+  | "docdex_operation_not_allowed"
+  | "docdex_auth_failed"
+  | "docdex_repo_access_denied"
+  | "docdex_unavailable";
+
+export type DocdexRuntimeOperation =
+  | "health"
+  | "initialize"
+  | "search"
+  | "snippet"
+  | "open"
+  | "symbols"
+  | "ast"
+  | "impact_graph"
+  | "impact_diagnostics"
+  | "dag_export"
+  | "tree"
+  | "memory_save"
+  | "memory_recall"
+  | "profile_read"
+  | "profile_write"
+  | "web_research"
+  | "chat_context"
+  | "rerank"
+  | "batch_search"
+  | "capabilities"
+  | "stats"
+  | "files"
+  | "repo_inspect"
+  | "index_rebuild"
+  | "index_ingest"
+  | "delegate"
+  | "hooks_validate";
+
+export interface DocdexRuntimeErrorOptions {
+  status?: number;
+  retryable?: boolean;
+  details?: Record<string, unknown>;
+}
+
+export class DocdexRuntimeError extends Error {
+  readonly code: DocdexRuntimeErrorCode;
+  readonly status?: number;
+  readonly retryable: boolean;
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    code: DocdexRuntimeErrorCode,
+    message: string,
+    options: DocdexRuntimeErrorOptions = {},
+  ) {
+    super(message);
+    this.name = code;
+    this.code = code;
+    this.status = options.status;
+    this.retryable = options.retryable ?? code === "docdex_unavailable";
+    this.details = options.details;
+  }
 }
 
 export interface DocdexSearchOptions {
@@ -57,6 +125,21 @@ export interface DocdexOpenFileOptions {
   clamp?: boolean;
 }
 
+export interface DocdexChatMessage {
+  role: string;
+  content: string | Array<Record<string, unknown>>;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: unknown;
+}
+
+export interface DocdexChatContextOptions {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  docdex?: Record<string, unknown>;
+}
+
 export interface DocdexWebResearchOptions {
   forceWeb?: boolean;
   skipLocalSearch?: boolean;
@@ -75,6 +158,100 @@ const CAPABILITY_KEYS = [
   "retrieval_explanation",
   "batch_search",
 ] as const;
+
+const DOCDEX_RUNTIME_ERROR_CODES = new Set<DocdexRuntimeErrorCode>([
+  "docdex_context_missing",
+  "docdex_api_key_missing",
+  "docdex_operation_not_allowed",
+  "docdex_auth_failed",
+  "docdex_repo_access_denied",
+  "docdex_unavailable",
+]);
+
+const DOCDEX_RUNTIME_OPERATIONS = new Set<DocdexRuntimeOperation>([
+  "health",
+  "initialize",
+  "search",
+  "snippet",
+  "open",
+  "symbols",
+  "ast",
+  "impact_graph",
+  "impact_diagnostics",
+  "dag_export",
+  "tree",
+  "memory_save",
+  "memory_recall",
+  "profile_read",
+  "profile_write",
+  "web_research",
+  "chat_context",
+  "rerank",
+  "batch_search",
+  "capabilities",
+  "stats",
+  "files",
+  "repo_inspect",
+  "index_rebuild",
+  "index_ingest",
+  "delegate",
+  "hooks_validate",
+]);
+
+const MCP_OPERATION_BY_METHOD: Record<string, DocdexRuntimeOperation> = {
+  docdex_symbols: "symbols",
+  docdex_ast: "ast",
+  docdex_stats: "stats",
+  docdex_files: "files",
+  docdex_repo_inspect: "repo_inspect",
+  docdex_memory_save: "memory_save",
+  docdex_memory_recall: "memory_recall",
+  docdex_tree: "tree",
+  docdex_open: "open",
+  docdex_get_profile: "profile_read",
+  docdex_save_preference: "profile_write",
+  docdex_web_research: "web_research",
+  docdex_rerank: "rerank",
+  docdex_batch_search: "batch_search",
+  docdex_capabilities: "capabilities",
+};
+
+export const isDocdexRuntimeErrorCode = (value: unknown): value is DocdexRuntimeErrorCode => {
+  return typeof value === "string" && DOCDEX_RUNTIME_ERROR_CODES.has(value as DocdexRuntimeErrorCode);
+};
+
+export const normalizeDocdexRuntimeOperation = (
+  value: string,
+): DocdexRuntimeOperation | undefined => {
+  const normalized = value.trim().replace(/[.-]/g, "_").toLowerCase();
+  const aliases: Record<string, DocdexRuntimeOperation> = {
+    impact: "impact_graph",
+    diagnostics: "impact_diagnostics",
+    impact_diagnostics: "impact_diagnostics",
+    web: "web_research",
+    web_search: "web_research",
+    chat: "chat_context",
+    chat_completions: "chat_context",
+    context_chat: "chat_context",
+    open_file: "open",
+    snippet_fetch: "snippet",
+    profile: "profile_read",
+    get_profile: "profile_read",
+    save_preference: "profile_write",
+    memory: "memory_recall",
+    index: "index_rebuild",
+    hooks: "hooks_validate",
+  };
+  const aliased = aliases[normalized];
+  if (aliased) return aliased;
+  return DOCDEX_RUNTIME_OPERATIONS.has(normalized as DocdexRuntimeOperation)
+    ? (normalized as DocdexRuntimeOperation)
+    : undefined;
+};
+
+const escapeRegExp = (value: string): string => {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+};
 
 export class DocdexClient {
   private repoId?: string;
@@ -112,6 +289,94 @@ export class DocdexClient {
     this.capabilitySnapshot = undefined;
   }
 
+  private runtimeAllowedOperations(): Set<DocdexRuntimeOperation> | undefined {
+    if (!this.options.allowedOperations?.length) return undefined;
+    const operations = this.options.allowedOperations
+      .map((entry) => normalizeDocdexRuntimeOperation(entry))
+      .filter((entry): entry is DocdexRuntimeOperation => Boolean(entry));
+    return operations.length ? new Set(operations) : new Set();
+  }
+
+  private runtimeCapability(operation: DocdexRuntimeOperation): boolean | undefined {
+    if (!this.options.capabilities) return undefined;
+    for (const [key, value] of Object.entries(this.options.capabilities)) {
+      const normalized = normalizeDocdexRuntimeOperation(key);
+      if (normalized === operation && typeof value === "boolean") {
+        return value;
+      }
+    }
+    return undefined;
+  }
+
+  private redactSensitiveText(text: string): string {
+    let output = text;
+    for (const secret of [this.options.apiKey, this.options.authToken]) {
+      if (typeof secret === "string" && secret.length >= 4) {
+        output = output.replace(new RegExp(escapeRegExp(secret), "g"), "[redacted]");
+      }
+    }
+    output = output.replace(
+      /("(?:x-api-key|authorization|api[_-]?key|token|secret)"\s*:\s*")[^"]+(")/gi,
+      "$1[redacted]$2",
+    );
+    output = output.replace(
+      /((?:x-api-key|authorization|api[_-]?key|token|secret)\s*[:=]\s*)(?:Bearer\s+)?[^\s,;}]+/gi,
+      "$1[redacted]",
+    );
+    return output;
+  }
+
+  private runtimeError(
+    code: DocdexRuntimeErrorCode,
+    message: string,
+    options: DocdexRuntimeErrorOptions = {},
+  ): DocdexRuntimeError {
+    return new DocdexRuntimeError(code, this.redactSensitiveText(message), options);
+  }
+
+  private assertRuntimeContext(operation: DocdexRuntimeOperation): void {
+    const credentialSource = this.options.credentialSource;
+    const requiresAttachedKey = credentialSource === "attached_mswarm_api_key";
+    if (requiresAttachedKey && (!this.options.apiKey || this.options.apiKey.trim().length === 0)) {
+      throw this.runtimeError(
+        "docdex_api_key_missing",
+        "Docdex attached mswarm API key is required but was not provided.",
+        { retryable: false, details: { operation, credential_source: credentialSource } },
+      );
+    }
+    if (this.options.required && this.resolveBaseUrl().length === 0) {
+      throw this.runtimeError("docdex_context_missing", "Docdex base_url is required for this job.", {
+        retryable: false,
+        details: { operation },
+      });
+    }
+    if (this.options.required && requiresAttachedKey && !this.repoId) {
+      throw this.runtimeError("docdex_context_missing", "Docdex repo_id is required for this job.", {
+        retryable: false,
+        details: { operation },
+      });
+    }
+  }
+
+  private assertOperationAllowed(operation: DocdexRuntimeOperation): void {
+    this.assertRuntimeContext(operation);
+    const allowedOperations = this.runtimeAllowedOperations();
+    if (allowedOperations && !allowedOperations.has(operation)) {
+      throw this.runtimeError(
+        "docdex_operation_not_allowed",
+        `Docdex operation is not allowed by this job: ${operation}`,
+        { retryable: false, details: { operation } },
+      );
+    }
+    if (this.runtimeCapability(operation) === false) {
+      throw this.runtimeError(
+        "docdex_operation_not_allowed",
+        `Docdex operation is disabled by this job capability map: ${operation}`,
+        { retryable: false, details: { operation } },
+      );
+    }
+  }
+
   private resolveBaseUrl(): string {
     const base = this.options.baseUrl.trim();
     return base.endsWith("/") ? base.slice(0, -1) : base;
@@ -119,7 +384,11 @@ export class DocdexClient {
 
   private buildHeaders(dagSessionId?: string): Record<string, string> {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (this.options.authToken) headers.authorization = `Bearer ${this.options.authToken}`;
+    if (this.options.apiKey) {
+      headers["x-api-key"] = this.options.apiKey;
+    } else if (this.options.authToken) {
+      headers.authorization = `Bearer ${this.options.authToken}`;
+    }
     if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
     if (this.options.repoRoot) headers["x-docdex-repo-root"] = path.resolve(this.options.repoRoot);
     const resolvedDagSessionId = dagSessionId ?? this.dagSessionId;
@@ -129,19 +398,45 @@ export class DocdexClient {
 
   private async ensureHealth(): Promise<void> {
     if (this.healthChecked) return;
-    const ok = await this.healthCheck();
+    let ok = false;
+    try {
+      ok = await this.healthCheck();
+    } catch (error) {
+      if (error instanceof DocdexRuntimeError) throw error;
+      throw this.runtimeError(
+        "docdex_unavailable",
+        `Docdex health check failed: ${error instanceof Error ? error.message : String(error)}`,
+        { retryable: true },
+      );
+    }
     if (!ok) {
-      throw new Error("Docdex health check failed");
+      throw this.runtimeError("docdex_unavailable", "Docdex health check failed", {
+        retryable: true,
+      });
     }
   }
 
   async healthCheck(): Promise<boolean> {
-    const response = await fetch(`${this.resolveBaseUrl()}/healthz`);
+    let response: Response;
+    try {
+      response = await fetch(`${this.resolveBaseUrl()}/healthz`);
+    } catch (error) {
+      throw this.runtimeError(
+        "docdex_unavailable",
+        `Docdex health check failed: ${error instanceof Error ? error.message : String(error)}`,
+        { retryable: true },
+      );
+    }
     this.healthChecked = response.ok;
     return response.ok;
   }
 
   async initialize(rootUri: string): Promise<{ repoId?: string; repoRoot?: string }> {
+    this.assertOperationAllowed("initialize");
+    return this.initializeRepo(rootUri);
+  }
+
+  private async initializeRepo(rootUri: string): Promise<{ repoId?: string; repoRoot?: string }> {
     await this.ensureHealth();
     const response = await fetch(`${this.resolveBaseUrl()}/v1/initialize`, {
       method: "POST",
@@ -149,8 +444,7 @@ export class DocdexClient {
       body: JSON.stringify({ rootUri }),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex initialize failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "initialize");
     }
     const payload = (await response.json()) as Record<string, unknown>;
     const repoId = (payload.repo_id ?? payload.repoId ?? payload.repo) as string | undefined;
@@ -163,7 +457,7 @@ export class DocdexClient {
     if (this.repoId || this.repoInitializeAttempted || !this.options.repoRoot) return;
     this.repoInitializeAttempted = true;
     try {
-      await this.initialize(pathToFileURL(path.resolve(this.options.repoRoot)).toString());
+      await this.initializeRepo(pathToFileURL(path.resolve(this.options.repoRoot)).toString());
     } catch {
       // Keep endpoint-specific calls responsible for reporting the final failure.
       // Single-repo daemons can still accept repo_root without a prior initialize.
@@ -175,7 +469,52 @@ export class DocdexClient {
     if (this.options.repoRoot) params.set("repo_root", path.resolve(this.options.repoRoot));
   }
 
+  private extractErrorCode(body: string): string | undefined {
+    const parsed = this.tryParseJson(body);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const record = parsed as Record<string, unknown>;
+    const error = record.error && typeof record.error === "object"
+      ? (record.error as Record<string, unknown>)
+      : undefined;
+    const code = error?.code ?? record.code;
+    return typeof code === "string" ? code : undefined;
+  }
+
+  private mapResponseErrorCode(status: number, body: string): DocdexRuntimeErrorCode {
+    const extracted = this.extractErrorCode(body);
+    if (isDocdexRuntimeErrorCode(extracted)) return extracted;
+    const normalized = `${extracted ?? ""} ${body}`.toLowerCase();
+    if (/introspection_unavailable|unavailable|timeout|timed out|econnrefused|enotfound/.test(normalized)) {
+      return "docdex_unavailable";
+    }
+    if (/repo_access_denied|unknown_repo|repo.*denied|denied.*repo/.test(normalized)) {
+      return "docdex_repo_access_denied";
+    }
+    if (/scope_denied|operation_not_allowed|encrypted_operation_disabled|not allowed|forbidden_operation/.test(normalized)) {
+      return "docdex_operation_not_allowed";
+    }
+    if (status === 401 || status === 403 || /invalid_credentials|missing_credentials|ambiguous_credentials/.test(normalized)) {
+      return "docdex_auth_failed";
+    }
+    return "docdex_unavailable";
+  }
+
+  private async throwResponseError(response: Response, operation: string): Promise<never> {
+    const body = await response.text();
+    const code = this.mapResponseErrorCode(response.status, body);
+    throw this.runtimeError(
+      code,
+      `Docdex ${operation} failed (${response.status}): ${body}`,
+      {
+        status: response.status,
+        retryable: code === "docdex_unavailable" && response.status >= 500,
+        details: { operation },
+      },
+    );
+  }
+
   async search(query: string, options: DocdexSearchOptions = {}): Promise<unknown> {
+    this.assertOperationAllowed("search");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const params = new URLSearchParams({ q: query });
@@ -187,13 +526,13 @@ export class DocdexClient {
       headers: this.buildHeaders(dagSessionId),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex search failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "search");
     }
     return response.json();
   }
 
   async openSnippet(docId: string, options: DocdexSnippetOptions = {}): Promise<unknown> {
+    this.assertOperationAllowed("snippet");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const params = new URLSearchParams();
@@ -204,8 +543,7 @@ export class DocdexClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex snippet failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "snippet");
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
@@ -215,6 +553,7 @@ export class DocdexClient {
   }
 
   async impactGraph(file: string, options: DocdexImpactOptions = {}): Promise<unknown> {
+    this.assertOperationAllowed("impact_graph");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const params = new URLSearchParams({ file });
@@ -226,13 +565,13 @@ export class DocdexClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex impact graph failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "impact graph");
     }
     return response.json();
   }
 
   async impactDiagnostics(options: DocdexImpactDiagnosticsOptions = {}): Promise<unknown> {
+    this.assertOperationAllowed("impact_diagnostics");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const params = new URLSearchParams();
@@ -244,13 +583,13 @@ export class DocdexClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex impact diagnostics failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "impact diagnostics");
     }
     return response.json();
   }
 
   async indexRebuild(libsSources?: string): Promise<unknown> {
+    this.assertOperationAllowed("index_rebuild");
     await this.ensureHealth();
     const response = await fetch(`${this.resolveBaseUrl()}/v1/index/rebuild`, {
       method: "POST",
@@ -258,13 +597,13 @@ export class DocdexClient {
       body: JSON.stringify(libsSources ? { libs_sources: libsSources } : {}),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex index rebuild failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "index rebuild");
     }
     return response.json();
   }
 
   async indexIngest(file: string): Promise<unknown> {
+    this.assertOperationAllowed("index_ingest");
     await this.ensureHealth();
     const response = await fetch(`${this.resolveBaseUrl()}/v1/index/ingest`, {
       method: "POST",
@@ -272,13 +611,13 @@ export class DocdexClient {
       body: JSON.stringify({ file }),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex index ingest failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "index ingest");
     }
     return response.json();
   }
 
   async hooksValidate(files: string[]): Promise<unknown> {
+    this.assertOperationAllowed("hooks_validate");
     await this.ensureHealth();
     const response = await fetch(`${this.resolveBaseUrl()}/v1/hooks/validate`, {
       method: "POST",
@@ -286,13 +625,13 @@ export class DocdexClient {
       body: JSON.stringify({ files }),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex hooks validate failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "hooks validate");
     }
     return response.json();
   }
 
   async delegate(payload: Record<string, unknown>): Promise<unknown> {
+    this.assertOperationAllowed("delegate");
     await this.ensureHealth();
     const response = await fetch(`${this.resolveBaseUrl()}/v1/delegate`, {
       method: "POST",
@@ -300,13 +639,39 @@ export class DocdexClient {
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex delegate failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "delegate");
+    }
+    return response.json();
+  }
+
+  async chatContext(
+    messages: DocdexChatMessage[],
+    options: DocdexChatContextOptions = {},
+  ): Promise<unknown> {
+    this.assertOperationAllowed("chat_context");
+    await this.ensureHealth();
+    await this.ensureRepoInitialized();
+    const body: Record<string, unknown> = {
+      messages,
+      stream: false,
+    };
+    if (options.model) body.model = options.model;
+    if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+    if (options.temperature !== undefined) body.temperature = options.temperature;
+    if (options.docdex) body.docdex = options.docdex;
+    const response = await fetch(`${this.resolveBaseUrl()}/v1/chat/completions`, {
+      method: "POST",
+      headers: this.buildHeaders(this.dagSessionId),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      await this.throwResponseError(response, "chat context");
     }
     return response.json();
   }
 
   async dagExport(sessionId: string, options: DocdexDagOptions = {}): Promise<unknown> {
+    this.assertOperationAllowed("dag_export");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const params = new URLSearchParams({ session_id: sessionId });
@@ -318,7 +683,16 @@ export class DocdexClient {
     });
     const body = await response.text();
     if (!response.ok) {
-      throw new Error(`Docdex dag export failed (${response.status}): ${body}`);
+      const code = this.mapResponseErrorCode(response.status, body);
+      throw this.runtimeError(
+        code,
+        `Docdex dag export failed (${response.status}): ${body}`,
+        {
+          status: response.status,
+          retryable: code === "docdex_unavailable" && response.status >= 500,
+          details: { operation: "dag_export" },
+        },
+      );
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
@@ -332,6 +706,10 @@ export class DocdexClient {
   }
 
   async callMcp<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    const operation = MCP_OPERATION_BY_METHOD[method];
+    if (operation) {
+      this.assertOperationAllowed(operation);
+    }
     await this.ensureHealth();
     const payload = {
       jsonrpc: "2.0",
@@ -345,12 +723,19 @@ export class DocdexClient {
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex MCP failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "MCP");
     }
-    const raw = (await response.json()) as { result?: T; error?: { message?: string } };
+    const raw = (await response.json()) as {
+      result?: T;
+      error?: { message?: string; code?: unknown; data?: unknown };
+    };
     if (raw.error) {
-      throw new Error(raw.error.message ?? "Docdex MCP error");
+      const body = JSON.stringify(raw.error);
+      const code = this.mapResponseErrorCode(500, body);
+      throw this.runtimeError(code, raw.error.message ?? "Docdex MCP error", {
+        retryable: code === "docdex_unavailable",
+        details: { method },
+      });
     }
     return this.normalizeMcpResult(raw.result) as T;
   }
@@ -561,6 +946,7 @@ export class DocdexClient {
   }
 
   private async webResearchHttp(query: string, options: DocdexWebResearchOptions = {}): Promise<unknown> {
+    this.assertOperationAllowed("web_research");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
     const params = new URLSearchParams({ q: query });
@@ -579,8 +965,7 @@ export class DocdexClient {
       headers: this.buildHeaders(this.dagSessionId),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Docdex web research failed (${response.status}): ${body}`);
+      await this.throwResponseError(response, "web research");
     }
     return response.json();
   }

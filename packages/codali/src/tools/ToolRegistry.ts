@@ -226,11 +226,42 @@ const PERMISSION_DENIED_PATTERNS = [
   "eperm",
 ];
 
+const PRESERVED_ERROR_CODES = new Set<ToolErrorCode>([
+  "tool_unknown",
+  "tool_schema_invalid",
+  "tool_invalid_args",
+  "tool_permission_denied",
+  "tool_timeout",
+  "tool_execution_failed",
+  "docdex_context_missing",
+  "docdex_api_key_missing",
+  "docdex_operation_not_allowed",
+  "docdex_auth_failed",
+  "docdex_repo_access_denied",
+  "docdex_unavailable",
+]);
+
+const preservedErrorCode = (error: unknown): ToolErrorCode | undefined => {
+  if (!isObject(error)) return undefined;
+  const code = error.code;
+  return typeof code === "string" && PRESERVED_ERROR_CODES.has(code as ToolErrorCode)
+    ? (code as ToolErrorCode)
+    : undefined;
+};
+
 const normalizeExecutionError = (error: unknown): ToolError => {
   if (error instanceof ToolExecutionError) {
     return error.toToolError();
   }
+  const explicitCode = preservedErrorCode(error);
   const message = error instanceof Error ? error.message : String(error);
+  if (explicitCode) {
+    const retryable = isObject(error) && typeof error.retryable === "boolean"
+      ? error.retryable
+      : explicitCode === "tool_timeout" || explicitCode === "docdex_unavailable";
+    const details = isObject(error) && isObject(error.details) ? error.details : undefined;
+    return buildToolError(explicitCode, message, { retryable, details });
+  }
   const normalized = message.toLowerCase();
   if (normalized.includes("timeout") || normalized.includes("timed out") || normalized.includes("etimedout")) {
     return buildToolError("tool_timeout", message, { retryable: true });

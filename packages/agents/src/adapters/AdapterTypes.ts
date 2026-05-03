@@ -10,14 +10,27 @@ export interface AdapterConfig {
   docdexBaseUrl?: string;
   docdexRepoId?: string;
   docdexRepoRoot?: string;
-  docdex?: {
-    baseUrl?: string;
-    repoId?: string;
-    repoRoot?: string;
-  };
+  docdex?: DocdexRuntimeContext;
   prompts?: AgentPromptManifest;
   authMetadata?: AgentAuthMetadata;
   adapter?: string;
+}
+
+export interface DocdexRuntimeContext {
+  enabled?: boolean;
+  baseUrl?: string;
+  repoId?: string;
+  repoRoot?: string;
+  dagSessionId?: string;
+  required?: boolean;
+  allowedOperations?: string[];
+  credentialSource?: "attached_mswarm_api_key" | string;
+  capabilities?: Record<string, boolean | undefined>;
+  initialize?: boolean;
+  allowWeb?: boolean;
+  allowMemoryWrite?: boolean;
+  allowProfileWrite?: boolean;
+  allowIndexRebuild?: boolean;
 }
 
 export interface AgentAdapter {

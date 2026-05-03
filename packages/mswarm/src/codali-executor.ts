@@ -27,10 +27,16 @@ export interface CodaliRuntimeProviderInput {
 }
 
 export interface CodaliRuntimeDocdexInput {
+  enabled?: boolean;
   baseUrl?: string;
   repoRoot?: string;
   repoId?: string;
   dagSessionId?: string;
+  apiKey?: string;
+  credentialSource?: "attached_mswarm_api_key" | string;
+  required?: boolean;
+  allowedOperations?: string[];
+  capabilities?: Record<string, boolean | undefined>;
   initialize?: boolean;
   allowWeb?: boolean;
   allowMemoryWrite?: boolean;
@@ -193,10 +199,15 @@ export interface MswarmCodaliWorkspace {
 }
 
 export interface MswarmCodaliDocdex {
+  enabled?: boolean;
   baseUrl?: string;
   repoRoot?: string;
   repoId?: string;
   dagSessionId?: string;
+  credentialSource?: "attached_mswarm_api_key" | string;
+  required?: boolean;
+  allowedOperations?: string[];
+  capabilities?: Record<string, boolean | undefined>;
   initialize?: boolean;
   allowWeb?: boolean;
   allowMemoryWrite?: boolean;
@@ -232,6 +243,7 @@ export interface MswarmCodaliInvocationInput {
   policy?: MswarmCodaliPolicy;
   session?: MswarmCodaliSession;
   subagents?: MswarmCodaliSubagents;
+  attachedMswarmApiKey?: string;
   temperature?: number;
   responseFormat?: Record<string, unknown> | null;
   stream?: boolean;
@@ -418,12 +430,29 @@ function buildRuntimeDocdex(
   workspace: MswarmCodaliWorkspace,
   docdex: MswarmCodaliDocdex | undefined,
   requestId: string,
+  attachedMswarmApiKey?: string,
 ): CodaliRuntimeInput["docdex"] {
+  if (!docdex) {
+    return {
+      enabled: false,
+      baseUrl: DEFAULT_DOCDEX_BASE_URL,
+      repoRoot: workspace.root,
+      dagSessionId: requestId,
+    };
+  }
   return {
+    enabled: docdex.enabled,
     baseUrl: docdex?.baseUrl ?? DEFAULT_DOCDEX_BASE_URL,
     repoRoot: docdex?.repoRoot ?? workspace.root,
     repoId: docdex?.repoId,
     dagSessionId: docdex?.dagSessionId ?? requestId,
+    apiKey: docdex?.credentialSource === "attached_mswarm_api_key"
+      ? attachedMswarmApiKey
+      : undefined,
+    credentialSource: docdex?.credentialSource,
+    required: docdex?.required,
+    allowedOperations: docdex?.allowedOperations,
+    capabilities: docdex?.capabilities,
     initialize: docdex?.initialize,
     allowWeb: docdex?.allowWeb ?? false,
     allowMemoryWrite: docdex?.allowMemoryWrite ?? false,
@@ -480,7 +509,12 @@ export class MswarmCodaliExecutor {
         timeoutMs: runtimePolicy.timeoutMs,
       },
       agent: runtimeAgent(input.agent),
-      docdex: buildRuntimeDocdex(workspace, input.docdex, input.requestId),
+      docdex: buildRuntimeDocdex(
+        workspace,
+        input.docdex,
+        input.requestId,
+        input.attachedMswarmApiKey,
+      ),
       policy: runtimePolicy,
       response: responseFormatToCodali(input.responseFormat),
       streaming: { enabled: input.stream === true, flushEveryMs: 250 },

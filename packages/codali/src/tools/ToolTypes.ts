@@ -44,7 +44,13 @@ export type ToolErrorCode =
   | "tool_invalid_args"
   | "tool_permission_denied"
   | "tool_timeout"
-  | "tool_execution_failed";
+  | "tool_execution_failed"
+  | "docdex_context_missing"
+  | "docdex_api_key_missing"
+  | "docdex_operation_not_allowed"
+  | "docdex_auth_failed"
+  | "docdex_repo_access_denied"
+  | "docdex_unavailable";
 
 export type ToolErrorCategory =
   | "lookup"
@@ -98,6 +104,15 @@ export const toolErrorCategoryForCode = (code: ToolErrorCode): ToolErrorCategory
   if (code === "tool_invalid_args") return "validation";
   if (code === "tool_permission_denied") return "permission";
   if (code === "tool_timeout") return "timeout";
+  if (code === "docdex_context_missing") return "validation";
+  if (
+    code === "docdex_api_key_missing" ||
+    code === "docdex_operation_not_allowed" ||
+    code === "docdex_auth_failed" ||
+    code === "docdex_repo_access_denied"
+  ) {
+    return "permission";
+  }
   return "execution";
 };
 

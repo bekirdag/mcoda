@@ -88,6 +88,170 @@ test("DocdexClient initializes repo before HTTP search when repo id is missing",
   ]);
 });
 
+test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo calls", {
+  concurrency: false,
+}, async () => {
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get("repo_id"), "secure-repo");
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.["x-api-key"], "msw_docdex_secret");
+      assert.equal(headers?.["x-docdex-repo-id"], "secure-repo");
+      assert.equal(headers?.authorization, undefined);
+      return makeJsonResponse({ results: [] });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      authToken: "legacy-bearer-token",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      capabilities: { search: true },
+    });
+    await client.search("encrypted repo context", { limit: 2 });
+  });
+});
+
+test("DocdexClient posts chat context through the encrypted repo runtime envelope", {
+  concurrency: false,
+}, async () => {
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.endsWith("/v1/chat/completions")) {
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.["x-api-key"], "msw_docdex_secret");
+      assert.equal(headers?.authorization, undefined);
+      assert.equal(headers?.["x-docdex-repo-id"], "secure-repo");
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      assert.equal(body.stream, false);
+      assert.equal(body.model, "qwen3.5:35b");
+      assert.equal(body.max_tokens, 512);
+      assert.equal(body.messages[0]?.role, "user");
+      return makeJsonResponse({
+        choices: [{ message: { role: "assistant", content: "context ready" } }],
+      });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      authToken: "legacy-bearer-token",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["chat_context"],
+      capabilities: { chat_context: true },
+    });
+    const result = await client.chatContext(
+      [{ role: "user", content: "Summarize project context." }],
+      { model: "qwen3.5:35b", maxTokens: 512 },
+    );
+    assert.deepEqual(result, {
+      choices: [{ message: { role: "assistant", content: "context ready" } }],
+    });
+  });
+});
+
+test("DocdexClient blocks disallowed encrypted repo operations before network access", {
+  concurrency: false,
+}, async () => {
+  let fetchCalls = 0;
+  await withStubbedFetch(() => {
+    fetchCalls += 1;
+    return makeErrorResponse(500, "should not call network");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+    });
+    await assert.rejects(
+      () => client.openSnippet("doc-1"),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "docdex_operation_not_allowed");
+        return true;
+      },
+    );
+  });
+  assert.equal(fetchCalls, 0);
+});
+
+test("DocdexClient fails required attached-key jobs before network access when key is missing", {
+  concurrency: false,
+}, async () => {
+  let fetchCalls = 0;
+  await withStubbedFetch(() => {
+    fetchCalls += 1;
+    return makeErrorResponse(500, "should not call network");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+    });
+    await assert.rejects(
+      () => client.search("runtime context"),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "docdex_api_key_missing");
+        return true;
+      },
+    );
+  });
+  assert.equal(fetchCalls, 0);
+});
+
+test("DocdexClient maps and redacts encrypted repo auth failures", {
+  concurrency: false,
+}, async () => {
+  await withStubbedFetch((url) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      return makeErrorResponse(
+        401,
+        '{"error":{"code":"invalid_credentials","message":"bad x-api-key msw_docdex_secret"}}',
+      );
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+    });
+    await assert.rejects(
+      () => client.search("runtime context"),
+      (error: unknown) => {
+        const runtimeError = error as { code?: string; message?: string };
+        assert.equal(runtimeError.code, "docdex_auth_failed");
+        assert.ok(!String(runtimeError.message).includes("msw_docdex_secret"));
+        assert.ok(String(runtimeError.message).includes("[redacted]"));
+        return true;
+      },
+    );
+  });
+});
+
 test("DocdexClient caches capability probe results", { concurrency: false }, async () => {
   let probeCalls = 0;
   await withStubbedFetch((url, init) => {

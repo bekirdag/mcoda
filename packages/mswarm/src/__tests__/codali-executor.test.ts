@@ -178,6 +178,63 @@ test("MswarmCodaliExecutor routes non-tool agents to protocol_loop when tools ar
   assert.equal(result.metadata.tool_calls_executed, 2);
 });
 
+test("MswarmCodaliExecutor attaches encrypted Docdex runtime key only to Codali docdex context", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  const result = await executor.invoke({
+    jobId: "job-docdex-secure",
+    requestId: "req-docdex-secure",
+    model: "mcoda-local",
+    messages: [{ role: "user", content: "Search encrypted Docdex context." }],
+    agent: {
+      slug: "local-ollama",
+      adapter: "ollama-remote",
+      model: "qwen3.5:35b",
+      baseUrl: "http://ollama.test",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "http://docdex.secure.test",
+      repoRoot: "/tmp/workspace",
+      repoId: "repo-secure",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search", "snippet"],
+      capabilities: { search: true, snippet: true, open: false },
+    },
+    attachedMswarmApiKey: "msw_docdex_secret",
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      allowedTools: ["docdex_search", "docdex_open"],
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "done",
+        messages: [{ role: "assistant", content: "done" }],
+        toolCallsExecuted: 1,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-secure-docdex",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.docdex?.baseUrl, "http://docdex.secure.test");
+  assert.equal(capturedInput.docdex?.repoId, "repo-secure");
+  assert.equal(capturedInput.docdex?.credentialSource, "attached_mswarm_api_key");
+  assert.equal(capturedInput.docdex?.apiKey, "msw_docdex_secret");
+  assert.deepEqual(capturedInput.docdex?.allowedOperations, ["search", "snippet"]);
+  assert.deepEqual(capturedInput.docdex?.capabilities, { search: true, snippet: true, open: false });
+  assert.equal(JSON.stringify(result.metadata).includes("msw_docdex_secret"), false);
+});
+
 test("MswarmCodaliExecutor passes session and subagent settings to Codali", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};
@@ -227,6 +284,7 @@ test("MswarmCodaliExecutor passes session and subagent settings to Codali", asyn
 
   const capturedInput = runtimeInput.value;
   assert.ok(capturedInput);
+  assert.equal(capturedInput.docdex?.enabled, false);
   assert.deepEqual(capturedInput.session, {
     id: "session-123",
     resume: true,

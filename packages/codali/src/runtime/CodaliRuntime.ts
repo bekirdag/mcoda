@@ -19,7 +19,11 @@ import type {
   ProviderResponseFormat,
   ProviderUsage,
 } from "../providers/ProviderTypes.js";
-import { DocdexClient } from "../docdex/DocdexClient.js";
+import {
+  DocdexClient,
+  normalizeDocdexRuntimeOperation,
+  type DocdexRuntimeOperation,
+} from "../docdex/DocdexClient.js";
 import { createDiffTool } from "../tools/diff/DiffTool.js";
 import { createDocdexTools } from "../tools/docdex/DocdexTools.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
@@ -52,10 +56,16 @@ export interface CodaliRuntimeProviderInput {
 }
 
 export interface CodaliRuntimeDocdexInput {
+  enabled?: boolean;
   baseUrl?: string;
   repoRoot?: string;
   repoId?: string;
   dagSessionId?: string;
+  apiKey?: string;
+  credentialSource?: "attached_mswarm_api_key" | string;
+  required?: boolean;
+  allowedOperations?: string[];
+  capabilities?: Record<string, boolean | undefined>;
   initialize?: boolean;
   allowWeb?: boolean;
   allowMemoryWrite?: boolean;
@@ -210,6 +220,35 @@ const WEB_TOOL_NAMES = new Set(["docdex_web_research"]);
 const MEMORY_WRITE_TOOL_NAMES = new Set(["docdex_memory_save"]);
 const PROFILE_WRITE_TOOL_NAMES = new Set(["docdex_save_preference"]);
 const INDEX_REBUILD_TOOL_NAMES = new Set(["docdex_index_rebuild", "docdex_index_ingest"]);
+const DOCDEX_TOOL_OPERATIONS = new Map<string, DocdexRuntimeOperation[]>([
+  ["docdex_health", ["health"]],
+  ["docdex_initialize", ["initialize"]],
+  ["docdex_search", ["search"]],
+  ["docdex_open", ["open", "snippet"]],
+  ["docdex_open_file", ["open"]],
+  ["docdex_symbols", ["symbols"]],
+  ["docdex_ast", ["ast"]],
+  ["docdex_impact_graph", ["impact_graph"]],
+  ["docdex_impact_diagnostics", ["impact_diagnostics"]],
+  ["docdex_dag_export", ["dag_export"]],
+  ["docdex_tree", ["tree"]],
+  ["docdex_memory_save", ["memory_save"]],
+  ["docdex_memory_recall", ["memory_recall"]],
+  ["docdex_get_profile", ["profile_read"]],
+  ["docdex_save_preference", ["profile_write"]],
+  ["docdex_web_research", ["web_research"]],
+  ["docdex_chat_context", ["chat_context"]],
+  ["docdex_rerank", ["rerank"]],
+  ["docdex_batch_search", ["batch_search"]],
+  ["docdex_capabilities", ["capabilities"]],
+  ["docdex_stats", ["stats"]],
+  ["docdex_files", ["files"]],
+  ["docdex_repo_inspect", ["repo_inspect"]],
+  ["docdex_index_rebuild", ["index_rebuild"]],
+  ["docdex_index_ingest", ["index_ingest"]],
+  ["docdex_delegate", ["delegate"]],
+  ["docdex_hooks_validate", ["hooks_validate"]],
+]);
 
 const RUNTIME_TO_PROTOCOL_NEEDS = new Map<string, string[]>([
   ["docdex_search", ["docdex.search"]],
@@ -218,6 +257,7 @@ const RUNTIME_TO_PROTOCOL_NEEDS = new Map<string, string[]>([
   ["docdex_symbols", ["docdex.symbols"]],
   ["docdex_ast", ["docdex.ast"]],
   ["docdex_web_research", ["docdex.web"]],
+  ["docdex_chat_context", ["docdex.chat_context"]],
   ["docdex_impact_graph", ["docdex.impact"]],
   ["docdex_impact_diagnostics", ["docdex.impact_diagnostics"]],
   ["docdex_tree", ["docdex.tree"]],
@@ -234,6 +274,7 @@ const PROTOCOL_TO_RUNTIME_TOOL_NAMES = new Map<string, string[]>([
   ["docdex.symbols", ["docdex_symbols"]],
   ["docdex.ast", ["docdex_ast"]],
   ["docdex.web", ["docdex_web_research"]],
+  ["docdex.chat_context", ["docdex_chat_context"]],
   ["docdex.impact", ["docdex_impact_graph"]],
   ["docdex.impact_diagnostics", ["docdex_impact_diagnostics"]],
   ["docdex.tree", ["docdex_tree"]],
@@ -746,12 +787,53 @@ const isRuntimeToolAllowed = (toolName: string, policy: CodaliRuntimePolicy): bo
   return true;
 };
 
+const allowedDocdexOperations = (
+  docdex: CodaliRuntimeDocdexInput | undefined,
+): Set<DocdexRuntimeOperation> | undefined => {
+  if (!docdex?.allowedOperations?.length) return undefined;
+  const operations = docdex.allowedOperations
+    .map((entry) => normalizeDocdexRuntimeOperation(entry))
+    .filter((entry): entry is DocdexRuntimeOperation => Boolean(entry));
+  return operations.length ? new Set(operations) : new Set();
+};
+
+const docdexCapabilityAllows = (
+  docdex: CodaliRuntimeDocdexInput | undefined,
+  operation: DocdexRuntimeOperation,
+): boolean => {
+  if (!docdex?.capabilities) return true;
+  for (const [key, value] of Object.entries(docdex.capabilities)) {
+    if (normalizeDocdexRuntimeOperation(key) === operation && value === false) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isDocdexRuntimeOperationAllowed = (
+  toolName: string,
+  docdex: CodaliRuntimeDocdexInput | undefined,
+): boolean => {
+  const operations = DOCDEX_TOOL_OPERATIONS.get(toolName);
+  if (!operations?.length) return true;
+  const allowedOperations = allowedDocdexOperations(docdex);
+  return operations.some((operation) => {
+    if (allowedOperations && !allowedOperations.has(operation)) {
+      return false;
+    }
+    return docdexCapabilityAllows(docdex, operation);
+  });
+};
+
 const isDocdexToolAllowed = (
   toolName: string,
   docdex: CodaliRuntimeDocdexInput | undefined,
 ): boolean => {
   if (!toolName.startsWith("docdex_")) {
     return true;
+  }
+  if (docdex?.enabled === false) {
+    return false;
   }
   if (docdex?.allowWeb === false && WEB_TOOL_NAMES.has(toolName)) {
     return false;
@@ -763,6 +845,9 @@ const isDocdexToolAllowed = (
     return false;
   }
   if (docdex?.allowIndexRebuild === false && INDEX_REBUILD_TOOL_NAMES.has(toolName)) {
+    return false;
+  }
+  if (!isDocdexRuntimeOperationAllowed(toolName, docdex)) {
     return false;
   }
   return true;
@@ -803,6 +888,11 @@ const buildRuntimeToolRegistry = (input: CodaliRuntimeInput): ToolRegistry => {
     repoId: input.docdex?.repoId,
     repoRoot: input.docdex?.repoRoot ?? input.workspace.root,
     dagSessionId: input.docdex?.dagSessionId ?? input.metadata?.requestId,
+    apiKey: input.docdex?.apiKey,
+    credentialSource: input.docdex?.credentialSource,
+    required: input.docdex?.required,
+    allowedOperations: input.docdex?.allowedOperations,
+    capabilities: input.docdex?.capabilities,
   });
   for (const tool of createDocdexTools(docdexClient)) register(tool);
   return registry;

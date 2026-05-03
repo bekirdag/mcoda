@@ -142,6 +142,101 @@ test("OpenAiAdapter invoke posts to the configured endpoint and parses output", 
   assert.equal((result.metadata as any)?.tokensTotal, 7);
 });
 
+test("OpenAiAdapter forwards managed mswarm Docdex runtime context without exposing the raw key", async () => {
+  global.fetch = async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String(input?.url ?? "");
+    assert.equal(url, "https://api.mswarm.test/v1/swarm/openai/chat/completions");
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer msw_owner");
+    assert.equal(headers["x-docdex-repo-id"], "repo-secure");
+    assert.equal(headers["x-docdex-repo-root"], "/workspace");
+    assert.equal(headers["x-api-key"], undefined);
+    const body = JSON.parse(String(init?.body ?? ""));
+    assert.equal(body.model, "qwen3.5:35b");
+    assert.equal(body.docdex.base_url, "https://docdex.secure.test");
+    assert.equal(body.docdex.repo_id, "repo-secure");
+    assert.equal(body.docdex.repo_root, "/workspace");
+    assert.equal(body.docdex.required, true);
+    assert.equal(body.docdex.credential_source, "attached_mswarm_api_key");
+    assert.deepEqual(body.docdex.allowed_operations, ["search", "snippet", "chat_context"]);
+    assert.deepEqual(body.docdex.capabilities, {
+      search: true,
+      snippet: true,
+      chat_context: true,
+      open: false,
+    });
+    assert.equal(JSON.stringify(body).includes("msw_owner"), false);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "secured" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent: {
+      ...agent,
+      config: {
+        mswarmCloud: {
+          managed: true,
+          remoteSlug: "qwen-secure",
+        },
+      },
+    } as Agent,
+    capabilities: ["chat", "docdex_query"],
+    model: "qwen3.5:35b",
+    apiKey: "msw_owner",
+    adapter: "openai-api",
+    baseUrl: "https://api.mswarm.test/v1/swarm/openai",
+  });
+  const result = await adapter.invoke({
+    input: "use docdex",
+    metadata: {
+      docdex: {
+        base_url: "https://docdex.secure.test",
+        repo_id: "repo-secure",
+        repo_root: "/workspace",
+        required: true,
+        allowed_operations: ["search", "snippet", "chat_context"],
+        credential_source: "attached_mswarm_api_key",
+        capabilities: {
+          search: true,
+          snippet: true,
+          chat_context: true,
+          open: false,
+        },
+      },
+    },
+  });
+  assert.equal(result.output, "secured");
+});
+
+test("OpenAiAdapter ignores Docdex metadata for non-mswarm OpenAI agents", async () => {
+  global.fetch = async (_input: any, init?: any) => {
+    const body = JSON.parse(String(init?.body ?? ""));
+    assert.equal(body.docdex, undefined);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "plain" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent,
+    capabilities: ["chat"],
+    model: "gpt-4o",
+    apiKey: "secret",
+    baseUrl: "https://api.example.com/v1",
+  });
+  const result = await adapter.invoke({
+    input: "hello",
+    metadata: {
+      docdexBaseUrl: "https://docdex.secure.test",
+      docdexRepoId: "repo-secure",
+    },
+  });
+  assert.equal(result.output, "plain");
+});
+
 test("OpenAiAdapter invokeStream parses SSE chunks", async () => {
   global.fetch = async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : String(input?.url ?? "");

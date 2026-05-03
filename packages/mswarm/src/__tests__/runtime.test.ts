@@ -665,6 +665,115 @@ describe("self-hosted node runtime", () => {
     expect(((result.openai_response?.metadata as Record<string, unknown>) || {}).codali_run_id).toBe("run-req-mcoda-json");
   });
 
+  it("passes encrypted Docdex job context and attached mswarm API key to Codali without response leakage", async () => {
+    const statePath = tempStatePath();
+    const secret = "msw_docdex_secret";
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          config: {
+            baseUrl: "http://ollama.test"
+          }
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        return successfulCodaliInvocation(input);
+      })
+    });
+
+    const result = await runtime.executeJob(
+      {
+        job_id: "job-docdex-secure",
+        request_id: "req-docdex-secure",
+        node_id: "shn_service",
+        agent_slug: "qwen-reviewer",
+        source_agent_slug: "qwen-reviewer",
+        provider: "mcoda",
+        model: "mcoda-qwen-reviewer",
+        workspace: { root: "/tmp/secure-workspace", read_only: true },
+        docdex: {
+          base_url: "http://docdex.secure.test",
+          repo_id: "repo-secure",
+          required: true,
+          credential_source: "attached_mswarm_api_key",
+          allowed_operations: ["search", "snippet"],
+          capabilities: { search: true, snippet: true, open: false },
+          allow_web: false,
+          allow_memory_write: false,
+          allow_profile_write: false,
+          allow_index_rebuild: false
+        },
+        policy: {
+          allowed_tools: ["docdex_search", "docdex_open"],
+          allow_shell: false,
+          allow_writes: false
+        },
+        openai_request: {
+          model: "mcoda-qwen-reviewer",
+          messages: [{ role: "user", content: "Use encrypted Docdex search." }]
+        }
+      },
+      {
+        attachedMswarmApiKey: secret
+      },
+    );
+
+    expect(result.status).toBe("success");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.docdex?.baseUrl).toBe("http://docdex.secure.test");
+    expect(capturedInput.docdex?.repoId).toBe("repo-secure");
+    expect(capturedInput.docdex?.credentialSource).toBe("attached_mswarm_api_key");
+    expect(capturedInput.docdex?.required).toBe(true);
+    expect(capturedInput.docdex?.allowedOperations).toEqual(["search", "snippet"]);
+    expect(capturedInput.docdex?.capabilities).toEqual({ search: true, snippet: true, open: false });
+    expect(capturedInput.attachedMswarmApiKey).toBe(secret);
+    expect(JSON.stringify(result.openai_response)).not.toContain(secret);
+    expect(JSON.stringify(result.progress_events || [])).not.toContain(secret);
+  });
+
+  it("fails required encrypted Docdex jobs when the attached mswarm API key is unavailable", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          config: {
+            baseUrl: "http://ollama.test",
+            apiKey: "provider-local-key-is-not-docdex-key"
+          }
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input))
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-docdex-missing-key",
+      request_id: "req-docdex-missing-key",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      docdex: {
+        base_url: "http://docdex.secure.test",
+        repo_id: "repo-secure",
+        required: true,
+        credential_source: "attached_mswarm_api_key",
+        allowed_operations: ["search"]
+      },
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "Use encrypted Docdex search." }]
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("docdex_api_key_missing");
+    expect(JSON.stringify(result)).not.toContain("provider-local-key-is-not-docdex-key");
+  });
+
   it("maps Codali policy denials to self-hosted job failures", async () => {
     const statePath = tempStatePath();
     const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
@@ -789,11 +898,16 @@ describe("self-hosted node runtime", () => {
         messages: [{ role: "user", content: "Write ping pong HTML." }]
       }
     };
+    let capturedAttachedMswarmApiKey: string | undefined;
     const runtime = {
       executeJob: async (
         _job: unknown,
-        options?: { onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void> }
+        options?: {
+          onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
+          attachedMswarmApiKey?: string;
+        }
       ) => {
+        capturedAttachedMswarmApiKey = options?.attachedMswarmApiKey;
         await options?.onOpenAIChunk?.({
           id: "chatcmpl-req-sse",
           object: "chat.completion.chunk",
@@ -829,12 +943,14 @@ describe("self-hosted node runtime", () => {
             requestId: job.request_id,
             model: job.openai_request.model
           })}`,
-          "content-type": "application/json"
+          "content-type": "application/json",
+          "x-mswarm-attached-api-key": "msw_docdex_direct"
         },
         payload: job
       });
 
       expect(response.statusCode).toBe(200);
+      expect(capturedAttachedMswarmApiKey).toBe("msw_docdex_direct");
       expect(response.headers["content-type"]).toContain("text/event-stream");
       expect(response.payload).toContain("data: {");
       expect(response.payload).toContain("\"object\":\"chat.completion.chunk\"");

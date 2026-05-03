@@ -1,5 +1,11 @@
 import { AgentHealth } from "@mcoda/shared";
-import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
+import {
+  AdapterConfig,
+  AgentAdapter,
+  InvocationRequest,
+  InvocationResult,
+  type DocdexRuntimeContext,
+} from "../AdapterTypes.js";
 import { parseUsageLimitError } from "../../AgentService/UsageLimitParser.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -19,6 +25,9 @@ const resolveString = (value: unknown): string | undefined => {
   return raw ? raw : undefined;
 };
 
+const resolveBoolean = (value: unknown): boolean | undefined =>
+  typeof value === "boolean" ? value : undefined;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -26,6 +35,31 @@ const normalizeBaseUrl = (value?: unknown): string | undefined => {
   const str = resolveString(value);
   if (!str) return undefined;
   return str.endsWith("/") ? str.slice(0, -1) : str;
+};
+
+const resolveStringArray = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const entries = value
+    .map((entry) => resolveString(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  return entries.length ? entries : undefined;
+};
+
+const normalizeBooleanMap = (value: unknown): Record<string, boolean | undefined> | undefined => {
+  if (!isRecord(value)) return undefined;
+  const output: Record<string, boolean | undefined> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "boolean") output[key] = entry;
+  }
+  return Object.keys(output).length ? output : undefined;
+};
+
+const firstDefined = <T>(...values: Array<T | undefined>): T | undefined =>
+  values.find((value): value is T => value !== undefined);
+
+const readRecord = (record: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined => {
+  const value = record?.[key];
+  return isRecord(value) ? value : undefined;
 };
 
 const buildRateLimitProbeMessage = (response: Response, responseText: string): string => {
@@ -74,6 +108,175 @@ const resolveBaseUrl = (config: AdapterConfig): string => {
     normalizeBaseUrl(agentConfig?.apiBaseUrl) ??
     DEFAULT_BASE_URL
   );
+};
+
+const isManagedMswarmConfig = (config: AdapterConfig): boolean => {
+  const anyConfig = config as unknown as Record<string, unknown>;
+  const agentConfig = (config.agent as unknown as Record<string, unknown>)?.config as
+    | Record<string, unknown>
+    | undefined;
+  const cloud = readRecord(anyConfig, "mswarmCloud") ?? readRecord(agentConfig, "mswarmCloud");
+  const selfHosted = readRecord(anyConfig, "mswarmSelfHosted") ?? readRecord(agentConfig, "mswarmSelfHosted");
+  return cloud?.managed === true || selfHosted?.managed === true;
+};
+
+const resolveDocdexContext = (
+  config: AdapterConfig,
+  metadata: Record<string, unknown> | undefined,
+): DocdexRuntimeContext | undefined => {
+  if (!isManagedMswarmConfig(config)) return undefined;
+  const anyConfig = config as unknown as Record<string, unknown>;
+  const configDocdex = isRecord(anyConfig.docdex) ? anyConfig.docdex : undefined;
+  const metadataDocdexValue = metadata?.docdex;
+  const metadataDocdex = isRecord(metadataDocdexValue) ? metadataDocdexValue : undefined;
+  const enabled = firstDefined(
+    resolveBoolean(metadataDocdex?.enabled),
+    resolveBoolean(metadata?.docdexEnabled),
+    resolveBoolean(metadata?.docdex_enabled),
+    resolveBoolean(configDocdex?.enabled),
+  );
+  if (enabled === false) return undefined;
+
+  const baseUrl = firstDefined(
+    resolveString(metadataDocdex?.baseUrl),
+    resolveString(metadataDocdex?.base_url),
+    resolveString(metadata?.docdexBaseUrl),
+    resolveString(metadata?.docdex_base_url),
+    resolveString(anyConfig.docdexBaseUrl),
+    resolveString(configDocdex?.baseUrl),
+    resolveString(configDocdex?.base_url),
+  );
+  const repoId = firstDefined(
+    resolveString(metadataDocdex?.repoId),
+    resolveString(metadataDocdex?.repo_id),
+    resolveString(metadata?.docdexRepoId),
+    resolveString(metadata?.docdex_repo_id),
+    resolveString(anyConfig.docdexRepoId),
+    resolveString(configDocdex?.repoId),
+    resolveString(configDocdex?.repo_id),
+  );
+  const repoRoot = firstDefined(
+    resolveString(metadataDocdex?.repoRoot),
+    resolveString(metadataDocdex?.repo_root),
+    resolveString(metadata?.docdexRepoRoot),
+    resolveString(metadata?.docdex_repo_root),
+    resolveString(anyConfig.docdexRepoRoot),
+    resolveString(configDocdex?.repoRoot),
+    resolveString(configDocdex?.repo_root),
+  );
+  const required = firstDefined(
+    resolveBoolean(metadataDocdex?.required),
+    resolveBoolean(metadata?.docdexRequired),
+    resolveBoolean(metadata?.docdex_required),
+    resolveBoolean(configDocdex?.required),
+  );
+  const allowedOperations = firstDefined(
+    resolveStringArray(metadataDocdex?.allowedOperations),
+    resolveStringArray(metadataDocdex?.allowed_operations),
+    resolveStringArray(metadata?.docdexAllowedOperations),
+    resolveStringArray(metadata?.docdex_allowed_operations),
+    resolveStringArray(configDocdex?.allowedOperations),
+    resolveStringArray(configDocdex?.allowed_operations),
+  );
+  const credentialSource = firstDefined(
+    resolveString(metadataDocdex?.credentialSource),
+    resolveString(metadataDocdex?.credential_source),
+    resolveString(metadata?.docdexCredentialSource),
+    resolveString(metadata?.docdex_credential_source),
+    resolveString(configDocdex?.credentialSource),
+    resolveString(configDocdex?.credential_source),
+  );
+  const capabilities = firstDefined(
+    normalizeBooleanMap(metadataDocdex?.capabilities),
+    normalizeBooleanMap(metadata?.docdexCapabilities),
+    normalizeBooleanMap(metadata?.docdex_capabilities),
+    normalizeBooleanMap(configDocdex?.capabilities),
+  );
+  const dagSessionId = firstDefined(
+    resolveString(metadataDocdex?.dagSessionId),
+    resolveString(metadataDocdex?.dag_session_id),
+    resolveString(metadata?.docdexDagSessionId),
+    resolveString(metadata?.docdex_dag_session_id),
+    resolveString(configDocdex?.dagSessionId),
+    resolveString(configDocdex?.dag_session_id),
+  );
+  const initialize = firstDefined(resolveBoolean(metadataDocdex?.initialize), resolveBoolean(configDocdex?.initialize));
+  const allowWeb = firstDefined(
+    resolveBoolean(metadataDocdex?.allowWeb),
+    resolveBoolean(metadataDocdex?.allow_web),
+    resolveBoolean(configDocdex?.allowWeb),
+    resolveBoolean(configDocdex?.allow_web),
+  );
+  const allowMemoryWrite = firstDefined(
+    resolveBoolean(metadataDocdex?.allowMemoryWrite),
+    resolveBoolean(metadataDocdex?.allow_memory_write),
+    resolveBoolean(configDocdex?.allowMemoryWrite),
+    resolveBoolean(configDocdex?.allow_memory_write),
+  );
+  const allowProfileWrite = firstDefined(
+    resolveBoolean(metadataDocdex?.allowProfileWrite),
+    resolveBoolean(metadataDocdex?.allow_profile_write),
+    resolveBoolean(configDocdex?.allowProfileWrite),
+    resolveBoolean(configDocdex?.allow_profile_write),
+  );
+  const allowIndexRebuild = firstDefined(
+    resolveBoolean(metadataDocdex?.allowIndexRebuild),
+    resolveBoolean(metadataDocdex?.allow_index_rebuild),
+    resolveBoolean(configDocdex?.allowIndexRebuild),
+    resolveBoolean(configDocdex?.allow_index_rebuild),
+  );
+
+  const hasContext =
+    baseUrl !== undefined ||
+    repoId !== undefined ||
+    repoRoot !== undefined ||
+    required !== undefined ||
+    allowedOperations !== undefined ||
+    capabilities !== undefined ||
+    dagSessionId !== undefined ||
+    initialize !== undefined ||
+    allowWeb !== undefined ||
+    allowMemoryWrite !== undefined ||
+    allowProfileWrite !== undefined ||
+    allowIndexRebuild !== undefined ||
+    metadataDocdex !== undefined ||
+    configDocdex !== undefined;
+  if (!hasContext) return undefined;
+
+  return {
+    enabled: true,
+    baseUrl,
+    repoId,
+    repoRoot,
+    dagSessionId,
+    required,
+    allowedOperations,
+    credentialSource: credentialSource ?? "attached_mswarm_api_key",
+    capabilities,
+    initialize,
+    allowWeb,
+    allowMemoryWrite,
+    allowProfileWrite,
+    allowIndexRebuild,
+  };
+};
+
+const toDocdexRequestBody = (context: DocdexRuntimeContext): Record<string, unknown> => {
+  const body: Record<string, unknown> = {};
+  if (context.baseUrl !== undefined) body.base_url = context.baseUrl;
+  if (context.repoId !== undefined) body.repo_id = context.repoId;
+  if (context.repoRoot !== undefined) body.repo_root = context.repoRoot;
+  if (context.dagSessionId !== undefined) body.dag_session_id = context.dagSessionId;
+  if (context.required !== undefined) body.required = context.required;
+  if (context.allowedOperations !== undefined) body.allowed_operations = context.allowedOperations;
+  if (context.credentialSource !== undefined) body.credential_source = context.credentialSource;
+  if (context.capabilities !== undefined) body.capabilities = context.capabilities;
+  if (context.initialize !== undefined) body.initialize = context.initialize;
+  if (context.allowWeb !== undefined) body.allow_web = context.allowWeb;
+  if (context.allowMemoryWrite !== undefined) body.allow_memory_write = context.allowMemoryWrite;
+  if (context.allowProfileWrite !== undefined) body.allow_profile_write = context.allowProfileWrite;
+  if (context.allowIndexRebuild !== undefined) body.allow_index_rebuild = context.allowIndexRebuild;
+  return body;
 };
 
 const extractUsage = (usage: unknown) => {
@@ -302,10 +505,11 @@ export class OpenAiAdapter implements AgentAdapter {
     const url = this.ensureBaseUrl();
     const model = this.ensureModel();
     const apiKey = this.ensureApiKey();
+    const docdex = resolveDocdexContext(this.config, request.metadata);
     const resp = await fetch(`${url}/chat/completions`, {
       method: "POST",
-      headers: this.buildHeaders(apiKey, false),
-      body: JSON.stringify(this.buildBody(request.input, model, false)),
+      headers: this.buildHeaders(apiKey, false, docdex),
+      body: JSON.stringify(this.buildBody(request.input, model, false, docdex)),
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -342,10 +546,11 @@ export class OpenAiAdapter implements AgentAdapter {
     const url = this.ensureBaseUrl();
     const model = this.ensureModel();
     const apiKey = this.ensureApiKey();
+    const docdex = resolveDocdexContext(this.config, request.metadata);
     const resp = await fetch(`${url}/chat/completions`, {
       method: "POST",
-      headers: this.buildHeaders(apiKey, true),
-      body: JSON.stringify(this.buildBody(request.input, model, true)),
+      headers: this.buildHeaders(apiKey, true, docdex),
+      body: JSON.stringify(this.buildBody(request.input, model, true, docdex)),
     });
     if (!resp.ok || !resp.body) {
       const text = !resp.ok ? await resp.text().catch(() => "") : "";
@@ -452,21 +657,36 @@ export class OpenAiAdapter implements AgentAdapter {
     return this.config.apiKey;
   }
 
-  private buildHeaders(apiKey: string, streaming: boolean): Record<string, string> {
+  private buildHeaders(
+    apiKey: string,
+    streaming: boolean,
+    docdex?: DocdexRuntimeContext,
+  ): Record<string, string> {
     return {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       Accept: streaming ? "text/event-stream" : "application/json",
+      ...(docdex?.repoId ? { "x-docdex-repo-id": docdex.repoId } : {}),
+      ...(docdex?.repoRoot ? { "x-docdex-repo-root": docdex.repoRoot } : {}),
+      ...(docdex?.dagSessionId ? { "x-docdex-dag-session": docdex.dagSessionId } : {}),
       ...(this.headers ?? {}),
     };
   }
 
-  private buildBody(input: string, model: string, stream: boolean): Record<string, unknown> {
+  private buildBody(
+    input: string,
+    model: string,
+    stream: boolean,
+    docdex?: DocdexRuntimeContext,
+  ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model,
       messages: [{ role: "user", content: input }],
       stream,
     };
+    if (docdex) {
+      body.docdex = toDocdexRequestBody(docdex);
+    }
     if (typeof this.temperature === "number") {
       body.temperature = this.temperature;
     }

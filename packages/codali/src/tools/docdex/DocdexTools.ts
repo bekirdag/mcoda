@@ -327,6 +327,54 @@ export const createDocdexTools = (client: DocdexClient): ToolDefinition[] => [
     },
   },
   {
+    name: "docdex_chat_context",
+    description: "Ask docdex OpenAI-compatible chat with repo/profile/wake-up context.",
+    inputSchema: {
+      type: "object",
+      required: ["messages"],
+      properties: {
+        messages: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["role", "content"],
+            properties: {
+              role: { type: "string" },
+              content: {
+                anyOf: [
+                  { type: "string" },
+                  { type: "array", items: { type: "object" } },
+                ],
+              },
+              name: { type: "string" },
+              tool_call_id: { type: "string" },
+            },
+          },
+        },
+        model: { type: "string" },
+        maxTokens: { type: "number" },
+        temperature: { type: "number" },
+        docdex: { type: "object" },
+      },
+    },
+    handler: async (args) => {
+      const { messages, model, maxTokens, temperature, docdex } = args as {
+        messages: Array<{
+          role: string;
+          content: string | Array<Record<string, unknown>>;
+          name?: string;
+          tool_call_id?: string;
+        }>;
+        model?: string;
+        maxTokens?: number;
+        temperature?: number;
+        docdex?: Record<string, unknown>;
+      };
+      const result = await client.chatContext(messages, { model, maxTokens, temperature, docdex });
+      return toOutput(result);
+    },
+  },
+  {
     name: "docdex_rerank",
     description: "Rerank candidate hits using docdex optional rerank flow.",
     inputSchema: {
