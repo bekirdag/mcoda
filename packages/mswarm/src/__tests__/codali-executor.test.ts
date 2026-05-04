@@ -178,6 +178,48 @@ test("MswarmCodaliExecutor routes non-tool agents to protocol_loop when tools ar
   assert.equal(result.metadata.tool_calls_executed, 2);
 });
 
+test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  await executor.invoke({
+    jobId: "job-ollama-cli",
+    requestId: "req-ollama-cli",
+    model: "mcoda-local-qwen",
+    messages: [{ role: "user", content: "Search Docdex before answering." }],
+    agent: {
+      slug: "qwen-35b",
+      adapter: "ollama-cli",
+      model: "qwen3.5:35b",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      allowedTools: ["docdex_search"],
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "done",
+        messages: [{ role: "assistant", content: "done" }],
+        toolCallsExecuted: 1,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-ollama-cli",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.provider.name, "ollama-remote");
+  assert.equal(capturedInput.agent?.provider, "ollama-remote");
+  assert.equal(capturedInput.policy.mode, "protocol_loop");
+});
+
 test("MswarmCodaliExecutor attaches encrypted Docdex runtime key only to Codali docdex context", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};

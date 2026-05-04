@@ -370,7 +370,7 @@ function providerNameForAgent(agent: MswarmCodaliAgent): string {
   if (agent.provider) {
     return agent.provider;
   }
-  if (agent.adapter === "ollama-remote" || agent.adapter === "ollama") {
+  if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(agent.adapter)) {
     return "ollama-remote";
   }
   if (
