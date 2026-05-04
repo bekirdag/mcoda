@@ -120,6 +120,60 @@ test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo
   });
 });
 
+test("DocdexClient retries invalid parser search queries with sanitized plain text", {
+  concurrency: false,
+}, async () => {
+  const originalQuery =
+    "marker:DOCDEX-LIVE-AUDIT-1777880062366 OR DOCDEX-LIVE-AUDIT-1777880062366";
+  const retryQuery = "DOCDEX-LIVE-AUDIT-1777880062366 DOCDEX-LIVE-AUDIT-1777880062366";
+  const seenQueries: string[] = [];
+  await withStubbedFetch((url) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const parsed = new URL(url);
+      const query = parsed.searchParams.get("q") ?? "";
+      seenQueries.push(query);
+      assert.equal(parsed.searchParams.get("repo_id"), "secure-repo");
+      if (query === originalQuery) {
+        return makeErrorResponse(
+          400,
+          '{"error":{"code":"invalid_query","message":"query parse failed: Field does not exist: marker"}}',
+        );
+      }
+      assert.equal(query, retryQuery);
+      return makeJsonResponse({
+        results: [{ rel_path: "daily-logs/sample.md", snippet: "DOCDEX-LIVE-AUDIT-1777880062366" }],
+        meta: { source: "retry" },
+      });
+    }
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+    });
+    const result = await client.search(originalQuery, { limit: 2 });
+    assert.deepEqual(seenQueries, [originalQuery, retryQuery]);
+    assert.deepEqual(result, {
+      results: [{ rel_path: "daily-logs/sample.md", snippet: "DOCDEX-LIVE-AUDIT-1777880062366" }],
+      meta: {
+        source: "retry",
+        codali_query_retry: {
+          reason: "invalid_query",
+          original_query: originalQuery,
+          retried_query: retryQuery,
+        },
+      },
+    });
+  });
+});
+
 test("DocdexClient posts chat context through the encrypted repo runtime envelope", {
   concurrency: false,
 }, async () => {

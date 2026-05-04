@@ -253,6 +253,24 @@ const escapeRegExp = (value: string): string => {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 };
 
+const invalidSearchQueryError = (status: number, body: string): boolean => {
+  const normalized = body.toLowerCase();
+  return status === 400 && /invalid_query|query parse failed|syntax error/.test(normalized);
+};
+
+const sanitizeSearchRetryQuery = (query: string): string | undefined => {
+  const original = query.trim();
+  if (!original) return undefined;
+  const sanitized = original
+    .replace(/\b[A-Za-z_][\w.-]{0,63}:\s*/g, " ")
+    .replace(/\b(?:AND|OR|NOT)\b/gi, " ")
+    .replace(/[()[\]{}^~*?]/g, " ")
+    .replace(/["'`]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized && sanitized !== original ? sanitized : undefined;
+};
+
 export class DocdexClient {
   private repoId?: string;
   private dagSessionId?: string;
@@ -501,13 +519,17 @@ export class DocdexClient {
 
   private async throwResponseError(response: Response, operation: string): Promise<never> {
     const body = await response.text();
-    const code = this.mapResponseErrorCode(response.status, body);
+    this.throwResponseBodyError(response.status, body, operation);
+  }
+
+  private throwResponseBodyError(status: number, body: string, operation: string): never {
+    const code = this.mapResponseErrorCode(status, body);
     throw this.runtimeError(
       code,
-      `Docdex ${operation} failed (${response.status}): ${body}`,
+      `Docdex ${operation} failed (${status}): ${body}`,
       {
-        status: response.status,
-        retryable: code === "docdex_unavailable" && response.status >= 500,
+        status,
+        retryable: code === "docdex_unavailable" && status >= 500,
         details: { operation },
       },
     );
@@ -517,16 +539,50 @@ export class DocdexClient {
     this.assertOperationAllowed("search");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
-    const params = new URLSearchParams({ q: query });
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
     const dagSessionId = options.dagSessionId ?? this.dagSessionId;
-    if (dagSessionId) params.set("dag_session_id", dagSessionId);
-    this.withRepoId(params);
-    const response = await fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
-      headers: this.buildHeaders(dagSessionId),
-    });
+    const executeSearch = (searchQuery: string): Promise<Response> => {
+      const params = new URLSearchParams({ q: searchQuery });
+      if (options.limit !== undefined) params.set("limit", String(options.limit));
+      if (dagSessionId) params.set("dag_session_id", dagSessionId);
+      this.withRepoId(params);
+      return fetch(`${this.resolveBaseUrl()}/search?${params.toString()}`, {
+        headers: this.buildHeaders(dagSessionId),
+      });
+    };
+    const response = await executeSearch(query);
     if (!response.ok) {
-      await this.throwResponseError(response, "search");
+      const body = await response.text();
+      const retryQuery = invalidSearchQueryError(response.status, body)
+        ? sanitizeSearchRetryQuery(query)
+        : undefined;
+      if (retryQuery) {
+        const retryResponse = await executeSearch(retryQuery);
+        if (retryResponse.ok) {
+          const retryPayload = await retryResponse.json();
+          if (retryPayload && typeof retryPayload === "object" && !Array.isArray(retryPayload)) {
+            const payloadRecord = retryPayload as Record<string, unknown>;
+            const meta =
+              payloadRecord.meta && typeof payloadRecord.meta === "object" && !Array.isArray(payloadRecord.meta)
+                ? { ...(payloadRecord.meta as Record<string, unknown>) }
+                : {};
+            return {
+              ...payloadRecord,
+              meta: {
+                ...meta,
+                codali_query_retry: {
+                  reason: "invalid_query",
+                  original_query: query,
+                  retried_query: retryQuery,
+                },
+              },
+            };
+          }
+          return retryPayload;
+        }
+        const retryBody = await retryResponse.text();
+        this.throwResponseBodyError(retryResponse.status, retryBody, "search");
+      }
+      this.throwResponseBodyError(response.status, body, "search");
     }
     return response.json();
   }
