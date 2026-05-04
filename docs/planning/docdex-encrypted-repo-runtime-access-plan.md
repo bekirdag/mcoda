@@ -1,6 +1,6 @@
 # Docdex Encrypted Repository Runtime Access Plan
 
-Status: implemented in mcoda 0.1.61 candidate; validation pending release
+Status: implemented in mcoda 0.1.61 candidate; release/rollout pending
 Owner repo: `mcoda`
 Source reference: `/Users/bekirdag/Documents/apps/docdex/docs/planning/mswarm-docdex-encrypted-repo-access-implementation-plan.md`
 
@@ -47,8 +47,8 @@ Docdex now has the first-phase encrypted-repository auth gates for search,
 snippet, chat context, and MCP. saas_be now provides stable API-key
 introspection claims, scopes, usage meters, and cache invalidation. mswarm now
 implements the encrypted-search provisioning module and exposes immutable
-Docdex runtime context for ready encrypted repositories. mcoda should consume
-that context next and use the attached mswarm API key for Docdex calls.
+Docdex runtime context for ready encrypted repositories. mcoda 0.1.61 candidate
+now consumes that context and uses the attached mswarm API key for Docdex calls.
 
 Current Docdex runtime contract for mcoda:
 
@@ -283,13 +283,18 @@ Validate exact paths before coding:
 
 ## Implementation Slices
 
-1. Add Docdex job-context types.
-2. Add Docdex client helper that uses the attached mswarm API key.
-3. Wire Docdex context into agent runtime and Codali tool context.
-4. Enforce allowed operations from job context.
-5. Add MCP-over-HTTP support if the current tool layer can expose Docdex MCP.
-6. Add credential redaction tests for runtime logs and artifacts.
-7. Add self-hosted and managed-agent smoke tests with mocked Docdex responses.
+1. Done: add Docdex job-context types.
+2. Done: add Docdex client helper that uses the attached mswarm API key.
+3. Done: wire Docdex context into agent runtime and Codali tool context.
+4. Done: enforce allowed operations from job context.
+5. Done: add MCP-over-HTTP/runtime tool support where the current tool layer can
+   expose Docdex MCP-backed tools.
+6. Done: add credential redaction tests for runtime logs and artifacts.
+7. Done: add self-hosted and managed-agent smoke tests with mocked Docdex
+   responses.
+
+Validation evidence is recorded in
+`docs/planning/docdex-encrypted-repo-runtime-access-progress.md`.
 
 ## Test Plan
 

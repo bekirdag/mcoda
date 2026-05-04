@@ -2182,8 +2182,8 @@ export class MswarmSelfHostedNodeClient {
   async pollJob(
     runtimeToken: string,
     payload: { node_id: string; capacity?: Record<string, unknown>; wait_ms?: number }
-  ): Promise<{ job?: SelfHostedNodeInvocationJob | null }> {
-    return fetchJson<{ job?: SelfHostedNodeInvocationJob | null }>(
+  ): Promise<{ job?: SelfHostedNodeInvocationJob | null; attached_mswarm_api_key?: string | null }> {
+    return fetchJson<{ job?: SelfHostedNodeInvocationJob | null; attached_mswarm_api_key?: string | null }>(
       this.fetchImpl,
       `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/poll`,
       {
@@ -2756,7 +2756,9 @@ export class SelfHostedNodeRuntime {
     if (!job) {
       return { executed: false };
     }
-    const result = await this.executeJob(job);
+    const result = await this.executeJob(job, {
+      attachedMswarmApiKey: optionalText(response.attached_mswarm_api_key) || undefined,
+    });
     await this.gateway.postJobResult(enrollment.runtimeToken, job.job_id, {
       ...result,
       node_id: this.config.nodeId

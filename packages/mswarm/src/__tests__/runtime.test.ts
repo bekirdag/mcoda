@@ -734,6 +734,64 @@ describe("self-hosted node runtime", () => {
     expect(JSON.stringify(result.progress_events || [])).not.toContain(secret);
   });
 
+  it("uses the ephemeral relay poll attachment for encrypted Docdex jobs", async () => {
+    const statePath = tempStatePath();
+    const secret = "msw_relay_docdex_secret";
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    let postedResult: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/poll") {
+        return jsonResponse({
+          attached_mswarm_api_key: secret,
+          job: {
+            job_id: "job-docdex-relay",
+            request_id: "req-docdex-relay",
+            node_id: "shn_service",
+            agent_slug: "qwen-reviewer",
+            source_agent_slug: "qwen-reviewer",
+            provider: "mcoda",
+            model: "mcoda-qwen-reviewer",
+            docdex: {
+              base_url: "http://docdex.secure.test",
+              repo_id: "repo-secure",
+              required: true,
+              credential_source: "attached_mswarm_api_key",
+              allowed_operations: ["search", "snippet"]
+            },
+            openai_request: {
+              model: "mcoda-qwen-reviewer",
+              messages: [{ role: "user", content: "Use relay Docdex search." }]
+            }
+          }
+        });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-docdex-relay/result") {
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        return successfulCodaliInvocation(input);
+      })
+    });
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("success");
+    assert.ok(captured.value);
+    expect(captured.value.attachedMswarmApiKey).toBe(secret);
+    expect(captured.value.docdex?.credentialSource).toBe("attached_mswarm_api_key");
+    assert.ok(postedResult);
+    expect(JSON.stringify(postedResult)).not.toContain(secret);
+  });
+
   it("fails required encrypted Docdex jobs when the attached mswarm API key is unavailable", async () => {
     const statePath = tempStatePath();
     const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
