@@ -665,6 +665,49 @@ describe("self-hosted node runtime", () => {
     expect(((result.openai_response?.metadata as Record<string, unknown>) || {}).codali_run_id).toBe("run-req-mcoda-json");
   });
 
+  it("normalizes Ollama CLI mcoda agents to the Codali Ollama provider", async () => {
+    const statePath = tempStatePath();
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          adapter: "ollama-cli",
+          supportsTools: false,
+          config: {}
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        return successfulCodaliInvocation(input);
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-mcoda-ollama-cli",
+      request_id: "req-mcoda-ollama-cli",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "Search encrypted Docdex context." }]
+      },
+      policy: {
+        allow_tools: true,
+        allowed_tools: ["docdex_search"]
+      }
+    });
+
+    expect(result.status).toBe("success");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.agent.adapter).toBe("ollama-cli");
+    expect(capturedInput.agent.provider).toBe("ollama-remote");
+    expect(capturedInput.agent.supportsTools).toBe(false);
+  });
+
   it("passes encrypted Docdex job context and attached mswarm API key to Codali without response leakage", async () => {
     const statePath = tempStatePath();
     const secret = "msw_docdex_secret";

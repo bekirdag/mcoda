@@ -1858,7 +1858,9 @@ function mcodaAgentDefaultModel(agent: McodaAgentListEntry): string | null {
 
 function resolveCodaliProviderForAgent(agent: McodaAgentListEntry): string | undefined {
   const adapter = optionalText(agent.adapter);
-  if (adapter === "ollama-remote" || adapter === "ollama") return "ollama-remote";
+  if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(adapter || "")) {
+    return "ollama-remote";
+  }
   if (adapter === "openai" || adapter === "openai-compatible" || adapter === "openai-cli") {
     return "openai-compatible";
   }
