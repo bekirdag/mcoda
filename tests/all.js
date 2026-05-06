@@ -236,9 +236,15 @@ if (process.env.MCODA_SKIP_WORKSPACE_TESTS !== "1") {
   } else if (process.platform === "win32") {
     runWorkspacePackageTests(workspacePackageEntries.map((entry) => entry.name), shell);
   } else {
-    let workspace = run("workspace-tests", pnpm, ["-r", "run", "test"], { shell });
+    let workspace = run("workspace-tests", pnpm, ["-r", "--workspace-concurrency=1", "run", "test"], { shell });
     if (workspace.error) {
-      const fallback = run("workspace-tests-corepack", "corepack", ["pnpm", "-r", "run", "test"], { shell });
+      const fallback = run("workspace-tests-corepack", "corepack", [
+        "pnpm",
+        "-r",
+        "--workspace-concurrency=1",
+        "run",
+        "test",
+      ], { shell });
       results.push(workspace, fallback);
       workspace = fallback;
     } else {
