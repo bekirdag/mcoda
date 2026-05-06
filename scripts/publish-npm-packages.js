@@ -11,7 +11,6 @@ const packageDirs = [
   'packages/integrations',
   'packages/core',
   'packages/cli',
-  'packages/codali',
   'packages/mswarm'
 ];
 
@@ -19,6 +18,12 @@ if (process.env.MCODA_PUBLISH_AGENT_SETUP === '1') {
   packageDirs.splice(6, 0, 'packages/agent-setup');
 } else {
   console.log('Skipping @mcoda/agent-setup publish; set MCODA_PUBLISH_AGENT_SETUP=1 after npm package access is configured.');
+}
+
+if (process.env.MCODA_PUBLISH_CODALI === '1') {
+  packageDirs.splice(packageDirs.indexOf('packages/mswarm'), 0, 'packages/codali');
+} else {
+  console.log('Skipping @mcoda/codali publish; set MCODA_PUBLISH_CODALI=1 after npm package access is configured.');
 }
 
 const args = new Set(process.argv.slice(2));
