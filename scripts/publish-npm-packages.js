@@ -10,6 +10,7 @@ const packageDirs = [
   'packages/generators',
   'packages/integrations',
   'packages/core',
+  'packages/agent-setup',
   'packages/cli',
   'packages/codali',
   'packages/mswarm'

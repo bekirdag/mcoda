@@ -1,0 +1,58 @@
+import type { McodaStageDefinition } from "./types.js";
+
+export const defaultMcodaStageDefinitions = [
+  {
+    stageKey: "translation",
+    displayName: "Translation",
+    description: "Translate source text into the application's working language.",
+    defaultAgentSlug: null,
+    recommendedUsage: "translation",
+    preferredSource: "cloud_or_self_hosted",
+    nullable: false,
+  },
+  {
+    stageKey: "summarization",
+    displayName: "Summarization",
+    description: "Create concise summaries and digests.",
+    defaultAgentSlug: null,
+    recommendedUsage: "summarization",
+    preferredSource: "cloud_or_self_hosted",
+    nullable: false,
+  },
+  {
+    stageKey: "classification",
+    displayName: "Classification",
+    description: "Classify text into product-specific categories.",
+    defaultAgentSlug: null,
+    recommendedUsage: "classification",
+    preferredSource: "cloud_or_self_hosted",
+    nullable: false,
+  },
+  {
+    stageKey: "extraction",
+    displayName: "Entity Extraction",
+    description: "Extract structured entities or fields.",
+    defaultAgentSlug: null,
+    recommendedUsage: "extraction",
+    preferredSource: "cloud_or_self_hosted",
+    nullable: false,
+  },
+  {
+    stageKey: "reasoning",
+    displayName: "Reasoning",
+    description: "Run deeper analysis where simple classification is not enough.",
+    defaultAgentSlug: null,
+    recommendedUsage: "reasoning",
+    preferredSource: "cloud_or_self_hosted",
+    nullable: true,
+  },
+  {
+    stageKey: "guardrail",
+    displayName: "Guardrail Review",
+    description: "Validate output quality, policy, schema, and safety constraints.",
+    defaultAgentSlug: null,
+    recommendedUsage: "guardrail",
+    preferredSource: "cloud_or_self_hosted",
+    nullable: true,
+  },
+] satisfies McodaStageDefinition[];

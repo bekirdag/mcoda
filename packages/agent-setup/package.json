@@ -1,0 +1,88 @@
+{
+  "name": "@mcoda/agent-setup",
+  "version": "0.1.66",
+  "description": "Turnkey mcoda/mswarm agent setup SDK for applications.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./headless": {
+      "types": "./dist/headless/index.d.ts",
+      "import": "./dist/headless/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./react/styles.css": {
+      "default": "./styles/react.css"
+    }
+  },
+  "files": [
+    "dist",
+    "examples",
+    "styles",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @mcoda/core run build && tsc -p tsconfig.json",
+    "lint": "echo \"lint not configured\"",
+    "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bekirdag/mcoda.git",
+    "directory": "packages/agent-setup"
+  },
+  "bugs": {
+    "url": "https://github.com/bekirdag/mcoda/issues"
+  },
+  "homepage": "https://github.com/bekirdag/mcoda/tree/main/packages/agent-setup#readme",
+  "license": "MIT",
+  "author": "bekir dag",
+  "keywords": [
+    "mcoda",
+    "mswarm",
+    "agent",
+    "setup",
+    "react",
+    "sdk"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@mcoda/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18.2.0 || >=19.0.0",
+    "react-dom": ">=18.2.0 || >=19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "react": "^18.3.1"
+  }
+}

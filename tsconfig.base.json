@@ -16,6 +16,8 @@
       "@mcoda/integrations/*": ["packages/integrations/src/*"],
       "@mcoda/core": ["packages/core/src/index.ts"],
       "@mcoda/core/*": ["packages/core/src/*"],
+      "@mcoda/agent-setup": ["packages/agent-setup/src/index.ts"],
+      "@mcoda/agent-setup/*": ["packages/agent-setup/src/*"],
       "@mcoda/generators": ["packages/generators/src/index.ts"],
       "@mcoda/generators/*": ["packages/generators/src/*"],
       "@mcoda/cli": ["packages/cli/src/index.ts"],
