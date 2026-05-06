@@ -387,7 +387,7 @@ const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_LISTEN_PORT = 18083;
 const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
-const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.56";
+const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.67";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
@@ -395,6 +395,7 @@ const DEFAULT_MCODA_BIN = "mcoda";
 const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_JOB_POLL_WAIT_MS = 25_000;
+const DEFAULT_STREAM_EVENT_BATCH_SIZE = 8;
 const SERVICE_LABEL = "com.mcoda.mswarm.self-hosted-node";
 const SYSTEMD_SERVICE_NAME = "mswarm-self-hosted-node.service";
 const WINDOWS_TASK_NAME = "MswarmSelfHostedNode";
@@ -2219,6 +2220,26 @@ export class MswarmSelfHostedNodeClient {
       this.timeoutMs
     );
   }
+
+  async postJobEvents(
+    runtimeToken: string,
+    jobId: string,
+    payload: { node_id: string; stream_events?: Record<string, unknown>[]; progress_events?: Record<string, unknown>[] }
+  ): Promise<unknown> {
+    return fetchJson<unknown>(
+      this.fetchImpl,
+      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/${encodeURIComponent(jobId)}/events`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${runtimeToken}`
+        },
+        body: JSON.stringify(payload)
+      },
+      this.timeoutMs
+    );
+  }
 }
 
 export class SelfHostedNodeRuntime {
@@ -2758,11 +2779,47 @@ export class SelfHostedNodeRuntime {
     if (!job) {
       return { executed: false };
     }
+    const pendingStreamEvents: Record<string, unknown>[] = [];
+    let streamEventForwardingFailed = false;
+    let forwardedStreamEventCount = 0;
+    const flushStreamEvents = async () => {
+      if (pendingStreamEvents.length === 0 || streamEventForwardingFailed) {
+        return;
+      }
+      const stream_events = pendingStreamEvents.splice(0, pendingStreamEvents.length);
+      try {
+        await this.gateway.postJobEvents(enrollment.runtimeToken, job.job_id, {
+          node_id: this.config.nodeId,
+          stream_events
+        });
+        forwardedStreamEventCount += stream_events.length;
+      } catch {
+        streamEventForwardingFailed = true;
+      }
+    };
     const result = await this.executeJob(job, {
       attachedMswarmApiKey: optionalText(response.attached_mswarm_api_key) || undefined,
+      onOpenAIChunk: async (chunk) => {
+        if (job.openai_request.stream !== true || streamEventForwardingFailed) {
+          return;
+        }
+        pendingStreamEvents.push(chunk);
+        if (pendingStreamEvents.length >= DEFAULT_STREAM_EVENT_BATCH_SIZE) {
+          await flushStreamEvents();
+        }
+      },
     });
+    await flushStreamEvents();
+    const postedResult = job.openai_request.stream === true
+      ? streamEventForwardingFailed
+        ? {
+            ...result,
+            stream_events: result.stream_events?.slice(forwardedStreamEventCount)
+          }
+        : (({ stream_events: _streamEvents, ...rest }) => rest)(result)
+      : result;
     await this.gateway.postJobResult(enrollment.runtimeToken, job.job_id, {
-      ...result,
+      ...postedResult,
       node_id: this.config.nodeId
     });
     return { executed: true, job_id: job.job_id, status: result.status };

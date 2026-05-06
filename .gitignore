@@ -19,3 +19,4 @@ docs/codali-sds
 docs/planning/*
 !docs/planning/.gitkeep
 packages/**/*.tgz
+.claude

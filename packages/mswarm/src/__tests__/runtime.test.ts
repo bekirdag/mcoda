@@ -835,6 +835,80 @@ describe("self-hosted node runtime", () => {
     expect(JSON.stringify(postedResult)).not.toContain(secret);
   });
 
+  it("posts outbound relay stream events while executing streamed jobs", async () => {
+    const statePath = tempStatePath();
+    const eventPosts: Record<string, unknown>[] = [];
+    let postedResult: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/poll") {
+        return jsonResponse({
+          job: {
+            job_id: "job-stream-relay",
+            request_id: "req-stream-relay",
+            node_id: "shn_service",
+            agent_slug: "qwen-reviewer",
+            source_agent_slug: "qwen-reviewer",
+            provider: "mcoda",
+            model: "mcoda-qwen-reviewer",
+            openai_request: {
+              model: "mcoda-qwen-reviewer",
+              stream: true,
+              messages: [{ role: "user", content: "Stream this." }]
+            }
+          }
+        });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-stream-relay/events") {
+        eventPosts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({ accepted: true });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-stream-relay/result") {
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        await input.onOpenAIChunk?.({
+          id: "chatcmpl-req-stream-relay",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: input.model,
+          choices: [{ index: 0, delta: { role: "assistant", content: "hel" }, finish_reason: null }]
+        });
+        await input.onOpenAIChunk?.({
+          id: "chatcmpl-req-stream-relay",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: input.model,
+          choices: [{ index: 0, delta: { content: "lo" }, finish_reason: null }]
+        });
+        await input.onOpenAIChunk?.({
+          id: "chatcmpl-req-stream-relay",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: input.model,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
+        });
+        return successfulCodaliInvocation(input, "hello");
+      })
+    });
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("success");
+    expect(eventPosts).toHaveLength(1);
+    assert.ok(eventPosts[0]);
+    expect((eventPosts[0].stream_events as unknown[] | undefined)?.length).toBe(3);
+    assert.ok(postedResult);
+    expect((postedResult as { stream_events?: unknown[] }).stream_events).toBeUndefined();
+  });
+
   it("fails required encrypted Docdex jobs when the attached mswarm API key is unavailable", async () => {
     const statePath = tempStatePath();
     const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
