@@ -2,6 +2,7 @@ import { defaultMcodaStageDefinitions } from "../defaultStages.js";
 import {
   buildCloudAgentOptions,
   buildSelfHostedServerOptions,
+  buildWorkerAgentOptions,
 } from "../headless/catalog.js";
 import { createProgrammaticMcodaRuntimeAdapter } from "./programmaticRuntime.js";
 import type {
@@ -67,7 +68,12 @@ export function createMcodaAgentSetupService(
   ): Promise<McodaAgentSetupSnapshot> => {
     const settings = await options.settingsStore.load();
     const errors: Record<string, string> = { ...extraErrors };
-    const [localAgents, cloudCatalogAgents, selfHostedCatalogAgents] =
+    const [
+      localAgents,
+      cloudCatalogAgents,
+      selfHostedCatalogAgents,
+      workerCatalogAgents,
+    ] =
       await Promise.all([
         capture(
           errors,
@@ -87,6 +93,12 @@ export function createMcodaAgentSetupService(
           () => runtime.listSelfHostedAgents({ includeUnreachable: true }),
           []
         ),
+        captureRemote(
+          errors,
+          "worker_agents",
+          () => runtime.listWorkerAgents(),
+          []
+        ),
       ]);
     const cloudAgents =
       errors.cloud_agents === undefined
@@ -96,10 +108,15 @@ export function createMcodaAgentSetupService(
       errors.self_hosted_agents === undefined
         ? buildSelfHostedServerOptions(localAgents, selfHostedCatalogAgents)
         : [];
+    const workerAgents =
+      errors.worker_agents === undefined
+        ? buildWorkerAgentOptions(localAgents, workerCatalogAgents)
+        : [];
     const catalog: McodaAgentCatalog = {
       localAgents,
       cloudAgents,
       selfHostedAgents: selfHostedCatalogAgents,
+      workerAgents,
       selfHostedServers,
       errors,
       generatedAt: new Date().toISOString(),
@@ -193,6 +210,12 @@ export function createMcodaAgentSetupService(
           pruneMissing: true,
           includeUnreachable: true,
         }),
+      []
+    );
+    await captureRemote(
+      errors,
+      "worker_agent_sync",
+      () => runtime.syncWorkerAgents({ pruneMissing: true }),
       []
     );
     return errors;

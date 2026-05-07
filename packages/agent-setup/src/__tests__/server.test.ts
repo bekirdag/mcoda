@@ -256,10 +256,16 @@ test("programmatic runtime reads injected config store for later API calls", asy
       async listSelfHostedAgents() {
         return [];
       },
+      async listWorkers() {
+        return [];
+      },
       async syncCloudAgents() {
         return { created: 0, updated: 0, deleted: 0, agents: [] };
       },
       async syncSelfHostedAgents() {
+        return { created: 0, updated: 0, deleted: 0, agents: [] };
+      },
+      async syncWorkers() {
         return { created: 0, updated: 0, deleted: 0, agents: [] };
       },
     };
@@ -318,10 +324,25 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
           },
         ];
       },
+      async listWorkers() {
+        return [
+          {
+            slug: "worker_real",
+            provider: "mswarm",
+            default_model: "mswarm-worker:worker_real",
+            supports_tools: true,
+            capabilities: ["structured_output"],
+            worker: { name: "Real worker" },
+          },
+        ];
+      },
       async syncCloudAgents() {
         return { created: 1, updated: 0, deleted: 0, agents: [] };
       },
       async syncSelfHostedAgents() {
+        return { created: 1, updated: 0, deleted: 0, agents: [] };
+      },
+      async syncWorkers() {
         return { created: 1, updated: 0, deleted: 0, agents: [] };
       },
     };

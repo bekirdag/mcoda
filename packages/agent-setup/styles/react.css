@@ -178,7 +178,7 @@
 .mcoda-agent-setup__metric-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
 }
 
 .mcoda-agent-setup__metric {
@@ -253,6 +253,12 @@
   background: var(--mcoda-blue-soft);
   border-color: #bfdbfe;
   color: #1d4ed8;
+}
+
+.mcoda-agent-setup__badge--worker {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
 }
 
 .mcoda-agent-setup__warnings {

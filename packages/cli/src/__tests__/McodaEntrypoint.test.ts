@@ -4,6 +4,7 @@ import packageJson from '../../package.json' with { type: 'json' };
 import { McodaEntrypoint } from '../bin/McodaEntrypoint.js';
 import { CloudCommands } from '../commands/cloud/CloudCommands.js';
 import { SelfHostedCommands } from '../commands/self-hosted/SelfHostedCommands.js';
+import { WorkersCommands } from '../commands/workers/WorkersCommands.js';
 import { ConfigCommands } from '../commands/config/ConfigCommands.js';
 import { ConsentCommands } from '../commands/consent/ConsentCommands.js';
 import { SetupCommand } from '../commands/setup/SetupCommand.js';
@@ -183,6 +184,28 @@ test(
       assert.equal(called, true);
     } finally {
       (SelfHostedCommands as any).run = originalRun;
+    }
+  }
+);
+
+test(
+  'McodaEntrypoint routes worker commands',
+  { concurrency: false },
+  async () => {
+    const originalRun = WorkersCommands.run;
+    let called = false;
+    (WorkersCommands as any).run = async (argv: string[]) => {
+      called = true;
+      assert.deepEqual(argv, ['list', '--json']);
+    };
+    try {
+      await withConsentState(
+        { consentAccepted: true, consentToken: 'token-123' },
+        () => McodaEntrypoint.run(['workers', 'list', '--json'])
+      );
+      assert.equal(called, true);
+    } finally {
+      (WorkersCommands as any).run = originalRun;
     }
   }
 );

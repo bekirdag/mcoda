@@ -2,6 +2,7 @@ export * from './commands/agents/AgentsCommands.js';
 export * from './bin/McodaEntrypoint.js';
 export * from './commands/cloud/CloudCommands.js';
 export * from './commands/self-hosted/SelfHostedCommands.js';
+export * from './commands/workers/WorkersCommands.js';
 export * from './commands/config/ConfigCommands.js';
 export * from './commands/consent/ConsentCommands.js';
 export * from './commands/docs/DocsCommands.js';

@@ -1,6 +1,7 @@
 import {
   syncedCloudSlug,
   syncedSelfHostedSlug,
+  syncedWorkerSlug,
 } from "../headless/catalog.js";
 import type {
   McodaAgentCatalogEntry,
@@ -13,6 +14,7 @@ import type {
 export interface InMemoryMcodaRuntimeAdapterInput {
   cloudAgents?: McodaAgentCatalogEntry[];
   selfHostedAgents?: McodaAgentCatalogEntry[];
+  workerAgents?: McodaAgentCatalogEntry[];
   localAgents?: McodaAgentCatalogEntry[];
 }
 
@@ -22,13 +24,14 @@ export function createInMemoryMcodaRuntimeAdapter(
   let cloudAgents = input.cloudAgents?.map((agent) => ({ ...agent })) ?? [];
   let selfHostedAgents =
     input.selfHostedAgents?.map((agent) => ({ ...agent })) ?? [];
+  let workerAgents = input.workerAgents?.map((agent) => ({ ...agent })) ?? [];
   let localAgents = input.localAgents?.map((agent) => ({ ...agent })) ?? [];
   let configuredApiKey = false;
 
   const syncRemote = (
     remoteAgents: McodaAgentCatalogEntry[],
     slugFor: (agent: McodaAgentCatalogEntry) => string,
-    managedKind: "cloud" | "self_hosted"
+    managedKind: "cloud" | "self_hosted" | "worker"
   ): McodaAgentCatalogEntry[] => {
     const remoteLocalSlugs = new Set(remoteAgents.map(slugFor));
     localAgents = localAgents.filter((agent) => {
@@ -97,6 +100,15 @@ export function createInMemoryMcodaRuntimeAdapter(
         syncedSelfHostedSlug,
         "self_hosted"
       );
+    },
+    async listWorkerAgents(options) {
+      return filterProvider(workerAgents, options).map((agent) => ({ ...agent }));
+    },
+    async syncWorkerAgents(options?: McodaAgentSyncInput) {
+      if (!configuredApiKey) {
+        throw new Error("mswarm api key is required");
+      }
+      return syncRemote(filterProvider(workerAgents, options), syncedWorkerSlug, "worker");
     },
     async listLocalAgents(options) {
       return filterProvider(localAgents, options).map((agent) => ({ ...agent }));

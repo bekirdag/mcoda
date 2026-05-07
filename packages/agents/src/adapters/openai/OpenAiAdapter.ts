@@ -117,7 +117,8 @@ const isManagedMswarmConfig = (config: AdapterConfig): boolean => {
     | undefined;
   const cloud = readRecord(anyConfig, "mswarmCloud") ?? readRecord(agentConfig, "mswarmCloud");
   const selfHosted = readRecord(anyConfig, "mswarmSelfHosted") ?? readRecord(agentConfig, "mswarmSelfHosted");
-  return cloud?.managed === true || selfHosted?.managed === true;
+  const worker = readRecord(anyConfig, "mswarmWorker") ?? readRecord(agentConfig, "mswarmWorker");
+  return cloud?.managed === true || selfHosted?.managed === true || worker?.managed === true;
 };
 
 const resolveDocdexContext = (

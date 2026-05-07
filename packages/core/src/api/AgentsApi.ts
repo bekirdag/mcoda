@@ -38,7 +38,7 @@ const isManagedMswarmAgent = (agent: Agent): boolean => {
     return false;
   }
   const record = config as Record<string, unknown>;
-  return ["mswarmCloud", "mswarmSelfHosted"].some((key) => {
+  return ["mswarmCloud", "mswarmSelfHosted", "mswarmWorker"].some((key) => {
     const managed = record[key];
     return Boolean(
       managed &&

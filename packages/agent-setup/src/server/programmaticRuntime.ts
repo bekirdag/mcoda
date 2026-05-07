@@ -5,9 +5,10 @@ import {
   type AgentResponse,
   type ListMswarmCloudAgentsOptions,
   type ListMswarmSelfHostedAgentsOptions,
+  type ListMswarmWorkerAgentsOptions,
 } from "@mcoda/core";
 import { normalizeAgentCatalogEntry } from "../headless/normalization.js";
-import { isCloudAgent, isSelfHostedAgent } from "../headless/catalog.js";
+import { isCloudAgent, isSelfHostedAgent, isWorkerAgent } from "../headless/catalog.js";
 import type {
   McodaAgentCatalogEntry,
   McodaAgentListInput,
@@ -23,6 +24,7 @@ export interface ProgrammaticMcodaRuntimeAdapterInput {
     timeoutMs?: number;
     agentSlugPrefix?: string;
     selfHostedAgentSlugPrefix?: string;
+    workerAgentSlugPrefix?: string;
   };
   store?: MswarmConfigStore;
 }
@@ -40,6 +42,7 @@ export function createProgrammaticMcodaRuntimeAdapter(
       timeoutMs: input.mswarm?.timeoutMs ?? stored.timeoutMs,
       agentSlugPrefix: input.mswarm?.agentSlugPrefix ?? stored.agentSlugPrefix,
       selfHostedAgentSlugPrefix: input.mswarm?.selfHostedAgentSlugPrefix,
+      workerAgentSlugPrefix: input.mswarm?.workerAgentSlugPrefix,
     });
   };
 
@@ -115,6 +118,22 @@ export function createProgrammaticMcodaRuntimeAdapter(
       );
       return (await listLocal(options)).filter(isSelfHostedAgent);
     },
+    async listWorkerAgents(options) {
+      return withMswarmApi(async (api) => {
+        const agents = await api.listWorkers(toWorkerOptions(options));
+        return agents.map((agent) =>
+          normalizeAgentCatalogEntry(agent, {
+            source: "worker_catalog",
+            synced: false,
+            managedKind: "worker",
+          })
+        );
+      });
+    },
+    async syncWorkerAgents(options) {
+      await withMswarmApi((api) => api.syncWorkers(toWorkerSyncOptions(options)));
+      return (await listLocal(options)).filter(isWorkerAgent);
+    },
     listLocalAgents: listLocal,
     async testAgent(input) {
       try {
@@ -187,6 +206,23 @@ function toSelfHostedSyncOptions(
   return {
     provider: options?.provider,
     includeUnreachable: options?.includeUnreachable ?? true,
+    pruneMissing: options?.pruneMissing ?? true,
+  };
+}
+
+function toWorkerOptions(
+  options: McodaAgentListInput | undefined
+): ListMswarmWorkerAgentsOptions {
+  return {
+    includeDisabled: options?.includeUnreachable ?? false,
+  };
+}
+
+function toWorkerSyncOptions(
+  options: McodaAgentSyncInput | undefined
+): ListMswarmWorkerAgentsOptions {
+  return {
+    includeDisabled: options?.includeUnreachable ?? false,
     pruneMissing: options?.pruneMissing ?? true,
   };
 }

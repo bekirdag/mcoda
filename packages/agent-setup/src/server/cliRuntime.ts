@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { normalizeAgentCatalogEntries } from "../headless/normalization.js";
-import { isCloudAgent, isSelfHostedAgent } from "../headless/catalog.js";
+import { isCloudAgent, isSelfHostedAgent, isWorkerAgent } from "../headless/catalog.js";
 import type {
   McodaAgentCatalogEntry,
   McodaAgentListInput,
@@ -126,6 +126,34 @@ export function createCliMcodaRuntimeAdapter(
         timeoutMs: input.timeoutMs,
       });
       return (await listLocal(options)).filter(isSelfHostedAgent);
+    },
+    async listWorkerAgents(options) {
+      return runAgents(
+        [
+          "workers",
+          "list",
+          "--json",
+          ...(options?.includeUnreachable ? ["--include-disabled"] : []),
+        ],
+        {
+          source: "worker_catalog",
+          synced: false,
+          managedKind: "worker",
+        }
+      );
+    },
+    async syncWorkerAgents(options?: McodaAgentSyncInput) {
+      await run(command, [
+        "workers",
+        "sync",
+        "--prune",
+        "--json",
+        ...(options?.includeUnreachable ? ["--include-disabled"] : []),
+      ], {
+        cwd: input.cwd,
+        timeoutMs: input.timeoutMs,
+      });
+      return (await listLocal(options)).filter(isWorkerAgent);
     },
     listLocalAgents: listLocal,
   };

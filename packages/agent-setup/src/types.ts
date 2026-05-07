@@ -8,13 +8,15 @@ export interface McodaRuntimeInfo {
 export type McodaAgentSource =
   | "local_registry"
   | "cloud_catalog"
-  | "self_hosted_catalog";
+  | "self_hosted_catalog"
+  | "worker_catalog";
 
-export type McodaAgentManagedKind = "cloud" | "self_hosted" | null;
+export type McodaAgentManagedKind = "cloud" | "self_hosted" | "worker" | null;
 
 export type McodaPreferredSource =
   | "cloud"
   | "self_hosted"
+  | "worker"
   | "cloud_or_self_hosted"
   | null;
 
@@ -72,6 +74,7 @@ export interface McodaAgentCatalog {
   localAgents: McodaAgentCatalogEntry[];
   cloudAgents: McodaAgentCatalogEntry[];
   selfHostedAgents: McodaAgentCatalogEntry[];
+  workerAgents: McodaAgentCatalogEntry[];
   selfHostedServers: McodaSelfHostedServer[];
   errors: Record<string, string>;
   generatedAt: string;
@@ -149,6 +152,8 @@ export interface McodaRuntimeAdapter {
   syncSelfHostedAgents(
     input?: McodaAgentSyncInput
   ): Promise<McodaAgentCatalogEntry[]>;
+  listWorkerAgents(input?: McodaAgentListInput): Promise<McodaAgentCatalogEntry[]>;
+  syncWorkerAgents(input?: McodaAgentSyncInput): Promise<McodaAgentCatalogEntry[]>;
   listLocalAgents(input?: McodaAgentListInput): Promise<McodaAgentCatalogEntry[]>;
   testAgent?(input: {
     slug: string;

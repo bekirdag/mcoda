@@ -19,6 +19,7 @@ import { CodaliAdapter } from "../adapters/codali/CodaliAdapter.js";
 import { OllamaRemoteAdapter } from "../adapters/ollama/OllamaRemoteAdapter.js";
 import { OllamaCliAdapter } from "../adapters/ollama/OllamaCliAdapter.js";
 import { OpenAiAdapter } from "../adapters/openai/OpenAiAdapter.js";
+import { MswarmWorkerAdapter } from "../adapters/mswarm/MswarmWorkerAdapter.js";
 import { OpenAiCliAdapter } from "../adapters/openai/OpenAiCliAdapter.js";
 import { ZhipuApiAdapter } from "../adapters/zhipu/ZhipuApiAdapter.js";
 import { QaAdapter } from "../adapters/qa/QaAdapter.js";
@@ -42,6 +43,7 @@ const SUPPORTED_ADAPTERS = new Set([
   "ollama-remote",
   "ollama-cli",
   "codali-cli",
+  "mswarm-worker",
 ]);
 
 const DEFAULT_JOB_PROMPT =
@@ -72,7 +74,7 @@ const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   other: 60 * 60 * 1000,
 };
 
-const getManagedMswarmKind = (agent: Agent): "cloud" | "self-hosted" | undefined => {
+const getManagedMswarmKind = (agent: Agent): "cloud" | "self-hosted" | "worker" | undefined => {
   const config = agent.config;
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     return undefined;
@@ -95,6 +97,15 @@ const getManagedMswarmKind = (agent: Agent): "cloud" | "self-hosted" | undefined
     (selfHosted as Record<string, unknown>).managed === true
   ) {
     return "self-hosted";
+  }
+  const worker = record.mswarmWorker;
+  if (
+    worker &&
+    typeof worker === "object" &&
+    !Array.isArray(worker) &&
+    (worker as Record<string, unknown>).managed === true
+  ) {
+    return "worker";
   }
   return undefined;
 };
@@ -329,11 +340,16 @@ export class AgentService {
 
     if (adapterType.endsWith("-api")) {
       if (hasSecret) return adapterType;
-      const managedMswarmKind = adapterType === "openai-api" ? getManagedMswarmKind(agent) : undefined;
+      const managedMswarmKind =
+        adapterType === "openai-api" || adapterType === "mswarm-worker"
+          ? getManagedMswarmKind(agent)
+          : undefined;
       if (managedMswarmKind) {
         const label = agent.slug ?? agent.id;
         const syncCommand =
-          managedMswarmKind === "self-hosted"
+          managedMswarmKind === "worker"
+            ? "mcoda workers sync"
+            : managedMswarmKind === "self-hosted"
             ? "mcoda self-hosted agent sync"
             : "mcoda cloud agent sync";
         throw new Error(
@@ -365,6 +381,9 @@ export class AgentService {
 
     if (adapterType === "openai-api") {
       return new OpenAiAdapter(configWithAdapter);
+    }
+    if (adapterType === "mswarm-worker") {
+      return new MswarmWorkerAdapter(configWithAdapter);
     }
     if (adapterType === "zhipu-api") {
       return new ZhipuApiAdapter(configWithAdapter);

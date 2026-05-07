@@ -27,6 +27,7 @@ export interface McodaAgentSetupLabels {
   saveAssignments: string;
   cloud: string;
   selfHosted: string;
+  workers: string;
 }
 
 export interface McodaAgentSetupComponentOverrides {
@@ -44,7 +45,10 @@ const DEFAULT_LABELS: McodaAgentSetupLabels = {
   saveAssignments: "Save Assignments",
   cloud: "Cloud",
   selfHosted: "Self-hosted",
+  workers: "Workers",
 };
+
+type AgentAssignmentSource = "cloud" | "self_hosted" | "worker";
 
 export function McodaAgentSetupPage(
   props: McodaAgentSetupPageProps
@@ -112,7 +116,7 @@ export function McodaAgentSetupPage(
       const next = await props.client.syncAgents();
       setSnapshot(next);
       setAssignments(next.assignments);
-      setStatusMessage("Cloud and self-hosted agent catalogs synced.");
+      setStatusMessage("Cloud, self-hosted, and Worker agent catalogs synced.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -150,7 +154,7 @@ export function McodaAgentSetupPage(
         React.createElement(
           "p",
           null,
-          "Configure mswarm access and assign cloud or self-hosted mcoda agents to each runtime stage."
+          "Configure mswarm access and assign cloud, self-hosted, or Worker mcoda targets to each runtime stage."
         )
       ),
       React.createElement(
@@ -265,6 +269,11 @@ export function AgentCatalogSummary(props: {
         label: "Self-hosted",
         value: String(snapshot.catalog.selfHostedAgents.length),
         detail: `${snapshot.catalog.selfHostedServers.length} servers`,
+      }),
+      React.createElement(MetricCard, {
+        label: "Workers",
+        value: String(snapshot.catalog.workerAgents.length),
+        detail: "mswarm Worker catalog",
       })
     ),
     warningEntries.length
@@ -302,7 +311,7 @@ export function MswarmAccessCard(props: {
           null,
           props.snapshot?.mswarmApiKeyConfigured
             ? "Replace the stored key or resync the catalog."
-            : "Add a key to load real cloud and self-hosted agents."
+            : "Add a key to load real cloud, self-hosted, and Worker agents."
         )
       )
     ),
@@ -361,17 +370,19 @@ export function StageAgentAssignments(props: {
   const sourceSelect = AgentSourceSelect;
   const serverSelect = SelfHostedServerSelect;
   const agentSelect = AgentSearchSelect;
-  const [sources, setSources] = React.useState<Record<string, "cloud" | "self_hosted">>(
-    {}
-  );
+  const [sources, setSources] = React.useState<Record<string, AgentAssignmentSource>>({});
   const [servers, setServers] = React.useState<Record<string, string>>({});
 
   React.useEffect(() => {
-    const nextSources: Record<string, "cloud" | "self_hosted"> = {};
+    const nextSources: Record<string, AgentAssignmentSource> = {};
     const nextServers: Record<string, string> = {};
     for (const stage of props.stages) {
       const assignment = props.assignments[stage.stageKey];
       if (!assignment) continue;
+      if (props.snapshot.catalog.workerAgents.some((agent) => agent.slug === assignment)) {
+        nextSources[stage.stageKey] = "worker";
+        continue;
+      }
       const selfHostedServer = props.snapshot.catalog.selfHostedServers.find((server) =>
         server.agents.some((agent) => agent.slug === assignment)
       );
@@ -386,7 +397,13 @@ export function StageAgentAssignments(props: {
     }
     setSources((current) => ({ ...current, ...nextSources }));
     setServers((current) => ({ ...current, ...nextServers }));
-  }, [props.assignments, props.snapshot.catalog.cloudAgents, props.snapshot.catalog.selfHostedServers, props.stages]);
+  }, [
+    props.assignments,
+    props.snapshot.catalog.cloudAgents,
+    props.snapshot.catalog.selfHostedServers,
+    props.snapshot.catalog.workerAgents,
+    props.stages,
+  ]);
 
   return React.createElement(
     "section",
@@ -435,7 +452,7 @@ export function StageAgentAssignments(props: {
             const selectedSlug = props.assignments[stage.stageKey] ?? "";
             const source =
               sources[stage.stageKey] ??
-              (stage.preferredSource === "self_hosted" ? "self_hosted" : "cloud");
+              defaultAssignmentSource(stage.preferredSource);
             const serverId = servers[stage.stageKey];
             const server =
               props.snapshot.catalog.selfHostedServers.find(
@@ -444,12 +461,15 @@ export function StageAgentAssignments(props: {
             const agents =
               source === "cloud"
                 ? props.snapshot.catalog.cloudAgents
-                : server?.agents ?? [];
+                : source === "worker"
+                  ? props.snapshot.catalog.workerAgents
+                  : server?.agents ?? [];
             const allSelectableAgents = [
               ...props.snapshot.catalog.cloudAgents,
               ...props.snapshot.catalog.selfHostedServers.flatMap(
                 (candidate) => candidate.agents
               ),
+              ...props.snapshot.catalog.workerAgents,
             ];
             const selectedAgent = allSelectableAgents.find(
               (agent) => agent.slug === selectedSlug
@@ -459,12 +479,14 @@ export function StageAgentAssignments(props: {
             )
               ? selectedSlug
               : "";
-            const onSourceChange = (value: "cloud" | "self_hosted") => {
+            const onSourceChange = (value: AgentAssignmentSource) => {
               setSources((current) => ({ ...current, [stage.stageKey]: value }));
               const nextSlug =
                 value === "cloud"
                   ? props.snapshot.catalog.cloudAgents[0]?.slug
-                  : firstSelfHostedAgentSlug(props.snapshot.catalog.selfHostedServers);
+                  : value === "worker"
+                    ? props.snapshot.catalog.workerAgents[0]?.slug
+                    : firstSelfHostedAgentSlug(props.snapshot.catalog.selfHostedServers);
               props.onAssignmentChange(stage.stageKey, nextSlug ?? null);
             };
             const onServerChange = (value: string) => {
@@ -510,7 +532,7 @@ export function StageAgentAssignments(props: {
                   : React.createElement(
                       "span",
                       { className: "mcoda-agent-setup__muted-pill" },
-                      "Cloud catalog"
+                      source === "worker" ? "Worker catalog" : "Cloud catalog"
                     )
               ),
               React.createElement(
@@ -540,9 +562,9 @@ export function StageAgentAssignments(props: {
 }
 
 export function AgentSourceSelect(props: {
-  value: "cloud" | "self_hosted";
+  value: AgentAssignmentSource;
   labels?: Partial<McodaAgentSetupLabels>;
-  onChange: (value: "cloud" | "self_hosted") => void;
+  onChange: (value: AgentAssignmentSource) => void;
 }): React.ReactElement {
   const labels = { ...DEFAULT_LABELS, ...(props.labels ?? {}) };
   return React.createElement(
@@ -565,6 +587,15 @@ export function AgentSourceSelect(props: {
         onClick: () => props.onChange("self_hosted"),
       },
       labels.selfHosted
+    ),
+    React.createElement(
+      "button",
+      {
+        type: "button",
+        "aria-pressed": props.value === "worker",
+        onClick: () => props.onChange("worker"),
+      },
+      labels.workers
     )
   );
 }
@@ -872,6 +903,8 @@ function AgentStatusBadge(props: {
       ? "Cloud"
       : kind === "self_hosted"
         ? "Self-hosted"
+        : kind === "worker"
+          ? "Worker"
         : props.agent
           ? "Local"
           : props.slug
@@ -882,10 +915,20 @@ function AgentStatusBadge(props: {
       ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--info"
       : kind === "self_hosted"
         ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--success"
+        : kind === "worker"
+          ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--worker"
         : props.agent
           ? "mcoda-agent-setup__badge"
           : "mcoda-agent-setup__badge mcoda-agent-setup__badge--warning";
   return React.createElement("span", { className }, sourceLabel);
+}
+
+function defaultAssignmentSource(
+  preferredSource: McodaStageDefinition["preferredSource"]
+): AgentAssignmentSource {
+  if (preferredSource === "self_hosted") return "self_hosted";
+  if (preferredSource === "worker") return "worker";
+  return "cloud";
 }
 
 function firstSelfHostedAgentSlug(servers: McodaSelfHostedServer[]): string | null {
@@ -912,6 +955,7 @@ function prettySlug(slug: string): string {
   return slug
     .replace(/^mswarm-cloud-/, "")
     .replace(/^mswarm-self-hosted-/, "")
+    .replace(/^mswarm-worker-/, "")
     .replace(/^mcoda-/, "")
     .replace(/[-_]+/g, " ");
 }

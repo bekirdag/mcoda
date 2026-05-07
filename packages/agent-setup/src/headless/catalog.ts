@@ -5,6 +5,7 @@ import type {
 
 const CLOUD_PREFIX = "mswarm-cloud-";
 const SELF_HOSTED_PREFIX = "mswarm-self-hosted-";
+const WORKER_PREFIX = "mswarm-worker-";
 
 const normalizeSlugPart = (value: string): string =>
   value
@@ -36,6 +37,14 @@ export function isSelfHostedAgent(agent: McodaAgentCatalogEntry): boolean {
   );
 }
 
+export function isWorkerAgent(agent: McodaAgentCatalogEntry): boolean {
+  return (
+    agent.source === "worker_catalog" ||
+    agent.managedKind === "worker" ||
+    agent.slug.startsWith(WORKER_PREFIX)
+  );
+}
+
 export function syncedCloudSlug(agent: McodaAgentCatalogEntry): string {
   if (agent.slug.startsWith(CLOUD_PREFIX)) return agent.slug;
   const remote = agent.remoteSlug ?? agent.slug;
@@ -46,6 +55,12 @@ export function syncedSelfHostedSlug(agent: McodaAgentCatalogEntry): string {
   if (agent.slug.startsWith(SELF_HOSTED_PREFIX)) return agent.slug;
   const remote = agent.remoteSlug ?? agent.slug;
   return `${SELF_HOSTED_PREFIX}${normalizeSlugPart(remote) || "agent"}`;
+}
+
+export function syncedWorkerSlug(agent: McodaAgentCatalogEntry): string {
+  if (agent.slug.startsWith(WORKER_PREFIX)) return agent.slug;
+  const remote = (agent.remoteSlug ?? agent.slug).replace(/^worker_/i, "");
+  return `${WORKER_PREFIX}${normalizeSlugPart(remote) || "agent"}`;
 }
 
 export function mergeCatalogEntries(
@@ -140,6 +155,23 @@ export function buildSelfHostedServerOptions(
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
+export function buildWorkerAgentOptions(
+  localAgents: McodaAgentCatalogEntry[],
+  workerCatalogAgents: McodaAgentCatalogEntry[]
+): McodaAgentCatalogEntry[] {
+  const catalogByLocalSlug = new Map(
+    workerCatalogAgents.map((agent) => [syncedWorkerSlug(agent), agent])
+  );
+  const synced = localAgents
+    .filter(isWorkerAgent)
+    .map((agent) => mergeCatalogEntries(agent, catalogByLocalSlug.get(agent.slug)));
+  const localSlugs = new Set(synced.map((agent) => agent.slug));
+  const unsynced = workerCatalogAgents
+    .filter((agent) => !localSlugs.has(syncedWorkerSlug(agent)))
+    .map((agent) => ({ ...agent, synced: false }));
+  return sortAgents([...synced, ...unsynced]);
+}
+
 export function filterAgentOptions(
   agents: McodaAgentCatalogEntry[],
   query: string
@@ -190,6 +222,9 @@ export function resolveRunnableSelectionSlug(
       isSelfHostedAgent(agent) &&
       agent.slug === syncedSelfHostedSlug({ ...agent, slug: trimmed })
     ) {
+      return true;
+    }
+    if (isWorkerAgent(agent) && agent.slug === syncedWorkerSlug({ ...agent, slug: trimmed })) {
       return true;
     }
     return false;

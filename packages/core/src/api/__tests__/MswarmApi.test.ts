@@ -425,6 +425,173 @@ test(
 );
 
 test(
+  'MswarmApi.listWorkers paginates worker catalog results',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          assert.equal(req.headers['x-api-key'], 'worker-key');
+          assert.equal(url.pathname, '/v1/swarm/workers');
+          assert.equal(url.searchParams.get('shape'), 'mcoda');
+          if (!url.searchParams.get('cursor')) {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                agents: [
+                  {
+                    slug: 'worker_abc123',
+                    remote_slug: 'mswarm/workers/worker_abc123',
+                    provider: 'mswarm',
+                    adapter: 'mswarm-worker',
+                    default_model: 'mswarm-worker:worker_abc123',
+                    supports_tools: true,
+                    capabilities: ['structured_output'],
+                    health_status: 'healthy',
+                    worker: { installation_id: 'abc-123', name: 'Worker A' },
+                  },
+                ],
+                next_cursor: 'cursor-2',
+              })
+            );
+            return;
+          }
+          assert.equal(url.searchParams.get('cursor'), 'cursor-2');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'worker_def456',
+                  remote_slug: 'mswarm/workers/worker_def456',
+                  provider: 'mswarm',
+                  adapter: 'mswarm-worker',
+                  default_model: 'mswarm-worker:worker_def456',
+                  supports_tools: true,
+                  capabilities: ['chat'],
+                  health_status: 'healthy',
+                  worker: { installation_id: 'def-456', name: 'Worker B' },
+                },
+              ],
+              next_cursor: null,
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'worker-key' });
+          try {
+            const workers = await api.listWorkers();
+            assert.deepEqual(
+              workers.map((worker) => worker.slug),
+              ['worker_abc123', 'worker_def456']
+            );
+            assert.equal(workers[0]?.worker?.name, 'Worker A');
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncWorkers materializes managed worker agents and runWorker posts payloads',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          assert.equal(req.headers['x-api-key'], 'worker-key');
+          if (req.method === 'GET') {
+            assert.equal(url.pathname, '/v1/swarm/workers');
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                agents: [
+                  {
+                    slug: 'worker_abc123',
+                    remote_slug: 'mswarm/workers/worker_abc123',
+                    provider: 'mswarm',
+                    adapter: 'mswarm-worker',
+                    default_model: 'mswarm-worker:worker_abc123',
+                    model_id: 'mswarm-worker:worker_abc123',
+                    supports_tools: true,
+                    supports_reasoning: false,
+                    capabilities: ['structured_output'],
+                    health_status: 'healthy',
+                    rating: 8.5,
+                    worker: {
+                      installation_id: 'abc-123',
+                      name: 'Client intake worker',
+                    },
+                  },
+                ],
+                next_cursor: null,
+              })
+            );
+            return;
+          }
+          assert.equal(req.method, 'POST');
+          assert.equal(url.pathname, '/v1/swarm/workers/worker_abc123/run');
+          assert.equal(req.headers['idempotency-key'], 'idem-1');
+          let body = '';
+          req.on('data', (chunk) => {
+            body += chunk;
+          });
+          req.on('end', () => {
+            assert.deepEqual(JSON.parse(body), { text: 'hello worker' });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ result: { output: '{"ok":true}' } }));
+          });
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'worker-key' });
+          try {
+            const summary = await api.syncWorkers();
+            assert.equal(summary.created, 1);
+            assert.equal(summary.agents[0]?.localSlug, 'mswarm-worker-abc123');
+
+            const repo = await GlobalRepository.create();
+            try {
+              const worker = await repo.getAgentBySlug('mswarm-worker-abc123');
+              assert.equal(worker?.adapter, 'mswarm-worker');
+              assert.equal(worker?.defaultModel, 'mswarm-worker:worker_abc123');
+              assert.equal(
+                (worker?.config as any)?.mswarmWorker?.remoteSlug,
+                'mswarm/workers/worker_abc123'
+              );
+              const secret = worker
+                ? await repo.getAgentAuthSecret(worker.id)
+                : undefined;
+              assert.equal(
+                secret?.encryptedSecret
+                  ? await CryptoHelper.decryptSecret(secret.encryptedSecret)
+                  : undefined,
+                'worker-key'
+              );
+            } finally {
+              await repo.close();
+            }
+
+            const result = await api.runWorker(
+              'worker_abc123',
+              { text: 'hello worker' },
+              { idempotencyKey: 'idem-1' }
+            );
+            assert.deepEqual(result, { result: { output: '{"ok":true}' } });
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
   'MswarmApi.listSelfHostedAgents sends auth and maps mcoda metadata',
   { concurrency: false },
   async () => {

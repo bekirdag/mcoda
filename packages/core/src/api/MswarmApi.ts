@@ -46,6 +46,24 @@ export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
   source_agent_slug?: string;
 }
 
+export interface MswarmWorkerAgent extends MswarmCloudAgent {
+  id?: string;
+  remote_slug?: string;
+  adapter?: string;
+  source?: string;
+  worker?: {
+    installation_id?: string;
+    status?: string;
+    enabled?: boolean;
+    name?: string;
+    api_run_url?: string;
+    docdex_enabled?: boolean;
+    selected_agent?: Record<string, unknown> | null;
+    config_health?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+}
+
 export interface MswarmCloudAgentDetail extends MswarmCloudAgent {
   pricing?: Record<string, unknown>;
   supported_parameters?: string[];
@@ -56,6 +74,10 @@ export interface MswarmCloudAgentDetail extends MswarmCloudAgent {
 
 export interface MswarmSelfHostedAgentDetail
   extends MswarmSelfHostedAgent,
+    Omit<MswarmCloudAgentDetail, keyof MswarmCloudAgent> {}
+
+export interface MswarmWorkerAgentDetail
+  extends MswarmWorkerAgent,
     Omit<MswarmCloudAgentDetail, keyof MswarmCloudAgent> {}
 
 export interface ListMswarmCloudAgentsOptions {
@@ -73,6 +95,11 @@ export interface ListMswarmSelfHostedAgentsOptions
   includeUnreachable?: boolean;
 }
 
+export interface ListMswarmWorkerAgentsOptions
+  extends ListMswarmCloudAgentsOptions {
+  includeDisabled?: boolean;
+}
+
 export interface MswarmApiOptions {
   baseUrl?: string;
   openAiBaseUrl?: string;
@@ -80,6 +107,7 @@ export interface MswarmApiOptions {
   timeoutMs?: number;
   agentSlugPrefix?: string;
   selfHostedAgentSlugPrefix?: string;
+  workerAgentSlugPrefix?: string;
 }
 
 export interface MswarmConsentResponse {
@@ -125,6 +153,7 @@ interface ResolvedMswarmApiOptions {
   timeoutMs: number;
   agentSlugPrefix: string;
   selfHostedAgentSlugPrefix: string;
+  workerAgentSlugPrefix: string;
 }
 
 export interface ManagedMswarmCloudConfig {
@@ -175,6 +204,28 @@ export interface ManagedMswarmSelfHostedAgentConfig
   mswarmSelfHosted: ManagedMswarmSelfHostedConfig;
 }
 
+export interface ManagedMswarmWorkerConfig {
+  managed: true;
+  remoteSlug: string;
+  workerId: string;
+  provider: string;
+  modelId?: string;
+  displayName?: string;
+  description?: string;
+  catalogBaseUrl: string;
+  apiRunUrl?: string;
+  worker?: Record<string, unknown>;
+  sync?: Record<string, unknown>;
+  syncedAt: string;
+}
+
+export interface ManagedMswarmWorkerAgentConfig
+  extends Record<string, unknown> {
+  baseUrl: string;
+  apiBaseUrl: string;
+  mswarmWorker: ManagedMswarmWorkerConfig;
+}
+
 export interface MswarmSyncRecord {
   remoteSlug: string;
   localSlug: string;
@@ -200,10 +251,16 @@ interface ListMswarmCloudAgentsResponse {
   agents?: unknown;
 }
 
+interface ListMswarmWorkersResponse extends ListMswarmCloudAgentsResponse {
+  workers?: unknown;
+  next_cursor?: unknown;
+}
+
 const DEFAULT_BASE_URL = 'https://api.mswarm.org/';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_SLUG_PREFIX = 'mswarm-cloud';
 const DEFAULT_SELF_HOSTED_AGENT_SLUG_PREFIX = 'mswarm-self-hosted';
+const DEFAULT_WORKER_AGENT_SLUG_PREFIX = 'mswarm-worker';
 export const MSWARM_CONSENT_POLICY_VERSION = '2026-03-18';
 export const MCODA_FREE_CLIENT_TYPE = 'free_mcoda_client';
 const MCODA_PRODUCT_SLUG = 'mcoda';
@@ -300,12 +357,16 @@ const resolveOptions = async (
   const directSelfHostedAgentSlugPrefix =
     options.selfHostedAgentSlugPrefix ??
     process.env.MCODA_MSWARM_SELF_HOSTED_AGENT_SLUG_PREFIX;
+  const directWorkerAgentSlugPrefix =
+    options.workerAgentSlugPrefix ??
+    process.env.MCODA_MSWARM_WORKER_AGENT_SLUG_PREFIX;
   const needsStoredFallback =
     directBaseUrl === undefined ||
     directApiKey === undefined ||
     directTimeout === undefined ||
     directAgentSlugPrefix === undefined ||
-    directSelfHostedAgentSlugPrefix === undefined;
+    directSelfHostedAgentSlugPrefix === undefined ||
+    directWorkerAgentSlugPrefix === undefined;
   const stored = needsStoredFallback
     ? await new MswarmConfigStore().readState()
     : {};
@@ -329,6 +390,9 @@ const resolveOptions = async (
     selfHostedAgentSlugPrefix:
       resolveString(directSelfHostedAgentSlugPrefix) ??
       DEFAULT_SELF_HOSTED_AGENT_SLUG_PREFIX,
+    workerAgentSlugPrefix:
+      resolveString(directWorkerAgentSlugPrefix) ??
+      DEFAULT_WORKER_AGENT_SLUG_PREFIX,
   };
 };
 
@@ -468,6 +532,15 @@ const toManagedLocalSlug = (prefix: string, remoteSlug: string): string => {
   return `${prefix}-${normalized || 'agent'}`;
 };
 
+const toManagedWorkerLocalSlug = (
+  prefix: string,
+  agent: MswarmWorkerAgent
+): string => {
+  const base =
+    agent.slug.startsWith('worker_') ? agent.slug.slice('worker_'.length) : agent.slug;
+  return toManagedLocalSlug(prefix, base);
+};
+
 const toHealthStatus = (
   value: string | undefined
 ): AgentHealthStatus | undefined => {
@@ -477,10 +550,16 @@ const toHealthStatus = (
   if (
     normalized === 'degraded' ||
     normalized === 'unknown' ||
-    normalized === 'limited'
+    normalized === 'limited' ||
+    normalized === 'stale' ||
+    normalized === 'misconfigured'
   )
     return 'degraded';
-  if (normalized === 'unreachable' || normalized === 'offline')
+  if (
+    normalized === 'unreachable' ||
+    normalized === 'offline' ||
+    normalized === 'disabled'
+  )
     return 'unreachable';
   return undefined;
 };
@@ -489,7 +568,8 @@ const isSyncManagedHealth = (health: AgentHealth | undefined): boolean =>
   isRecord(health?.details) &&
   (health.details.source === 'mswarm' ||
     health.details.source === 'mswarm_catalog' ||
-    health.details.source === 'mswarm_self_hosted');
+    health.details.source === 'mswarm_self_hosted' ||
+    health.details.source === 'mswarm_worker');
 
 const isAuthMissingManagedHealth = (
   health: AgentHealth | undefined
@@ -525,10 +605,23 @@ const isManagedMswarmSelfHostedConfig = (
   return config.mswarmSelfHosted.managed === true;
 };
 
+const isManagedMswarmWorkerConfig = (
+  config: unknown
+): config is ManagedMswarmWorkerAgentConfig => {
+  if (!isRecord(config)) return false;
+  if (!isRecord(config.mswarmWorker)) return false;
+  return config.mswarmWorker.managed === true;
+};
+
 const isManagedMswarmConfig = (
   config: unknown
-): config is ManagedMswarmAgentConfig | ManagedMswarmSelfHostedAgentConfig =>
-  isManagedMswarmCloudConfig(config) || isManagedMswarmSelfHostedConfig(config);
+): config is
+  | ManagedMswarmAgentConfig
+  | ManagedMswarmSelfHostedAgentConfig
+  | ManagedMswarmWorkerAgentConfig =>
+  isManagedMswarmCloudConfig(config) ||
+  isManagedMswarmSelfHostedConfig(config) ||
+  isManagedMswarmWorkerConfig(config);
 
 const toManagedConfig = (
   existingConfig: Record<string, unknown> | undefined,
@@ -594,6 +687,38 @@ const toManagedSelfHostedConfig = (
   return nextConfig;
 };
 
+const toManagedWorkerConfig = (
+  existingConfig: Record<string, unknown> | undefined,
+  catalogBaseUrl: string,
+  agent: MswarmWorkerAgent,
+  syncedAt: string
+): ManagedMswarmWorkerAgentConfig => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  const worker = isRecord(agent.worker) ? agent.worker : {};
+  const workerId = agent.id ?? agent.slug;
+  const apiRunUrl = resolveString(worker.api_run_url);
+  const nextConfig: ManagedMswarmWorkerAgentConfig = {
+    ...(existingConfig ?? {}),
+    baseUrl: catalogBaseUrl,
+    apiBaseUrl: catalogBaseUrl,
+    mswarmWorker: {
+      managed: true,
+      remoteSlug: agent.remote_slug ?? agent.slug,
+      workerId,
+      provider: agent.provider,
+      modelId: agent.model_id,
+      displayName: agent.display_name,
+      description: agent.description,
+      catalogBaseUrl,
+      apiRunUrl,
+      worker: Object.keys(worker).length > 0 ? worker : undefined,
+      sync: Object.keys(sync).length > 0 ? sync : undefined,
+      syncedAt,
+    },
+  };
+  return nextConfig;
+};
+
 const toManagedSyncRecord = (
   config: ManagedMswarmAgentConfig,
   localSlug: string,
@@ -618,6 +743,19 @@ const toManagedSelfHostedSyncRecord = (
   localSlug,
   action,
   provider: config.mswarmSelfHosted.provider,
+  defaultModel,
+});
+
+const toManagedWorkerSyncRecord = (
+  config: ManagedMswarmWorkerAgentConfig,
+  localSlug: string,
+  defaultModel: string,
+  action: MswarmSyncRecord['action']
+): MswarmSyncRecord => ({
+  remoteSlug: config.mswarmWorker.remoteSlug,
+  localSlug,
+  action,
+  provider: config.mswarmWorker.provider,
   defaultModel,
 });
 
@@ -782,6 +920,32 @@ const toSelfHostedAgentDetail = (
   };
 };
 
+const toWorkerAgent = (value: unknown): MswarmWorkerAgent => {
+  const agent = toCloudAgent(value);
+  const record = isRecord(value) ? value : {};
+  return {
+    ...agent,
+    id: resolveString(record.id),
+    remote_slug: resolveString(record.remote_slug),
+    adapter: resolveString(record.adapter),
+    source: resolveString(record.source),
+    worker: isRecord(record.worker) ? record.worker : undefined,
+  };
+};
+
+const toWorkerAgentDetail = (value: unknown): MswarmWorkerAgentDetail => {
+  const agent = toWorkerAgent(value);
+  const record = isRecord(value) ? value : {};
+  return {
+    ...agent,
+    pricing: isRecord(record.pricing) ? record.pricing : undefined,
+    supported_parameters: resolveStringArray(record.supported_parameters),
+    status: resolveString(record.status),
+    moderation_status: resolveString(record.moderation_status),
+    mcoda_shape: isRecord(record.mcoda_shape) ? record.mcoda_shape : undefined,
+  };
+};
+
 const hasAdvancedCloudAgentSelection = (
   options: ListMswarmCloudAgentsOptions
 ): boolean =>
@@ -871,6 +1035,7 @@ export class MswarmApi {
   readonly baseUrl: string;
   readonly agentSlugPrefix: string;
   readonly selfHostedAgentSlugPrefix: string;
+  readonly workerAgentSlugPrefix: string;
 
   constructor(
     private readonly repo: GlobalRepository,
@@ -879,6 +1044,7 @@ export class MswarmApi {
     this.baseUrl = options.baseUrl;
     this.agentSlugPrefix = options.agentSlugPrefix;
     this.selfHostedAgentSlugPrefix = options.selfHostedAgentSlugPrefix;
+    this.workerAgentSlugPrefix = options.workerAgentSlugPrefix;
   }
 
   static async create(options: MswarmApiOptions = {}): Promise<MswarmApi> {
@@ -1050,6 +1216,93 @@ export class MswarmApi {
       `/v1/swarm/self-hosted/agents/${encodeURIComponent(slug)}`
     );
     return toSelfHostedAgentDetail(payload);
+  }
+
+  private async listWorkerAgentPage(
+    options: ListMswarmWorkerAgentsOptions = {},
+    cursor?: string
+  ): Promise<{ agents: MswarmWorkerAgent[]; nextCursor?: string }> {
+    const payload = await this.requestJson<ListMswarmWorkersResponse>(
+      '/v1/swarm/workers',
+      {
+        shape: 'mcoda',
+        limit: options.limit,
+        cursor,
+        include_disabled: options.includeDisabled ? 'true' : undefined,
+      }
+    );
+    const values = Array.isArray(payload.agents)
+      ? payload.agents
+      : Array.isArray(payload.workers)
+        ? payload.workers
+        : [];
+    return {
+      agents: values.map(toWorkerAgent),
+      nextCursor: resolveString(payload.next_cursor),
+    };
+  }
+
+  async listAllWorkers(
+    options: ListMswarmWorkerAgentsOptions = {}
+  ): Promise<MswarmWorkerAgent[]> {
+    const requestedLimit = normalizeOptionalPositiveInt(options.limit, 'limit');
+    const pageLimit =
+      requestedLimit !== undefined ? Math.min(requestedLimit, 250) : 250;
+    const collected: MswarmWorkerAgent[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listWorkerAgentPage(
+        { ...options, limit: pageLimit },
+        cursor
+      );
+      collected.push(...page.agents);
+      cursor = page.nextCursor;
+      if (requestedLimit !== undefined && collected.length >= requestedLimit) {
+        return collected.slice(0, requestedLimit);
+      }
+    } while (cursor);
+    return collected;
+  }
+
+  async listWorkers(
+    options: ListMswarmWorkerAgentsOptions = {}
+  ): Promise<MswarmWorkerAgent[]> {
+    let agents = await this.listAllWorkers(options);
+    if (options.provider) {
+      agents = agents.filter((agent) => agent.provider === options.provider);
+    }
+    return applyCloudAgentListOptions(agents, options);
+  }
+
+  async getWorker(slug: string): Promise<MswarmWorkerAgentDetail> {
+    if (!slug.trim()) {
+      throw new Error('Worker slug is required');
+    }
+    const payload = await this.requestJson<unknown>(
+      `/v1/swarm/workers/${encodeURIComponent(slug)}`
+    );
+    return toWorkerAgentDetail(payload);
+  }
+
+  async runWorker(
+    slug: string,
+    payload: unknown,
+    options: { idempotencyKey?: string } = {}
+  ): Promise<Record<string, unknown>> {
+    if (!slug.trim()) {
+      throw new Error('Worker slug is required');
+    }
+    return this.requestJson<Record<string, unknown>>(
+      `/v1/swarm/workers/${encodeURIComponent(slug)}/run`,
+      undefined,
+      {
+        method: 'POST',
+        body: payload ?? {},
+        headers: options.idempotencyKey
+          ? { 'idempotency-key': options.idempotencyKey }
+          : undefined,
+      }
+    );
   }
 
   async syncCloudAgents(
@@ -1309,6 +1562,131 @@ export class MswarmApi {
             localAgent.defaultModel ??
               managedConfig.mswarmSelfHosted.modelId ??
               '-',
+            'deleted'
+          )
+        );
+      }
+    }
+
+    return {
+      created: records.filter((record) => record.action === 'created').length,
+      updated: records.filter((record) => record.action === 'updated').length,
+      deleted: records.filter((record) => record.action === 'deleted').length,
+      agents: records,
+    };
+  }
+
+  async syncWorkers(
+    options: ListMswarmWorkerAgentsOptions = {}
+  ): Promise<MswarmSyncSummary> {
+    if (
+      options.pruneMissing &&
+      (options.limit !== undefined || hasAdvancedCloudAgentSelection(options))
+    ) {
+      throw new Error(
+        'pruneMissing cannot be combined with limit or advanced worker filters'
+      );
+    }
+    const agents = await this.listWorkers(options);
+    const syncedAt = new Date().toISOString();
+    const encryptedApiKey = await CryptoHelper.encryptSecret(
+      this.requireApiKey()
+    );
+    const records: MswarmSyncRecord[] = [];
+
+    for (const agent of agents) {
+      const localSlug = toManagedWorkerLocalSlug(
+        this.options.workerAgentSlugPrefix,
+        agent
+      );
+      const existing = await this.repo.getAgentBySlug(localSlug);
+      const remoteSlug = agent.remote_slug ?? agent.slug;
+      if (
+        existing &&
+        (!isManagedMswarmWorkerConfig(existing.config) ||
+          existing.config.mswarmWorker.remoteSlug !== remoteSlug)
+      ) {
+        throw new Error(`Refusing to overwrite non-mswarm agent ${localSlug}`);
+      }
+
+      const existingConfig =
+        existing && isRecord(existing.config)
+          ? (existing.config as Record<string, unknown>)
+          : undefined;
+      const nextConfig = toManagedWorkerConfig(
+        existingConfig,
+        this.options.baseUrl,
+        agent,
+        syncedAt
+      );
+      const createInput = {
+        ...toSyncedAgentInput(existing, agent, localSlug, nextConfig, syncedAt),
+        adapter: 'mswarm-worker',
+        openaiCompatible: false,
+      };
+      const { slug: _ignoredSlug, ...updateInput } = createInput;
+      const stored = existing
+        ? await this.repo.updateAgent(
+            existing.id,
+            updateInput as UpdateAgentInput
+          )
+        : await this.repo.createAgent(createInput);
+      if (!stored) {
+        throw new Error(`Failed to persist synced worker ${localSlug}`);
+      }
+
+      await this.repo.setAgentModels(stored.id, toAgentModels(stored.id, agent));
+      await this.repo.setAgentAuth(stored.id, encryptedApiKey);
+      const existingHealth = existing
+        ? await this.repo.getAgentHealth(existing.id)
+        : undefined;
+      const mappedHealth = toHealthStatus(agent.health_status);
+      if (mappedHealth && shouldReplaceManagedHealth(existingHealth)) {
+        const health: AgentHealth = {
+          agentId: stored.id,
+          status: mappedHealth,
+          lastCheckedAt: syncedAt,
+          details: {
+            source: 'mswarm_worker',
+            remoteSlug,
+            workerId: agent.id ?? agent.slug,
+            remoteHealthStatus: agent.health_status,
+          },
+        };
+        await this.repo.setAgentHealth(health);
+      }
+
+      records.push(
+        toManagedWorkerSyncRecord(
+          nextConfig,
+          localSlug,
+          agent.default_model,
+          existing ? 'updated' : 'created'
+        )
+      );
+    }
+
+    if (options.pruneMissing) {
+      const remoteSlugs = new Set(agents.map((agent) => agent.remote_slug ?? agent.slug));
+      const localAgents = await this.repo.listAgents();
+      for (const localAgent of localAgents) {
+        const managedConfig = isManagedMswarmWorkerConfig(localAgent.config)
+          ? localAgent.config
+          : undefined;
+        if (!managedConfig) continue;
+        if (
+          options.provider &&
+          managedConfig.mswarmWorker.provider !== options.provider
+        ) {
+          continue;
+        }
+        if (remoteSlugs.has(managedConfig.mswarmWorker.remoteSlug)) continue;
+        await this.repo.deleteAgent(localAgent.id);
+        records.push(
+          toManagedWorkerSyncRecord(
+            managedConfig,
+            localAgent.slug,
+            localAgent.defaultModel ?? managedConfig.mswarmWorker.modelId ?? '-',
             'deleted'
           )
         );

@@ -38,19 +38,31 @@ export function normalizeAgentCatalogEntry(
   const config = recordValue(record.config);
   const mswarmCloud = recordValue(config?.mswarmCloud);
   const mswarmSelfHosted = recordValue(config?.mswarmSelfHosted);
-  const sync = recordValue(record.sync) ?? recordValue(mswarmSelfHosted?.sync);
+  const mswarmWorker = recordValue(config?.mswarmWorker);
+  const sync =
+    recordValue(record.sync) ??
+    recordValue(mswarmSelfHosted?.sync) ??
+    recordValue(mswarmWorker?.sync);
   const managedKind =
     fallback.managedKind ??
-    (mswarmCloud ? "cloud" : mswarmSelfHosted ? "self_hosted" : null);
+    (mswarmCloud
+      ? "cloud"
+      : mswarmSelfHosted
+        ? "self_hosted"
+        : mswarmWorker
+          ? "worker"
+          : null);
   const remoteSlug =
     stringValue(record.remoteSlug) ??
     stringValue(record.remote_slug) ??
     stringValue(mswarmCloud?.remoteSlug) ??
-    stringValue(mswarmSelfHosted?.remoteSlug);
+    stringValue(mswarmSelfHosted?.remoteSlug) ??
+    stringValue(mswarmWorker?.remoteSlug);
   const slug =
     stringValue(record.slug) ??
     stringValue(record.agent_slug) ??
     stringValue(mswarmSelfHosted?.agentSlug) ??
+    stringValue(mswarmWorker?.workerId) ??
     remoteSlug ??
     "agent";
   const defaultModel =
@@ -59,7 +71,8 @@ export function normalizeAgentCatalogEntry(
     stringValue(record.defaultModelId) ??
     stringValue(record.model_id) ??
     stringValue(mswarmCloud?.modelId) ??
-    stringValue(mswarmSelfHosted?.modelId);
+    stringValue(mswarmSelfHosted?.modelId) ??
+    stringValue(mswarmWorker?.modelId);
   const model =
     stringValue(record.model) ??
     stringValue(record.modelId) ??
@@ -102,14 +115,17 @@ export function normalizeAgentCatalogEntry(
       stringValue(record.displayName) ??
       stringValue(record.display_name) ??
       stringValue(mswarmCloud?.displayName) ??
-      stringValue(mswarmSelfHosted?.displayName),
+      stringValue(mswarmSelfHosted?.displayName) ??
+      stringValue(mswarmWorker?.displayName),
     provider:
       stringValue(record.provider) ??
       stringValue(mswarmCloud?.provider) ??
-      stringValue(mswarmSelfHosted?.provider),
+      stringValue(mswarmSelfHosted?.provider) ??
+      stringValue(mswarmWorker?.provider),
     adapter:
       stringValue(record.adapter) ??
-      stringValue(mswarmSelfHosted?.adapter),
+      stringValue(mswarmSelfHosted?.adapter) ??
+      (mswarmWorker ? "mswarm-worker" : null),
     model,
     defaultModel,
     healthStatus,
