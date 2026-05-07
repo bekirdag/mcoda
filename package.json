@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.70",
+  "version": "0.1.71",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "private": true,
   "type": "module",
@@ -40,6 +40,7 @@
     "install:local": "node scripts/install-local-packages.js",
     "install:local:bins": "node scripts/install-local-packages.js --bins-only",
     "lint": "pnpm -r run lint",
+    "codali:stream-smoke": "pnpm --filter @mcoda/codali run build && node scripts/codali-stream-smoke.mjs",
     "release:publish:npm": "node scripts/publish-npm-packages.js",
     "release:publish:npm:dry-run": "node scripts/publish-npm-packages.js --dry-run",
     "test": "node tests/all.js",

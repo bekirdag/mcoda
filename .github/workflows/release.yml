@@ -148,5 +148,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
+          MCODA_PUBLISH_AGENT_SETUP: "1"
+          MCODA_PUBLISH_CODALI: "1"
         run: |
           pnpm run release:publish:npm
