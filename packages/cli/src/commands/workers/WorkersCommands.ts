@@ -4,6 +4,7 @@ import {
   type MswarmWorkerAgent,
   type MswarmWorkerAgentDetail,
 } from "@mcoda/core";
+import { readFile } from "node:fs/promises";
 
 interface ParsedArgs {
   flags: Record<string, string | boolean | string[]>;
@@ -16,16 +17,20 @@ Usage: mcoda workers <list|details|sync|run> [options]
 Subcommands:
   list                     List mswarm Workers as mcoda agents (supports --json)
     --limit <N>            Limit returned workers
-    --include-disabled     Include disabled Workers in the catalog result
+    --include-disabled     Include disabled Workers in the catalog result (default)
+    --enabled-only         Hide disabled Workers
   details <SLUG>           Show a single mswarm Worker (supports --json)
   sync                     Sync mswarm Workers into the local mcoda registry
     --limit <N>            Limit synced workers
-    --include-disabled     Sync disabled Workers too
+    --include-disabled     Sync disabled Workers too (default)
+    --enabled-only         Sync active Workers only
     --prune                Remove previously synced Workers missing from the current catalog result
     --agent-slug-prefix <P>
                              Override the local managed-worker slug prefix
   run <SLUG> [TEXT...]     Run a Worker through mswarm
     --input <TEXT>         Worker input text
+    --payload-file <FILE>  Read JSON payload from a file
+    --payload-stdin        Read JSON or text payload from stdin
     --idempotency-key <K>  Forward an idempotency key
 
 Connection options:
@@ -43,6 +48,8 @@ Flags:
   --json                   Emit JSON for supported commands
   --help                   Show this help
 `.trim();
+
+const MAX_WORKER_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
 const parseArgs = (argv: string[]): ParsedArgs => {
   const flags: Record<string, string | boolean | string[]> = {};
@@ -93,6 +100,19 @@ const formatBoolean = (value: boolean | undefined): string =>
 const formatCapabilities = (capabilities: string[] | undefined): string =>
   capabilities && capabilities.length > 0 ? capabilities.join(",") : "-";
 
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+const formatString = (value: unknown): string =>
+  typeof value === "string" && value.trim() ? value.trim() : "-";
+
+const formatWorkerAgent = (worker: MswarmWorkerAgent): string => {
+  const selected = asRecord(worker.worker?.selected_agent);
+  return formatString(selected?.slug ?? selected?.model ?? worker.default_model);
+};
+
 const pad = (value: string, width: number): string => value.padEnd(width, " ");
 
 const renderTable = (headers: string[], rows: string[][]): string => {
@@ -115,18 +135,16 @@ const printWorkerList = (workers: MswarmWorkerAgent[]): void => {
   const rows = workers.map((worker) => [
     worker.slug,
     worker.worker?.name ?? worker.display_name ?? "-",
-    worker.default_model,
-    formatNumber(worker.rating),
-    formatNumber(worker.reasoning_rating),
-    formatNumber(worker.max_complexity),
-    formatBoolean(worker.supports_tools),
-    worker.health_status ?? "-",
-    formatCapabilities(worker.capabilities),
+    formatBoolean(worker.worker?.enabled),
+    worker.worker?.status ?? worker.health_status ?? "-",
+    formatWorkerAgent(worker),
+    formatBoolean(worker.worker?.docdex_enabled),
+    formatString(asRecord(worker.worker?.config_health)?.status),
   ]);
   // eslint-disable-next-line no-console
   console.log(
     renderTable(
-      ["WORKER SLUG", "NAME", "MODEL", "RATING", "REASON", "MAX CPLX", "TOOLS", "HEALTH", "CAPABILITIES"],
+      ["WORKER SLUG", "NAME", "ENABLED", "STATUS", "AGENT", "DOCDEX", "CONFIG"],
       rows,
     ),
   );
@@ -170,6 +188,66 @@ const printSyncSummary = (summary: MswarmSyncSummary): void => {
   console.log(renderTable(["REMOTE SLUG", "LOCAL SLUG", "ACTION", "MODEL"], rows));
 };
 
+const ensurePayloadSize = (raw: string, label: string): void => {
+  const bytes = Buffer.byteLength(raw, "utf8");
+  if (bytes > MAX_WORKER_PAYLOAD_BYTES) {
+    throw new Error(`${label} exceeds ${MAX_WORKER_PAYLOAD_BYTES} bytes`);
+  }
+};
+
+const readStdin = async (): Promise<string> =>
+  new Promise((resolve, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+      if (Buffer.byteLength(data, "utf8") > MAX_WORKER_PAYLOAD_BYTES) {
+        reject(new Error(`stdin payload exceeds ${MAX_WORKER_PAYLOAD_BYTES} bytes`));
+      }
+    });
+    process.stdin.on("error", reject);
+    process.stdin.on("end", () => resolve(data));
+  });
+
+const parsePayloadText = (raw: string, label: string): unknown => {
+  ensurePayloadSize(raw, label);
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return {};
+  }
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch (error) {
+      throw new Error(`${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { text: raw };
+};
+
+const resolveRunPayload = async (parsed: ParsedArgs): Promise<unknown> => {
+  const sources = [
+    resolveString(parsed.flags["payload-file"]) !== undefined,
+    parsed.flags["payload-stdin"] === true,
+    resolveString(parsed.flags.input) !== undefined || parsed.positionals.length > 1,
+  ].filter(Boolean).length;
+  if (sources > 1) {
+    throw new Error("Use only one of --payload-file, --payload-stdin, --input, or positional TEXT");
+  }
+  const payloadFile = resolveString(parsed.flags["payload-file"]);
+  if (payloadFile) {
+    return parsePayloadText(await readFile(payloadFile, "utf8"), "--payload-file");
+  }
+  if (parsed.flags["payload-stdin"] === true) {
+    return parsePayloadText(await readStdin(), "--payload-stdin");
+  }
+  const input = resolveString(parsed.flags.input) ?? parsed.positionals.slice(1).join(" ");
+  return { text: input };
+};
+
+const resolveIncludeDisabled = (parsed: ParsedArgs): boolean =>
+  parsed.flags["enabled-only"] === true ? false : true;
+
 export class WorkersCommands {
   static async run(argv: string[]): Promise<void> {
     const [rawSubcommand, ...rest] = argv;
@@ -191,9 +269,9 @@ export class WorkersCommands {
     try {
       switch (subcommand) {
         case "list": {
-          const workers = await api.listWorkers({
+          const workers = await api.listAllWorkers({
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
-            includeDisabled: Boolean(parsed.flags["include-disabled"]),
+            includeDisabled: resolveIncludeDisabled(parsed),
           });
           if (parsed.flags.json) {
             // eslint-disable-next-line no-console
@@ -218,7 +296,7 @@ export class WorkersCommands {
         case "sync": {
           const summary = await api.syncWorkers({
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
-            includeDisabled: Boolean(parsed.flags["include-disabled"]),
+            includeDisabled: resolveIncludeDisabled(parsed),
             pruneMissing: Boolean(parsed.flags.prune),
           });
           if (parsed.flags.json) {
@@ -232,10 +310,9 @@ export class WorkersCommands {
         case "run": {
           const slug = parsed.positionals[0];
           if (!slug) throw new Error("Usage: mcoda workers run <SLUG> [TEXT...]");
-          const input = resolveString(parsed.flags.input) ?? parsed.positionals.slice(1).join(" ");
           const result = await api.runWorker(
             slug,
-            { text: input },
+            await resolveRunPayload(parsed),
             { idempotencyKey: resolveString(parsed.flags["idempotency-key"]) },
           );
           if (parsed.flags.json) {

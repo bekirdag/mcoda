@@ -10,6 +10,7 @@ import { createProvider } from "../providers/ProviderRegistry.js";
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
 import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
 import { CodexCliProvider } from "../providers/CodexCliProvider.js";
+import { MswarmWorkerProvider } from "../providers/MswarmWorkerProvider.js";
 import type {
   AgentEvent,
   AgentStatusPhase,
@@ -767,6 +768,9 @@ const createRuntimeProvider = (input: CodaliRuntimeProviderInput): Provider => {
   }
   if (input.name === "codex-cli") {
     return new CodexCliProvider(config);
+  }
+  if (input.name === "mswarm-worker") {
+    return new MswarmWorkerProvider(config);
   }
   return createProvider(input.name, config);
 };

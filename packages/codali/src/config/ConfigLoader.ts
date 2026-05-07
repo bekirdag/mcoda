@@ -774,6 +774,10 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
     parseBoolean(env.CODALI_SECURITY_ALLOW_CLOUD_MODELS) ??
     parseBoolean(env.CODALI_ALLOW_CLOUD_MODELS);
   if (allowCloudModels !== undefined) security.allowCloudModels = allowCloudModels;
+  const allowWorkers =
+    parseBoolean(env.CODALI_SECURITY_ALLOW_WORKERS) ??
+    parseBoolean(env.CODALI_ALLOW_WORKERS);
+  if (allowWorkers !== undefined) security.allowWorkers = allowWorkers;
 
   const builder: Partial<BuilderConfig> = {};
   const builderMode = env.CODALI_BUILDER_MODE;

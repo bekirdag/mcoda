@@ -49,6 +49,7 @@ export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
 export interface MswarmWorkerAgent extends MswarmCloudAgent {
   id?: string;
   remote_slug?: string;
+  updated_at?: string;
   adapter?: string;
   source?: string;
   worker?: {
@@ -98,6 +99,15 @@ export interface ListMswarmSelfHostedAgentsOptions
 export interface ListMswarmWorkerAgentsOptions
   extends ListMswarmCloudAgentsOptions {
   includeDisabled?: boolean;
+  cursor?: string;
+  updatedAfter?: string;
+}
+
+export interface MswarmWorkerCatalogPage {
+  workers: MswarmWorkerAgent[];
+  next_cursor: string | null;
+  generated_at?: string;
+  total?: number;
 }
 
 export interface MswarmApiOptions {
@@ -254,6 +264,8 @@ interface ListMswarmCloudAgentsResponse {
 interface ListMswarmWorkersResponse extends ListMswarmCloudAgentsResponse {
   workers?: unknown;
   next_cursor?: unknown;
+  generated_at?: unknown;
+  total?: unknown;
 }
 
 const DEFAULT_BASE_URL = 'https://api.mswarm.org/';
@@ -927,6 +939,7 @@ const toWorkerAgent = (value: unknown): MswarmWorkerAgent => {
     ...agent,
     id: resolveString(record.id),
     remote_slug: resolveString(record.remote_slug),
+    updated_at: resolveTimestamp(record.updated_at),
     adapter: resolveString(record.adapter),
     source: resolveString(record.source),
     worker: isRecord(record.worker) ? record.worker : undefined,
@@ -954,9 +967,9 @@ const hasAdvancedCloudAgentSelection = (
   options.minReasoningRating !== undefined ||
   options.sortByCatalogRating === true;
 
-const sortCloudAgentsByCatalogRating = (
-  agents: MswarmCloudAgent[]
-): MswarmCloudAgent[] =>
+const sortCloudAgentsByCatalogRating = <T extends MswarmCloudAgent>(
+  agents: T[]
+): T[] =>
   [...agents].sort((left, right) => {
     const ratingDelta =
       (right.rating ?? Number.NEGATIVE_INFINITY) -
@@ -965,10 +978,10 @@ const sortCloudAgentsByCatalogRating = (
     return left.slug.localeCompare(right.slug);
   });
 
-const applyCloudAgentListOptions = (
-  agents: MswarmCloudAgent[],
+const applyCloudAgentListOptions = <T extends MswarmCloudAgent>(
+  agents: T[],
   options: ListMswarmCloudAgentsOptions
-): MswarmCloudAgent[] => {
+): T[] => {
   const maxCostPerMillion = normalizeOptionalNonNegativeNumber(
     options.maxCostPerMillion,
     'maxCostPerMillion'
@@ -1219,17 +1232,20 @@ export class MswarmApi {
   }
 
   private async listWorkerAgentPage(
-    options: ListMswarmWorkerAgentsOptions = {},
-    cursor?: string
-  ): Promise<{ agents: MswarmWorkerAgent[]; nextCursor?: string }> {
+    options: ListMswarmWorkerAgentsOptions = {}
+  ): Promise<MswarmWorkerCatalogPage> {
+    const query: Record<string, string | number | undefined> = {
+      shape: 'mcoda',
+      limit: options.limit,
+      cursor: options.cursor,
+      updated_after: options.updatedAfter,
+    };
+    if (options.includeDisabled !== undefined) {
+      query.include_disabled = options.includeDisabled ? 'true' : 'false';
+    }
     const payload = await this.requestJson<ListMswarmWorkersResponse>(
       '/v1/swarm/workers',
-      {
-        shape: 'mcoda',
-        limit: options.limit,
-        cursor,
-        include_disabled: options.includeDisabled ? 'true' : undefined,
-      }
+      query
     );
     const values = Array.isArray(payload.agents)
       ? payload.agents
@@ -1237,8 +1253,10 @@ export class MswarmApi {
         ? payload.workers
         : [];
     return {
-      agents: values.map(toWorkerAgent),
-      nextCursor: resolveString(payload.next_cursor),
+      workers: values.map(toWorkerAgent),
+      next_cursor: resolveString(payload.next_cursor) ?? null,
+      generated_at: resolveTimestamp(payload.generated_at),
+      total: resolveNumber(payload.total),
     };
   }
 
@@ -1251,27 +1269,32 @@ export class MswarmApi {
     const collected: MswarmWorkerAgent[] = [];
     let cursor: string | undefined;
     do {
-      const page = await this.listWorkerAgentPage(
-        { ...options, limit: pageLimit },
-        cursor
-      );
-      collected.push(...page.agents);
-      cursor = page.nextCursor;
+      const page = await this.listWorkerAgentPage({
+        ...options,
+        limit: pageLimit,
+        cursor,
+      });
+      collected.push(...page.workers);
+      cursor = page.next_cursor ?? undefined;
       if (requestedLimit !== undefined && collected.length >= requestedLimit) {
-        return collected.slice(0, requestedLimit);
+        return applyCloudAgentListOptions(collected.slice(0, requestedLimit), options);
       }
     } while (cursor);
-    return collected;
+    return applyCloudAgentListOptions(collected, options);
   }
 
   async listWorkers(
     options: ListMswarmWorkerAgentsOptions = {}
-  ): Promise<MswarmWorkerAgent[]> {
-    let agents = await this.listAllWorkers(options);
+  ): Promise<MswarmWorkerCatalogPage> {
+    const page = await this.listWorkerAgentPage(options);
+    let agents = page.workers;
     if (options.provider) {
       agents = agents.filter((agent) => agent.provider === options.provider);
     }
-    return applyCloudAgentListOptions(agents, options);
+    return {
+      ...page,
+      workers: applyCloudAgentListOptions(agents, options),
+    };
   }
 
   async getWorker(slug: string): Promise<MswarmWorkerAgentDetail> {
@@ -1581,13 +1604,17 @@ export class MswarmApi {
   ): Promise<MswarmSyncSummary> {
     if (
       options.pruneMissing &&
-      (options.limit !== undefined || hasAdvancedCloudAgentSelection(options))
+      (options.limit !== undefined ||
+        options.cursor !== undefined ||
+        options.updatedAfter !== undefined ||
+        options.includeDisabled === false ||
+        hasAdvancedCloudAgentSelection(options))
     ) {
       throw new Error(
-        'pruneMissing cannot be combined with limit or advanced worker filters'
+        'pruneMissing cannot be combined with partial worker catalog filters'
       );
     }
-    const agents = await this.listWorkers(options);
+    const agents = await this.listAllWorkers(options);
     const syncedAt = new Date().toISOString();
     const encryptedApiKey = await CryptoHelper.encryptSecret(
       this.requireApiKey()

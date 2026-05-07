@@ -91,6 +91,7 @@ export interface SecurityConfig {
   readOnlyPaths: string[];
   allowDocEdits: boolean;
   allowCloudModels: boolean;
+  allowWorkers: boolean;
 }
 
 export interface BuilderConfig {
@@ -392,6 +393,7 @@ export const DEFAULT_SECURITY: SecurityConfig = {
   ],
   allowDocEdits: false,
   allowCloudModels: false,
+  allowWorkers: false,
 };
 
 export const DEFAULT_BUILDER: BuilderConfig = {

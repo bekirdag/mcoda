@@ -21,6 +21,7 @@ import type {
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
 import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
 import { CodexCliProvider } from "../providers/CodexCliProvider.js";
+import { MswarmWorkerProvider } from "../providers/MswarmWorkerProvider.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
 import { createDiffTool } from "../tools/diff/DiffTool.js";
@@ -1161,6 +1162,11 @@ const registerBuiltins = () => {
     // ignore duplicate registrations
   }
   try {
+    registerProvider("mswarm-worker", (config: ProviderConfig) => new MswarmWorkerProvider(config));
+  } catch {
+    // ignore duplicate registrations
+  }
+  try {
     registerProvider("stub", () => new StubProvider());
   } catch {
     // ignore duplicate registrations
@@ -1627,6 +1633,7 @@ export class RunCommand {
               builderMode: config.builder.mode,
               fallbackAgent: resolvedAgent,
               allowCloudModels: config.security.allowCloudModels,
+              allowWorkers: config.security.allowWorkers,
               excludeAgentIds: phaseExclusions,
             })
           : {
@@ -2107,6 +2114,7 @@ export class RunCommand {
               builderMode: config.builder.mode,
               fallbackAgent: resolvedAgent,
               allowCloudModels: config.security.allowCloudModels,
+              allowWorkers: config.security.allowWorkers,
               excludeAgentIds: {
                 ...phaseExclusions,
                 [phase]: currentExcluded,

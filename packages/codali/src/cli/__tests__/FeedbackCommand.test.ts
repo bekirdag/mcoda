@@ -43,6 +43,7 @@ const makeConfig = (): CodaliConfig =>
       readOnlyPaths: [],
       allowDocEdits: false,
       allowCloudModels: false,
+      allowWorkers: false,
     },
     builder: {
       mode: "patch_json",

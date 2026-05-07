@@ -24,6 +24,7 @@ export interface PhaseAgentSelectionOptions {
   builderMode: BuilderConfig["mode"];
   fallbackAgent?: ResolvedAgentConfig;
   allowCloudModels?: boolean;
+  allowWorkers?: boolean;
   excludeAgentIds?: Partial<Record<PipelinePhase, string[]>>;
 }
 
@@ -101,6 +102,20 @@ const isManagedMswarmCloudAgent = (agent: Agent): boolean => {
   );
 };
 
+const isManagedMswarmWorkerAgent = (agent: Agent): boolean => {
+  const config = agent.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return false;
+  }
+  const managed = (config as Record<string, unknown>).mswarmWorker;
+  return Boolean(
+    managed &&
+      typeof managed === "object" &&
+      !Array.isArray(managed) &&
+      (managed as Record<string, unknown>).managed === true,
+  );
+};
+
 const isCloudModel = (agent: Agent): boolean => {
   if (isManagedMswarmCloudAgent(agent)) {
     return true;
@@ -109,6 +124,10 @@ const isCloudModel = (agent: Agent): boolean => {
 };
 
 const normalizeAdapter = (adapter?: string): string => (adapter ?? "").trim().toLowerCase();
+
+const isWorkerAgent = (agent: Agent): boolean =>
+  normalizeAdapter(agent.adapter) === "mswarm-worker" ||
+  isManagedMswarmWorkerAgent(agent);
 
 const requiresConfiguredAuth = (agent: Agent): boolean =>
   ADAPTERS_REQUIRING_AUTH.has(normalizeAdapter(agent.adapter));
@@ -265,6 +284,7 @@ export const selectPhaseAgents = async (
       for (const agent of agents) {
         if (excludedIds.has(agent.id)) continue;
         if (!agent.defaultModel) continue;
+        if (!options.allowWorkers && isWorkerAgent(agent)) continue;
         if (!options.allowCloudModels && isCloudModel(agent)) continue;
         const readiness = await getReadiness(agent);
         if (readiness.healthStatus === "unreachable") continue;

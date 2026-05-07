@@ -120,7 +120,7 @@ export function createProgrammaticMcodaRuntimeAdapter(
     },
     async listWorkerAgents(options) {
       return withMswarmApi(async (api) => {
-        const agents = await api.listWorkers(toWorkerOptions(options));
+        const agents = await api.listAllWorkers(toWorkerOptions(options));
         return agents.map((agent) =>
           normalizeAgentCatalogEntry(agent, {
             source: "worker_catalog",
@@ -214,7 +214,7 @@ function toWorkerOptions(
   options: McodaAgentListInput | undefined
 ): ListMswarmWorkerAgentsOptions {
   return {
-    includeDisabled: options?.includeUnreachable ?? false,
+    includeDisabled: options?.includeUnreachable ?? true,
   };
 }
 
@@ -222,7 +222,7 @@ function toWorkerSyncOptions(
   options: McodaAgentSyncInput | undefined
 ): ListMswarmWorkerAgentsOptions {
   return {
-    includeDisabled: options?.includeUnreachable ?? false,
+    includeDisabled: options?.includeUnreachable ?? true,
     pruneMissing: options?.pruneMissing ?? true,
   };
 }

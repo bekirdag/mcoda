@@ -7,6 +7,7 @@ import {
 } from "../AdapterTypes.js";
 
 const MAX_RESPONSE_DETAIL_CHARS = 500;
+const SENSITIVE_METADATA_KEY = /(?:secret|token|api[_-]?key|encryption[_-]?key|repo[_-]?(?:id|key))/i;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,6 +77,50 @@ const resolveIdempotencyKey = (
   resolveString(metadata?.idempotency_key) ??
   resolveString(metadata?.runId) ??
   resolveString(metadata?.run_id);
+
+function sanitizeMetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeMetadataValue(entry));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SENSITIVE_METADATA_KEY.test(key)) {
+      continue;
+    }
+    sanitized[key] = sanitizeMetadataValue(child);
+  }
+  return sanitized;
+}
+
+function buildResponseSummary(
+  payload: Record<string, unknown>,
+  result: Record<string, unknown>
+): Record<string, unknown> {
+  const summary: Record<string, unknown> = {
+    runId: resolveString(payload.run_id) ?? resolveString(payload.runId),
+    requestId: resolveString(payload.request_id) ?? resolveString(payload.requestId),
+    status: resolveString(payload.status),
+    accepted: resolveBoolean(payload.accepted),
+    agent: sanitizeMetadataValue(payload.agent),
+  };
+  const resultMetadata = isRecord(result.runtime_metadata)
+    ? result.runtime_metadata
+    : isRecord(result.metadata)
+      ? result.metadata
+      : undefined;
+  if (resultMetadata) {
+    summary.resultMetadata = sanitizeMetadataValue(resultMetadata);
+  }
+  for (const [key, value] of Object.entries(summary)) {
+    if (value === undefined) {
+      delete summary[key];
+    }
+  }
+  return summary;
+}
 
 export class MswarmWorkerAdapter implements AgentAdapter {
   private readonly worker: Record<string, unknown>;
@@ -153,6 +198,7 @@ export class MswarmWorkerAdapter implements AgentAdapter {
       );
     }
     const result = isRecord(payload.result) ? payload.result : {};
+    const responseSummary = buildResponseSummary(payload, result);
     return {
       output: parseWorkerOutput(payload),
       adapter: "mswarm-worker",
@@ -166,7 +212,7 @@ export class MswarmWorkerAdapter implements AgentAdapter {
           workerId: resolveString(this.worker.workerId),
           remoteSlug: resolveString(this.worker.remoteSlug),
           durationMs: Date.now() - started,
-          response: payload,
+          responseSummary,
         },
       },
     };

@@ -275,6 +275,70 @@ test("selectPhaseAgents treats managed mswarm agents as cloud-gated candidates",
   });
 });
 
+test("selectPhaseAgents gates managed worker agents unless explicitly allowed or pinned", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const localArchitect = await repo.createAgent({
+        slug: "local-worker-safe-architect",
+        adapter: "ollama-remote",
+        defaultModel: "qwen3-coder:latest",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 7,
+        reasoningRating: 7,
+        costPerMillion: 0,
+        bestUsage: "system_architecture",
+      });
+      await repo.setAgentCapabilities(localArchitect.id, ["plan", "system_architecture"]);
+
+      const managedWorker = await repo.createAgent({
+        slug: "mswarm-worker-client-intake",
+        adapter: "mswarm-worker",
+        defaultModel: "mswarm-worker:worker_client_intake",
+        rating: 10,
+        reasoningRating: 10,
+        costPerMillion: 0,
+        bestUsage: "system_architecture",
+        config: {
+          mswarmWorker: {
+            managed: true,
+            remoteSlug: "mswarm/workers/worker_client_intake",
+            workerId: "worker_client_intake",
+            apiRunUrl: "https://api.mswarm.test/v1/swarm/workers/worker_client_intake/run",
+          },
+        },
+      });
+      await repo.setAgentCapabilities(managedWorker.id, ["plan", "system_architecture"]);
+      await repo.setAgentAuth(managedWorker.id, await CryptoHelper.encryptSecret("worker-key"));
+    } finally {
+      await repo.close();
+    }
+
+    const withoutWorkers = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "freeform",
+      allowWorkers: false,
+    });
+    assert.equal(withoutWorkers.architect.agent?.slug, "local-worker-safe-architect");
+
+    const withWorkers = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "freeform",
+      allowWorkers: true,
+    });
+    assert.equal(withWorkers.architect.agent?.slug, "mswarm-worker-client-intake");
+    assert.equal(withWorkers.architect.resolved?.provider, "mswarm-worker");
+
+    const pinnedWorker = await selectPhaseAgents({
+      overrides: { architect: "mswarm-worker-client-intake" },
+      builderMode: "freeform",
+      allowWorkers: false,
+    });
+    assert.equal(pinnedWorker.architect.agent?.slug, "mswarm-worker-client-intake");
+    assert.equal(pinnedWorker.architect.source, "override");
+  });
+});
+
 test("selectPhaseAgents still prefers structured patch builders when unstructured options are cheaper", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const repo = await GlobalRepository.create();

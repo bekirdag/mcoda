@@ -425,7 +425,7 @@ test(
 );
 
 test(
-  'MswarmApi.listWorkers paginates worker catalog results',
+  'MswarmApi.listWorkers returns one worker page and listAllWorkers paginates',
   { concurrency: false },
   async () => {
     await withTempHome(async () => {
@@ -435,16 +435,26 @@ test(
           assert.equal(req.headers['x-api-key'], 'worker-key');
           assert.equal(url.pathname, '/v1/swarm/workers');
           assert.equal(url.searchParams.get('shape'), 'mcoda');
+          if (url.searchParams.get('updated_after')) {
+            assert.equal(
+              url.searchParams.get('updated_after'),
+              '2026-05-07T09:00:00.000Z'
+            );
+            assert.equal(url.searchParams.get('include_disabled'), 'false');
+          }
           if (!url.searchParams.get('cursor')) {
             res.writeHead(200, { 'content-type': 'application/json' });
             res.end(
               JSON.stringify({
+                generated_at: '2026-05-07T09:30:00.000Z',
+                total: 2,
                 agents: [
                   {
                     slug: 'worker_abc123',
                     remote_slug: 'mswarm/workers/worker_abc123',
                     provider: 'mswarm',
                     adapter: 'mswarm-worker',
+                    updated_at: '2026-05-07T09:05:00.000Z',
                     default_model: 'mswarm-worker:worker_abc123',
                     supports_tools: true,
                     capabilities: ['structured_output'],
@@ -461,6 +471,8 @@ test(
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(
             JSON.stringify({
+              generated_at: '2026-05-07T09:30:01.000Z',
+              total: 2,
               agents: [
                 {
                   slug: 'worker_def456',
@@ -481,7 +493,21 @@ test(
         async (baseUrl) => {
           const api = await MswarmApi.create({ baseUrl, apiKey: 'worker-key' });
           try {
-            const workers = await api.listWorkers();
+            const page = await api.listWorkers({
+              limit: 1,
+              includeDisabled: false,
+              updatedAfter: '2026-05-07T09:00:00.000Z',
+            });
+            assert.deepEqual(
+              page.workers.map((worker) => worker.slug),
+              ['worker_abc123']
+            );
+            assert.equal(page.next_cursor, 'cursor-2');
+            assert.equal(page.total, 2);
+            assert.equal(page.generated_at, '2026-05-07T09:30:00.000Z');
+            assert.equal(page.workers[0]?.updated_at, '2026-05-07T09:05:00.000Z');
+
+            const workers = await api.listAllWorkers();
             assert.deepEqual(
               workers.map((worker) => worker.slug),
               ['worker_abc123', 'worker_def456']
@@ -587,6 +613,39 @@ test(
           }
         }
       );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncWorkers rejects pruneMissing with partial worker catalog filters',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      const api = await MswarmApi.create({
+        baseUrl: 'http://127.0.0.1:1',
+        apiKey: 'worker-key',
+      });
+      try {
+        await assert.rejects(
+          () => api.syncWorkers({ pruneMissing: true, limit: 1 }),
+          /partial worker catalog filters/
+        );
+        await assert.rejects(
+          () =>
+            api.syncWorkers({
+              pruneMissing: true,
+              updatedAfter: '2026-05-07T09:00:00.000Z',
+            }),
+          /partial worker catalog filters/
+        );
+        await assert.rejects(
+          () => api.syncWorkers({ pruneMissing: true, includeDisabled: false }),
+          /partial worker catalog filters/
+        );
+      } finally {
+        await api.close();
+      }
     });
   }
 );

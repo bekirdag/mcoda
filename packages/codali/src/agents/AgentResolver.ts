@@ -17,8 +17,8 @@ export interface ResolvedAgentConfig {
   requiresApiKey: boolean;
 }
 
-const PROVIDERS_REQUIRING_API_KEY = new Set(["openai-compatible"]);
-const PROVIDERS_REQUIRING_BASE_URL = new Set(["ollama-remote"]);
+const PROVIDERS_REQUIRING_API_KEY = new Set(["openai-compatible", "mswarm-worker"]);
+const PROVIDERS_REQUIRING_BASE_URL = new Set(["ollama-remote", "mswarm-worker"]);
 const SESSION_AUTH_ADAPTERS = new Set(["codex-cli", "openai-cli", "gemini-cli"]);
 const UNSUPPORTED_CODALI_ADAPTERS = new Set(["gemini-cli", "zhipu-api"]);
 
@@ -26,9 +26,23 @@ const resolveString = (value: unknown): string | undefined => {
   return typeof value === "string" && value.trim() ? value : undefined;
 };
 
+const readRecord = (
+  value: unknown,
+  key: string,
+): Record<string, unknown> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const child = (value as Record<string, unknown>)[key];
+  return child && typeof child === "object" && !Array.isArray(child)
+    ? (child as Record<string, unknown>)
+    : undefined;
+};
+
 const resolveBaseUrl = (agent: Agent): string | undefined => {
   const config = (agent.config ?? {}) as Record<string, unknown>;
+  const worker = readRecord(config, "mswarmWorker");
   return (
+    resolveString(worker?.apiRunUrl) ??
+    resolveString(worker?.api_run_url) ??
     resolveString(config.baseUrl) ??
     resolveString(config.endpoint) ??
     resolveString(config.apiBaseUrl)
@@ -58,6 +72,9 @@ export const resolveProviderFromAdapter = (
   }
   if (["ollama-remote", "ollama-cli", "local-model"].includes(adapter)) {
     return { provider: "ollama-remote", requiresApiKey: false };
+  }
+  if (adapter === "mswarm-worker") {
+    return { provider: "mswarm-worker", requiresApiKey: true };
   }
   throw new Error(
     `CODALI_UNSUPPORTED_ADAPTER: ${adapter} is not supported; configure a codali provider explicitly or choose a different agent.`,

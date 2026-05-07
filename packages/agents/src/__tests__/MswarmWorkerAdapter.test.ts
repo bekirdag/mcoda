@@ -64,7 +64,17 @@ test("MswarmWorkerAdapter invokes the Worker run URL with auth and idempotency h
     return new Response(
       JSON.stringify({
         run_id: "worker-run-1",
-        result: { output: "{\"ok\":true}" },
+        result: {
+          output: "{\"ok\":true}",
+          runtime_metadata: {
+            docdex: {
+              enabled: true,
+              repo_id: "repo-secret",
+              repo_key: "key-secret",
+              ingested_count: 1,
+            },
+          },
+        },
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
@@ -82,4 +92,12 @@ test("MswarmWorkerAdapter invokes the Worker run URL with auth and idempotency h
   assert.equal(result.output, "{\"ok\":true}");
   assert.equal(result.adapter, "mswarm-worker");
   assert.equal((result.metadata as any)?.mswarmWorker?.remoteSlug, "worker_client_intake");
+  assert.equal((result.metadata as any)?.mswarmWorker?.response, undefined);
+  assert.deepEqual(
+    (result.metadata as any)?.mswarmWorker?.responseSummary?.resultMetadata?.docdex,
+    {
+      enabled: true,
+      ingested_count: 1,
+    },
+  );
 });
