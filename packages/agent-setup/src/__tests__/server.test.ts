@@ -58,9 +58,42 @@ test("server helper configures key and syncs agents without requiring mcoda CLI"
   assert.equal(snapshot.runtime.requiresMcodaCli, false);
   assert.equal(snapshot.mswarmApiKeyConfigured, true);
   assert.equal(snapshot.mswarmApiKeyLast4, "7890");
+  assert.equal(snapshot.mswarmConnection, null);
   assert.equal(snapshot.catalog.localAgents.length, 1);
   assert.equal(snapshot.catalog.localAgents[0].slug, "mswarm-cloud-openrouter-qwen");
   assert.doesNotMatch(JSON.stringify(snapshot), /sk_live_test_7890/);
+});
+
+test("server helper stores non-secret mswarm connection metadata", async () => {
+  const service = createMcodaAgentSetupService({
+    settingsStore: createInMemoryMcodaAgentSettingsStore(),
+    mcoda: createInMemoryMcodaRuntimeAdapter({ cloudAgents: [remoteCloud] }),
+    defaultStages: stages,
+  });
+  const snapshot = await service.configureMswarmApiKey({
+    apiKey: "sk_live_user_scoped_7890",
+    connection: {
+      tenantId: "tenant-bdya",
+      productSlug: "bdya",
+      apiKeyId: "api-key-123",
+      ownerUserId: "user-bekir",
+      ownerKeycloakUserId: "kc-bekir",
+      featureKey: "okacam-employee-line-items",
+      installationId: "install-123",
+      installationStatus: "active",
+      validationMode: "skip",
+    },
+  });
+  assert.equal(snapshot.mswarmConnection?.tenantId, "tenant-bdya");
+  assert.equal(snapshot.mswarmConnection?.productSlug, "bdya");
+  assert.equal(snapshot.mswarmConnection?.apiKeyId, "api-key-123");
+  assert.equal(snapshot.mswarmConnection?.ownerUserId, "user-bekir");
+  assert.equal(snapshot.mswarmConnection?.ownerKeycloakUserId, "kc-bekir");
+  assert.equal(snapshot.mswarmConnection?.featureKey, "okacam-employee-line-items");
+  assert.equal(snapshot.mswarmConnection?.installationId, "install-123");
+  assert.equal(snapshot.mswarmConnection?.installationStatus, "active");
+  assert.equal(snapshot.mswarmConnection?.validationStatus, "unverified");
+  assert.doesNotMatch(JSON.stringify(snapshot), /sk_live_user_scoped_7890/);
 });
 
 test("server helper validates assignments against local registry", async () => {
@@ -213,11 +246,23 @@ test("HTTP handler routes recommended backend endpoints", async () => {
     path: "/api/mcoda/mswarm-api-key",
     body: {
       mswarm_api_key: "sk_http_4567",
+      mswarm_connection: {
+        tenant_id: "tenant-okacam",
+        product_slug: "okacam",
+        api_key_id: "api-key-http",
+        owner_user_id: "user-bekir",
+        feature_key: "okacam-badges",
+        installation_id: "install-http",
+        installation_status: "active",
+        validation_mode: "skip",
+      },
       reason_code: "configure",
     },
   });
   assert.equal(saveKey.status, 200);
   assert.equal((saveKey.body as any).mswarmApiKeyLast4, "4567");
+  assert.equal((saveKey.body as any).mswarmConnection.tenantId, "tenant-okacam");
+  assert.equal((saveKey.body as any).mswarmConnection.featureKey, "okacam-badges");
   assert.doesNotMatch(JSON.stringify(saveKey.body), /sk_http_4567/);
 
   const patch = await handler({
@@ -279,6 +324,73 @@ test("programmatic runtime reads injected config store for later API calls", asy
     await adapter.configureMswarmApiKey({ apiKey: "sk_store_9999" });
     await adapter.listCloudAgents();
     assert.equal((capturedOptions as any).apiKey, "sk_store_9999");
+  } finally {
+    (MswarmApi as any).create = originalCreate;
+    (MswarmApi as any).refreshManagedAgentAuth = originalRefresh;
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("programmatic runtime validates submitted connection identity", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-agent-setup-identity-"));
+  const store = new MswarmConfigStore(path.join(tempDir, "config.json"));
+  const originalCreate = MswarmApi.create;
+  const originalRefresh = MswarmApi.refreshManagedAgentAuth;
+  (MswarmApi as any).create = async () => ({
+    async close() {},
+    async getRuntimeIdentity() {
+      return {
+        tenantId: "tenant-bdya",
+        productSlug: "bdya",
+        apiKeyId: "api-key-123",
+        subscriptionId: "sub-123",
+        asOf: "2026-05-23T00:00:00.000Z",
+        usageLimits: {
+          product_slug: "bdya",
+          tenant_id: "tenant-bdya",
+          api_key_id: "api-key-123",
+          subscription_id: "sub-123",
+          budgets: [],
+          as_of: "2026-05-23T00:00:00.000Z",
+        },
+      };
+    },
+  });
+  (MswarmApi as any).refreshManagedAgentAuth = async () => ({
+    updated: 0,
+    agents: [],
+  });
+  try {
+    const adapter = createProgrammaticMcodaRuntimeAdapter({ store });
+    const connection = await adapter.configureMswarmApiKey({
+      apiKey: "sk_store_9999",
+      connection: {
+        tenantId: "tenant-bdya",
+        productSlug: "bdya",
+        apiKeyId: "api-key-123",
+        ownerUserId: "user-bekir",
+        featureKey: "okacam-badges",
+        validationMode: "required",
+      },
+    });
+    assert.equal(connection?.validationStatus, "verified");
+    assert.equal(connection?.tenantId, "tenant-bdya");
+    assert.equal(connection?.productSlug, "bdya");
+    assert.equal(connection?.apiKeyId, "api-key-123");
+    assert.equal(connection?.ownerUserId, "user-bekir");
+    assert.equal(connection?.featureKey, "okacam-badges");
+    await assert.rejects(
+      () =>
+        adapter.configureMswarmApiKey({
+          apiKey: "sk_store_9999",
+          connection: {
+            tenantId: "tenant-wrong",
+            productSlug: "bdya",
+            validationMode: "required",
+          },
+        }),
+      /tenantId expected tenant-wrong/
+    );
   } finally {
     (MswarmApi as any).create = originalCreate;
     (MswarmApi as any).refreshManagedAgentAuth = originalRefresh;

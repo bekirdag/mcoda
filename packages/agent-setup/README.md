@@ -15,6 +15,12 @@ a preinstalled or configured `mcoda` CLI/client tool. When an admin submits a
 real mswarm API key through `configureMswarmApiKey()`, subsequent cloud and
 self-hosted catalog reads use the real mswarm API via `MswarmApi`.
 
+For user-scoped mswarm integrations, `configureMswarmApiKey()` can receive
+non-secret connection metadata such as tenant ID, product slug, owner user ID,
+feature key, and installation ID. The default runtime validates tenant,
+product, and API-key identity against mswarm runtime usage limits when
+available, then exposes the stored metadata as `snapshot.mswarmConnection`.
+
 React consumers can use the packaged default stylesheet:
 
 ```ts

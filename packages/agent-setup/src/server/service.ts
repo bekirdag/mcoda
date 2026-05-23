@@ -11,6 +11,8 @@ import type {
   McodaAgentSetupServerOptions,
   McodaAgentSetupService,
   McodaAgentSetupSnapshot,
+  McodaMswarmConnectionInput,
+  McodaMswarmConnectionMetadata,
   McodaStageDefinition,
 } from "../types.js";
 
@@ -127,6 +129,7 @@ export function createMcodaAgentSetupService(
       mswarmApiKeyConfigured: settings.mswarmApiKeyConfigured,
       mswarmApiKeyLast4: settings.mswarmApiKeyLast4,
       mswarmConfiguredAt: settings.mswarmConfiguredAt,
+      mswarmConnection: settings.mswarmConnection ?? null,
       stages,
       assignments: {
         ...initialAssignments(stages),
@@ -149,12 +152,16 @@ export function createMcodaAgentSetupService(
       if (!apiKey) {
         throw new Error("mswarm api key is required");
       }
-      await runtime.configureMswarmApiKey(input);
+      const connection = await runtime.configureMswarmApiKey({
+        ...input,
+        apiKey,
+      });
       const configuredAt = new Date().toISOString();
       await options.settingsStore.saveMswarmKeyMetadata({
         configured: true,
         last4: apiKey.slice(-4),
         configuredAt,
+        connection: connection ?? fallbackMswarmConnection(input.connection),
         actor: input.actor,
         reasonCode: input.reasonCode,
       });
@@ -232,6 +239,41 @@ function initialAssignments(
   return Object.fromEntries(
     stages.map((stage) => [stage.stageKey, stage.defaultAgentSlug ?? null])
   );
+}
+
+function fallbackMswarmConnection(
+  input: McodaMswarmConnectionInput | undefined
+): McodaMswarmConnectionMetadata | null {
+  if (!input) return null;
+  const connection: McodaMswarmConnectionMetadata = {
+    tenantId: normalizeString(input.tenantId),
+    productSlug: normalizeString(input.productSlug),
+    apiKeyId: normalizeString(input.apiKeyId),
+    ownerUserId: normalizeString(input.ownerUserId),
+    ownerKeycloakUserId: normalizeString(input.ownerKeycloakUserId),
+    featureKey: normalizeString(input.featureKey),
+    installationId: normalizeString(input.installationId),
+    installationStatus: normalizeString(input.installationStatus),
+    validationStatus: "unverified",
+    validationErrors: [],
+    validatedAt: null,
+  };
+  return [
+    connection.tenantId,
+    connection.productSlug,
+    connection.apiKeyId,
+    connection.ownerUserId,
+    connection.ownerKeycloakUserId,
+    connection.featureKey,
+    connection.installationId,
+    connection.installationStatus,
+  ].some(Boolean)
+    ? connection
+    : null;
+}
+
+function normalizeString(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function validateAssignments(

@@ -20,6 +20,42 @@ export type McodaPreferredSource =
   | "cloud_or_self_hosted"
   | null;
 
+export type McodaMswarmConnectionValidationMode =
+  | "auto"
+  | "required"
+  | "skip";
+
+export type McodaMswarmConnectionValidationStatus =
+  | "unverified"
+  | "verified"
+  | "mismatch";
+
+export interface McodaMswarmConnectionInput {
+  tenantId?: string | null;
+  productSlug?: string | null;
+  apiKeyId?: string | null;
+  ownerUserId?: string | null;
+  ownerKeycloakUserId?: string | null;
+  featureKey?: string | null;
+  installationId?: string | null;
+  installationStatus?: string | null;
+  validationMode?: McodaMswarmConnectionValidationMode;
+}
+
+export interface McodaMswarmConnectionMetadata {
+  tenantId: string | null;
+  productSlug: string | null;
+  apiKeyId: string | null;
+  ownerUserId: string | null;
+  ownerKeycloakUserId: string | null;
+  featureKey: string | null;
+  installationId: string | null;
+  installationStatus: string | null;
+  validationStatus: McodaMswarmConnectionValidationStatus;
+  validationErrors: string[];
+  validatedAt: string | null;
+}
+
 export interface McodaStageDefinition {
   stageKey: string;
   displayName: string;
@@ -86,6 +122,7 @@ export interface McodaAgentSetupSnapshot {
   mswarmApiKeyConfigured: boolean;
   mswarmApiKeyLast4: string | null;
   mswarmConfiguredAt: string | null;
+  mswarmConnection: McodaMswarmConnectionMetadata | null;
   stages: McodaStageDefinition[];
   assignments: Record<string, string | null>;
   catalog: McodaAgentCatalog;
@@ -107,6 +144,7 @@ export interface McodaAgentSetupClient {
   fetchSnapshot(): Promise<McodaAgentSetupSnapshot>;
   configureMswarmApiKey(input: {
     apiKey: string;
+    connection?: McodaMswarmConnectionInput;
     reasonCode?: string;
     metadata?: Record<string, unknown>;
   }): Promise<McodaAgentSetupSnapshot>;
@@ -140,10 +178,11 @@ export interface McodaRuntimeAdapter {
   runtime: McodaRuntimeInfo;
   configureMswarmApiKey(input: {
     apiKey: string;
+    connection?: McodaMswarmConnectionInput;
     actor?: string;
     reasonCode?: string;
     metadata?: Record<string, unknown>;
-  }): Promise<void>;
+  }): Promise<McodaMswarmConnectionMetadata | void>;
   listCloudAgents(input?: McodaAgentListInput): Promise<McodaAgentCatalogEntry[]>;
   syncCloudAgents(input?: McodaAgentSyncInput): Promise<McodaAgentCatalogEntry[]>;
   listSelfHostedAgents(
@@ -167,6 +206,7 @@ export interface McodaAgentSettingsSnapshot {
   mswarmApiKeyConfigured: boolean;
   mswarmApiKeyLast4: string | null;
   mswarmConfiguredAt: string | null;
+  mswarmConnection?: McodaMswarmConnectionMetadata | null;
   updatedAt: string | null;
 }
 
@@ -176,6 +216,7 @@ export interface McodaAgentSettingsStore {
     configured: boolean;
     last4: string | null;
     configuredAt: string;
+    connection?: McodaMswarmConnectionMetadata | null;
     actor?: string;
     reasonCode?: string;
   }): Promise<void>;
@@ -207,6 +248,7 @@ export interface McodaAgentSetupService {
   configureMswarmApiKey(
     input: {
       apiKey: string;
+      connection?: McodaMswarmConnectionInput;
       actor?: string;
       reasonCode?: string;
       metadata?: Record<string, unknown>;

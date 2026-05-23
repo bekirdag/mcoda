@@ -2,6 +2,8 @@ import type {
   McodaAgentSetupHttpRequest,
   McodaAgentSetupHttpResponse,
   McodaAgentSetupService,
+  McodaMswarmConnectionInput,
+  McodaMswarmConnectionValidationMode,
 } from "../types.js";
 
 export interface McodaAgentSetupHttpHandlers {
@@ -46,6 +48,10 @@ export function createMcodaAgentSetupHttpHandlers(
               stringValue(record.reason_code) ??
               stringValue(record.reasonCode) ??
               undefined,
+            connection: parseMswarmConnection(
+              record.connection ?? record.mswarm_connection,
+              record
+            ),
             metadata: asOptionalRecord(record.metadata),
           },
           request
@@ -179,6 +185,73 @@ function asRecord(value: unknown): Record<string, unknown> {
 function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   const record = asRecord(value);
   return Object.keys(record).length ? record : undefined;
+}
+
+function parseMswarmConnection(
+  value: unknown,
+  fallback: Record<string, unknown> = {}
+): McodaMswarmConnectionInput | undefined {
+  const record = asRecord(value);
+  const connection: McodaMswarmConnectionInput = {
+    tenantId:
+      stringValue(record.tenantId) ??
+      stringValue(record.tenant_id) ??
+      stringValue(fallback.tenantId) ??
+      stringValue(fallback.tenant_id),
+    productSlug:
+      stringValue(record.productSlug) ??
+      stringValue(record.product_slug) ??
+      stringValue(fallback.productSlug) ??
+      stringValue(fallback.product_slug),
+    apiKeyId:
+      stringValue(record.apiKeyId) ??
+      stringValue(record.api_key_id) ??
+      stringValue(fallback.apiKeyId) ??
+      stringValue(fallback.api_key_id),
+    ownerUserId:
+      stringValue(record.ownerUserId) ??
+      stringValue(record.owner_user_id) ??
+      stringValue(fallback.ownerUserId) ??
+      stringValue(fallback.owner_user_id),
+    ownerKeycloakUserId:
+      stringValue(record.ownerKeycloakUserId) ??
+      stringValue(record.owner_keycloak_user_id) ??
+      stringValue(fallback.ownerKeycloakUserId) ??
+      stringValue(fallback.owner_keycloak_user_id),
+    featureKey:
+      stringValue(record.featureKey) ??
+      stringValue(record.feature_key) ??
+      stringValue(fallback.featureKey) ??
+      stringValue(fallback.feature_key),
+    installationId:
+      stringValue(record.installationId) ??
+      stringValue(record.installation_id) ??
+      stringValue(fallback.installationId) ??
+      stringValue(fallback.installation_id),
+    installationStatus:
+      stringValue(record.installationStatus) ??
+      stringValue(record.installation_status) ??
+      stringValue(fallback.installationStatus) ??
+      stringValue(fallback.installation_status),
+    validationMode: parseValidationMode(
+      record.validationMode ??
+        record.validation_mode ??
+        fallback.validationMode ??
+        fallback.validation_mode
+    ),
+  };
+  return Object.values(connection).some((entry) => entry !== undefined)
+    ? connection
+    : undefined;
+}
+
+function parseValidationMode(
+  value: unknown
+): McodaMswarmConnectionValidationMode | undefined {
+  if (value === "auto" || value === "required" || value === "skip") {
+    return value;
+  }
+  return undefined;
 }
 
 function asStringNullRecord(value: unknown): Record<string, string | null> {

@@ -271,6 +271,53 @@ test(
 );
 
 test(
+  'MswarmApi.getRuntimeIdentity reads tenant product and API key identity',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          assert.equal(req.headers['x-api-key'], 'owner-key');
+          assert.equal(req.url, '/v1/swarm/runtime/usage-limits');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              product_slug: 'bdya',
+              tenant_id: 'tenant-bdya',
+              api_key_id: 'api-key-123',
+              subscription_id: 'sub-123',
+              budgets: [
+                {
+                  key: 'runtime.requests',
+                  meter_id: 'mswarm.requests',
+                  limit: 100,
+                  used: 12,
+                  remaining: 88,
+                  source: 'saas_be',
+                },
+              ],
+              as_of: '2026-05-23T00:00:00.000Z',
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'owner-key' });
+          try {
+            const identity = await api.getRuntimeIdentity();
+            assert.equal(identity.tenantId, 'tenant-bdya');
+            assert.equal(identity.productSlug, 'bdya');
+            assert.equal(identity.apiKeyId, 'api-key-123');
+            assert.equal(identity.usageLimits.budgets[0]?.remaining, 88);
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
   'MswarmApi.registerFreeMcodaClient posts the free-client consent payload',
   { concurrency: false },
   async () => {

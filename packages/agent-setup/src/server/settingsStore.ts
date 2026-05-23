@@ -11,6 +11,7 @@ export function createInMemoryMcodaAgentSettingsStore(
     mswarmApiKeyConfigured: initial.mswarmApiKeyConfigured ?? false,
     mswarmApiKeyLast4: initial.mswarmApiKeyLast4 ?? null,
     mswarmConfiguredAt: initial.mswarmConfiguredAt ?? null,
+    mswarmConnection: initial.mswarmConnection ?? null,
     updatedAt: initial.updatedAt ?? null,
   };
 
@@ -28,6 +29,7 @@ export function createInMemoryMcodaAgentSettingsStore(
         mswarmApiKeyConfigured: input.configured,
         mswarmApiKeyLast4: input.last4,
         mswarmConfiguredAt: input.configuredAt,
+        mswarmConnection: input.connection ?? null,
         updatedAt,
       };
     },

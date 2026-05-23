@@ -24,6 +24,13 @@ test("HTTP client sends expected mswarm key request shape", async () => {
   });
   await client.configureMswarmApiKey({
     apiKey: "sk_test_1234",
+    connection: {
+      tenantId: "tenant-bdya",
+      productSlug: "bdya",
+      ownerUserId: "user-bekir",
+      featureKey: "okacam-badges",
+      validationMode: "required",
+    },
     reasonCode: "configure",
   });
   assert.equal(calls[0].url, "/api/mcoda/mswarm-api-key");
@@ -31,6 +38,13 @@ test("HTTP client sends expected mswarm key request shape", async () => {
   assert.equal(calls[0].init.headers.authorization, "Bearer test");
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     mswarm_api_key: "sk_test_1234",
+    connection: {
+      tenantId: "tenant-bdya",
+      productSlug: "bdya",
+      ownerUserId: "user-bekir",
+      featureKey: "okacam-badges",
+      validationMode: "required",
+    },
     reason_code: "configure",
   });
 });

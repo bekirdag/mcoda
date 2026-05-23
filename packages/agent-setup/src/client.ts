@@ -86,6 +86,7 @@ export function createMcodaAgentSetupClient(
         method: "POST",
         body: {
           mswarm_api_key: request.apiKey,
+          connection: request.connection,
           reason_code: request.reasonCode,
           metadata: request.metadata,
         },

@@ -8,6 +8,7 @@ import type {
   McodaAgentListInput,
   McodaAgentSyncInput,
   McodaAgentTestResult,
+  McodaMswarmConnectionMetadata,
   McodaRuntimeAdapter,
 } from "../types.js";
 
@@ -76,6 +77,9 @@ export function createInMemoryMcodaRuntimeAdapter(
         throw new Error("mswarm api key is required");
       }
       configuredApiKey = true;
+      return input.connection
+        ? normalizeConnectionMetadata(input.connection)
+        : undefined;
     },
     async listCloudAgents(options) {
       return filterProvider(cloudAgents, options).map((agent) => ({ ...agent }));
@@ -131,4 +135,28 @@ export function createInMemoryMcodaRuntimeAdapter(
       };
     },
   };
+}
+
+function normalizeConnectionMetadata(
+  input: NonNullable<
+    Parameters<McodaRuntimeAdapter["configureMswarmApiKey"]>[0]["connection"]
+  >
+): McodaMswarmConnectionMetadata {
+  return {
+    tenantId: normalizeString(input.tenantId),
+    productSlug: normalizeString(input.productSlug),
+    apiKeyId: normalizeString(input.apiKeyId),
+    ownerUserId: normalizeString(input.ownerUserId),
+    ownerKeycloakUserId: normalizeString(input.ownerKeycloakUserId),
+    featureKey: normalizeString(input.featureKey),
+    installationId: normalizeString(input.installationId),
+    installationStatus: normalizeString(input.installationStatus),
+    validationStatus: "unverified",
+    validationErrors: [],
+    validatedAt: null,
+  };
+}
+
+function normalizeString(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

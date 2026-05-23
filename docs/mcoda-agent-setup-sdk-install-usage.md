@@ -1,6 +1,6 @@
 # mcoda Agent Setup SDK Install And Usage
 
-Last verified: 2026-05-06
+Last verified: 2026-05-23
 
 This document explains how an application can install and use the public
 `@mcoda/agent-setup` SDK to configure mcoda/mswarm agents from an app UI.
@@ -11,22 +11,17 @@ The npm registry currently reports:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.66
+# 0.1.72
 ```
 
-Published `@mcoda/agent-setup@0.1.66` exports:
+Published `@mcoda/agent-setup@0.1.72` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.66`.
-
-Important: the local repo has a newer React stylesheet export,
-`@mcoda/agent-setup/react/styles.css`, but that export is not in the currently
-published `0.1.66` package. It becomes available to npm consumers only after a
-version bump and republish.
+It depends on public `@mcoda/core@0.1.72`.
 
 ## What The SDK Does
 
@@ -73,6 +68,13 @@ Use this split:
 
 Do not send the mswarm API key directly to a third-party browser-only client or
 store it in frontend state beyond the submit request.
+
+For products that connect a user-scoped mswarm installation, pass the
+non-secret connection identity with the key configuration request. The SDK
+validates tenant, product, and API-key identity through mswarm runtime usage
+limits when available, then stores the metadata in the setup snapshot so the
+host app can tell which tenant/user/feature installation owns the current
+configuration.
 
 ## Backend Setup
 
@@ -163,6 +165,17 @@ const snapshot = await client.fetchSnapshot();
 
 await client.configureMswarmApiKey({
   apiKey: "mswarm-api-key-from-admin-form",
+  connection: {
+    tenantId: "tenant-from-your-product",
+    productSlug: "bdya",
+    apiKeyId: "mswarm-api-key-id-from-your-product",
+    ownerUserId: "product-user-id",
+    ownerKeycloakUserId: "keycloak-user-id",
+    featureKey: "okacam-employee-line-items",
+    installationId: "mswarm-feature-installation-id",
+    installationStatus: "active",
+    validationMode: "required",
+  },
   reasonCode: "admin_setup",
 });
 
@@ -182,6 +195,15 @@ await client.updateAssignments({
 Do not hardcode real production agent slugs in product code. The UI should let
 the admin choose from the catalog returned by `fetchSnapshot()` / `syncAgents()`.
 The slugs above are examples only.
+
+`validationMode` can be:
+
+- `required`: fail the request if mswarm cannot confirm tenant/product/API-key
+  identity or if the confirmed identity does not match the provided values.
+- `auto`: try the same validation, but keep submitted non-secret metadata as
+  unverified if the runtime identity endpoint is unavailable.
+- `skip`: store the supplied non-secret metadata without calling the runtime
+  identity endpoint.
 
 ## React Setup Page
 
@@ -216,11 +238,7 @@ export function AgentSetupScreen() {
 }
 ```
 
-For the currently published `0.1.66` package, provide your own app CSS around
-the React component.
-
-After the local stylesheet export is version-bumped and published, consumers can
-also add:
+Consumers can add the packaged default stylesheet:
 
 ```ts
 import "@mcoda/agent-setup/react/styles.css";
@@ -274,11 +292,12 @@ export function createDatabaseSettingsStore(): McodaAgentSettingsStore {
         mswarmApiKeyConfigured: false,
         mswarmApiKeyLast4: null,
         mswarmConfiguredAt: null,
+        mswarmConnection: null,
         updatedAt: null,
       };
     },
     async saveMswarmKeyMetadata(input) {
-      // Store only configured/last4/configuredAt metadata.
+      // Store only configured/last4/configuredAt plus input.connection metadata.
       // Do not store raw secrets here unless your product explicitly owns
       // encrypted secret storage in this same implementation.
     },

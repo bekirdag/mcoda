@@ -257,6 +257,35 @@ export interface MswarmManagedAuthRefreshSummary {
   agents: string[];
 }
 
+export interface MswarmRuntimeUsageBudget {
+  key: string;
+  meter_id?: string | null;
+  limit?: number | null;
+  used?: number | null;
+  remaining?: number | null;
+  reset_at?: string | null;
+  source?: string | null;
+  [key: string]: unknown;
+}
+
+export interface MswarmRuntimeUsageLimits {
+  product_slug: string | null;
+  tenant_id: string | null;
+  api_key_id: string | null;
+  subscription_id: string | null;
+  budgets: MswarmRuntimeUsageBudget[];
+  as_of: string | null;
+}
+
+export interface MswarmRuntimeIdentity {
+  tenantId: string | null;
+  productSlug: string | null;
+  apiKeyId: string | null;
+  subscriptionId: string | null;
+  asOf: string | null;
+  usageLimits: MswarmRuntimeUsageLimits;
+}
+
 interface ListMswarmCloudAgentsResponse {
   agents?: unknown;
 }
@@ -303,6 +332,9 @@ const resolveStringArray = (value: unknown): string[] => {
       typeof entry === 'string' && entry.trim().length > 0
   );
 };
+
+const resolveNullableString = (value: unknown): string | null =>
+  resolveString(value) ?? null;
 
 const normalizeBaseUrl = (value: string | undefined, label: string): string => {
   const trimmed = value?.trim();
@@ -441,6 +473,37 @@ const resolveStringArrayFromRecordOrShape = (
     keys.flatMap((key) => resolveStringArray(source[key]))
   );
   return uniqueStrings(values);
+};
+
+const toRuntimeUsageBudget = (value: unknown): MswarmRuntimeUsageBudget => {
+  const record = isRecord(value) ? value : {};
+  const budget: MswarmRuntimeUsageBudget = {
+    ...record,
+    key: resolveString(record.key) ?? resolveString(record.meter_id) ?? 'unknown',
+    meter_id: resolveNullableString(record.meter_id),
+    limit: resolveNumber(record.limit) ?? null,
+    used: resolveNumber(record.used) ?? null,
+    remaining: resolveNumber(record.remaining) ?? null,
+    reset_at: resolveNullableString(record.reset_at),
+    source: resolveNullableString(record.source),
+  };
+  return budget;
+};
+
+const toRuntimeUsageLimits = (value: unknown): MswarmRuntimeUsageLimits => {
+  const record = isRecord(value) ? value : {};
+  return {
+    product_slug: resolveNullableString(record.product_slug ?? record.productSlug),
+    tenant_id: resolveNullableString(record.tenant_id ?? record.tenantId),
+    api_key_id: resolveNullableString(record.api_key_id ?? record.apiKeyId),
+    subscription_id: resolveNullableString(
+      record.subscription_id ?? record.subscriptionId
+    ),
+    budgets: Array.isArray(record.budgets)
+      ? record.budgets.map(toRuntimeUsageBudget)
+      : [],
+    as_of: resolveNullableString(record.as_of ?? record.asOf),
+  };
 };
 
 const hasCapabilityFragment = (
@@ -1097,6 +1160,25 @@ export class MswarmApi {
 
   async refreshManagedAgentAuth(): Promise<MswarmManagedAuthRefreshSummary> {
     return MswarmApi.refreshManagedAgentAuth(this.requireApiKey());
+  }
+
+  async getRuntimeUsageLimits(): Promise<MswarmRuntimeUsageLimits> {
+    const payload = await this.requestJson<unknown>(
+      '/v1/swarm/runtime/usage-limits'
+    );
+    return toRuntimeUsageLimits(payload);
+  }
+
+  async getRuntimeIdentity(): Promise<MswarmRuntimeIdentity> {
+    const usageLimits = await this.getRuntimeUsageLimits();
+    return {
+      tenantId: usageLimits.tenant_id,
+      productSlug: usageLimits.product_slug,
+      apiKeyId: usageLimits.api_key_id,
+      subscriptionId: usageLimits.subscription_id,
+      asOf: usageLimits.as_of,
+      usageLimits,
+    };
   }
 
   private requireApiKey(): string {
