@@ -1,0 +1,94 @@
+{
+  "name": "mcoda/laravel-agent-setup",
+  "description": "Laravel package for embedding the mcoda agent setup flow in Laravel applications.",
+  "type": "library",
+  "keywords": [
+    "agents",
+    "laravel",
+    "mcoda",
+    "mswarm"
+  ],
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "mcoda maintainers"
+    }
+  ],
+  "require": {
+    "php": "^8.2",
+    "illuminate/contracts": "^10.0|^11.0|^12.0",
+    "illuminate/http": "^10.0|^11.0|^12.0",
+    "illuminate/routing": "^10.0|^11.0|^12.0",
+    "illuminate/support": "^10.0|^11.0|^12.0",
+    "illuminate/view": "^10.0|^11.0|^12.0"
+  },
+  "require-dev": {
+    "orchestra/testbench": "^8.0|^9.0|^10.0",
+    "phpunit/phpunit": "^10.5|^11.5"
+  },
+  "autoload": {
+    "psr-4": {
+      "Mcoda\\LaravelAgentSetup\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Mcoda\\LaravelAgentSetup\\Tests\\": "tests/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Mcoda\\LaravelAgentSetup\\McodaAgentSetupServiceProvider"
+      ],
+      "aliases": {
+        "McodaAgentSetup": "Mcoda\\LaravelAgentSetup\\Facades\\McodaAgentSetup"
+      }
+    }
+  },
+  "archive": {
+    "exclude": [
+      "/.phpunit.cache",
+      "/.phpunit.cache/**",
+      "/composer.lock",
+      "/vendor",
+      "/vendor/**"
+    ]
+  },
+  "scripts": {
+    "ci": [
+      "@composer validate --strict",
+      "@lint",
+      "@test"
+    ],
+    "ci:integration": [
+      "@composer validate --strict",
+      "@lint",
+      "@test",
+      "@test:integration"
+    ],
+    "ci:release": [
+      "@composer validate --strict",
+      "@lint",
+      "@test",
+      "@test:integration",
+      "@test:consumer",
+      "@test:release-archive"
+    ],
+    "ci:consumer": [
+      "@composer validate --strict",
+      "@lint",
+      "@test",
+      "@test:consumer"
+    ],
+    "lint": "find src config routes tests -name '*.php' -print0 | xargs -0 -n1 php -l",
+    "smoke": "php tests/smoke.php",
+    "test": "php tests/smoke.php",
+    "test:consumer": "php tests/consumer-install.php",
+    "test:integration": "vendor/bin/phpunit --configuration phpunit.xml.dist",
+    "test:release-archive": "php tests/release-archive.php",
+    "test:smoke": "php tests/smoke.php"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

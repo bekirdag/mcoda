@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CodaliAdapter } from "../adapters/codali/CodaliAdapter.js";
+import { CodaliAdapter, resolveCodaliProviderFromAdapter } from "../adapters/codali/CodaliAdapter.js";
 import type { AdapterConfig } from "../adapters/AdapterTypes.js";
 import type { Agent } from "@mcoda/shared";
 
@@ -210,6 +210,112 @@ test("CodaliAdapter maps openai-api adapters and requires api key", { concurrenc
       adapter.invoke({ input: "hello", metadata: { workspaceRoot: process.cwd() } }),
       /AUTH_REQUIRED: API key missing for codali provider openai-compatible/,
     );
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    if (originalKey === undefined) {
+      delete process.env.CODALI_API_KEY;
+    } else {
+      process.env.CODALI_API_KEY = originalKey;
+    }
+  }
+});
+
+test("CodaliAdapter maps local OpenAI-compatible adapters without api key", { concurrency: false }, async () => {
+  const adapterIds = ["openai-compatible-local", "vllm-local", "llama-cpp-local", "llamacpp-local"];
+  for (const sourceAdapter of adapterIds) {
+    const implicit = resolveCodaliProviderFromAdapter({ sourceAdapter });
+    assert.equal(implicit.provider, "openai-compatible");
+    assert.equal(implicit.requiresApiKey, false);
+    assert.equal(implicit.localOpenAiCompatible, true);
+
+    const explicit = resolveCodaliProviderFromAdapter({
+      sourceAdapter,
+      explicitProvider: "openai-compatible",
+    });
+    assert.equal(explicit.provider, "openai-compatible");
+    assert.equal(explicit.requiresApiKey, false);
+    assert.equal(explicit.localOpenAiCompatible, true);
+  }
+});
+
+test("CodaliAdapter requires baseUrl for local OpenAI-compatible source adapters", { concurrency: false }, async () => {
+  const originalStub = process.env.MCODA_CLI_STUB;
+  const originalKey = process.env.CODALI_API_KEY;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    delete process.env.CODALI_API_KEY;
+
+    const agent: Agent = {
+      id: "agent-local-openai-missing-base-url",
+      slug: "agent-local-openai-missing-base-url",
+      adapter: "vllm-local",
+      defaultModel: "local-model",
+      config: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AdapterConfig = {
+      agent,
+      capabilities: ["code_write"],
+      model: "local-model",
+      adapter: "codali-cli",
+    };
+
+    const adapter = new CodaliAdapter(config);
+    await assert.rejects(
+      adapter.invoke({ input: "hello", metadata: { workspaceRoot: process.cwd() } }),
+      /CONFIG_REQUIRED: baseUrl missing for local OpenAI-compatible codali provider/,
+    );
+  } finally {
+    if (originalStub === undefined) {
+      delete process.env.MCODA_CLI_STUB;
+    } else {
+      process.env.MCODA_CLI_STUB = originalStub;
+    }
+    if (originalKey === undefined) {
+      delete process.env.CODALI_API_KEY;
+    } else {
+      process.env.CODALI_API_KEY = originalKey;
+    }
+  }
+});
+
+test("CodaliAdapter invokes local OpenAI-compatible source adapters without api key", { concurrency: false }, async () => {
+  const originalStub = process.env.MCODA_CLI_STUB;
+  const originalKey = process.env.CODALI_API_KEY;
+  try {
+    process.env.MCODA_CLI_STUB = "1";
+    delete process.env.CODALI_API_KEY;
+
+    const agent: Agent = {
+      id: "agent-local-openai",
+      slug: "agent-local-openai",
+      adapter: "vllm-local",
+      defaultModel: "local-model",
+      config: { baseUrl: "http://127.0.0.1:8000/v1" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const config: AdapterConfig = {
+      agent,
+      capabilities: ["code_write"],
+      model: "local-model",
+      adapter: "codali-cli",
+    };
+
+    const adapter = new CodaliAdapter(config);
+    const result = await adapter.invoke({ input: "hello", metadata: { workspaceRoot: process.cwd() } });
+    assert.equal(result.output, "codali-stub:hello");
+    const meta = result.metadata as Record<string, unknown>;
+    assert.equal(meta.provider, "openai-compatible");
+    assert.equal(meta.sourceAdapter, "vllm-local");
+    assert.equal(meta.baseUrl, "http://127.0.0.1:8000/v1");
   } finally {
     if (originalStub === undefined) {
       delete process.env.MCODA_CLI_STUB;

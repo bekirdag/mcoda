@@ -200,3 +200,4 @@ export const QA_TECH_STACKS = {
         },
     },
 };
+//# sourceMappingURL=QaTechStack.js.map

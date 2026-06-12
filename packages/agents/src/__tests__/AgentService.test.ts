@@ -198,6 +198,73 @@ test("local adapter is used when specified", async () => {
   assert.equal(result.metadata?.mode, "local");
 });
 
+test("local OpenAI-compatible adapters invoke without stored api keys", async () => {
+  const adapters = ["openai-compatible-local", "vllm-local", "llama-cpp-local", "llamacpp-local"];
+  for (const adapterName of adapters) {
+    let sawAuthorization: string | undefined;
+    global.fetch = async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
+      assert.equal(url, "http://127.0.0.1:8000/v1/chat/completions");
+      const headers = init?.headers as Record<string, string>;
+      sawAuthorization = headers?.Authorization;
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      assert.equal(body.model, "local-model");
+      return new Response(JSON.stringify({ choices: [{ message: { content: `ok:${adapterName}` } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const agent = await repo.createAgent({
+      slug: `local-openai-${adapterName.replace(/[^a-z0-9]+/gi, "-")}`,
+      adapter: adapterName,
+      defaultModel: "local-model",
+      capabilities: ["chat"],
+      config: { baseUrl: "http://127.0.0.1:8000/v1" },
+    });
+
+    const result = await service.invoke(agent.id, { input: "ping" });
+    assert.equal(result.adapter, adapterName);
+    assert.equal(result.output, `ok:${adapterName}`);
+    assert.equal((result.metadata as any)?.authMode, "none");
+    assert.equal((result.metadata as any)?.adapterType, adapterName);
+    assert.equal(sawAuthorization, undefined);
+  }
+});
+
+test("local OpenAI-compatible aliases expose default runner kind in health", async () => {
+  const cases = [
+    { adapter: "vllm-local", runnerKind: "vllm" },
+    { adapter: "llama-cpp-local", runnerKind: "llama-cpp" },
+    { adapter: "llamacpp-local", runnerKind: "llama-cpp" },
+  ];
+
+  for (const entry of cases) {
+    global.fetch = async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : String((input as any)?.url ?? "");
+      assert.equal(url, "http://127.0.0.1:8000/v1/models");
+      assert.equal(init?.method, "GET");
+      return new Response(JSON.stringify({ data: [{ id: "local-model" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const agent = await repo.createAgent({
+      slug: `health-${entry.adapter.replace(/[^a-z0-9]+/gi, "-")}`,
+      adapter: entry.adapter,
+      defaultModel: "local-model",
+      capabilities: ["chat"],
+      config: { baseUrl: "http://127.0.0.1:8000/v1" },
+    });
+
+    const health = await service.healthCheck(agent.id);
+    assert.equal(health.status, "healthy");
+    assert.equal((health.details as any)?.runnerKind, entry.runnerKind);
+    assert.equal((health.details as any)?.authMode, "none");
+  }
+});
+
 test("prompts and capabilities are surfaced to adapters", async () => {
   const agent = await repo.createAgent({
     slug: "prompted",
@@ -850,6 +917,61 @@ test("invoke uses offline-capable fallback on connectivity failure before waitin
   assert.equal(result.output, "ok:local-fallback");
   assert.deepEqual(calls, [primary.id, backup.id]);
   assert.deepEqual(sleeps, []);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" &&
+        event.fromAgentId === primary.id &&
+        event.toAgentId === backup.id &&
+        event.reason === "connectivity_issue",
+    ),
+  );
+  assert.ok(!failoverEvents.some((event) => event.type === "wait_for_internet"));
+});
+
+test("invoke treats local OpenAI-compatible agents as offline-capable fallbacks", async () => {
+  const primary = await repo.createAgent({
+    slug: "offline-openai-primary",
+    adapter: "codex-cli",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const backup = await repo.createAgent({
+    slug: "offline-openai-backup",
+    adapter: "vllm-local",
+    defaultModel: "local-model",
+    rating: 8,
+    reasoningRating: 8,
+    maxComplexity: 7,
+    capabilities: ["chat", "code_write"],
+    config: { baseUrl: "http://127.0.0.1:8000/v1" },
+  });
+  const fallbackService = new AgentService(repo, {
+    sleep: async () => {
+      throw new Error("should not wait for internet when local OpenAI-compatible fallback exists");
+    },
+    checkInternetReachable: async () => false,
+    connectivityPollIntervalMs: 1000,
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  fallbackService.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        throw new Error("fetch failed: network down");
+      }
+      return { output: "ok:local-openai-fallback", adapter: "vllm-local", model: backup.defaultModel };
+    },
+  });
+
+  const result = await fallbackService.invoke(primary.id, { input: "ping" });
+  assert.equal(result.output, "ok:local-openai-fallback");
+  assert.deepEqual(calls, [primary.id, backup.id]);
   const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
   assert.ok(
     failoverEvents.some(

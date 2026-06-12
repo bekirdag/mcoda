@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import type {
+  LocalOpenAiCompatibleRunnerConfig,
+  LocalRunnerAuthMode,
+  LocalRunnerKind,
+  LocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
 import {
   normalizeAgentRequest,
   parseAgentRequest,
@@ -54,6 +60,20 @@ export interface CodaliRuntimeProviderInput {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
 }
 
 export interface CodaliRuntimeDocdexInput {
@@ -80,6 +100,9 @@ export interface CodaliRuntimeAgentInput {
   provider?: string;
   model: string;
   baseUrl?: string;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
   supportsTools?: boolean;
   capabilities?: string[];
   contextWindow?: number;
@@ -759,6 +782,20 @@ const createRuntimeProvider = (input: CodaliRuntimeProviderInput): Provider => {
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
     timeoutMs: input.timeoutMs,
+    localRunner: input.localRunner,
+    runnerKind: input.runnerKind,
+    authMode: input.authMode,
+    dummyBearerToken: input.dummyBearerToken,
+    headers: input.headers,
+    extraBody: input.extraBody,
+    responseFormatStrategy: input.responseFormatStrategy,
+    healthPath: input.healthPath,
+    modelsPath: input.modelsPath,
+    requireModelInRequest: input.requireModelInRequest,
+    supportsStreaming: input.supportsStreaming,
+    supportsTools: input.supportsTools,
+    supportsJsonSchema: input.supportsJsonSchema,
+    supportsGbnf: input.supportsGbnf,
   };
   if (input.name === "openai-compatible") {
     return new OpenAiCompatibleProvider(config);

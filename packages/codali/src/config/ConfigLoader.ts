@@ -97,6 +97,20 @@ export interface ConfigSource {
   model?: string;
   apiKey?: string;
   baseUrl?: string;
+  localRunner?: CodaliConfig["localRunner"];
+  runnerKind?: CodaliConfig["runnerKind"];
+  authMode?: CodaliConfig["authMode"];
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: CodaliConfig["responseFormatStrategy"];
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
   workflow?: WorkflowConfigSource;
   docdex?: Partial<DocdexConfig>;
   tools?: Partial<ToolConfig>;
@@ -960,6 +974,30 @@ const loadEnvConfig = (env: NodeJS.ProcessEnv): ConfigSource => {
   if (env.CODALI_MODEL) config.model = env.CODALI_MODEL;
   if (env.CODALI_API_KEY) config.apiKey = env.CODALI_API_KEY;
   if (env.CODALI_BASE_URL) config.baseUrl = env.CODALI_BASE_URL;
+  const localRunner = parseJson<ConfigSource["localRunner"]>(env.CODALI_LOCAL_RUNNER_JSON);
+  if (localRunner) config.localRunner = localRunner;
+  if (env.CODALI_RUNNER_KIND) config.runnerKind = env.CODALI_RUNNER_KIND as CodaliConfig["runnerKind"];
+  if (env.CODALI_AUTH_MODE) config.authMode = env.CODALI_AUTH_MODE as CodaliConfig["authMode"];
+  if (env.CODALI_DUMMY_BEARER_TOKEN) config.dummyBearerToken = env.CODALI_DUMMY_BEARER_TOKEN;
+  const headers = parseJson<Record<string, string>>(env.CODALI_HEADERS_JSON);
+  if (headers) config.headers = headers;
+  const extraBody = parseJson<Record<string, unknown>>(env.CODALI_EXTRA_BODY_JSON);
+  if (extraBody) config.extraBody = extraBody;
+  if (env.CODALI_RESPONSE_FORMAT_STRATEGY) {
+    config.responseFormatStrategy = env.CODALI_RESPONSE_FORMAT_STRATEGY as CodaliConfig["responseFormatStrategy"];
+  }
+  if (env.CODALI_HEALTH_PATH) config.healthPath = env.CODALI_HEALTH_PATH;
+  if (env.CODALI_MODELS_PATH) config.modelsPath = env.CODALI_MODELS_PATH;
+  const requireModelInRequest = parseBoolean(env.CODALI_REQUIRE_MODEL_IN_REQUEST);
+  if (requireModelInRequest !== undefined) config.requireModelInRequest = requireModelInRequest;
+  const supportsStreaming = parseBoolean(env.CODALI_SUPPORTS_STREAMING);
+  if (supportsStreaming !== undefined) config.supportsStreaming = supportsStreaming;
+  const supportsTools = parseBoolean(env.CODALI_SUPPORTS_TOOLS);
+  if (supportsTools !== undefined) config.supportsTools = supportsTools;
+  const supportsJsonSchema = parseBoolean(env.CODALI_SUPPORTS_JSON_SCHEMA);
+  if (supportsJsonSchema !== undefined) config.supportsJsonSchema = supportsJsonSchema;
+  const supportsGbnf = parseBoolean(env.CODALI_SUPPORTS_GBNF);
+  if (supportsGbnf !== undefined) config.supportsGbnf = supportsGbnf;
 
   return config;
 };
@@ -1231,6 +1269,12 @@ const mergeConfigs = (
     ...envConfig?.logging,
     ...cliConfig?.logging,
   };
+  const localRunner = {
+    ...(defaults.localRunner ?? {}),
+    ...(fileConfig?.localRunner ?? {}),
+    ...(envConfig?.localRunner ?? {}),
+    ...(cliConfig?.localRunner ?? {}),
+  } as CodaliConfig["localRunner"];
 
   return {
     ...defaults,
@@ -1253,6 +1297,7 @@ const mergeConfigs = (
     workflow,
     logging,
     routing,
+    localRunner: localRunner && Object.keys(localRunner).length ? localRunner : undefined,
   };
 };
 
@@ -1422,6 +1467,20 @@ export const loadConfig = async (options: LoadConfigOptions = {}): Promise<Codal
     model: "",
     apiKey: undefined,
     baseUrl: undefined,
+    localRunner: undefined,
+    runnerKind: undefined,
+    authMode: undefined,
+    dummyBearerToken: undefined,
+    headers: undefined,
+    extraBody: undefined,
+    responseFormatStrategy: undefined,
+    healthPath: undefined,
+    modelsPath: undefined,
+    requireModelInRequest: undefined,
+    supportsStreaming: undefined,
+    supportsTools: undefined,
+    supportsJsonSchema: undefined,
+    supportsGbnf: undefined,
     smart: true,
     docdex: {
       baseUrl: envConfig.docdex?.baseUrl ?? DEFAULT_DOCDEX_BASE_URL,

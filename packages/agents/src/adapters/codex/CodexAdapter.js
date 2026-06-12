@@ -1,3 +1,18 @@
+import { cliHealthy, runCodexExec, runCodexExecStream } from "./CodexCliRunner.js";
+const extractOutputSchema = (request) => {
+    const candidate = request.metadata?.outputSchema;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        return undefined;
+    }
+    return candidate;
+};
+const extractTimeoutMs = (request) => {
+    const candidate = request.metadata?.timeoutMs;
+    if (typeof candidate !== "number" || !Number.isFinite(candidate) || candidate <= 0) {
+        return undefined;
+    }
+    return Math.floor(candidate);
+};
 export class CodexAdapter {
     constructor(config) {
         this.config = config;
@@ -6,38 +21,52 @@ export class CodexAdapter {
         return this.config.capabilities;
     }
     async healthCheck() {
-        // CLI-based adapter can operate without stored secrets.
+        const started = Date.now();
+        const result = cliHealthy();
         return {
             agentId: this.config.agent.id,
-            status: "healthy",
+            status: result.ok ? "healthy" : "unreachable",
             lastCheckedAt: new Date().toISOString(),
-            latencyMs: 0,
-            details: { adapter: "codex-cli" },
+            latencyMs: Date.now() - started,
+            details: { adapter: "codex-cli", ...result.details },
         };
     }
     async invoke(request) {
-        const authMode = this.config.apiKey ? "api" : "cli";
+        const health = cliHealthy(true);
+        const cliDetails = health.details;
+        const result = await runCodexExec(request.input, this.config.model, extractOutputSchema(request), extractTimeoutMs(request));
         return {
-            output: `codex-stub:${request.input}`,
+            output: result.output,
             adapter: this.config.adapter ?? "codex-cli",
             model: this.config.model,
             metadata: {
-                mode: authMode,
+                mode: "cli",
                 capabilities: this.config.capabilities,
                 adapterType: this.config.adapter ?? "codex-cli",
-                authMode,
+                authMode: "cli",
+                cli: cliDetails,
+                raw: result.raw,
             },
         };
     }
     async *invokeStream(request) {
-        yield {
-            output: `codex-stream:${request.input}`,
-            adapter: this.config.adapter ?? "codex-cli",
-            model: this.config.model,
-            metadata: {
-                mode: this.config.apiKey ? "api" : "cli",
-                streaming: true,
-            },
-        };
+        const health = cliHealthy(true);
+        const cliDetails = health.details;
+        for await (const chunk of runCodexExecStream(request.input, this.config.model, extractOutputSchema(request), extractTimeoutMs(request))) {
+            yield {
+                output: chunk.output,
+                adapter: this.config.adapter ?? "codex-cli",
+                model: this.config.model,
+                metadata: {
+                    mode: "cli",
+                    capabilities: this.config.capabilities,
+                    adapterType: this.config.adapter ?? "codex-cli",
+                    authMode: "cli",
+                    cli: cliDetails,
+                    raw: chunk.raw,
+                    streaming: true,
+                },
+            };
+        }
     }
 }

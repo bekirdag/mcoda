@@ -1,5 +1,55 @@
 export type ProviderRole = "system" | "user" | "assistant" | "tool";
 
+export type LocalRunnerKind =
+  | "vllm"
+  | "llama-cpp"
+  | "llama-cpp-python"
+  | "lm-studio"
+  | "localai"
+  | "sglang"
+  | "tgi"
+  | "custom";
+
+export type LocalRunnerAuthMode = "none" | "bearer" | "dummy-bearer";
+
+export type LocalRunnerResponseFormatStrategy =
+  | "openai"
+  | "json-object"
+  | "json-schema"
+  | "gbnf"
+  | "prompt-only"
+  | "none";
+
+export interface LocalOpenAiCompatibleRunnerConfig {
+  baseUrl?: string;
+  endpoint?: string;
+  apiBaseUrl?: string;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
+}
+
+const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
+  "openai-compatible-local",
+  "vllm-local",
+  "llama-cpp-local",
+  "llamacpp-local"
+]);
+
+function isLocalOpenAiCompatibleAdapter(adapter: unknown): boolean {
+  return typeof adapter === "string" && LOCAL_OPENAI_COMPATIBLE_ADAPTERS.has(adapter.trim().toLowerCase());
+}
+
 export interface ProviderMessage {
   role: ProviderRole;
   content: string;
@@ -24,6 +74,20 @@ export interface CodaliRuntimeProviderInput {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs?: number;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
 }
 
 export interface CodaliRuntimeDocdexInput {
@@ -50,7 +114,20 @@ export interface CodaliRuntimeAgentInput {
   provider?: string;
   model: string;
   baseUrl?: string;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
   supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
   capabilities?: string[];
   contextWindow?: number;
   maxOutputTokens?: number;
@@ -187,7 +264,20 @@ export interface MswarmCodaliAgent {
   model: string;
   baseUrl?: string;
   apiKey?: string;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
   supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
   capabilities?: string[];
   contextWindow?: number;
   maxOutputTokens?: number;
@@ -370,6 +460,9 @@ function providerNameForAgent(agent: MswarmCodaliAgent): string {
   if (agent.provider) {
     return agent.provider;
   }
+  if (isLocalOpenAiCompatibleAdapter(agent.adapter)) {
+    return "openai-compatible";
+  }
   if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(agent.adapter)) {
     return "ollama-remote";
   }
@@ -468,7 +561,20 @@ function runtimeAgent(agent: MswarmCodaliAgent): CodaliRuntimeAgentInput {
     provider: providerNameForAgent(agent),
     model: agent.model,
     baseUrl: agent.baseUrl,
+    localRunner: agent.localRunner,
+    runnerKind: agent.runnerKind,
+    authMode: agent.authMode,
+    dummyBearerToken: agent.dummyBearerToken,
+    headers: agent.headers,
+    extraBody: agent.extraBody,
+    responseFormatStrategy: agent.responseFormatStrategy,
+    healthPath: agent.healthPath,
+    modelsPath: agent.modelsPath,
+    requireModelInRequest: agent.requireModelInRequest,
+    supportsStreaming: agent.supportsStreaming,
     supportsTools: agent.supportsTools,
+    supportsJsonSchema: agent.supportsJsonSchema,
+    supportsGbnf: agent.supportsGbnf,
     capabilities: agent.capabilities,
     contextWindow: agent.contextWindow,
     maxOutputTokens: agent.maxOutputTokens,
@@ -507,6 +613,20 @@ export class MswarmCodaliExecutor {
         baseUrl: input.agent.baseUrl,
         apiKey: input.agent.apiKey,
         timeoutMs: runtimePolicy.timeoutMs,
+        localRunner: input.agent.localRunner,
+        runnerKind: input.agent.runnerKind,
+        authMode: input.agent.authMode,
+        dummyBearerToken: input.agent.dummyBearerToken,
+        headers: input.agent.headers,
+        extraBody: input.agent.extraBody,
+        responseFormatStrategy: input.agent.responseFormatStrategy,
+        healthPath: input.agent.healthPath,
+        modelsPath: input.agent.modelsPath,
+        requireModelInRequest: input.agent.requireModelInRequest,
+        supportsStreaming: input.agent.supportsStreaming,
+        supportsTools: input.agent.supportsTools,
+        supportsJsonSchema: input.agent.supportsJsonSchema,
+        supportsGbnf: input.agent.supportsGbnf,
       },
       agent: runtimeAgent(input.agent),
       docdex: buildRuntimeDocdex(

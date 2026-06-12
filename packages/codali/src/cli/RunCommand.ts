@@ -6,7 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 import { loadConfig } from "../config/ConfigLoader.js";
-import type { ResolvedWorkflowProfile, ToolConfig } from "../config/Config.js";
+import type { CodaliConfig, ResolvedWorkflowProfile, ToolConfig } from "../config/Config.js";
 import { createProvider } from "../providers/ProviderRegistry.js";
 import type {
   AgentEvent,
@@ -58,7 +58,7 @@ import {
   resolvePricing,
 } from "../cognitive/CostEstimator.js";
 import { getGlobalWorkspaceDir } from "../runtime/StoragePaths.js";
-import { resolveAgentConfig } from "../agents/AgentResolver.js";
+import { resolveAgentConfig, type ResolvedAgentConfig } from "../agents/AgentResolver.js";
 import { selectPhaseAgents, type PhaseAgentSelection } from "../agents/PhaseAgentSelector.js";
 import type {
   PhaseTelemetryInput,
@@ -91,6 +91,20 @@ interface ParsedArgs {
   model?: string;
   apiKey?: string;
   baseUrl?: string;
+  localRunner?: ProviderConfig["localRunner"];
+  runnerKind?: ProviderConfig["runnerKind"];
+  authMode?: ProviderConfig["authMode"];
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: ProviderConfig["responseFormatStrategy"];
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
   workflowProfile?: string;
   taskFile?: string;
   configPath?: string;
@@ -147,6 +161,14 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
       .map((entry) => entry.trim())
       .filter(Boolean);
     return items.length ? items : undefined;
+  };
+  const parseJsonArg = <T>(value: string | undefined, label: string): T | undefined => {
+    if (!value) return undefined;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      throw new Error(`Invalid ${label}: expected JSON.`);
+    }
   };
 
   const parsed: ParsedArgs = {};
@@ -264,6 +286,76 @@ export const parseArgs = (argv: string[]): ParsedArgs => {
     }
     if (arg === "--base-url" && next) {
       parsed.baseUrl = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--local-runner-json" && next) {
+      parsed.localRunner = parseJsonArg<ProviderConfig["localRunner"]>(next, "--local-runner-json");
+      i += 1;
+      continue;
+    }
+    if (arg === "--runner-kind" && next) {
+      parsed.runnerKind = next as ProviderConfig["runnerKind"];
+      i += 1;
+      continue;
+    }
+    if (arg === "--auth-mode" && next) {
+      parsed.authMode = next as ProviderConfig["authMode"];
+      i += 1;
+      continue;
+    }
+    if (arg === "--dummy-bearer-token" && next) {
+      parsed.dummyBearerToken = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--headers-json" && next) {
+      parsed.headers = parseJsonArg<Record<string, string>>(next, "--headers-json");
+      i += 1;
+      continue;
+    }
+    if (arg === "--extra-body-json" && next) {
+      parsed.extraBody = parseJsonArg<Record<string, unknown>>(next, "--extra-body-json");
+      i += 1;
+      continue;
+    }
+    if (arg === "--response-format-strategy" && next) {
+      parsed.responseFormatStrategy = next as ProviderConfig["responseFormatStrategy"];
+      i += 1;
+      continue;
+    }
+    if (arg === "--health-path" && next) {
+      parsed.healthPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--models-path" && next) {
+      parsed.modelsPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg === "--require-model-in-request" && next) {
+      parsed.requireModelInRequest = parseBooleanArg(next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--supports-streaming" && next) {
+      parsed.supportsStreaming = parseBooleanArg(next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--supports-tools" && next) {
+      parsed.supportsTools = parseBooleanArg(next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--supports-json-schema" && next) {
+      parsed.supportsJsonSchema = parseBooleanArg(next);
+      i += 1;
+      continue;
+    }
+    if (arg === "--supports-gbnf" && next) {
+      parsed.supportsGbnf = parseBooleanArg(next);
       i += 1;
       continue;
     }
@@ -671,13 +763,85 @@ const isPhaseProvider = (value: string): value is PipelinePhase =>
   value === "critic" ||
   value === "interpreter";
 
+type LocalRunnerProviderFields = Pick<
+  CodaliConfig,
+  | "localRunner"
+  | "runnerKind"
+  | "authMode"
+  | "dummyBearerToken"
+  | "headers"
+  | "extraBody"
+  | "responseFormatStrategy"
+  | "healthPath"
+  | "modelsPath"
+  | "requireModelInRequest"
+  | "supportsStreaming"
+  | "supportsTools"
+  | "supportsJsonSchema"
+  | "supportsGbnf"
+>;
+
+const copyLocalRunnerProviderFields = (config: LocalRunnerProviderFields): Partial<ProviderConfig> => ({
+  localRunner: config.localRunner,
+  runnerKind: config.runnerKind,
+  authMode: config.authMode,
+  dummyBearerToken: config.dummyBearerToken,
+  headers: config.headers,
+  extraBody: config.extraBody,
+  responseFormatStrategy: config.responseFormatStrategy,
+  healthPath: config.healthPath,
+  modelsPath: config.modelsPath,
+  requireModelInRequest: config.requireModelInRequest,
+  supportsStreaming: config.supportsStreaming,
+  supportsTools: config.supportsTools,
+  supportsJsonSchema: config.supportsJsonSchema,
+  supportsGbnf: config.supportsGbnf,
+});
+
+const buildDefaultProviderConfig = (config: CodaliConfig): ProviderConfig => ({
+  model: config.model,
+  apiKey: config.apiKey,
+  baseUrl: config.baseUrl,
+  timeoutMs: config.limits.timeoutMs,
+  ...copyLocalRunnerProviderFields(config),
+});
+
+const applyResolvedAgentProviderDefaults = (
+  config: CodaliConfig,
+  resolved: ResolvedAgentConfig,
+  options: { overwrite: boolean },
+): void => {
+  if (options.overwrite || !config.provider) config.provider = resolved.provider;
+  if (options.overwrite || !config.model) config.model = resolved.model;
+  if (options.overwrite || config.apiKey === undefined) config.apiKey = resolved.apiKey;
+  if (options.overwrite || config.baseUrl === undefined) config.baseUrl = resolved.baseUrl;
+
+  const fill = <T>(current: T | undefined, next: T | undefined): T | undefined =>
+    options.overwrite || current === undefined ? next : current;
+
+  config.localRunner = fill(config.localRunner, resolved.localRunner);
+  config.runnerKind = fill(config.runnerKind, resolved.runnerKind);
+  config.authMode = fill(config.authMode, resolved.authMode);
+  config.dummyBearerToken = fill(config.dummyBearerToken, resolved.dummyBearerToken);
+  config.headers = fill(config.headers, resolved.headers);
+  config.extraBody = fill(config.extraBody, resolved.extraBody);
+  config.responseFormatStrategy = fill(config.responseFormatStrategy, resolved.responseFormatStrategy);
+  config.healthPath = fill(config.healthPath, resolved.healthPath);
+  config.modelsPath = fill(config.modelsPath, resolved.modelsPath);
+  config.requireModelInRequest = fill(config.requireModelInRequest, resolved.requireModelInRequest);
+  config.supportsStreaming = fill(config.supportsStreaming, resolved.supportsStreaming);
+  config.supportsTools = fill(config.supportsTools, resolved.supportsTools);
+  config.supportsJsonSchema = fill(config.supportsJsonSchema, resolved.supportsJsonSchema);
+  config.supportsGbnf = fill(config.supportsGbnf, resolved.supportsGbnf);
+};
+
 const resolveInterpreterRoute = (
   config: {
     interpreter: { provider: string; model: string; timeoutMs: number };
     model: string;
     apiKey?: string;
     baseUrl?: string;
-  },
+  } & LocalRunnerProviderFields,
   phaseRoutes: Record<PipelinePhase, { provider: string; config: ProviderConfig; temperature?: number }>,
 ): { provider: string; config: ProviderConfig; temperature?: number } => {
   const requestedProvider = config.interpreter.provider?.trim() || "auto";
@@ -702,6 +866,7 @@ const resolveInterpreterRoute = (
         apiKey: config.apiKey,
         baseUrl: config.baseUrl,
         timeoutMs: config.interpreter.timeoutMs,
+        ...copyLocalRunnerProviderFields(config),
       };
   if (!baseConfig.baseUrl) {
     const sameProviderBaseUrl = Object.values(phaseRoutes)
@@ -1193,6 +1358,20 @@ export class RunCommand {
     const model = parsed.model ?? resolvedAgent?.model;
     const apiKey = parsed.apiKey ?? resolvedAgent?.apiKey;
     const baseUrl = parsed.baseUrl ?? resolvedAgent?.baseUrl;
+    const localRunner = parsed.localRunner ?? resolvedAgent?.localRunner;
+    const runnerKind = parsed.runnerKind ?? resolvedAgent?.runnerKind;
+    const authMode = parsed.authMode ?? resolvedAgent?.authMode;
+    const dummyBearerToken = parsed.dummyBearerToken ?? resolvedAgent?.dummyBearerToken;
+    const headers = parsed.headers ?? resolvedAgent?.headers;
+    const extraBody = parsed.extraBody ?? resolvedAgent?.extraBody;
+    const responseFormatStrategy = parsed.responseFormatStrategy ?? resolvedAgent?.responseFormatStrategy;
+    const healthPath = parsed.healthPath ?? resolvedAgent?.healthPath;
+    const modelsPath = parsed.modelsPath ?? resolvedAgent?.modelsPath;
+    const requireModelInRequest = parsed.requireModelInRequest ?? resolvedAgent?.requireModelInRequest;
+    const supportsStreaming = parsed.supportsStreaming ?? resolvedAgent?.supportsStreaming;
+    const supportsTools = parsed.supportsTools ?? resolvedAgent?.supportsTools;
+    const supportsJsonSchema = parsed.supportsJsonSchema ?? resolvedAgent?.supportsJsonSchema;
+    const supportsGbnf = parsed.supportsGbnf ?? resolvedAgent?.supportsGbnf;
     const agentId = resolvedAgent?.agent.id ?? parsed.agentId;
     const agentSlug = resolvedAgent?.agent.slug ?? parsed.agentSlug;
 
@@ -1216,6 +1395,22 @@ export class RunCommand {
     if (model) cliConfig.model = model;
     if (apiKey) cliConfig.apiKey = apiKey;
     if (baseUrl) cliConfig.baseUrl = baseUrl;
+    if (localRunner) cliConfig.localRunner = localRunner;
+    if (runnerKind) cliConfig.runnerKind = runnerKind;
+    if (authMode) cliConfig.authMode = authMode;
+    if (dummyBearerToken) cliConfig.dummyBearerToken = dummyBearerToken;
+    if (headers) cliConfig.headers = headers;
+    if (extraBody) cliConfig.extraBody = extraBody;
+    if (responseFormatStrategy) cliConfig.responseFormatStrategy = responseFormatStrategy;
+    if (healthPath) cliConfig.healthPath = healthPath;
+    if (modelsPath) cliConfig.modelsPath = modelsPath;
+    if (requireModelInRequest !== undefined) {
+      cliConfig.requireModelInRequest = requireModelInRequest;
+    }
+    if (supportsStreaming !== undefined) cliConfig.supportsStreaming = supportsStreaming;
+    if (supportsTools !== undefined) cliConfig.supportsTools = supportsTools;
+    if (supportsJsonSchema !== undefined) cliConfig.supportsJsonSchema = supportsJsonSchema;
+    if (supportsGbnf !== undefined) cliConfig.supportsGbnf = supportsGbnf;
     if (parsed.workflowProfile) {
       cliConfig.workflow = { profile: parsed.workflowProfile };
     }
@@ -1670,16 +1865,10 @@ export class RunCommand {
               "No eligible agents found in the mcoda agent registry. Run `mcoda agent list` or supply --agent/--provider/--model.",
             );
           }
-          config.provider = fallbackResolved.provider;
-          config.model = fallbackResolved.model;
-          config.apiKey = fallbackResolved.apiKey;
-          config.baseUrl = fallbackResolved.baseUrl;
+          applyResolvedAgentProviderDefaults(config, fallbackResolved, { overwrite: true });
         } else if (!config.provider || !config.model) {
           if (fallbackResolved) {
-            config.provider = config.provider || fallbackResolved.provider;
-            config.model = config.model || fallbackResolved.model;
-            config.apiKey = config.apiKey ?? fallbackResolved.apiKey;
-            config.baseUrl = config.baseUrl ?? fallbackResolved.baseUrl;
+            applyResolvedAgentProviderDefaults(config, fallbackResolved, { overwrite: false });
           }
         }
 
@@ -1691,12 +1880,7 @@ export class RunCommand {
 
         const defaults = {
           provider: config.provider,
-          config: {
-            model: config.model,
-            apiKey: config.apiKey,
-            baseUrl: config.baseUrl,
-            timeoutMs: config.limits.timeoutMs,
-          },
+          config: buildDefaultProviderConfig(config),
         };
 
         const selectedPhaseModels = new Set<string>(
@@ -1760,6 +1944,8 @@ export class RunCommand {
                   apiKey: selected.apiKey,
                   baseUrl: selected.baseUrl,
                   timeoutMs: config.limits.timeoutMs,
+                  ...copyLocalRunnerProviderFields(config),
+                  ...copyLocalRunnerProviderFields(selected),
                 },
               }
             : defaults;
@@ -2189,6 +2375,8 @@ export class RunCommand {
               apiKey: nextResolved.apiKey,
               baseUrl: nextResolved.baseUrl,
               timeoutMs: config.limits.timeoutMs,
+              ...copyLocalRunnerProviderFields(config),
+              ...copyLocalRunnerProviderFields(nextResolved),
             },
           };
           const nextRoute = buildRoutedProvider(
@@ -2373,22 +2561,14 @@ export class RunCommand {
             throw new Error("Run cancelled due to cost limit");
           }
         }
-        const provider = createProvider(config.provider, {
-          model: config.model,
-          apiKey: config.apiKey,
-          baseUrl: config.baseUrl,
-          timeoutMs: config.limits.timeoutMs,
-        });
+        const provider = createProvider(config.provider, buildDefaultProviderConfig(config));
 
         const result = await runCodaliTask({
           task: workflowTaskInput,
           workspace: { root: config.workspaceRoot },
           provider: {
             name: config.provider,
-            model: config.model,
-            apiKey: config.apiKey,
-            baseUrl: config.baseUrl,
-            timeoutMs: config.limits.timeoutMs,
+            ...buildDefaultProviderConfig(config),
           },
           docdex: {
             baseUrl: config.docdex.baseUrl,

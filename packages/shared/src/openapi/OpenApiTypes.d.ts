@@ -121,6 +121,34 @@ export interface AgentHealth {
     latencyMs?: number;
     details?: Record<string, unknown>;
 }
+export type AgentUsageLimitScope = "model" | "agent" | "provider";
+export type AgentUsageLimitWindowType = "rolling_5h" | "daily" | "weekly" | "other";
+export type AgentUsageLimitStatus = "available" | "exhausted" | "unknown";
+export interface AgentUsageLimitRecord {
+    id: string;
+    agentId: string;
+    limitScope: AgentUsageLimitScope;
+    limitKey: string;
+    windowType: AgentUsageLimitWindowType;
+    status: AgentUsageLimitStatus;
+    resetAt?: string;
+    observedAt: string;
+    source?: string;
+    details?: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+}
+export interface UpsertAgentUsageLimitInput {
+    agentId: string;
+    limitScope: AgentUsageLimitScope;
+    limitKey: string;
+    windowType: AgentUsageLimitWindowType;
+    status: AgentUsageLimitStatus;
+    resetAt?: string;
+    observedAt: string;
+    source?: string;
+    details?: Record<string, unknown>;
+}
 export interface WorkspaceDefault {
     workspaceId: string;
     commandName: string;
@@ -203,6 +231,24 @@ export interface EstimateEtas {
     readyToQaEta?: string;
     completeEta?: string;
 }
+export interface EstimateStatusCounts {
+    total: number;
+    readyToCodeReview: number;
+    failed: number;
+    inProgress: number;
+    readyToQa: number;
+    completed: number;
+}
+export interface EstimateCompletionMetric {
+    done: number;
+    total: number;
+    percent: number;
+}
+export interface EstimateCompletion {
+    workOnTasks: EstimateCompletionMetric;
+    readyToQa: EstimateCompletionMetric;
+    done: EstimateCompletionMetric;
+}
 export interface EstimateResult {
     scope: {
         project?: string;
@@ -215,6 +261,8 @@ export interface EstimateResult {
     effectiveVelocity: EffectiveVelocity;
     durationsHours: EstimateDurations;
     etas: EstimateEtas;
+    statusCounts: EstimateStatusCounts;
+    completion: EstimateCompletion;
 }
 export interface TokenUsage {
     timestamp: string;

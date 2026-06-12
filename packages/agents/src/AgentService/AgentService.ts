@@ -9,7 +9,9 @@ import {
   AgentUsageLimitRecord,
   AgentUsageLimitWindowType,
   CryptoHelper,
+  LOCAL_OPENAI_COMPATIBLE_ADAPTER_ALIASES,
   UpsertAgentUsageLimitInput,
+  isLocalOpenAiCompatibleAdapter,
 } from "@mcoda/shared";
 import { GlobalRepository } from "@mcoda/db";
 import { CodexAdapter } from "../adapters/codex/CodexAdapter.js";
@@ -30,7 +32,13 @@ import { parseInvocationFailure } from "./InvocationFailureParser.js";
 
 const CLI_BASED_ADAPTERS = new Set(["codex-cli", "gemini-cli", "openai-cli", "ollama-cli", "codali-cli", "claude-cli"]);
 const LOCAL_ADAPTERS = new Set(["local-model"]);
-const OFFLINE_CAPABLE_ADAPTERS = new Set(["local-model", "ollama-cli", "qa-cli"]);
+const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set<string>(LOCAL_OPENAI_COMPATIBLE_ADAPTER_ALIASES);
+const OFFLINE_CAPABLE_ADAPTERS = new Set([
+  "local-model",
+  "ollama-cli",
+  "qa-cli",
+  ...LOCAL_OPENAI_COMPATIBLE_ADAPTERS,
+]);
 const SUPPORTED_ADAPTERS = new Set([
   "openai-api",
   "codex-cli",
@@ -44,6 +52,7 @@ const SUPPORTED_ADAPTERS = new Set([
   "ollama-cli",
   "codali-cli",
   "mswarm-worker",
+  ...LOCAL_OPENAI_COMPATIBLE_ADAPTERS,
 ]);
 
 const DEFAULT_JOB_PROMPT =
@@ -379,7 +388,7 @@ export class AgentService {
     const adapterType = this.resolveAdapterType(agent, config.apiKey, adapterOverride);
     const configWithAdapter = { ...config, adapter: adapterType };
 
-    if (adapterType === "openai-api") {
+    if (adapterType === "openai-api" || isLocalOpenAiCompatibleAdapter(adapterType)) {
       return new OpenAiAdapter(configWithAdapter);
     }
     if (adapterType === "mswarm-worker") {

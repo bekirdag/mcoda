@@ -1,3 +1,10 @@
+import type {
+  LocalOpenAiCompatibleRunnerConfig,
+  LocalRunnerAuthMode,
+  LocalRunnerKind,
+  LocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
+
 export type ProviderRole = "system" | "user" | "assistant" | "tool";
 
 export interface ProviderToolDefinition {
@@ -72,6 +79,20 @@ export interface ProviderConfig {
   apiKey?: string;
   baseUrl?: string;
   timeoutMs?: number;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
 }
 
 export interface Provider {

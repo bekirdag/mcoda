@@ -1,6 +1,11 @@
-import { AgentHealth } from "@mcoda/shared";
+import {
+  AgentHealth,
+  isLocalOpenAiCompatibleAdapter,
+  normalizeLocalOpenAiCompatibleRunnerConfig,
+  type LocalOpenAiCompatibleRunnerConfig,
+} from "@mcoda/shared";
 import { AdapterConfig, AgentAdapter, InvocationRequest, InvocationResult } from "../AdapterTypes.js";
-import { cliHealthy, runCodaliExec, runCodaliStream } from "./CodaliCliRunner.js";
+import { cliHealthy, runCodaliExec, runCodaliStream, type CodaliCliOptions } from "./CodaliCliRunner.js";
 
 const resolveString = (value: unknown): string | undefined => (typeof value === "string" && value.trim() ? value : undefined);
 
@@ -43,6 +48,13 @@ const PROVIDERS_REQUIRING_API_KEY = new Set(["openai-compatible"]);
 const SESSION_AUTH_ADAPTERS = new Set(["codex-cli", "openai-cli", "gemini-cli"]);
 const UNSUPPORTED_CODALI_ADAPTERS = new Set(["gemini-cli", "zhipu-api"]);
 
+type CodaliProviderResolution = {
+  provider: string;
+  sourceAdapter?: string;
+  requiresApiKey: boolean;
+  localOpenAiCompatible: boolean;
+};
+
 const resolveSourceAdapter = (request: InvocationRequest, config: AdapterConfig): string | undefined => {
   const metadata = request.metadata ?? {};
   return (
@@ -75,16 +87,19 @@ const resolveAgentSlug = (request: InvocationRequest, config: AdapterConfig): st
 export const resolveCodaliProviderFromAdapter = (params: {
   sourceAdapter?: string;
   explicitProvider?: string;
-}): { provider: string; sourceAdapter?: string; requiresApiKey: boolean } => {
+}): CodaliProviderResolution => {
   const sourceAdapter = params.sourceAdapter;
   const explicitProvider = params.explicitProvider;
+  const localOpenAiCompatible = isLocalOpenAiCompatibleAdapter(sourceAdapter);
   if (explicitProvider) {
     const providerRequires = PROVIDERS_REQUIRING_API_KEY.has(explicitProvider);
-    const requiresApiKey = providerRequires && !SESSION_AUTH_ADAPTERS.has(sourceAdapter ?? "");
+    const sourceUsesSessionAuth = SESSION_AUTH_ADAPTERS.has(sourceAdapter ?? "") || localOpenAiCompatible;
+    const requiresApiKey = providerRequires && !sourceUsesSessionAuth;
     return {
       provider: explicitProvider,
       sourceAdapter,
       requiresApiKey,
+      localOpenAiCompatible,
     };
   }
 
@@ -95,25 +110,28 @@ export const resolveCodaliProviderFromAdapter = (params: {
       );
     }
     if (sourceAdapter === "openai-api") {
-      return { provider: "openai-compatible", sourceAdapter, requiresApiKey: true };
+      return { provider: "openai-compatible", sourceAdapter, requiresApiKey: true, localOpenAiCompatible };
+    }
+    if (localOpenAiCompatible) {
+      return { provider: "openai-compatible", sourceAdapter, requiresApiKey: false, localOpenAiCompatible };
     }
     if (["openai-cli", "codex-cli"].includes(sourceAdapter)) {
-      return { provider: "codex-cli", sourceAdapter, requiresApiKey: false };
+      return { provider: "codex-cli", sourceAdapter, requiresApiKey: false, localOpenAiCompatible };
     }
     if (["ollama-remote", "ollama-cli", "local-model"].includes(sourceAdapter)) {
-      return { provider: "ollama-remote", sourceAdapter, requiresApiKey: false };
+      return { provider: "ollama-remote", sourceAdapter, requiresApiKey: false, localOpenAiCompatible };
     }
   }
 
   const requiresApiKey =
     PROVIDERS_REQUIRING_API_KEY.has("openai-compatible") && !SESSION_AUTH_ADAPTERS.has(sourceAdapter ?? "");
-  return { provider: "openai-compatible", sourceAdapter, requiresApiKey };
+  return { provider: "openai-compatible", sourceAdapter, requiresApiKey, localOpenAiCompatible };
 };
 
 const resolveProviderInfo = (
   request: InvocationRequest,
   config: AdapterConfig,
-): { provider: string; sourceAdapter?: string; requiresApiKey: boolean } => {
+): CodaliProviderResolution => {
   const anyConfig = config as unknown as Record<string, unknown>;
   const explicitProvider = resolveString(anyConfig.provider) ?? resolveString(anyConfig.llmProvider);
   const sourceAdapter = resolveSourceAdapter(request, config);
@@ -135,6 +153,17 @@ const ensureApiKey = (
   );
 };
 
+const ensureLocalOpenAiCompatibleBaseUrl = (
+  providerInfo: CodaliProviderResolution,
+  baseUrl: string | undefined,
+): void => {
+  if (providerInfo.provider !== "openai-compatible" || !providerInfo.localOpenAiCompatible || baseUrl) return;
+  const sourceLabel = providerInfo.sourceAdapter ? ` (source adapter: ${providerInfo.sourceAdapter})` : "";
+  throw new Error(
+    `CONFIG_REQUIRED: baseUrl missing for local OpenAI-compatible codali provider${sourceLabel}; set config.baseUrl or agent.config.baseUrl.`,
+  );
+};
+
 const resolveBaseUrl = (config: AdapterConfig): string | undefined => {
   const anyConfig = config as unknown as Record<string, unknown>;
   const agentConfig = (config.agent as unknown as Record<string, unknown>)?.config as
@@ -148,6 +177,57 @@ const resolveBaseUrl = (config: AdapterConfig): string | undefined => {
     resolveString(agentConfig?.endpoint) ??
     resolveString(agentConfig?.apiBaseUrl)
   );
+};
+
+const compactLocalRunnerConfig = (
+  config: AdapterConfig,
+): LocalOpenAiCompatibleRunnerConfig | undefined => {
+  const normalized = normalizeLocalOpenAiCompatibleRunnerConfig({
+    adapter: config.adapter ?? config.agent.adapter,
+    config,
+    agentConfig: config.agent.config,
+  });
+  const entries = Object.entries(normalized.config).filter(([, value]) => value !== undefined);
+  if (!normalized.isLocalOpenAiCompatible && entries.length === 0) return undefined;
+  return Object.fromEntries(entries) as LocalOpenAiCompatibleRunnerConfig;
+};
+
+const resolveLocalRunnerCliOptions = (
+  config: AdapterConfig,
+): Pick<
+  CodaliCliOptions,
+  | "localRunner"
+  | "runnerKind"
+  | "authMode"
+  | "dummyBearerToken"
+  | "headers"
+  | "extraBody"
+  | "responseFormatStrategy"
+  | "healthPath"
+  | "modelsPath"
+  | "requireModelInRequest"
+  | "supportsStreaming"
+  | "supportsTools"
+  | "supportsJsonSchema"
+  | "supportsGbnf"
+> => {
+  const localRunner = compactLocalRunnerConfig(config);
+  return {
+    localRunner,
+    runnerKind: localRunner?.runnerKind,
+    authMode: localRunner?.authMode,
+    dummyBearerToken: localRunner?.dummyBearerToken,
+    headers: localRunner?.headers,
+    extraBody: localRunner?.extraBody,
+    responseFormatStrategy: localRunner?.responseFormatStrategy,
+    healthPath: localRunner?.healthPath,
+    modelsPath: localRunner?.modelsPath,
+    requireModelInRequest: localRunner?.requireModelInRequest,
+    supportsStreaming: localRunner?.supportsStreaming,
+    supportsTools: localRunner?.supportsTools,
+    supportsJsonSchema: localRunner?.supportsJsonSchema,
+    supportsGbnf: localRunner?.supportsGbnf,
+  };
 };
 
 const resolveDocdexBaseUrl = (config: AdapterConfig): string | undefined => {
@@ -204,6 +284,8 @@ export class CodaliAdapter implements AgentAdapter {
   const agentId = resolveAgentId(request, this.config);
   const agentSlug = resolveAgentSlug(request, this.config);
   const baseUrl = resolveBaseUrl(this.config);
+  ensureLocalOpenAiCompatibleBaseUrl(providerInfo, baseUrl);
+  const localRunnerOptions = resolveLocalRunnerCliOptions(this.config);
   const docdexBaseUrl =
     resolveMetadataValue(metadata, ["docdexBaseUrl", "docdex_base_url"]) ?? resolveDocdexBaseUrl(this.config);
   const docdexRepoId =
@@ -233,6 +315,7 @@ export class CodaliAdapter implements AgentAdapter {
     model: this.config.model ?? "default",
     apiKey: this.config.apiKey,
     baseUrl,
+    ...localRunnerOptions,
     docdexBaseUrl,
     docdexRepoId,
     docdexRepoRoot,
@@ -272,10 +355,12 @@ export class CodaliAdapter implements AgentAdapter {
     const workspaceRoot = resolveWorkspaceRoot(request);
     const providerInfo = resolveProviderInfo(request, this.config);
     ensureApiKey(providerInfo.provider, providerInfo.sourceAdapter, providerInfo.requiresApiKey, this.config);
-    const provider = providerInfo.provider;
-    const agentId = resolveAgentId(request, this.config);
-    const agentSlug = resolveAgentSlug(request, this.config);
-    const baseUrl = resolveBaseUrl(this.config);
+  const provider = providerInfo.provider;
+  const agentId = resolveAgentId(request, this.config);
+  const agentSlug = resolveAgentSlug(request, this.config);
+  const baseUrl = resolveBaseUrl(this.config);
+  ensureLocalOpenAiCompatibleBaseUrl(providerInfo, baseUrl);
+  const localRunnerOptions = resolveLocalRunnerCliOptions(this.config);
     const docdexBaseUrl =
       resolveMetadataValue(metadata, ["docdexBaseUrl", "docdex_base_url"]) ?? resolveDocdexBaseUrl(this.config);
     const docdexRepoId =
@@ -324,6 +409,7 @@ export class CodaliAdapter implements AgentAdapter {
       model: this.config.model ?? "default",
       apiKey: this.config.apiKey,
       baseUrl,
+      ...localRunnerOptions,
       docdexBaseUrl,
       docdexRepoId,
       docdexRepoRoot,

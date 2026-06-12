@@ -1,4 +1,13 @@
 import { AgentsApi, AgentResponse, AgentUsageLimitResponse, WorkspaceResolver } from "@mcoda/core";
+import {
+  defaultLocalRunnerKindForAdapter,
+  isLocalOpenAiCompatibleAdapter,
+  isReservedLocalRunnerExtraBodyKey,
+  isSecretLocalRunnerHeaderKey,
+  normalizeLocalRunnerAuthMode,
+  normalizeLocalRunnerKind,
+  normalizeLocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
 import readline from "node:readline";
 
 interface ParsedArgs {
@@ -55,7 +64,7 @@ Subcommands:
   limits                     Show tracked usage-limit windows/reset times
     --agent <NAME>           Filter by agent slug/id
   add <NAME>                 Create a global agent
-    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|claude-cli|gemini-cli|local-model|qa-cli|ollama-remote)
+    --adapter <TYPE>         Adapter slug (openai-api|zhipu-api|codex-cli|claude-cli|gemini-cli|local-model|qa-cli|ollama-remote|openai-compatible-local|vllm-local|llama-cpp-local|llamacpp-local)
     --model <MODEL>          Default model name
     --rating <N>             Relative capability rating (higher is stronger)
     --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
@@ -70,14 +79,42 @@ Subcommands:
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
     --config-base-url <URL>  Base URL for remote adapters (e.g., http://host:11434 for ollama-remote)
+    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|lm-studio|localai|sglang|tgi|custom)
+    --config-auth-mode <M>   Local auth mode (none|bearer|dummy-bearer)
+    --config-dummy-bearer-token <T> Non-secret dummy bearer token for local runners
+    --config-header <K=V>    Repeatable non-secret local runner header
+    --config-extra-body-json <JSON> Extra OpenAI-compatible request body object
+    --config-response-format-strategy <S> Local response format strategy
+    --config-health-path <P> Local runner health path override
+    --config-models-path <P> Local runner models path override
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
+    --adapter <TYPE>         Adapter slug (supports local OpenAI-compatible aliases)
+    --model <MODEL>          Default model name
+    --rating <N>             Relative capability rating (higher is stronger)
+    --reasoning-rating <N>   Relative reasoning strength rating (higher is stronger)
     --max-complexity <N>     Max task complexity the agent should handle (1-10)
     --openai-compatible <B> OpenAI-compatible API support (true/false)
     --context-window <N>     Context window size (tokens)
     --max-output-tokens <N>  Max output tokens per response
     --supports-tools <B>     Tool-calling support (true/false)
+    --best-usage <TEXT>      Primary usage area (e.g., code_write, ui_ux_docs)
+    --cost-per-million <N>   Cost per 1M tokens (0 for local models)
+    --capability <CAP>       Repeatable capabilities to attach
+    --job-path <PATH>        Optional job prompt path
+    --character-path <PATH>  Optional character prompt path
+    --config-base-url <URL>  Base URL for remote/local runner adapters
+    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|lm-studio|localai|sglang|tgi|custom)
+    --config-auth-mode <M>   Local auth mode (none|bearer|dummy-bearer)
+    --config-dummy-bearer-token <T> Non-secret dummy bearer token for local runners
+    --config-header <K=V>    Repeatable non-secret local runner header
+    --config-extra-body-json <JSON> Extra OpenAI-compatible request body object
+    --config-response-format-strategy <S> Local response format strategy
+    --config-health-path <P> Local runner health path override
+    --config-models-path <P> Local runner models path override
+    --config-temperature <N> Temperature override for supported adapters
+    --config-thinking <BOOL> Enable thinking mode for supported adapters
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
     --force                  Force deletion even if referenced
   auth set <NAME>            Store credentials (use --api-key or interactive prompt)
@@ -164,6 +201,81 @@ const parseBooleanFlag = (
   throw new Error(`Invalid ${label}; expected true/false`);
 };
 
+const CONFIG_FLAG_NAMES = [
+  "config-base-url",
+  "config-runner-kind",
+  "config-auth-mode",
+  "config-dummy-bearer-token",
+  "config-header",
+  "config-extra-body-json",
+  "config-response-format-strategy",
+  "config-health-path",
+  "config-models-path",
+  "config-temperature",
+  "config-thinking",
+] as const;
+
+const hasConfigFlags = (flags: Record<string, any>): boolean =>
+  CONFIG_FLAG_NAMES.some((flagName) => flags[flagName] !== undefined);
+
+const getLastStringFlag = (
+  value: string | string[] | boolean | undefined,
+  label: string,
+): string | undefined => {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
+  if (typeof raw === "boolean") {
+    throw new Error(`Invalid ${label}; expected a value`);
+  }
+  const trimmed = String(raw).trim();
+  if (!trimmed) {
+    throw new Error(`Invalid ${label}; expected a non-empty value`);
+  }
+  return trimmed;
+};
+
+const getStringFlagValues = (
+  value: string | string[] | boolean | undefined,
+  label: string,
+): string[] => {
+  if (value === undefined) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((raw) => {
+    if (typeof raw === "boolean") {
+      throw new Error(`Invalid ${label}; expected a value`);
+    }
+    const trimmed = String(raw).trim();
+    if (!trimmed) {
+      throw new Error(`Invalid ${label}; expected a non-empty value`);
+    }
+    return trimmed;
+  });
+};
+
+const validateHttpUrl = (value: string, label: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`Invalid ${label}; expected an absolute http(s) URL`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error(`Invalid ${label}; expected an absolute http(s) URL`);
+  }
+  return value;
+};
+
+const isLoopbackBaseUrl = (value: string): boolean => {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (hostname === "localhost" || hostname === "::1") return true;
+    if (/^127(?:\.\d{1,3}){3}$/.test(hostname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+};
+
 const resolveListRefreshHealth = (flags: Record<string, string | boolean | string[]>): boolean => {
   const refreshHealth = parseBooleanFlag(flags["refresh-health"], "--refresh-health");
   const noRefreshHealth = parseBooleanFlag(flags["no-refresh-health"], "--no-refresh-health");
@@ -186,9 +298,109 @@ const parseCostPerMillion = (value: string | string[] | boolean | undefined): nu
   return parsed;
 };
 
-const parseConfig = (flags: Record<string, any>) => {
+const parseConfigExtraBody = (raw: string): Record<string, unknown> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Invalid --config-extra-body-json; expected a JSON object");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Invalid --config-extra-body-json; expected a JSON object");
+  }
+  for (const key of Object.keys(parsed)) {
+    if (isReservedLocalRunnerExtraBodyKey(key)) {
+      throw new Error(`Invalid --config-extra-body-json; reserved OpenAI request key "${key}" is not allowed`);
+    }
+  }
+  return parsed as Record<string, unknown>;
+};
+
+const parseConfigHeaders = (value: string | string[] | boolean | undefined): Record<string, string> | undefined => {
+  const entries = getStringFlagValues(value, "--config-header");
+  if (entries.length === 0) return undefined;
+  const headers: Record<string, string> = {};
+  for (const entry of entries) {
+    const separatorIndex = entry.indexOf("=");
+    if (separatorIndex <= 0) {
+      throw new Error("Invalid --config-header; expected key=value");
+    }
+    const key = entry.slice(0, separatorIndex).trim();
+    const headerValue = entry.slice(separatorIndex + 1).trim();
+    if (!key || !headerValue) {
+      throw new Error("Invalid --config-header; expected non-empty key=value");
+    }
+    if (isSecretLocalRunnerHeaderKey(key)) {
+      throw new Error(`Invalid --config-header; secret-bearing header "${key}" must be stored as auth, not config`);
+    }
+    headers[key] = headerValue;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+};
+
+const parseConfig = (
+  flags: Record<string, any>,
+  options: {
+    adapter?: string;
+    applyLocalDefaults?: boolean;
+    requireBaseUrl?: boolean;
+    warn?: (message: string) => void;
+  } = {},
+) => {
   const config: Record<string, unknown> = {};
-  if (flags["config-base-url"]) config.baseUrl = String(flags["config-base-url"]);
+  const localOpenAiCompatible = isLocalOpenAiCompatibleAdapter(options.adapter);
+  const applyLocalDefaults = options.applyLocalDefaults ?? true;
+  const baseUrl = getLastStringFlag(flags["config-base-url"], "--config-base-url");
+  if (baseUrl) config.baseUrl = validateHttpUrl(baseUrl, "--config-base-url");
+
+  const runnerKindValue = getLastStringFlag(flags["config-runner-kind"], "--config-runner-kind");
+  if (runnerKindValue) {
+    const runnerKind = normalizeLocalRunnerKind(runnerKindValue);
+    if (!runnerKind) throw new Error(`Invalid --config-runner-kind; unknown local runner kind "${runnerKindValue}"`);
+    config.runnerKind = runnerKind;
+  } else if (applyLocalDefaults) {
+    const defaultRunnerKind = defaultLocalRunnerKindForAdapter(options.adapter);
+    if (defaultRunnerKind) config.runnerKind = defaultRunnerKind;
+  }
+
+  const authModeValue = getLastStringFlag(flags["config-auth-mode"], "--config-auth-mode");
+  if (authModeValue) {
+    const authMode = normalizeLocalRunnerAuthMode(authModeValue);
+    if (!authMode) throw new Error(`Invalid --config-auth-mode; unknown local auth mode "${authModeValue}"`);
+    config.authMode = authMode;
+  } else if (localOpenAiCompatible && applyLocalDefaults) {
+    config.authMode = "none";
+  }
+
+  const dummyBearerToken = getLastStringFlag(flags["config-dummy-bearer-token"], "--config-dummy-bearer-token");
+  if (dummyBearerToken) config.dummyBearerToken = dummyBearerToken;
+
+  const headers = parseConfigHeaders(flags["config-header"]);
+  if (headers) config.headers = headers;
+
+  const extraBodyRaw = getLastStringFlag(flags["config-extra-body-json"], "--config-extra-body-json");
+  if (extraBodyRaw) config.extraBody = parseConfigExtraBody(extraBodyRaw);
+
+  const responseFormatStrategyValue = getLastStringFlag(
+    flags["config-response-format-strategy"],
+    "--config-response-format-strategy",
+  );
+  if (responseFormatStrategyValue) {
+    const responseFormatStrategy = normalizeLocalRunnerResponseFormatStrategy(responseFormatStrategyValue);
+    if (!responseFormatStrategy) {
+      throw new Error(
+        `Invalid --config-response-format-strategy; unknown response format strategy "${responseFormatStrategyValue}"`,
+      );
+    }
+    config.responseFormatStrategy = responseFormatStrategy;
+  }
+
+  const healthPath = getLastStringFlag(flags["config-health-path"], "--config-health-path");
+  if (healthPath) config.healthPath = healthPath;
+
+  const modelsPath = getLastStringFlag(flags["config-models-path"], "--config-models-path");
+  if (modelsPath) config.modelsPath = modelsPath;
+
   if (flags["config-temperature"] !== undefined) {
     const raw = flags["config-temperature"];
     const parsed = typeof raw === "number" ? raw : Number.parseFloat(String(raw));
@@ -212,7 +424,26 @@ const parseConfig = (flags: Record<string, any>) => {
       }
     }
   }
+  if (options.requireBaseUrl && !config.baseUrl && !config.endpoint && !config.apiBaseUrl) {
+    throw new Error("CONFIG_REQUIRED: --config-base-url is required for local OpenAI-compatible adapters");
+  }
+  if (config.authMode === "none" && typeof config.baseUrl === "string" && !isLoopbackBaseUrl(config.baseUrl)) {
+    options.warn?.(
+      `Warning: ${options.adapter ?? "local runner"} uses authMode=none with non-loopback baseUrl ${config.baseUrl}.`,
+    );
+  }
   return Object.keys(config).length ? config : undefined;
+};
+
+const hasLocalRunnerBaseUrl = (config: Record<string, unknown> | undefined): boolean =>
+  Boolean(config?.baseUrl || config?.endpoint || config?.apiBaseUrl);
+
+const mergeConfigPatch = (
+  existing: Record<string, unknown> | undefined,
+  patch: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!patch) return undefined;
+  return existing ? { ...existing, ...patch } : patch;
 };
 
 const DEFAULT_OLLAMA_CAPABILITIES = ["plan", "code_write", "code_review"];
@@ -559,23 +790,34 @@ export class AgentsCommands {
         case "add": {
           const name = parsed.positionals[0];
           if (!name) throw new Error("agent add requires a slug/name\n\n" + USAGE);
+          const adapter = String(parsed.flags.adapter ?? "openai-api");
+          const localOpenAiCompatible = isLocalOpenAiCompatibleAdapter(adapter);
           const capabilities =
             parseCapabilities(parsed.flags.capability) ??
-            (String(parsed.flags.adapter ?? "openai-api") === "ollama-remote" ? DEFAULT_OLLAMA_CAPABILITIES : []);
+            (adapter === "ollama-remote" ? DEFAULT_OLLAMA_CAPABILITIES : []);
           const prompts = parsePrompts(parsed.flags);
-          const config = parseConfig(parsed.flags);
+          const config = parseConfig(parsed.flags, {
+            adapter,
+            requireBaseUrl: localOpenAiCompatible,
+            warn: (message) => console.warn(message),
+          });
           const rating = parseRating(parsed.flags.rating);
           const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
           const maxComplexity = parseMaxComplexity(parsed.flags["max-complexity"]);
-          const openaiCompatible = parseBooleanFlag(parsed.flags["openai-compatible"], "--openai-compatible");
+          const openaiCompatibleFlag = parseBooleanFlag(parsed.flags["openai-compatible"], "--openai-compatible");
+          if (localOpenAiCompatible && openaiCompatibleFlag === false) {
+            throw new Error("Local OpenAI-compatible adapters require --openai-compatible true");
+          }
+          const openaiCompatible = localOpenAiCompatible ? true : openaiCompatibleFlag;
           const contextWindow = parsePositiveInt(parsed.flags["context-window"], "--context-window");
           const maxOutputTokens = parsePositiveInt(parsed.flags["max-output-tokens"], "--max-output-tokens");
           const supportsTools = parseBooleanFlag(parsed.flags["supports-tools"], "--supports-tools");
           const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
-          const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
+          const parsedCostPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
+          const costPerMillion = localOpenAiCompatible && parsedCostPerMillion === undefined ? 0 : parsedCostPerMillion;
           const agent = await api.createAgent({
             slug: name,
-            adapter: String(parsed.flags.adapter ?? "openai-api"),
+            adapter,
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             rating,
             reasoningRating,
@@ -597,20 +839,49 @@ export class AgentsCommands {
         case "update": {
           const name = parsed.positionals[0];
           if (!name) throw new Error("agent update requires a slug/name\n\n" + USAGE);
+          const existing = await api.getAgent(name);
+          const adapter = parsed.flags.adapter ? String(parsed.flags.adapter) : undefined;
+          const effectiveAdapter = adapter ?? existing.adapter;
+          const localOpenAiCompatible = isLocalOpenAiCompatibleAdapter(effectiveAdapter);
+          const switchingToLocalOpenAiCompatible = adapter !== undefined && isLocalOpenAiCompatibleAdapter(adapter);
           const capabilities = parseCapabilities(parsed.flags.capability);
           const prompts = parsePrompts(parsed.flags);
-          const config = parseConfig(parsed.flags);
+          const configPatch =
+            hasConfigFlags(parsed.flags) || switchingToLocalOpenAiCompatible
+              ? parseConfig(parsed.flags, {
+                  adapter: effectiveAdapter,
+                  applyLocalDefaults: switchingToLocalOpenAiCompatible,
+                })
+              : undefined;
+          const existingConfig =
+            existing.config && typeof existing.config === "object"
+              ? (existing.config as Record<string, unknown>)
+              : undefined;
+          const config = mergeConfigPatch(existingConfig, configPatch);
+          if (config && localOpenAiCompatible && !hasLocalRunnerBaseUrl(config)) {
+            throw new Error("CONFIG_REQUIRED: --config-base-url is required for local OpenAI-compatible adapters");
+          }
+          if (config?.authMode === "none" && typeof config.baseUrl === "string" && !isLoopbackBaseUrl(config.baseUrl)) {
+            console.warn(
+              `Warning: ${effectiveAdapter ?? "local runner"} uses authMode=none with non-loopback baseUrl ${config.baseUrl}.`,
+            );
+          }
           const rating = parseRating(parsed.flags.rating);
           const reasoningRating = parseReasoningRating(parsed.flags["reasoning-rating"]);
           const maxComplexity = parseMaxComplexity(parsed.flags["max-complexity"]);
-          const openaiCompatible = parseBooleanFlag(parsed.flags["openai-compatible"], "--openai-compatible");
+          const openaiCompatibleFlag = parseBooleanFlag(parsed.flags["openai-compatible"], "--openai-compatible");
+          if (localOpenAiCompatible && openaiCompatibleFlag === false) {
+            throw new Error("Local OpenAI-compatible adapters require --openai-compatible true");
+          }
+          const openaiCompatible = localOpenAiCompatible ? true : openaiCompatibleFlag;
           const contextWindow = parsePositiveInt(parsed.flags["context-window"], "--context-window");
           const maxOutputTokens = parsePositiveInt(parsed.flags["max-output-tokens"], "--max-output-tokens");
           const supportsTools = parseBooleanFlag(parsed.flags["supports-tools"], "--supports-tools");
           const bestUsage = parsed.flags["best-usage"] ? String(parsed.flags["best-usage"]) : undefined;
-          const costPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
+          const parsedCostPerMillion = parseCostPerMillion(parsed.flags["cost-per-million"]);
+          const costPerMillion = localOpenAiCompatible && parsedCostPerMillion === undefined ? 0 : parsedCostPerMillion;
           const agent = await api.updateAgent(name, {
-            adapter: parsed.flags.adapter ? String(parsed.flags.adapter) : undefined,
+            adapter,
             defaultModel: parsed.flags.model ? String(parsed.flags.model) : undefined,
             rating,
             reasoningRating,

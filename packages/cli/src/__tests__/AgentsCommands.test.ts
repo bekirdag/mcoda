@@ -23,6 +23,32 @@ const captureLogs = async (fn: () => Promise<void> | void): Promise<string[]> =>
   return logs;
 };
 
+const captureConsole = async (
+  fn: () => Promise<void> | void,
+): Promise<{ logs: string[]; warnings: string[] }> => {
+  const logs: string[] = [];
+  const warnings: string[] = [];
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  // @ts-ignore override
+  console.log = (...args: any[]) => {
+    logs.push(args.join(" "));
+  };
+  // @ts-ignore override
+  console.warn = (...args: any[]) => {
+    warnings.push(args.join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    // @ts-ignore restore
+    console.log = originalLog;
+    // @ts-ignore restore
+    console.warn = originalWarn;
+  }
+  return { logs, warnings };
+};
+
 const withTempHome = async (fn: (home: string) => Promise<void>): Promise<void> => {
   const originalHome = process.env.HOME;
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "mcoda-agent-cli-"));
@@ -39,6 +65,13 @@ test("agent --help prints usage", { concurrency: false }, async () => {
   const logs = await captureLogs(() => AgentsCommands.run(["--help"]));
   const output = logs.join("\n");
   assert.match(output, /Usage: mcoda agent/);
+  assert.match(output, /vllm-local/);
+  assert.match(output, /llama-cpp-local/);
+  assert.match(output, /--config-header <K=V>/);
+  assert.match(output, /--config-extra-body-json <JSON>/);
+  assert.match(output, /update <NAME>[\s\S]*--adapter <TYPE>/);
+  assert.match(output, /update <NAME>[\s\S]*--config-runner-kind <K>/);
+  assert.match(output, /update <NAME>[\s\S]*--config-extra-body-json <JSON>/);
 
   const logsSub = await captureLogs(() => AgentsCommands.run(["list", "--help"]));
   const outputSub = logsSub.join("\n");
@@ -320,6 +353,313 @@ test("agent add stores config for ollama-remote", { concurrency: false }, async 
     assert.ok(agent);
     assert.equal((agent.config as any)?.baseUrl, "http://192.168.1.115:11434");
     await repo.close();
+  });
+});
+
+test("agent add stores local OpenAI-compatible runner config flags", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "phase4-vllm",
+      "--adapter",
+      "vllm-local",
+      "--model",
+      "local-model",
+      "--config-base-url",
+      "http://127.0.0.1:8000/v1",
+      "--config-header",
+      "X-Trace=phase4",
+      "--config-header",
+      "X-Runner=vllm",
+      "--config-extra-body-json",
+      '{"guided_choice":["yes","no"],"top_k":40}',
+      "--config-response-format-strategy",
+      "json_schema",
+      "--config-health-path",
+      "/health",
+      "--config-models-path",
+      "/v1/models",
+      "--config-dummy-bearer-token",
+      "not-a-secret",
+      "--capability",
+      "plan",
+      "--capability",
+      "code_write",
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("phase4-vllm");
+    assert.ok(agent);
+    assert.equal(agent.adapter, "vllm-local");
+    assert.equal(agent.defaultModel, "local-model");
+    assert.equal(agent.openaiCompatible, true);
+    assert.equal(agent.costPerMillion, 0);
+    assert.deepEqual(await repo.getAgentCapabilities(agent.id), ["code_write", "plan"]);
+    assert.equal((agent.config as any)?.baseUrl, "http://127.0.0.1:8000/v1");
+    assert.equal((agent.config as any)?.runnerKind, "vllm");
+    assert.equal((agent.config as any)?.authMode, "none");
+    assert.equal((agent.config as any)?.dummyBearerToken, "not-a-secret");
+    assert.deepEqual((agent.config as any)?.headers, {
+      "X-Trace": "phase4",
+      "X-Runner": "vllm",
+    });
+    assert.deepEqual((agent.config as any)?.extraBody, {
+      guided_choice: ["yes", "no"],
+      top_k: 40,
+    });
+    assert.equal((agent.config as any)?.responseFormatStrategy, "json-schema");
+    assert.equal((agent.config as any)?.healthPath, "/health");
+    assert.equal((agent.config as any)?.modelsPath, "/v1/models");
+    await repo.close();
+  });
+});
+
+test("agent add defaults llama.cpp local runner kinds", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "phase4-llama-cpp",
+      "--adapter",
+      "llama-cpp-local",
+      "--config-base-url",
+      "http://127.0.0.1:8080/v1",
+    ]);
+    await AgentsCommands.run([
+      "add",
+      "phase4-legacy-llamacpp",
+      "--adapter",
+      "llamacpp-local",
+      "--config-base-url",
+      "http://127.0.0.1:8081/v1",
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const llamaCpp = await repo.getAgentBySlug("phase4-llama-cpp");
+    const legacy = await repo.getAgentBySlug("phase4-legacy-llamacpp");
+    assert.ok(llamaCpp);
+    assert.ok(legacy);
+    assert.equal((llamaCpp.config as any)?.runnerKind, "llama-cpp");
+    assert.equal((legacy.config as any)?.runnerKind, "llama-cpp");
+    assert.equal((llamaCpp.config as any)?.authMode, "none");
+    assert.equal((legacy.config as any)?.authMode, "none");
+    await repo.close();
+  });
+});
+
+test("agent update merges local runner config patches", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "phase4-update-local",
+      "--adapter",
+      "vllm-local",
+      "--config-base-url",
+      "http://127.0.0.1:8000/v1",
+      "--config-runner-kind",
+      "custom",
+      "--config-response-format-strategy",
+      "none",
+    ]);
+    await AgentsCommands.run([
+      "update",
+      "phase4-update-local",
+      "--config-header",
+      "X-Trace=updated",
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("phase4-update-local");
+    assert.ok(agent);
+    assert.equal((agent.config as any)?.baseUrl, "http://127.0.0.1:8000/v1");
+    assert.equal((agent.config as any)?.runnerKind, "custom");
+    assert.equal((agent.config as any)?.authMode, "none");
+    assert.equal((agent.config as any)?.responseFormatStrategy, "none");
+    assert.deepEqual((agent.config as any)?.headers, { "X-Trace": "updated" });
+    await repo.close();
+  });
+});
+
+test("agent update switching to local adapter stores local defaults", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run(["add", "phase4-switch-local", "--adapter", "openai-api"]);
+    await AgentsCommands.run([
+      "update",
+      "phase4-switch-local",
+      "--adapter",
+      "vllm-local",
+      "--config-base-url",
+      "http://127.0.0.1:8000/v1",
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("phase4-switch-local");
+    assert.ok(agent);
+    assert.equal(agent.adapter, "vllm-local");
+    assert.equal(agent.openaiCompatible, true);
+    assert.equal(agent.costPerMillion, 0);
+    assert.equal((agent.config as any)?.baseUrl, "http://127.0.0.1:8000/v1");
+    assert.equal((agent.config as any)?.runnerKind, "vllm");
+    assert.equal((agent.config as any)?.authMode, "none");
+    await repo.close();
+  });
+});
+
+test("agent update switching to local adapter reuses existing baseUrl config", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "phase4-switch-existing-base-url",
+      "--adapter",
+      "openai-api",
+      "--config-base-url",
+      "http://127.0.0.1:8000/v1",
+    ]);
+    await AgentsCommands.run([
+      "update",
+      "phase4-switch-existing-base-url",
+      "--adapter",
+      "vllm-local",
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("phase4-switch-existing-base-url");
+    assert.ok(agent);
+    assert.equal(agent.adapter, "vllm-local");
+    assert.equal(agent.openaiCompatible, true);
+    assert.equal(agent.costPerMillion, 0);
+    assert.equal((agent.config as any)?.baseUrl, "http://127.0.0.1:8000/v1");
+    assert.equal((agent.config as any)?.runnerKind, "vllm");
+    assert.equal((agent.config as any)?.authMode, "none");
+    await repo.close();
+  });
+});
+
+test("agent add warns for non-loopback authless local runner URLs", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const output = await captureConsole(() =>
+      AgentsCommands.run([
+        "add",
+        "phase4-lan-vllm",
+        "--adapter",
+        "vllm-local",
+        "--config-base-url",
+        "http://192.168.1.115:8000/v1",
+      ]),
+    );
+    assert.match(output.logs.join("\n"), /Created agent phase4-lan-vllm/);
+    assert.match(output.warnings.join("\n"), /authMode=none/);
+    assert.match(output.warnings.join("\n"), /non-loopback baseUrl/);
+  });
+});
+
+test("agent add rejects unsafe local runner config flags", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-invalid-json",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "http://127.0.0.1:8000/v1",
+          "--config-extra-body-json",
+          "{not-json",
+        ]),
+      /Invalid --config-extra-body-json/,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-secret-header",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "http://127.0.0.1:8000/v1",
+          "--config-header",
+          "Authorization=Bearer token",
+        ]),
+      /secret-bearing header/i,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-reserved-extra-body",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "http://127.0.0.1:8000/v1",
+          "--config-extra-body-json",
+          '{"messages":[]}',
+        ]),
+      /reserved OpenAI request key "messages"/,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-bad-url",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "not-a-url",
+        ]),
+      /Invalid --config-base-url/,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-bad-runner-kind",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "http://127.0.0.1:8000/v1",
+          "--config-runner-kind",
+          "mystery-runner",
+        ]),
+      /Invalid --config-runner-kind/,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-bad-auth-mode",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "http://127.0.0.1:8000/v1",
+          "--config-auth-mode",
+          "apikey",
+        ]),
+      /Invalid --config-auth-mode/,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-openai-false",
+          "--adapter",
+          "vllm-local",
+          "--config-base-url",
+          "http://127.0.0.1:8000/v1",
+          "--openai-compatible",
+          "false",
+        ]),
+      /Local OpenAI-compatible adapters require --openai-compatible true/,
+    );
+    await assert.rejects(
+      () =>
+        AgentsCommands.run([
+          "add",
+          "phase4-missing-base-url",
+          "--adapter",
+          "vllm-local",
+        ]),
+      /--config-base-url is required/,
+    );
   });
 });
 

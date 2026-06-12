@@ -24,6 +24,133 @@ test("OpenAiAdapter healthCheck reflects missing api key", async () => {
   assert.equal(health.details?.reason, "missing_api_key");
 });
 
+test("OpenAiAdapter local healthCheck uses model listing without authorization", async () => {
+  let calls = 0;
+  global.fetch = async (input: any, init?: any) => {
+    calls += 1;
+    const url = typeof input === "string" ? input : String(input?.url ?? "");
+    assert.equal(url, "http://127.0.0.1:8000/v1/models");
+    assert.equal(init?.method, "GET");
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.Authorization, undefined);
+    return new Response(
+      JSON.stringify({
+        data: [{ id: "local-model" }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent: { ...agent, adapter: "openai-compatible-local" },
+    adapter: "openai-compatible-local",
+    capabilities: ["chat"],
+    model: "local-model",
+    baseUrl: "http://127.0.0.1:8000/v1",
+  });
+  const health = await adapter.healthCheck();
+  assert.equal(calls, 1);
+  assert.equal(health.status, "healthy");
+  assert.equal((health.details as any)?.source, "local_models");
+  assert.equal((health.details as any)?.authMode, "none");
+  assert.equal((health.details as any)?.modelListing?.modelFound, true);
+});
+
+test("OpenAiAdapter local healthCheck degrades when configured model is not listed", async () => {
+  let calls = 0;
+  global.fetch = async (input: any, init?: any) => {
+    calls += 1;
+    const url = typeof input === "string" ? input : String(input?.url ?? "");
+    assert.equal(url, "http://127.0.0.1:8000/v1/models");
+    assert.equal(init?.method, "GET");
+    return new Response(
+      JSON.stringify({
+        data: [{ id: "other-model" }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent: { ...agent, adapter: "openai-compatible-local" },
+    adapter: "openai-compatible-local",
+    capabilities: ["chat"],
+    model: "local-model",
+    baseUrl: "http://127.0.0.1:8000/v1",
+  });
+  const health = await adapter.healthCheck();
+  assert.equal(calls, 1);
+  assert.equal(health.status, "degraded");
+  assert.equal((health.details as any)?.source, "local_models");
+  assert.equal((health.details as any)?.reason, "model_not_listed");
+  assert.equal((health.details as any)?.modelListing?.modelFound, false);
+});
+
+test("OpenAiAdapter local invoke omits authorization when authMode is none", async () => {
+  global.fetch = async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String(input?.url ?? "");
+    assert.equal(url, "http://127.0.0.1:8000/v1/chat/completions");
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.Authorization, undefined);
+    const body = JSON.parse(String(init?.body ?? ""));
+    assert.equal(body.model, "local-model");
+    assert.equal(body.stream, false);
+    assert.equal(body.top_k, 40);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "local ok" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent: { ...agent, adapter: "openai-compatible-local" },
+    adapter: "openai-compatible-local",
+    capabilities: ["chat"],
+    model: "local-model",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    extraBody: { top_k: 40 },
+  });
+  const result = await adapter.invoke({ input: "hello" });
+  assert.equal(result.output, "local ok");
+  assert.equal(result.metadata?.authMode, "none");
+});
+
+test("OpenAiAdapter local invoke supports dummy bearer auth", async () => {
+  global.fetch = async (_input: any, init?: any) => {
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer local");
+    return new Response(JSON.stringify({ choices: [{ message: { content: "dummy ok" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const adapter = new OpenAiAdapter({
+    agent: { ...agent, adapter: "openai-compatible-local" },
+    adapter: "openai-compatible-local",
+    capabilities: ["chat"],
+    model: "local-model",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    authMode: "dummy-bearer",
+  });
+  const result = await adapter.invoke({ input: "hello" });
+  assert.equal(result.output, "dummy ok");
+  assert.equal(result.metadata?.authMode, "dummy-bearer");
+});
+
+test("OpenAiAdapter bearer auth still requires api key", async () => {
+  const adapter = new OpenAiAdapter({
+    agent: { ...agent, adapter: "openai-compatible-local" },
+    adapter: "openai-compatible-local",
+    capabilities: ["chat"],
+    model: "local-model",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    authMode: "bearer",
+  });
+
+  await assert.rejects(() => adapter.invoke({ input: "hello" }), /AUTH_REQUIRED/);
+});
+
 test("OpenAiAdapter healthCheck probes the configured endpoint", async () => {
   global.fetch = async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : String(input?.url ?? "");

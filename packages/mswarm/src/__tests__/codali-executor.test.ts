@@ -220,6 +220,93 @@ test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider
   assert.equal(capturedInput.policy.mode, "protocol_loop");
 });
 
+test("MswarmCodaliExecutor maps local OpenAI-compatible agents and forwards runner metadata", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  await executor.invoke({
+    jobId: "job-vllm-local",
+    requestId: "req-vllm-local",
+    model: "mcoda-local-vllm",
+    messages: [{ role: "user", content: "Use local vLLM." }],
+    agent: {
+      slug: "local-vllm",
+      adapter: "vllm-local",
+      model: "Qwen/Qwen3-32B",
+      baseUrl: "http://127.0.0.1:8000/v1",
+      localRunner: {
+        baseUrl: "http://127.0.0.1:8000/v1",
+        runnerKind: "vllm",
+        authMode: "dummy-bearer",
+        dummyBearerToken: "local",
+        headers: { "x-mswarm-node": "local" },
+        extraBody: { guided_choice: ["approve", "reject"] },
+        responseFormatStrategy: "json-object",
+        healthPath: "/health",
+        modelsPath: "/v1/models",
+        requireModelInRequest: true,
+        supportsStreaming: true,
+        supportsTools: true,
+        supportsJsonSchema: true,
+        supportsGbnf: false,
+      },
+      runnerKind: "vllm",
+      authMode: "dummy-bearer",
+      dummyBearerToken: "local",
+      headers: { "x-mswarm-node": "local" },
+      extraBody: { guided_choice: ["approve", "reject"] },
+      responseFormatStrategy: "json-object",
+      healthPath: "/health",
+      modelsPath: "/v1/models",
+      requireModelInRequest: true,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonSchema: true,
+      supportsGbnf: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "done",
+        messages: [{ role: "assistant", content: "done" }],
+        toolCallsExecuted: 0,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-vllm-local",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.provider.name, "openai-compatible");
+  assert.equal(capturedInput.provider.model, "Qwen/Qwen3-32B");
+  assert.equal(capturedInput.provider.baseUrl, "http://127.0.0.1:8000/v1");
+  assert.equal(capturedInput.provider.runnerKind, "vllm");
+  assert.equal(capturedInput.provider.authMode, "dummy-bearer");
+  assert.equal(capturedInput.provider.dummyBearerToken, "local");
+  assert.deepEqual(capturedInput.provider.headers, { "x-mswarm-node": "local" });
+  assert.deepEqual(capturedInput.provider.extraBody, { guided_choice: ["approve", "reject"] });
+  assert.equal(capturedInput.provider.responseFormatStrategy, "json-object");
+  assert.equal(capturedInput.provider.healthPath, "/health");
+  assert.equal(capturedInput.provider.modelsPath, "/v1/models");
+  assert.equal(capturedInput.provider.requireModelInRequest, true);
+  assert.equal(capturedInput.provider.supportsStreaming, true);
+  assert.equal(capturedInput.provider.supportsTools, true);
+  assert.equal(capturedInput.provider.supportsJsonSchema, true);
+  assert.equal(capturedInput.provider.supportsGbnf, false);
+  assert.equal(capturedInput.agent?.provider, "openai-compatible");
+  assert.equal(capturedInput.agent?.runnerKind, "vllm");
+  assert.equal(capturedInput.agent?.authMode, "dummy-bearer");
+  assert.deepEqual(capturedInput.agent?.headers, { "x-mswarm-node": "local" });
+  assert.deepEqual(capturedInput.agent?.extraBody, { guided_choice: ["approve", "reject"] });
+  assert.equal(capturedInput.agent?.responseFormatStrategy, "json-object");
+  assert.equal(capturedInput.agent?.supportsJsonSchema, true);
+  assert.equal(capturedInput.agent?.supportsGbnf, false);
+});
+
 test("MswarmCodaliExecutor attaches encrypted Docdex runtime key only to Codali docdex context", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};

@@ -62,6 +62,46 @@ test("loadConfig defaults docdex base URL", { concurrency: false }, async () => 
   assert.equal(config.docdex.baseUrl, "http://127.0.0.1:28491");
 });
 
+test("loadConfig carries local runner fields from env and cli", { concurrency: false }, async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
+  const config = await loadConfig({
+    cwd: tmpDir,
+    env: {
+      CODALI_WORKSPACE_ROOT: tmpDir,
+      CODALI_PROVIDER: "openai-compatible",
+      CODALI_MODEL: "local-model",
+      CODALI_LOCAL_RUNNER_JSON: "{\"runnerKind\":\"llama-cpp\",\"headers\":{\"x-runner\":\"llama\"}}",
+      CODALI_AUTH_MODE: "none",
+      CODALI_DUMMY_BEARER_TOKEN: "local",
+      CODALI_EXTRA_BODY_JSON: "{\"top_k\":40}",
+      CODALI_RESPONSE_FORMAT_STRATEGY: "json-object",
+      CODALI_HEALTH_PATH: "/health",
+      CODALI_SUPPORTS_TOOLS: "false",
+      CODALI_SUPPORTS_JSON_SCHEMA: "true",
+    },
+    cli: {
+      localRunner: { modelsPath: "/v1/models" },
+      runnerKind: "vllm",
+      supportsStreaming: true,
+    },
+  });
+
+  assert.deepEqual(config.localRunner, {
+    runnerKind: "llama-cpp",
+    headers: { "x-runner": "llama" },
+    modelsPath: "/v1/models",
+  });
+  assert.equal(config.runnerKind, "vllm");
+  assert.equal(config.authMode, "none");
+  assert.equal(config.dummyBearerToken, "local");
+  assert.deepEqual(config.extraBody, { top_k: 40 });
+  assert.equal(config.responseFormatStrategy, "json-object");
+  assert.equal(config.healthPath, "/health");
+  assert.equal(config.supportsStreaming, true);
+  assert.equal(config.supportsTools, false);
+  assert.equal(config.supportsJsonSchema, true);
+});
+
 test("loadConfig provides defaults for context/security/builder/streaming/cost/localContext", { concurrency: false }, async () => {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "codali-config-"));
   const config = await loadConfig({

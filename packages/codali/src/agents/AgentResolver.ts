@@ -1,5 +1,14 @@
 import { GlobalRepository } from "@mcoda/db";
-import { CryptoHelper, type Agent } from "@mcoda/shared";
+import {
+  CryptoHelper,
+  isLocalOpenAiCompatibleAdapter,
+  normalizeLocalOpenAiCompatibleRunnerConfig,
+  type Agent,
+  type LocalOpenAiCompatibleRunnerConfig,
+  type LocalRunnerAuthMode,
+  type LocalRunnerKind,
+  type LocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
 
 export interface AgentResolutionOverrides {
   provider?: string;
@@ -15,6 +24,20 @@ export interface ResolvedAgentConfig {
   baseUrl?: string;
   apiKey?: string;
   requiresApiKey: boolean;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
 }
 
 const PROVIDERS_REQUIRING_API_KEY = new Set(["openai-compatible", "mswarm-worker"]);
@@ -52,12 +75,14 @@ const resolveBaseUrl = (agent: Agent): string | undefined => {
 export const resolveProviderFromAdapter = (
   adapter: string,
   explicitProvider?: string,
-): { provider: string; requiresApiKey: boolean } => {
+): { provider: string; requiresApiKey: boolean; localOpenAiCompatible: boolean } => {
+  const localOpenAiCompatible = isLocalOpenAiCompatibleAdapter(adapter);
   if (explicitProvider) {
     const requiresApiKey =
       PROVIDERS_REQUIRING_API_KEY.has(explicitProvider) &&
-      !SESSION_AUTH_ADAPTERS.has(adapter);
-    return { provider: explicitProvider, requiresApiKey };
+      !SESSION_AUTH_ADAPTERS.has(adapter) &&
+      !localOpenAiCompatible;
+    return { provider: explicitProvider, requiresApiKey, localOpenAiCompatible };
   }
   if (UNSUPPORTED_CODALI_ADAPTERS.has(adapter)) {
     throw new Error(
@@ -65,20 +90,36 @@ export const resolveProviderFromAdapter = (
     );
   }
   if (adapter === "openai-api") {
-    return { provider: "openai-compatible", requiresApiKey: true };
+    return { provider: "openai-compatible", requiresApiKey: true, localOpenAiCompatible };
+  }
+  if (localOpenAiCompatible) {
+    return { provider: "openai-compatible", requiresApiKey: false, localOpenAiCompatible };
   }
   if (["openai-cli", "codex-cli"].includes(adapter)) {
-    return { provider: "codex-cli", requiresApiKey: false };
+    return { provider: "codex-cli", requiresApiKey: false, localOpenAiCompatible };
   }
   if (["ollama-remote", "ollama-cli", "local-model"].includes(adapter)) {
-    return { provider: "ollama-remote", requiresApiKey: false };
+    return { provider: "ollama-remote", requiresApiKey: false, localOpenAiCompatible };
   }
   if (adapter === "mswarm-worker") {
-    return { provider: "mswarm-worker", requiresApiKey: true };
+    return { provider: "mswarm-worker", requiresApiKey: true, localOpenAiCompatible };
   }
   throw new Error(
     `CODALI_UNSUPPORTED_ADAPTER: ${adapter} is not supported; configure a codali provider explicitly or choose a different agent.`,
   );
+};
+
+const compactLocalRunnerConfig = (
+  agent: Agent,
+): LocalOpenAiCompatibleRunnerConfig | undefined => {
+  const normalized = normalizeLocalOpenAiCompatibleRunnerConfig({
+    adapter: agent.adapter,
+    config: agent.config,
+    agentConfig: agent.config,
+  });
+  const entries = Object.entries(normalized.config).filter(([, value]) => value !== undefined);
+  if (!normalized.isLocalOpenAiCompatible && entries.length === 0) return undefined;
+  return Object.fromEntries(entries) as LocalOpenAiCompatibleRunnerConfig;
 };
 
 export const resolveAgentConfigFromRecord = async (
@@ -86,11 +127,14 @@ export const resolveAgentConfigFromRecord = async (
   repo: GlobalRepository,
   overrides: AgentResolutionOverrides = {},
 ): Promise<ResolvedAgentConfig> => {
-  const { provider, requiresApiKey } = resolveProviderFromAdapter(
+  const { provider, requiresApiKey, localOpenAiCompatible } = resolveProviderFromAdapter(
     agent.adapter,
     overrides.provider,
   );
-  if (provider === "openai-compatible" && agent.openaiCompatible === false) {
+  const localRunner = compactLocalRunnerConfig(agent);
+  const effectiveRequiresApiKey =
+    requiresApiKey || (localOpenAiCompatible && localRunner?.authMode === "bearer");
+  if (provider === "openai-compatible" && agent.openaiCompatible === false && !localOpenAiCompatible) {
     const label = agent.slug ?? agent.id;
     throw new Error(
       `Agent ${label} is not marked openai-compatible; update the agent metadata or choose a different provider.`,
@@ -101,28 +145,49 @@ export const resolveAgentConfigFromRecord = async (
     const label = agent.slug ?? agent.id;
     throw new Error(`Agent ${label} has no default model`);
   }
-  const baseUrl = overrides.baseUrl ?? resolveBaseUrl(agent);
-  if (PROVIDERS_REQUIRING_BASE_URL.has(provider) && !baseUrl) {
+  const baseUrl = overrides.baseUrl ?? localRunner?.baseUrl ?? resolveBaseUrl(agent);
+  if ((PROVIDERS_REQUIRING_BASE_URL.has(provider) || localOpenAiCompatible) && !baseUrl) {
     const label = agent.slug ?? agent.id;
     throw new Error(
       `Agent ${label} is missing a baseUrl for provider ${provider}; update the agent config.`,
     );
   }
   let apiKey = overrides.apiKey;
-  if (!apiKey && requiresApiKey) {
+  if (!apiKey && effectiveRequiresApiKey) {
     const secret = await repo.getAgentAuthSecret(agent.id);
     if (secret?.encryptedSecret) {
       apiKey = await CryptoHelper.decryptSecret(secret.encryptedSecret);
     }
   }
-  if (requiresApiKey && !apiKey) {
+  if (effectiveRequiresApiKey && !apiKey) {
     const label = agent.slug ?? agent.id;
     throw new Error(
       `AUTH_REQUIRED: API key missing for agent ${label}; run \"mcoda agent auth set ${label}\".`,
     );
   }
 
-  return { agent, provider, model, baseUrl, apiKey, requiresApiKey };
+  return {
+    agent,
+    provider,
+    model,
+    baseUrl,
+    apiKey,
+    requiresApiKey: effectiveRequiresApiKey,
+    localRunner,
+    runnerKind: localRunner?.runnerKind,
+    authMode: localRunner?.authMode,
+    dummyBearerToken: localRunner?.dummyBearerToken,
+    headers: localRunner?.headers,
+    extraBody: localRunner?.extraBody,
+    responseFormatStrategy: localRunner?.responseFormatStrategy,
+    healthPath: localRunner?.healthPath,
+    modelsPath: localRunner?.modelsPath,
+    requireModelInRequest: localRunner?.requireModelInRequest,
+    supportsStreaming: localRunner?.supportsStreaming,
+    supportsTools: localRunner?.supportsTools,
+    supportsJsonSchema: localRunner?.supportsJsonSchema,
+    supportsGbnf: localRunner?.supportsGbnf,
+  };
 };
 
 export const resolveAgentConfig = async (

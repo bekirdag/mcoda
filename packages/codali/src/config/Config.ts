@@ -1,3 +1,10 @@
+import type {
+  LocalOpenAiCompatibleRunnerConfig,
+  LocalRunnerAuthMode,
+  LocalRunnerKind,
+  LocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
+
 export interface DocdexConfig {
   baseUrl: string;
   repoRoot?: string;
@@ -230,6 +237,20 @@ export interface CodaliConfig {
   model: string;
   apiKey?: string;
   baseUrl?: string;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
   workflow?: WorkflowConfig;
   resolvedWorkflowProfile?: ResolvedWorkflowProfile;
   docdex: DocdexConfig;

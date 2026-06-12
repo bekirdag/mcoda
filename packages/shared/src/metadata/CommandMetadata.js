@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 const FALLBACK_CAPABILITIES = {
     "create-tasks": ["plan"],
+    "sds-preflight": ["plan"],
     "refine-tasks": ["plan"],
+    "task-sufficiency-audit": ["plan"],
+    "add-tests": [],
     "work-on-tasks": ["code_write"],
     "code-review": ["code_review"],
     "qa-tasks": [],
@@ -14,10 +17,19 @@ const FALLBACK_CAPABILITIES = {
     "openapi-from-docs": ["docdex_query"],
     "order-tasks": ["plan"],
     "gateway-agent": ["plan", "docdex_query"],
+    "project-guidance": [],
 };
 const COMMAND_ALIASES = {
     "create-tasks": ["create_tasks", "create tasks"],
+    "sds-preflight": ["sds_preflight", "sds preflight", "sds-preflight"],
     "refine-tasks": ["refine_tasks", "refine tasks", "refine-task"],
+    "task-sufficiency-audit": [
+        "task_sufficiency_audit",
+        "task sufficiency audit",
+        "sufficiency-audit",
+        "sufficiency audit",
+    ],
+    "add-tests": ["add_tests", "add tests", "bootstrap-tests"],
     "work-on-tasks": ["work_on_tasks", "work on tasks"],
     "code-review": ["code_review", "code review"],
     "qa-tasks": ["qa_tasks", "qa tasks"],
@@ -27,6 +39,7 @@ const COMMAND_ALIASES = {
     sds: ["docs:sds:generate", "docs-sds-generate", "sds-generate", "docs-sds"],
     "openapi-from-docs": ["openapi", "openapi_from_docs", "openapi-from-docs"],
     "gateway-agent": ["gateway", "gateway agent", "gateway_agent"],
+    "project-guidance": ["project_guidance", "project guidance"],
 };
 let cache = null;
 const tryResolveOpenapiPath = () => {
@@ -152,3 +165,4 @@ export const getKnownQaProfiles = () => {
     const { qaProfiles } = ensureCache();
     return Array.from(qaProfiles).sort();
 };
+//# sourceMappingURL=CommandMetadata.js.map

@@ -1,6 +1,14 @@
+import {
+  normalizeLocalOpenAiCompatibleRunnerConfig,
+  type LocalOpenAiCompatibleRunnerConfig,
+  type LocalRunnerAuthMode,
+  type LocalRunnerConfigIssue,
+  type LocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
 import type {
   Provider,
   ProviderConfig,
+  ProviderMessage,
   ProviderRequest,
   ProviderResponse,
   ProviderResponseFormat,
@@ -44,10 +52,45 @@ const normalizeBaseUrl = (baseUrl?: string): string => {
   return root.endsWith("/") ? root : `${root}/`;
 };
 
+const enforcedIssueCodes = new Set<LocalRunnerConfigIssue["code"]>([
+  "invalid_auth_mode",
+  "invalid_headers",
+  "invalid_header_value",
+  "secret_header",
+  "invalid_extra_body",
+  "reserved_extra_body_key",
+]);
+
+const assertLocalConfigIssues = (issues: LocalRunnerConfigIssue[]): void => {
+  const enforced = issues.filter((issue) => enforcedIssueCodes.has(issue.code));
+  if (enforced.length === 0) return;
+  throw new Error(
+    `Invalid OpenAI-compatible local runner config: ${enforced
+      .map((issue) => `${issue.path}: ${issue.message}`)
+      .join("; ")}`,
+  );
+};
+
+interface AuthResolution {
+  mode: LocalRunnerAuthMode;
+  authorization?: string;
+}
+
 const toResponseFormat = (
   format: ProviderResponseFormat | undefined,
+  strategy: LocalRunnerResponseFormatStrategy = "openai",
 ): Record<string, unknown> | undefined => {
   if (!format) return undefined;
+  if (strategy === "none" || strategy === "prompt-only" || strategy === "gbnf") {
+    return undefined;
+  }
+  if (strategy === "json-object") {
+    if (format.type === "text") return { type: "text" };
+    if (format.type === "json" || format.type === "json_schema") {
+      return { type: "json_object" };
+    }
+    return undefined;
+  }
   if (format.type === "json") {
     return { type: "json_object" };
   }
@@ -60,14 +103,55 @@ const toResponseFormat = (
   return undefined;
 };
 
+const buildPromptOnlyFormatInstruction = (format: ProviderResponseFormat | undefined): string | undefined => {
+  if (!format || format.type === "text") return undefined;
+  if (format.type === "json") {
+    return [
+      "Output format constraint:",
+      "Return exactly one valid JSON object.",
+      "Do not include markdown fences, reasoning, commentary, or text outside the JSON object.",
+    ].join("\n");
+  }
+  if (format.type === "json_schema") {
+    return [
+      "Output format constraint:",
+      "Return exactly one valid JSON object matching this schema:",
+      JSON.stringify(format.schema ?? {}),
+      "Do not include markdown fences, reasoning, commentary, or text outside the JSON object.",
+    ].join("\n");
+  }
+  if (format.type === "gbnf") {
+    return [
+      "Output format constraint:",
+      "Return output that conforms to this GBNF grammar:",
+      format.grammar ?? "",
+      "Do not include markdown fences, reasoning, commentary, or text outside the grammar output.",
+    ].join("\n");
+  }
+  return undefined;
+};
+
 export class OpenAiCompatibleProvider implements Provider {
   name = "openai-compatible";
+  private localRunner: LocalOpenAiCompatibleRunnerConfig;
+  private authMode: LocalRunnerAuthMode;
+  private responseFormatStrategy: LocalRunnerResponseFormatStrategy;
 
-  constructor(private config: ProviderConfig) {}
+  constructor(private config: ProviderConfig) {
+    const normalizedLocal = normalizeLocalOpenAiCompatibleRunnerConfig({
+      config,
+      agentConfig: config.localRunner,
+    });
+    assertLocalConfigIssues(normalizedLocal.issues);
+    this.localRunner = normalizedLocal.config;
+    this.authMode = normalizedLocal.config.authMode ?? (config.apiKey ? "bearer" : "none");
+    this.responseFormatStrategy = normalizedLocal.config.responseFormatStrategy ?? "openai";
+  }
 
   async generate(request: ProviderRequest): Promise<ProviderResponse> {
-    const baseUrl = normalizeBaseUrl(this.config.baseUrl);
+    const baseUrl = normalizeBaseUrl(this.localRunner.baseUrl ?? this.config.baseUrl);
     const url = new URL("chat/completions", baseUrl).toString();
+    const auth = this.resolveAuth();
     const emitToken = (token: string) => {
       if (request.onEvent) {
         request.onEvent({ type: "token", content: token });
@@ -77,20 +161,33 @@ export class OpenAiCompatibleProvider implements Provider {
     };
 
     const headers: Record<string, string> = {
+      ...(this.localRunner.headers ?? {}),
       "content-type": "application/json",
+      ...(auth.authorization ? { authorization: auth.authorization } : {}),
     };
-    if (this.config.apiKey) {
-      headers.authorization = `Bearer ${this.config.apiKey}`;
+
+    const promptOnlyInstruction =
+      this.responseFormatStrategy === "prompt-only"
+        ? buildPromptOnlyFormatInstruction(request.responseFormat)
+        : undefined;
+    const messages: Array<{
+      role: ProviderMessage["role"];
+      content: string;
+      name?: string;
+      tool_call_id?: string;
+    }> = request.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      name: message.name,
+      tool_call_id: message.toolCallId,
+    }));
+    if (promptOnlyInstruction) {
+      messages.unshift({ role: "system", content: promptOnlyInstruction });
     }
 
-    const body = {
-      model: this.config.model,
-      messages: request.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-        name: message.name,
-        tool_call_id: message.toolCallId,
-      })),
+    const body: Record<string, unknown> = {
+      ...(this.localRunner.requireModelInRequest === false ? {} : { model: this.config.model }),
+      messages,
       tools: request.tools?.map((tool) => ({
         type: "function",
         function: {
@@ -102,10 +199,22 @@ export class OpenAiCompatibleProvider implements Provider {
       tool_choice: request.toolChoice,
       max_tokens: request.maxTokens,
       temperature: request.temperature,
-      response_format: toResponseFormat(request.responseFormat),
+      response_format: toResponseFormat(request.responseFormat, this.responseFormatStrategy),
       stream: request.stream ?? false,
       stream_options: request.stream ? { include_usage: true } : undefined,
     };
+    if (
+      this.responseFormatStrategy === "gbnf" &&
+      request.responseFormat?.type === "gbnf" &&
+      request.responseFormat.grammar
+    ) {
+      body.grammar = request.responseFormat.grammar;
+    }
+    if (this.localRunner.extraBody) {
+      for (const [key, value] of Object.entries(this.localRunner.extraBody)) {
+        if (body[key] === undefined) body[key] = value;
+      }
+    }
 
     const controller = new AbortController();
     const timeoutMs = this.config.timeoutMs ?? 60_000;
@@ -235,5 +344,21 @@ export class OpenAiCompatibleProvider implements Provider {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private resolveAuth(): AuthResolution {
+    if (this.authMode === "none") {
+      return { mode: "none" };
+    }
+    if (this.authMode === "dummy-bearer") {
+      return {
+        mode: "dummy-bearer",
+        authorization: `Bearer ${this.localRunner.dummyBearerToken ?? "local"}`,
+      };
+    }
+    if (!this.config.apiKey) {
+      throw new Error("AUTH_REQUIRED: OpenAI-compatible provider API key missing; set CODALI_API_KEY.");
+    }
+    return { mode: "bearer", authorization: `Bearer ${this.config.apiKey}` };
   }
 }

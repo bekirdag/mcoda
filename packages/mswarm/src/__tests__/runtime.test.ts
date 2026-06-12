@@ -372,6 +372,62 @@ describe("self-hosted node runtime", () => {
     expect(mapped?.health_status).toBe("healthy");
   });
 
+  it("preserves local OpenAI-compatible runner metadata in self-hosted agent catalog", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        id: "local-vllm-id",
+        slug: "local-vllm-coder",
+        adapter: "vllm-local",
+        defaultModel: "Qwen/Qwen3-32B",
+        openaiCompatible: true,
+        contextWindow: 131_072,
+        maxOutputTokens: 8192,
+        supportsTools: true,
+        rating: 8.1,
+        reasoningRating: 7.9,
+        bestUsage: "code_write",
+        costPerMillion: 0,
+        maxComplexity: 8,
+        capabilities: ["code_write", "json_schema"],
+        health: { status: "healthy" },
+        config: {
+          baseUrl: "http://127.0.0.1:8000/v1",
+          authMode: "none",
+          responseFormatStrategy: "json-object",
+          healthPath: "/health",
+          modelsPath: "/v1/models",
+          supportsStreaming: true,
+          supportsJsonSchema: true,
+          supportsGbnf: false,
+          apiKey: "secret-local-key"
+        }
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+
+    expect(mapped?.name).toBe("local-vllm-coder");
+    expect(mapped?.provider).toBe("mcoda");
+    expect(mapped?.adapter).toBe("vllm-local");
+    expect(mapped?.model).toBe("Qwen/Qwen3-32B");
+    expect(mapped?.model_id).toBe("Qwen/Qwen3-32B");
+    expect(mapped?.base_url).toBe("http://127.0.0.1:8000/v1");
+    expect(mapped?.runner_kind).toBe("vllm");
+    expect(mapped?.auth_mode).toBe("none");
+    expect(mapped?.response_format_strategy).toBe("json-object");
+    expect(mapped?.health_path).toBe("/health");
+    expect(mapped?.models_path).toBe("/v1/models");
+    expect(mapped?.supports_tools).toBe(true);
+    expect(mapped?.supports_streaming).toBe(true);
+    expect(mapped?.supports_json_schema).toBe(true);
+    expect(mapped?.supports_gbnf).toBe(false);
+    expect(mapped?.openai_compatible).toBe(true);
+    expect(JSON.stringify(mapped)).not.toContain("secret-local-key");
+  });
+
   it("excludes managed mswarm cloud agents from self-hosted mcoda discovery", () => {
     const mapped = mapMcodaAgentToSelfHostedModel(
       {
@@ -706,6 +762,85 @@ describe("self-hosted node runtime", () => {
     expect(capturedInput.agent.adapter).toBe("ollama-cli");
     expect(capturedInput.agent.provider).toBe("ollama-remote");
     expect(capturedInput.agent.supportsTools).toBe(false);
+  });
+
+  it("routes local OpenAI-compatible mcoda agents to Codali with runner metadata", async () => {
+    const cases = [
+      { adapter: "vllm-local", runnerKind: "vllm" },
+      { adapter: "llama-cpp-local", runnerKind: "llama-cpp" },
+      { adapter: "llamacpp-local", runnerKind: "llama-cpp" }
+    ];
+
+    for (const testCase of cases) {
+      const statePath = tempStatePath();
+      const captured: { value?: MswarmCodaliInvocationInput } = {};
+      const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+        mcoda: mcodaAgentListClient([
+          healthyMcodaAgent({
+            slug: `${testCase.adapter}-agent`,
+            adapter: testCase.adapter,
+            defaultModel: "Qwen/Qwen3-32B",
+            openaiCompatible: true,
+            supportsTools: true,
+            capabilities: ["code_write", "json_schema"],
+            config: {
+              baseUrl: "http://127.0.0.1:8000/v1",
+              authMode: "dummy-bearer",
+              dummyBearerToken: "local",
+              headers: { "x-mswarm-node": "local" },
+              extraBody: { guided_choice: ["approve", "reject"] },
+              responseFormatStrategy: "json-object",
+              healthPath: "/health",
+              modelsPath: "/v1/models",
+              supportsStreaming: true,
+              supportsJsonSchema: true
+            }
+          })
+        ]),
+        codaliExecutor: new StubCodaliExecutor(async (input) => {
+          captured.value = input;
+          return successfulCodaliInvocation(input);
+        })
+      });
+
+      const result = await runtime.executeJob({
+        job_id: `job-${testCase.adapter}`,
+        request_id: `req-${testCase.adapter}`,
+        node_id: "shn_service",
+        agent_slug: `${testCase.adapter}-agent`,
+        source_agent_slug: `${testCase.adapter}-agent`,
+        provider: "mcoda",
+        model: `mcoda-${testCase.adapter}-agent`,
+        openai_request: {
+          model: `mcoda-${testCase.adapter}-agent`,
+          messages: [{ role: "user", content: "Use the local runner." }]
+        },
+        policy: {
+          allow_tools: true,
+          allowed_tools: ["docdex_search"]
+        }
+      });
+
+      expect(result.status).toBe("success");
+      const capturedInput = captured.value;
+      assert.ok(capturedInput);
+      expect(capturedInput.agent.adapter).toBe(testCase.adapter);
+      expect(capturedInput.agent.provider).toBe("openai-compatible");
+      expect(capturedInput.agent.model).toBe("Qwen/Qwen3-32B");
+      expect(capturedInput.agent.baseUrl).toBe("http://127.0.0.1:8000/v1");
+      expect(capturedInput.agent.localRunner?.baseUrl).toBe("http://127.0.0.1:8000/v1");
+      expect(capturedInput.agent.runnerKind).toBe(testCase.runnerKind);
+      expect(capturedInput.agent.authMode).toBe("dummy-bearer");
+      expect(capturedInput.agent.dummyBearerToken).toBe("local");
+      expect(capturedInput.agent.headers).toEqual({ "x-mswarm-node": "local" });
+      expect(capturedInput.agent.extraBody).toEqual({ guided_choice: ["approve", "reject"] });
+      expect(capturedInput.agent.responseFormatStrategy).toBe("json-object");
+      expect(capturedInput.agent.healthPath).toBe("/health");
+      expect(capturedInput.agent.modelsPath).toBe("/v1/models");
+      expect(capturedInput.agent.supportsStreaming).toBe(true);
+      expect(capturedInput.agent.supportsTools).toBe(true);
+      expect(capturedInput.agent.supportsJsonSchema).toBe(true);
+    }
   });
 
   it("passes encrypted Docdex job context and attached mswarm API key to Codali without response leakage", async () => {

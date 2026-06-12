@@ -1,4 +1,11 @@
-import { AgentHealth } from "@mcoda/shared";
+import {
+  AgentHealth,
+  normalizeLocalOpenAiCompatibleRunnerConfig,
+  type LocalOpenAiCompatibleRunnerConfig,
+  type LocalRunnerAuthMode,
+  type LocalRunnerConfigIssue,
+  type LocalRunnerKind,
+} from "@mcoda/shared";
 import {
   AdapterConfig,
   AgentAdapter,
@@ -10,6 +17,7 @@ import { parseUsageLimitError } from "../../AgentService/UsageLimitParser.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const MAX_RESPONSE_DETAIL_CHARS = 500;
+const LOCAL_HEALTH_TIMEOUT_MS = 10_000;
 const RATE_LIMIT_HEADER_NAMES = [
   "retry-after",
   "x-ratelimit-reset-after",
@@ -371,21 +379,70 @@ type OpenAiConfig = AdapterConfig & {
   headers?: Record<string, string>;
   temperature?: number;
   extraBody?: Record<string, unknown>;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  responseFormatStrategy?: string;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
 };
+
+interface AuthResolution {
+  mode: LocalRunnerAuthMode;
+  authorization?: string;
+  metadataAuthMode: string;
+}
+
+interface LocalHealthProbeResult {
+  ok: boolean;
+  status?: number;
+  url: string;
+  response?: string;
+  error?: string;
+  data?: unknown;
+}
+
+interface ModelListingResult extends LocalHealthProbeResult {
+  models?: string[];
+  modelFound?: boolean;
+}
 
 export class OpenAiAdapter implements AgentAdapter {
   private baseUrl: string;
   private headers: Record<string, string> | undefined;
   private temperature: number | undefined;
   private extraBody: Record<string, unknown> | undefined;
+  private runnerKind: LocalRunnerKind | undefined;
+  private authMode: LocalRunnerAuthMode;
+  private dummyBearerToken: string | undefined;
+  private healthPath: string | undefined;
+  private modelsPath: string | undefined;
+  private localConfigIssues: LocalRunnerConfigIssue[];
+  private isLocalOpenAiCompatible: boolean;
 
   constructor(private config: OpenAiConfig) {
-    this.baseUrl = resolveBaseUrl(config);
-    this.headers = isRecord((config as any).headers) ? ((config as any).headers as Record<string, string>) : undefined;
+    const normalizedLocal = normalizeLocalOpenAiCompatibleRunnerConfig({
+      adapter: config.adapter ?? config.agent.adapter,
+      config,
+      agentConfig: config.agent.config,
+    });
+    this.baseUrl = normalizeBaseUrl(normalizedLocal.config.baseUrl) ?? resolveBaseUrl(config);
+    this.headers = normalizedLocal.config.headers;
     this.temperature = typeof (config as any).temperature === "number" ? (config as any).temperature : undefined;
-    this.extraBody = isRecord((config as any).extraBody)
-      ? ((config as any).extraBody as Record<string, unknown>)
-      : undefined;
+    this.extraBody = normalizedLocal.config.extraBody;
+    this.runnerKind = normalizedLocal.config.runnerKind;
+    this.authMode = normalizedLocal.config.authMode ?? "bearer";
+    this.dummyBearerToken = normalizedLocal.config.dummyBearerToken;
+    this.healthPath = normalizedLocal.config.healthPath;
+    this.modelsPath = normalizedLocal.config.modelsPath;
+    this.localConfigIssues = normalizedLocal.issues;
+    this.isLocalOpenAiCompatible = normalizedLocal.isLocalOpenAiCompatible || this.authMode !== "bearer";
     this.assertConfig();
   }
 
@@ -394,28 +451,17 @@ export class OpenAiAdapter implements AgentAdapter {
   }
 
   async healthCheck(): Promise<AgentHealth> {
-    if (!this.config.apiKey) {
-      return {
-        agentId: this.config.agent.id,
-        status: "unreachable",
-        lastCheckedAt: new Date().toISOString(),
-        details: {
-          adapter: "openai-api",
-          source: "openai_probe",
-          model: this.config.model,
-          baseUrl: this.baseUrl,
-          reason: "missing_api_key",
-        },
-      };
-    }
     const startedAt = Date.now();
     try {
       const model = this.ensureModel();
-      const apiKey = this.ensureApiKey();
+      const auth = this.resolveAuth();
       const url = this.ensureBaseUrl();
+      if (this.isLocalOpenAiCompatible) {
+        return await this.healthCheckLocal({ model, auth, url, startedAt });
+      }
       const response = await fetch(`${url}/chat/completions`, {
         method: "POST",
-        headers: this.buildHeaders(apiKey, false),
+        headers: this.buildHeaders(auth, false),
         body: JSON.stringify(this.buildHealthCheckBody(model)),
       });
       const responseText = await response.text().catch(() => "");
@@ -482,7 +528,7 @@ export class OpenAiAdapter implements AgentAdapter {
       const message = error instanceof Error ? error.message : String(error);
       const reason = /model is not configured/i.test(message)
         ? "missing_model"
-        : /missing api key/i.test(message)
+        : /missing api key|api key missing/i.test(message)
           ? "missing_api_key"
           : "probe_failed";
       return {
@@ -505,11 +551,11 @@ export class OpenAiAdapter implements AgentAdapter {
   async invoke(request: InvocationRequest): Promise<InvocationResult> {
     const url = this.ensureBaseUrl();
     const model = this.ensureModel();
-    const apiKey = this.ensureApiKey();
+    const auth = this.resolveAuth();
     const docdex = resolveDocdexContext(this.config, request.metadata);
     const resp = await fetch(`${url}/chat/completions`, {
       method: "POST",
-      headers: this.buildHeaders(apiKey, false, docdex),
+      headers: this.buildHeaders(auth, false, docdex),
       body: JSON.stringify(this.buildBody(request.input, model, false, docdex)),
     });
     if (!resp.ok) {
@@ -528,7 +574,7 @@ export class OpenAiAdapter implements AgentAdapter {
         mode: "api",
         capabilities: this.config.capabilities,
         prompts: this.config.prompts,
-        authMode: "api",
+        authMode: auth.metadataAuthMode,
         adapterType: this.config.adapter ?? "openai-api",
         baseUrl: url,
         usage: isRecord(data) ? data.usage : undefined,
@@ -546,11 +592,11 @@ export class OpenAiAdapter implements AgentAdapter {
   async *invokeStream(request: InvocationRequest): AsyncGenerator<InvocationResult, void, unknown> {
     const url = this.ensureBaseUrl();
     const model = this.ensureModel();
-    const apiKey = this.ensureApiKey();
+    const auth = this.resolveAuth();
     const docdex = resolveDocdexContext(this.config, request.metadata);
     const resp = await fetch(`${url}/chat/completions`, {
       method: "POST",
-      headers: this.buildHeaders(apiKey, true, docdex),
+      headers: this.buildHeaders(auth, true, docdex),
       body: JSON.stringify(this.buildBody(request.input, model, true, docdex)),
     });
     if (!resp.ok || !resp.body) {
@@ -575,7 +621,7 @@ export class OpenAiAdapter implements AgentAdapter {
         model,
         metadata: {
           mode: "api",
-          authMode: "api",
+          authMode: auth.metadataAuthMode,
           adapterType: this.config.adapter ?? "openai-api",
           baseUrl: url,
           capabilities: this.config.capabilities,
@@ -649,22 +695,32 @@ export class OpenAiAdapter implements AgentAdapter {
     return this.config.model;
   }
 
-  private ensureApiKey(): string {
+  private resolveAuth(): AuthResolution {
+    if (this.authMode === "none") {
+      return { mode: "none", metadataAuthMode: "none" };
+    }
+    if (this.authMode === "dummy-bearer") {
+      return {
+        mode: "dummy-bearer",
+        authorization: `Bearer ${this.dummyBearerToken ?? "local"}`,
+        metadataAuthMode: "dummy-bearer",
+      };
+    }
     if (!this.config.apiKey) {
       throw new Error(
         `AUTH_REQUIRED: OpenAI API key missing; run \`mcoda agent auth set ${this.config.agent.slug ?? this.config.agent.id}\``,
       );
     }
-    return this.config.apiKey;
+    return {
+      mode: "bearer",
+      authorization: `Bearer ${this.config.apiKey}`,
+      metadataAuthMode: "api",
+    };
   }
 
-  private buildHeaders(
-    apiKey: string,
-    streaming: boolean,
-    docdex?: DocdexRuntimeContext,
-  ): Record<string, string> {
+  private buildHeaders(auth: AuthResolution, streaming: boolean, docdex?: DocdexRuntimeContext): Record<string, string> {
     return {
-      Authorization: `Bearer ${apiKey}`,
+      ...(auth.authorization ? { Authorization: auth.authorization } : {}),
       "Content-Type": "application/json",
       Accept: streaming ? "text/event-stream" : "application/json",
       ...(docdex?.repoId ? { "x-docdex-repo-id": docdex.repoId } : {}),
@@ -711,5 +767,234 @@ export class OpenAiAdapter implements AgentAdapter {
       body.temperature = 0;
     }
     return body;
+  }
+
+  private async healthCheckLocal(params: {
+    model: string;
+    auth: AuthResolution;
+    url: string;
+    startedAt: number;
+  }): Promise<AgentHealth> {
+    const { model, auth, url, startedAt } = params;
+    if (this.healthPath) {
+      const result = await this.fetchHealthPath(url, auth, this.healthPath);
+      const checkedAtMs = Date.now();
+      if (result.ok) {
+        return this.buildHealthResult("healthy", checkedAtMs, startedAt, {
+          source: "local_health_path",
+          model,
+          baseUrl: url,
+          healthPath: this.healthPath,
+          health: this.summarizeProbe(result),
+        });
+      }
+      return this.buildHealthResult("unreachable", checkedAtMs, startedAt, {
+        source: "local_health_path",
+        model,
+        baseUrl: url,
+        reason: result.error ? "health_path_failed" : "health_path_http_error",
+        healthPath: this.healthPath,
+        health: this.summarizeProbe(result),
+      });
+    }
+
+    const modelListing = await this.fetchModels(url, auth, model);
+    const checkedAtMs = Date.now();
+    if (modelListing.ok) {
+      if (modelListing.modelFound === false) {
+        return this.buildHealthResult("degraded", checkedAtMs, startedAt, {
+          source: "local_models",
+          model,
+          baseUrl: url,
+          reason: "model_not_listed",
+          modelListing: this.summarizeModelListing(modelListing),
+        });
+      }
+      return this.buildHealthResult("healthy", checkedAtMs, startedAt, {
+        source: "local_models",
+        model,
+        baseUrl: url,
+        modelListing: this.summarizeModelListing(modelListing),
+      });
+    }
+
+    const chatProbe = await this.fetchChatProbe(url, auth, model);
+    const afterChatMs = Date.now();
+    if (chatProbe.ok) {
+      return this.buildHealthResult("degraded", afterChatMs, startedAt, {
+        source: "local_chat_probe",
+        model,
+        baseUrl: url,
+        reason: "model_listing_failed",
+        modelListing: this.summarizeModelListing(modelListing),
+        chatProbe: this.summarizeProbe(chatProbe),
+      });
+    }
+
+    return this.buildHealthResult("unreachable", afterChatMs, startedAt, {
+      source: "local_models",
+      model,
+      baseUrl: url,
+      reason: modelListing.error ? "model_listing_failed" : "model_listing_http_error",
+      modelListing: this.summarizeModelListing(modelListing),
+      chatProbe: this.summarizeProbe(chatProbe),
+    });
+  }
+
+  private buildHealthResult(
+    status: AgentHealth["status"],
+    checkedAtMs: number,
+    startedAt: number,
+    details: Record<string, unknown>,
+  ): AgentHealth {
+    return {
+      agentId: this.config.agent.id,
+      status,
+      lastCheckedAt: new Date(checkedAtMs).toISOString(),
+      latencyMs: checkedAtMs - startedAt,
+      details: {
+        adapter: this.config.adapter ?? "openai-api",
+        runnerKind: this.runnerKind,
+        authMode: this.authMode,
+        configIssues: this.localConfigIssues.length ? this.localConfigIssues : undefined,
+        ...details,
+      },
+    };
+  }
+
+  private async fetchHealthPath(baseUrl: string, auth: AuthResolution, healthPath: string): Promise<LocalHealthProbeResult> {
+    const url = this.resolveRunnerUrl(baseUrl, healthPath);
+    return this.fetchJsonProbe(url, auth);
+  }
+
+  private async fetchModels(baseUrl: string, auth: AuthResolution, model: string): Promise<ModelListingResult> {
+    const candidates = this.resolveModelListUrls(baseUrl);
+    let last: ModelListingResult | undefined;
+    for (const url of candidates) {
+      const result = await this.fetchJsonProbe(url, auth);
+      if (!result.ok) {
+        last = { ...result, models: [], modelFound: false };
+        continue;
+      }
+      const models = this.extractModelIds(result.data);
+      return {
+        ...result,
+        models,
+        modelFound: models.length === 0 ? undefined : models.includes(model),
+      };
+    }
+    return last ?? {
+      ok: false,
+      url: candidates[0] ?? baseUrl,
+      error: "No model listing URL candidates were available.",
+      models: [],
+      modelFound: false,
+    };
+  }
+
+  private async fetchChatProbe(baseUrl: string, auth: AuthResolution, model: string): Promise<LocalHealthProbeResult> {
+    const url = `${baseUrl}/chat/completions`;
+    return this.fetchJsonProbe(url, auth, {
+      method: "POST",
+      body: JSON.stringify(this.buildHealthCheckBody(model)),
+    });
+  }
+
+  private async fetchJsonProbe(
+    url: string,
+    auth: AuthResolution,
+    init: RequestInit = {},
+  ): Promise<LocalHealthProbeResult> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOCAL_HEALTH_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        method: init.method ?? "GET",
+        headers: this.buildHeaders(auth, false),
+        body: init.body,
+        signal: controller.signal,
+      });
+      const responseText = await response.text().catch(() => "");
+      let data: unknown;
+      if (responseText.trim()) {
+        try {
+          data = JSON.parse(responseText);
+        } catch {
+          data = undefined;
+        }
+      }
+      return {
+        ok: response.ok,
+        status: response.status,
+        url,
+        response: responseText.slice(0, MAX_RESPONSE_DETAIL_CHARS),
+        data,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        url,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private resolveRunnerUrl(baseUrl: string, rawPath: string): string {
+    try {
+      return new URL(rawPath).toString();
+    } catch {
+      // Continue with relative runner paths below.
+    }
+    if (rawPath.startsWith("/")) {
+      const root = new URL(baseUrl);
+      return new URL(rawPath, root.origin).toString();
+    }
+    return new URL(rawPath, `${baseUrl}/`).toString();
+  }
+
+  private resolveModelListUrls(baseUrl: string): string[] {
+    if (this.modelsPath) return [this.resolveRunnerUrl(baseUrl, this.modelsPath)];
+    const root = new URL(baseUrl);
+    const urls = new Set<string>();
+    if (!root.pathname.replace(/\/+$/, "").endsWith("/v1")) {
+      urls.add(new URL("/v1/models", root.origin).toString());
+    }
+    urls.add(new URL("models", `${baseUrl}/`).toString());
+    urls.add(new URL("/models", root.origin).toString());
+    return Array.from(urls);
+  }
+
+  private extractModelIds(data: unknown): string[] {
+    if (!isRecord(data)) return [];
+    const entries = Array.isArray(data.data) ? data.data : Array.isArray(data.models) ? data.models : [];
+    const ids = entries
+      .map((entry) => {
+        if (typeof entry === "string") return entry.trim();
+        if (isRecord(entry)) return resolveString(entry.id) ?? resolveString(entry.name);
+        return undefined;
+      })
+      .filter((entry): entry is string => Boolean(entry));
+    return Array.from(new Set(ids));
+  }
+
+  private summarizeProbe(result: LocalHealthProbeResult): Record<string, unknown> {
+    return {
+      ok: result.ok,
+      url: result.url,
+      httpStatus: result.status,
+      response: result.response,
+      error: result.error,
+    };
+  }
+
+  private summarizeModelListing(result: ModelListingResult): Record<string, unknown> {
+    return {
+      ...this.summarizeProbe(result),
+      models: result.models?.slice(0, 25),
+      modelCount: result.models?.length,
+      modelFound: result.modelFound,
+    };
   }
 }

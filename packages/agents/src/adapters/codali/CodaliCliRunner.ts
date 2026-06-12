@@ -1,5 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
+import type {
+  LocalOpenAiCompatibleRunnerConfig,
+  LocalRunnerAuthMode,
+  LocalRunnerKind,
+  LocalRunnerResponseFormatStrategy,
+} from "@mcoda/shared";
 
 const CODALI_BIN_ENV = "CODALI_BIN";
 const CODALI_STUB_ENV = "MCODA_CLI_STUB";
@@ -20,6 +26,20 @@ export interface CodaliCliOptions {
   model: string;
   apiKey?: string;
   baseUrl?: string;
+  localRunner?: LocalOpenAiCompatibleRunnerConfig;
+  runnerKind?: LocalRunnerKind;
+  authMode?: LocalRunnerAuthMode;
+  dummyBearerToken?: string;
+  headers?: Record<string, string>;
+  extraBody?: Record<string, unknown>;
+  responseFormatStrategy?: LocalRunnerResponseFormatStrategy;
+  healthPath?: string;
+  modelsPath?: string;
+  requireModelInRequest?: boolean;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonSchema?: boolean;
+  supportsGbnf?: boolean;
   docdexBaseUrl?: string;
   docdexRepoId?: string;
   docdexRepoRoot?: string;
@@ -77,6 +97,48 @@ export const buildArgs = (options: CodaliCliOptions): string[] => {
   if (options.baseUrl) {
     args.push("--base-url", options.baseUrl);
   }
+  if (options.localRunner) {
+    args.push("--local-runner-json", JSON.stringify(options.localRunner));
+  }
+  if (options.runnerKind) {
+    args.push("--runner-kind", options.runnerKind);
+  }
+  if (options.authMode) {
+    args.push("--auth-mode", options.authMode);
+  }
+  if (options.dummyBearerToken) {
+    args.push("--dummy-bearer-token", options.dummyBearerToken);
+  }
+  if (options.headers) {
+    args.push("--headers-json", JSON.stringify(options.headers));
+  }
+  if (options.extraBody) {
+    args.push("--extra-body-json", JSON.stringify(options.extraBody));
+  }
+  if (options.responseFormatStrategy) {
+    args.push("--response-format-strategy", options.responseFormatStrategy);
+  }
+  if (options.healthPath) {
+    args.push("--health-path", options.healthPath);
+  }
+  if (options.modelsPath) {
+    args.push("--models-path", options.modelsPath);
+  }
+  if (options.requireModelInRequest !== undefined) {
+    args.push("--require-model-in-request", String(options.requireModelInRequest));
+  }
+  if (options.supportsStreaming !== undefined) {
+    args.push("--supports-streaming", String(options.supportsStreaming));
+  }
+  if (options.supportsTools !== undefined) {
+    args.push("--supports-tools", String(options.supportsTools));
+  }
+  if (options.supportsJsonSchema !== undefined) {
+    args.push("--supports-json-schema", String(options.supportsJsonSchema));
+  }
+  if (options.supportsGbnf !== undefined) {
+    args.push("--supports-gbnf", String(options.supportsGbnf));
+  }
   if (options.docdexBaseUrl) {
     args.push("--docdex-base-url", options.docdexBaseUrl);
   }
@@ -102,6 +164,9 @@ export const buildEnv = (options: CodaliCliOptions): NodeJS.ProcessEnv => {
   }
   if (options.baseUrl && !env.CODALI_BASE_URL) {
     env.CODALI_BASE_URL = options.baseUrl;
+  }
+  if (options.localRunner && !env.CODALI_LOCAL_RUNNER_JSON) {
+    env.CODALI_LOCAL_RUNNER_JSON = JSON.stringify(options.localRunner);
   }
   return env;
 };

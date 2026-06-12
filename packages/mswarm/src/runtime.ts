@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   MswarmCodaliExecutor,
+  type LocalOpenAiCompatibleRunnerConfig,
   type MswarmCodaliAgent,
   type MswarmCodaliDocdex,
   type MswarmCodaliPolicy,
@@ -26,9 +27,16 @@ export interface SelfHostedModelInput {
   name: string;
   provider?: "mcoda" | "ollama";
   adapter?: string | null;
+  model?: string | null;
   source_agent_id?: string | null;
   source_agent_slug?: string | null;
   model_id?: string | null;
+  base_url?: string | null;
+  runner_kind?: string | null;
+  auth_mode?: string | null;
+  response_format_strategy?: string | null;
+  health_path?: string | null;
+  models_path?: string | null;
   display_name?: string | null;
   digest?: string | null;
   exposed?: boolean;
@@ -38,7 +46,10 @@ export interface SelfHostedModelInput {
   context_window?: number | null;
   max_output_tokens?: number | null;
   supports_tools?: boolean;
+  supports_streaming?: boolean;
   supports_vision?: boolean;
+  supports_json_schema?: boolean;
+  supports_gbnf?: boolean;
   openai_compatible?: boolean;
   best_usage?: string | null;
   capabilities?: string[];
@@ -403,9 +414,182 @@ const DAEMON_PROCESS_NAME = "mswarm-node";
 const POSIX_WRAPPER_SCRIPT_NAME = DAEMON_PROCESS_NAME;
 const WINDOWS_WRAPPER_SCRIPT_NAME = "mswarm-self-hosted-node.ps1";
 const DEFAULT_EXPOSE_ALL_MODELS = true;
+const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
+  "openai-compatible-local",
+  "vllm-local",
+  "llama-cpp-local",
+  "llamacpp-local"
+]);
+const SECRET_LOCAL_RUNNER_HEADER_KEYS = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"]);
+const RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS = new Set([
+  "model",
+  "messages",
+  "stream",
+  "tools",
+  "tool_choice",
+  "response_format",
+  "max_tokens",
+  "temperature"
+]);
+const LOCAL_RUNNER_KIND_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibleRunnerConfig["runnerKind"]>> = {
+  vllm: "vllm",
+  "llama-cpp": "llama-cpp",
+  "llama.cpp": "llama-cpp",
+  llamacpp: "llama-cpp",
+  llama_cpp: "llama-cpp",
+  "llama-cpp-python": "llama-cpp-python",
+  "llama.cpp-python": "llama-cpp-python",
+  llamacpppython: "llama-cpp-python",
+  llama_cpp_python: "llama-cpp-python",
+  "lm-studio": "lm-studio",
+  lmstudio: "lm-studio",
+  lm_studio: "lm-studio",
+  localai: "localai",
+  "local-ai": "localai",
+  local_ai: "localai",
+  sglang: "sglang",
+  tgi: "tgi",
+  "text-generation-inference": "tgi",
+  text_generation_inference: "tgi",
+  custom: "custom"
+};
+const LOCAL_RUNNER_AUTH_MODE_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibleRunnerConfig["authMode"]>> = {
+  none: "none",
+  bearer: "bearer",
+  "dummy-bearer": "dummy-bearer",
+  dummy_bearer: "dummy-bearer",
+  dummybearer: "dummy-bearer",
+  dummy: "dummy-bearer"
+};
+const LOCAL_RUNNER_RESPONSE_FORMAT_ALIASES: Record<
+  string,
+  NonNullable<LocalOpenAiCompatibleRunnerConfig["responseFormatStrategy"]>
+> = {
+  openai: "openai",
+  "json-object": "json-object",
+  json_object: "json-object",
+  jsonobject: "json-object",
+  "json-schema": "json-schema",
+  json_schema: "json-schema",
+  jsonschema: "json-schema",
+  gbnf: "gbnf",
+  "prompt-only": "prompt-only",
+  prompt_only: "prompt-only",
+  promptonly: "prompt-only",
+  none: "none"
+};
 
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeLookupKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isLocalOpenAiCompatibleAdapter(adapter: unknown): boolean {
+  const normalized = optionalText(adapter);
+  return normalized ? LOCAL_OPENAI_COMPATIBLE_ADAPTERS.has(normalizeLookupKey(normalized)) : false;
+}
+
+function defaultLocalRunnerKindForAdapter(adapter: unknown): LocalOpenAiCompatibleRunnerConfig["runnerKind"] {
+  const normalized = optionalText(adapter);
+  if (!normalized) return undefined;
+  const lookupKey = normalizeLookupKey(normalized);
+  if (lookupKey === "vllm-local") return "vllm";
+  if (lookupKey === "llama-cpp-local" || lookupKey === "llamacpp-local") return "llama-cpp";
+  return undefined;
+}
+
+function readConfigString(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = optionalText(record[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function readConfigBoolean(record: Record<string, unknown>, keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    if (typeof record[key] === "boolean") return record[key] as boolean;
+  }
+  return undefined;
+}
+
+function normalizeStringMap(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const mapped: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    const stringValue = optionalText(rawValue);
+    if (!stringValue || SECRET_LOCAL_RUNNER_HEADER_KEYS.has(normalizeLookupKey(key))) {
+      continue;
+    }
+    mapped[key] = stringValue;
+  }
+  return Object.keys(mapped).length > 0 ? mapped : undefined;
+}
+
+function normalizeExtraBody(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const mapped: Record<string, unknown> = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS.has(normalizeLookupKey(key))) {
+      continue;
+    }
+    mapped[key] = rawValue;
+  }
+  return Object.keys(mapped).length > 0 ? mapped : undefined;
+}
+
+function normalizeLocalRunnerKind(value: unknown): LocalOpenAiCompatibleRunnerConfig["runnerKind"] {
+  const normalized = optionalText(value);
+  return normalized ? LOCAL_RUNNER_KIND_ALIASES[normalizeLookupKey(normalized)] : undefined;
+}
+
+function normalizeLocalRunnerAuthMode(value: unknown): LocalOpenAiCompatibleRunnerConfig["authMode"] {
+  const normalized = optionalText(value);
+  return normalized ? LOCAL_RUNNER_AUTH_MODE_ALIASES[normalizeLookupKey(normalized)] : undefined;
+}
+
+function normalizeLocalRunnerResponseFormatStrategy(
+  value: unknown
+): LocalOpenAiCompatibleRunnerConfig["responseFormatStrategy"] {
+  const normalized = optionalText(value);
+  return normalized ? LOCAL_RUNNER_RESPONSE_FORMAT_ALIASES[normalizeLookupKey(normalized)] : undefined;
+}
+
+function normalizeMcodaLocalRunnerConfig(
+  adapter: string,
+  config: Record<string, unknown> | null | undefined
+): LocalOpenAiCompatibleRunnerConfig | undefined {
+  if (!isLocalOpenAiCompatibleAdapter(adapter)) return undefined;
+  const configRecord = config ?? {};
+  const localRunnerRecord = isRecord(configRecord.localRunner) ? configRecord.localRunner : {};
+  const merged = { ...localRunnerRecord, ...configRecord };
+  const authMode = normalizeLocalRunnerAuthMode(merged.authMode) ?? "none";
+  const dummyBearerToken = readConfigString(merged, ["dummyBearerToken", "dummyApiKey"]);
+  return {
+    baseUrl: readConfigString(merged, ["baseUrl", "base_url", "endpoint", "apiBaseUrl", "api_base_url"]),
+    endpoint: readConfigString(merged, ["endpoint"]),
+    apiBaseUrl: readConfigString(merged, ["apiBaseUrl", "api_base_url"]),
+    runnerKind: normalizeLocalRunnerKind(merged.runnerKind) ?? defaultLocalRunnerKindForAdapter(adapter),
+    authMode,
+    dummyBearerToken: authMode === "dummy-bearer" ? dummyBearerToken ?? "local" : dummyBearerToken,
+    headers: normalizeStringMap(merged.headers),
+    extraBody: normalizeExtraBody(merged.extraBody),
+    responseFormatStrategy: normalizeLocalRunnerResponseFormatStrategy(merged.responseFormatStrategy),
+    healthPath: readConfigString(merged, ["healthPath", "health_path"]),
+    modelsPath: readConfigString(merged, ["modelsPath", "models_path"]),
+    requireModelInRequest: readConfigBoolean(merged, ["requireModelInRequest", "require_model_in_request"]),
+    supportsStreaming: readConfigBoolean(merged, ["supportsStreaming", "supports_streaming"]),
+    supportsTools: readConfigBoolean(merged, ["supportsTools", "supports_tools"]),
+    supportsJsonSchema: readConfigBoolean(merged, ["supportsJsonSchema", "supports_json_schema"]),
+    supportsGbnf: readConfigBoolean(merged, ["supportsGbnf", "supports_gbnf"])
+  };
 }
 
 function parsePositiveInteger(value: unknown, fallback: number): number {
@@ -1525,21 +1709,36 @@ export function mapMcodaAgentToSelfHostedModel(
   const bestUsage = optionalText(agent.bestUsage) || optionalText(agent.best_usage) || "general_chat";
   const healthStatus = normalizeHealthStatus(agent.health?.status);
   const capabilities = normalizeCapabilities(agent.capabilities);
+  const localRunner = normalizeMcodaLocalRunnerConfig(adapter, agent.config);
+  const supportsTools = optionalBoolean(agent.supportsTools, agent.supports_tools, localRunner?.supportsTools) === true;
+  const openaiCompatible =
+    localRunner !== undefined || optionalBoolean(agent.openaiCompatible, agent.openai_compatible) === true;
+  const model = defaultModel || slug;
   return {
     name: slug,
     provider: "mcoda",
     adapter,
     source_agent_id: optionalText(agent.id),
     source_agent_slug: slug,
-    model_id: defaultModel || slug,
+    model,
+    model_id: model,
+    base_url: localRunner?.baseUrl,
+    runner_kind: localRunner?.runnerKind,
+    auth_mode: localRunner?.authMode,
+    response_format_strategy: localRunner?.responseFormatStrategy,
+    health_path: localRunner?.healthPath,
+    models_path: localRunner?.modelsPath,
     display_name: slug,
     context_window: optionalNumber(agent.contextWindow, agent.context_window),
     max_output_tokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens),
-    supports_tools: optionalBoolean(agent.supportsTools, agent.supports_tools) === true,
+    supports_tools: supportsTools,
+    supports_streaming: localRunner?.supportsStreaming,
     supports_vision:
       capabilities.some((capability) => capability.toLowerCase().includes("vision")) ||
       capabilities.some((capability) => capability.toLowerCase().includes("visual")),
-    openai_compatible: optionalBoolean(agent.openaiCompatible, agent.openai_compatible) === true,
+    supports_json_schema: localRunner?.supportsJsonSchema,
+    supports_gbnf: localRunner?.supportsGbnf,
+    openai_compatible: openaiCompatible,
     exposed:
       healthStatus !== "blocked" &&
       isAgentExposed(slug, defaultModel, bestUsage, config),
@@ -1859,6 +2058,9 @@ function mcodaAgentDefaultModel(agent: McodaAgentListEntry): string | null {
 
 function resolveCodaliProviderForAgent(agent: McodaAgentListEntry): string | undefined {
   const adapter = optionalText(agent.adapter);
+  if (isLocalOpenAiCompatibleAdapter(adapter)) {
+    return "openai-compatible";
+  }
   if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(adapter || "")) {
     return "ollama-remote";
   }
@@ -1873,14 +2075,33 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
   const adapter = optionalText(agent.adapter) || "unknown";
   const model = mcodaAgentDefaultModel(agent) || fallbackSlug;
   const config = agent.config ?? null;
+  const localRunner = normalizeMcodaLocalRunnerConfig(adapter, config);
+  const supportsTools = optionalBoolean(agent.supportsTools, agent.supports_tools, localRunner?.supportsTools) === true;
   return {
     slug: optionalText(agent.slug) || fallbackSlug,
     adapter,
     provider: resolveCodaliProviderForAgent(agent),
     model,
-    baseUrl: configText(config, "baseUrl", "base_url", "apiBaseUrl", "api_base_url"),
-    apiKey: configText(config, "apiKey", "api_key"),
-    supportsTools: optionalBoolean(agent.supportsTools, agent.supports_tools) === true,
+    baseUrl: localRunner?.baseUrl ?? configText(config, "baseUrl", "base_url", "apiBaseUrl", "api_base_url"),
+    apiKey: localRunner
+      ? localRunner.authMode === "bearer"
+        ? configText(config, "apiKey", "api_key")
+        : undefined
+      : configText(config, "apiKey", "api_key"),
+    localRunner,
+    runnerKind: localRunner?.runnerKind,
+    authMode: localRunner?.authMode,
+    dummyBearerToken: localRunner?.dummyBearerToken,
+    headers: localRunner?.headers,
+    extraBody: localRunner?.extraBody,
+    responseFormatStrategy: localRunner?.responseFormatStrategy,
+    healthPath: localRunner?.healthPath,
+    modelsPath: localRunner?.modelsPath,
+    requireModelInRequest: localRunner?.requireModelInRequest,
+    supportsStreaming: localRunner?.supportsStreaming,
+    supportsTools,
+    supportsJsonSchema: localRunner?.supportsJsonSchema,
+    supportsGbnf: localRunner?.supportsGbnf,
     capabilities: normalizeCapabilities(agent.capabilities),
     contextWindow: optionalNumber(agent.contextWindow, agent.context_window) ?? undefined,
     maxOutputTokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens) ?? undefined,

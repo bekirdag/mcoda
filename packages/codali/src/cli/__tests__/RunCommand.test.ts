@@ -24,6 +24,34 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
     "secret",
     "--base-url",
     "https://api.example.com",
+    "--local-runner-json",
+    "{\"runnerKind\":\"vllm\",\"authMode\":\"none\"}",
+    "--runner-kind",
+    "vllm",
+    "--auth-mode",
+    "none",
+    "--dummy-bearer-token",
+    "local",
+    "--headers-json",
+    "{\"x-runner\":\"vllm\"}",
+    "--extra-body-json",
+    "{\"top_k\":40}",
+    "--response-format-strategy",
+    "json-object",
+    "--health-path",
+    "/health",
+    "--models-path",
+    "/v1/models",
+    "--require-model-in-request",
+    "true",
+    "--supports-streaming",
+    "true",
+    "--supports-tools",
+    "false",
+    "--supports-json-schema",
+    "true",
+    "--supports-gbnf",
+    "false",
     "--workflow-profile",
     "explain",
     "--task",
@@ -80,6 +108,20 @@ test("parseArgs captures cli flags", { concurrency: false }, () => {
   assert.equal(parsed.model, "gpt-4o-mini");
   assert.equal(parsed.apiKey, "secret");
   assert.equal(parsed.baseUrl, "https://api.example.com");
+  assert.deepEqual(parsed.localRunner, { runnerKind: "vllm", authMode: "none" });
+  assert.equal(parsed.runnerKind, "vllm");
+  assert.equal(parsed.authMode, "none");
+  assert.equal(parsed.dummyBearerToken, "local");
+  assert.deepEqual(parsed.headers, { "x-runner": "vllm" });
+  assert.deepEqual(parsed.extraBody, { top_k: 40 });
+  assert.equal(parsed.responseFormatStrategy, "json-object");
+  assert.equal(parsed.healthPath, "/health");
+  assert.equal(parsed.modelsPath, "/v1/models");
+  assert.equal(parsed.requireModelInRequest, true);
+  assert.equal(parsed.supportsStreaming, true);
+  assert.equal(parsed.supportsTools, false);
+  assert.equal(parsed.supportsJsonSchema, true);
+  assert.equal(parsed.supportsGbnf, false);
   assert.equal(parsed.workflowProfile, "explain");
   assert.equal(parsed.taskFile, "tasks/work.txt");
   assert.equal(parsed.configPath, "codali.config.json");
