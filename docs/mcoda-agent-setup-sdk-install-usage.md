@@ -1,6 +1,6 @@
 # mcoda Agent Setup SDK Install And Usage
 
-Last verified: 2026-06-12
+Last verified: 2026-06-13
 
 This document explains how an application can install and use the public
 `@mcoda/agent-setup` SDK to configure mcoda/mswarm agents from an app UI.
@@ -11,17 +11,17 @@ The npm registry currently reports:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.73
+# 0.1.74
 ```
 
-Published `@mcoda/agent-setup@0.1.73` exports:
+Published `@mcoda/agent-setup@0.1.74` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.73`.
+It depends on public `@mcoda/core@0.1.74`.
 
 ## What The SDK Does
 
@@ -32,6 +32,8 @@ The SDK provides:
 - Server-side service helpers and HTTP handler.
 - A default programmatic mcoda runtime adapter.
 - Optional React setup UI components.
+- Local-runner catalog metadata and a first-class Local source lane for
+  unmanaged vLLM, llama.cpp, and OpenAI-compatible local runner agents.
 
 The default programmatic server runtime uses mcoda package APIs directly. It
 does not require the host app server to have the `mcoda` CLI/client tool

@@ -9,6 +9,7 @@ import {
   syncedCloudSlug,
   syncedSelfHostedSlug,
 } from "../headless/index.js";
+import { normalizeAgentCatalogEntry } from "../headless/normalization.js";
 import type { McodaAgentCatalogEntry } from "../types.js";
 
 const cloudAgent = (slug: string, patch: Partial<McodaAgentCatalogEntry> = {}): McodaAgentCatalogEntry => ({
@@ -116,6 +117,51 @@ test("filtering searches large catalogs without hidden cap", () => {
   const filtered = filterAgentOptions(agents, "reasoning 642");
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].slug, "provider-model-642");
+});
+
+test("normalization exposes local runner metadata and search terms", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "local-vllm",
+      adapter: "vllm-local",
+      provider: "vllm",
+      defaultModel: "qwen-local",
+      config: {
+        baseUrl: "http://127.0.0.1:8000/v1",
+        localRunner: {
+          runnerKind: "vllm",
+          authMode: "none",
+          responseFormatStrategy: "json-object",
+          supportsJsonSchema: false,
+          supportsGbnf: true,
+        },
+      },
+    },
+    { source: "local_registry", synced: true }
+  );
+
+  assert.equal(agent.localRunner?.baseUrl, "http://127.0.0.1:8000/v1");
+  assert.equal(agent.localRunner?.runnerKind, "vllm");
+  assert.equal(agent.localRunner?.authMode, "none");
+  assert.equal(agent.localRunner?.responseFormatStrategy, "json-object");
+  assert.equal(agent.localRunner?.supportsJsonSchema, false);
+  assert.equal(agent.localRunner?.supportsGbnf, true);
+  assert.deepEqual(filterAgentOptions([agent], "vllm 8000 json-object"), [agent]);
+});
+
+test("normalization does not infer local runner metadata from generic capabilities", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "openrouter-qwen",
+      adapter: "openai-api",
+      provider: "openrouter",
+      defaultModel: "qwen",
+      supportsTools: true,
+    },
+    { source: "cloud_catalog", synced: false, managedKind: "cloud" }
+  );
+
+  assert.equal(agent.localRunner, null);
 });
 
 test("virtual agent window renders only the visible slice while preserving total height", () => {

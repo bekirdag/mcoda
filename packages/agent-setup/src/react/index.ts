@@ -25,6 +25,7 @@ export interface McodaAgentSetupLabels {
   saveKey: string;
   syncAgents: string;
   saveAssignments: string;
+  local: string;
   cloud: string;
   selfHosted: string;
   workers: string;
@@ -43,12 +44,13 @@ const DEFAULT_LABELS: McodaAgentSetupLabels = {
   saveKey: "Save Key",
   syncAgents: "Sync Agents",
   saveAssignments: "Save Assignments",
+  local: "Local",
   cloud: "Cloud",
   selfHosted: "Self-hosted",
   workers: "Workers",
 };
 
-type AgentAssignmentSource = "cloud" | "self_hosted" | "worker";
+type AgentAssignmentSource = "local" | "cloud" | "self_hosted" | "worker";
 
 export function McodaAgentSetupPage(
   props: McodaAgentSetupPageProps
@@ -154,7 +156,7 @@ export function McodaAgentSetupPage(
         React.createElement(
           "p",
           null,
-          "Configure mswarm access and assign cloud, self-hosted, or Worker mcoda targets to each runtime stage."
+          "Configure mswarm access and assign local, cloud, self-hosted, or Worker mcoda targets to each runtime stage."
         )
       ),
       React.createElement(
@@ -259,6 +261,11 @@ export function AgentCatalogSummary(props: {
         label: "Synced agents",
         value: String(snapshot.catalog.localAgents.length),
         detail: "mcoda registry entries",
+      }),
+      React.createElement(MetricCard, {
+        label: "Local runners",
+        value: String(localAssignableAgents(snapshot).length),
+        detail: "unmanaged registry entries",
       }),
       React.createElement(MetricCard, {
         label: "Cloud agents",
@@ -372,6 +379,10 @@ export function StageAgentAssignments(props: {
   const agentSelect = AgentSearchSelect;
   const [sources, setSources] = React.useState<Record<string, AgentAssignmentSource>>({});
   const [servers, setServers] = React.useState<Record<string, string>>({});
+  const localAgents = React.useMemo(
+    () => localAssignableAgents(props.snapshot),
+    [props.snapshot]
+  );
 
   React.useEffect(() => {
     const nextSources: Record<string, AgentAssignmentSource> = {};
@@ -393,6 +404,10 @@ export function StageAgentAssignments(props: {
       }
       if (props.snapshot.catalog.cloudAgents.some((agent) => agent.slug === assignment)) {
         nextSources[stage.stageKey] = "cloud";
+        continue;
+      }
+      if (localAgents.some((agent) => agent.slug === assignment)) {
+        nextSources[stage.stageKey] = "local";
       }
     }
     setSources((current) => ({ ...current, ...nextSources }));
@@ -402,6 +417,7 @@ export function StageAgentAssignments(props: {
     props.snapshot.catalog.cloudAgents,
     props.snapshot.catalog.selfHostedServers,
     props.snapshot.catalog.workerAgents,
+    localAgents,
     props.stages,
   ]);
 
@@ -459,12 +475,15 @@ export function StageAgentAssignments(props: {
                 (candidate) => candidate.id === serverId
               ) ?? props.snapshot.catalog.selfHostedServers[0];
             const agents =
-              source === "cloud"
+              source === "local"
+                ? localAgents
+                : source === "cloud"
                 ? props.snapshot.catalog.cloudAgents
                 : source === "worker"
                   ? props.snapshot.catalog.workerAgents
                   : server?.agents ?? [];
             const allSelectableAgents = [
+              ...localAgents,
               ...props.snapshot.catalog.cloudAgents,
               ...props.snapshot.catalog.selfHostedServers.flatMap(
                 (candidate) => candidate.agents
@@ -482,7 +501,9 @@ export function StageAgentAssignments(props: {
             const onSourceChange = (value: AgentAssignmentSource) => {
               setSources((current) => ({ ...current, [stage.stageKey]: value }));
               const nextSlug =
-                value === "cloud"
+                value === "local"
+                  ? localAgents[0]?.slug
+                  : value === "cloud"
                   ? props.snapshot.catalog.cloudAgents[0]?.slug
                   : value === "worker"
                     ? props.snapshot.catalog.workerAgents[0]?.slug
@@ -532,7 +553,11 @@ export function StageAgentAssignments(props: {
                   : React.createElement(
                       "span",
                       { className: "mcoda-agent-setup__muted-pill" },
-                      source === "worker" ? "Worker catalog" : "Cloud catalog"
+                      source === "worker"
+                        ? "Worker catalog"
+                        : source === "local"
+                          ? "Local registry"
+                          : "Cloud catalog"
                     )
               ),
               React.createElement(
@@ -570,6 +595,15 @@ export function AgentSourceSelect(props: {
   return React.createElement(
     "div",
     { className: "mcoda-agent-setup__source", role: "group", "aria-label": "Agent source" },
+    React.createElement(
+      "button",
+      {
+        type: "button",
+        "aria-pressed": props.value === "local",
+        onClick: () => props.onChange("local"),
+      },
+      labels.local
+    ),
     React.createElement(
       "button",
       {
@@ -906,7 +940,9 @@ function AgentStatusBadge(props: {
         : kind === "worker"
           ? "Worker"
         : props.agent
-          ? "Local"
+          ? props.agent.localRunner
+            ? "Local runner"
+            : "Local"
           : props.slug
             ? "Missing"
             : "Unset";
@@ -935,15 +971,29 @@ function firstSelfHostedAgentSlug(servers: McodaSelfHostedServer[]): string | nu
   return servers.find((server) => server.agents.length > 0)?.agents[0]?.slug ?? null;
 }
 
+function localAssignableAgents(snapshot: McodaAgentSetupSnapshot): McodaAgentCatalogEntry[] {
+  return snapshot.catalog.localAgents.filter((agent) => !agent.managedKind);
+}
+
 function agentTitle(agent: McodaAgentCatalogEntry): string {
   return agent.displayName ?? prettySlug(agent.slug);
 }
 
 function agentMetadata(agent: McodaAgentCatalogEntry): string {
+  const runnerDetail = agent.localRunner
+    ? [
+        agent.localRunner.runnerKind,
+        agent.localRunner.baseUrl,
+        agent.localRunner.responseFormatStrategy,
+      ]
+        .filter(Boolean)
+        .join(" / ")
+    : null;
   return (
     [
       agent.defaultModel ?? agent.model,
       agent.provider,
+      runnerDetail,
       agent.healthStatus && agent.healthStatus !== "-" ? agent.healthStatus : null,
     ]
       .filter(Boolean)

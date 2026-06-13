@@ -2,7 +2,15 @@ import type {
   McodaAgentCatalogEntry,
   McodaAgentManagedKind,
   McodaAgentSource,
+  McodaLocalRunnerCatalogMetadata,
 } from "../types.js";
+
+const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
+  "openai-compatible-local",
+  "vllm-local",
+  "llama-cpp-local",
+  "llamacpp-local",
+]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -26,6 +34,45 @@ const stringArrayValue = (value: unknown): string[] | undefined =>
 const recordValue = (value: unknown): Record<string, unknown> | undefined =>
   isRecord(value) ? value : undefined;
 
+const lookupKey = (value: string): string => value.trim().toLowerCase();
+
+const stringFromRecords = (
+  records: Array<Record<string, unknown> | undefined>,
+  keys: string[]
+): string | null => {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = stringValue(record[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+};
+
+const booleanFromRecords = (
+  records: Array<Record<string, unknown> | undefined>,
+  keys: string[]
+): boolean | null => {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = booleanValue(record[key]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+};
+
+const defaultRunnerKindForAdapter = (adapter: string | null): string | null => {
+  const normalized = adapter ? lookupKey(adapter) : "";
+  if (normalized === "vllm-local") return "vllm";
+  if (normalized === "llama-cpp-local" || normalized === "llamacpp-local") {
+    return "llama-cpp";
+  }
+  return null;
+};
+
 export function normalizeAgentCatalogEntry(
   raw: unknown,
   fallback: {
@@ -39,6 +86,7 @@ export function normalizeAgentCatalogEntry(
   const mswarmCloud = recordValue(config?.mswarmCloud);
   const mswarmSelfHosted = recordValue(config?.mswarmSelfHosted);
   const mswarmWorker = recordValue(config?.mswarmWorker);
+  const localRunner = recordValue(config?.localRunner);
   const sync =
     recordValue(record.sync) ??
     recordValue(mswarmSelfHosted?.sync) ??
@@ -78,6 +126,16 @@ export function normalizeAgentCatalogEntry(
     stringValue(record.modelId) ??
     stringValue(record.model_id) ??
     defaultModel;
+  const adapter =
+    stringValue(record.adapter) ??
+    stringValue(mswarmSelfHosted?.adapter) ??
+    (mswarmWorker ? "mswarm-worker" : null);
+  const localRunnerMetadata = normalizeLocalRunnerMetadata(
+    record,
+    config,
+    localRunner,
+    adapter
+  );
   const health = recordValue(record.health);
   const healthStatus =
     stringValue(record.healthStatus) ??
@@ -122,10 +180,7 @@ export function normalizeAgentCatalogEntry(
       stringValue(mswarmCloud?.provider) ??
       stringValue(mswarmSelfHosted?.provider) ??
       stringValue(mswarmWorker?.provider),
-    adapter:
-      stringValue(record.adapter) ??
-      stringValue(mswarmSelfHosted?.adapter) ??
-      (mswarmWorker ? "mswarm-worker" : null),
+    adapter,
     model,
     defaultModel,
     healthStatus,
@@ -151,10 +206,65 @@ export function normalizeAgentCatalogEntry(
     bestUsage:
       stringValue(record.bestUsage) ??
       stringValue(record.best_usage),
+    localRunner: localRunnerMetadata,
     capabilities: stringArrayValue(record.capabilities),
     metadata: {
       raw,
     },
+  };
+}
+
+function normalizeLocalRunnerMetadata(
+  record: Record<string, unknown>,
+  config: Record<string, unknown> | undefined,
+  localRunner: Record<string, unknown> | undefined,
+  adapter: string | null
+): McodaLocalRunnerCatalogMetadata | null {
+  const adapterIsLocal = adapter
+    ? LOCAL_OPENAI_COMPATIBLE_ADAPTERS.has(lookupKey(adapter))
+    : false;
+  const records = [localRunner, config, adapterIsLocal ? record : undefined];
+  const baseUrl = stringFromRecords(records, ["baseUrl", "endpoint", "apiBaseUrl"]);
+  const runnerKind =
+    stringFromRecords(records, ["runnerKind"]) ?? defaultRunnerKindForAdapter(adapter);
+  const authMode = stringFromRecords(records, ["authMode"]);
+  const responseFormatStrategy = stringFromRecords(records, [
+    "responseFormatStrategy",
+  ]);
+  const healthPath = stringFromRecords(records, ["healthPath"]);
+  const modelsPath = stringFromRecords(records, ["modelsPath"]);
+  const requireModelInRequest = booleanFromRecords(records, [
+    "requireModelInRequest",
+  ]);
+  const supportsStreaming = booleanFromRecords(records, ["supportsStreaming"]);
+  const supportsTools = booleanFromRecords(records, ["supportsTools"]);
+  const supportsJsonSchema = booleanFromRecords(records, ["supportsJsonSchema"]);
+  const supportsGbnf = booleanFromRecords(records, ["supportsGbnf"]);
+
+  if (
+    !localRunner &&
+    !adapterIsLocal &&
+    !runnerKind &&
+    !authMode &&
+    !responseFormatStrategy &&
+    !healthPath &&
+    !modelsPath
+  ) {
+    return null;
+  }
+
+  return {
+    baseUrl,
+    runnerKind,
+    authMode,
+    responseFormatStrategy,
+    healthPath,
+    modelsPath,
+    requireModelInRequest,
+    supportsStreaming,
+    supportsTools,
+    supportsJsonSchema,
+    supportsGbnf,
   };
 }
 

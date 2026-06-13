@@ -119,6 +119,64 @@ test("server helper validates assignments against local registry", async () => {
   assert.equal(saved.assignments.summarization, "mswarm-cloud-openrouter-qwen");
 });
 
+test("server helper keeps unmanaged local runner agents assignable", async () => {
+  const localRunner: McodaAgentCatalogEntry = {
+    slug: "local-vllm",
+    source: "local_registry",
+    synced: true,
+    remoteSlug: null,
+    managedKind: null,
+    displayName: "Local vLLM",
+    provider: "vllm",
+    adapter: "vllm-local",
+    model: "qwen-local",
+    defaultModel: "qwen-local",
+    healthStatus: "healthy",
+    supportsTools: true,
+    rating: 7,
+    reasoningRating: 7,
+    maxComplexity: 5,
+    costPerMillion: 0,
+    localRunner: {
+      baseUrl: "http://127.0.0.1:8000/v1",
+      runnerKind: "vllm",
+      authMode: "none",
+      responseFormatStrategy: "json-object",
+      healthPath: null,
+      modelsPath: null,
+      requireModelInRequest: null,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonSchema: false,
+      supportsGbnf: null,
+    },
+  };
+  const service = createMcodaAgentSetupService({
+    settingsStore: createInMemoryMcodaAgentSettingsStore(),
+    mcoda: createInMemoryMcodaRuntimeAdapter({
+      cloudAgents: [remoteCloud],
+      localAgents: [localRunner],
+    }),
+    defaultStages: stages,
+  });
+  const snapshot = await service.fetchSnapshot();
+  assert.equal(snapshot.catalog.localAgents.some((agent) => agent.slug === "local-vllm"), true);
+  assert.equal(snapshot.catalog.cloudAgents.some((agent) => agent.slug === "local-vllm"), false);
+  assert.equal(
+    snapshot.catalog.localAgents.find((agent) => agent.slug === "local-vllm")?.localRunner
+      ?.runnerKind,
+    "vllm"
+  );
+
+  const saved = await service.updateAssignments({
+    assignments: {
+      summarization: "local-vllm",
+      guardrail: null,
+    },
+  });
+  assert.equal(saved.assignments.summarization, "local-vllm");
+});
+
 test("server helper rejects omitted required stage assignments", async () => {
   const service = createMcodaAgentSetupService({
     settingsStore: createInMemoryMcodaAgentSettingsStore(),

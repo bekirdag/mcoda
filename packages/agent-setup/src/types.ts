@@ -20,6 +20,40 @@ export type McodaPreferredSource =
   | "cloud_or_self_hosted"
   | null;
 
+export type McodaLocalRunnerKind =
+  | "vllm"
+  | "llama-cpp"
+  | "llama-cpp-python"
+  | "lm-studio"
+  | "localai"
+  | "sglang"
+  | "tgi"
+  | "custom";
+
+export type McodaLocalRunnerAuthMode = "none" | "bearer" | "dummy-bearer";
+
+export type McodaLocalRunnerResponseFormatStrategy =
+  | "openai"
+  | "json-object"
+  | "json-schema"
+  | "gbnf"
+  | "prompt-only"
+  | "none";
+
+export interface McodaLocalRunnerCatalogMetadata {
+  baseUrl: string | null;
+  runnerKind: McodaLocalRunnerKind | string | null;
+  authMode: McodaLocalRunnerAuthMode | string | null;
+  responseFormatStrategy: McodaLocalRunnerResponseFormatStrategy | string | null;
+  healthPath: string | null;
+  modelsPath: string | null;
+  requireModelInRequest: boolean | null;
+  supportsStreaming: boolean | null;
+  supportsTools: boolean | null;
+  supportsJsonSchema: boolean | null;
+  supportsGbnf: boolean | null;
+}
+
 export type McodaMswarmConnectionValidationMode =
   | "auto"
   | "required"
@@ -91,6 +125,7 @@ export interface McodaAgentCatalogEntry {
   contextWindow?: number | null;
   maxOutputTokens?: number | null;
   bestUsage?: string | null;
+  localRunner?: McodaLocalRunnerCatalogMetadata | null;
   capabilities?: string[];
   metadata?: Record<string, unknown>;
 }

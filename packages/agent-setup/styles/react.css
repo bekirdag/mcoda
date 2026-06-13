@@ -178,7 +178,7 @@
 .mcoda-agent-setup__metric-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
 .mcoda-agent-setup__metric {
@@ -322,7 +322,7 @@
 
 .mcoda-agent-setup__stage-table {
   border-collapse: collapse;
-  min-width: 980px;
+  min-width: 1080px;
   table-layout: fixed;
   width: 100%;
 }
@@ -351,17 +351,17 @@
 
 .mcoda-agent-setup__stage-table th:nth-child(2),
 .mcoda-agent-setup__stage-table td:nth-child(2) {
-  width: 15%;
+  width: 18%;
 }
 
 .mcoda-agent-setup__stage-table th:nth-child(3),
 .mcoda-agent-setup__stage-table td:nth-child(3) {
-  width: 18%;
+  width: 16%;
 }
 
 .mcoda-agent-setup__stage-table th:nth-child(4),
 .mcoda-agent-setup__stage-table td:nth-child(4) {
-  width: 34%;
+  width: 33%;
 }
 
 .mcoda-agent-setup__stage-cell strong {
@@ -388,9 +388,11 @@
   background: #f1f5f9;
   border: 1px solid var(--mcoda-border);
   border-radius: 8px;
-  display: inline-flex;
+  display: grid;
   gap: 4px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   padding: 4px;
+  width: 100%;
 }
 
 .mcoda-agent-setup__source button {
@@ -402,7 +404,9 @@
   font-size: 12px;
   font-weight: 800;
   min-height: 30px;
-  padding: 0 10px;
+  min-width: 0;
+  padding: 0 8px;
+  white-space: nowrap;
 }
 
 .mcoda-agent-setup__source button[aria-pressed="true"] {
