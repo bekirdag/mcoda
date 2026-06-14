@@ -36,6 +36,23 @@ import { SetWorkspaceCommand } from '../commands/workspace/SetWorkspaceCommand.j
 import { ProjectGuidanceCommand } from '../commands/workspace/ProjectGuidanceCommand.js';
 import { MswarmConfigStore } from '@mcoda/core';
 
+const TOP_LEVEL_USAGE =
+  'Usage: mcoda <agent|cloud|cloud-agent|self-hosted|self-hosted-agent|workers|worker|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
+  'Setup: use `mcoda setup` after installation (or accept the postinstall prompt) to complete the mandatory mswarm telemetry consent flow.\n' +
+  'Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in the resolved global mcoda config file.\n' +
+  'Consent: use `mcoda consent accept` before other commands if you need to complete consent outside the guided setup flow.\n' +
+  'Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n' +
+  'Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n' +
+  'Self-hosted agents: use `mcoda self-hosted agent list|details|sync` to discover and materialize owner-hosted mswarm agents.\n' +
+  'Workers: use `mcoda workers list|details|sync|run` to discover, materialize, and invoke mswarm Workers.\n' +
+  'Expose this machine: install `@mcoda/mswarm`, then run `mswarm install <KEY>`.\n' +
+  'Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n' +
+  'Help: use `mcoda help`, `mcoda --help`, `mcoda -h`, or `mcoda -H` for this overview.\n' +
+  'Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n' +
+  'Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.';
+
+const TOP_LEVEL_HELP_COMMANDS = new Set(['--help', '-h', '-H', 'help']);
+
 export class McodaEntrypoint {
   static async run(argv: string[] = process.argv.slice(2)): Promise<void> {
     const applyCodexNoSandboxFlag = (value: string | undefined): void => {
@@ -94,21 +111,13 @@ export class McodaEntrypoint {
       console.log((packageJson as { version?: string }).version ?? 'dev');
       return;
     }
+    if (command && TOP_LEVEL_HELP_COMMANDS.has(command)) {
+      // eslint-disable-next-line no-console
+      console.log(TOP_LEVEL_USAGE);
+      return;
+    }
     if (!command) {
-      throw new Error(
-        'Usage: mcoda <agent|cloud|cloud-agent|self-hosted|self-hosted-agent|workers|worker|config|consent|setup|gateway-agent|test-agent|agent-run|routing|docs|openapi|job|jobs|tokens|telemetry|create-tasks|migrate-tasks|refine-tasks|task-sufficiency-audit|sds-preflight|order-tasks|tasks|add-tests|work-on-tasks|gateway-trio|code-review|qa-tasks|backlog|task|task-detail|estimate|update|set-workspace|project-guidance|pdr|sds> [...args]\n' +
-          'Setup: use `mcoda setup` after installation (or accept the postinstall prompt) to complete the mandatory mswarm telemetry consent flow.\n' +
-          'Config: use `mcoda config set mswarm-api-key <KEY>` to persist an encrypted mswarm API key in the resolved global mcoda config file.\n' +
-          'Consent: use `mcoda consent accept` before other commands if you need to complete consent outside the guided setup flow.\n' +
-          'Routing: use `mcoda routing defaults` to view/update workspace/global defaults, `mcoda routing preview|explain` to inspect agent selection/provenance (override → workspace_default → global_default).\n' +
-          'Cloud agents: use `mcoda cloud agent list|details|sync` to discover and materialize mswarm-managed remote agents.\n' +
-          'Self-hosted agents: use `mcoda self-hosted agent list|details|sync` to discover and materialize owner-hosted mswarm agents.\n' +
-          'Workers: use `mcoda workers list|details|sync|run` to discover, materialize, and invoke mswarm Workers.\n' +
-          'Expose this machine: install `@mcoda/mswarm`, then run `mswarm install <KEY>`.\n' +
-          'Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n' +
-          'Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens\n' +
-          'Jobs API required for job commands (set MCODA_API_BASE_URL/MCODA_JOBS_API_URL or workspace api.baseUrl). status/watch/logs exit non-zero on failed/cancelled jobs per SDS.'
-      );
+      throw new Error(TOP_LEVEL_USAGE);
     }
     if (!['config', 'consent', 'setup'].includes(command)) {
       const consentState = await new MswarmConfigStore().readState();

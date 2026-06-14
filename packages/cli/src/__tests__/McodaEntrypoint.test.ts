@@ -60,6 +60,28 @@ test('McodaEntrypoint no-command usage mentions self-hosted setup', async () => 
 });
 
 test(
+  'McodaEntrypoint top-level help aliases print usage before consent checks',
+  { concurrency: false },
+  async () => {
+    const originalReadState = MswarmConfigStore.prototype.readState;
+    (MswarmConfigStore.prototype as any).readState = async () => {
+      throw new Error('consent should not be read for help');
+    };
+    try {
+      for (const alias of ['--help', '-h', '-H', 'help']) {
+        const logs = await captureLogs(() => McodaEntrypoint.run([alias]));
+        const output = logs.join('\n');
+        assert.match(output, /^Usage: mcoda /);
+        assert.ok(output.includes('Help: use `mcoda help`'));
+        assert.ok(output.includes('Job commands (mcoda job --help for details)'));
+      }
+    } finally {
+      (MswarmConfigStore.prototype as any).readState = originalReadState;
+    }
+  }
+);
+
+test(
   'McodaEntrypoint disables stream io for --json',
   { concurrency: false },
   async () => {
