@@ -7,8 +7,10 @@ namespace Mcoda\LaravelAgentSetup;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 use Mcoda\LaravelAgentSetup\Client\McodaAgentSetupHttpClient;
+use Mcoda\LaravelAgentSetup\Client\McodaGpuJobHttpClient;
 use Mcoda\LaravelAgentSetup\Contracts\AgentSetupClient;
 use Mcoda\LaravelAgentSetup\Contracts\AgentSetupStore;
+use Mcoda\LaravelAgentSetup\Contracts\GpuJobClient;
 use Mcoda\LaravelAgentSetup\Storage\FileAgentSetupStore;
 
 final class McodaAgentSetupServiceProvider extends ServiceProvider
@@ -35,6 +37,23 @@ final class McodaAgentSetupServiceProvider extends ServiceProvider
             return new FileAgentSetupStore($path);
         });
 
+        $this->app->singleton(McodaGpuJobHttpClient::class, function ($app): McodaGpuJobHttpClient {
+            $config = $app['config']->get('mcoda-agent-setup', []);
+
+            return new McodaGpuJobHttpClient(
+                $app->make(HttpFactory::class),
+                [
+                    'node_base_url' => $config['gpu_job_node_base_url'] ?? null,
+                    'nodeId' => $config['gpu_job_node_id'] ?? null,
+                    'signingSecret' => $config['gpu_job_signing_secret'] ?? null,
+                    'token' => $config['gpu_job_token'] ?? null,
+                    'opsToken' => $config['gpu_job_ops_token'] ?? null,
+                    'tokenTtlSeconds' => $config['gpu_job_token_ttl_seconds'] ?? null,
+                ],
+                (int) ($config['gpu_job_timeout_seconds'] ?? 30),
+            );
+        });
+
         $this->app->singleton('mcoda-agent-setup', function ($app): McodaAgentSetupManager {
             return new McodaAgentSetupManager(
                 $app->make(McodaAgentSetupHttpClient::class),
@@ -43,6 +62,8 @@ final class McodaAgentSetupServiceProvider extends ServiceProvider
             );
         });
 
+        $this->app->alias(McodaGpuJobHttpClient::class, 'mcoda-gpu-jobs');
+        $this->app->alias(McodaGpuJobHttpClient::class, GpuJobClient::class);
         $this->app->alias('mcoda-agent-setup', McodaAgentSetupManager::class);
         $this->app->alias('mcoda-agent-setup', AgentSetupClient::class);
     }

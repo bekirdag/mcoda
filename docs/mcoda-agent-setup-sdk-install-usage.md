@@ -1,27 +1,27 @@
 # mcoda Agent Setup SDK Install And Usage
 
-Last verified: 2026-06-13
+Last verified: 2026-06-15
 
 This document explains how an application can install and use the public
 `@mcoda/agent-setup` SDK to configure mcoda/mswarm agents from an app UI.
 
-## Current Published Package
+## Current Package Version
 
-The npm registry currently reports:
+This release targets:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.74
+# 0.1.77
 ```
 
-Published `@mcoda/agent-setup@0.1.74` exports:
+Published `@mcoda/agent-setup@0.1.77` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.74`.
+It depends on public `@mcoda/core@0.1.77`.
 
 ## What The SDK Does
 
@@ -34,6 +34,8 @@ The SDK provides:
 - Optional React setup UI components.
 - Local-runner catalog metadata and a first-class Local source lane for
   unmanaged vLLM, llama.cpp, and OpenAI-compatible local runner agents.
+- A backend-only owner-local GPU/generic job client for trusted applications
+  that own a self-hosted node token or signing secret.
 
 The default programmatic server runtime uses mcoda package APIs directly. It
 does not require the host app server to have the `mcoda` CLI/client tool
@@ -246,6 +248,36 @@ Consumers can add the packaged default stylesheet:
 import "@mcoda/agent-setup/react/styles.css";
 ```
 
+Host apps that expose owner-local GPU job operations can pass `gpuJobOps` plus
+optional drilldown callbacks. Keep these callbacks backed by trusted backend
+routes; browser code should not receive owner-local signing secrets.
+
+```tsx
+<McodaAgentSetupPage
+  client={client}
+  gpuJobOps={ops}
+  onGpuJobOpsRefresh={refreshOps}
+  onGpuJobViewDetails={(job) => gpuJobs.status({
+    jobId: job.job_id,
+    requestId: job.request_id,
+    schemaVersion: job.schema_version,
+    jobType: job.job_type,
+  })}
+  onGpuJobViewLogs={(job) => gpuJobs.logs({
+    jobId: job.job_id,
+    requestId: job.request_id,
+    schemaVersion: job.schema_version,
+    jobType: job.job_type,
+  })}
+  onGpuJobViewArtifacts={(job) => gpuJobs.artifacts({
+    jobId: job.job_id,
+    requestId: job.request_id,
+    schemaVersion: job.schema_version,
+    jobType: job.job_type,
+  })}
+/>
+```
+
 ## Headless Usage
 
 If the app has its own UI, use the client and headless utilities instead of the
@@ -274,6 +306,95 @@ const selfHostedServers = buildSelfHostedServerOptions(
 ```
 
 This is the preferred path for apps that already have a design system.
+
+## Owner-Local GPU Job Client
+
+The SDK also exports a server-side helper for the owner-local generic GPU job
+surface. Use this only from trusted backend code that owns the self-hosted node
+signing secret or receives pre-signed job tokens from a control plane.
+
+```ts
+import { createMcodaGpuJobClient } from "@mcoda/agent-setup";
+
+const gpuJobs = await createMcodaGpuJobClient({
+  nodeBaseUrl: process.env.MCODA_MSWARM_NODE_BASE_URL,
+  nodeId: process.env.MCODA_MSWARM_NODE_ID,
+  signingSecret: process.env.MCODA_MSWARM_NODE_SIGNING_SECRET,
+});
+
+const capabilities = await gpuJobs.listGpus();
+const ops = await gpuJobs.ops({ auditLimit: 25, auditOffset: 0 });
+
+const upload = await gpuJobs.uploadArtifact({
+  jobId: "job-cuda-001",
+  requestId: "request-cuda-001",
+  schemaVersion: "2026-06-14",
+  jobType: "cuda.run",
+  path: "inputs/package.tar.gz",
+  contentBase64: packageBytes.toString("base64"),
+  contentType: "application/gzip",
+  sha256: packageSha256,
+});
+
+const job = await gpuJobs.jobs.create(
+  {
+    schema_version: "2026-06-14",
+    job_type: "cuda.run",
+    inputs: [{ name: "package", uri: upload.artifact.uri }],
+    args: {
+      manifest_path: "mcoda-job.json",
+      profile: "release",
+      target: "run",
+    },
+    policy: { trust_mode: "owner-local", network: "none" },
+  },
+  {
+    jobId: "job-cuda-001",
+    requestId: "request-cuda-001",
+  }
+);
+
+for await (const event of gpuJobs.jobs.events(job.job.job_id, {
+  requestId: job.job.request_id,
+  schemaVersion: "2026-06-14",
+  jobType: "cuda.run",
+})) {
+  console.log(event.type, event.message ?? "");
+}
+
+const status = await gpuJobs.status({
+  jobId: job.job.job_id,
+  requestId: job.job.request_id,
+  schemaVersion: "2026-06-14",
+  jobType: "cuda.run",
+});
+const logs = await gpuJobs.logs({
+  jobId: job.job.job_id,
+  requestId: job.job.request_id,
+  schemaVersion: "2026-06-14",
+  jobType: "cuda.run",
+});
+const artifacts = await gpuJobs.artifacts({
+  jobId: job.job.job_id,
+  requestId: job.job.request_id,
+  schemaVersion: "2026-06-14",
+  jobType: "cuda.run",
+});
+
+if (status.job.state === "failed" || status.job.state === "blocked") {
+  await gpuJobs.retry({
+    jobId: status.job.job_id,
+    requestId: status.job.request_id,
+    schemaVersion: status.job.job.schema_version,
+    jobType: status.job.job.job_type,
+  });
+}
+```
+
+This direct client intentionally targets owner-local development and diagnostics.
+Production generic jobs should go through the hosted mswarm scheduler/control
+plane so tenant policy, quotas, usage, and artifact retention are enforced
+centrally.
 
 ## Persistent Settings Store
 

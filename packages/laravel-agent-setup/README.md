@@ -11,6 +11,7 @@ and provides:
 - web and API routes
 - a Blade setup UI sample
 - a PHP HTTP client for the Node SDK-compatible backend endpoints
+- a PHP owner-local GPU/generic job client for trusted backend code
 - a local file-backed fallback for install smoke tests
 
 ## Install
@@ -87,6 +88,13 @@ MCODA_AGENT_SETUP_WEB_MIDDLEWARE=web,auth
 MCODA_AGENT_SETUP_API_MIDDLEWARE=web,auth
 MCODA_AGENT_SETUP_HTTP_TIMEOUT=30
 MCODA_AGENT_SETUP_STORAGE_PATH=
+MCODA_GPU_JOB_NODE_BASE_URL=http://127.0.0.1:18488
+MCODA_GPU_JOB_NODE_ID=
+MCODA_GPU_JOB_SIGNING_SECRET=
+MCODA_GPU_JOB_TOKEN=
+MCODA_GPU_JOB_OPS_TOKEN=
+MCODA_GPU_JOB_TOKEN_TTL_SECONDS=3600
+MCODA_GPU_JOB_TIMEOUT_SECONDS=30
 ```
 
 When `MCODA_AGENT_SETUP_BACKEND_URL` is empty, the package runs in local fallback
@@ -103,6 +111,16 @@ Config keys:
 - `backend_token`: optional bearer token sent to the backend.
 - `backend_auth_header`: header name for the backend token.
 - `http_timeout`: backend HTTP timeout in seconds.
+- `gpu_job_node_base_url`: owner-local self-hosted node URL for GPU job calls.
+- `gpu_job_node_id`: self-hosted node id used in scoped job tokens.
+- `gpu_job_signing_secret`: owner-local invocation signing secret used to sign
+  short-lived scoped GPU job tokens.
+- `gpu_job_token`: optional pre-signed bearer token. When present, it is used
+  instead of signing a token from `gpu_job_signing_secret`.
+- `gpu_job_ops_token`: optional pre-signed read-only ops bearer token used for
+  the owner-local operations endpoint.
+- `gpu_job_token_ttl_seconds`: token lifetime for locally signed job tokens.
+- `gpu_job_timeout_seconds`: GPU job HTTP timeout in seconds.
 - `storage_path`: local fallback JSON store path.
 - `stages`: application-specific stage definitions.
 
@@ -117,6 +135,13 @@ POST   /mcoda-agent-setup/api/mswarm-api-key
 POST   /mcoda-agent-setup/api/agents/sync
 PATCH  /mcoda-agent-setup/api/agent-settings
 POST   /mcoda-agent-setup/api/agents/test
+GET    /mcoda-agent-setup/api/gpu-jobs/ops
+GET    /mcoda-agent-setup/api/gpu-jobs/{job}
+GET    /mcoda-agent-setup/api/gpu-jobs/{job}/logs
+GET    /mcoda-agent-setup/api/gpu-jobs/{job}/events
+GET    /mcoda-agent-setup/api/gpu-jobs/{job}/artifacts
+POST   /mcoda-agent-setup/api/gpu-jobs/{job}/cancel
+POST   /mcoda-agent-setup/api/gpu-jobs/{job}/retry
 ```
 
 The API payload names match the Node SDK contract:
@@ -135,6 +160,68 @@ The Laravel routes and manager also normalize the Node handler aliases `apiKey`,
 snake_case connection metadata fields before local fallback or remote backend
 calls.
 
+## Owner-Local GPU Jobs
+
+The package binds a GPU job client for trusted backend use:
+
+```php
+use Mcoda\LaravelAgentSetup\Contracts\GpuJobClient;
+
+$client = app(GpuJobClient::class);
+
+$capabilities = $client->listGpus();
+$ops = $client->ops(['auditLimit' => 25, 'auditOffset' => 0]);
+
+$upload = $client->uploadArtifact([
+    'jobId' => 'job-cuda-001',
+    'requestId' => 'request-cuda-001',
+    'schemaVersion' => '2026-06-14',
+    'jobType' => 'cuda.run',
+    'path' => 'inputs/package.tar.gz',
+    'contentBase64' => base64_encode($packageBytes),
+    'contentType' => 'application/gzip',
+    'sha256' => $packageSha256,
+]);
+
+$run = $client->create([
+    'job_id' => 'job-cuda-001',
+    'request_id' => 'request-cuda-001',
+    'node_id' => config('mcoda-agent-setup.gpu_job_node_id'),
+    'job' => [
+        'schema_version' => '2026-06-14',
+        'job_type' => 'cuda.run',
+        'inputs' => [['name' => 'package', 'uri' => $upload['artifact']['uri']]],
+        'args' => [
+            'manifest_path' => 'mcoda-job.json',
+            'profile' => 'release',
+            'target' => 'run',
+        ],
+        'policy' => ['trust_mode' => 'owner-local', 'network' => 'none'],
+    ],
+]);
+
+$status = $client->status([
+    'jobId' => $run['job_id'],
+    'requestId' => $run['request_id'],
+    'schemaVersion' => '2026-06-14',
+    'jobType' => 'cuda.run',
+]);
+
+if (in_array($status['job']['state'], ['failed', 'blocked'], true)) {
+    $client->retry([
+        'jobId' => $status['job']['job_id'],
+        'requestId' => $status['job']['request_id'],
+        'schemaVersion' => $status['job']['job']['schema_version'],
+        'jobType' => $status['job']['job']['job_type'],
+    ]);
+}
+```
+
+The same service is available through the `McodaGpuJobs` facade. Do not expose
+this direct owner-local client to browser code. Production generic jobs should
+use the hosted mswarm scheduler/control plane once tenant policy, quotas,
+artifact retention, and billing are required.
+
 ## Security
 
 The browser sends a new mswarm API key only to the Laravel backend route. In
@@ -149,6 +236,10 @@ Production checklist:
 - Keep `MCODA_AGENT_SETUP_BACKEND_TOKEN` in environment configuration only.
 - Prefer HTTPS for the Laravel app and the backend URL.
 - Keep the fallback store path outside any public document root.
+- Keep `MCODA_GPU_JOB_SIGNING_SECRET`, `MCODA_GPU_JOB_TOKEN`, and
+  `MCODA_GPU_JOB_OPS_TOKEN` in environment configuration only.
+- Authorize any backend route that calls `GpuJobClient`; artifact uploads and
+  job runs can consume local GPU/CPU/disk resources.
 - Use Laravel's default CSRF protection for browser-submitted setup requests.
 - Treat local fallback mode as setup smoke mode, not a production sync backend.
 - Rotate mswarm API keys from the owning product or tenant control plane if an

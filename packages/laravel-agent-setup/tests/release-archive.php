@@ -53,14 +53,18 @@ try {
         'routes/api.php',
         'routes/web.php',
         'src/Client/McodaAgentSetupHttpClient.php',
+        'src/Client/McodaGpuJobHttpClient.php',
         'src/Contracts/AgentSetupClient.php',
         'src/Contracts/AgentSetupStore.php',
+        'src/Contracts/GpuJobClient.php',
         'src/Facades/McodaAgentSetup.php',
+        'src/Facades/McodaGpuJobs.php',
         'src/Http/Controllers/McodaAgentSetupController.php',
         'src/McodaAgentSetupManager.php',
         'src/McodaAgentSetupServiceProvider.php',
         'src/Storage/FileAgentSetupStore.php',
         'src/Support/DefaultStages.php',
+        'src/Support/GpuJobToken.php',
         'src/Support/RequestPayload.php',
     ]);
     assertArchiveMissing($entries, 'composer.lock');
@@ -332,6 +336,13 @@ function assertComposerMetadata(array $metadata): void
         'Mcoda\\LaravelAgentSetup\\Facades\\McodaAgentSetup',
         $alias,
         'archive should expose Laravel facade auto-discovery metadata'
+    );
+
+    $gpuAlias = $metadata['extra']['laravel']['aliases']['McodaGpuJobs'] ?? null;
+    assertSame(
+        'Mcoda\\LaravelAgentSetup\\Facades\\McodaGpuJobs',
+        $gpuAlias,
+        'archive should expose Laravel GPU jobs facade auto-discovery metadata'
     );
 }
 

@@ -5,6 +5,7 @@ import { McodaEntrypoint } from '../bin/McodaEntrypoint.js';
 import { CloudCommands } from '../commands/cloud/CloudCommands.js';
 import { SelfHostedCommands } from '../commands/self-hosted/SelfHostedCommands.js';
 import { WorkersCommands } from '../commands/workers/WorkersCommands.js';
+import { GpuCommands } from '../commands/gpu/GpuCommands.js';
 import { ConfigCommands } from '../commands/config/ConfigCommands.js';
 import { ConsentCommands } from '../commands/consent/ConsentCommands.js';
 import { SetupCommand } from '../commands/setup/SetupCommand.js';
@@ -228,6 +229,28 @@ test(
       assert.equal(called, true);
     } finally {
       (WorkersCommands as any).run = originalRun;
+    }
+  }
+);
+
+test(
+  'McodaEntrypoint routes gpu commands',
+  { concurrency: false },
+  async () => {
+    const originalRun = GpuCommands.run;
+    let called = false;
+    (GpuCommands as any).run = async (argv: string[]) => {
+      called = true;
+      assert.deepEqual(argv, ['list', '--json']);
+    };
+    try {
+      await withConsentState(
+        { consentAccepted: true, consentToken: 'token-123' },
+        () => McodaEntrypoint.run(['gpu', 'list', '--json'])
+      );
+      assert.equal(called, true);
+    } finally {
+      (GpuCommands as any).run = originalRun;
     }
   }
 );

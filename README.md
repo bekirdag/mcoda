@@ -24,13 +24,15 @@ mcoda is a workflow CLI that connects planning, documentation, and delivery. It 
 | 🧠 Planning | Turn specs into tasks and backlog | JSON plans + SQLite state |
 | ⚙️ Execution | Drive work, review, and QA loops | Jobs, logs, and telemetry |
 | 🤝 Routing | Choose the right agent per command | Defaults and previews |
+| 🖥️ Local runners | Expose local LLM and GPU job runners through mswarm | Self-hosted agents, generic jobs, artifacts |
 
 Optional agent rating is available with `--rate-agents` to score outputs (quality, cost, time, iterations), update per-agent ratings, and inform gateway routing with max-complexity gates and exploration. The reviewer prompt is stored at `~/.mcoda/workspaces/<name>-<hash>/prompts/agent-rating.md`.
 
 ## 🚀 Why teams use it
 - **Local-first**: keeps artifacts and state local on your machine under `~/.mcoda/workspaces/<name>-<hash>/`.
 - **Repeatable**: stable workflows with versioned outputs.
-- **Agent-ready**: works with codex, openai, gemini, ollama, and more.
+- **Agent-ready**: works with codex, openai, gemini, ollama, vLLM, llama.cpp, OpenAI-compatible local runners, and mswarm self-hosted nodes.
+- **Runner-ready**: owner-local mswarm nodes can run typed generic GPU/package jobs with scoped tokens, logs, events, artifacts, cancellation, and retry.
 - **Traceable**: jobs, telemetry, and backlog live in one place.
 
 ## 🛠️ Quick start
@@ -52,6 +54,7 @@ mcoda --help
 
 ## 🔌 Integrations
 - **Docdex** for doc search and context stitching.
+- **mswarm** for cloud, self-hosted LLM, and owner-local generic GPU/package jobs.
 - **Git** for task branches and review flows.
 - **OpenAPI** for schema-first workflows.
 - **QA runners** (Chromium, Maestro, CLI).

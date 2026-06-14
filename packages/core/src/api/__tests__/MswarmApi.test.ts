@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { GlobalRepository } from '@mcoda/db';
 import { CryptoHelper } from '@mcoda/shared';
-import { MswarmApi } from '../MswarmApi.js';
+import { MswarmApi, signMswarmGenericJobOpsToken, signMswarmGenericJobToken } from '../MswarmApi.js';
 import { MswarmConfigStore } from '../MswarmConfigStore.js';
 
 const withTempHome = async (
@@ -316,6 +316,289 @@ test(
     });
   }
 );
+
+test(
+  'MswarmApi.listGpuCapabilities signs owner-local capability requests',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          assert.equal(req.method, 'GET');
+          assert.equal(req.url, '/v1/swarm/self-hosted/node/capabilities');
+          const header = String(req.headers.authorization ?? '');
+          assert.match(header, /^Bearer [^.]+\.[^.]+\.[^.]+$/);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              generic_jobs_enabled: true,
+              job_types: ['cuda.run'],
+              accelerators: {
+                gpu: {
+                  available: true,
+                  count: 1,
+                  cuda: true,
+                  vram_tier: '16-31',
+                },
+              },
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'owner-key' });
+          try {
+            const capabilities = await api.listGpuCapabilities({
+              nodeBaseUrl: baseUrl,
+              nodeId: 'shn_local',
+              signingSecret: 'node-secret',
+            });
+            assert.equal(capabilities.generic_jobs_enabled, true);
+            assert.deepEqual(capabilities.job_types, ['cuda.run']);
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi handles generic job artifact upload run and status requests',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      const seen: string[] = [];
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          seen.push(`${req.method} ${url.pathname}`);
+          const header = String(req.headers.authorization ?? '');
+          assert.match(header, /^Bearer [^.]+\.[^.]+\.[^.]+$/);
+          let body = '';
+          req.setEncoding('utf8');
+          req.on('data', (chunk) => {
+            body += chunk;
+          });
+          req.on('end', () => {
+            if (
+              req.method === 'POST' &&
+              url.pathname ===
+                '/v1/swarm/self-hosted/node/generic-job-control/jobs/job-gpu/artifacts'
+            ) {
+              const payload = JSON.parse(body) as Record<string, unknown>;
+              assert.equal(payload.path, 'inputs/package.tar.gz');
+              assert.equal(payload.content_base64, Buffer.from('pkg').toString('base64'));
+              res.writeHead(201, { 'content-type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  job_id: 'job-gpu',
+                  artifact: {
+                    uri: 'artifact://local/job-gpu/inputs/package.tar.gz',
+                    name: 'package',
+                    size_bytes: 3,
+                  },
+                })
+              );
+              return;
+            }
+            if (
+              req.method === 'POST' &&
+              url.pathname === '/v1/swarm/self-hosted/node/generic-job-control/jobs'
+            ) {
+              const payload = JSON.parse(body) as Record<string, any>;
+              assert.equal(payload.job_id, 'job-gpu');
+              assert.equal(payload.job.job_type, 'cuda.run');
+              res.writeHead(202, { 'content-type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  job: { job_id: 'job-gpu', state: 'queued' },
+                  events: [],
+                  logs: [],
+                  artifacts: [],
+                  audit: [],
+                })
+              );
+              return;
+            }
+            if (
+              req.method === 'GET' &&
+              url.pathname === '/v1/swarm/self-hosted/node/generic-job-control/ops'
+            ) {
+              assert.equal(url.searchParams.get('audit_limit'), '2');
+              assert.equal(url.searchParams.get('audit_offset'), '1');
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  schema_version: '2026-06-14',
+                  generated_at: '2026-06-14T00:00:00.000Z',
+                  node: {
+                    node_id: 'shn_local',
+                    owner_local: true,
+                    generic_jobs_enabled: true,
+                    artifact_store_configured: true,
+                    max_concurrent_jobs: 1,
+                  },
+                  capabilities: { generic_jobs_enabled: true },
+                  queue: {
+                    jobs: [{ job_id: 'job-gpu', state: 'succeeded' }],
+                    totals_by_state: { succeeded: 1 },
+                    active_jobs: 0,
+                    queued_jobs: 0,
+                    terminal_jobs: 1,
+                  },
+                  quota: {
+                    max_concurrent_jobs: 1,
+                    active_jobs: 0,
+                    queued_jobs: 0,
+                    available_slots: 1,
+                    production_enforced: false,
+                    limits: {},
+                  },
+                  usage: {
+                    total_jobs: 1,
+                    active_jobs: 0,
+                    terminal_jobs: 1,
+                    succeeded_jobs: 1,
+                    failed_jobs: 0,
+                    cancelled_jobs: 0,
+                    blocked_jobs: 0,
+                    expired_jobs: 0,
+                    gpu_seconds: 0,
+                    artifact_count: 0,
+                    artifact_bytes: 0,
+                    event_count: 0,
+                    audit_event_count: 1,
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    log_bytes: 0,
+                  },
+                  audit: { total: 1, offset: 1, limit: 2, events: [] },
+                })
+              );
+              return;
+            }
+            if (
+              req.method === 'GET' &&
+              url.pathname === '/v1/swarm/self-hosted/node/generic-job-control/jobs/job-gpu'
+            ) {
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  job: { job_id: 'job-gpu', state: 'succeeded' },
+                  events: [],
+                  logs: [],
+                  artifacts: [],
+                  audit: [],
+                })
+              );
+              return;
+            }
+            if (
+              req.method === 'POST' &&
+              url.pathname === '/v1/swarm/self-hosted/node/generic-job-control/jobs/job-gpu/retry'
+            ) {
+              res.writeHead(202, { 'content-type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  job: { job_id: 'job-gpu', state: 'queued' },
+                  events: [],
+                  logs: [],
+                  artifacts: [],
+                  audit: [],
+                })
+              );
+              return;
+            }
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'not found' }));
+          });
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({ baseUrl, apiKey: 'owner-key' });
+          const reference = {
+            nodeBaseUrl: baseUrl,
+            nodeId: 'shn_local',
+            jobId: 'job-gpu',
+            requestId: 'req-gpu',
+            schemaVersion: '2026-06-14',
+            jobType: 'cuda.run',
+            signingSecret: 'node-secret',
+          };
+          try {
+            const upload = await api.uploadGenericJobArtifact({
+              ...reference,
+              name: 'package',
+              path: 'inputs/package.tar.gz',
+              contentBase64: Buffer.from('pkg').toString('base64'),
+            });
+            assert.equal(upload.artifact.uri, 'artifact://local/job-gpu/inputs/package.tar.gz');
+
+            const run = await api.runGenericJob(
+              {
+                job_id: 'job-gpu',
+                request_id: 'req-gpu',
+                node_id: 'shn_local',
+                job: {
+                  schema_version: '2026-06-14',
+                  job_type: 'cuda.run',
+                  args: { manifest_path: 'mcoda-job.json', profile: 'nvcc-default', target: 'vector-add' },
+                  policy: { trust_mode: 'owner-local', network: 'none', allow_raw_command: false },
+                },
+              },
+              { nodeBaseUrl: baseUrl, signingSecret: 'node-secret' }
+            );
+            assert.equal(run.job.state, 'queued');
+
+            const status = await api.getGenericJob(reference);
+            assert.equal(status.job.state, 'succeeded');
+            const ops = await api.getGenericJobOps({
+              nodeBaseUrl: baseUrl,
+              nodeId: 'shn_local',
+              signingSecret: 'node-secret',
+              auditLimit: 2,
+              auditOffset: 1,
+            });
+            assert.equal(ops.usage.total_jobs, 1);
+            const retry = await api.retryGenericJob(reference);
+            assert.equal(retry.job.state, 'queued');
+            assert.deepEqual(seen, [
+              'POST /v1/swarm/self-hosted/node/generic-job-control/jobs/job-gpu/artifacts',
+              'POST /v1/swarm/self-hosted/node/generic-job-control/jobs',
+              'GET /v1/swarm/self-hosted/node/generic-job-control/jobs/job-gpu',
+              'GET /v1/swarm/self-hosted/node/generic-job-control/ops',
+              'POST /v1/swarm/self-hosted/node/generic-job-control/jobs/job-gpu/retry',
+            ]);
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test('signMswarmGenericJobToken creates bearer-compatible JWT-like tokens', () => {
+  const token = signMswarmGenericJobToken({
+    signingSecret: 'node-secret',
+    nodeId: 'shn_local',
+    jobId: 'job-gpu',
+    requestId: 'req-gpu',
+    schemaVersion: '2026-06-14',
+    jobType: 'cuda.run',
+    ttlSeconds: 60,
+  });
+  assert.match(token, /^[^.]+\.[^.]+\.[^.]+$/);
+});
+
+test('signMswarmGenericJobOpsToken creates bearer-compatible JWT-like tokens', () => {
+  const token = signMswarmGenericJobOpsToken({
+    signingSecret: 'node-secret',
+    nodeId: 'shn_local',
+    ttlSeconds: 60,
+  });
+  assert.match(token, /^[^.]+\.[^.]+\.[^.]+$/);
+});
 
 test(
   'MswarmApi.registerFreeMcodaClient posts the free-client consent payload',

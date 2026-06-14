@@ -144,6 +144,33 @@ Jobs can additionally scope execution with:
 - `docdex.base_url`, `docdex.repo_root`, `docdex.repo_id`, and Docdex write/web/index flags
 - `policy.allow_tools`, `policy.allowed_tools`, `policy.denied_tools`, write/shell/destructive flags, `policy.max_runtime_ms`, and `policy.max_tool_calls`
 
+## Owner-Local Generic GPU Jobs
+
+mswarm can also expose a separate owner-local generic job plane for trusted GPU
+and package workloads such as Blender rendering, CUDA package jobs, ffmpeg CUDA
+jobs, and Python GPU jobs. This path is separate from the OpenAI-compatible LLM
+execution path and is disabled by default.
+
+Enable it only on a trusted local node:
+
+```sh
+MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED=1 \
+MSWARM_SELF_HOSTED_DIRECT_HOST=127.0.0.1 \
+MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET=<local-secret> \
+mswarm node run --enable-generic-jobs
+```
+
+The generic job endpoints require scoped HMAC tokens or the owner-local signing
+secret. They expose capability discovery, artifact upload, lifecycle status,
+logs, events, cancellation, retry, and an ops summary for queue/usage/quota
+inspection. Use `mcoda gpu list`, `mcoda gpu ops`, and the GPU-aware
+`mcoda job artifact upload|run|status|logs|events|artifacts|cancel|retry`
+commands to operate the local node.
+
+Do not expose the node signing secret to browsers or untrusted tenants.
+Production scheduling should issue short-lived scoped tokens from a control
+plane; owner-local direct use is for a trusted operator on the node.
+
 ## Environment
 
 `MSWARM_API_KEY` can replace `--api-key` during legacy `setup`, but the preferred flow is `mswarm node install <MSWARM_API_KEY>` or `mswarm node install --api-key-stdin` so the key is never exported into the shell environment. `MSWARM_GATEWAY_BASE_URL` overrides the gateway. The default discovery mode is `mcoda`, so the node reads `mcoda agent list --json --refresh-health`; set `MSWARM_SELF_HOSTED_DISCOVERY_MODE=ollama` only for raw Ollama fallback discovery. `MSWARM_SELF_HOSTED_EXPOSURE_POLICY=none` disables default exposure while keeping allowlists/blocklists available. `MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS` controls short gateway and inventory requests; self-hosted execution jobs default to one hour and can be overridden with `MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS` or `--job-timeout-ms` during install.

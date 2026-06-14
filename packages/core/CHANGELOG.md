@@ -3,6 +3,11 @@
 ## Unreleased
 - Initial public packaging for @mcoda/core.
 
+## 0.1.77
+- Add MswarmApi owner-local generic GPU job helpers for capability reads,
+  artifact upload, run/status/logs/events/artifacts, cancellation, retry, and
+  ops summaries.
+
 ## 0.1.9
 - Release v0.1.9.
 

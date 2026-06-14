@@ -51,6 +51,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Owner-Local GPU Job Node
+    |--------------------------------------------------------------------------
+    |
+    | These settings are used by the GPU job client. The client talks directly
+    | to the owner-local mswarm self-hosted node control plane and signs scoped
+    | short-lived tokens with the node invocation signing secret when a prebuilt
+    | token is not supplied.
+    |
+    */
+    'gpu_job_node_base_url' => env('MCODA_GPU_JOB_NODE_BASE_URL', 'http://127.0.0.1:18488'),
+    'gpu_job_node_id' => env('MCODA_GPU_JOB_NODE_ID'),
+    'gpu_job_signing_secret' => env('MCODA_GPU_JOB_SIGNING_SECRET'),
+    'gpu_job_token' => env('MCODA_GPU_JOB_TOKEN'),
+    'gpu_job_ops_token' => env('MCODA_GPU_JOB_OPS_TOKEN'),
+    'gpu_job_token_ttl_seconds' => (int) env('MCODA_GPU_JOB_TOKEN_TTL_SECONDS', 3600),
+    'gpu_job_timeout_seconds' => (int) env('MCODA_GPU_JOB_TIMEOUT_SECONDS', 30),
+
+    /*
+    |--------------------------------------------------------------------------
     | Local Fallback Store
     |--------------------------------------------------------------------------
     |

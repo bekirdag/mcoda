@@ -94,6 +94,11 @@ try {
         $aliases['McodaAgentSetup'] ?? null,
         'Laravel package manifest should discover the McodaAgentSetup facade alias'
     );
+    assertSame(
+        Mcoda\LaravelAgentSetup\Facades\McodaGpuJobs::class,
+        $aliases['McodaGpuJobs'] ?? null,
+        'Laravel package manifest should discover the McodaGpuJobs facade alias'
+    );
 
     $config = require $installedPackagePath . '/config/mcoda-agent-setup.php';
     assertSame(

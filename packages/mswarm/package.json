@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/mswarm",
-  "version": "0.1.76",
+  "version": "0.1.77",
   "description": "Owner-run mswarm node for exposing local mcoda agents through the mswarm self-hosted gateway.",
   "type": "module",
   "main": "dist/server.js",
@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "pnpm --filter @mcoda/codali run build && tsc -p tsconfig.json && node ../../scripts/copy-mswarm-codali-vendor.js",
+    "build": "pnpm --filter @mcoda/shared run build && pnpm --filter @mcoda/codali run build && tsc -p tsconfig.json && node ../../scripts/copy-mswarm-codali-vendor.js",
     "lint": "echo \"lint not configured\"",
     "test": "pnpm run build && node ../../scripts/run-node-tests.js dist"
   },

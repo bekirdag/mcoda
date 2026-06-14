@@ -6,7 +6,11 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "noEmit": false
+    "noEmit": false,
+    "paths": {
+      "@mcoda/shared": ["packages/shared/dist/index.d.ts"],
+      "@mcoda/shared/*": ["packages/shared/dist/*"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules"]

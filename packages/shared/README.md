@@ -10,6 +10,7 @@ Shared utilities and schemas used across the mcoda workspace.
 - PathHelper for resolving mcoda directories.
 - CryptoHelper for local secret encryption.
 - CommandMetadata helpers and OpenAPI types.
+- Versioned mswarm generic job, lifecycle, capability, and artifact sandbox contracts.
 - QA profile types.
 
 ## Example

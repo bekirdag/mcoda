@@ -8,8 +8,10 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use Illuminate\View\View;
+use Mcoda\LaravelAgentSetup\Contracts\GpuJobClient;
 use Mcoda\LaravelAgentSetup\McodaAgentSetupManager;
 use Mcoda\LaravelAgentSetup\Support\RequestPayload;
+use RuntimeException;
 use Throwable;
 
 final class McodaAgentSetupController extends Controller
@@ -75,6 +77,64 @@ final class McodaAgentSetupController extends Controller
         ]));
     }
 
+    public function gpuJobOps(Request $request, GpuJobClient $gpuJobs): JsonResponse
+    {
+        $payload = $request->query();
+
+        return $this->jsonResult(fn (): array => $gpuJobs->ops([
+            'auditLimit' => $this->optionalNonNegativeInt(
+                RequestPayload::first($payload, ['audit_limit', 'auditLimit']),
+                'auditLimit',
+            ),
+            'auditOffset' => $this->optionalNonNegativeInt(
+                RequestPayload::first($payload, ['audit_offset', 'auditOffset']),
+                'auditOffset',
+            ),
+        ]));
+    }
+
+    public function gpuJobStatus(Request $request, GpuJobClient $gpuJobs, string $job): JsonResponse
+    {
+        $payload = $this->gpuJobReference($request->query(), $job);
+
+        return $this->jsonResult(fn (): array => $gpuJobs->status($payload));
+    }
+
+    public function gpuJobLogs(Request $request, GpuJobClient $gpuJobs, string $job): JsonResponse
+    {
+        $payload = $this->gpuJobReference($request->query(), $job);
+
+        return $this->jsonResult(fn (): array => $gpuJobs->logs($payload));
+    }
+
+    public function gpuJobEvents(Request $request, GpuJobClient $gpuJobs, string $job): JsonResponse
+    {
+        $payload = $this->gpuJobReference($request->query(), $job);
+
+        return $this->jsonResult(fn (): array => $gpuJobs->events($payload));
+    }
+
+    public function gpuJobArtifacts(Request $request, GpuJobClient $gpuJobs, string $job): JsonResponse
+    {
+        $payload = $this->gpuJobReference($request->query(), $job);
+
+        return $this->jsonResult(fn (): array => $gpuJobs->artifacts($payload));
+    }
+
+    public function cancelGpuJob(Request $request, GpuJobClient $gpuJobs, string $job): JsonResponse
+    {
+        $payload = $this->gpuJobReference($request->all(), $job);
+
+        return $this->jsonResult(fn (): array => $gpuJobs->cancel($payload));
+    }
+
+    public function retryGpuJob(Request $request, GpuJobClient $gpuJobs, string $job): JsonResponse
+    {
+        $payload = $this->gpuJobReference($request->all(), $job);
+
+        return $this->jsonResult(fn (): array => $gpuJobs->retry($payload));
+    }
+
     /**
      * @param callable(): array<string, mixed> $callback
      */
@@ -85,5 +145,43 @@ final class McodaAgentSetupController extends Controller
         } catch (Throwable $error) {
             return response()->json(['error' => $error->getMessage()], 422);
         }
+    }
+
+    private function optionalNonNegativeInt(mixed $value, string $label): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (! is_int($value) && ! (is_string($value) && ctype_digit($value))) {
+            throw new RuntimeException("{$label} must be a non-negative integer.");
+        }
+        $integer = (int) $value;
+        if ($integer < 0) {
+            throw new RuntimeException("{$label} must be a non-negative integer.");
+        }
+
+        return $integer;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function gpuJobReference(array $payload, string $job): array
+    {
+        $reference = [
+            'jobId' => $job,
+            'requestId' => $this->optionalString(RequestPayload::first($payload, ['requestId', 'request_id'])),
+            'schemaVersion' => $this->optionalString(RequestPayload::first($payload, ['schemaVersion', 'schema_version'])),
+            'jobType' => $this->optionalString(RequestPayload::first($payload, ['jobType', 'job_type'])),
+            'nodeId' => $this->optionalString(RequestPayload::first($payload, ['nodeId', 'node_id'])),
+        ];
+
+        return array_filter($reference, static fn (mixed $value): bool => $value !== null);
+    }
+
+    private function optionalString(mixed $value): ?string
+    {
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
     }
 }

@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Mcoda\LaravelAgentSetup\Tests\Integration;
 
 use Mcoda\LaravelAgentSetup\Contracts\AgentSetupClient;
+use Mcoda\LaravelAgentSetup\Contracts\GpuJobClient;
+use Mcoda\LaravelAgentSetup\Client\McodaGpuJobHttpClient;
 use Mcoda\LaravelAgentSetup\Facades\McodaAgentSetup;
+use Mcoda\LaravelAgentSetup\Facades\McodaGpuJobs;
 use Mcoda\LaravelAgentSetup\McodaAgentSetupManager;
 use Mcoda\LaravelAgentSetup\McodaAgentSetupServiceProvider;
 use Orchestra\Testbench\TestCase;
@@ -37,6 +40,7 @@ final class PackageServiceProviderTest extends TestCase
     {
         return [
             'McodaAgentSetup' => McodaAgentSetup::class,
+            'McodaGpuJobs' => McodaGpuJobs::class,
         ];
     }
 
@@ -60,6 +64,50 @@ final class PackageServiceProviderTest extends TestCase
 
         $this->assertSame('mcoda_mswarm', $snapshot['provider']);
         $this->assertSame('custom', $snapshot['runtime']['mode']);
+    }
+
+    public function test_service_provider_registers_gpu_job_client_binding_and_facade(): void
+    {
+        $client = $this->app->make('mcoda-gpu-jobs');
+
+        $this->assertInstanceOf(McodaGpuJobHttpClient::class, $client);
+        $this->assertSame($client, $this->app->make(McodaGpuJobHttpClient::class));
+        $this->assertSame($client, $this->app->make(GpuJobClient::class));
+        $this->assertSame($client, McodaGpuJobs::getFacadeRoot());
+        $this->assertTrue(method_exists($client, 'create'));
+        $this->assertSame('http://127.0.0.1:18488', config('mcoda-agent-setup.gpu_job_node_base_url'));
+    }
+
+    public function test_gpu_job_api_routes_are_registered(): void
+    {
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/ops'),
+            route('mcoda-agent-setup.api.gpu-jobs.ops')
+        );
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/job-gpu'),
+            route('mcoda-agent-setup.api.gpu-jobs.status', ['job' => 'job-gpu'])
+        );
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/job-gpu/logs'),
+            route('mcoda-agent-setup.api.gpu-jobs.logs', ['job' => 'job-gpu'])
+        );
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/job-gpu/events'),
+            route('mcoda-agent-setup.api.gpu-jobs.events', ['job' => 'job-gpu'])
+        );
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/job-gpu/artifacts'),
+            route('mcoda-agent-setup.api.gpu-jobs.artifacts', ['job' => 'job-gpu'])
+        );
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/job-gpu/cancel'),
+            route('mcoda-agent-setup.api.gpu-jobs.cancel', ['job' => 'job-gpu'])
+        );
+        $this->assertSame(
+            url('/mcoda-agent-setup/api/gpu-jobs/job-gpu/retry'),
+            route('mcoda-agent-setup.api.gpu-jobs.retry', ['job' => 'job-gpu'])
+        );
     }
 
     public function test_api_snapshot_route_uses_local_fallback(): void

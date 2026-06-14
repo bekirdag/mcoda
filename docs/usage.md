@@ -115,6 +115,8 @@ Inspect long-running jobs and token usage.
 mcoda job list --project WEB
 mcoda job status <JOB_ID>
 mcoda tokens --group-by project,command,agent --since 7d
+mcoda gpu list --node-base-url http://127.0.0.1:18488 --node-id shn_local
+mcoda job run --job-file ./gpu-job.json --wait --node-base-url http://127.0.0.1:18488 --signing-secret "$MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET"
 ```
 
 ## Updates
@@ -403,6 +405,26 @@ mcoda job resume <JOB_ID> [--agent <NAME>] [--no-telemetry]
 mcoda job cancel <JOB_ID> [--force]
 mcoda job tokens <JOB_ID> [--since <TIMESTAMP|DURATION>] [--format table|json]
 ```
+
+### Owner-local GPU jobs
+Use the generic GPU job commands against a trusted self-hosted mswarm node. These commands are for owner-local operations; do not expose the node signing secret to browser code.
+
+```sh
+mcoda gpu list [--node-base-url <URL>] [--node-id <ID>] [--signing-secret <KEY>|--token <TOKEN>] [--json]
+mcoda gpu ops [--audit-limit <N>] [--audit-offset <N>] [--json]
+mcoda job artifact upload <FILE> --job-id <ID> --request-id <ID> --node-id <ID> --job-type <TYPE>
+mcoda job run --job-file <FILE> [--wait] [--json]
+mcoda job status <JOB_ID> --node-id <ID> --request-id <ID> --job-type <TYPE>
+mcoda job logs <JOB_ID> --node-id <ID> --request-id <ID> --job-type <TYPE>
+mcoda job events <JOB_ID> --node-id <ID> --request-id <ID> --job-type <TYPE>
+mcoda job artifacts <JOB_ID> --node-id <ID> --request-id <ID> --job-type <TYPE>
+mcoda job cancel <JOB_ID> --node-id <ID> --request-id <ID> --job-type <TYPE>
+mcoda job retry <JOB_ID> --node-id <ID> --request-id <ID> --job-type <TYPE>
+```
+
+- Connection flags: `--node-base-url`, `--node-id`, `--signing-secret`, `--token`, `--timeout-ms`, `--token-ttl-seconds`.
+- Environment fallbacks: `MCODA_MSWARM_NODE_BASE_URL`, `MCODA_MSWARM_NODE_ID`, `MSWARM_SELF_HOSTED_NODE_ID`, `MCODA_MSWARM_NODE_SIGNING_SECRET`, and `MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET`.
+- Shared job subcommands such as `status`, `logs`, `cancel`, and `retry` stay on normal mcoda workspace jobs unless GPU job connection flags are present.
 
 ### Work on tasks (implementation pipeline)
 Drive tasks from the workspace DB through the agent-powered implementation loop:

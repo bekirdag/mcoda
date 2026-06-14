@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHmac } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { buildInstallSetupArgs, buildSelfHostedNodeApp, isSelfHostedNodeDirectRun, normalizeMswarmCommand } from "../server.js";
@@ -14,6 +15,10 @@ import {
 } from "../codali-executor.js";
 import {
   type CommandRunner,
+  type MswarmGenericJobRunner,
+  type MswarmGenericJobRunnerContext,
+  type SelfHostedGenericNodeJob,
+  type SelfHostedNodeInvocationJob,
   type SelfHostedNodeConfig,
   McodaAgentInventoryClient,
   McodaLocalAgentExecutor,
@@ -110,6 +115,10 @@ function tempRuntimeTokenPath(statePath: string): string {
   return join(dirname(statePath), "node.key");
 }
 
+function tempArtifactStorePath(statePath: string): string {
+  return join(dirname(statePath), "artifacts");
+}
+
 async function packageVersion(): Promise<string> {
   const raw = await readFile(new URL("../../package.json", import.meta.url), "utf8");
   const parsed = JSON.parse(raw) as { version?: string };
@@ -150,6 +159,9 @@ function serviceConfigFor(statePath: string): SelfHostedNodeConfig {
     heartbeatIntervalSeconds: 30,
     requestTimeoutMs: 1000,
     jobTimeoutMs: 3_600_000,
+    genericJobsEnabled: false,
+    genericJobTimeoutMs: 3_600_000,
+    genericJobMaxConcurrency: 1,
     exposeAllModels: true,
     modelAllowlist: ["phi3-reviewer"],
     modelBlocklist: ["nomic-embed-text:latest"]
@@ -163,6 +175,155 @@ function permissiveServiceConfigFor(statePath: string): SelfHostedNodeConfig {
   };
 }
 
+function genericServiceConfigFor(statePath: string, overrides: Partial<SelfHostedNodeConfig> = {}): SelfHostedNodeConfig {
+  return {
+    ...serviceConfigFor(statePath),
+    genericJobsEnabled: true,
+    genericJobTimeoutMs: 1_000,
+    relayMode: "direct",
+    ...overrides
+  };
+}
+
+function genericEchoJob(overrides: Partial<SelfHostedGenericNodeJob> = {}): SelfHostedGenericNodeJob {
+  return {
+    job_id: "job-generic-echo",
+    request_id: "req-generic-echo",
+    node_id: "shn_service",
+    job: {
+      schema_version: "2026-06-14",
+      job_type: "tenant.test-echo",
+      args: {
+        message: "hello generic"
+      },
+      policy: {
+        trust_mode: "owner-local",
+        network: "none",
+        allow_raw_command: false
+      },
+      limits: {
+        timeout_sec: 1
+      }
+    },
+    ...overrides
+  };
+}
+
+function genericBlenderJob(overrides: Partial<SelfHostedGenericNodeJob> = {}): SelfHostedGenericNodeJob {
+  return {
+    job_id: "job-render-blender",
+    request_id: "req-render-blender",
+    node_id: "shn_service",
+    job: {
+      schema_version: "2026-06-14",
+      job_type: "render.blender",
+      inputs: [
+        {
+          name: "scene",
+          artifact: {
+            uri: "artifact://local/upstream-render/scene.blend",
+            content_type: "application/octet-stream"
+          },
+          mount_path: "scene.blend",
+          required: true
+        }
+      ],
+      args: {
+        frames: "1-2",
+        engine: "cycles",
+        resolution: "640x360",
+        output_format: "png"
+      },
+      outputs: [
+        {
+          name: "frames",
+          path: "frames",
+          content_type: "image/png",
+          required: true
+        }
+      ],
+      policy: {
+        trust_mode: "owner-local",
+        network: "none",
+        allow_raw_command: false
+      },
+      limits: {
+        timeout_sec: 1
+      }
+    },
+    ...overrides
+  };
+}
+
+function genericCudaJob(overrides: Partial<SelfHostedGenericNodeJob> = {}): SelfHostedGenericNodeJob {
+  return {
+    job_id: "job-cuda-run",
+    request_id: "req-cuda-run",
+    node_id: "shn_service",
+    job: {
+      schema_version: "2026-06-14",
+      job_type: "cuda.run",
+      inputs: [
+        {
+          name: "package",
+          artifact: {
+            uri: "artifact://local/upstream-cuda/package.tar.gz",
+            content_type: "application/gzip"
+          },
+          mount_path: "package.tar.gz",
+          required: true
+        },
+        {
+          name: "manifest",
+          artifact: {
+            uri: "artifact://local/upstream-cuda/mcoda-job.json",
+            content_type: "application/json"
+          },
+          mount_path: "mcoda-job.json",
+          required: true
+        }
+      ],
+      args: {
+        manifest_path: "mcoda-job.json",
+        profile: "nvcc-default",
+        target: "vector-add"
+      },
+      resources: {
+        gpu: {
+          count: 1,
+          vendor: "nvidia",
+          cuda_min_version: "12.0"
+        },
+        memory_gb: 4,
+        disk_gb: 8
+      },
+      limits: {
+        timeout_sec: 2,
+        max_stdout_bytes: 1024 * 1024,
+        max_stderr_bytes: 1024 * 1024,
+        max_output_bytes: 1024 * 1024
+      },
+      outputs: [
+        {
+          name: "result",
+          path: "results/result.txt",
+          content_type: "text/plain",
+          required: true
+        }
+      ],
+      policy: {
+        trust_mode: "owner-local",
+        network: "none",
+        allow_raw_command: false,
+        allowed_images: ["nvidia/cuda:12.4.1-devel-ubuntu22.04"],
+        allowed_package_publishers: ["mcoda.local"],
+        max_artifact_bytes: 1024 * 1024
+      }
+    },
+    ...overrides
+  };
+}
+
 function mcodaAgentListClient(agents: unknown[]): McodaAgentInventoryClient {
   return new McodaAgentInventoryClient({
     runner: async () => ({
@@ -170,6 +331,183 @@ function mcodaAgentListClient(agents: unknown[]): McodaAgentInventoryClient {
       stderr: ""
     })
   });
+}
+
+function capabilityProbeRunner(
+  results: Record<string, { stdout?: string; stderr?: string; error?: string | Error }>
+): CommandRunner {
+  return async (command) => {
+    const result = results[command];
+    if (!result) {
+      throw new Error(`${command} not found`);
+    }
+    if (result.error) {
+      throw result.error instanceof Error ? result.error : new Error(result.error);
+    }
+    return {
+      stdout: result.stdout || "",
+      stderr: result.stderr || ""
+    };
+  };
+}
+
+function gpuCapabilityProbeRunner(): CommandRunner {
+  return async (command, args) => {
+    if (command === "nvidia-smi" && args.length === 0) {
+      return { stdout: "NVIDIA-SMI 550.54.14    CUDA Version: 12.4\n", stderr: "" };
+    }
+    if (command === "nvidia-smi") {
+      return { stdout: "0, NVIDIA RTX 4090, 24564, 550.54.14, 8.9\n", stderr: "" };
+    }
+    if (command === "docker") {
+      return {
+        stdout: JSON.stringify({
+          runc: { path: "runc" },
+          nvidia: { path: "nvidia-container-runtime" }
+        }),
+        stderr: ""
+      };
+    }
+    if (command === "blender") {
+      return { stdout: "Blender 4.1.1\n", stderr: "" };
+    }
+    if (command === "ffmpeg") {
+      return { stdout: "ffmpeg version 6.1 Copyright\n", stderr: "" };
+    }
+    throw new Error(`${command} not found`);
+  };
+}
+
+function blenderCapabilityAndRenderRunner(captured: { args?: string[]; command?: string }): CommandRunner {
+  return async (command, args) => {
+    if (command === "nvidia-smi" && args.length === 0) {
+      return { stdout: "NVIDIA-SMI 550.54.14    CUDA Version: 12.4\n", stderr: "" };
+    }
+    if (command === "nvidia-smi") {
+      return { stdout: "0, NVIDIA RTX 4090, 24564, 550.54.14, 8.9\n", stderr: "" };
+    }
+    if (command === "docker") {
+      return {
+        stdout: JSON.stringify({
+          runc: { path: "runc" },
+          nvidia: { path: "nvidia-container-runtime" }
+        }),
+        stderr: ""
+      };
+    }
+    if (command === "ffmpeg") {
+      return { stdout: "ffmpeg version 6.1 Copyright\n", stderr: "" };
+    }
+    if (command === "blender" && args.includes("--version")) {
+      return { stdout: "Blender 4.1.1\n", stderr: "" };
+    }
+    if (command === "blender") {
+      captured.command = command;
+      captured.args = [...args];
+      const outputIndex = args.indexOf("--render-output");
+      const outputPattern = outputIndex >= 0 ? args[outputIndex + 1] : "";
+      if (!outputPattern) {
+        throw new Error("missing render output path");
+      }
+      const renderedPath = `${outputPattern.replace("####", "0001")}.png`;
+      mkdirSync(dirname(renderedPath), { recursive: true });
+      writeFileSync(renderedPath, "fake png frame\n", "utf8");
+      return {
+        stdout: "Fra:1 Mem:12.00M\nFra:2 Mem:12.00M\n",
+        stderr: "Saved: frame_0001.png\n"
+      };
+    }
+    throw new Error(`${command} not found`);
+  };
+}
+
+function validCudaManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema_version: "2026-06-14",
+    package: {
+      name: "vector-add",
+      publisher: "mcoda.local"
+    },
+    profiles: {
+      "nvcc-default": {
+        image: "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+        compiler: "nvcc",
+        flags: ["-O2", "--std=c++17"]
+      }
+    },
+    targets: {
+      "vector-add": {
+        source: "src/vector_add.cu",
+        output: "bin/vector-add",
+        args: ["--size=32"]
+      }
+    },
+    ...overrides
+  };
+}
+
+function writeCudaUpstreamArtifacts(artifactStorePath: string, manifest: Record<string, unknown> = validCudaManifest()): void {
+  mkdirSync(join(artifactStorePath, "upstream-cuda", "outputs"), { recursive: true });
+  writeFileSync(join(artifactStorePath, "upstream-cuda", "outputs", "package.tar.gz"), "fake tgz\n", "utf8");
+  writeFileSync(
+    join(artifactStorePath, "upstream-cuda", "outputs", "mcoda-job.json"),
+    JSON.stringify(manifest),
+    "utf8"
+  );
+}
+
+function cudaCapabilityAndDockerRunner(captured: { args?: string[]; command?: string }): CommandRunner {
+  return async (command, args) => {
+    if (command === "nvidia-smi" && args.length === 0) {
+      return { stdout: "NVIDIA-SMI 550.54.14    CUDA Version: 12.4\n", stderr: "" };
+    }
+    if (command === "nvidia-smi") {
+      return { stdout: "0, NVIDIA RTX 4090, 24564, 550.54.14, 8.9\n", stderr: "" };
+    }
+    if (command === "docker" && args[0] === "info") {
+      return {
+        stdout: JSON.stringify({
+          runc: { path: "runc" },
+          nvidia: { path: "nvidia-container-runtime" }
+        }),
+        stderr: ""
+      };
+    }
+    if (command === "blender" && args.includes("--version")) {
+      return { stdout: "Blender 4.1.1\n", stderr: "" };
+    }
+    if (command === "ffmpeg") {
+      return { stdout: "ffmpeg version 6.1 Copyright\n", stderr: "" };
+    }
+    if (command === "tar" && args[0] === "-tzf") {
+      return { stdout: "src/vector_add.cu\nmcoda-job.json\n", stderr: "" };
+    }
+    if (command === "tar" && args[0] === "-tvzf") {
+      return {
+        stdout: [
+          "-rw-r--r-- 0/0 128 2026-06-14 00:00 src/vector_add.cu",
+          "-rw-r--r-- 0/0 256 2026-06-14 00:00 mcoda-job.json"
+        ].join("\n"),
+        stderr: ""
+      };
+    }
+    if (command === "docker" && args[0] === "run") {
+      captured.command = command;
+      captured.args = [...args];
+      const outputMount = args.find((arg) => arg.includes(":/workspace/outputs:rw")) || "";
+      const outputDir = outputMount.split(":/workspace/outputs:rw")[0];
+      if (!outputDir) {
+        throw new Error("missing output mount");
+      }
+      mkdirSync(join(outputDir, "results"), { recursive: true });
+      writeFileSync(join(outputDir, "results", "result.txt"), "cuda ok\n", "utf8");
+      return {
+        stdout: "nvcc compile complete\ncuda run complete\n",
+        stderr: "cuda stderr note\n"
+      };
+    }
+    throw new Error(`${command} not found`);
+  };
 }
 
 function healthyMcodaAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -254,6 +592,76 @@ function signInvocationToken(input: {
       scope: "self_hosted.invoke",
       iat: now,
       exp: now + 60
+    })
+  );
+  const signingInput = `${header}.${payload}`;
+  const signature = base64Url(createHmac("sha256", input.secret).update(signingInput).digest());
+  return `${signingInput}.${signature}`;
+}
+
+function signGenericJobToken(input: {
+  secret: string;
+  nodeId: string;
+  jobId: string;
+  requestId: string;
+  schemaVersion?: string;
+  jobType: string;
+}): string {
+  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64Url(
+    JSON.stringify({
+      node_id: input.nodeId,
+      job_id: input.jobId,
+      request_id: input.requestId,
+      schema_version: input.schemaVersion || "2026-06-14",
+      job_type: input.jobType,
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      scope: "self_hosted.generic_job.invoke",
+      iat: now,
+      exp: now + 60
+    })
+  );
+  const signingInput = `${header}.${payload}`;
+  const signature = base64Url(createHmac("sha256", input.secret).update(signingInput).digest());
+  return `${signingInput}.${signature}`;
+}
+
+function signCapabilityToken(input: {
+  secret: string;
+  nodeId: string;
+}): string {
+  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64Url(
+    JSON.stringify({
+      node_id: input.nodeId,
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      scope: "self_hosted.capabilities.read",
+      iat: now,
+      exp: now + 60,
+      nonce: "test-capabilities"
+    })
+  );
+  const signingInput = `${header}.${payload}`;
+  const signature = base64Url(createHmac("sha256", input.secret).update(signingInput).digest());
+  return `${signingInput}.${signature}`;
+}
+
+function signGenericJobOpsToken(input: {
+  secret: string;
+  nodeId: string;
+}): string {
+  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64Url(
+    JSON.stringify({
+      node_id: input.nodeId,
+      deadline_at: new Date(Date.now() + 60_000).toISOString(),
+      scope: "self_hosted.generic_job.ops.read",
+      iat: now,
+      exp: now + 60,
+      nonce: "test-generic-job-ops"
     })
   );
   const signingInput = `${header}.${payload}`;
@@ -454,6 +862,7 @@ describe("self-hosted node runtime", () => {
     const firstConfig = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_ID: "shn_env",
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_ARTIFACT_STORE_PATH: tempArtifactStorePath(statePath),
       MSWARM_SELF_HOSTED_MODEL_ALLOWLIST: "phi3.5:3.8b,llama3.1:8b",
       MSWARM_SELF_HOSTED_EXPOSURE_POLICY: "none"
     } as NodeJS.ProcessEnv);
@@ -462,6 +871,10 @@ describe("self-hosted node runtime", () => {
     expect(firstConfig.mcodaBin).toBe("mcoda");
     expect(firstConfig.requestTimeoutMs).toBe(10_000);
     expect(firstConfig.jobTimeoutMs).toBe(3_600_000);
+    expect(firstConfig.artifactStorePath).toBe(tempArtifactStorePath(statePath));
+    expect(firstConfig.genericJobsEnabled).toBe(false);
+    expect(firstConfig.genericJobTimeoutMs).toBe(3_600_000);
+    expect(firstConfig.genericJobMaxConcurrency).toBe(1);
     expect(firstConfig.exposeAllModels).toBe(false);
     expect(firstConfig.modelAllowlist).toEqual(["phi3.5:3.8b", "llama3.1:8b"]);
   });
@@ -492,10 +905,16 @@ describe("self-hosted node runtime", () => {
     const config = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_ID: "shn_job_timeout",
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
-      MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: "7200000"
+      MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: "7200000",
+      MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED: "true",
+      MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS: "5000",
+      MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: "3"
     } as NodeJS.ProcessEnv);
 
     expect(config.jobTimeoutMs).toBe(7_200_000);
+    expect(config.genericJobsEnabled).toBe(true);
+    expect(config.genericJobTimeoutMs).toBe(5_000);
+    expect(config.genericJobMaxConcurrency).toBe(3);
   });
 
   it("migrates legacy daemon exposure false to the new exposed-by-default policy", async () => {
@@ -551,6 +970,10 @@ describe("self-hosted node runtime", () => {
         "https://gateway.test/",
         "--server-name",
         "Bekir MacBook Pro",
+        "--artifact-store-path",
+        tempArtifactStorePath(statePath),
+        "--generic-job-max-concurrency",
+        "2",
         "--allow",
         "phi3-reviewer"
       ],
@@ -564,6 +987,8 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.serverName).toBe("bekir-macbook-pro");
     expect(setupConfig.relayMode).toBe("outbound");
     expect(setupConfig.jobTimeoutMs).toBe(3_600_000);
+    expect(setupConfig.genericJobMaxConcurrency).toBe(2);
+    expect(setupConfig.artifactStorePath).toBe(tempArtifactStorePath(statePath));
     expect(setupConfig.exposeAllModels).toBe(true);
     expect(setupConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
 
@@ -667,6 +1092,733 @@ describe("self-hosted node runtime", () => {
     assert.ok(chatBody);
     expect((chatBody as Record<string, unknown>).format).toBe("json");
     expect((chatBody as Record<string, unknown>).stream).toBe(false);
+  });
+
+  it("keeps self-hosted LLM invocation jobs accepted outside the generic job contract", async () => {
+    const statePath = tempStatePath();
+    let chatBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "http://ollama.test/api/chat") {
+        chatBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          message: { content: "hello from llm" },
+          prompt_eval_count: 2,
+          eval_count: 3
+        });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath), { fetchImpl });
+    const llmJob: SelfHostedNodeInvocationJob = {
+      job_id: "job-llm-compat",
+      request_id: "req-llm-compat",
+      node_id: "shn_service",
+      agent_slug: "phi3-reviewer",
+      provider: "ollama",
+      model: "phi3.5:latest",
+      openai_request: {
+        model: "phi3.5:latest",
+        messages: [{ role: "user", content: "Say hello." }]
+      }
+    };
+
+    const result = await runtime.executeJob(llmJob);
+
+    expect(result.status).toBe("success");
+    assert.ok(chatBody);
+    expect((chatBody as Record<string, unknown>).model).toBe("phi3.5:latest");
+    expect((chatBody as Record<string, unknown>).stream).toBe(false);
+    expect((result.openai_response?.choices as Array<{ message?: { content?: string } }>)[0]?.message?.content).toBe(
+      "hello from llm"
+    );
+  });
+
+  it("runs owner-local generic test.echo jobs through the generic runner path", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const runtime = new SelfHostedNodeRuntime(config);
+    const events: Array<{ type: unknown }> = [];
+
+    const result = await runtime.executeGenericJob(genericEchoJob(), {
+      onEvent: async (event) => {
+        events.push(event);
+      }
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.result.status).toBe("succeeded");
+    expect(result.result.job_id).toBe("job-generic-echo");
+    expect(result.events.length).toBe(events.length);
+    expect(events.map((event) => event.type)).toEqual(["started", "stdout", "progress", "completed"]);
+    expect(result.result.metrics).toMatchObject({
+      runner: "test.echo",
+      message: "hello generic"
+    });
+  });
+
+  it("collects declared output artifacts from the local generic artifact store", async () => {
+    const statePath = tempStatePath();
+    class ArtifactWritingRunner implements MswarmGenericJobRunner {
+      readonly id = "test.echo";
+
+      async run(context: MswarmGenericJobRunnerContext) {
+        mkdirSync(join(context.artifacts.outputDir, "frames"), { recursive: true });
+        writeFileSync(join(context.artifacts.outputDir, "frames", "0001.txt"), "rendered frame\n");
+        return {
+          job_id: "runner-local-id",
+          status: "succeeded" as const,
+          exit_code: 0
+        };
+      }
+    }
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath: tempArtifactStorePath(statePath)
+      }),
+      { genericRunners: [new ArtifactWritingRunner()] }
+    );
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          outputs: [
+            {
+              name: "frame",
+              path: "frames/0001.txt",
+              content_type: "text/plain",
+              required: true
+            }
+          ]
+        }
+      })
+    );
+
+    expect(result.status).toBe("succeeded");
+    expect(result.events.map((event) => event.type)).toContain("artifact");
+    expect(result.result.artifacts?.length).toBe(1);
+    const artifact = result.result.artifacts?.[0];
+    assert.ok(artifact);
+    expect(artifact.name).toBe("frame");
+    expect(artifact.uri).toBe("artifact://local/job-generic-echo/frames/0001.txt");
+    expect(artifact.content_type).toBe("text/plain");
+    expect(artifact.size_bytes).toBe(Buffer.byteLength("rendered frame\n"));
+    expect(artifact.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(artifact.scope).toBe("output");
+  });
+
+  it("runs render.blender jobs through safe command args and artifact collection", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    mkdirSync(join(artifactStorePath, "upstream-render", "outputs"), { recursive: true });
+    writeFileSync(join(artifactStorePath, "upstream-render", "outputs", "scene.blend"), "fake blend\n", "utf8");
+    const captured: { args?: string[]; command?: string } = {};
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath,
+        genericJobTimeoutMs: 2_000
+      }),
+      {
+        capabilityRunner: blenderCapabilityAndRenderRunner(captured)
+      }
+    );
+
+    const envelope = genericBlenderJob();
+    const result = await runtime.executeGenericJob({
+      ...envelope,
+      job: {
+        ...envelope.job,
+        resources: {
+          gpu: {
+            count: 1,
+            vendor: "nvidia"
+          }
+        }
+      }
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(captured.command).toBe("blender");
+    assert.ok(captured.args);
+    expect(captured.args).toContain("-b");
+    expect(captured.args).toContain("--render-output");
+    expect(captured.args).toContain("--render-format");
+    expect(captured.args).toContain("PNG");
+    expect(captured.args).toContain("--engine");
+    expect(captured.args).toContain("CYCLES");
+    expect(captured.args).toContain("-s");
+    expect(captured.args).toContain("-e");
+    expect(captured.args).toContain("-a");
+    expect(captured.args).not.toContain("bash");
+    const pythonExprIndex = captured.args.indexOf("--python-expr");
+    assert.ok(pythonExprIndex >= 0);
+    const pythonExpr = captured.args[pythonExprIndex + 1] || "";
+    expect(pythonExpr).toContain("compute_device_type");
+    expect(pythonExpr).toContain('"CUDA"');
+    expect(pythonExpr).toContain("scene.cycles");
+    expect(result.events.map((event) => event.type)).toContain("artifact");
+    expect(result.events.map((event) => event.type)).toContain("progress");
+    expect(result.result.artifacts?.length).toBe(1);
+    expect(result.result.artifacts?.[0]?.uri).toBe("artifact://local/job-render-blender/frames/frame_0001.png");
+    expect(result.result.metrics).toMatchObject({
+      runner: "blender.render",
+      frames: "1-2",
+      engine: "cycles",
+      output_format: "png",
+      resolution: "640x360",
+      gpu_requested: true,
+      render_device: "gpu"
+    });
+    expect(JSON.stringify(result.result)).not.toContain(artifactStorePath);
+    expect(JSON.stringify(result.events)).not.toContain(artifactStorePath);
+  });
+
+  it("rejects render.blender tenant-owned jobs until containerized Blender execution exists", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    mkdirSync(join(artifactStorePath, "upstream-render", "outputs"), { recursive: true });
+    writeFileSync(join(artifactStorePath, "upstream-render", "outputs", "scene.blend"), "fake blend\n", "utf8");
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath,
+        genericJobTimeoutMs: 2_000
+      }),
+      {
+        capabilityRunner: blenderCapabilityAndRenderRunner({})
+      }
+    );
+    const baseJob = genericBlenderJob();
+
+    const result = await runtime.executeGenericJob(
+      genericBlenderJob({
+        job: {
+          ...baseJob.job,
+          policy: {
+            trust_mode: "tenant-owned",
+            network: "none",
+            allow_raw_command: false
+          }
+        }
+      })
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("policy_denied");
+  });
+
+  it("rejects render.blender GPU requests instead of silently falling back to CPU", async () => {
+    const statePath = tempStatePath();
+    const captured: { args?: string[]; command?: string } = {};
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        genericJobTimeoutMs: 2_000
+      }),
+      {
+        capabilityRunner: blenderCapabilityAndRenderRunner(captured)
+      }
+    );
+    const baseJob = genericBlenderJob();
+
+    const result = await runtime.executeGenericJob(
+      genericBlenderJob({
+        job: {
+          ...baseJob.job,
+          resources: {
+            gpu: {
+              count: 2,
+              min_vram_gb: 8,
+              vendor: "nvidia"
+            }
+          }
+        }
+      })
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("no_capable_node");
+    expect(captured.command).toBeUndefined();
+  });
+
+  it("runs cuda.run jobs through approved Docker NVIDIA args and artifact collection", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    writeCudaUpstreamArtifacts(artifactStorePath);
+    const captured: { args?: string[]; command?: string } = {};
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath,
+        genericJobTimeoutMs: 3_000
+      }),
+      {
+        capabilityRunner: cudaCapabilityAndDockerRunner(captured)
+      }
+    );
+
+    const result = await runtime.executeGenericJob(genericCudaJob());
+
+    expect(result.status).toBe("succeeded");
+    expect(captured.command).toBe("docker");
+    assert.ok(captured.args);
+    expect(captured.args).toContain("run");
+    expect(captured.args).toContain("--runtime");
+    expect(captured.args).toContain("nvidia");
+    expect(captured.args).toContain("--gpus");
+    expect(captured.args).toContain("count=1");
+    expect(captured.args).toContain("--network");
+    expect(captured.args).toContain("none");
+    expect(captured.args).toContain("--user");
+    expect(captured.args).toContain("65532:65532");
+    expect(captured.args).toContain("--read-only");
+    expect(captured.args).toContain("--cap-drop");
+    expect(captured.args).toContain("ALL");
+    expect(captured.args).toContain("--security-opt");
+    expect(captured.args).toContain("no-new-privileges");
+    expect(captured.args).toContain("--pull");
+    expect(captured.args).toContain("never");
+    expect(captured.args).toContain("nvidia/cuda:12.4.1-devel-ubuntu22.04");
+    expect(captured.args).toContain("/bin/bash");
+    expect(captured.args).toContain("/workspace/__mcoda_cuda_run.sh");
+    expect(captured.args).not.toContain("--privileged");
+    expect(captured.args).not.toContain("host");
+    expect(captured.args).not.toContain("-lc");
+    expect(captured.args.some((arg) => arg.includes(":/workspace/inputs:ro"))).toBe(true);
+    expect(captured.args.some((arg) => arg.includes(":/workspace/outputs:rw"))).toBe(true);
+    expect(captured.args.some((arg) => arg.includes(":/workspace/work:rw"))).toBe(true);
+    expect(result.events.map((event) => event.type)).toContain("artifact");
+    expect(result.events.map((event) => event.type)).toContain("stdout");
+    expect(result.events.map((event) => event.type)).toContain("stderr");
+    expect(result.result.artifacts?.length).toBe(1);
+    expect(result.result.artifacts?.[0]?.uri).toBe("artifact://local/job-cuda-run/results/result.txt");
+    expect(result.result.metrics).toMatchObject({
+      runner: "cuda.package",
+      image: "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+      profile: "nvcc-default",
+      target: "vector-add",
+      publisher: "mcoda.local",
+      gpu_count: 1,
+      network: "none",
+      container_user: "65532:65532"
+    });
+    expect(JSON.stringify(result.result)).not.toContain(artifactStorePath);
+    expect(JSON.stringify(result.events)).not.toContain(artifactStorePath);
+  });
+
+  it("rejects cuda.run manifests with raw commands or unapproved images", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    writeCudaUpstreamArtifacts(
+      artifactStorePath,
+      validCudaManifest({
+        profiles: {
+          "nvcc-default": {
+            image: "nvidia/cuda:latest",
+            compiler: "nvcc"
+          }
+        },
+        targets: {
+          "vector-add": {
+            source: "src/vector_add.cu",
+            command: "bash -lc ./run.sh"
+          }
+        }
+      })
+    );
+    const captured: { args?: string[]; command?: string } = {};
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath,
+        genericJobTimeoutMs: 3_000
+      }),
+      {
+        capabilityRunner: cudaCapabilityAndDockerRunner(captured)
+      }
+    );
+
+    const result = await runtime.executeGenericJob(genericCudaJob());
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("validation_failed");
+    expect(result.result.error?.message || "").toContain("not_allowed");
+    expect(captured.command).toBeUndefined();
+  });
+
+  it("rejects cuda.run packages with unsafe archive entries before Docker", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    writeCudaUpstreamArtifacts(artifactStorePath);
+    const captured: { args?: string[]; command?: string } = {};
+    const baseRunner = cudaCapabilityAndDockerRunner(captured);
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath,
+        genericJobTimeoutMs: 3_000
+      }),
+      {
+        capabilityRunner: async (command, args, options) => {
+          if (command === "tar" && args[0] === "-tzf") {
+            return { stdout: "../escape.cu\n", stderr: "" };
+          }
+          return baseRunner(command, args, options);
+        }
+      }
+    );
+
+    const result = await runtime.executeGenericJob(genericCudaJob());
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("validation_failed");
+    expect(result.result.error?.message || "").toContain("cuda_package_archive_parent_path_not_allowed");
+    expect(captured.command).toBeUndefined();
+  });
+
+  it("redacts local paths from cuda.run validation failures", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    writeCudaUpstreamArtifacts(artifactStorePath);
+    const captured: { args?: string[]; command?: string } = {};
+    const baseRunner = cudaCapabilityAndDockerRunner(captured);
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath,
+        genericJobTimeoutMs: 3_000
+      }),
+      {
+        capabilityRunner: async (command, args, options) => {
+          if (command === "tar" && args[0] === "-tzf") {
+            throw new Error(`tar failed while reading ${args[1]}`);
+          }
+          return baseRunner(command, args, options);
+        }
+      }
+    );
+
+    const result = await runtime.executeGenericJob(genericCudaJob());
+    const message = result.result.error?.message || "";
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("validation_failed");
+    expect(message).toContain("[job-input]");
+    expect(message).not.toContain(artifactStorePath);
+    expect(captured.command).toBeUndefined();
+  });
+
+  it("rejects cuda.run jobs when Docker NVIDIA is unavailable", async () => {
+    const statePath = tempStatePath();
+    const captured: { args?: string[]; command?: string } = {};
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        genericJobTimeoutMs: 3_000
+      }),
+      {
+        capabilityRunner: async (command, args) => {
+          if (command === "nvidia-smi" && args.length === 0) {
+            return { stdout: "NVIDIA-SMI 550.54.14    CUDA Version: 12.4\n", stderr: "" };
+          }
+          if (command === "nvidia-smi") {
+            return { stdout: "0, NVIDIA RTX 4090, 24564, 550.54.14, 8.9\n", stderr: "" };
+          }
+          if (command === "docker" && args[0] === "info") {
+            return { stdout: JSON.stringify({ runc: { path: "runc" } }), stderr: "" };
+          }
+          if (command === "blender" && args.includes("--version")) {
+            return { stdout: "Blender 4.1.1\n", stderr: "" };
+          }
+          if (command === "ffmpeg") {
+            return { stdout: "ffmpeg version 6.1 Copyright\n", stderr: "" };
+          }
+          captured.command = command;
+          captured.args = [...args];
+          return { stdout: "", stderr: "" };
+        }
+      }
+    );
+
+    const result = await runtime.executeGenericJob(genericCudaJob());
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("no_capable_node");
+    expect(result.result.error?.message || "").toContain("NVIDIA runtime");
+    expect(captured.command).toBeUndefined();
+  });
+
+  it("registers input artifact metadata without exposing host paths in job results", async () => {
+    const statePath = tempStatePath();
+    const captured: { context?: MswarmGenericJobRunnerContext } = {};
+    class InputInspectingRunner implements MswarmGenericJobRunner {
+      readonly id = "test.echo";
+
+      async run(context: MswarmGenericJobRunnerContext) {
+        captured.context = context;
+        return {
+          job_id: "runner-local-id",
+          status: "succeeded" as const,
+          exit_code: 0
+        };
+      }
+    }
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath: tempArtifactStorePath(statePath)
+      }),
+      { genericRunners: [new InputInspectingRunner()] }
+    );
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          inputs: [
+            {
+              name: "scene",
+              artifact: {
+                uri: "artifact://local/upstream-job/scene.blend",
+                content_type: "application/octet-stream",
+                size_bytes: 128
+              },
+              mount_path: "scene/scene.blend",
+              required: false
+            }
+          ]
+        }
+      })
+    );
+
+    expect(result.status).toBe("succeeded");
+    assert.ok(captured.context);
+    expect(captured.context.artifacts.registeredInputs).toHaveLength(1);
+    expect(captured.context.artifacts.registeredInputs[0]?.store.backend).toBe("local-dev");
+    expect(captured.context.artifacts.registeredInputs[0]?.access.visibility).toBe("owner-local");
+    expect(captured.context.artifacts.registeredInputs[0]?.retention.retain_for_seconds).toBe(86_400);
+    expect(JSON.stringify(result.result)).not.toContain(tempArtifactStorePath(statePath));
+  });
+
+  it("rejects unsafe generic output paths before runner execution", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(genericServiceConfigFor(statePath));
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          outputs: [
+            {
+              name: "escape",
+              path: "../escape.txt",
+              required: true
+            }
+          ]
+        }
+      })
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("validation_failed");
+    expect(result.validation_issues?.[0]?.code).toBe("unsafe_path");
+  });
+
+  it("passes non-root container sandbox defaults to tenant-owned GPU generic jobs", async () => {
+    const statePath = tempStatePath();
+    const captured: { context?: MswarmGenericJobRunnerContext } = {};
+    class SandboxInspectingRunner implements MswarmGenericJobRunner {
+      readonly id = "test.echo";
+
+      async run(context: MswarmGenericJobRunnerContext) {
+        captured.context = context;
+        return {
+          job_id: "runner-local-id",
+          status: "succeeded" as const,
+          exit_code: 0
+        };
+      }
+    }
+    const runtime = new SelfHostedNodeRuntime(genericServiceConfigFor(statePath), {
+      genericRunners: [new SandboxInspectingRunner()]
+    });
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          policy: {
+            trust_mode: "tenant-owned",
+            network: "none",
+            allow_raw_command: false,
+            allowed_images: ["nvidia/cuda:12.4.1-devel-ubuntu22.04"]
+          },
+          resources: {
+            gpu: {
+              count: 1,
+              vendor: "nvidia"
+            }
+          }
+        }
+      })
+    );
+
+    expect(result.status).toBe("succeeded");
+    assert.ok(captured.context);
+    expect(captured.context.sandbox.name).toBe("container-nvidia");
+    expect(captured.context.sandbox.container.enabled).toBe(true);
+    expect(captured.context.sandbox.container.rootless).toBe(true);
+    expect(captured.context.sandbox.container.user).toBe("65532:65532");
+    expect(captured.context.sandbox.container.privileged).toBe(false);
+    expect(captured.context.sandbox.filesystem.allow_host_paths).toBe(false);
+    expect(result.events[0]?.data?.sandbox_profile).toBe("container-nvidia");
+  });
+
+  it("rejects symlinked generic outputs during local artifact collection", async () => {
+    const statePath = tempStatePath();
+    class SymlinkOutputRunner implements MswarmGenericJobRunner {
+      readonly id = "test.echo";
+
+      async run(context: MswarmGenericJobRunnerContext) {
+        writeFileSync(join(context.artifacts.workDir, "outside.txt"), "escape\n");
+        symlinkSync(join(context.artifacts.workDir, "outside.txt"), join(context.artifacts.outputDir, "link.txt"));
+        return {
+          job_id: "runner-local-id",
+          status: "succeeded" as const,
+          exit_code: 0
+        };
+      }
+    }
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath: tempArtifactStorePath(statePath)
+      }),
+      { genericRunners: [new SymlinkOutputRunner()] }
+    );
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          outputs: [
+            {
+              name: "link",
+              path: "link.txt",
+              required: true
+            }
+          ]
+        }
+      })
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("runner_error");
+    expect(result.result.error?.message).toBe("output_symlink_not_allowed");
+  });
+
+  it("does not mask failed runner results with missing required outputs", async () => {
+    const statePath = tempStatePath();
+    class FailedRunner implements MswarmGenericJobRunner {
+      readonly id = "test.echo";
+
+      async run() {
+        return {
+          job_id: "runner-local-id",
+          status: "failed" as const,
+          exit_code: 1,
+          error: {
+            code: "runner_failed",
+            message: "runner reported failure"
+          }
+        };
+      }
+    }
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        artifactStorePath: tempArtifactStorePath(statePath)
+      }),
+      { genericRunners: [new FailedRunner()] }
+    );
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          outputs: [
+            {
+              name: "required-missing",
+              path: "missing.txt",
+              required: true
+            }
+          ]
+        }
+      })
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("runner_failed");
+    expect(result.result.error?.message).toBe("runner reported failure");
+  });
+
+  it("keeps generic jobs disabled by default in runtime execution", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(serviceConfigFor(statePath));
+
+    const result = await runtime.executeGenericJob(genericEchoJob());
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("feature_disabled");
+  });
+
+  it("cancels generic jobs through abort signals", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(genericServiceConfigFor(statePath, { genericJobTimeoutMs: 2_000 }));
+    const controller = new AbortController();
+    const events: Array<{ type: unknown }> = [];
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          args: {
+            message: "slow",
+            delay_ms: 20,
+            repeat: 5
+          },
+          limits: {
+            timeout_sec: 2
+          }
+        }
+      }),
+      {
+        signal: controller.signal,
+        onEvent: async (event) => {
+          events.push(event);
+          if (event.type === "stdout") {
+            controller.abort("cancelled");
+          }
+        }
+      }
+    );
+
+    expect(result.status).toBe("cancelled");
+    expect(result.result.error?.code).toBe("cancelled");
+    expect(events.map((event) => event.type)).toContain("cancelled");
+  });
+
+  it("times out generic jobs using runtime timeout plumbing", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(genericServiceConfigFor(statePath, { genericJobTimeoutMs: 10 }));
+
+    const result = await runtime.executeGenericJob(
+      genericEchoJob({
+        job: {
+          ...genericEchoJob().job,
+          args: {
+            message: "too slow",
+            delay_ms: 50,
+            repeat: 2
+          }
+        }
+      })
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.result.error?.code).toBe("timeout");
+    expect(result.events.map((event) => event.type)).toContain("failed");
   });
 
   it("routes mcoda invocation jobs through Codali with agent metadata and response format", async () => {
@@ -1271,6 +2423,1003 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("keeps the direct generic job endpoint disabled by default", async () => {
+    const statePath = tempStatePath();
+    const config = serviceConfigFor(statePath);
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        payload: genericEchoJob()
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.payload).code).toBe("feature_disabled");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("serves owner-local public node capabilities with a capability token", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, {
+      nodeId: "shn_public_caps"
+    });
+    const runtime = new SelfHostedNodeRuntime(config, {
+      capabilityRunner: gpuCapabilityProbeRunner()
+    });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/swarm/self-hosted/node/capabilities",
+        headers: {
+          authorization: `Bearer ${signCapabilityToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: config.nodeId
+          })}`
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.payload) as Record<string, unknown>;
+      const serialized = JSON.stringify(body);
+      const accelerator = (body.accelerators as Record<string, unknown>).gpu as Record<string, unknown>;
+      expect(body.generic_jobs_enabled).toBe(true);
+      expect((body.job_types as unknown[])).toContain("tenant.test-echo");
+      expect((body.job_types as unknown[])).toContain("render.blender");
+      expect((body.job_types as unknown[])).toContain("cuda.run");
+      expect(accelerator).toMatchObject({
+        available: true,
+        count: 1,
+        cuda: true,
+        vram_tier: "16-31"
+      });
+      expect(serialized).not.toContain("NVIDIA RTX 4090");
+      expect(serialized).not.toContain("550.54.14");
+      expect(serialized).not.toContain("24564");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects capability reads with generic job tokens", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericEchoJob();
+    const runtime = new SelfHostedNodeRuntime(config, {
+      capabilityRunner: gpuCapabilityProbeRunner()
+    });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/v1/swarm/self-hosted/node/capabilities",
+        headers: {
+          authorization: `Bearer ${signGenericJobToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: job.job_id,
+            requestId: job.request_id,
+            jobType: job.job.job_type
+          })}`
+        }
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(JSON.parse(response.payload).code).toBe("unauthorized");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requires owner-local binding for direct generic jobs", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, { listenHost: "0.0.0.0" });
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        payload: genericEchoJob()
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.payload).code).toBe("owner_local_required");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requires a signed generic job token instead of the LLM invocation token scope", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericEchoJob();
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        headers: {
+          authorization: `Bearer ${signInvocationToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: job.job_id,
+            requestId: job.request_id,
+            model: "not-a-generic-job"
+          })}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(JSON.parse(response.payload).code).toBe("unauthorized");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects generic job tokens that do not match the job schema version", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericEchoJob();
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        headers: {
+          authorization: `Bearer ${signGenericJobToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: job.job_id,
+            requestId: job.request_id,
+            schemaVersion: "old-schema",
+            jobType: job.job.job_type
+          })}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.payload).code).toBe("validation_failed");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("serves direct generic jobs as typed SSE events", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericEchoJob();
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        headers: {
+          authorization: `Bearer ${signGenericJobToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: job.job_id,
+            requestId: job.request_id,
+            jobType: job.job.job_type
+          })}`,
+          accept: "text/event-stream",
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("text/event-stream");
+      expect(response.payload).toContain("event: started");
+      expect(response.payload).toContain("event: stdout");
+      expect(response.payload).toContain("\"message\":\"hello generic\"");
+      expect(response.payload).toContain("event: completed");
+      expect(response.payload).toContain("data: [DONE]");
+      expect(response.payload).not.toContain("chat.completion.chunk");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("executes direct generic jobs with JSON results when event stream is not requested", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericEchoJob();
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        headers: {
+          authorization: `Bearer ${signGenericJobToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: job.job_id,
+            requestId: job.request_id,
+            jobType: job.job.job_type
+          })}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.payload) as Record<string, unknown>;
+      expect(body.status).toBe("succeeded");
+      expect((body.result as Record<string, unknown>).status).toBe("succeeded");
+      expect((body.events as Array<Record<string, unknown>>).map((event) => event.type)).toEqual([
+        "started",
+        "stdout",
+        "progress",
+        "completed"
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("cancels running direct generic jobs through the owner-local cancel endpoint", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, { genericJobTimeoutMs: 2_000 });
+    const baseJob = genericEchoJob();
+    const job = genericEchoJob({
+      job: {
+        ...baseJob.job,
+        args: {
+          message: "cancel me",
+          delay_ms: 50,
+          repeat: 10
+        },
+        limits: {
+          timeout_sec: 2
+        }
+      }
+    });
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const running = app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+      await delay(10);
+      const cancel = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-jobs/${encodeURIComponent(job.job_id)}/cancel`,
+        headers: {
+          authorization: `Bearer ${token}`
+        }
+      });
+      const response = await running;
+
+      expect(cancel.statusCode).toBe(202);
+      expect(JSON.parse(cancel.payload).status).toBe("cancelling");
+      expect(response.statusCode).toBe(409);
+      const body = JSON.parse(response.payload) as Record<string, unknown>;
+      expect(body.status).toBe("cancelled");
+      expect(((body.result as Record<string, unknown>).error as Record<string, unknown>).code).toBe("cancelled");
+
+      const secondCancel = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-jobs/${encodeURIComponent(job.job_id)}/cancel`,
+        headers: {
+          authorization: `Bearer ${token}`
+        }
+      });
+      expect(secondCancel.statusCode).toBe(404);
+      expect(JSON.parse(secondCancel.payload).code).toBe("job_not_running");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requires a matching generic job token for owner-local cancellation", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericEchoJob();
+    const runtime = new SelfHostedNodeRuntime(config);
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-jobs/${encodeURIComponent(job.job_id)}/cancel`,
+        headers: {
+          authorization: `Bearer ${signGenericJobToken({
+            secret: config.invocationSigningSecret || "",
+            nodeId: job.node_id,
+            jobId: "other-job",
+            requestId: job.request_id,
+            jobType: job.job.job_type
+          })}`
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.payload).code).toBe("validation_failed");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("runs owner-local lifecycle jobs and exposes status, events, logs, artifacts, and audit records", async () => {
+    const statePath = tempStatePath();
+    const baseJob = genericEchoJob();
+    const job = genericEchoJob({
+      job_id: "job-lifecycle-artifact",
+      request_id: "req-lifecycle-artifact",
+      job: {
+        ...baseJob.job,
+        outputs: [
+          {
+            name: "result",
+            path: "out/result.txt",
+            content_type: "text/plain",
+            required: true
+          }
+        ]
+      }
+    });
+    const config = genericServiceConfigFor(statePath, {
+      artifactStorePath: tempArtifactStorePath(statePath)
+    });
+    const runner: MswarmGenericJobRunner = {
+      id: "test.echo",
+      async run(context: MswarmGenericJobRunnerContext) {
+        await context.emitEvent({ type: "stdout", message: "artifact ready" });
+        mkdirSync(join(context.artifacts.outputDir, "out"), { recursive: true });
+        writeFileSync(join(context.artifacts.outputDir, "out", "result.txt"), "phase 5 artifact\n", "utf8");
+        return {
+          job_id: job.job_id,
+          status: "succeeded",
+          exit_code: 0,
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString()
+        };
+      }
+    };
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { genericRunners: [runner], capabilityRunner: capabilityProbeRunner({}) });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+      expect(create.statusCode).toBe(202);
+      expect(JSON.stringify(JSON.parse(create.payload))).not.toContain(token);
+
+      let statusBody = JSON.parse(create.payload) as Record<string, unknown>;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if ((statusBody.job as Record<string, unknown>).state === "succeeded") break;
+        await delay(10);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(status.statusCode).toBe(200);
+        statusBody = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+
+      const lifecycleJob = statusBody.job as Record<string, unknown>;
+      expect(lifecycleJob.state).toBe("succeeded");
+      expect((lifecycleJob.envelope as Record<string, unknown>).token_sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(statusBody)).not.toContain(token);
+
+      const events = await app.inject({
+        method: "GET",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/events`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+      const logs = await app.inject({
+        method: "GET",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/logs`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+      const artifacts = await app.inject({
+        method: "GET",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/artifacts`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+      const audit = await app.inject({
+        method: "GET",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/audit`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+
+      expect(events.statusCode).toBe(200);
+      expect((JSON.parse(events.payload).events as Array<Record<string, unknown>>).map((event) => event.type)).toContain("artifact");
+      expect(logs.statusCode).toBe(200);
+      expect((JSON.parse(logs.payload).logs as Array<Record<string, unknown>>)[0]).toMatchObject({
+        stream: "stdout",
+        message: "artifact ready"
+      });
+      expect(artifacts.statusCode).toBe(200);
+      const artifactList = JSON.parse(artifacts.payload).artifacts as Array<Record<string, unknown>>;
+      expect(artifactList).toHaveLength(1);
+      expect(artifactList[0].uri).toMatch(/^artifact:\/\/local\//);
+      expect(artifactList[0].size_bytes).toBe(17);
+      expect(audit.statusCode).toBe(200);
+      expect((JSON.parse(audit.payload).audit as Array<Record<string, unknown>>).map((entry) => entry.action)).toContain(
+        "reservation_released"
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts owner-local generic lifecycle artifact uploads with safe local artifact URIs", async () => {
+    const statePath = tempStatePath();
+    const artifactStorePath = tempArtifactStorePath(statePath);
+    const config = genericServiceConfigFor(statePath, { artifactStorePath });
+    const job = genericCudaJob({
+      job_id: "job-upload-cuda-package",
+      request_id: "req-upload-cuda-package"
+    });
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: gpuCapabilityProbeRunner() });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const content = Buffer.from("cuda package bytes\n", "utf8");
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/artifacts`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: {
+          name: "package",
+          path: "inputs/package.tar.gz",
+          content_base64: content.toString("base64"),
+          content_type: "application/gzip",
+          size_bytes: content.length,
+          sha256: createHmac("sha256", "not-the-hash").update(content).digest("hex")
+        }
+      });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.payload).message).toBe("artifact_upload_checksum_mismatch");
+
+      const ok = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/artifacts`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: {
+          name: "package",
+          path: "inputs/package.tar.gz",
+          content_base64: content.toString("base64"),
+          content_type: "application/gzip",
+          size_bytes: content.length
+        }
+      });
+      expect(ok.statusCode).toBe(201);
+      const body = JSON.parse(ok.payload) as Record<string, Record<string, unknown>>;
+      expect(body.artifact.uri).toBe("artifact://local/job-upload-cuda-package/inputs/package.tar.gz");
+      expect(body.artifact.size_bytes).toBe(content.length);
+      expect(body.artifact.content_type).toBe("application/gzip");
+      const written = await readFile(join(artifactStorePath, "job-upload-cuda-package", "inputs", "package.tar.gz"), "utf8");
+      expect(written).toBe("cuda package bytes\n");
+
+      const unsafe = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/artifacts`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: {
+          path: "../escape.tar.gz",
+          content_base64: content.toString("base64")
+        }
+      });
+      expect(unsafe.statusCode).toBe(400);
+      expect(JSON.parse(unsafe.payload).message).toContain("artifact_path_parent_path_not_allowed");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("blocks lifecycle render.blender jobs when Blender is unavailable", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericBlenderJob();
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: capabilityProbeRunner({}) });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+      expect(create.statusCode).toBe(202);
+
+      let statusBody = JSON.parse(create.payload) as Record<string, unknown>;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if ((statusBody.job as Record<string, unknown>).state === "blocked") break;
+        await delay(10);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(status.statusCode).toBe(200);
+        statusBody = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+
+      const lifecycleJob = statusBody.job as Record<string, unknown>;
+      expect(lifecycleJob.state).toBe("blocked");
+      expect(((lifecycleJob.backpressure as Record<string, unknown>).reason as string)).toBe("no_capable_node");
+      expect(((lifecycleJob.result as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
+        "no_capable_node"
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("blocks lifecycle cuda.run jobs when Docker NVIDIA is unavailable", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericCudaJob();
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, {
+      capabilityRunner: async (command, args) => {
+        if (command === "nvidia-smi") {
+          return { stdout: "0, NVIDIA RTX 4090, 24564, 550.54.14, 8.9\n", stderr: "" };
+        }
+        if (command === "docker" && args[0] === "info") {
+          return { stdout: JSON.stringify({ runc: { path: "runc" } }), stderr: "" };
+        }
+        if (command === "blender" && args.includes("--version")) {
+          return { stdout: "Blender 4.1.1\n", stderr: "" };
+        }
+        if (command === "ffmpeg") {
+          return { stdout: "ffmpeg version 6.1 Copyright\n", stderr: "" };
+        }
+        throw new Error(`${command} not found`);
+      }
+    });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+      expect(create.statusCode).toBe(202);
+
+      let statusBody = JSON.parse(create.payload) as Record<string, unknown>;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if ((statusBody.job as Record<string, unknown>).state === "blocked") break;
+        await delay(10);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(status.statusCode).toBe(200);
+        statusBody = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+
+      const lifecycleJob = statusBody.job as Record<string, unknown>;
+      expect(lifecycleJob.state).toBe("blocked");
+      expect(((lifecycleJob.backpressure as Record<string, unknown>).reason as string)).toBe("no_capable_node");
+      expect(((lifecycleJob.result as Record<string, unknown>).error as Record<string, unknown>).code).toBe(
+        "no_capable_node"
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("reuses owner-local lifecycle jobs by idempotency key without leaking raw tokens", async () => {
+    const statePath = tempStatePath();
+    const baseJob = genericEchoJob();
+    const job = genericEchoJob({
+      job_id: "job-lifecycle-idempotent",
+      request_id: "req-lifecycle-idempotent",
+      job: {
+        ...baseJob.job,
+        idempotency_key: "same-logical-job"
+      }
+    });
+    const config = genericServiceConfigFor(statePath);
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: capabilityProbeRunner({}) });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const first = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+      const second = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(first.statusCode).toBe(202);
+      expect(second.statusCode).toBe(200);
+      const body = JSON.parse(second.payload) as Record<string, unknown>;
+      expect((body.job as Record<string, unknown>).job_id).toBe(job.job_id);
+      expect(JSON.stringify(body)).not.toContain(token);
+      expect((body.audit as Array<Record<string, unknown>>).map((entry) => entry.action)).toContain(
+        "job_idempotent_reused"
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("applies lifecycle tenant backpressure until the active tenant reservation is released", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, {
+      genericJobMaxConcurrency: 2,
+      genericJobTimeoutMs: 1_000
+    });
+    const baseJob = genericEchoJob();
+    const tenantA = genericEchoJob({
+      job_id: "job-lifecycle-tenant-a",
+      request_id: "req-lifecycle-tenant-a",
+      job: {
+        ...baseJob.job,
+        args: { message: "tenant a", delay_ms: 50, repeat: 3 },
+        limits: { timeout_sec: 1 },
+        metadata: { tenant_id: "tenant-a" }
+      }
+    });
+    const tenantB = genericEchoJob({
+      job_id: "job-lifecycle-tenant-b",
+      request_id: "req-lifecycle-tenant-b",
+      job: {
+        ...baseJob.job,
+        metadata: { tenant_id: "tenant-b" }
+      }
+    });
+    const tokenA = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: tenantA.node_id,
+      jobId: tenantA.job_id,
+      requestId: tenantA.request_id,
+      jobType: tenantA.job.job_type
+    });
+    const tokenB = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: tenantB.node_id,
+      jobId: tenantB.job_id,
+      requestId: tenantB.request_id,
+      jobType: tenantB.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: capabilityProbeRunner({}) });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const createA = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: { authorization: `Bearer ${tokenA}`, "content-type": "application/json" },
+        payload: tenantA
+      });
+      expect(createA.statusCode).toBe(202);
+      await delay(15);
+      const createB = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: { authorization: `Bearer ${tokenB}`, "content-type": "application/json" },
+        payload: tenantB
+      });
+      expect(createB.statusCode).toBe(202);
+      await delay(15);
+
+      const blockedB = await app.inject({
+        method: "GET",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(tenantB.job_id)}`,
+        headers: { authorization: `Bearer ${tokenB}` }
+      });
+      expect(blockedB.statusCode).toBe(200);
+      const blockedBody = JSON.parse(blockedB.payload) as Record<string, unknown>;
+      expect((blockedBody.job as Record<string, unknown>).state).toBe("queued");
+      expect(((blockedBody.job as Record<string, unknown>).backpressure as Record<string, unknown>).reason).toBe(
+        "tenant_reserved"
+      );
+
+      let finalB = blockedBody;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if ((finalB.job as Record<string, unknown>).state === "succeeded") break;
+        await delay(20);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(tenantB.job_id)}`,
+          headers: { authorization: `Bearer ${tokenB}` }
+        });
+        expect(status.statusCode).toBe(200);
+        finalB = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+      expect((finalB.job as Record<string, unknown>).state).toBe("succeeded");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("cancels owner-local lifecycle jobs through the lifecycle cancel endpoint", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, { genericJobTimeoutMs: 2_000 });
+    const baseJob = genericEchoJob();
+    const job = genericEchoJob({
+      job_id: "job-lifecycle-cancel",
+      request_id: "req-lifecycle-cancel",
+      job: {
+        ...baseJob.job,
+        args: { message: "cancel lifecycle", delay_ms: 50, repeat: 10 },
+        limits: { timeout_sec: 2 }
+      }
+    });
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: capabilityProbeRunner({}) });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        payload: job
+      });
+      expect(create.statusCode).toBe(202);
+      await delay(20);
+      const cancel = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/cancel`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+      expect(cancel.statusCode).toBe(202);
+
+      let statusBody = JSON.parse(cancel.payload) as Record<string, unknown>;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if ((statusBody.job as Record<string, unknown>).state === "cancelled") break;
+        await delay(20);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(status.statusCode).toBe(200);
+        statusBody = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+      const lifecycleJob = statusBody.job as Record<string, unknown>;
+      expect(lifecycleJob.state).toBe("cancelled");
+      expect(((lifecycleJob.result as Record<string, unknown>).error as Record<string, unknown>).code).toBe("cancelled");
+      expect(((lifecycleJob.reservation as Record<string, unknown>).released_at as string).length > 0).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("exposes owner-local lifecycle ops with read-only ops tokens and audit pagination", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, {
+      artifactStorePath: tempArtifactStorePath(statePath),
+      genericJobMaxConcurrency: 2
+    });
+    const baseJob = genericEchoJob();
+    const job = genericEchoJob({
+      job_id: "job-lifecycle-ops",
+      request_id: "req-lifecycle-ops",
+      job: {
+        ...baseJob.job,
+        metadata: { tenant_id: "tenant-ops" },
+        resources: { gpu: { count: 1 } }
+      }
+    });
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const opsToken = signGenericJobOpsToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: gpuCapabilityProbeRunner() });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const wrongScope = await app.inject({
+        method: "GET",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/ops",
+        headers: { authorization: `Bearer ${token}` }
+      });
+      expect(wrongScope.statusCode).toBe(401);
+
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        payload: job
+      });
+      expect(create.statusCode).toBe(202);
+
+      let statusBody = JSON.parse(create.payload) as Record<string, unknown>;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if ((statusBody.job as Record<string, unknown>).state === "succeeded") break;
+        await delay(20);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(status.statusCode).toBe(200);
+        statusBody = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+
+      const ops = await app.inject({
+        method: "GET",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/ops?audit_limit=2&audit_offset=0",
+        headers: { authorization: `Bearer ${opsToken}` }
+      });
+      expect(ops.statusCode).toBe(200);
+      const body = JSON.parse(ops.payload) as Record<string, any>;
+      expect(body.node.node_id).toBe(config.nodeId);
+      expect(body.node.owner_local).toBe(true);
+      expect(body.node.artifact_store_configured).toBe(true);
+      expect(body.queue.jobs.some((entry: Record<string, unknown>) => entry.job_id === job.job_id)).toBe(true);
+      expect(body.queue.totals_by_state.succeeded).toBe(1);
+      expect(body.usage.total_jobs).toBe(1);
+      expect(body.usage.succeeded_jobs).toBe(1);
+      expect(body.usage.gpu_seconds >= 0).toBe(true);
+      expect(body.quota.production_enforced).toBe(false);
+      expect(body.audit.limit).toBe(2);
+      expect(body.audit.events.length <= 2).toBe(true);
+      expect(body.audit.total >= body.audit.events.length).toBe(true);
+      expect(JSON.stringify(body)).not.toContain(token);
+      expect(JSON.stringify(body)).not.toContain(opsToken);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("requeues terminal non-succeeded lifecycle jobs through the retry endpoint", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath);
+    const job = genericBlenderJob({
+      job_id: "job-lifecycle-retry",
+      request_id: "req-lifecycle-retry"
+    });
+    const token = signGenericJobToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      jobType: job.job.job_type
+    });
+    const runtime = new SelfHostedNodeRuntime(config, { capabilityRunner: capabilityProbeRunner({}) });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const create = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        payload: job
+      });
+      expect(create.statusCode).toBe(202);
+
+      let statusBody = JSON.parse(create.payload) as Record<string, unknown>;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if ((statusBody.job as Record<string, unknown>).state === "blocked") break;
+        await delay(10);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}`,
+          headers: { authorization: `Bearer ${token}` }
+        });
+        expect(status.statusCode).toBe(200);
+        statusBody = JSON.parse(status.payload) as Record<string, unknown>;
+      }
+      expect((statusBody.job as Record<string, unknown>).state).toBe("blocked");
+
+      const retry = await app.inject({
+        method: "POST",
+        url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(job.job_id)}/retry`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+      expect(retry.statusCode).toBe(202);
+      const retryBody = JSON.parse(retry.payload) as Record<string, any>;
+      expect(retryBody.job.state).toBe("queued");
+      expect(retryBody.job.retry.retry_count).toBe(1);
+      expect(retryBody.job.result).toBeUndefined();
+      expect((retryBody.audit as Array<Record<string, unknown>>).map((entry) => entry.action)).toContain(
+        "job_retry_scheduled"
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("normalizes node subcommands while preserving top-level compatibility aliases", () => {
     expect(normalizeMswarmCommand(["node", "mswarm", "node", "install", "--api-key", "msw_owner"])).toEqual({
       namespace: "node",
@@ -1663,6 +3812,7 @@ describe("self-hosted node runtime", () => {
         expect(body.machine_fingerprint).toMatch(/^sha256:/);
         expect(body.server_name).toBe("setup-box");
         expect(body.relay_mode).toBe("outbound");
+        expect(body.generic_job_max_concurrency).toBe(1);
         return jsonResponse({
           created: true,
           enrolled: true,
@@ -1726,6 +3876,7 @@ describe("self-hosted node runtime", () => {
     expect(savedState.machine_fingerprint).toMatch(/^sha256:/);
     expect(savedState.exposure_policy).toBe("all");
     expect(savedState.job_timeout_ms).toBe(3_600_000);
+    expect(savedState.generic_job_max_concurrency).toBe(1);
     expect((await readFile(tempRuntimeTokenPath(statePath), "utf8")).trim()).toBe("msn_setup");
     const daemonConfig = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
@@ -1733,6 +3884,7 @@ describe("self-hosted node runtime", () => {
     } as NodeJS.ProcessEnv);
     expect(daemonConfig.exposeAllModels).toBe(true);
     expect(daemonConfig.jobTimeoutMs).toBe(3_600_000);
+    expect(daemonConfig.genericJobMaxConcurrency).toBe(1);
     expect(daemonConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
     expect(daemonConfig.discoveryMode).toBe("mcoda");
     expect(daemonConfig.nodeVersion).toBe(await packageVersion());
@@ -1874,6 +4026,9 @@ describe("self-hosted node runtime", () => {
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
         jobTimeoutMs: 3_600_000,
+        genericJobsEnabled: false,
+        genericJobTimeoutMs: 3_600_000,
+        genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
@@ -1909,6 +4064,9 @@ describe("self-hosted node runtime", () => {
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
         jobTimeoutMs: 3_600_000,
+        genericJobsEnabled: false,
+        genericJobTimeoutMs: 3_600_000,
+        genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
@@ -1982,6 +4140,9 @@ describe("self-hosted node runtime", () => {
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
         jobTimeoutMs: 3_600_000,
+        genericJobsEnabled: false,
+        genericJobTimeoutMs: 3_600_000,
+        genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []
@@ -2010,6 +4171,101 @@ describe("self-hosted node runtime", () => {
       exposed: false,
       best_usage: "embedding"
     });
+  });
+
+  it("sends signed private capability catalog in self-hosted heartbeats", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, {
+      nodeId: "shn_capabilities",
+      runtimeToken: "msn_capabilities"
+    });
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(
+      config,
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "qwen-reviewer" })]),
+        capabilityRunner: gpuCapabilityProbeRunner()
+      }
+    );
+
+    const result = await runtime.runOnce();
+
+    expect(result.status).toBe("online");
+    const body = heartbeatBodies[0];
+    const capabilities = body.capabilities as Record<string, unknown>;
+    const privateCatalog = capabilities.private_catalog_entry as Record<string, unknown>;
+    const snapshot = (privateCatalog.snapshot as Record<string, unknown>);
+    const gpu = snapshot.gpu as Record<string, unknown>;
+    const devices = gpu.devices as Array<Record<string, unknown>>;
+    const publicProjection = capabilities.public_projection as Record<string, unknown>;
+    const publicSerialized = JSON.stringify(publicProjection);
+    expect(devices[0].name).toBe("NVIDIA RTX 4090");
+    expect(publicSerialized).not.toContain("NVIDIA RTX 4090");
+    expect(publicSerialized).not.toContain("550.54.14");
+    expect(publicSerialized).not.toContain("24564");
+    expect(((capabilities.scheduler_match as Record<string, unknown>).resources as Record<string, unknown>)).toMatchObject({
+      gpu_count: 1,
+      has_cuda: true
+    });
+    const unsigned = {
+      schema_version: capabilities.schema_version,
+      snapshot_id: capabilities.snapshot_id,
+      private_catalog_entry: capabilities.private_catalog_entry,
+      scheduler_match: capabilities.scheduler_match,
+      public_projection: capabilities.public_projection
+    };
+    const expectedSignature = base64Url(
+      createHmac("sha256", config.runtimeToken || "").update(JSON.stringify(unsigned)).digest()
+    );
+    expect((capabilities.signature as Record<string, unknown>).value).toBe(expectedSignature);
+  });
+
+  it("keeps capability heartbeat payloads degraded-safe when probes fail", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, {
+      nodeId: "shn_capability_degraded",
+      runtimeToken: "msn_capability_degraded"
+    });
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(
+      config,
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+        capabilityRunner: capabilityProbeRunner({})
+      }
+    );
+
+    await runtime.runOnce();
+
+    const capabilities = heartbeatBodies[0].capabilities as Record<string, unknown>;
+    const privateCatalog = capabilities.private_catalog_entry as Record<string, unknown>;
+    const snapshot = privateCatalog.snapshot as Record<string, unknown>;
+    const gpu = snapshot.gpu as Record<string, unknown>;
+    const publicProjection = capabilities.public_projection as Record<string, unknown>;
+    const accelerators = (publicProjection.accelerators as Record<string, unknown>).gpu as Record<string, unknown>;
+    expect(gpu.status).toBe("missing");
+    expect(accelerators.available).toBe(false);
+    expect((snapshot.job_types as unknown[])).not.toContain("render.blender");
+    expect((snapshot.job_types as unknown[])).not.toContain("cuda.run");
+    expect((snapshot.diagnostics as unknown[]).length > 0).toBe(true);
   });
 
   it("sends a degraded heartbeat when Ollama is unavailable", async () => {
@@ -2046,6 +4302,9 @@ describe("self-hosted node runtime", () => {
         heartbeatIntervalSeconds: 30,
         requestTimeoutMs: 1000,
         jobTimeoutMs: 3_600_000,
+        genericJobsEnabled: false,
+        genericJobTimeoutMs: 3_600_000,
+        genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
         modelBlocklist: []

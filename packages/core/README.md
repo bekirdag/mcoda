@@ -9,7 +9,8 @@ Core services that power the mcoda CLI (docs, planning, jobs, telemetry, openapi
 ## What it provides
 - WorkspaceResolver for discovering/initializing workspace data under `~/.mcoda/workspaces/<fingerprint>`.
 - Service layer for docs, planning, execution, review, telemetry, and system updates.
-- API wrappers (AgentsApi, TasksApi, QaTasksApi) used by the CLI.
+- API wrappers (AgentsApi, TasksApi, QaTasksApi, MswarmApi) used by the CLI and SDK packages.
+- Owner-local mswarm generic job helpers for capability reads, artifact upload, run/status/logs/events/artifacts, cancellation, retry, and ops summaries.
 
 ## Example
 ```ts

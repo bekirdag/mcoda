@@ -8,6 +8,8 @@ import type {
   McodaAgentCatalogEntry,
   McodaAgentSetupClient,
   McodaAgentSetupSnapshot,
+  McodaGpuJobOpsPanelData,
+  McodaGpuJobOpsPanelJob,
   McodaSelfHostedServer,
   McodaStageDefinition,
 } from "../types.js";
@@ -19,6 +21,13 @@ export interface McodaAgentSetupPageProps {
   className?: string;
   labels?: Partial<McodaAgentSetupLabels>;
   components?: Partial<McodaAgentSetupComponentOverrides>;
+  gpuJobOps?: McodaGpuJobOpsPanelData | null;
+  onGpuJobOpsRefresh?: () => void | Promise<void>;
+  onGpuJobViewDetails?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onGpuJobViewLogs?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onGpuJobViewArtifacts?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onGpuJobRetry?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onGpuJobCancel?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
 }
 
 export interface McodaAgentSetupLabels {
@@ -34,6 +43,7 @@ export interface McodaAgentSetupLabels {
 export interface McodaAgentSetupComponentOverrides {
   AgentCatalogSummary: typeof AgentCatalogSummary;
   MswarmAccessCard: typeof MswarmAccessCard;
+  GpuJobOpsPanel: typeof GpuJobOpsPanel;
   StageAgentAssignments: typeof StageAgentAssignments;
   AgentSourceSelect: typeof AgentSourceSelect;
   SelfHostedServerSelect: typeof SelfHostedServerSelect;
@@ -60,6 +70,7 @@ export function McodaAgentSetupPage(
   const components = {
     AgentCatalogSummary,
     MswarmAccessCard,
+    GpuJobOpsPanel,
     StageAgentAssignments,
     ...(props.components ?? {}),
   };
@@ -141,6 +152,38 @@ export function McodaAgentSetupPage(
       setBusy(false);
     }
   };
+  const refreshGpuJobOps = async () => {
+    if (!props.onGpuJobOpsRefresh) return;
+    setBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await props.onGpuJobOpsRefresh();
+      setStatusMessage("GPU job operations refreshed.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const runGpuJobAction = async (
+    action: ((job: McodaGpuJobOpsPanelJob) => void | Promise<void>) | undefined,
+    job: McodaGpuJobOpsPanelJob,
+    message: string
+  ) => {
+    if (!action) return;
+    setBusy(true);
+    setError(null);
+    setStatusMessage(null);
+    try {
+      await action(job);
+      setStatusMessage(message);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return React.createElement(
     "section",
@@ -200,6 +243,28 @@ export function McodaAgentSetupPage(
         onSyncAgents: syncAgents,
       })
     ),
+    props.gpuJobOps
+      ? React.createElement(components.GpuJobOpsPanel, {
+          ops: props.gpuJobOps,
+          busy,
+          onRefresh: props.onGpuJobOpsRefresh ? refreshGpuJobOps : undefined,
+          onViewDetails: props.onGpuJobViewDetails
+            ? (job) => runGpuJobAction(props.onGpuJobViewDetails, job, `Loaded details for ${job.job_id}.`)
+            : undefined,
+          onViewLogs: props.onGpuJobViewLogs
+            ? (job) => runGpuJobAction(props.onGpuJobViewLogs, job, `Loaded logs for ${job.job_id}.`)
+            : undefined,
+          onViewArtifacts: props.onGpuJobViewArtifacts
+            ? (job) => runGpuJobAction(props.onGpuJobViewArtifacts, job, `Loaded artifacts for ${job.job_id}.`)
+            : undefined,
+          onRetry: props.onGpuJobRetry
+            ? (job) => runGpuJobAction(props.onGpuJobRetry, job, `Retry queued for ${job.job_id}.`)
+            : undefined,
+          onCancel: props.onGpuJobCancel
+            ? (job) => runGpuJobAction(props.onGpuJobCancel, job, `Cancel requested for ${job.job_id}.`)
+            : undefined,
+        })
+      : null,
     snapshot
       ? React.createElement(components.StageAgentAssignments, {
           stages,
@@ -212,6 +277,265 @@ export function McodaAgentSetupPage(
           busy,
         })
       : null
+  );
+}
+
+export interface GpuJobOpsPanelProps {
+  ops: McodaGpuJobOpsPanelData;
+  busy?: boolean;
+  onRefresh?: () => void | Promise<void>;
+  onViewDetails?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onViewLogs?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onViewArtifacts?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onRetry?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+  onCancel?: (job: McodaGpuJobOpsPanelJob) => void | Promise<void>;
+}
+
+export function GpuJobOpsPanel(props: GpuJobOpsPanelProps): React.ReactElement {
+  const { ops } = props;
+  const jobs = ops.queue.jobs;
+  const auditEvents = ops.audit.events.slice(0, 6);
+  const stateEntries = Object.entries(ops.queue.totals_by_state).sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+  const software = opsSoftwareMetric(ops);
+  const showControls = Boolean(
+    props.onViewDetails || props.onViewLogs || props.onViewArtifacts || props.onRetry || props.onCancel
+  );
+  return React.createElement(
+    "section",
+    { className: "mcoda-agent-setup__gpu-ops" },
+    React.createElement(
+      "div",
+      { className: "mcoda-agent-setup__card-heading" },
+      React.createElement("div", null,
+        React.createElement("h2", null, "GPU Job Operations"),
+        React.createElement("p", null, `Node ${ops.node.node_id} · ${formatTimestamp(ops.generated_at)}`)
+      ),
+      props.onRefresh
+        ? React.createElement(
+            "button",
+            {
+              type: "button",
+              className: "mcoda-agent-setup__button mcoda-agent-setup__button--secondary",
+              disabled: props.busy,
+              onClick: props.onRefresh,
+            },
+            props.busy ? "Refreshing" : "Refresh"
+          )
+        : React.createElement(
+            "span",
+            {
+              className: ops.node.generic_jobs_enabled
+                ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--success"
+                : "mcoda-agent-setup__badge mcoda-agent-setup__badge--warning",
+            },
+            ops.node.generic_jobs_enabled ? "Enabled" : "Disabled"
+          )
+    ),
+    React.createElement(
+      "div",
+      { className: "mcoda-agent-setup__metric-grid" },
+      React.createElement(MetricCard, {
+        label: "Queue",
+        value: String(ops.usage.total_jobs),
+        detail: `${ops.queue.active_jobs} active, ${ops.queue.queued_jobs} queued`,
+      }),
+      React.createElement(MetricCard, {
+        label: "Slots",
+        value: `${ops.quota.available_slots}/${ops.quota.max_concurrent_jobs}`,
+        detail: "available concurrency",
+      }),
+      React.createElement(MetricCard, {
+        label: "GPU time",
+        value: formatDurationSeconds(ops.usage.gpu_seconds),
+        detail: "owner-local runtime",
+      }),
+      React.createElement(MetricCard, {
+        label: "Artifacts",
+        value: String(ops.usage.artifact_count),
+        detail: formatBytes(ops.usage.artifact_bytes),
+      }),
+      React.createElement(MetricCard, {
+        label: "Job types",
+        value: opsJobTypes(ops),
+        detail: opsGpuSummary(ops),
+      }),
+      React.createElement(MetricCard, {
+        label: "Software",
+        value: software.value,
+        detail: software.detail,
+      }),
+      React.createElement(MetricCard, {
+        label: "Audit",
+        value: String(ops.audit.total),
+        detail: `${ops.audit.limit} visible from ${ops.audit.offset}`,
+      })
+    ),
+    stateEntries.length
+      ? React.createElement(
+          "div",
+          { className: "mcoda-agent-setup__state-chips", "aria-label": "GPU job states" },
+          stateEntries.map(([state, count]) =>
+            React.createElement(
+              "span",
+              { key: state, className: `mcoda-agent-setup__state-chip mcoda-agent-setup__state-chip--${state}` },
+              React.createElement("strong", null, String(count)),
+              React.createElement("span", null, state)
+            )
+          )
+        )
+      : null,
+    React.createElement(
+      "div",
+      { className: "mcoda-agent-setup__gpu-ops-grid" },
+      React.createElement(
+        "div",
+        { className: "mcoda-agent-setup__gpu-ops-panel" },
+        React.createElement("h3", null, "Jobs"),
+        jobs.length
+          ? React.createElement(
+              "div",
+              { className: "mcoda-agent-setup__gpu-table-wrap" },
+              React.createElement(
+                "table",
+                { className: "mcoda-agent-setup__gpu-table" },
+                React.createElement(
+                  "thead",
+                  null,
+                  React.createElement(
+                    "tr",
+                    null,
+                    React.createElement("th", null, "Job"),
+                    React.createElement("th", null, "State"),
+                    React.createElement("th", null, "Progress"),
+                    React.createElement("th", null, "Artifacts"),
+                    showControls ? React.createElement("th", null, "Actions") : null
+                  )
+                ),
+                React.createElement(
+                  "tbody",
+                  null,
+                  jobs.map((job) => {
+                    const terminal = isTerminalGpuJobState(job.state);
+                    const retryable = terminal && job.state !== "succeeded";
+                    return React.createElement(
+                      "tr",
+                      { key: job.job_id },
+                      React.createElement(
+                        "td",
+                        { className: "mcoda-agent-setup__gpu-job-cell" },
+                        React.createElement("strong", null, job.job_id),
+                        React.createElement("small", null, `${job.job_type} · ${formatTimestamp(job.updated_at)}`)
+                      ),
+                      React.createElement(
+                        "td",
+                        null,
+                        React.createElement(
+                          "span",
+                          { className: `mcoda-agent-setup__badge ${terminal ? "mcoda-agent-setup__badge--info" : "mcoda-agent-setup__badge--success"}` },
+                          job.state
+                        )
+                      ),
+                      React.createElement("td", null, formatPercent(job.progress_percent)),
+                      React.createElement("td", null, `${job.artifact_count} / ${formatBytes(job.artifact_bytes)}`),
+                      showControls
+                        ? React.createElement(
+                            "td",
+                            null,
+                            React.createElement(
+                              "div",
+                              { className: "mcoda-agent-setup__gpu-actions" },
+                              props.onViewDetails
+                                ? React.createElement(
+                                    "button",
+                                    {
+                                      type: "button",
+                                      className: "mcoda-agent-setup__button mcoda-agent-setup__button--secondary",
+                                      disabled: props.busy,
+                                      onClick: () => props.onViewDetails?.(job),
+                                    },
+                                    "Details"
+                                  )
+                                : null,
+                              props.onViewLogs
+                                ? React.createElement(
+                                    "button",
+                                    {
+                                      type: "button",
+                                      className: "mcoda-agent-setup__button mcoda-agent-setup__button--secondary",
+                                      disabled: props.busy,
+                                      onClick: () => props.onViewLogs?.(job),
+                                    },
+                                    "Logs"
+                                  )
+                                : null,
+                              props.onViewArtifacts
+                                ? React.createElement(
+                                    "button",
+                                    {
+                                      type: "button",
+                                      className: "mcoda-agent-setup__button mcoda-agent-setup__button--secondary",
+                                      disabled: props.busy,
+                                      onClick: () => props.onViewArtifacts?.(job),
+                                    },
+                                    "Artifacts"
+                                  )
+                                : null,
+                              props.onCancel
+                                ? React.createElement(
+                                    "button",
+                                    {
+                                      type: "button",
+                                      className: "mcoda-agent-setup__button mcoda-agent-setup__button--secondary",
+                                      disabled: props.busy || terminal,
+                                      onClick: () => props.onCancel?.(job),
+                                    },
+                                    "Cancel"
+                                  )
+                                : null,
+                              props.onRetry
+                                ? React.createElement(
+                                    "button",
+                                    {
+                                      type: "button",
+                                      className: "mcoda-agent-setup__button mcoda-agent-setup__button--primary",
+                                      disabled: props.busy || !retryable,
+                                      onClick: () => props.onRetry?.(job),
+                                    },
+                                    "Retry"
+                                  )
+                                : null
+                            )
+                          )
+                        : null
+                    );
+                  })
+                )
+              )
+            )
+          : React.createElement("p", { className: "mcoda-agent-setup__gpu-empty" }, "No GPU jobs recorded.")
+      ),
+      React.createElement(
+        "div",
+        { className: "mcoda-agent-setup__gpu-ops-panel" },
+        React.createElement("h3", null, "Audit"),
+        auditEvents.length
+          ? React.createElement(
+              "ol",
+              { className: "mcoda-agent-setup__audit-list" },
+              auditEvents.map((event, index) =>
+                React.createElement(
+                  "li",
+                  { key: `${event.timestamp}-${event.action}-${index}` },
+                  React.createElement("strong", null, event.action),
+                  React.createElement("span", null, formatTimestamp(event.timestamp))
+                )
+              )
+            )
+          : React.createElement("p", { className: "mcoda-agent-setup__gpu-empty" }, "No audit events recorded.")
+      )
+    )
   );
 }
 
@@ -925,6 +1249,80 @@ function MetricCard(props: {
     React.createElement("strong", null, props.value),
     React.createElement("small", null, props.detail)
   );
+}
+
+const GPU_TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled", "expired", "blocked"]);
+
+function isTerminalGpuJobState(state: string): boolean {
+  return GPU_TERMINAL_STATES.has(state);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function opsJobTypes(ops: McodaGpuJobOpsPanelData): string {
+  const value = ops.capabilities.job_types;
+  if (!Array.isArray(value) || value.length === 0) return "none";
+  return value.map((entry) => String(entry)).slice(0, 3).join(", ");
+}
+
+function opsGpuSummary(ops: McodaGpuJobOpsPanelData): string {
+  const accelerators = asRecord(ops.capabilities.accelerators);
+  const gpu = asRecord(accelerators.gpu);
+  const vendors = Array.isArray(gpu.vendors)
+    ? gpu.vendors.map((entry) => String(entry)).join(", ")
+    : "";
+  const count = typeof gpu.count === "number" ? `${gpu.count} GPU${gpu.count === 1 ? "" : "s"}` : null;
+  const cuda = gpu.cuda === true ? "CUDA" : gpu.cuda === false ? "no CUDA" : null;
+  const vram = typeof gpu.vram_tier === "string" ? gpu.vram_tier : null;
+  return [count, vendors, cuda, vram].filter(Boolean).join(" / ") || "capability snapshot";
+}
+
+function opsSoftwareMetric(ops: McodaGpuJobOpsPanelData): { value: string; detail: string } {
+  const software = asRecord(ops.capabilities.software);
+  const entries = Object.entries(software)
+    .map(([name, value]) => [name, asRecord(value)] as const)
+    .filter(([, value]) => Object.keys(value).length > 0);
+  if (entries.length === 0) {
+    return { value: "unknown", detail: "software probes unavailable" };
+  }
+  const available = entries.filter(([, value]) => value.available === true || value.status === "available").length;
+  return {
+    value: `${available}/${entries.length} available`,
+    detail: entries
+      .map(([name, value]) => `${name}: ${typeof value.status === "string" ? value.status : value.available === true ? "available" : "unknown"}`)
+      .join(", "),
+  };
+}
+
+function formatPercent(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "-";
+  return `${Math.round(Math.max(0, Math.min(100, value)))}%`;
+}
+
+function formatDurationSeconds(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  if (value < 60) return `${Math.round(value)}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let next = value;
+  let unit = 0;
+  while (next >= 1024 && unit < units.length - 1) {
+    next /= 1024;
+    unit += 1;
+  }
+  return `${next >= 10 || unit === 0 ? Math.round(next) : next.toFixed(1)} ${units[unit]}`;
 }
 
 function AgentStatusBadge(props: {

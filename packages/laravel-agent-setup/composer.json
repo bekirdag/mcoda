@@ -42,7 +42,8 @@
         "Mcoda\\LaravelAgentSetup\\McodaAgentSetupServiceProvider"
       ],
       "aliases": {
-        "McodaAgentSetup": "Mcoda\\LaravelAgentSetup\\Facades\\McodaAgentSetup"
+        "McodaAgentSetup": "Mcoda\\LaravelAgentSetup\\Facades\\McodaAgentSetup",
+        "McodaGpuJobs": "Mcoda\\LaravelAgentSetup\\Facades\\McodaGpuJobs"
       }
     }
   },

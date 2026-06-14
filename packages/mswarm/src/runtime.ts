@@ -1,8 +1,8 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { hostname, homedir, platform, userInfo } from "node:os";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
   MswarmCodaliExecutor,
   type LocalOpenAiCompatibleRunnerConfig,
@@ -11,6 +11,38 @@ import {
   type MswarmCodaliPolicy,
   type MswarmCodaliWorkspace
 } from "./codali-executor.js";
+import {
+  MSWARM_CAPABILITY_SCHEMA_VERSION,
+  assertMswarmSafeRelativePath,
+  validateMswarmArchiveEntry,
+  buildMswarmCapabilityNames,
+  buildMswarmPrivateCapabilityCatalogEntry,
+  buildMswarmLocalArtifactUri,
+  buildMswarmSandboxProfile,
+  defaultMswarmArtifactAccessPolicy,
+  defaultMswarmArtifactRetentionPolicy,
+  projectMswarmPublicCapabilities,
+  validateMswarmGenericJobRequest,
+  type MswarmArtifactStoreDescriptor,
+  type MswarmGpuCapabilityProbe,
+  type MswarmGpuDeviceCapability,
+  type MswarmGenericJobValidationIssue,
+  type MswarmJobType,
+  type MswarmJobEvent,
+  type MswarmJobPolicy,
+  type MswarmJobRequest,
+  type MswarmJobResult,
+  type MswarmNodeCapabilitySnapshot,
+  type MswarmOutputSpec,
+  type MswarmPublicCapabilityProjection,
+  type MswarmRegisteredArtifact,
+  type MswarmRegisteredJobCatalogEntry,
+  type MswarmRunnerCatalogCapability,
+  type MswarmSandboxProfile,
+  type MswarmSignedCapabilityPayload,
+  type MswarmSoftwareProbeName,
+  type MswarmSoftwareProbeResult
+} from "@mcoda/shared";
 
 export type FetchLike = typeof fetch;
 export type SelfHostedDiscoveryMode = "mcoda" | "ollama";
@@ -19,7 +51,7 @@ export type SelfHostedExposurePolicy = "all" | "none";
 export type CommandRunner = (
   command: string,
   args: string[],
-  options: { timeoutMs: number; maxBuffer: number; input?: string }
+  options: { timeoutMs: number; maxBuffer: number; input?: string; signal?: AbortSignal }
 ) => Promise<{ stdout: string; stderr: string }>;
 export type SelfHostedModelHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown" | "blocked";
 
@@ -77,6 +109,7 @@ export interface SelfHostedNodeConfig {
   ollamaBaseUrl: string;
   statePath: string;
   runtimeTokenPath: string;
+  artifactStorePath?: string;
   invocationSigningSecret?: string | null;
   listenHost: string;
   listenPort: number;
@@ -84,6 +117,10 @@ export interface SelfHostedNodeConfig {
   heartbeatIntervalSeconds: number;
   requestTimeoutMs: number;
   jobTimeoutMs: number;
+  genericJobsEnabled: boolean;
+  genericJobTimeoutMs: number;
+  genericJobMaxConcurrency: number;
+  capabilityProbeTimeoutMs?: number;
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
@@ -96,6 +133,7 @@ export interface SelfHostedNodeState {
   machine_fingerprint?: string;
   direct_base_url?: string | null;
   runtime_token?: string;
+  artifact_store_path?: string;
   config_version?: number;
   heartbeat_interval_seconds?: number;
   heartbeat_timeout_seconds?: number;
@@ -109,6 +147,10 @@ export interface SelfHostedNodeState {
   node_version?: string;
   request_timeout_ms?: number;
   job_timeout_ms?: number;
+  generic_jobs_enabled?: boolean;
+  generic_job_timeout_ms?: number;
+  generic_job_max_concurrency?: number;
+  capability_probe_timeout_ms?: number;
   expose_all_models?: boolean;
   exposure_policy?: SelfHostedExposurePolicy;
   model_allowlist?: string[];
@@ -124,6 +166,7 @@ export interface SelfHostedOwnerSetupConfig {
   discoveryMode: SelfHostedDiscoveryMode;
   statePath: string;
   runtimeTokenPath: string;
+  artifactStorePath?: string;
   machineIdPath: string;
   mcodaBin: string;
   mcodaListArgs: string[];
@@ -132,6 +175,10 @@ export interface SelfHostedOwnerSetupConfig {
   heartbeatIntervalSeconds: number;
   requestTimeoutMs: number;
   jobTimeoutMs: number;
+  genericJobsEnabled: boolean;
+  genericJobTimeoutMs: number;
+  genericJobMaxConcurrency: number;
+  capabilityProbeTimeoutMs?: number;
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
@@ -233,6 +280,13 @@ export interface SelfHostedNodeInvocationJob {
   };
 }
 
+export interface SelfHostedGenericNodeJob {
+  job_id: string;
+  request_id: string;
+  node_id: string;
+  job: MswarmJobRequest;
+}
+
 export interface SelfHostedNodeInvocationResult {
   job_id: string;
   request_id: string;
@@ -258,6 +312,51 @@ export interface SelfHostedJobExecutionOptions {
    * agent config or serialized into job/result payloads.
    */
   attachedMswarmApiKey?: string;
+}
+
+export interface MswarmGenericJobRunnerContext {
+  job: MswarmJobRequest;
+  signal: AbortSignal;
+  emitEvent: (event: Omit<MswarmJobEvent, "job_id" | "sequence" | "timestamp">) => Promise<void>;
+  artifacts: MswarmGenericJobArtifactContext;
+  sandbox: MswarmSandboxProfile;
+}
+
+export interface MswarmGenericJobRunner {
+  readonly id: string;
+  run(context: MswarmGenericJobRunnerContext): Promise<MswarmJobResult>;
+}
+
+export interface MswarmGenericJobArtifactContext {
+  store: MswarmArtifactStoreDescriptor;
+  workDir: string;
+  inputDir: string;
+  outputDir: string;
+  registeredInputs: MswarmRegisteredArtifact[];
+  outputSpecs: MswarmOutputSpec[];
+  sandbox: MswarmSandboxProfile;
+}
+
+export interface MswarmGenericJobArtifactStore {
+  prepareJobWorkspace(jobId: string, job: MswarmJobRequest): Promise<MswarmGenericJobArtifactContext>;
+  collectOutputs(context: MswarmGenericJobArtifactContext, jobId: string): Promise<MswarmRegisteredArtifact[]>;
+}
+
+export interface MswarmGenericJobExecutionOptions {
+  signal?: AbortSignal;
+  onEvent?: (event: MswarmJobEvent) => void | Promise<void>;
+}
+
+export interface MswarmGenericJobExecutionResult {
+  job_id: string;
+  request_id: string;
+  status: MswarmJobResult["status"];
+  result: MswarmJobResult;
+  events: MswarmJobEvent[];
+  validation_issues?: MswarmGenericJobValidationIssue[];
+  timing: {
+    local_latency_ms: number;
+  };
 }
 
 export interface SelfHostedNodeHeartbeatResult {
@@ -402,11 +501,90 @@ const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.70";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
+const DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_MCODA_BIN = "mcoda";
 const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
+const DEFAULT_LOCAL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_JOB_POLL_WAIT_MS = 25_000;
 const DEFAULT_STREAM_EVENT_BATCH_SIZE = 8;
+const OWNER_LOCAL_TEST_ECHO_JOB_TYPE = "tenant.test-echo";
+const TEST_ECHO_RUNNER_ID = "test.echo";
+const RENDER_BLENDER_JOB_TYPE = "render.blender";
+const BLENDER_RENDER_RUNNER_ID = "blender.render";
+const CUDA_RUN_JOB_TYPE = "cuda.run";
+const CUDA_PACKAGE_RUNNER_ID = "cuda.package";
+const APPROVED_NVIDIA_CUDA_IMAGES = new Set([
+  "nvidia/cuda:12.4.1-devel-ubuntu22.04"
+]);
+type OwnerLocalGenericJobCatalogEntry = Omit<MswarmRegisteredJobCatalogEntry, "job_type"> & {
+  job_type: MswarmJobType;
+  required_capabilities?: string[];
+};
+const OWNER_LOCAL_GENERIC_JOB_CATALOG: OwnerLocalGenericJobCatalogEntry[] = [
+  {
+    job_type: OWNER_LOCAL_TEST_ECHO_JOB_TYPE,
+    args_schema: {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        message: { type: "string" },
+        delay_ms: { type: "number", minimum: 0 },
+        repeat: { type: "number", minimum: 1 },
+        fail: { type: "boolean" }
+      }
+    },
+    policy: {
+      trust_mode: "owner-local",
+      network: "none",
+      allow_raw_command: false
+    },
+    runner: TEST_ECHO_RUNNER_ID
+  },
+  {
+    job_type: RENDER_BLENDER_JOB_TYPE,
+    args_schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        frames: { type: ["string", "number"] },
+        engine: { enum: ["cycles", "eevee", "workbench"] },
+        resolution: { type: "string", pattern: "^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}$" },
+        output_format: { enum: ["png", "jpeg", "open_exr"] },
+        scene: { type: "string" },
+        camera: { type: "string" }
+      }
+    },
+    policy: {
+      trust_mode: "owner-local",
+      network: "none",
+      allow_raw_command: false
+    },
+    runner: BLENDER_RENDER_RUNNER_ID,
+    required_capabilities: ["software.blender"]
+  },
+  {
+    job_type: CUDA_RUN_JOB_TYPE,
+    args_schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["manifest_path", "profile", "target"],
+      properties: {
+        manifest_path: { type: "string" },
+        profile: { type: "string" },
+        target: { type: "string" }
+      }
+    },
+    policy: {
+      trust_mode: "owner-local",
+      network: "none",
+      allow_raw_command: false,
+      allowed_images: Array.from(APPROVED_NVIDIA_CUDA_IMAGES)
+    },
+    runner: CUDA_PACKAGE_RUNNER_ID,
+    required_capabilities: ["gpu.nvidia", "software.docker", "docker.nvidia"]
+  }
+];
 const SERVICE_LABEL = "com.mcoda.mswarm.self-hosted-node";
 const SYSTEMD_SERVICE_NAME = "mswarm-self-hosted-node.service";
 const WINDOWS_TASK_NAME = "MswarmSelfHostedNode";
@@ -750,6 +928,10 @@ function defaultRuntimeTokenPath(): string {
   return join(homedir(), ".mswarm", "self-hosted-node", "node.key");
 }
 
+function defaultArtifactStorePath(): string {
+  return join(homedir(), ".mswarm", "self-hosted-node", "artifacts");
+}
+
 export async function readOrCreateSelfHostedMachineId(machineIdPath = defaultMachineIdPath()): Promise<string> {
   try {
     const existing = (await readFile(machineIdPath, "utf8")).trim();
@@ -1002,6 +1184,7 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
     MSWARM_GATEWAY_BASE_URL: config.gatewayBaseUrl,
     MSWARM_SELF_HOSTED_NODE_STATE_PATH: config.statePath,
     MSWARM_SELF_HOSTED_NODE_KEY_PATH: config.runtimeTokenPath,
+    MSWARM_SELF_HOSTED_ARTIFACT_STORE_PATH: config.artifactStorePath || null,
     MSWARM_SELF_HOSTED_RELAY_MODE: config.relayMode || "outbound",
     MSWARM_SELF_HOSTED_DIRECT_BASE_URL: config.directBaseUrl || null,
     MSWARM_SELF_HOSTED_DISCOVERY_MODE: config.discoveryMode,
@@ -1015,7 +1198,13 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
     MSWARM_SELF_HOSTED_MODEL_BLOCKLIST: config.modelBlocklist.join(","),
     MSWARM_SELF_HOSTED_HEARTBEAT_INTERVAL_SECONDS: String(config.heartbeatIntervalSeconds),
     MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS: String(config.requestTimeoutMs),
-    MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: String(config.jobTimeoutMs)
+    MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: String(config.jobTimeoutMs),
+    MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED: config.genericJobsEnabled ? "true" : "false",
+    MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS: String(config.genericJobTimeoutMs),
+    MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: String(config.genericJobMaxConcurrency),
+    MSWARM_SELF_HOSTED_CAPABILITY_PROBE_TIMEOUT_MS: config.capabilityProbeTimeoutMs
+      ? String(config.capabilityProbeTimeoutMs)
+      : null
   };
   return Object.fromEntries(
     Object.entries(values).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "")
@@ -1555,6 +1744,10 @@ export async function readSelfHostedNodeConfig(
     ollamaBaseUrl: trimTrailingSlash(ollamaBaseUrl),
     statePath,
     runtimeTokenPath,
+    artifactStorePath:
+      optionalText(env.MSWARM_SELF_HOSTED_ARTIFACT_STORE_PATH) ||
+      state.artifact_store_path ||
+      defaultArtifactStorePath(),
     invocationSigningSecret:
       optionalText(env.MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET) ||
       optionalText(env.MSWARM_SELF_HOSTED_RELAY_SIGNING_SECRET),
@@ -1576,6 +1769,22 @@ export async function readSelfHostedNodeConfig(
     jobTimeoutMs: parsePositiveInteger(
       env.MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS,
       state.job_timeout_ms || DEFAULT_JOB_TIMEOUT_MS
+    ),
+    genericJobsEnabled: parseBoolean(
+      env.MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED ?? env.MSWARM_SELF_HOSTED_GENERIC_JOBS,
+      state.generic_jobs_enabled === true
+    ),
+    genericJobTimeoutMs: parsePositiveInteger(
+      env.MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS,
+      state.generic_job_timeout_ms || state.job_timeout_ms || DEFAULT_JOB_TIMEOUT_MS
+    ),
+    genericJobMaxConcurrency: parsePositiveInteger(
+      env.MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY,
+      state.generic_job_max_concurrency || 1
+    ),
+    capabilityProbeTimeoutMs: parsePositiveInteger(
+      env.MSWARM_SELF_HOSTED_CAPABILITY_PROBE_TIMEOUT_MS,
+      state.capability_probe_timeout_ms || DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS
     ),
     exposeAllModels: resolveDaemonExposeAllModels(env, state),
     modelAllowlist: parseList(env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST || state.model_allowlist),
@@ -1626,6 +1835,10 @@ export async function readOwnerSetupConfig(
     discoveryMode: parseDiscoveryMode(env.MSWARM_SELF_HOSTED_DISCOVERY_MODE),
     statePath,
     runtimeTokenPath,
+    artifactStorePath:
+      optionalText(options["artifact-store-path"]) ||
+      optionalText(env.MSWARM_SELF_HOSTED_ARTIFACT_STORE_PATH) ||
+      defaultArtifactStorePath(),
     machineIdPath: optionalText(env.MSWARM_SELF_HOSTED_MACHINE_ID_PATH) || defaultMachineIdPath(),
     mcodaBin: optionalText(env.MSWARM_SELF_HOSTED_MCODA_BIN) || DEFAULT_MCODA_BIN,
     mcodaListArgs: parseArgs(env.MSWARM_SELF_HOSTED_MCODA_LIST_ARGS, DEFAULT_MCODA_LIST_ARGS),
@@ -1642,6 +1855,22 @@ export async function readOwnerSetupConfig(
     jobTimeoutMs: parsePositiveInteger(
       options["job-timeout-ms"] || env.MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS,
       DEFAULT_JOB_TIMEOUT_MS
+    ),
+    genericJobsEnabled: parseBoolean(
+      options["enable-generic-jobs"] || env.MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED || env.MSWARM_SELF_HOSTED_GENERIC_JOBS,
+      false
+    ),
+    genericJobTimeoutMs: parsePositiveInteger(
+      options["generic-job-timeout-ms"] || env.MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS,
+      DEFAULT_JOB_TIMEOUT_MS
+    ),
+    genericJobMaxConcurrency: parsePositiveInteger(
+      options["generic-job-max-concurrency"] || env.MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY,
+      1
+    ),
+    capabilityProbeTimeoutMs: parsePositiveInteger(
+      env.MSWARM_SELF_HOSTED_CAPABILITY_PROBE_TIMEOUT_MS,
+      DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS
     ),
     exposeAllModels: resolveOwnerSetupExposeAllModels(options, env),
     modelAllowlist: allowlist,
@@ -1770,7 +1999,7 @@ function parseMcodaAgentListOutput(stdout: string): McodaAgentListEntry[] {
 async function defaultCommandRunner(
   command: string,
   args: string[],
-  options: { timeoutMs: number; maxBuffer: number; input?: string }
+  options: { timeoutMs: number; maxBuffer: number; input?: string; signal?: AbortSignal }
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -1779,9 +2008,15 @@ async function defaultCommandRunner(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const abort = () => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      finish(new Error("command aborted"));
+    };
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      options.signal?.removeEventListener("abort", abort);
       child.kill("SIGTERM");
       reject(new Error(`command timed out after ${options.timeoutMs}ms: ${command}`));
     }, options.timeoutMs);
@@ -1789,6 +2024,7 @@ async function defaultCommandRunner(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       if (error) {
         reject(error);
         return;
@@ -1817,6 +2053,11 @@ async function defaultCommandRunner(
       }
       finish();
     });
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abort, { once: true });
     if (options.input) {
       child.stdin.write(options.input);
     }
@@ -2256,6 +2497,1642 @@ function buildCodaliPolicy(job: SelfHostedNodeInvocationJob): MswarmCodaliPolicy
   };
 }
 
+function numberArg(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function boundedMilliseconds(value: unknown, fallback: number, max: number): number {
+  return Math.max(0, Math.min(max, Math.floor(numberArg(value, fallback))));
+}
+
+function abortErrorCode(signal: AbortSignal): "cancelled" | "timeout" {
+  return signal.reason === "timeout" ? "timeout" : "cancelled";
+}
+
+function abortErrorMessage(signal: AbortSignal): string {
+  return abortErrorCode(signal) === "timeout" ? "generic job timed out" : "generic job cancelled";
+}
+
+async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  if (signal.aborted) {
+    throw new Error(abortErrorMessage(signal));
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(new Error(abortErrorMessage(signal)));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function safeLocalArtifactJobId(jobId: string): string {
+  const normalized = jobId.replace(/[^a-zA-Z0-9_.-]/g, "_") || "job";
+  return assertMswarmSafeRelativePath(normalized, "job_id");
+}
+
+function safeLocalArtifactName(value: string, fallback: string): string {
+  const normalized = value.replace(/[^a-zA-Z0-9_.-]/g, "_") || fallback;
+  return assertMswarmSafeRelativePath(normalized, "artifact_name");
+}
+
+function resolveWithinRoot(root: string, relativePath: string): string {
+  const rootPath = resolve(root);
+  const target = resolve(rootPath, relativePath);
+  const delta = relative(rootPath, target);
+  if (delta === "" || (!delta.startsWith("..") && !isAbsolute(delta))) {
+    return target;
+  }
+  throw new Error("path_escape_not_allowed");
+}
+
+function sha256Hex(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function positiveByteLimit(...values: Array<number | undefined>): number {
+  const positive = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+  return positive.length ? Math.min(...positive) : DEFAULT_LOCAL_ARTIFACT_MAX_BYTES;
+}
+
+function parseLocalArtifactUri(uri: string): { jobId: string; path: string } | null {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== "artifact:" || parsed.hostname !== "local") {
+      return null;
+    }
+    const parts = decodeURIComponent(parsed.pathname).split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return null;
+    }
+    const [jobId, ...artifactPath] = parts;
+    return {
+      jobId: assertMswarmSafeRelativePath(jobId, "artifact_job_id"),
+      path: assertMswarmSafeRelativePath(artifactPath.join("/"), "artifact_path")
+    };
+  } catch {
+    return null;
+  }
+}
+
+export class MswarmLocalArtifactStore implements MswarmGenericJobArtifactStore {
+  private readonly rootDir: string;
+  private readonly now: () => Date;
+
+  constructor(input: { rootDir?: string; now?: () => Date } = {}) {
+    this.rootDir = input.rootDir || defaultArtifactStorePath();
+    this.now = input.now || (() => new Date());
+  }
+
+  async prepareJobWorkspace(jobId: string, job: MswarmJobRequest): Promise<MswarmGenericJobArtifactContext> {
+    const safeJobId = safeLocalArtifactJobId(jobId);
+    const workDir = resolveWithinRoot(this.rootDir, safeJobId);
+    const inputDir = resolveWithinRoot(workDir, "inputs");
+    const outputDir = resolveWithinRoot(workDir, "outputs");
+    await rm(workDir, { recursive: true, force: true });
+    await mkdir(inputDir, { recursive: true });
+    await mkdir(outputDir, { recursive: true });
+    const store = {
+      backend: "local-dev" as const,
+      root_uri: `artifact://local/${safeJobId}`
+    };
+    const registeredInputs = await Promise.all(
+      (job.inputs || []).map((input, index) => this.registerInput(jobId, job, input, index, inputDir, store))
+    );
+    const outputSpecs = (job.outputs || []).map((output) => ({
+      ...output,
+      path: assertMswarmSafeRelativePath(output.path, "output_path")
+    }));
+    const sandbox = buildMswarmSandboxProfile({
+      policy: job.policy,
+      limits: job.limits,
+      containerized: job.policy.trust_mode === "tenant-owned" || job.job_type === CUDA_RUN_JOB_TYPE,
+      gpu: job.resources?.gpu ? "nvidia" : "none"
+    });
+    return {
+      store,
+      workDir,
+      inputDir,
+      outputDir,
+      registeredInputs,
+      outputSpecs,
+      sandbox
+    };
+  }
+
+  async collectOutputs(context: MswarmGenericJobArtifactContext, jobId: string): Promise<MswarmRegisteredArtifact[]> {
+    const artifacts: MswarmRegisteredArtifact[] = [];
+    let totalBytes = 0;
+    for (const output of context.outputSpecs) {
+      const collected = await this.collectDeclaredOutput(context, jobId, output);
+      for (const artifact of collected) {
+        totalBytes += artifact.size_bytes || 0;
+        const totalLimit = positiveByteLimit(context.sandbox.limits.max_output_bytes);
+        if (totalBytes > totalLimit) {
+          throw new Error("output_size_limit_exceeded");
+        }
+        artifacts.push(artifact);
+      }
+    }
+    return artifacts;
+  }
+
+  private async registerInput(
+    jobId: string,
+    job: MswarmJobRequest,
+    input: NonNullable<MswarmJobRequest["inputs"]>[number],
+    index: number,
+    inputDir: string,
+    store: MswarmGenericJobArtifactContext["store"]
+  ): Promise<MswarmRegisteredArtifact> {
+    const mountPath = input.mount_path
+      ? assertMswarmSafeRelativePath(input.mount_path, "input_mount_path")
+      : safeLocalArtifactName(input.name, `input-${index}`);
+    const targetPath = resolveWithinRoot(inputDir, mountPath);
+    const maxArtifactBytes = positiveByteLimit(job.policy.max_artifact_bytes);
+    if (Number.isFinite(input.artifact.size_bytes) && input.artifact.size_bytes !== undefined) {
+      if (input.artifact.size_bytes > maxArtifactBytes) {
+        throw new Error("input_artifact_size_limit_exceeded");
+      }
+    }
+    const source = parseLocalArtifactUri(input.artifact.uri);
+    let localPath: string | undefined;
+    if (source) {
+      const sourcePath = resolveWithinRoot(resolveWithinRoot(this.rootDir, source.jobId), join("outputs", source.path));
+      try {
+        const sourceStat = await lstat(sourcePath);
+        if (!sourceStat.isFile()) {
+          throw new Error("input_artifact_must_be_file");
+        }
+        if (sourceStat.size > maxArtifactBytes) {
+          throw new Error("input_artifact_size_limit_exceeded");
+        }
+        const bytes = await readFile(sourcePath);
+        if (input.artifact.sha256 && input.artifact.sha256 !== sha256Hex(bytes)) {
+          throw new Error("input_artifact_checksum_mismatch");
+        }
+        await mkdir(dirname(targetPath), { recursive: true });
+        await writeFile(targetPath, bytes);
+        localPath = targetPath;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || input.required === true) {
+          throw error;
+        }
+      }
+    } else if (input.required === true) {
+      throw new Error("input_artifact_unavailable");
+    }
+    const registeredAt = this.now().toISOString();
+    return {
+      ...input.artifact,
+      id: input.artifact.id || `input_${sha256Hex(Buffer.from(`${jobId}:${input.name}:${input.artifact.uri}`)).slice(0, 16)}`,
+      job_id: jobId,
+      name: input.name,
+      scope: "input",
+      registered_at: registeredAt,
+      store,
+      access: defaultMswarmArtifactAccessPolicy(
+        job.policy.trust_mode === "tenant-owned" ? "tenant-scoped" : "owner-local"
+      ),
+      retention: defaultMswarmArtifactRetentionPolicy(),
+      ...(localPath ? { local_path: localPath } : {})
+    };
+  }
+
+  private async collectDeclaredOutput(
+    context: MswarmGenericJobArtifactContext,
+    jobId: string,
+    output: MswarmOutputSpec
+  ): Promise<MswarmRegisteredArtifact[]> {
+    const normalizedPath = assertMswarmSafeRelativePath(output.path, "output_path");
+    const targetPath = resolveWithinRoot(context.outputDir, normalizedPath);
+    try {
+      const targetStat = await lstat(targetPath);
+      if (targetStat.isSymbolicLink()) {
+        throw new Error("output_symlink_not_allowed");
+      }
+      if (targetStat.isDirectory()) {
+        return this.collectOutputDirectory(context, jobId, output, normalizedPath);
+      }
+      if (targetStat.isFile()) {
+        return [await this.collectOutputFile(context, jobId, output, normalizedPath, targetPath)];
+      }
+      throw new Error("output_entry_type_not_allowed");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && output.required !== true) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private async collectOutputDirectory(
+    context: MswarmGenericJobArtifactContext,
+    jobId: string,
+    output: MswarmOutputSpec,
+    relativeDir: string
+  ): Promise<MswarmRegisteredArtifact[]> {
+    const dirPath = resolveWithinRoot(context.outputDir, relativeDir);
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    const artifacts: MswarmRegisteredArtifact[] = [];
+    for (const entry of entries) {
+      const childRelativePath = assertMswarmSafeRelativePath(`${relativeDir}/${entry.name}`, "output_path");
+      const childPath = resolveWithinRoot(context.outputDir, childRelativePath);
+      if (entry.isSymbolicLink()) {
+        throw new Error("output_symlink_not_allowed");
+      }
+      if (entry.isDirectory()) {
+        artifacts.push(...(await this.collectOutputDirectory(context, jobId, output, childRelativePath)));
+      } else if (entry.isFile()) {
+        artifacts.push(await this.collectOutputFile(context, jobId, output, childRelativePath, childPath));
+      } else {
+        throw new Error("output_entry_type_not_allowed");
+      }
+    }
+    return artifacts;
+  }
+
+  private async collectOutputFile(
+    context: MswarmGenericJobArtifactContext,
+    jobId: string,
+    output: MswarmOutputSpec,
+    relativePath: string,
+    filePath: string
+  ): Promise<MswarmRegisteredArtifact> {
+    const stat = await lstat(filePath);
+    if (!stat.isFile()) {
+      throw new Error("output_entry_type_not_allowed");
+    }
+    const perArtifactLimit = positiveByteLimit(context.sandbox.limits.max_artifact_bytes, context.sandbox.limits.max_output_bytes);
+    if (stat.size > perArtifactLimit) {
+      throw new Error("output_artifact_size_limit_exceeded");
+    }
+    const bytes = await readFile(filePath);
+    return {
+      id: `output_${sha256Hex(Buffer.from(`${jobId}:${relativePath}`)).slice(0, 16)}`,
+      job_id: jobId,
+      name: output.path === relativePath ? output.name : `${output.name}/${relativePath}`,
+      uri: buildMswarmLocalArtifactUri(jobId, relativePath),
+      content_type: output.content_type,
+      size_bytes: stat.size,
+      sha256: sha256Hex(bytes),
+      scope: "output",
+      registered_at: this.now().toISOString(),
+      store: context.store,
+      access: defaultMswarmArtifactAccessPolicy(
+        context.sandbox.trust_mode === "tenant-owned" ? "tenant-scoped" : "owner-local"
+      ),
+      retention: defaultMswarmArtifactRetentionPolicy()
+    };
+  }
+}
+
+export class MswarmTestEchoRunner implements MswarmGenericJobRunner {
+  readonly id = TEST_ECHO_RUNNER_ID;
+
+  async run(context: MswarmGenericJobRunnerContext): Promise<MswarmJobResult> {
+    const args = context.job.args || {};
+    const message = optionalText(args.message) || "ok";
+    const repeat = Math.max(1, Math.min(20, Math.floor(numberArg(args.repeat, 1))));
+    const delayMs = boundedMilliseconds(args.delay_ms, 0, 30_000);
+    if (args.fail === true) {
+      throw new Error(message);
+    }
+    for (let index = 0; index < repeat; index += 1) {
+      if (context.signal.aborted) {
+        throw new Error(abortErrorMessage(context.signal));
+      }
+      if (delayMs > 0) {
+        await sleepWithAbort(delayMs, context.signal);
+      }
+      await context.emitEvent({
+        type: "stdout",
+        message,
+        data: {
+          runner: this.id,
+          index,
+          repeat
+        }
+      });
+    }
+    await context.emitEvent({
+      type: "progress",
+      message: "echo complete",
+      data: {
+        completed: repeat,
+        total: repeat
+      }
+    });
+    return {
+      job_id: context.job.idempotency_key || "local-generic-job",
+      status: "succeeded",
+      exit_code: 0,
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      metrics: {
+        runner: this.id,
+        echoed: repeat,
+        message
+      }
+    };
+  }
+}
+
+type BlenderFrameSelection =
+  | { mode: "frame"; frame: number; label: string; total: number }
+  | { mode: "range"; start: number; end: number; label: string; total: number };
+
+const BLENDER_ENGINE_ARGS: Record<string, string> = {
+  cycles: "CYCLES",
+  eevee: "BLENDER_EEVEE_NEXT",
+  workbench: "BLENDER_WORKBENCH"
+};
+
+const BLENDER_OUTPUT_FORMAT_ARGS: Record<string, string> = {
+  png: "PNG",
+  jpeg: "JPEG",
+  open_exr: "OPEN_EXR"
+};
+
+function positiveSafeInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function parseBlenderFrameSelection(value: unknown): BlenderFrameSelection {
+  const defaultFrame = 1;
+  if (value === undefined || value === null) {
+    return { mode: "frame", frame: defaultFrame, label: String(defaultFrame), total: 1 };
+  }
+  const numericFrame = positiveSafeInteger(value);
+  if (numericFrame !== null) {
+    return { mode: "frame", frame: numericFrame, label: String(numericFrame), total: 1 };
+  }
+  const raw = optionalText(value);
+  const match = raw?.match(/^([1-9]\d{0,6})(?:-([1-9]\d{0,6}))?$/);
+  if (!match) {
+    throw new Error("render.blender args.frames must be a positive frame number or start-end range");
+  }
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : start;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end <= 0 || end < start) {
+    throw new Error("render.blender args.frames must use a valid positive frame range");
+  }
+  if (end - start > 10_000) {
+    throw new Error("render.blender args.frames range exceeds the maximum supported 10001 frames");
+  }
+  if (start === end) {
+    return { mode: "frame", frame: start, label: String(start), total: 1 };
+  }
+  return { mode: "range", start, end, label: `${start}-${end}`, total: end - start + 1 };
+}
+
+function normalizeBlenderEngine(value: unknown): { label: string; blender: string } | undefined {
+  const raw = optionalText(value);
+  if (!raw) return undefined;
+  const key = raw.toLowerCase();
+  const blender = BLENDER_ENGINE_ARGS[key];
+  if (!blender) {
+    throw new Error("render.blender args.engine must be cycles, eevee, or workbench");
+  }
+  return { label: key, blender };
+}
+
+function normalizeBlenderOutputFormat(value: unknown): { label: string; blender: string; extension: string } {
+  const key = (optionalText(value) || "png").toLowerCase();
+  const blender = BLENDER_OUTPUT_FORMAT_ARGS[key];
+  if (!blender) {
+    throw new Error("render.blender args.output_format must be png, jpeg, or open_exr");
+  }
+  return { label: key, blender, extension: key === "open_exr" ? "exr" : key === "jpeg" ? "jpg" : "png" };
+}
+
+function parseBlenderResolution(value: unknown): { width: number; height: number; label: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const raw = optionalText(value);
+  const match = raw?.match(/^([1-9]\d{0,4})x([1-9]\d{0,4})$/i);
+  if (!match) {
+    throw new Error("render.blender args.resolution must use WIDTHxHEIGHT");
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width > 16_384 || height > 16_384) {
+    throw new Error("render.blender args.resolution exceeds 16384x16384");
+  }
+  return { width, height, label: `${width}x${height}` };
+}
+
+function safeBlenderSceneName(value: unknown, label: "scene" | "camera"): string | undefined {
+  const raw = optionalText(value);
+  if (!raw) return undefined;
+  if (raw.length > 128 || /[\0\r\n]/.test(raw)) {
+    throw new Error(`render.blender args.${label} is not a safe Blender object name`);
+  }
+  return raw;
+}
+
+function blenderSceneInputPath(context: MswarmGenericJobRunnerContext): string {
+  const scene = context.artifacts.registeredInputs.find((input) => input.name === "scene") || context.artifacts.registeredInputs[0];
+  if (!scene?.local_path) {
+    throw new Error("render.blender requires a materialized scene input artifact");
+  }
+  return scene.local_path;
+}
+
+function blenderOutputPattern(context: MswarmGenericJobRunnerContext): string {
+  const output = context.artifacts.outputSpecs[0];
+  if (!output) {
+    throw new Error("render.blender requires a declared output directory");
+  }
+  const normalizedPath = assertMswarmSafeRelativePath(output.path, "render_blender_output_path");
+  const leaf = normalizedPath.split("/").filter(Boolean).at(-1) || normalizedPath;
+  if (/\.[a-zA-Z0-9]{1,8}$/.test(leaf)) {
+    throw new Error("render.blender output path must be a directory, not a file path");
+  }
+  return resolveWithinRoot(context.artifacts.outputDir, `${normalizedPath}/frame_####`);
+}
+
+function redactBlenderLocalPaths(context: MswarmGenericJobRunnerContext, value: string): string {
+  const replacements: Array<[string | undefined, string]> = [
+    [context.artifacts.workDir, "[job-workdir]"],
+    [context.artifacts.inputDir, "[job-inputs]"],
+    [context.artifacts.outputDir, "[job-outputs]"],
+    ...context.artifacts.registeredInputs.map((input): [string | undefined, string] => [input.local_path, "[job-input]"])
+  ];
+  let output = value;
+  for (const [source, replacement] of replacements) {
+    if (source) {
+      output = output.split(source).join(replacement);
+    }
+  }
+  return output;
+}
+
+async function emitBlenderOutput(
+  context: MswarmGenericJobRunnerContext,
+  type: "stdout" | "stderr",
+  value: string
+): Promise<void> {
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 200);
+  for (const line of lines) {
+    await context.emitEvent({
+      type,
+      message: redactBlenderLocalPaths(context, line),
+      data: { runner: BLENDER_RENDER_RUNNER_ID }
+    });
+  }
+}
+
+async function emitBlenderProgress(
+  context: MswarmGenericJobRunnerContext,
+  output: string,
+  frames: BlenderFrameSelection
+): Promise<void> {
+  const seen = new Set<number>();
+  const lowerBound = frames.mode === "range" ? frames.start : frames.frame;
+  const upperBound = frames.mode === "range" ? frames.end : frames.frame;
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/\bFra:(\d+)\b/i) || line.match(/\bFrame\s+(\d+)\b/i);
+    if (!match) continue;
+    const frame = Number(match[1]);
+    if (!Number.isSafeInteger(frame) || frame < lowerBound || frame > upperBound || seen.has(frame)) {
+      continue;
+    }
+    seen.add(frame);
+    await context.emitEvent({
+      type: "progress",
+      message: `rendered frame ${frame}`,
+      data: {
+        runner: BLENDER_RENDER_RUNNER_ID,
+        frame,
+        completed: seen.size,
+        total: frames.total
+      }
+    });
+  }
+}
+
+function blenderFailureResult(job: MswarmJobRequest, code: string, message: string, startedAt: string): MswarmJobResult {
+  return {
+    job_id: job.idempotency_key || "render.blender",
+    status: "failed",
+    exit_code: 1,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    error: {
+      code,
+      message,
+      retryable: false
+    }
+  };
+}
+
+function blenderGpuComputeDeviceType(): "CUDA" {
+  // The current GPU probe only marks NVIDIA devices as available, so CUDA is
+  // the only concrete Blender compute backend this runner can safely request.
+  return "CUDA";
+}
+
+export class MswarmBlenderRenderRunner implements MswarmGenericJobRunner {
+  readonly id = BLENDER_RENDER_RUNNER_ID;
+  private readonly runner: CommandRunner;
+
+  constructor(runner: CommandRunner = defaultCommandRunner) {
+    this.runner = runner;
+  }
+
+  async run(context: MswarmGenericJobRunnerContext): Promise<MswarmJobResult> {
+    const startedAt = new Date().toISOString();
+    if (context.signal.aborted) {
+      throw new Error(abortErrorMessage(context.signal));
+    }
+    if (context.job.policy.trust_mode !== "owner-local") {
+      return blenderFailureResult(
+        context.job,
+        "policy_denied",
+        "render.blender is owner-local only until containerized Blender execution is available",
+        startedAt
+      );
+    }
+    let scenePath: string;
+    let frames: BlenderFrameSelection;
+    let engine: { label: string; blender: string } | undefined;
+    let outputFormat: { label: string; blender: string; extension: string };
+    let resolution: { width: number; height: number; label: string } | undefined;
+    let sceneName: string | undefined;
+    let cameraName: string | undefined;
+    let outputPattern: string;
+    const gpuRequested = Boolean(context.job.resources?.gpu);
+    try {
+      const args = context.job.args || {};
+      scenePath = blenderSceneInputPath(context);
+      frames = parseBlenderFrameSelection(args.frames);
+      engine = normalizeBlenderEngine(args.engine);
+      outputFormat = normalizeBlenderOutputFormat(args.output_format);
+      resolution = parseBlenderResolution(args.resolution);
+      sceneName = safeBlenderSceneName(args.scene, "scene");
+      cameraName = safeBlenderSceneName(args.camera, "camera");
+      outputPattern = blenderOutputPattern(context);
+      await mkdir(dirname(outputPattern), { recursive: true });
+    } catch (error) {
+      return blenderFailureResult(
+        context.job,
+        "validation_failed",
+        error instanceof Error ? error.message : String(error || "render.blender validation failed"),
+        startedAt
+      );
+    }
+
+    const pythonStatements: string[] = [];
+    if (resolution) {
+      pythonStatements.push(`bpy.context.scene.render.resolution_x=${resolution.width}`);
+      pythonStatements.push(`bpy.context.scene.render.resolution_y=${resolution.height}`);
+    }
+    if (cameraName) {
+      pythonStatements.push(`camera=bpy.data.objects.get(${JSON.stringify(cameraName)})`);
+      pythonStatements.push("bpy.context.scene.camera=camera if camera is not None else bpy.context.scene.camera");
+    }
+    if (gpuRequested) {
+      const computeDeviceType = blenderGpuComputeDeviceType();
+      pythonStatements.push("cycles_addon=bpy.context.preferences.addons.get('cycles')");
+      pythonStatements.push("cycles_prefs=cycles_addon.preferences if cycles_addon is not None else None");
+      pythonStatements.push(
+        `setattr(cycles_prefs,'compute_device_type',${JSON.stringify(computeDeviceType)}) if cycles_prefs is not None and hasattr(cycles_prefs,'compute_device_type') else None`
+      );
+      pythonStatements.push("getattr(cycles_prefs,'get_devices',lambda: None)() if cycles_prefs is not None else None");
+      pythonStatements.push("setattr(bpy.context.scene.cycles,'device','GPU') if hasattr(bpy.context.scene,'cycles') else None");
+      pythonStatements.push(
+        "[setattr(device,'use',True) for device in getattr(cycles_prefs,'devices',[]) if hasattr(device,'use')] if cycles_prefs is not None else None"
+      );
+    }
+
+    const blenderArgs = ["-b", scenePath];
+    if (sceneName) {
+      blenderArgs.push("--scene", sceneName);
+    }
+    if (engine) {
+      blenderArgs.push("--engine", engine.blender);
+    }
+    if (pythonStatements.length > 0) {
+      blenderArgs.push("--python-expr", `import bpy; ${pythonStatements.join("; ")}`);
+    }
+    blenderArgs.push("--render-output", outputPattern, "--render-format", outputFormat.blender);
+    if (frames.mode === "range") {
+      blenderArgs.push("-s", String(frames.start), "-e", String(frames.end), "-a");
+    } else {
+      blenderArgs.push("--render-frame", String(frames.frame));
+    }
+
+    await context.emitEvent({
+      type: "progress",
+      message: "blender render starting",
+      data: {
+        runner: this.id,
+        frames: frames.label,
+        engine: engine?.label || "scene-default",
+        output_format: outputFormat.label,
+        ...(resolution ? { resolution: resolution.label } : {}),
+        gpu_requested: gpuRequested,
+        render_device: gpuRequested ? "gpu" : "scene-default"
+      }
+    });
+
+    const timeoutMs = Math.max(
+      1_000,
+      Math.min(DEFAULT_JOB_TIMEOUT_MS, Math.floor((context.sandbox.limits.timeout_sec || DEFAULT_JOB_TIMEOUT_MS / 1000) * 1000))
+    );
+    const maxBuffer = Math.min(
+      DEFAULT_COMMAND_MAX_BUFFER,
+      Math.max(1024 * 1024, context.job.limits?.max_stdout_bytes || 0, context.job.limits?.max_stderr_bytes || 0)
+    );
+    try {
+      const result = await this.runner("blender", blenderArgs, {
+        timeoutMs,
+        maxBuffer,
+        signal: context.signal
+      });
+      await emitBlenderOutput(context, "stdout", result.stdout);
+      await emitBlenderOutput(context, "stderr", result.stderr);
+      await emitBlenderProgress(context, `${result.stdout}\n${result.stderr}`, frames);
+      return {
+        job_id: context.job.idempotency_key || "render.blender",
+        status: "succeeded",
+        exit_code: 0,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        metrics: {
+          runner: this.id,
+          frames: frames.label,
+          engine: engine?.label || "scene-default",
+          output_format: outputFormat.label,
+          ...(resolution ? { resolution: resolution.label } : {}),
+          gpu_requested: gpuRequested,
+          render_device: gpuRequested ? "gpu" : "scene-default"
+        }
+      };
+    } catch (error) {
+      if (context.signal.aborted) {
+        throw error;
+      }
+      return blenderFailureResult(
+        context.job,
+        "runner_failed",
+        redactBlenderLocalPaths(context, error instanceof Error ? error.message : String(error || "Blender render failed")),
+        startedAt
+      );
+    }
+  }
+}
+
+interface CudaRunArgs {
+  manifestPath: string;
+  profile: string;
+  target: string;
+}
+
+interface CudaPackageManifestSelection {
+  schemaVersion: string;
+  packageName?: string;
+  publisher?: string;
+  image: string;
+  compiler: "nvcc";
+  source: string;
+  output: string;
+  flags: string[];
+  runArgs: string[];
+}
+
+const SAFE_CUDA_IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+const SAFE_CUDA_TOKEN = /^[a-zA-Z0-9_@%+=:,./-]{1,200}$/;
+const UNSAFE_CUDA_MANIFEST_KEYS = new Set([
+  "command",
+  "cmd",
+  "shell",
+  "entrypoint",
+  "docker_args",
+  "mount",
+  "mounts",
+  "volumes",
+  "binds",
+  "device",
+  "devices",
+  "privileged",
+  "network",
+  "host_network"
+]);
+
+function cudaFailureResult(job: MswarmJobRequest, code: string, message: string, startedAt: string): MswarmJobResult {
+  return {
+    job_id: job.idempotency_key || "cuda.run",
+    status: "failed",
+    exit_code: 1,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    error: {
+      code,
+      message,
+      retryable: false
+    }
+  };
+}
+
+function safeCudaIdentifier(value: unknown, label: string): string {
+  const text = optionalText(value);
+  if (!text || !SAFE_CUDA_IDENTIFIER.test(text)) {
+    throw new Error(`${label}_invalid`);
+  }
+  return text;
+}
+
+function safeCudaRelativePath(value: unknown, label: string): string {
+  return assertMswarmSafeRelativePath(optionalText(value), label);
+}
+
+function safeCudaToken(value: unknown, label: string): string {
+  const text = optionalText(value);
+  if (!text || !SAFE_CUDA_TOKEN.test(text) || /[`$;&|<>\r\n]/.test(text)) {
+    throw new Error(`${label}_invalid`);
+  }
+  return text;
+}
+
+function safeCudaTokenList(value: unknown, label: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${label}_must_be_array`);
+  }
+  return value.map((entry, index) => safeCudaToken(entry, `${label}_${index}`));
+}
+
+function assertNoUnsafeCudaManifestKeys(record: Record<string, unknown>, label: string): void {
+  for (const key of Object.keys(record)) {
+    if (UNSAFE_CUDA_MANIFEST_KEYS.has(key)) {
+      throw new Error(`${label}_${key}_not_allowed`);
+    }
+  }
+}
+
+function parseCudaRunArgs(job: MswarmJobRequest): CudaRunArgs {
+  const args = job.args || {};
+  return {
+    manifestPath: safeCudaRelativePath(args.manifest_path, "cuda_manifest_path"),
+    profile: safeCudaIdentifier(args.profile, "cuda_profile"),
+    target: safeCudaIdentifier(args.target, "cuda_target")
+  };
+}
+
+function cudaPackageArchive(context: MswarmGenericJobRunnerContext): { hostPath: string; inputPath: string } {
+  const registeredInput =
+    context.artifacts.registeredInputs.find((input) => input.name === "package" && input.local_path) ||
+    context.artifacts.registeredInputs.find((input) => input.local_path && input.name !== "manifest");
+  if (!registeredInput?.local_path) {
+    throw new Error("cuda_package_artifact_required");
+  }
+  const inputPath = assertMswarmSafeRelativePath(
+    relative(context.artifacts.inputDir, registeredInput.local_path),
+    "cuda_package_input_path"
+  );
+  if (!/(\.tar\.gz|\.tgz)$/i.test(inputPath)) {
+    throw new Error("cuda_package_archive_must_be_targz");
+  }
+  return { hostPath: registeredInput.local_path, inputPath };
+}
+
+function cudaArchiveValidationError(reason: string | undefined): Error {
+  return new Error(`cuda_package_archive_${reason || "invalid"}`);
+}
+
+function cudaTarVerboseEntryType(line: string): "file" | "directory" | "symlink" | "hardlink" | "device" | "other" {
+  const marker = line.trimStart()[0];
+  if (marker === "d") return "directory";
+  if (marker === "-") return "file";
+  if (marker === "l") return "symlink";
+  if (marker === "h") return "hardlink";
+  if (marker === "b" || marker === "c") return "device";
+  return marker ? "other" : "file";
+}
+
+async function validateCudaPackageArchive(
+  context: MswarmGenericJobRunnerContext,
+  runner: CommandRunner,
+  archive: { hostPath: string }
+): Promise<void> {
+  const listOptions = {
+    timeoutMs: 5_000,
+    maxBuffer: 512 * 1024,
+    signal: context.signal
+  };
+  const names = await runner("tar", ["-tzf", archive.hostPath], listOptions);
+  let entryCount = 0;
+  for (const rawLine of names.stdout.split(/\r?\n/)) {
+    const entryPath = rawLine.trim();
+    if (!entryPath) continue;
+    entryCount += 1;
+    const result = validateMswarmArchiveEntry({
+      path: entryPath,
+      type: entryPath.endsWith("/") ? "directory" : "file"
+    });
+    if (!result.ok) {
+      throw cudaArchiveValidationError(result.reason);
+    }
+  }
+  if (entryCount === 0) {
+    throw cudaArchiveValidationError("empty");
+  }
+  const verbose = await runner("tar", ["-tvzf", archive.hostPath], listOptions);
+  for (const rawLine of verbose.stdout.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    const type = cudaTarVerboseEntryType(rawLine);
+    if (type === "file" || type === "directory") continue;
+    const result = validateMswarmArchiveEntry({ path: "entry", type });
+    throw cudaArchiveValidationError(result.reason);
+  }
+}
+
+async function readCudaManifestText(
+  context: MswarmGenericJobRunnerContext,
+  runner: CommandRunner,
+  args: CudaRunArgs
+): Promise<string> {
+  const directManifestPath = resolveWithinRoot(context.artifacts.inputDir, args.manifestPath);
+  try {
+    const directStat = await lstat(directManifestPath);
+    if (directStat.isFile()) {
+      return await readFile(directManifestPath, "utf8");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  const archive = cudaPackageArchive(context);
+  const extracted = await runner("tar", ["-xOf", archive.hostPath, args.manifestPath], {
+    timeoutMs: 5_000,
+    maxBuffer: 256 * 1024,
+    signal: context.signal
+  });
+  return extracted.stdout;
+}
+
+function parseCudaPackageManifest(
+  text: string,
+  args: CudaRunArgs,
+  policy: MswarmJobPolicy
+): CudaPackageManifestSelection {
+  const parsed = JSON.parse(text) as unknown;
+  const manifest = objectRecord(parsed);
+  if (!manifest) {
+    throw new Error("cuda_manifest_must_be_object");
+  }
+  assertNoUnsafeCudaManifestKeys(manifest, "cuda_manifest");
+  const schemaVersion = optionalText(manifest.schema_version);
+  if (schemaVersion !== "2026-06-14") {
+    throw new Error("cuda_manifest_schema_version_invalid");
+  }
+  const packageInfo = objectRecord(manifest.package);
+  const publisher = optionalText(packageInfo?.publisher);
+  if (policy.allowed_package_publishers?.length) {
+    if (!publisher || !policy.allowed_package_publishers.includes(publisher)) {
+      throw new Error("cuda_manifest_publisher_not_allowed");
+    }
+  }
+  const profiles = objectRecord(manifest.profiles);
+  const targets = objectRecord(manifest.targets);
+  const profile = objectRecord(profiles?.[args.profile]);
+  const target = objectRecord(targets?.[args.target]);
+  if (!profile) {
+    throw new Error("cuda_manifest_profile_not_found");
+  }
+  if (!target) {
+    throw new Error("cuda_manifest_target_not_found");
+  }
+  assertNoUnsafeCudaManifestKeys(profile, "cuda_manifest_profile");
+  assertNoUnsafeCudaManifestKeys(target, "cuda_manifest_target");
+  const image = optionalText(profile.image);
+  if (!image || !APPROVED_NVIDIA_CUDA_IMAGES.has(image)) {
+    throw new Error("cuda_image_not_approved");
+  }
+  if (!policy.allowed_images?.includes(image)) {
+    throw new Error("cuda_image_not_allowed_by_policy");
+  }
+  const compiler = optionalText(profile.compiler) || "nvcc";
+  if (compiler !== "nvcc") {
+    throw new Error("cuda_compiler_not_allowed");
+  }
+  const source = safeCudaRelativePath(target.source, "cuda_target_source");
+  if (!source.endsWith(".cu")) {
+    throw new Error("cuda_target_source_must_be_cu");
+  }
+  const output = safeCudaRelativePath(optionalText(target.output) || `bin/${args.target}`, "cuda_target_output");
+  return {
+    schemaVersion,
+    packageName: optionalText(packageInfo?.name) ?? undefined,
+    publisher: publisher ?? undefined,
+    image,
+    compiler,
+    source,
+    output,
+    flags: [...safeCudaTokenList(profile.flags, "cuda_profile_flags"), ...safeCudaTokenList(target.flags, "cuda_target_flags")],
+    runArgs: safeCudaTokenList(target.args, "cuda_target_args")
+  };
+}
+
+function redactCudaLocalPaths(context: MswarmGenericJobRunnerContext, value: string): string {
+  const replacements: Array<[string | undefined, string]> = [
+    ...context.artifacts.registeredInputs.map((input): [string | undefined, string] => [input.local_path, "[job-input]"]),
+    [context.artifacts.inputDir, "[job-inputs]"],
+    [context.artifacts.outputDir, "[job-outputs]"],
+    [context.artifacts.workDir, "[job-workdir]"]
+  ];
+  replacements.sort((left, right) => (right[0]?.length || 0) - (left[0]?.length || 0));
+  let output = value;
+  for (const [source, replacement] of replacements) {
+    if (source) {
+      output = output.split(source).join(replacement);
+    }
+  }
+  return output;
+}
+
+async function emitCudaOutput(
+  context: MswarmGenericJobRunnerContext,
+  type: "stdout" | "stderr",
+  value: string
+): Promise<void> {
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 200);
+  for (const line of lines) {
+    await context.emitEvent({
+      type,
+      message: redactCudaLocalPaths(context, line),
+      data: { runner: CUDA_PACKAGE_RUNNER_ID }
+    });
+  }
+}
+
+function buildCudaRunnerScript(input: {
+  archiveInputPath: string;
+  selection: CudaPackageManifestSelection;
+}): string {
+  const srcDir = "/workspace/work/src";
+  const buildOutput = `/workspace/work/${input.selection.output}`;
+  const compile = [
+    "/usr/local/cuda/bin/nvcc",
+    ...input.selection.flags,
+    "-o",
+    buildOutput,
+    `${srcDir}/${input.selection.source}`
+  ].map(quotePosixShellValue).join(" ");
+  const run = [
+    buildOutput,
+    ...input.selection.runArgs
+  ].map(quotePosixShellValue).join(" ");
+  return [
+    "set -euo pipefail",
+    "mkdir -p /workspace/work/src /workspace/outputs",
+    `tar -xzf ${quotePosixShellValue(`/workspace/inputs/${input.archiveInputPath}`)} -C /workspace/work/src`,
+    `mkdir -p ${quotePosixShellValue(dirname(buildOutput))}`,
+    "cd /workspace/work/src",
+    compile,
+    run
+  ].join("\n");
+}
+
+function dockerBindMount(hostPath: string, containerPath: string, mode: "ro" | "rw"): string {
+  return `${hostPath}:${containerPath}:${mode}`;
+}
+
+function buildCudaDockerArgs(input: {
+  context: MswarmGenericJobRunnerContext;
+  selection: CudaPackageManifestSelection;
+  archiveInputPath: string;
+  scriptPath: string;
+  workPath: string;
+}): string[] {
+  const gpuCount = Math.max(1, input.context.job.resources?.gpu?.count || 1);
+  const args = [
+    "run",
+    "--rm",
+    "--pull",
+    "never",
+    "--network",
+    "none",
+    "--runtime",
+    "nvidia",
+    "--gpus",
+    `count=${gpuCount}`,
+    "--user",
+    input.context.sandbox.container.user,
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--workdir",
+    "/workspace",
+    "--env",
+    "CUDA_CACHE_PATH=/workspace/work/.cuda-cache",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=64m"
+  ];
+  if (Number.isFinite(input.context.job.resources?.memory_gb) && input.context.job.resources?.memory_gb) {
+    args.push("--memory", `${Math.floor(input.context.job.resources.memory_gb)}g`);
+  }
+  if (Number.isFinite(input.context.job.resources?.disk_gb) && input.context.job.resources?.disk_gb) {
+    args.push("--storage-opt", `size=${Math.floor(input.context.job.resources.disk_gb)}G`);
+  }
+  args.push(
+    "-v",
+    dockerBindMount(input.context.artifacts.inputDir, "/workspace/inputs", "ro"),
+    "-v",
+    dockerBindMount(input.context.artifacts.outputDir, "/workspace/outputs", "rw"),
+    "-v",
+    dockerBindMount(input.workPath, "/workspace/work", "rw"),
+    "-v",
+    dockerBindMount(input.scriptPath, "/workspace/__mcoda_cuda_run.sh", "ro"),
+    input.selection.image,
+    "/bin/bash",
+    "/workspace/__mcoda_cuda_run.sh"
+  );
+  return args;
+}
+
+export class MswarmCudaPackageRunner implements MswarmGenericJobRunner {
+  readonly id = CUDA_PACKAGE_RUNNER_ID;
+  private readonly runner: CommandRunner;
+
+  constructor(runner: CommandRunner = defaultCommandRunner) {
+    this.runner = runner;
+  }
+
+  async run(context: MswarmGenericJobRunnerContext): Promise<MswarmJobResult> {
+    const startedAt = new Date().toISOString();
+    if (context.signal.aborted) {
+      throw new Error(abortErrorMessage(context.signal));
+    }
+    if (context.job.policy.network !== "none") {
+      return cudaFailureResult(context.job, "policy_denied", "cuda.run requires network policy none", startedAt);
+    }
+    if (context.job.policy.allow_raw_command !== false) {
+      return cudaFailureResult(context.job, "policy_denied", "cuda.run does not allow raw commands", startedAt);
+    }
+    if (!context.job.resources?.gpu) {
+      return cudaFailureResult(context.job, "validation_failed", "cuda.run requires GPU resources", startedAt);
+    }
+    if (!context.job.outputs?.length) {
+      return cudaFailureResult(context.job, "validation_failed", "cuda.run requires declared outputs", startedAt);
+    }
+    let args: CudaRunArgs;
+    let archive: { hostPath: string; inputPath: string };
+    let selection: CudaPackageManifestSelection;
+    let scriptPath: string;
+    let workPath: string;
+    try {
+      args = parseCudaRunArgs(context.job);
+      archive = cudaPackageArchive(context);
+      await validateCudaPackageArchive(context, this.runner, archive);
+      const manifestText = await readCudaManifestText(context, this.runner, args);
+      selection = parseCudaPackageManifest(manifestText, args, context.job.policy);
+      scriptPath = resolveWithinRoot(context.artifacts.workDir, "__mcoda_cuda_run.sh");
+      workPath = resolveWithinRoot(context.artifacts.workDir, "cuda-work");
+      await mkdir(workPath, { recursive: true });
+      await chmod(workPath, 0o777);
+      await chmod(context.artifacts.outputDir, 0o777);
+      await writeFile(scriptPath, buildCudaRunnerScript({ archiveInputPath: archive.inputPath, selection }), { mode: 0o644 });
+    } catch (error) {
+      return cudaFailureResult(
+        context.job,
+        "validation_failed",
+        redactCudaLocalPaths(context, error instanceof Error ? error.message : String(error || "cuda.run validation failed")),
+        startedAt
+      );
+    }
+
+    const dockerArgs = buildCudaDockerArgs({
+      context,
+      selection,
+      archiveInputPath: archive.inputPath,
+      scriptPath,
+      workPath
+    });
+    await context.emitEvent({
+      type: "progress",
+      message: "cuda package container starting",
+      data: {
+        runner: this.id,
+        image: selection.image,
+        profile: args.profile,
+        target: args.target,
+        gpu_count: Math.max(1, context.job.resources.gpu.count || 1),
+        network: "none",
+        container_user: context.sandbox.container.user
+      }
+    });
+
+    const timeoutMs = Math.max(
+      1_000,
+      Math.min(DEFAULT_JOB_TIMEOUT_MS, Math.floor((context.sandbox.limits.timeout_sec || DEFAULT_JOB_TIMEOUT_MS / 1000) * 1000))
+    );
+    const maxBuffer = Math.min(
+      DEFAULT_COMMAND_MAX_BUFFER,
+      Math.max(1024 * 1024, context.job.limits?.max_stdout_bytes || 0, context.job.limits?.max_stderr_bytes || 0)
+    );
+    try {
+      const result = await this.runner("docker", dockerArgs, {
+        timeoutMs,
+        maxBuffer,
+        signal: context.signal
+      });
+      await emitCudaOutput(context, "stdout", result.stdout);
+      await emitCudaOutput(context, "stderr", result.stderr);
+      await context.emitEvent({
+        type: "progress",
+        message: "cuda package container completed",
+        data: {
+          runner: this.id,
+          profile: args.profile,
+          target: args.target
+        }
+      });
+      return {
+        job_id: context.job.idempotency_key || "cuda.run",
+        status: "succeeded",
+        exit_code: 0,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        metrics: {
+          runner: this.id,
+          image: selection.image,
+          profile: args.profile,
+          target: args.target,
+          package: selection.packageName,
+          publisher: selection.publisher,
+          gpu_count: Math.max(1, context.job.resources.gpu.count || 1),
+          network: "none",
+          container_user: context.sandbox.container.user
+        }
+      };
+    } catch (error) {
+      if (context.signal.aborted) {
+        throw error;
+      }
+      return cudaFailureResult(
+        context.job,
+        "runner_failed",
+        redactCudaLocalPaths(context, error instanceof Error ? error.message : String(error || "cuda.run failed")),
+        startedAt
+      );
+    }
+  }
+}
+
+function createDefaultGenericJobRunners(runner: CommandRunner = defaultCommandRunner): MswarmGenericJobRunner[] {
+  return [new MswarmTestEchoRunner(), new MswarmBlenderRenderRunner(runner), new MswarmCudaPackageRunner(runner)];
+}
+
+function uniqueSortedStrings<T extends string>(values: Array<T | undefined | null>): T[] {
+  return Array.from(
+    new Set(values.filter((value): value is T => typeof value === "string" && value.length > 0))
+  ).sort();
+}
+
+function capabilityProbeTimeoutMs(config: SelfHostedNodeConfig): number {
+  return parsePositiveInteger(config.capabilityProbeTimeoutMs, DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS);
+}
+
+function capabilityCommandFailureMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error || "capability probe failed");
+}
+
+function isMissingCapabilityCommand(error: unknown, stderr = ""): boolean {
+  const message = `${capabilityCommandFailureMessage(error)}\n${stderr}`.toLowerCase();
+  return /enoent|not found|command not found|no such file|executable file not found/.test(message);
+}
+
+async function runCapabilityCommand(
+  runner: CommandRunner,
+  command: string,
+  args: string[],
+  timeoutMs: number
+): Promise<{ ok: true; stdout: string; stderr: string } | { ok: false; missing: boolean; message: string }> {
+  try {
+    const result = await runner(command, args, {
+      timeoutMs,
+      maxBuffer: Math.min(DEFAULT_COMMAND_MAX_BUFFER, 512 * 1024)
+    });
+    return { ok: true, stdout: result.stdout, stderr: result.stderr };
+  } catch (error) {
+    return {
+      ok: false,
+      missing: isMissingCapabilityCommand(error),
+      message: capabilityCommandFailureMessage(error)
+    };
+  }
+}
+
+function parseNvidiaSmiMemoryGb(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value.replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.round((parsed / 1024) * 10) / 10;
+}
+
+function parseNvidiaGpuProbe(stdout: string): MswarmGpuCapabilityProbe {
+  const devices: MswarmGpuDeviceCapability[] = [];
+  const cudaVersions = new Set<string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const [index, name, memoryMb, driverVersion, computeCapability, cudaVersion] = trimmed
+      .split(",")
+      .map((part) => part.trim());
+    const id = index ? `gpu-${index}` : `gpu-${devices.length}`;
+    if (cudaVersion) {
+      cudaVersions.add(cudaVersion);
+    }
+    devices.push({
+      id,
+      vendor: "nvidia",
+      ...(name ? { name } : {}),
+      ...(parseNvidiaSmiMemoryGb(memoryMb) ? { vram_gb: parseNvidiaSmiMemoryGb(memoryMb) } : {}),
+      ...(driverVersion ? { driver_version: driverVersion } : {}),
+      ...(cudaVersion ? { cuda_version: cudaVersion } : {}),
+      ...(computeCapability ? { compute_capability: computeCapability } : {}),
+      capabilities: ["cuda"]
+    });
+  }
+  const maxVramGb = devices.reduce<number | undefined>((max, device) => {
+    if (!Number.isFinite(device.vram_gb)) return max;
+    return max === undefined ? device.vram_gb : Math.max(max, device.vram_gb || 0);
+  }, undefined);
+  return {
+    status: devices.length > 0 ? "available" : "missing",
+    count: devices.length,
+    vendors: devices.length > 0 ? ["nvidia"] : [],
+    devices,
+    ...(cudaVersions.size > 0 ? { cuda_versions: Array.from(cudaVersions).sort() } : {}),
+    ...(maxVramGb !== undefined ? { max_vram_gb: maxVramGb } : {}),
+    ...(devices.length === 0 ? { message: "nvidia-smi returned no GPU rows" } : {})
+  };
+}
+
+function parseNvidiaSmiCudaVersion(stdout: string): string | undefined {
+  return stdout.match(/CUDA\s+Version:\s*([0-9]+(?:\.[0-9]+)?)/i)?.[1];
+}
+
+async function probeNvidiaGpuCapabilities(
+  runner: CommandRunner,
+  timeoutMs: number
+): Promise<MswarmGpuCapabilityProbe> {
+  const result = await runCapabilityCommand(
+    runner,
+    "nvidia-smi",
+    ["--query-gpu=index,name,memory.total,driver_version,compute_cap", "--format=csv,noheader,nounits"],
+    timeoutMs
+  );
+  if (!result.ok) {
+    return {
+      status: result.missing ? "missing" : "error",
+      count: 0,
+      vendors: [],
+      devices: [],
+      message: result.message
+    };
+  }
+  const probe = parseNvidiaGpuProbe(result.stdout);
+  const versionResult = await runCapabilityCommand(runner, "nvidia-smi", [], timeoutMs);
+  if (!versionResult.ok) {
+    return probe;
+  }
+  const cudaVersion = parseNvidiaSmiCudaVersion(versionResult.stdout || versionResult.stderr);
+  if (!cudaVersion) {
+    return probe;
+  }
+  const cudaVersions = Array.from(new Set([...(probe.cuda_versions || []), cudaVersion])).sort();
+  return {
+    ...probe,
+    cuda_versions: cudaVersions,
+    devices: probe.devices.map((device) => ({
+      ...device,
+      cuda_version: device.cuda_version || cudaVersion
+    }))
+  };
+}
+
+function missingSoftwareProbe(name: MswarmSoftwareProbeName, message?: string): MswarmSoftwareProbeResult {
+  return {
+    name,
+    status: "missing",
+    ...(message ? { message } : {})
+  };
+}
+
+function errorSoftwareProbe(name: MswarmSoftwareProbeName, message: string): MswarmSoftwareProbeResult {
+  return {
+    name,
+    status: "error",
+    message
+  };
+}
+
+function extractToolVersion(stdout: string, tool: MswarmSoftwareProbeName): string | undefined {
+  const firstLine = stdout.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() || "";
+  if (tool === "blender") {
+    return firstLine.match(/Blender\s+([^\s]+)/i)?.[1];
+  }
+  if (tool === "ffmpeg") {
+    return firstLine.match(/ffmpeg\s+version\s+([^\s]+)/i)?.[1];
+  }
+  return firstLine || undefined;
+}
+
+async function probeVersionedSoftware(
+  runner: CommandRunner,
+  name: Extract<MswarmSoftwareProbeName, "blender" | "ffmpeg">,
+  command: string,
+  args: string[],
+  timeoutMs: number
+): Promise<MswarmSoftwareProbeResult> {
+  const result = await runCapabilityCommand(runner, command, args, timeoutMs);
+  if (!result.ok) {
+    return result.missing
+      ? missingSoftwareProbe(name, result.message)
+      : errorSoftwareProbe(name, result.message);
+  }
+  return {
+    name,
+    status: "available",
+    ...(extractToolVersion(result.stdout || result.stderr, name) ? { version: extractToolVersion(result.stdout || result.stderr, name) } : {})
+  };
+}
+
+async function probeDockerCapabilities(
+  runner: CommandRunner,
+  timeoutMs: number
+): Promise<{
+  docker: MswarmSoftwareProbeResult;
+  dockerNvidia: MswarmSoftwareProbeResult;
+}> {
+  const result = await runCapabilityCommand(
+    runner,
+    "docker",
+    ["info", "--format", "{{json .Runtimes}}"],
+    timeoutMs
+  );
+  if (!result.ok) {
+    const docker = result.missing
+      ? missingSoftwareProbe("docker", result.message)
+      : errorSoftwareProbe("docker", result.message);
+    return {
+      docker,
+      dockerNvidia: { name: "docker-nvidia", status: docker.status, message: result.message }
+    };
+  }
+  try {
+    const runtimes = JSON.parse(result.stdout || "{}") as Record<string, unknown>;
+    const runtimeNames = Object.keys(runtimes);
+    const hasNvidiaRuntime = runtimeNames.some((name) => name.toLowerCase() === "nvidia");
+    return {
+      docker: { name: "docker", status: "available" },
+      dockerNvidia: hasNvidiaRuntime
+        ? { name: "docker-nvidia", status: "available", version: "nvidia" }
+        : missingSoftwareProbe("docker-nvidia", "Docker is available but the nvidia runtime is not registered")
+    };
+  } catch (error) {
+    const message = capabilityCommandFailureMessage(error);
+    return {
+      docker: errorSoftwareProbe("docker", `Unable to parse docker runtime inventory: ${message}`),
+      dockerNvidia: errorSoftwareProbe("docker-nvidia", `Unable to parse docker runtime inventory: ${message}`)
+    };
+  }
+}
+
+function capabilityDiagnostics(snapshot: MswarmNodeCapabilitySnapshot): MswarmNodeCapabilitySnapshot["diagnostics"] {
+  const diagnostics: NonNullable<MswarmNodeCapabilitySnapshot["diagnostics"]> = [];
+  if (snapshot.gpu.status !== "available") {
+    diagnostics.push({
+      name: "gpu",
+      status: snapshot.gpu.status,
+      message: snapshot.gpu.message
+    });
+  }
+  for (const result of Object.values(snapshot.software)) {
+    if (result.status !== "available") {
+      diagnostics.push({
+        name: result.name,
+        status: result.status,
+        message: result.message
+      });
+    }
+  }
+  return diagnostics.length ? diagnostics : undefined;
+}
+
+function buildCapabilitySnapshotId(snapshot: Omit<MswarmNodeCapabilitySnapshot, "snapshot_id">): string {
+  const digest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex").slice(0, 16);
+  return `caps_${digest}`;
+}
+
+function buildRunnerCapabilityCatalog(
+  config: SelfHostedNodeConfig,
+  runners: Map<string, MswarmGenericJobRunner>
+): MswarmRunnerCatalogCapability[] {
+  if (!config.genericJobsEnabled) {
+    return [];
+  }
+  return OWNER_LOCAL_GENERIC_JOB_CATALOG
+    .filter((entry) => runners.has(entry.runner))
+    .map((entry) => ({
+      job_type: entry.job_type,
+      runner: entry.runner,
+      trust_modes: uniqueSortedStrings([entry.policy.trust_mode]),
+      required_capabilities: entry.required_capabilities || []
+    }));
+}
+
+function runnerCapabilityRequirementsAvailable(
+  entry: MswarmRunnerCatalogCapability,
+  input: {
+    gpu: MswarmGpuCapabilityProbe;
+    software: Record<MswarmSoftwareProbeName, MswarmSoftwareProbeResult>;
+    genericJobsEnabled: boolean;
+  }
+): boolean {
+  if (!input.genericJobsEnabled) return false;
+  if (!entry.required_capabilities?.length) return true;
+  const snapshot: MswarmNodeCapabilitySnapshot = {
+    schema_version: MSWARM_CAPABILITY_SCHEMA_VERSION,
+    snapshot_id: "caps_requirement_check",
+    captured_at: new Date(0).toISOString(),
+    generic_jobs_enabled: input.genericJobsEnabled,
+    job_types: [],
+    trust_modes: [],
+    gpu: input.gpu,
+    software: input.software,
+    runner_catalog: []
+  };
+  const capabilities = new Set(buildMswarmCapabilityNames(snapshot));
+  return entry.required_capabilities.every((capability) => capabilities.has(capability));
+}
+
+function registeredOwnerLocalGenericJobCatalog(): MswarmRegisteredJobCatalogEntry[] {
+  return OWNER_LOCAL_GENERIC_JOB_CATALOG.filter(
+    (entry): entry is MswarmRegisteredJobCatalogEntry =>
+      entry.job_type.startsWith("tenant.") || entry.job_type.startsWith("package.")
+  );
+}
+
+function base64UrlEncodeRuntime(buffer: Buffer): string {
+  return buffer.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function signCapabilityPayload(input: {
+  privateCatalogEntry: ReturnType<typeof buildMswarmPrivateCapabilityCatalogEntry>;
+  runtimeToken: string;
+}): MswarmSignedCapabilityPayload {
+  const unsignedPayload = {
+    schema_version: MSWARM_CAPABILITY_SCHEMA_VERSION,
+    snapshot_id: input.privateCatalogEntry.snapshot_id,
+    private_catalog_entry: input.privateCatalogEntry,
+    scheduler_match: input.privateCatalogEntry.scheduler_match,
+    public_projection: input.privateCatalogEntry.public_projection
+  };
+  const signature = base64UrlEncodeRuntime(
+    createHmac("sha256", input.runtimeToken).update(JSON.stringify(unsignedPayload)).digest()
+  );
+  return {
+    ...unsignedPayload,
+    signature: {
+      alg: "HS256",
+      value: signature,
+      signed_at: new Date().toISOString(),
+      key_id: "self_hosted_runtime_token"
+    }
+  };
+}
+
+function runnerForGenericJob(
+  job: MswarmJobRequest,
+  runners: Map<string, MswarmGenericJobRunner>
+): MswarmGenericJobRunner | null {
+  const catalogEntry = OWNER_LOCAL_GENERIC_JOB_CATALOG.find((entry) => entry.job_type === job.job_type);
+  return catalogEntry ? runners.get(catalogEntry.runner) || null : null;
+}
+
+function compareDottedVersion(left: string | undefined, right: string | undefined): number {
+  if (!left || !right) return 0;
+  const leftParts = left.split(".").map((part) => Number(part.replace(/[^\d]/g, "")) || 0);
+  const rightParts = right.split(".").map((part) => Number(part.replace(/[^\d]/g, "")) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+function snapshotHasCudaVersion(snapshot: MswarmNodeCapabilitySnapshot, minVersion: string | undefined): boolean {
+  if (!minVersion) return true;
+  const versions = [
+    ...(snapshot.gpu.cuda_versions || []),
+    ...snapshot.gpu.devices.map((device) => device.cuda_version).filter((value): value is string => Boolean(value))
+  ];
+  return versions.some((version) => compareDottedVersion(version, minVersion) >= 0);
+}
+
+export function genericJobCapabilityMismatch(
+  job: MswarmJobRequest,
+  snapshot: MswarmNodeCapabilitySnapshot
+): { code: string; message: string } | null {
+  if (!snapshot.generic_jobs_enabled) {
+    return { code: "no_capable_node", message: "Generic jobs are disabled on this node." };
+  }
+  if (job.job_type === RENDER_BLENDER_JOB_TYPE && snapshot.software.blender.status !== "available") {
+    return {
+      code: "no_capable_node",
+      message: "Blender is not available on this node."
+    };
+  }
+  if (job.job_type === CUDA_RUN_JOB_TYPE) {
+    if (snapshot.gpu.status !== "available" || !snapshot.gpu.vendors.includes("nvidia")) {
+      return {
+        code: "no_capable_node",
+        message: "No NVIDIA GPU is available on this node."
+      };
+    }
+    if (snapshot.software.docker.status !== "available" || snapshot.software["docker-nvidia"].status !== "available") {
+      return {
+        code: "no_capable_node",
+        message: "Docker with the NVIDIA runtime is not available on this node."
+      };
+    }
+  }
+  if (!snapshot.job_types.includes(job.job_type)) {
+    return {
+      code: "no_capable_node",
+      message: `No capable owner-local node is available for ${job.job_type}.`
+    };
+  }
+  if (job.resources?.gpu) {
+    const requestedCount = Math.max(1, job.resources.gpu.count || 1);
+    if (snapshot.gpu.status !== "available" || snapshot.gpu.count < requestedCount) {
+      return {
+        code: "no_capable_node",
+        message: `Requested ${requestedCount} GPU(s), but this node reports ${snapshot.gpu.count}.`
+      };
+    }
+    if (job.resources.gpu.vendor && !snapshot.gpu.vendors.includes(job.resources.gpu.vendor)) {
+      return {
+        code: "no_capable_node",
+        message: `Requested GPU vendor ${job.resources.gpu.vendor} is not available on this node.`
+      };
+    }
+    if (
+      Number.isFinite(job.resources.gpu.min_vram_gb) &&
+      job.resources.gpu.min_vram_gb !== undefined &&
+      (!Number.isFinite(snapshot.gpu.max_vram_gb) || (snapshot.gpu.max_vram_gb || 0) < job.resources.gpu.min_vram_gb)
+    ) {
+      return {
+        code: "no_capable_node",
+        message: `Requested GPU VRAM ${job.resources.gpu.min_vram_gb}GB exceeds this node capability.`
+      };
+    }
+    if (!snapshotHasCudaVersion(snapshot, job.resources.gpu.cuda_min_version)) {
+      return {
+        code: "no_capable_node",
+        message: `Requested CUDA ${job.resources.gpu.cuda_min_version} is not available on this node.`
+      };
+    }
+  }
+  return null;
+}
+
+function genericJobTimeoutMs(job: MswarmJobRequest, fallbackMs: number): number {
+  const limitSeconds = positiveInteger(job.limits?.timeout_sec);
+  if (!limitSeconds) {
+    return fallbackMs;
+  }
+  return Math.max(1, Math.min(fallbackMs, limitSeconds * 1000));
+}
+
+function isGenericAbortError(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted) return true;
+  if (!(error instanceof Error)) return false;
+  return /cancelled|canceled|aborted|timed out|timeout/i.test(error.message);
+}
+
 function usageTokens(usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined): {
   promptTokens: number | null;
   completionTokens: number | null;
@@ -2471,6 +4348,9 @@ export class SelfHostedNodeRuntime {
   private readonly codaliExecutor: MswarmCodaliExecutor;
   private readonly ollama: OllamaClient;
   private readonly jobOllama: OllamaClient;
+  private readonly genericRunners: Map<string, MswarmGenericJobRunner>;
+  private readonly artifactStore: MswarmGenericJobArtifactStore;
+  private readonly capabilityRunner: CommandRunner;
 
   constructor(
     config: SelfHostedNodeConfig,
@@ -2481,6 +4361,9 @@ export class SelfHostedNodeRuntime {
       codaliExecutor?: MswarmCodaliExecutor;
       ollama?: OllamaClient;
       fetchImpl?: FetchLike;
+      genericRunners?: MswarmGenericJobRunner[];
+      artifactStore?: MswarmGenericJobArtifactStore;
+      capabilityRunner?: CommandRunner;
     }
   ) {
     this.config = config;
@@ -2519,6 +4402,15 @@ export class SelfHostedNodeRuntime {
         fetchImpl: deps?.fetchImpl,
         timeoutMs: config.jobTimeoutMs
       });
+    this.capabilityRunner = deps?.capabilityRunner || defaultCommandRunner;
+    this.genericRunners = new Map(
+      (deps?.genericRunners || createDefaultGenericJobRunners(this.capabilityRunner)).map((runner) => [runner.id, runner])
+    );
+    this.artifactStore =
+      deps?.artifactStore ||
+      new MswarmLocalArtifactStore({
+        rootDir: config.artifactStorePath || defaultArtifactStorePath()
+      });
   }
 
   static async setup(
@@ -2530,6 +4422,9 @@ export class SelfHostedNodeRuntime {
       codaliExecutor?: MswarmCodaliExecutor;
       ollama?: OllamaClient;
       fetchImpl?: FetchLike;
+      genericRunners?: MswarmGenericJobRunner[];
+      artifactStore?: MswarmGenericJobArtifactStore;
+      capabilityRunner?: CommandRunner;
     }
   ): Promise<SelfHostedNodeSetupResult> {
     const gateway =
@@ -2552,7 +4447,8 @@ export class SelfHostedNodeRuntime {
       expose_all_models: setupConfig.exposeAllModels,
       model_allowlist: setupConfig.modelAllowlist,
       model_blocklist: setupConfig.modelBlocklist,
-      heartbeat_interval_seconds: setupConfig.heartbeatIntervalSeconds
+      heartbeat_interval_seconds: setupConfig.heartbeatIntervalSeconds,
+      generic_job_max_concurrency: setupConfig.genericJobMaxConcurrency
     });
     const nodeId = optionalText(bootstrap.node?.node_id);
     const runtimeToken = optionalText(bootstrap.runtime_token);
@@ -2568,6 +4464,7 @@ export class SelfHostedNodeRuntime {
       machine_fingerprint: machineFingerprint,
       direct_base_url: setupConfig.directBaseUrl || null,
       runtime_token: undefined,
+      artifact_store_path: setupConfig.artifactStorePath || defaultArtifactStorePath(),
       config_version: bootstrap.config_version,
       heartbeat_interval_seconds: heartbeatInterval,
       heartbeat_timeout_seconds: bootstrap.heartbeat_timeout_seconds,
@@ -2581,6 +4478,10 @@ export class SelfHostedNodeRuntime {
       node_version: setupConfig.nodeVersion,
       request_timeout_ms: setupConfig.requestTimeoutMs,
       job_timeout_ms: setupConfig.jobTimeoutMs,
+      generic_jobs_enabled: setupConfig.genericJobsEnabled,
+      generic_job_timeout_ms: setupConfig.genericJobTimeoutMs,
+      generic_job_max_concurrency: setupConfig.genericJobMaxConcurrency,
+      capability_probe_timeout_ms: setupConfig.capabilityProbeTimeoutMs || DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS,
       expose_all_models: setupConfig.exposeAllModels,
       exposure_policy: setupConfig.exposeAllModels ? "all" : "none",
       model_allowlist: setupConfig.modelAllowlist,
@@ -2604,6 +4505,7 @@ export class SelfHostedNodeRuntime {
         ollamaBaseUrl: setupConfig.ollamaBaseUrl,
         statePath: setupConfig.statePath,
         runtimeTokenPath: setupConfig.runtimeTokenPath,
+        artifactStorePath: setupConfig.artifactStorePath || defaultArtifactStorePath(),
         invocationSigningSecret: null,
         listenHost: DEFAULT_LISTEN_HOST,
         listenPort: DEFAULT_LISTEN_PORT,
@@ -2611,6 +4513,10 @@ export class SelfHostedNodeRuntime {
         heartbeatIntervalSeconds: heartbeatInterval,
         requestTimeoutMs: setupConfig.requestTimeoutMs,
         jobTimeoutMs: setupConfig.jobTimeoutMs,
+        genericJobsEnabled: setupConfig.genericJobsEnabled,
+        genericJobTimeoutMs: setupConfig.genericJobTimeoutMs,
+        genericJobMaxConcurrency: setupConfig.genericJobMaxConcurrency,
+        capabilityProbeTimeoutMs: setupConfig.capabilityProbeTimeoutMs || DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS,
         exposeAllModels: setupConfig.exposeAllModels,
         modelAllowlist: setupConfig.modelAllowlist,
         modelBlocklist: setupConfig.modelBlocklist
@@ -2648,6 +4554,58 @@ export class SelfHostedNodeRuntime {
     return { source: "mcoda", status: "online", models, version: null, failureCount: 0 };
   }
 
+  async probeCapabilities(): Promise<MswarmNodeCapabilitySnapshot> {
+    const timeoutMs = capabilityProbeTimeoutMs(this.config);
+    const [gpu, docker, blender, ffmpeg] = await Promise.all([
+      probeNvidiaGpuCapabilities(this.capabilityRunner, timeoutMs),
+      probeDockerCapabilities(this.capabilityRunner, timeoutMs),
+      probeVersionedSoftware(this.capabilityRunner, "blender", "blender", ["--version"], timeoutMs),
+      probeVersionedSoftware(this.capabilityRunner, "ffmpeg", "ffmpeg", ["-version"], timeoutMs)
+    ]);
+    const software = {
+      docker: docker.docker,
+      "docker-nvidia": docker.dockerNvidia,
+      blender,
+      ffmpeg
+    };
+    const runnerCatalog = buildRunnerCapabilityCatalog(this.config, this.genericRunners).filter((entry) =>
+      runnerCapabilityRequirementsAvailable(entry, {
+        gpu,
+        software,
+        genericJobsEnabled: this.config.genericJobsEnabled
+      })
+    );
+    const snapshotWithoutId: Omit<MswarmNodeCapabilitySnapshot, "snapshot_id"> = {
+      schema_version: MSWARM_CAPABILITY_SCHEMA_VERSION,
+      captured_at: new Date().toISOString(),
+      node_id: this.config.nodeId,
+      platform: platform(),
+      arch: process.arch,
+      generic_jobs_enabled: this.config.genericJobsEnabled,
+      job_types: uniqueSortedStrings(runnerCatalog.map((entry) => entry.job_type)),
+      trust_modes: uniqueSortedStrings(runnerCatalog.flatMap((entry) => entry.trust_modes)),
+      gpu,
+      software,
+      runner_catalog: runnerCatalog
+    };
+    const snapshot: MswarmNodeCapabilitySnapshot = {
+      ...snapshotWithoutId,
+      snapshot_id: buildCapabilitySnapshotId(snapshotWithoutId)
+    };
+    const diagnostics = capabilityDiagnostics(snapshot);
+    return diagnostics ? { ...snapshot, diagnostics } : snapshot;
+  }
+
+  async publicCapabilityProjection(): Promise<MswarmPublicCapabilityProjection> {
+    return projectMswarmPublicCapabilities(await this.probeCapabilities());
+  }
+
+  async buildCapabilityHeartbeatPayload(runtimeToken: string): Promise<MswarmSignedCapabilityPayload> {
+    const snapshot = await this.probeCapabilities();
+    const privateCatalogEntry = buildMswarmPrivateCapabilityCatalogEntry(snapshot);
+    return signCapabilityPayload({ privateCatalogEntry, runtimeToken });
+  }
+
   async ensureEnrolled(): Promise<{ runtimeToken: string; state: SelfHostedNodeState; enrolled: boolean }> {
     const currentState = await readSelfHostedNodeState(this.config.statePath);
     const persistedRuntimeToken = await readSelfHostedRuntimeToken(this.config.runtimeTokenPath);
@@ -2680,6 +4638,9 @@ export class SelfHostedNodeRuntime {
       node_version: this.config.nodeVersion,
       request_timeout_ms: this.config.requestTimeoutMs,
       job_timeout_ms: this.config.jobTimeoutMs,
+      generic_jobs_enabled: this.config.genericJobsEnabled,
+      generic_job_timeout_ms: this.config.genericJobTimeoutMs,
+      generic_job_max_concurrency: this.config.genericJobMaxConcurrency,
       expose_all_models: this.config.exposeAllModels,
       exposure_policy: this.config.exposeAllModels ? "all" : "none",
       model_allowlist: this.config.modelAllowlist,
@@ -2709,6 +4670,178 @@ export class SelfHostedNodeRuntime {
       throw new Error("selected local mcoda agent is not exposed by this node");
     }
     return mapMcodaAgentToCodaliAgent(agent, selected);
+  }
+
+  async executeGenericJob(
+    envelope: SelfHostedGenericNodeJob,
+    options: MswarmGenericJobExecutionOptions = {}
+  ): Promise<MswarmGenericJobExecutionResult> {
+    const startedAt = Date.now();
+    const events: MswarmJobEvent[] = [];
+    let sequence = 0;
+    const emitEvent = async (event: Omit<MswarmJobEvent, "job_id" | "sequence" | "timestamp">) => {
+      const next: MswarmJobEvent = {
+        job_id: envelope.job_id,
+        sequence,
+        timestamp: new Date().toISOString(),
+        ...event
+      };
+      sequence += 1;
+      events.push(next);
+      await options.onEvent?.(next);
+    };
+    const failed = async (
+      code: string,
+      message: string,
+      validationIssues?: MswarmGenericJobValidationIssue[]
+    ): Promise<MswarmGenericJobExecutionResult> => {
+      await emitEvent({
+        type: code === "cancelled" ? "cancelled" : "failed",
+        message,
+        data: { code }
+      });
+      const status: MswarmJobResult["status"] = code === "cancelled" ? "cancelled" : "failed";
+      const result: MswarmJobResult = {
+        job_id: envelope.job_id,
+        status,
+        error: {
+          code,
+          message,
+          retryable: code === "timeout"
+        },
+        finished_at: new Date().toISOString()
+      };
+      return {
+        job_id: envelope.job_id,
+        request_id: envelope.request_id,
+        status,
+        result,
+        events,
+        ...(validationIssues?.length ? { validation_issues: validationIssues } : {}),
+        timing: { local_latency_ms: Date.now() - startedAt }
+      };
+    };
+
+    if (!this.config.genericJobsEnabled) {
+      return failed("feature_disabled", "Generic node jobs are disabled on this node.");
+    }
+    if (envelope.node_id !== this.config.nodeId) {
+      return failed("validation_failed", "generic job node_id does not match this node");
+    }
+    const validation = validateMswarmGenericJobRequest(envelope.job, {
+      registeredJobCatalog: registeredOwnerLocalGenericJobCatalog()
+    });
+    if (!validation.ok || !validation.value) {
+      return failed("validation_failed", "generic job request failed validation", validation.issues);
+    }
+    const job = validation.value;
+    const runner = runnerForGenericJob(job, this.genericRunners);
+    if (!runner) {
+      return failed("runner_unavailable", `No generic job runner is registered for ${job.job_type}.`);
+    }
+    if (job.job_type === RENDER_BLENDER_JOB_TYPE || job.job_type === CUDA_RUN_JOB_TYPE) {
+      const capabilityMismatch = genericJobCapabilityMismatch(job, await this.probeCapabilities());
+      if (capabilityMismatch) {
+        return failed(capabilityMismatch.code, capabilityMismatch.message);
+      }
+    }
+    let artifactContext: MswarmGenericJobArtifactContext;
+    try {
+      artifactContext = await this.artifactStore.prepareJobWorkspace(envelope.job_id, job);
+    } catch (error) {
+      return failed(
+        "validation_failed",
+        error instanceof Error ? error.message : String(error || "generic job artifact preparation failed")
+      );
+    }
+
+    const controller = new AbortController();
+    const timeoutMs = genericJobTimeoutMs(job, this.config.genericJobTimeoutMs || this.config.jobTimeoutMs);
+    const onAbort = () => {
+      if (!controller.signal.aborted) {
+        controller.abort(options.signal?.reason || "cancelled");
+      }
+    };
+    if (options.signal?.aborted) {
+      controller.abort(options.signal.reason || "cancelled");
+    }
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    const timeout = setTimeout(() => {
+      if (!controller.signal.aborted) {
+        controller.abort("timeout");
+      }
+    }, timeoutMs);
+
+    try {
+      await emitEvent({
+        type: "started",
+        message: `Running ${job.job_type}`,
+        data: {
+          runner: runner.id,
+          sandbox_profile: artifactContext.sandbox.name,
+          timeout_ms: timeoutMs
+        }
+      });
+      const runnerResult = await runner.run({
+        job,
+        signal: controller.signal,
+        emitEvent,
+        artifacts: artifactContext,
+        sandbox: artifactContext.sandbox
+      });
+      const status = runnerResult.status || "succeeded";
+      const outputContext =
+        status === "succeeded"
+          ? artifactContext
+          : {
+              ...artifactContext,
+              outputSpecs: artifactContext.outputSpecs.map((output) => ({ ...output, required: false }))
+            };
+      const outputArtifacts = await this.artifactStore.collectOutputs(outputContext, envelope.job_id);
+      for (const artifact of outputArtifacts) {
+        await emitEvent({
+          type: "artifact",
+          message: "output artifact collected",
+          data: { artifact }
+        });
+      }
+      const result: MswarmJobResult = {
+        ...runnerResult,
+        job_id: envelope.job_id,
+        status,
+        artifacts: [...(runnerResult.artifacts || []), ...outputArtifacts],
+        started_at: runnerResult.started_at || new Date(startedAt).toISOString(),
+        finished_at: runnerResult.finished_at || new Date().toISOString()
+      };
+      await emitEvent({
+        type: status === "succeeded" ? "completed" : "failed",
+        message: status === "succeeded" ? "generic job completed" : runnerResult.error?.message || "generic job failed",
+        data: {
+          status,
+          exit_code: result.exit_code,
+          runner: runner.id
+        }
+      });
+      return {
+        job_id: envelope.job_id,
+        request_id: envelope.request_id,
+        status,
+        result,
+        events,
+        timing: { local_latency_ms: Date.now() - startedAt }
+      };
+    } catch (error) {
+      const code = isGenericAbortError(error, controller.signal) ? abortErrorCode(controller.signal) : "runner_error";
+      const message = code === "timeout" || code === "cancelled"
+        ? abortErrorMessage(controller.signal)
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      return failed(code, message);
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   async executeJob(
@@ -2908,6 +5041,7 @@ export class SelfHostedNodeRuntime {
       models = [];
       version = null;
     }
+    const capabilityPayload = await this.buildCapabilityHeartbeatPayload(enrollment.runtimeToken);
     const heartbeatPayload: Record<string, unknown> = {
       node_id: this.config.nodeId,
       node_version: this.config.nodeVersion,
@@ -2936,7 +5070,8 @@ export class SelfHostedNodeRuntime {
         recent_failure_count: recentFailureCount,
         last_success_at: status === "online" ? new Date().toISOString() : null
       },
-      models
+      models,
+      capabilities: capabilityPayload
     };
     const heartbeatResponse = await this.gateway.heartbeat(enrollment.runtimeToken, heartbeatPayload);
     const exposedModelCount = models.filter((model) => model.exposed !== false).length;

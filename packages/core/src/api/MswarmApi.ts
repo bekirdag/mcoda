@@ -1,3 +1,4 @@
+import { createHmac, randomUUID } from 'node:crypto';
 import { GlobalRepository } from '@mcoda/db';
 import {
   CryptoHelper,
@@ -6,9 +7,18 @@ import {
   type AgentHealthStatus,
   type AgentModel,
   type CreateAgentInput,
+  type MswarmArtifactRef,
+  type MswarmGenericJobAuditEvent,
+  type MswarmGenericJobLifecycleSnapshot,
+  type MswarmGenericJobLogRecord,
+  type MswarmJobEvent,
+  type MswarmJobRequest,
+  type MswarmJobType,
   type UpdateAgentInput,
 } from '@mcoda/shared';
 import { MswarmConfigStore } from './MswarmConfigStore.js';
+
+export type { MswarmGenericJobLifecycleSnapshot } from '@mcoda/shared';
 
 export interface MswarmCloudAgent {
   slug: string;
@@ -286,6 +296,173 @@ export interface MswarmRuntimeIdentity {
   usageLimits: MswarmRuntimeUsageLimits;
 }
 
+export interface MswarmGenericNodeJobEnvelope {
+  job_id: string;
+  request_id: string;
+  node_id: string;
+  job: MswarmJobRequest;
+}
+
+export interface MswarmNodeAuthOptions {
+  nodeBaseUrl?: string;
+  token?: string;
+  signingSecret?: string;
+  tokenTtlSeconds?: number;
+}
+
+export interface MswarmCapabilityRequestOptions extends MswarmNodeAuthOptions {
+  nodeId?: string;
+}
+
+export interface MswarmGenericJobOpsRequestOptions extends MswarmNodeAuthOptions {
+  nodeId?: string;
+  auditLimit?: number;
+  auditOffset?: number;
+}
+
+export interface MswarmGenericJobReference extends MswarmNodeAuthOptions {
+  jobId: string;
+  nodeId?: string;
+  requestId?: string;
+  schemaVersion?: string;
+  jobType?: MswarmJobType | string;
+}
+
+export interface MswarmGenericJobArtifactUploadInput
+  extends MswarmGenericJobReference {
+  name?: string;
+  path: string;
+  contentBase64: string;
+  contentType?: string;
+  sha256?: string;
+  sizeBytes?: number;
+}
+
+export interface MswarmGenericJobArtifactUploadResult {
+  job_id: string;
+  artifact: MswarmArtifactRef;
+}
+
+export interface MswarmGenericJobEventsResult {
+  job_id: string;
+  events: MswarmJobEvent[];
+}
+
+export interface MswarmGenericJobLogsResult {
+  job_id: string;
+  logs: MswarmGenericJobLogRecord[];
+}
+
+export interface MswarmGenericJobArtifactsResult {
+  job_id: string;
+  artifacts: MswarmArtifactRef[];
+}
+
+export interface MswarmGenericJobOpsJobSummary {
+  job_id: string;
+  request_id: string;
+  tenant_id: string;
+  node_id?: string;
+  state: string;
+  job_type: string;
+  schema_version: string;
+  created_at: string;
+  updated_at: string;
+  queued_at?: string;
+  scheduled_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  retry_count: number;
+  max_retries: number;
+  progress_percent?: number;
+  last_event_type?: string;
+  last_event_message?: string;
+  artifact_count: number;
+  artifact_bytes: number;
+  log_bytes: number;
+}
+
+export interface MswarmGenericJobOpsSummary {
+  schema_version: string;
+  generated_at: string;
+  node: {
+    node_id: string;
+    listen_host?: string;
+    listen_port?: number;
+    owner_local: boolean;
+    generic_jobs_enabled: boolean;
+    artifact_store_configured: boolean;
+    max_concurrent_jobs: number;
+  };
+  capabilities: Record<string, unknown>;
+  queue: {
+    jobs: MswarmGenericJobOpsJobSummary[];
+    totals_by_state: Record<string, number>;
+    active_jobs: number;
+    queued_jobs: number;
+    terminal_jobs: number;
+  };
+  quota: {
+    max_concurrent_jobs: number;
+    active_jobs: number;
+    queued_jobs: number;
+    available_slots: number;
+    production_enforced: boolean;
+    limits: Record<string, unknown>;
+  };
+  usage: {
+    total_jobs: number;
+    active_jobs: number;
+    terminal_jobs: number;
+    succeeded_jobs: number;
+    failed_jobs: number;
+    cancelled_jobs: number;
+    blocked_jobs: number;
+    expired_jobs: number;
+    gpu_seconds: number;
+    artifact_count: number;
+    artifact_bytes: number;
+    event_count: number;
+    audit_event_count: number;
+    stdout_bytes: number;
+    stderr_bytes: number;
+    log_bytes: number;
+  };
+  audit: {
+    total: number;
+    offset: number;
+    limit: number;
+    events: MswarmGenericJobAuditEvent[];
+  };
+}
+
+export interface MswarmGenericJobTokenInput {
+  signingSecret: string;
+  nodeId: string;
+  jobId: string;
+  requestId: string;
+  schemaVersion: string;
+  jobType: MswarmJobType | string;
+  deadlineAt?: string;
+  ttlSeconds?: number;
+  allowedRunnerIds?: string[];
+  capabilityNames?: string[];
+  policyId?: string;
+  policyVersion?: string;
+  capabilityLeaseId?: string;
+  capabilitySnapshotId?: string;
+}
+
+export interface MswarmCapabilityTokenInput {
+  signingSecret: string;
+  nodeId: string;
+  deadlineAt?: string;
+  ttlSeconds?: number;
+  nonce?: string;
+}
+
+export type MswarmGenericJobOpsTokenInput = MswarmCapabilityTokenInput;
+
 interface ListMswarmCloudAgentsResponse {
   agents?: unknown;
 }
@@ -302,6 +479,8 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_SLUG_PREFIX = 'mswarm-cloud';
 const DEFAULT_SELF_HOSTED_AGENT_SLUG_PREFIX = 'mswarm-self-hosted';
 const DEFAULT_WORKER_AGENT_SLUG_PREFIX = 'mswarm-worker';
+const DEFAULT_LOCAL_NODE_BASE_URL = 'http://127.0.0.1:18488/';
+const DEFAULT_NODE_TOKEN_TTL_SECONDS = 3_600;
 export const MSWARM_CONSENT_POLICY_VERSION = '2026-03-18';
 export const MCODA_FREE_CLIENT_TYPE = 'free_mcoda_client';
 const MCODA_PRODUCT_SLUG = 'mcoda';
@@ -383,6 +562,115 @@ const normalizeOptionalNonNegativeNumber = (
   }
   return value;
 };
+
+const base64UrlEncode = (value: Buffer): string =>
+  value
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+
+const signHmacSha256 = (input: string, secret: string): string =>
+  base64UrlEncode(createHmac('sha256', secret).update(input).digest());
+
+const signJwtLikePayload = (
+  payload: Record<string, unknown>,
+  signingSecret: string
+): string => {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const encodedHeader = base64UrlEncode(
+    Buffer.from(JSON.stringify(header), 'utf8')
+  );
+  const encodedPayload = base64UrlEncode(
+    Buffer.from(JSON.stringify(payload), 'utf8')
+  );
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+  return `${signingInput}.${signHmacSha256(signingInput, signingSecret)}`;
+};
+
+const normalizeTokenTtlSeconds = (value: number | undefined): number => {
+  if (value === undefined) return DEFAULT_NODE_TOKEN_TTL_SECONDS;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error('tokenTtlSeconds must be a positive integer');
+  }
+  return Math.trunc(value);
+};
+
+const tokenTimeFields = (
+  deadlineAt: string | undefined,
+  ttlSeconds: number | undefined
+): { deadline_at: string; iat: number; exp: number } => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const ttl = normalizeTokenTtlSeconds(ttlSeconds);
+  const exp = nowSeconds + ttl;
+  return {
+    deadline_at: deadlineAt ?? new Date(exp * 1000).toISOString(),
+    iat: nowSeconds,
+    exp,
+  };
+};
+
+export function signMswarmGenericJobToken(
+  input: MswarmGenericJobTokenInput
+): string {
+  const secret = resolveString(input.signingSecret);
+  if (!secret) throw new Error('signingSecret is required');
+  const payload = {
+    node_id: requireText(input.nodeId, 'nodeId'),
+    job_id: requireText(input.jobId, 'jobId'),
+    request_id: requireText(input.requestId, 'requestId'),
+    schema_version: requireText(input.schemaVersion, 'schemaVersion'),
+    job_type: requireText(input.jobType, 'jobType'),
+    scope: 'self_hosted.generic_job.invoke',
+    allowed_runner_ids: input.allowedRunnerIds?.length
+      ? input.allowedRunnerIds
+      : undefined,
+    capability_names: input.capabilityNames?.length
+      ? input.capabilityNames
+      : undefined,
+    policy_id: input.policyId,
+    policy_version: input.policyVersion,
+    capability_lease_id: input.capabilityLeaseId,
+    capability_snapshot_id: input.capabilitySnapshotId,
+    ...tokenTimeFields(input.deadlineAt, input.ttlSeconds),
+  };
+  return signJwtLikePayload(payload, secret);
+}
+
+export function signMswarmCapabilityToken(
+  input: MswarmCapabilityTokenInput
+): string {
+  const secret = resolveString(input.signingSecret);
+  if (!secret) throw new Error('signingSecret is required');
+  const payload = {
+    node_id: requireText(input.nodeId, 'nodeId'),
+    scope: 'self_hosted.capabilities.read',
+    nonce: input.nonce ?? randomUUID(),
+    ...tokenTimeFields(input.deadlineAt, input.ttlSeconds),
+  };
+  return signJwtLikePayload(payload, secret);
+}
+
+export function signMswarmGenericJobOpsToken(
+  input: MswarmGenericJobOpsTokenInput
+): string {
+  const secret = resolveString(input.signingSecret);
+  if (!secret) throw new Error('signingSecret is required');
+  const payload = {
+    node_id: requireText(input.nodeId, 'nodeId'),
+    scope: 'self_hosted.generic_job.ops.read',
+    nonce: input.nonce ?? randomUUID(),
+    ...tokenTimeFields(input.deadlineAt, input.ttlSeconds),
+  };
+  return signJwtLikePayload(payload, secret);
+}
+
+function requireText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${label} is required`);
+  }
+  return value.trim();
+}
 
 const resolveOptions = async (
   options: MswarmApiOptions = {}
@@ -1181,6 +1469,274 @@ export class MswarmApi {
     };
   }
 
+  private nodeBaseUrl(input?: MswarmNodeAuthOptions): string {
+    return normalizeBaseUrl(
+      input?.nodeBaseUrl ??
+        process.env.MCODA_MSWARM_NODE_BASE_URL ??
+        DEFAULT_LOCAL_NODE_BASE_URL,
+      'MCODA_MSWARM_NODE_BASE_URL'
+    );
+  }
+
+  private genericJobToken(input: MswarmGenericJobReference): string {
+    const token = resolveString(input.token ?? process.env.MCODA_MSWARM_NODE_TOKEN);
+    if (token) return token;
+    const signingSecret = resolveString(
+      input.signingSecret ??
+        process.env.MCODA_MSWARM_NODE_SIGNING_SECRET ??
+        process.env.MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET
+    );
+    if (!signingSecret) {
+      throw new Error(
+        'A generic job token or owner-local signing secret is required'
+      );
+    }
+    return signMswarmGenericJobToken({
+      signingSecret,
+      nodeId: requireText(input.nodeId, 'nodeId'),
+      jobId: input.jobId,
+      requestId: requireText(input.requestId, 'requestId'),
+      schemaVersion: requireText(input.schemaVersion, 'schemaVersion'),
+      jobType: requireText(input.jobType, 'jobType'),
+      ttlSeconds: input.tokenTtlSeconds,
+    });
+  }
+
+  private capabilityToken(input: MswarmCapabilityRequestOptions = {}): string {
+    const token = resolveString(input.token ?? process.env.MCODA_MSWARM_NODE_TOKEN);
+    if (token) return token;
+    const signingSecret = resolveString(
+      input.signingSecret ??
+        process.env.MCODA_MSWARM_NODE_SIGNING_SECRET ??
+        process.env.MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET
+    );
+    if (!signingSecret) {
+      throw new Error(
+        'A capability token or owner-local signing secret is required'
+      );
+    }
+    const nodeId = requireText(
+      input.nodeId ??
+        process.env.MCODA_MSWARM_NODE_ID ??
+        process.env.MSWARM_SELF_HOSTED_NODE_ID,
+      'nodeId'
+    );
+    return signMswarmCapabilityToken({
+      signingSecret,
+      nodeId,
+      ttlSeconds: input.tokenTtlSeconds,
+    });
+  }
+
+  private genericJobOpsToken(input: MswarmGenericJobOpsRequestOptions = {}): string {
+    const token = resolveString(input.token ?? process.env.MCODA_MSWARM_NODE_OPS_TOKEN);
+    if (token) return token;
+    const signingSecret = resolveString(
+      input.signingSecret ??
+        process.env.MCODA_MSWARM_NODE_SIGNING_SECRET ??
+        process.env.MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET
+    );
+    if (!signingSecret) {
+      throw new Error(
+        'A generic job ops token or owner-local signing secret is required'
+      );
+    }
+    const nodeId = requireText(
+      input.nodeId ??
+        process.env.MCODA_MSWARM_NODE_ID ??
+        process.env.MSWARM_SELF_HOSTED_NODE_ID,
+      'nodeId'
+    );
+    return signMswarmGenericJobOpsToken({
+      signingSecret,
+      nodeId,
+      ttlSeconds: input.tokenTtlSeconds,
+    });
+  }
+
+  private referenceFromJob(
+    job: MswarmGenericNodeJobEnvelope,
+    options: MswarmNodeAuthOptions = {}
+  ): MswarmGenericJobReference {
+    return {
+      ...options,
+      jobId: job.job_id,
+      nodeId: job.node_id,
+      requestId: job.request_id,
+      schemaVersion: job.job.schema_version,
+      jobType: job.job.job_type,
+    };
+  }
+
+  async listGpuCapabilities(
+    options: MswarmCapabilityRequestOptions = {}
+  ): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>(
+      '/v1/swarm/self-hosted/node/capabilities',
+      undefined,
+      {
+        baseUrl: this.nodeBaseUrl(options),
+        headers: {
+          authorization: `Bearer ${this.capabilityToken(options)}`,
+        },
+      }
+    );
+  }
+
+  async getGenericJobOps(
+    options: MswarmGenericJobOpsRequestOptions = {}
+  ): Promise<MswarmGenericJobOpsSummary> {
+    return this.requestJson<MswarmGenericJobOpsSummary>(
+      '/v1/swarm/self-hosted/node/generic-job-control/ops',
+      {
+        audit_limit: options.auditLimit,
+        audit_offset: options.auditOffset,
+      },
+      {
+        baseUrl: this.nodeBaseUrl(options),
+        headers: {
+          authorization: `Bearer ${this.genericJobOpsToken(options)}`,
+        },
+      }
+    );
+  }
+
+  async uploadGenericJobArtifact(
+    input: MswarmGenericJobArtifactUploadInput
+  ): Promise<MswarmGenericJobArtifactUploadResult> {
+    const token = this.genericJobToken(input);
+    return this.requestJson<MswarmGenericJobArtifactUploadResult>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}/artifacts`,
+      undefined,
+      {
+        method: 'POST',
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+        body: {
+          name: input.name,
+          path: input.path,
+          content_base64: input.contentBase64,
+          content_type: input.contentType,
+          sha256: input.sha256,
+          size_bytes: input.sizeBytes,
+        },
+      }
+    );
+  }
+
+  async runGenericJob(
+    job: MswarmGenericNodeJobEnvelope,
+    options: MswarmNodeAuthOptions = {}
+  ): Promise<MswarmGenericJobLifecycleSnapshot> {
+    const reference = this.referenceFromJob(job, options);
+    return this.requestJson<MswarmGenericJobLifecycleSnapshot>(
+      '/v1/swarm/self-hosted/node/generic-job-control/jobs',
+      undefined,
+      {
+        method: 'POST',
+        baseUrl: this.nodeBaseUrl(options),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(reference)}`,
+        },
+        body: job,
+      }
+    );
+  }
+
+  async getGenericJob(
+    input: MswarmGenericJobReference
+  ): Promise<MswarmGenericJobLifecycleSnapshot> {
+    return this.requestJson<MswarmGenericJobLifecycleSnapshot>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}`,
+      undefined,
+      {
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(input)}`,
+        },
+      }
+    );
+  }
+
+  async getGenericJobEvents(
+    input: MswarmGenericJobReference
+  ): Promise<MswarmGenericJobEventsResult> {
+    return this.requestJson<MswarmGenericJobEventsResult>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}/events`,
+      undefined,
+      {
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(input)}`,
+        },
+      }
+    );
+  }
+
+  async getGenericJobLogs(
+    input: MswarmGenericJobReference
+  ): Promise<MswarmGenericJobLogsResult> {
+    return this.requestJson<MswarmGenericJobLogsResult>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}/logs`,
+      undefined,
+      {
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(input)}`,
+        },
+      }
+    );
+  }
+
+  async getGenericJobArtifacts(
+    input: MswarmGenericJobReference
+  ): Promise<MswarmGenericJobArtifactsResult> {
+    return this.requestJson<MswarmGenericJobArtifactsResult>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}/artifacts`,
+      undefined,
+      {
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(input)}`,
+        },
+      }
+    );
+  }
+
+  async cancelGenericJob(
+    input: MswarmGenericJobReference
+  ): Promise<MswarmGenericJobLifecycleSnapshot> {
+    return this.requestJson<MswarmGenericJobLifecycleSnapshot>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}/cancel`,
+      undefined,
+      {
+        method: 'POST',
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(input)}`,
+        },
+      }
+    );
+  }
+
+  async retryGenericJob(
+    input: MswarmGenericJobReference
+  ): Promise<MswarmGenericJobLifecycleSnapshot> {
+    return this.requestJson<MswarmGenericJobLifecycleSnapshot>(
+      `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(input.jobId)}/retry`,
+      undefined,
+      {
+        method: 'POST',
+        baseUrl: this.nodeBaseUrl(input),
+        headers: {
+          authorization: `Bearer ${this.genericJobToken(input)}`,
+        },
+      }
+    );
+  }
+
   private requireApiKey(): string {
     if (!this.options.apiKey) {
       throw new Error('MCODA_MSWARM_API_KEY is required');
@@ -1191,9 +1747,14 @@ export class MswarmApi {
   private async requestJson<T>(
     pathname: string,
     query?: Record<string, string | number | undefined>,
-    init?: { method?: string; body?: unknown; headers?: Record<string, string> }
+    init?: {
+      method?: string;
+      body?: unknown;
+      headers?: Record<string, string>;
+      baseUrl?: string;
+    }
   ): Promise<T> {
-    const url = new URL(pathname, this.options.baseUrl);
+    const url = new URL(pathname, init?.baseUrl ?? this.options.baseUrl);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
         if (value === undefined) continue;

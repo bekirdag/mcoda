@@ -34,6 +34,7 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 - Execution: `mcoda add-tests`, `mcoda work-on-tasks`, `mcoda code-review`, `mcoda qa-tasks`
 - Backlog: `mcoda backlog`, `mcoda task`
 - Jobs/telemetry: `mcoda jobs`, `mcoda tokens`, `mcoda telemetry`
+- Owner-local GPU jobs: `mcoda gpu list`, `mcoda gpu ops`, `mcoda job artifact upload|run|status|logs|events|artifacts|cancel|retry`
 - Agents: `mcoda test-agent`, `mcoda agent-run`
 - Updates: `mcoda update --check`
 
@@ -45,6 +46,7 @@ If that sufficiency pass errors, create-tasks continues (fail-open) and records 
 Environment variables are optional overrides for workspace settings:
 - `MCODA_DOCDEX_URL` to point at a docdex server.
 - `MCODA_API_BASE_URL` or `MCODA_JOBS_API_URL` for job APIs.
+- `MCODA_MSWARM_NODE_BASE_URL`, `MCODA_MSWARM_NODE_ID`, and `MCODA_MSWARM_NODE_SIGNING_SECRET` for owner-local generic GPU job commands.
 - `MCODA_TELEMETRY` set to `off` to disable telemetry.
 - `MCODA_STREAM_IO=1` to emit agent I/O lines to stderr.
 

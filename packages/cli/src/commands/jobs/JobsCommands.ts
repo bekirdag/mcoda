@@ -1,6 +1,7 @@
 import path from "node:path";
 import { JobInsightsService, JobResumeService, JobService, TelemetryService, TokenUsageRow, WorkspaceResolver, WorkspaceResolution } from "@mcoda/core";
 import { DocsCommands } from "../docs/DocsCommands.js";
+import { GpuJobCommands } from "../gpu/GpuCommands.js";
 
 type JobSubcommand = "list" | "status" | "watch" | "logs" | "inspect" | "resume" | "cancel" | "tokens";
 
@@ -464,6 +465,10 @@ const handleTokens = async (parsed: ParsedJobArgs, workspace: WorkspaceResolutio
 
 export class JobsCommands {
   static async run(argv: string[]): Promise<void> {
+    if (GpuJobCommands.shouldHandle(argv)) {
+      await GpuJobCommands.run(argv);
+      return;
+    }
     const parsed = parseJobArgs(argv);
     const workspace = await WorkspaceResolver.resolveWorkspace({
       cwd: process.cwd(),

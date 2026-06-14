@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/Contracts/AgentSetupClient.php';
 require_once __DIR__ . '/../src/Contracts/AgentSetupStore.php';
+require_once __DIR__ . '/../src/Contracts/GpuJobClient.php';
 require_once __DIR__ . '/../src/Support/DefaultStages.php';
+require_once __DIR__ . '/../src/Support/GpuJobToken.php';
 require_once __DIR__ . '/../src/Support/RequestPayload.php';
 require_once __DIR__ . '/../src/Storage/FileAgentSetupStore.php';
 require_once __DIR__ . '/../src/McodaAgentSetupManager.php';
@@ -13,6 +15,7 @@ use Mcoda\LaravelAgentSetup\Contracts\AgentSetupClient;
 use Mcoda\LaravelAgentSetup\McodaAgentSetupManager;
 use Mcoda\LaravelAgentSetup\Storage\FileAgentSetupStore;
 use Mcoda\LaravelAgentSetup\Support\DefaultStages;
+use Mcoda\LaravelAgentSetup\Support\GpuJobToken;
 use Mcoda\LaravelAgentSetup\Support\RequestPayload;
 
 final class DisabledRemoteClient implements AgentSetupClient
@@ -187,6 +190,28 @@ $assert($snapshot['assignments']['translation'] === 'mswarm-cloud-demo-translato
 $test = $manager->testAgent(['slug' => 'mswarm-cloud-demo-translator']);
 $assert($test['ok'] === false, 'local fallback testAgent should fail closed');
 $assert(str_contains($test['error'], 'MCODA_AGENT_SETUP_BACKEND_URL'), 'testAgent error should name backend configuration');
+
+$genericToken = GpuJobToken::genericJob([
+    'signingSecret' => 'owner-local-signing-secret',
+    'nodeId' => 'node-a',
+    'jobId' => 'job-a',
+    'requestId' => 'request-a',
+    'schemaVersion' => '2026-06-14',
+    'jobType' => 'cuda.run',
+]);
+$assert(substr_count($genericToken, '.') === 2, 'generic GPU job token should be JWT-like');
+
+$capabilityToken = GpuJobToken::capability([
+    'signingSecret' => 'owner-local-signing-secret',
+    'nodeId' => 'node-a',
+]);
+$assert(substr_count($capabilityToken, '.') === 2, 'GPU capability token should be JWT-like');
+
+$opsToken = GpuJobToken::ops([
+    'signingSecret' => 'owner-local-signing-secret',
+    'nodeId' => 'node-a',
+]);
+$assert(substr_count($opsToken, '.') === 2, 'GPU ops token should be JWT-like');
 
 @unlink($storePath);
 fwrite(STDOUT, "mcoda laravel agent setup smoke passed\n");

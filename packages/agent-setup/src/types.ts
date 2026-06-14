@@ -1,3 +1,8 @@
+import type {
+  MswarmGenericJobOpsJobSummary,
+  MswarmGenericJobOpsSummary,
+} from "@mcoda/core";
+
 export type McodaRuntimeMode = "programmatic" | "cli_fallback" | "custom";
 
 export interface McodaRuntimeInfo {
@@ -164,6 +169,9 @@ export interface McodaAgentSetupSnapshot {
   updatedAt: string | null;
   fetchedAt: string;
 }
+
+export type McodaGpuJobOpsPanelData = MswarmGenericJobOpsSummary;
+export type McodaGpuJobOpsPanelJob = MswarmGenericJobOpsJobSummary;
 
 export interface McodaAgentTestResult {
   slug: string;
