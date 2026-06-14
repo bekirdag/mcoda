@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/mswarm",
-  "version": "0.1.74",
+  "version": "0.1.75",
   "description": "Owner-run mswarm node for exposing local mcoda agents through the mswarm self-hosted gateway.",
   "type": "module",
   "main": "dist/server.js",

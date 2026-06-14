@@ -9,6 +9,8 @@ const CODEX_COMMAND_ENV = "MCODA_CODEX_COMMAND";
 const CODEX_COMMAND_ARGS_ENV = "MCODA_CODEX_COMMAND_ARGS";
 const CODEX_TIMEOUT_ENV = "MCODA_CODEX_TIMEOUT_MS";
 const CODEX_EXIT_GRACE_ENV = "MCODA_CODEX_EXIT_GRACE_MS";
+const CODEX_REASONING_ENV = "MCODA_CODEX_REASONING_EFFORT";
+const CODEX_REASONING_ENV_FALLBACK = "CODEX_REASONING_EFFORT";
 
 const restoreEnvVar = (name: string, value: string | undefined): void => {
   if (value === undefined) {
@@ -147,6 +149,53 @@ setTimeout(() => {
     restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
     restoreEnvVar("MCODA_SKIP_CLI_CHECKS", originalSkip);
     restoreEnvVar(CODEX_TIMEOUT_ENV, originalTimeout);
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("Codex CLI runner honors explicit reasoning effort overrides", { concurrency: false }, async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "codex-runner-reasoning-override-"));
+  const originalCommand = process.env[CODEX_COMMAND_ENV];
+  const originalCommandArgs = process.env[CODEX_COMMAND_ARGS_ENV];
+  const originalSkip = process.env.MCODA_SKIP_CLI_CHECKS;
+  const originalTimeout = process.env[CODEX_TIMEOUT_ENV];
+  const originalReasoning = process.env[CODEX_REASONING_ENV];
+  const originalFallbackReasoning = process.env[CODEX_REASONING_ENV_FALLBACK];
+  try {
+    const scriptPath = await writeFakeCodexScript(
+      tempDir,
+      `
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const args = process.argv.slice(2);
+  process.stdout.write(JSON.stringify({
+    type: "response.output_text.done",
+    text: JSON.stringify({ args }),
+  }) + "\\n");
+});
+process.stdin.on("error", () => {});
+`,
+    );
+    process.env.MCODA_SKIP_CLI_CHECKS = "1";
+    process.env[CODEX_COMMAND_ENV] = process.execPath;
+    process.env[CODEX_COMMAND_ARGS_ENV] = JSON.stringify([scriptPath]);
+    process.env[CODEX_TIMEOUT_ENV] = "1000";
+    process.env[CODEX_REASONING_ENV] = "low";
+    process.env[CODEX_REASONING_ENV_FALLBACK] = "medium";
+
+    const result = await runCodexExec("hello", "gpt-5.5", undefined, 1000, "xhigh");
+    const parsed = JSON.parse(result.output);
+    assert.ok(parsed.args.includes("--model"));
+    assert.ok(parsed.args.includes("gpt-5.5"));
+    assert.ok(parsed.args.includes("model_reasoning_effort=xhigh"));
+    assert.ok(!parsed.args.includes("model_reasoning_effort=low"));
+  } finally {
+    restoreEnvVar(CODEX_COMMAND_ENV, originalCommand);
+    restoreEnvVar(CODEX_COMMAND_ARGS_ENV, originalCommandArgs);
+    restoreEnvVar("MCODA_SKIP_CLI_CHECKS", originalSkip);
+    restoreEnvVar(CODEX_TIMEOUT_ENV, originalTimeout);
+    restoreEnvVar(CODEX_REASONING_ENV, originalReasoning);
+    restoreEnvVar(CODEX_REASONING_ENV_FALLBACK, originalFallbackReasoning);
     await rm(tempDir, { recursive: true, force: true });
   }
 });

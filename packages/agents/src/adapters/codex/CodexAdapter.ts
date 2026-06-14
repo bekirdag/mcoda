@@ -18,6 +18,13 @@ const extractTimeoutMs = (request: InvocationRequest): number | undefined => {
   return Math.floor(candidate);
 };
 
+const extractReasoningEffort = (config: AdapterConfig): string | undefined => {
+  const candidate = config.reasoningEffort;
+  if (typeof candidate !== "string") return undefined;
+  const trimmed = candidate.trim();
+  return trimmed ? trimmed : undefined;
+};
+
 export class CodexAdapter implements AgentAdapter {
   constructor(private config: AdapterConfig) {}
 
@@ -45,6 +52,7 @@ export class CodexAdapter implements AgentAdapter {
       this.config.model,
       extractOutputSchema(request),
       extractTimeoutMs(request),
+      extractReasoningEffort(this.config),
     );
     return {
       output: result.output,
@@ -69,6 +77,7 @@ export class CodexAdapter implements AgentAdapter {
       this.config.model,
       extractOutputSchema(request),
       extractTimeoutMs(request),
+      extractReasoningEffort(this.config),
     )) {
       yield {
         output: chunk.output,

@@ -27,6 +27,7 @@ export interface AdapterConfig {
     supportsTools?: boolean;
     supportsJsonSchema?: boolean;
     supportsGbnf?: boolean;
+    reasoningEffort?: string;
 }
 export interface DocdexRuntimeContext {
     enabled?: boolean;

@@ -13,6 +13,13 @@ const extractTimeoutMs = (request) => {
     }
     return Math.floor(candidate);
 };
+const extractReasoningEffort = (config) => {
+    const candidate = config.reasoningEffort;
+    if (typeof candidate !== "string")
+        return undefined;
+    const trimmed = candidate.trim();
+    return trimmed ? trimmed : undefined;
+};
 export class CodexAdapter {
     constructor(config) {
         this.config = config;
@@ -34,7 +41,7 @@ export class CodexAdapter {
     async invoke(request) {
         const health = cliHealthy(true);
         const cliDetails = health.details;
-        const result = await runCodexExec(request.input, this.config.model, extractOutputSchema(request), extractTimeoutMs(request));
+        const result = await runCodexExec(request.input, this.config.model, extractOutputSchema(request), extractTimeoutMs(request), extractReasoningEffort(this.config));
         return {
             output: result.output,
             adapter: this.config.adapter ?? "codex-cli",
@@ -52,7 +59,7 @@ export class CodexAdapter {
     async *invokeStream(request) {
         const health = cliHealthy(true);
         const cliDetails = health.details;
-        for await (const chunk of runCodexExecStream(request.input, this.config.model, extractOutputSchema(request), extractTimeoutMs(request))) {
+        for await (const chunk of runCodexExecStream(request.input, this.config.model, extractOutputSchema(request), extractTimeoutMs(request), extractReasoningEffort(this.config))) {
             yield {
                 output: chunk.output,
                 adapter: this.config.adapter ?? "codex-cli",

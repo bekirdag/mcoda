@@ -589,8 +589,10 @@ const normalizeReasoningEffort = (raw: string | undefined): string | undefined =
   return normalized;
 };
 
-const resolveReasoningEffort = (model?: string): string | undefined => {
-  const configured = normalizeReasoningEffort(process.env[CODEX_REASONING_ENV] ?? process.env[CODEX_REASONING_ENV_FALLBACK]);
+const resolveReasoningEffort = (model?: string, effort?: string): string | undefined => {
+  const configured = normalizeReasoningEffort(
+    effort ?? process.env[CODEX_REASONING_ENV] ?? process.env[CODEX_REASONING_ENV_FALLBACK],
+  );
   const normalizedModel = (model ?? "").toLowerCase();
   const isGpt51 = normalizedModel.includes("gpt-5.1");
   if (configured) {
@@ -652,6 +654,7 @@ interface CodexInvocationOptions {
   hooks?: CodexInvocationHooks;
   outputSchema?: Record<string, unknown>;
   timeoutMs?: number;
+  reasoningEffort?: string;
 }
 
 const materializeOutputSchema = async (
@@ -682,7 +685,7 @@ const invokeCodexProcess = async (
 ): Promise<{ output: string; raw: string; forcedExit: boolean }> => {
   const resolvedModel = model ?? "gpt-5.1-codex-max";
   const sandboxArgs = resolveSandboxArgs();
-  const reasoningEffort = resolveReasoningEffort(resolvedModel);
+  const reasoningEffort = resolveReasoningEffort(resolvedModel, options?.reasoningEffort);
   const codexCommand = resolveCodexCommand();
   const args = [...codexCommand.preArgs, ...sandboxArgs.args, "exec", "--model", resolvedModel, "--json"];
   const schemaFile = await materializeOutputSchema(options?.outputSchema);
@@ -888,6 +891,7 @@ export const runCodexExec = async (
   model?: string,
   outputSchema?: Record<string, unknown>,
   timeoutMs?: number,
+  reasoningEffort?: string,
 ): Promise<{ output: string; raw: string }> => {
   if (process.env.MCODA_CLI_STUB === "1") {
     const output = `qa-stub:${prompt}`;
@@ -895,7 +899,7 @@ export const runCodexExec = async (
     return { output, raw };
   }
   cliHealthy(true);
-  const result = await invokeCodexProcess(prompt, model, { outputSchema, timeoutMs });
+  const result = await invokeCodexProcess(prompt, model, { outputSchema, timeoutMs, reasoningEffort });
   return { output: result.output, raw: result.raw };
 };
 
@@ -904,6 +908,7 @@ export async function* runCodexExecStream(
   model?: string,
   outputSchema?: Record<string, unknown>,
   timeoutMs?: number,
+  reasoningEffort?: string,
 ): AsyncGenerator<{ output: string; raw: string }, void, unknown> {
   if (process.env.MCODA_CLI_STUB === "1") {
     const output = `qa-stub:${prompt}\n`;
@@ -930,9 +935,10 @@ export async function* runCodexExecStream(
   void invokeCodexProcess(prompt, model, {
     outputSchema,
     timeoutMs,
+    reasoningEffort,
     hooks: {
       onLine: (line) => {
-      formatter.handleLine(line);
+        formatter.handleLine(line);
       },
       onAssistantEvent: (event, rawLine) => {
         if (event.kind === "delta") {
