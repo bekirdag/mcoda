@@ -3,7 +3,7 @@
 ## Unreleased
 - Add OSS docs, CI, release automation, and npm packaging metadata.
 
-## 0.1.77
+## 0.1.78
 - Add owner-local mswarm generic GPU/package job support across shared
   contracts, core APIs, CLI commands, SDK helpers, and docs.
 

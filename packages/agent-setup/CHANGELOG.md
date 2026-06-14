@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.77
+## 0.1.78
 
 - Add the trusted backend `createMcodaGpuJobClient()` helper for owner-local
   mswarm generic GPU/package jobs.

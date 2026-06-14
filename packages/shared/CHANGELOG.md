@@ -3,7 +3,7 @@
 ## Unreleased
 - Initial public packaging for @mcoda/shared.
 
-## 0.1.77
+## 0.1.78
 - Add versioned mswarm generic job, lifecycle, capability, and artifact
   sandbox contracts for owner-local GPU/package jobs.
 

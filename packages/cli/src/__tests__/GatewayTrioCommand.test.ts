@@ -169,8 +169,7 @@ describe("gateway-trio argument parsing", () => {
   });
 });
 
-describe("gateway-trio CLI output shape", () => {
-  it("emits structured JSON output", async () => {
+it("gateway-trio emits structured JSON output", { concurrency: false }, async () => {
     const originalCreate = GatewayTrioService.create;
     const fakeResult = {
       jobId: "job-123",
@@ -199,18 +198,21 @@ describe("gateway-trio CLI output shape", () => {
       logs.push(String(msg));
     };
     console.error = () => {};
-    await GatewayTrioCommand.run(["--json"]);
-    console.log = originalLog;
-    console.error = originalError;
-    GatewayTrioService.create = originalCreate;
+    try {
+      await GatewayTrioCommand.run(["--json"]);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      GatewayTrioService.create = originalCreate;
+    }
     const parsed = JSON.parse(logs[0]);
     assert.equal(parsed.jobId, "job-123");
     assert.equal(parsed.commandRunId, "cmd-123");
     assert.equal(parsed.tasks[0].taskKey, "TASK-1");
     assert.equal(parsed.summary.completed, 1);
-  });
+});
 
-  it("streams watch progress to stderr after totals are known", async () => {
+it("gateway-trio streams watch progress to stderr after totals are known", { concurrency: false }, async () => {
     const originalCreate = GatewayTrioService.create;
     const originalGetJob = JobService.prototype.getJob;
     const originalClose = JobService.prototype.close;
@@ -228,9 +230,6 @@ describe("gateway-trio CLI output shape", () => {
     JobService.prototype.getJob = async () => {
       jobCalls += 1;
       if (jobCalls === 1) {
-        return { ...baseJob, jobState: "running" as const };
-      }
-      if (jobCalls === 2) {
         return { ...baseJob, jobState: "running" as const, totalItems: 2, processedItems: 0 };
       }
       return {
@@ -254,7 +253,10 @@ describe("gateway-trio CLI output shape", () => {
     GatewayTrioService.create = async () => ({
       run: async (request: any) => {
         request.onJobStart?.("job-123", "cmd-123");
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        const deadline = Date.now() + 1000;
+        while (jobCalls === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
         return fakeResult;
       },
       close: async () => {},
@@ -288,16 +290,20 @@ describe("gateway-trio CLI output shape", () => {
     assert.ok(progressLines.length > 0);
     assert.equal(logs.some((line) => line.includes("gateway-trio job job-123")), false);
     assert.equal(progressLines.some((line) => line.includes("0/0")), false);
-  });
+});
 
-  it("wraps gateway output in start/end markers", async () => {
+it("gateway-trio wraps gateway output in start/end markers", { concurrency: false }, async () => {
     const originalCreate = GatewayTrioService.create;
     const originalWrite = process.stdout.write;
+    const originalInfo = console.info;
+    const originalLog = console.log;
     const captured: string[] = [];
-    process.stdout.write = ((chunk: any) => {
-      captured.push(String(chunk));
-      return true;
-    }) as any;
+    console.log = (msg?: any) => {
+      captured.push(String(msg));
+    };
+    console.info = (msg?: any) => {
+      captured.push(String(msg));
+    };
     const fakeResult = {
       jobId: "job-123",
       commandRunId: "cmd-123",
@@ -323,7 +329,15 @@ describe("gateway-trio CLI output shape", () => {
           chosenAgent: "worker-agent",
           startedAt,
         });
-        request.onGatewayChunk?.("gateway-output");
+        process.stdout.write = ((chunk: any) => {
+          captured.push(String(chunk));
+          return true;
+        }) as any;
+        try {
+          request.onGatewayChunk?.("gateway-output");
+        } finally {
+          process.stdout.write = originalWrite;
+        }
         request.onGatewayEnd?.({
           taskKey: "TASK-1",
           job: "work-on-tasks",
@@ -341,6 +355,8 @@ describe("gateway-trio CLI output shape", () => {
       await GatewayTrioCommand.run([]);
     } finally {
       process.stdout.write = originalWrite;
+      console.log = originalLog;
+      console.info = originalInfo;
       GatewayTrioService.create = originalCreate;
     }
     const output = captured.join("");
@@ -349,5 +365,4 @@ describe("gateway-trio CLI output shape", () => {
     assert.ok(output.includes("worker-agent"));
     assert.ok(output.includes("END OF GATEWAY TASK"));
     assert.ok(output.includes("gateway-output"));
-  });
 });
