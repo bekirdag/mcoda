@@ -34,6 +34,9 @@ The SDK provides:
 - Optional React setup UI components.
 - Local-runner catalog metadata and a first-class Local source lane for
   unmanaged vLLM, llama.cpp, and OpenAI-compatible local runner agents.
+- Load-balanced self-hosted mswarm aliases surfaced as auto-routed
+  `self_hosted_load_balanced` entries under an `Auto load-balanced` server
+  choice.
 - A backend-only owner-local GPU/generic job client for trusted applications
   that own a self-hosted node token or signing secret.
 
@@ -69,9 +72,31 @@ Use this split:
 - App backend: owns admin authorization and receives the mswarm API key.
 - SDK server service: stores non-secret setup metadata, configures the runtime,
   fetches real cloud/self-hosted catalogs, syncs agents, and saves assignments.
+  The default runtime includes load-balanced self-hosted aliases when reading
+  or syncing self-hosted catalogs, while keeping fixed-server self-hosted agents
+  side by side.
 
 Do not send the mswarm API key directly to a third-party browser-only client or
 store it in frontend state beyond the submit request.
+
+## Self-Hosted Load-Balancer Migration
+
+Self-hosted catalogs contain direct server entries and, when the mswarm control
+plane exposes them, synthetic `Auto load-balanced` entries. The SDK keeps both
+sets visible so a product can migrate deliberately:
+
+- Keep existing assignments on direct self-hosted slugs until an admin chooses
+  an auto alias.
+- Use `buildSelfHostedServerOptions()` to separate fixed-server entries from
+  `managedKind: "self_hosted_load_balanced"` entries.
+- Treat old nodes that lack load telemetry/protocol metadata as direct-only;
+  they should not be shown as auto-routing candidates.
+- Store only the selected slug and non-secret gateway/group metadata in app
+  settings. Do not store node runtime tokens, direct URLs, invocation signing
+  secrets, or raw API keys in browser-visible state.
+- Roll back by saving a direct slug again or by hiding auto aliases from the
+  backend catalog sync. Do not delete direct agents or node records to disable
+  auto routing.
 
 For products that connect a user-scoped mswarm installation, pass the
 non-secret connection identity with the key configuration request. The SDK
@@ -305,6 +330,12 @@ const selfHostedServers = buildSelfHostedServerOptions(
 );
 ```
 
+`buildSelfHostedServerOptions()` groups direct self-hosted agents by server
+metadata and groups auto-routed load-balanced aliases under an
+`Auto load-balanced` option. Auto entries have `managedKind:
+"self_hosted_load_balanced"` and `routingMode: "auto"`; direct entries remain
+`managedKind: "self_hosted"` and keep their fixed server metadata.
+
 This is the preferred path for apps that already have a design system.
 
 ## Owner-Local GPU Job Client
@@ -470,6 +501,10 @@ After wiring the SDK into an app:
    shows only the last four characters.
 5. Click or call `syncAgents()`.
 6. Confirm cloud agents and self-hosted agents come from the real mswarm server.
-7. Save assignments for each required stage.
-8. Restart the app server and confirm assignments still load if using a
+7. Confirm direct self-hosted entries and `Auto load-balanced` entries are
+   shown separately when both are available.
+8. Save assignments for each required stage.
+9. Roll one self-hosted assignment back from an auto alias to a direct slug and
+   confirm the saved settings still load.
+10. Restart the app server and confirm assignments still load if using a
    persistent settings store.

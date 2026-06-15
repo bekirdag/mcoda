@@ -92,7 +92,11 @@ export function createMcodaAgentSetupService(
         captureRemote(
           errors,
           "self_hosted_agents",
-          () => runtime.listSelfHostedAgents({ includeUnreachable: true }),
+          () =>
+            runtime.listSelfHostedAgents({
+              includeUnreachable: true,
+              includeLoadBalanced: true,
+            }),
           []
         ),
         captureRemote(
@@ -216,6 +220,7 @@ export function createMcodaAgentSetupService(
         runtime.syncSelfHostedAgents({
           pruneMissing: true,
           includeUnreachable: true,
+          includeLoadBalanced: true,
         }),
       []
     );

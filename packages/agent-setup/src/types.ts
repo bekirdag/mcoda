@@ -16,7 +16,14 @@ export type McodaAgentSource =
   | "self_hosted_catalog"
   | "worker_catalog";
 
-export type McodaAgentManagedKind = "cloud" | "self_hosted" | "worker" | null;
+export type McodaAgentManagedKind =
+  | "cloud"
+  | "self_hosted"
+  | "self_hosted_load_balanced"
+  | "worker"
+  | null;
+
+export type McodaSelfHostedRoutingMode = "direct" | "auto";
 
 export type McodaPreferredSource =
   | "cloud"
@@ -112,6 +119,8 @@ export interface McodaAgentCatalogEntry {
   synced: boolean;
   remoteSlug: string | null;
   managedKind?: McodaAgentManagedKind;
+  routingMode?: McodaSelfHostedRoutingMode | null;
+  loadBalancedGroupId?: string | null;
   nodeId?: string | null;
   serverName?: string | null;
   serverId?: string | null;
@@ -140,6 +149,8 @@ export interface McodaSelfHostedServer {
   label: string;
   nodeId?: string | null;
   serverName?: string | null;
+  routingMode?: McodaSelfHostedRoutingMode | null;
+  loadBalancedGroupId?: string | null;
   status?: string | null;
   remoteSlugPrefix?: string | null;
   agentCount: number;
@@ -211,6 +222,7 @@ export interface McodaAgentListInput {
   provider?: string;
   refreshHealth?: boolean;
   includeUnreachable?: boolean;
+  includeLoadBalanced?: boolean;
 }
 
 export interface McodaAgentSyncInput extends McodaAgentListInput {

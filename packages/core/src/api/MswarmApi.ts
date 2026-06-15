@@ -54,6 +54,16 @@ export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
   adapter?: string;
   source_agent_id?: string;
   source_agent_slug?: string;
+  load_balanced?: boolean;
+  load_balanced_group_id?: string;
+  selector_fingerprint?: string;
+  member_count?: number;
+  candidate_node_ids?: string[];
+  canonical_agent_slug?: string;
+  canonical_model_id?: string;
+  execution_class?: string;
+  policy_class?: string;
+  context_tier?: string;
 }
 
 export interface MswarmWorkerAgent extends MswarmCloudAgent {
@@ -104,6 +114,11 @@ export interface ListMswarmCloudAgentsOptions {
 export interface ListMswarmSelfHostedAgentsOptions
   extends ListMswarmCloudAgentsOptions {
   includeUnreachable?: boolean;
+  includeLoadBalanced?: boolean;
+}
+
+export interface GetMswarmSelfHostedAgentOptions {
+  includeLoadBalanced?: boolean;
 }
 
 export interface ListMswarmWorkerAgentsOptions
@@ -203,6 +218,11 @@ export interface ManagedMswarmSelfHostedConfig {
   remoteSlug: string;
   agentSlug: string;
   provider: string;
+  routingMode?: 'direct' | 'auto';
+  loadBalanced?: boolean;
+  loadBalancedGroupId?: string;
+  selectorFingerprint?: string;
+  memberCount?: number;
   adapter?: string;
   sourceAgentSlug?: string;
   nodeId?: string;
@@ -253,6 +273,8 @@ export interface MswarmSyncRecord {
   provider: string;
   defaultModel: string;
   pricingVersion?: string;
+  routingMode?: 'direct' | 'auto';
+  loadBalanced?: boolean;
 }
 
 export interface MswarmSyncSummary {
@@ -904,6 +926,72 @@ const toManagedWorkerLocalSlug = (
   return toManagedLocalSlug(prefix, base);
 };
 
+const isLoadBalancedSelfHostedAgent = (
+  agent: MswarmSelfHostedAgent
+): boolean => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return (
+    agent.load_balanced === true ||
+    resolveBoolean(sync.load_balanced) === true ||
+    resolveString(sync.group_id) !== undefined ||
+    resolveString(agent.load_balanced_group_id) !== undefined
+  );
+};
+
+const selfHostedRoutingMode = (
+  agent: MswarmSelfHostedAgent
+): 'direct' | 'auto' =>
+  isLoadBalancedSelfHostedAgent(agent) ? 'auto' : 'direct';
+
+const toManagedSelfHostedLocalSlug = (
+  prefix: string,
+  agent: MswarmSelfHostedAgent
+): string => {
+  const routePrefix =
+    selfHostedRoutingMode(agent) === 'auto' ? `${prefix}-auto` : prefix;
+  return toManagedLocalSlug(routePrefix, agent.remote_slug ?? agent.slug);
+};
+
+const selfHostedLoadBalancedGroupId = (
+  agent: MswarmSelfHostedAgent
+): string | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return (
+    agent.load_balanced_group_id ??
+    resolveString(sync.group_id) ??
+    (isLoadBalancedSelfHostedAgent(agent) ? resolveString(sync.node_id) : undefined)
+  );
+};
+
+const sanitizeLoadBalancedSelfHostedSync = (
+  agent: MswarmSelfHostedAgent
+): Record<string, unknown> | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  const sanitized: Record<string, unknown> = {
+    source: resolveString(sync.source) ?? 'self_hosted',
+    remote_slug: agent.remote_slug ?? agent.slug,
+    relay_mode: resolveString(sync.relay_mode) ?? 'outbound',
+    load_balanced: true,
+  };
+  const groupId = selfHostedLoadBalancedGroupId(agent);
+  const memberCount =
+    agent.member_count ?? resolveNumber(sync.member_count);
+  const selectorFingerprint =
+    agent.selector_fingerprint ?? resolveString(sync.selector_fingerprint);
+  if (groupId) sanitized.group_id = groupId;
+  if (memberCount !== undefined) sanitized.member_count = memberCount;
+  if (selectorFingerprint) sanitized.selector_fingerprint = selectorFingerprint;
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+};
+
+const selfHostedConfigRoutingMode = (
+  config: ManagedMswarmSelfHostedAgentConfig
+): 'direct' | 'auto' =>
+  config.mswarmSelfHosted.routingMode === 'auto' ||
+  config.mswarmSelfHosted.loadBalanced === true
+    ? 'auto'
+    : 'direct';
+
 const toHealthStatus = (
   value: string | undefined
 ): AgentHealthStatus | undefined => {
@@ -1024,6 +1112,13 @@ const toManagedSelfHostedConfig = (
   syncedAt: string
 ): ManagedMswarmSelfHostedAgentConfig => {
   const sync = isRecord(agent.sync) ? agent.sync : {};
+  const routingMode = selfHostedRoutingMode(agent);
+  const loadBalanced = routingMode === 'auto';
+  const sanitizedSync = loadBalanced
+    ? sanitizeLoadBalancedSelfHostedSync(agent)
+    : Object.keys(sync).length > 0
+      ? sync
+      : undefined;
   const nextConfig: ManagedMswarmSelfHostedAgentConfig = {
     ...(existingConfig ?? {}),
     baseUrl: openAiBaseUrl,
@@ -1033,17 +1128,22 @@ const toManagedSelfHostedConfig = (
       remoteSlug: agent.remote_slug ?? agent.slug,
       agentSlug: agent.agent_slug ?? agent.slug,
       provider: agent.provider,
+      routingMode,
+      loadBalanced,
+      loadBalancedGroupId: selfHostedLoadBalancedGroupId(agent),
+      selectorFingerprint: agent.selector_fingerprint,
+      memberCount: agent.member_count,
       adapter: agent.adapter,
       sourceAgentSlug: agent.source_agent_slug,
-      nodeId: resolveString(sync.node_id),
-      serverName: resolveString(sync.server_name),
+      nodeId: loadBalanced ? undefined : resolveString(sync.node_id),
+      serverName: loadBalanced ? undefined : resolveString(sync.server_name),
       modelId: agent.model_id,
       displayName: agent.display_name,
       description: agent.description,
       supportsReasoning: agent.supports_reasoning,
       catalogBaseUrl,
       openAiBaseUrl,
-      sync: Object.keys(sync).length > 0 ? sync : undefined,
+      sync: sanitizedSync,
       syncedAt,
     },
   };
@@ -1107,6 +1207,8 @@ const toManagedSelfHostedSyncRecord = (
   action,
   provider: config.mswarmSelfHosted.provider,
   defaultModel,
+  routingMode: selfHostedConfigRoutingMode(config),
+  loadBalanced: selfHostedConfigRoutingMode(config) === 'auto',
 });
 
 const toManagedWorkerSyncRecord = (
@@ -1265,6 +1367,55 @@ const toSelfHostedAgent = (value: unknown): MswarmSelfHostedAgent => {
     adapter: resolveString(record.adapter),
     source_agent_id: resolveString(record.source_agent_id),
     source_agent_slug: resolveString(record.source_agent_slug),
+    load_balanced: resolveFromRecordOrShape(
+      record,
+      ['load_balanced', 'loadBalanced'],
+      resolveBoolean
+    ),
+    load_balanced_group_id: resolveFromRecordOrShape(
+      record,
+      ['load_balanced_group_id', 'loadBalancedGroupId'],
+      resolveString
+    ),
+    selector_fingerprint: resolveFromRecordOrShape(
+      record,
+      ['selector_fingerprint', 'selectorFingerprint'],
+      resolveString
+    ),
+    member_count: resolveFromRecordOrShape(
+      record,
+      ['member_count', 'memberCount'],
+      resolveNumber
+    ),
+    candidate_node_ids: resolveStringArrayFromRecordOrShape(record, [
+      'candidate_node_ids',
+      'candidateNodeIds',
+    ]),
+    canonical_agent_slug: resolveFromRecordOrShape(
+      record,
+      ['canonical_agent_slug', 'canonicalAgentSlug'],
+      resolveString
+    ),
+    canonical_model_id: resolveFromRecordOrShape(
+      record,
+      ['canonical_model_id', 'canonicalModelId'],
+      resolveString
+    ),
+    execution_class: resolveFromRecordOrShape(
+      record,
+      ['execution_class', 'executionClass'],
+      resolveString
+    ),
+    policy_class: resolveFromRecordOrShape(
+      record,
+      ['policy_class', 'policyClass'],
+      resolveString
+    ),
+    context_tier: resolveFromRecordOrShape(
+      record,
+      ['context_tier', 'contextTier'],
+      resolveString
+    ),
   };
 };
 
@@ -1851,6 +2002,7 @@ export class MswarmApi {
         provider: options.provider,
         limit: remoteLimit,
         include_unreachable: options.includeUnreachable ? 'true' : undefined,
+        include_load_balanced: options.includeLoadBalanced ? 'true' : undefined,
       }
     );
     let agents = (Array.isArray(payload.agents) ? payload.agents : []).map(
@@ -1863,13 +2015,17 @@ export class MswarmApi {
   }
 
   async getSelfHostedAgent(
-    slug: string
+    slug: string,
+    options: GetMswarmSelfHostedAgentOptions = {}
   ): Promise<MswarmSelfHostedAgentDetail> {
     if (!slug.trim()) {
       throw new Error('Self-hosted agent slug is required');
     }
     const payload = await this.requestJson<unknown>(
-      `/v1/swarm/self-hosted/agents/${encodeURIComponent(slug)}`
+      `/v1/swarm/self-hosted/agents/${encodeURIComponent(slug)}`,
+      {
+        include_load_balanced: options.includeLoadBalanced ? 'true' : undefined,
+      }
     );
     return toSelfHostedAgentDetail(payload);
   }
@@ -2125,9 +2281,9 @@ export class MswarmApi {
     const records: MswarmSyncRecord[] = [];
 
     for (const agent of agents) {
-      const localSlug = toManagedLocalSlug(
+      const localSlug = toManagedSelfHostedLocalSlug(
         this.options.selfHostedAgentSlugPrefix,
-        agent.slug
+        agent
       );
       const existing = await this.repo.getAgentBySlug(localSlug);
       const remoteSlug = agent.remote_slug ?? agent.slug;
@@ -2207,12 +2363,19 @@ export class MswarmApi {
       const remoteSlugs = new Set(
         agents.map((agent) => agent.remote_slug ?? agent.slug)
       );
+      const includeLoadBalanced = options.includeLoadBalanced === true;
       const localAgents = await this.repo.listAgents();
       for (const localAgent of localAgents) {
         const managedConfig = isManagedMswarmSelfHostedConfig(localAgent.config)
           ? localAgent.config
           : undefined;
         if (!managedConfig) continue;
+        if (
+          selfHostedConfigRoutingMode(managedConfig) === 'auto' &&
+          !includeLoadBalanced
+        ) {
+          continue;
+        }
         if (
           options.provider &&
           managedConfig.mswarmSelfHosted.provider !== options.provider

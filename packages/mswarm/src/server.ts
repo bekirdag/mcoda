@@ -98,6 +98,11 @@ Environment:
   MSWARM_SELF_HOSTED_NODE_KEY_PATH         Runtime token file, defaults to ~/.mswarm/self-hosted-node/node.key
   MSWARM_SELF_HOSTED_ARTIFACT_STORE_PATH   Local generic-job artifact store, defaults to ~/.mswarm/self-hosted-node/artifacts
   MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET  Shared direct-job signing secret
+  MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS        Overall advertised job capacity, defaults to 1
+  MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS    LLM/Codali capacity, defaults to overall capacity
+  MSWARM_SELF_HOSTED_DRAIN_MODE                 Report zero free slots for maintenance
+  MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED     Add load-balancer telemetry, defaults to true
+  MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED Opt in to coarse host pressure telemetry
   MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED       Enable owner-local generic jobs, defaults to false
   MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS     Generic job timeout, defaults to self-hosted job timeout
   MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY  Generic job concurrency, defaults to 1
@@ -120,6 +125,11 @@ Setup options:
   --block <SLUGS>           Comma-separated blocklist
   --expose-all              Expose all healthy non-embedding local agents (default)
   --no-expose-all           Expose only allowlisted local agents
+  --max-concurrent-jobs <N> Overall advertised job capacity
+  --max-concurrent-llm-jobs <N> LLM/Codali capacity
+  --drain                   Register the node in drain mode
+  --disable-load-reporting  Keep legacy heartbeat capacity shape only
+  --enable-hardware-telemetry  Include coarse host pressure telemetry in heartbeats
   --enable-generic-jobs     Enable owner-local generic job endpoint for development
   --generic-job-timeout-ms <N>  Generic job timeout for owner-local development
   --generic-job-max-concurrency <N>  Generic job concurrency for owner-local development
@@ -774,6 +784,10 @@ class OwnerLocalGenericJobLifecycleScheduler {
     private readonly config: SelfHostedNodeConfig
   ) {}
 
+  private syncRuntimeQueueTelemetry(): void {
+    this.runtime.updateLocalQueueTelemetry({ genericQueuedJobs: this.queuedEntries().length });
+  }
+
   create(job: SelfHostedGenericNodeJob, claims: SelfHostedGenericJobTokenClaims, token: string): {
     snapshot: MswarmGenericJobLifecycleSnapshot;
     reused: boolean;
@@ -823,6 +837,7 @@ class OwnerLocalGenericJobLifecycleScheduler {
     this.idempotency.set(idempotencyKey, job.job_id);
     this.audit(entry, "job_created", { idempotency_key: idempotencyKey });
     this.audit(entry, "job_queued");
+    this.syncRuntimeQueueTelemetry();
     queueMicrotask(() => {
       void this.dispatchQueued();
     });
@@ -1218,6 +1233,7 @@ class OwnerLocalGenericJobLifecycleScheduler {
       state,
       updated_at: new Date().toISOString()
     };
+    this.syncRuntimeQueueTelemetry();
   }
 
   private audit(

@@ -103,6 +103,9 @@ export function createCliMcodaRuntimeAdapter(
           "list",
           "--provider",
           options?.provider ?? "mcoda",
+          ...(options?.includeLoadBalanced ?? true
+            ? ["--include-load-balanced"]
+            : []),
           "--json",
         ],
         {
@@ -119,6 +122,9 @@ export function createCliMcodaRuntimeAdapter(
         "sync",
         "--provider",
         options?.provider ?? "mcoda",
+        ...(options?.includeLoadBalanced ?? true
+          ? ["--include-load-balanced"]
+          : []),
         "--prune",
         "--json",
       ], {

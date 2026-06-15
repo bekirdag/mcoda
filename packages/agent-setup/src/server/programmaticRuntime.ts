@@ -117,7 +117,9 @@ export function createProgrammaticMcodaRuntimeAdapter(
           normalizeAgentCatalogEntry(agent, {
             source: "self_hosted_catalog",
             synced: false,
-            managedKind: "self_hosted",
+            managedKind: agent.load_balanced
+              ? "self_hosted_load_balanced"
+              : "self_hosted",
           })
         );
       });
@@ -335,6 +337,7 @@ function toSelfHostedOptions(
   return {
     provider: options?.provider,
     includeUnreachable: options?.includeUnreachable ?? true,
+    includeLoadBalanced: options?.includeLoadBalanced ?? true,
   };
 }
 
@@ -344,6 +347,7 @@ function toSelfHostedSyncOptions(
   return {
     provider: options?.provider,
     includeUnreachable: options?.includeUnreachable ?? true,
+    includeLoadBalanced: options?.includeLoadBalanced ?? true,
     pruneMissing: options?.pruneMissing ?? true,
   };
 }

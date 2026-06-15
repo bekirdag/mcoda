@@ -64,6 +64,52 @@ test("server helper configures key and syncs agents without requiring mcoda CLI"
   assert.doesNotMatch(JSON.stringify(snapshot), /sk_live_test_7890/);
 });
 
+test("in-memory runtime honors load-balanced self-hosted opt-in", async () => {
+  const directSelfHosted: McodaAgentCatalogEntry = {
+    ...remoteCloud,
+    slug: "suku-qwen",
+    source: "self_hosted_catalog",
+    managedKind: "self_hosted",
+    remoteSlug: "suku/qwen",
+    provider: "mcoda",
+    nodeId: "suku",
+    serverName: "suku-gpu-box",
+  };
+  const autoSelfHosted: McodaAgentCatalogEntry = {
+    ...remoteCloud,
+    slug: "auto-qwen",
+    source: "self_hosted_catalog",
+    managedKind: "self_hosted_load_balanced",
+    routingMode: "auto",
+    loadBalancedGroupId: "lb_group_qwen",
+    remoteSlug: "mswarm/load-balanced/qwen",
+    provider: "mcoda",
+    nodeId: null,
+    serverName: null,
+  };
+  const runtime = createInMemoryMcodaRuntimeAdapter({
+    selfHostedAgents: [directSelfHosted, autoSelfHosted],
+  });
+
+  const directOnly = await runtime.listSelfHostedAgents({
+    includeLoadBalanced: false,
+  });
+  assert.deepEqual(
+    directOnly.map((agent) => agent.slug),
+    ["suku-qwen"]
+  );
+  assert.equal((await runtime.listSelfHostedAgents()).length, 2);
+
+  await runtime.configureMswarmApiKey({ apiKey: "sk_test_in_memory_1234" });
+  await runtime.syncSelfHostedAgents({ includeLoadBalanced: true });
+  await runtime.syncSelfHostedAgents({ includeLoadBalanced: false });
+  const localSlugs = (await runtime.listLocalAgents()).map((agent) => agent.slug);
+  assert.ok(localSlugs.includes("mswarm-self-hosted-suku-qwen"));
+  assert.ok(
+    localSlugs.includes("mswarm-self-hosted-auto-mswarm-load-balanced-qwen")
+  );
+});
+
 test("server helper stores non-secret mswarm connection metadata", async () => {
   const service = createMcodaAgentSetupService({
     settingsStore: createInMemoryMcodaAgentSettingsStore(),
@@ -257,12 +303,14 @@ test("server helper retries transient remote mswarm catalog failures", async () 
   const runtime = createInMemoryMcodaRuntimeAdapter();
   let cloudCalls = 0;
   let selfHostedCalls = 0;
+  let selfHostedOptions: unknown;
   runtime.listCloudAgents = async () => {
     cloudCalls += 1;
     if (cloudCalls === 1) throw new Error("temporary cloud failure");
     return [remoteCloud];
   };
-  runtime.listSelfHostedAgents = async () => {
+  runtime.listSelfHostedAgents = async (options) => {
+    selfHostedOptions = options;
     selfHostedCalls += 1;
     if (selfHostedCalls === 1) {
       throw new Error("temporary self-hosted failure");
@@ -287,6 +335,7 @@ test("server helper retries transient remote mswarm catalog failures", async () 
   const snapshot = await service.fetchSnapshot();
   assert.equal(cloudCalls, 2);
   assert.equal(selfHostedCalls, 2);
+  assert.equal((selfHostedOptions as any)?.includeLoadBalanced, true);
   assert.equal(snapshot.catalog.cloudAgents.length, 1);
   assert.equal(snapshot.catalog.selfHostedServers.length, 1);
   assert.deepEqual(snapshot.catalog.errors, {});
@@ -349,6 +398,7 @@ test("programmatic runtime reads injected config store for later API calls", asy
   const originalCreate = MswarmApi.create;
   const originalRefresh = MswarmApi.refreshManagedAgentAuth;
   let capturedOptions: unknown;
+  let capturedSelfHostedListOptions: unknown;
   (MswarmApi as any).create = async (options: unknown) => {
     capturedOptions = options;
     return {
@@ -356,7 +406,8 @@ test("programmatic runtime reads injected config store for later API calls", asy
       async listCloudAgents() {
         return [];
       },
-      async listSelfHostedAgents() {
+      async listSelfHostedAgents(options: unknown) {
+        capturedSelfHostedListOptions = options;
         return [];
       },
       async listAllWorkers() {
@@ -381,7 +432,12 @@ test("programmatic runtime reads injected config store for later API calls", asy
     const adapter = createProgrammaticMcodaRuntimeAdapter({ store });
     await adapter.configureMswarmApiKey({ apiKey: "sk_store_9999" });
     await adapter.listCloudAgents();
+    await adapter.listSelfHostedAgents();
     assert.equal((capturedOptions as any).apiKey, "sk_store_9999");
+    assert.equal(
+      (capturedSelfHostedListOptions as any)?.includeLoadBalanced,
+      true
+    );
   } finally {
     (MswarmApi as any).create = originalCreate;
     (MswarmApi as any).refreshManagedAgentAuth = originalRefresh;

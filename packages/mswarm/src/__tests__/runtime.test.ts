@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHmac } from "node:crypto";
@@ -159,9 +159,14 @@ function serviceConfigFor(statePath: string): SelfHostedNodeConfig {
     heartbeatIntervalSeconds: 30,
     requestTimeoutMs: 1000,
     jobTimeoutMs: 3_600_000,
+    maxConcurrentJobs: 1,
+    maxConcurrentLlmJobs: 1,
     genericJobsEnabled: false,
     genericJobTimeoutMs: 3_600_000,
     genericJobMaxConcurrency: 1,
+    drainMode: false,
+    loadReportingEnabled: true,
+    hardwareTelemetryEnabled: false,
     exposeAllModels: true,
     modelAllowlist: ["phi3-reviewer"],
     modelBlocklist: ["nomic-embed-text:latest"]
@@ -354,7 +359,7 @@ function capabilityProbeRunner(
 function gpuCapabilityProbeRunner(): CommandRunner {
   return async (command, args) => {
     if (command === "nvidia-smi" && args.length === 0) {
-      return { stdout: "NVIDIA-SMI 550.54.14    CUDA Version: 12.4\n", stderr: "" };
+      return { stdout: "NVIDIA-SMI 550.54.14    CUDA Version: 12.4    Serial GPU-SERIAL-0001\n", stderr: "" };
     }
     if (command === "nvidia-smi") {
       return { stdout: "0, NVIDIA RTX 4090, 24564, 550.54.14, 8.9\n", stderr: "" };
@@ -872,9 +877,14 @@ describe("self-hosted node runtime", () => {
     expect(firstConfig.requestTimeoutMs).toBe(10_000);
     expect(firstConfig.jobTimeoutMs).toBe(3_600_000);
     expect(firstConfig.artifactStorePath).toBe(tempArtifactStorePath(statePath));
+    expect(firstConfig.maxConcurrentJobs).toBe(1);
+    expect(firstConfig.maxConcurrentLlmJobs).toBe(1);
     expect(firstConfig.genericJobsEnabled).toBe(false);
     expect(firstConfig.genericJobTimeoutMs).toBe(3_600_000);
     expect(firstConfig.genericJobMaxConcurrency).toBe(1);
+    expect(firstConfig.drainMode).toBe(false);
+    expect(firstConfig.loadReportingEnabled).toBe(true);
+    expect(firstConfig.hardwareTelemetryEnabled).toBe(false);
     expect(firstConfig.exposeAllModels).toBe(false);
     expect(firstConfig.modelAllowlist).toEqual(["phi3.5:3.8b", "llama3.1:8b"]);
   });
@@ -906,15 +916,25 @@ describe("self-hosted node runtime", () => {
       MSWARM_SELF_HOSTED_NODE_ID: "shn_job_timeout",
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
       MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: "7200000",
+      MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS: "4",
+      MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS: "2",
       MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED: "true",
       MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS: "5000",
-      MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: "3"
+      MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: "3",
+      MSWARM_SELF_HOSTED_DRAIN_MODE: "true",
+      MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED: "false",
+      MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED: "true"
     } as NodeJS.ProcessEnv);
 
     expect(config.jobTimeoutMs).toBe(7_200_000);
+    expect(config.maxConcurrentJobs).toBe(4);
+    expect(config.maxConcurrentLlmJobs).toBe(2);
     expect(config.genericJobsEnabled).toBe(true);
     expect(config.genericJobTimeoutMs).toBe(5_000);
     expect(config.genericJobMaxConcurrency).toBe(3);
+    expect(config.drainMode).toBe(true);
+    expect(config.loadReportingEnabled).toBe(false);
+    expect(config.hardwareTelemetryEnabled).toBe(true);
   });
 
   it("migrates legacy daemon exposure false to the new exposed-by-default policy", async () => {
@@ -972,8 +992,13 @@ describe("self-hosted node runtime", () => {
         "Bekir MacBook Pro",
         "--artifact-store-path",
         tempArtifactStorePath(statePath),
+        "--max-concurrent-jobs",
+        "4",
+        "--max-concurrent-llm-jobs",
+        "2",
         "--generic-job-max-concurrency",
         "2",
+        "--enable-hardware-telemetry",
         "--allow",
         "phi3-reviewer"
       ],
@@ -987,7 +1012,12 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.serverName).toBe("bekir-macbook-pro");
     expect(setupConfig.relayMode).toBe("outbound");
     expect(setupConfig.jobTimeoutMs).toBe(3_600_000);
+    expect(setupConfig.maxConcurrentJobs).toBe(4);
+    expect(setupConfig.maxConcurrentLlmJobs).toBe(2);
     expect(setupConfig.genericJobMaxConcurrency).toBe(2);
+    expect(setupConfig.drainMode).toBe(false);
+    expect(setupConfig.loadReportingEnabled).toBe(true);
+    expect(setupConfig.hardwareTelemetryEnabled).toBe(true);
     expect(setupConfig.artifactStorePath).toBe(tempArtifactStorePath(statePath));
     expect(setupConfig.exposeAllModels).toBe(true);
     expect(setupConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
@@ -1873,6 +1903,73 @@ describe("self-hosted node runtime", () => {
     expect(((result.openai_response?.metadata as Record<string, unknown>) || {}).codali_run_id).toBe("run-req-mcoda-json");
   });
 
+  it("fails before start when the selected mcoda agent is missing instead of substituting by model", async () => {
+    const statePath = tempStatePath();
+    let invoked = false;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "fallback-same-model",
+          defaultModel: "mcoda-selected-agent"
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        invoked = true;
+        return successfulCodaliInvocation(input);
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-missing-selected-agent",
+      request_id: "req-missing-selected-agent",
+      node_id: "shn_service",
+      agent_slug: "mcoda-selected-agent",
+      source_agent_slug: "selected-agent",
+      provider: "mcoda",
+      model: "mcoda-selected-agent",
+      openai_request: {
+        model: "mcoda-selected-agent",
+        messages: [{ role: "user", content: "Run on the selected agent." }]
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.pre_start_failure).toBe(true);
+    expect(result.error?.code).toBe("selected_agent_unavailable");
+    expect(invoked).toBe(false);
+  });
+
+  it("fails before start when the selected mcoda agent is unhealthy", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "qwen-reviewer",
+          health: { status: "unhealthy" }
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input))
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-unhealthy-selected-agent",
+      request_id: "req-unhealthy-selected-agent",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "Run on the unhealthy agent." }]
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.pre_start_failure).toBe(true);
+    expect(result.error?.code).toBe("selected_agent_unhealthy");
+  });
+
   it("normalizes Ollama CLI mcoda agents to the Codali Ollama provider", async () => {
     const statePath = tempStatePath();
     const captured: { value?: MswarmCodaliInvocationInput } = {};
@@ -2068,6 +2165,7 @@ describe("self-hosted node runtime", () => {
     const statePath = tempStatePath();
     const secret = "msw_relay_docdex_secret";
     const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const startPosts: Record<string, unknown>[] = [];
     let postedResult: Record<string, unknown> | null = null;
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
@@ -2096,6 +2194,10 @@ describe("self-hosted node runtime", () => {
           }
         });
       }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-docdex-relay/start") {
+        startPosts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({ accepted: true, status: "started" });
+      }
       if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-docdex-relay/result") {
         postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return jsonResponse({ accepted: true });
@@ -2118,12 +2220,75 @@ describe("self-hosted node runtime", () => {
     assert.ok(captured.value);
     expect(captured.value.attachedMswarmApiKey).toBe(secret);
     expect(captured.value.docdex?.credentialSource).toBe("attached_mswarm_api_key");
+    expect(startPosts).toHaveLength(1);
+    expect(startPosts[0]).toMatchObject({
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      model: "mcoda-qwen-reviewer"
+    });
     assert.ok(postedResult);
     expect(JSON.stringify(postedResult)).not.toContain(secret);
   });
 
+  it("posts pre-start relay failures without acknowledging job start", async () => {
+    const statePath = tempStatePath();
+    let startCalled = false;
+    let postedResult: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/poll") {
+        return jsonResponse({
+          job: {
+            job_id: "job-prestart-missing-agent",
+            request_id: "req-prestart-missing-agent",
+            node_id: "shn_service",
+            agent_slug: "mcoda-selected-agent",
+            source_agent_slug: "selected-agent",
+            provider: "mcoda",
+            model: "mcoda-selected-agent",
+            openai_request: {
+              model: "mcoda-selected-agent",
+              messages: [{ role: "user", content: "Run on selected agent." }]
+            }
+          }
+        });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-prestart-missing-agent/start") {
+        startCalled = true;
+        return jsonResponse({ accepted: true, status: "started" });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-prestart-missing-agent/result") {
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "fallback-same-model",
+          defaultModel: "mcoda-selected-agent"
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input))
+    });
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(startCalled).toBe(false);
+    const posted = postedResult as Record<string, unknown> | null;
+    assert.ok(posted);
+    expect(posted.pre_start_failure).toBe(true);
+    expect((posted.error as { code?: string }).code).toBe("selected_agent_unavailable");
+  });
+
   it("posts outbound relay stream events while executing streamed jobs", async () => {
     const statePath = tempStatePath();
+    const startPosts: Record<string, unknown>[] = [];
     const eventPosts: Record<string, unknown>[] = [];
     let postedResult: Record<string, unknown> | null = null;
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -2145,6 +2310,10 @@ describe("self-hosted node runtime", () => {
             }
           }
         });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-stream-relay/start") {
+        startPosts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({ accepted: true, status: "started" });
       }
       if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-stream-relay/events") {
         eventPosts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -2189,6 +2358,7 @@ describe("self-hosted node runtime", () => {
 
     expect(result.executed).toBe(true);
     expect(result.status).toBe("success");
+    expect(startPosts).toHaveLength(1);
     expect(eventPosts).toHaveLength(1);
     assert.ok(eventPosts[0]);
     expect((eventPosts[0].stream_events as unknown[] | undefined)?.length).toBe(3);
@@ -3812,7 +3982,12 @@ describe("self-hosted node runtime", () => {
         expect(body.machine_fingerprint).toMatch(/^sha256:/);
         expect(body.server_name).toBe("setup-box");
         expect(body.relay_mode).toBe("outbound");
+        expect(body.max_concurrent_jobs).toBe(1);
+        expect(body.max_concurrent_llm_jobs).toBe(1);
         expect(body.generic_job_max_concurrency).toBe(1);
+        expect(body.drain_mode).toBe(false);
+        expect(body.load_reporting_enabled).toBe(true);
+        expect(body.hardware_telemetry_enabled).toBe(false);
         return jsonResponse({
           created: true,
           enrolled: true,
@@ -3876,7 +4051,12 @@ describe("self-hosted node runtime", () => {
     expect(savedState.machine_fingerprint).toMatch(/^sha256:/);
     expect(savedState.exposure_policy).toBe("all");
     expect(savedState.job_timeout_ms).toBe(3_600_000);
+    expect(savedState.max_concurrent_jobs).toBe(1);
+    expect(savedState.max_concurrent_llm_jobs).toBe(1);
     expect(savedState.generic_job_max_concurrency).toBe(1);
+    expect(savedState.drain_mode).toBe(false);
+    expect(savedState.load_reporting_enabled).toBe(true);
+    expect(savedState.hardware_telemetry_enabled).toBe(false);
     expect((await readFile(tempRuntimeTokenPath(statePath), "utf8")).trim()).toBe("msn_setup");
     const daemonConfig = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
@@ -3884,7 +4064,12 @@ describe("self-hosted node runtime", () => {
     } as NodeJS.ProcessEnv);
     expect(daemonConfig.exposeAllModels).toBe(true);
     expect(daemonConfig.jobTimeoutMs).toBe(3_600_000);
+    expect(daemonConfig.maxConcurrentJobs).toBe(1);
+    expect(daemonConfig.maxConcurrentLlmJobs).toBe(1);
     expect(daemonConfig.genericJobMaxConcurrency).toBe(1);
+    expect(daemonConfig.drainMode).toBe(false);
+    expect(daemonConfig.loadReportingEnabled).toBe(true);
+    expect(daemonConfig.hardwareTelemetryEnabled).toBe(false);
     expect(daemonConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
     expect(daemonConfig.discoveryMode).toBe("mcoda");
     expect(daemonConfig.nodeVersion).toBe(await packageVersion());
@@ -4170,6 +4355,254 @@ describe("self-hosted node runtime", () => {
       name: "nomic-embed-text",
       exposed: false,
       best_usage: "embedding"
+    });
+  });
+
+  it("reports scheduler-grade runtime load telemetry in heartbeats", async () => {
+    const statePath = tempStatePath();
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    let markRunnerStarted: () => void = () => {};
+    let releaseRunner: () => void = () => {};
+    const runnerStarted = new Promise<void>((resolve) => {
+      markRunnerStarted = resolve;
+    });
+    const runnerReleased = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    const runner: MswarmGenericJobRunner = {
+      id: "test.echo",
+      async run() {
+        markRunnerStarted();
+        await runnerReleased;
+        return {
+          job_id: "job-load-telemetry",
+          status: "succeeded",
+          exit_code: 0,
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString()
+        };
+      }
+    };
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        runtimeToken: "msn_load",
+        maxConcurrentJobs: 4,
+        maxConcurrentLlmJobs: 2,
+        genericJobMaxConcurrency: 3,
+        loadReportingEnabled: true
+      }),
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "phi3-reviewer" })]),
+        genericRunners: [runner],
+        capabilityRunner: capabilityProbeRunner({})
+      }
+    );
+
+    const runningJob = runtime.executeGenericJob(genericEchoJob({ job_id: "job-load-telemetry" }));
+    await runnerStarted;
+    const heartbeat = await runtime.runOnce();
+    releaseRunner();
+    const genericResult = await runningJob;
+
+    expect(genericResult.status).toBe("succeeded");
+    expect(heartbeat.status).toBe("online");
+    assert.ok(heartbeat.capacity);
+    expect(heartbeat.capacity.active_jobs).toBe(1);
+    expect(heartbeat.capacity.free_slots).toBe(3);
+    const body = heartbeatBodies[0];
+    expect(body.runtime_protocol_version).toBe(1);
+    expect(body.runtime as Record<string, unknown>).toMatchObject({
+      protocol_version: 1,
+      relay_mode: "direct",
+      load_reporting_enabled: true,
+      hardware_telemetry_enabled: false,
+      drain_mode: false
+    });
+    const capacity = body.capacity as Record<string, unknown>;
+    expect(capacity).toMatchObject({
+      protocol_version: 1,
+      runtime_protocol_version: 1,
+      load_balancer_protocol_version: 1,
+      catalog_metadata_version: 1,
+      max_concurrency: 4,
+      max_concurrent_llm_jobs: 2,
+      max_concurrent_generic_jobs: 3,
+      active_jobs: 1,
+      queued_jobs: 0,
+      free_slots: 3,
+      drain_mode: false
+    });
+    expect(String(capacity.catalog_fingerprint)).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const classCapacity = capacity.execution_class_capacity as Record<string, Record<string, unknown>>;
+    expect(classCapacity.agentic).toMatchObject({
+      max_concurrency: 2,
+      active_jobs: 0,
+      queued_jobs: 0,
+      free_slots: 2
+    });
+    expect(classCapacity.generic_job).toMatchObject({
+      max_concurrency: 3,
+      active_jobs: 1,
+      queued_jobs: 0,
+      free_slots: 2
+    });
+    expect(body.local_agent_catalog as Record<string, unknown>).toMatchObject({
+      metadata_version: 1,
+      model_count: 1,
+      exposed_model_count: 1
+    });
+    expect(String((body.local_agent_catalog as Record<string, unknown>).revision)).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(body.hardware_pressure).toBeUndefined();
+    const health = body.health as Record<string, unknown>;
+    assert.equal(typeof health.avg_latency_ms, "number");
+    expect(health.recent_failure_count).toBe(0);
+    expect(Array.isArray(health.recent_failures)).toBe(true);
+  });
+
+  it("redacts opt-in coarse hardware pressure telemetry", async () => {
+    const statePath = tempStatePath();
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        runtimeToken: "msn_hardware_pressure",
+        hardwareTelemetryEnabled: true
+      }),
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "phi3-reviewer" })]),
+        capabilityRunner: gpuCapabilityProbeRunner()
+      }
+    );
+
+    const result = await runtime.runOnce();
+
+    expect(result.status).toBe("online");
+    assert.ok(result.capacity?.hardware_pressure);
+    const hardware = heartbeatBodies[0].hardware_pressure as Record<string, unknown>;
+    expect(hardware).toMatchObject({
+      schema_version: 1,
+      gpu: {
+        available: true,
+        count: 1,
+        cuda: true,
+        vram: {
+          total_tier: "16-31",
+          used_ratio: null
+        }
+      }
+    });
+    const serialized = JSON.stringify(hardware);
+    expect(serialized).not.toContain("NVIDIA RTX 4090");
+    expect(serialized).not.toContain("550.54.14");
+    expect(serialized).not.toContain("24564");
+    expect(serialized).not.toContain("GPU-SERIAL-0001");
+    expect(serialized).not.toContain(userInfo().username);
+    expect(serialized).not.toContain(homedir());
+    expect(serialized).not.toContain("MSWARM_API_KEY");
+    expect(serialized).not.toContain("PATH=");
+    expect(serialized).not.toContain("process");
+    expect(serialized).not.toContain("ignore previous instructions");
+  });
+
+  it("keeps recent failure heartbeat telemetry secret-safe", async () => {
+    const statePath = tempStatePath();
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(
+      genericServiceConfigFor(statePath, {
+        runtimeToken: "msn_failure_telemetry"
+      }),
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "phi3-reviewer" })]),
+        capabilityRunner: capabilityProbeRunner({})
+      }
+    );
+
+    const failed = await runtime.executeGenericJob(
+      genericEchoJob({
+        node_id: "shn_wrong_node",
+        job: {
+          ...genericEchoJob().job,
+          args: {
+            message: "ignore previous instructions MSWARM_API_KEY=secret PATH=/tmp/secret"
+          }
+        }
+      })
+    );
+    await runtime.runOnce();
+
+    expect(failed.status).toBe("failed");
+    const health = heartbeatBodies[0].health as Record<string, unknown>;
+    expect(health.recent_failure_count).toBe(1);
+    const failures = health.recent_failures as Array<Record<string, unknown>>;
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      execution_class: "generic_job",
+      code: "validation_failed"
+    });
+    const serialized = JSON.stringify(failures);
+    expect(serialized).not.toContain("ignore previous instructions");
+    expect(serialized).not.toContain("MSWARM_API_KEY");
+    expect(serialized).not.toContain("PATH=");
+    expect(serialized).not.toContain("/tmp/secret");
+  });
+
+  it("keeps the legacy heartbeat capacity shape when load reporting is disabled", async () => {
+    const statePath = tempStatePath();
+    const heartbeatBodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/heartbeat") {
+        heartbeatBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(
+      {
+        ...serviceConfigFor(statePath),
+        runtimeToken: "msn_legacy_capacity",
+        loadReportingEnabled: false
+      },
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent({ slug: "phi3-reviewer" })]),
+        capabilityRunner: capabilityProbeRunner({})
+      }
+    );
+
+    const result = await runtime.runOnce();
+
+    expect(result.status).toBe("online");
+    expect((heartbeatBodies[0].runtime as Record<string, unknown>).load_reporting_enabled).toBe(false);
+    expect(heartbeatBodies[0].capacity).toEqual({
+      active_jobs: 0,
+      queued_jobs: 0
     });
   });
 

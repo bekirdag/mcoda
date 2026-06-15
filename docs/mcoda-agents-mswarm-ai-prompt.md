@@ -113,13 +113,16 @@ List available self-hosted agents:
 ```bash
 mcoda self-hosted agent list --provider mcoda --sorted-by-catalog-rating
 mcoda self-hosted agent list --provider mcoda --json
+mcoda self-hosted agent list --provider mcoda --include-load-balanced --json
 mcoda self-hosted agent details "<remote-slug>" --json
+mcoda self-hosted agent details "<auto-remote-slug>" --include-load-balanced --json
 ```
 
 Sync self-hosted agents into the local mcoda registry:
 
 ```bash
 mcoda self-hosted agent sync --provider mcoda --prune
+mcoda self-hosted agent sync --provider mcoda --include-load-balanced --prune
 mcoda agent list --json --refresh-health
 ```
 
@@ -275,14 +278,20 @@ Use these values from `mcoda self-hosted agent list --json`:
 
 - `remote_slug`: mswarm catalog identity for details and sync operations.
 - `default_model`: OpenAI-compatible `model` value for API calls.
-- synced local slug: mcoda local registry slug created by `mcoda self-hosted agent sync`, usually `mswarm-self-hosted-<agent-slug>`.
+- `route` / `load_balanced`: whether the catalog entry is a fixed direct server
+  route or an auto-routed load-balanced alias.
+- synced local slug: mcoda local registry slug created by `mcoda self-hosted
+  agent sync`, usually `mswarm-self-hosted-<agent-slug>` for direct entries and
+  `mswarm-self-hosted-auto-<agent-slug>` for auto-routed load-balanced aliases.
 
 Example flow:
 
 ```bash
 mcoda self-hosted agent list --provider mcoda --json
+mcoda self-hosted agent list --provider mcoda --include-load-balanced --json
 mcoda self-hosted agent details "mcoda/lab/qwen-3-5-35b" --json
 mcoda self-hosted agent sync --provider mcoda --prune
+mcoda self-hosted agent sync --provider mcoda --include-load-balanced --prune
 mcoda agent-run mswarm-self-hosted-mcoda-lab-qwen-3-5-35b --prompt "Use Docdex context if available."
 ```
 

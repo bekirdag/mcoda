@@ -1055,6 +1055,95 @@ test(
 );
 
 test(
+  'MswarmApi.listSelfHostedAgents and getSelfHostedAgent opt into load-balanced aliases',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          assert.equal(url.searchParams.get('include_load_balanced'), 'true');
+          if (url.pathname === '/v1/swarm/self-hosted/agents') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                agents: [
+                  {
+                    slug: 'mcoda-auto-claude-sonnet',
+                    agent_slug: 'mcoda-auto-claude-sonnet',
+                    remote_slug: 'mcoda/load-balanced/claude-sonnet',
+                    provider: 'mcoda',
+                    adapter: 'claude-cli',
+                    default_model: 'mcoda-auto-claude-sonnet',
+                    capabilities: ['chat', 'code_write'],
+                    health_status: 'healthy',
+                    supports_tools: true,
+                    load_balanced: true,
+                    load_balanced_group_id: 'lb_group_123',
+                    selector_fingerprint: 'selector-123',
+                    member_count: 2,
+                    candidate_node_ids: ['shn_lab', 'shn_backup'],
+                    canonical_agent_slug: 'claude-sonnet',
+                    canonical_model_id: 'sonnet',
+                    execution_class: 'agentic',
+                    policy_class: 'standard',
+                    context_tier: 'gte-128k',
+                  },
+                ],
+              })
+            );
+            return;
+          }
+          assert.equal(
+            url.pathname,
+            '/v1/swarm/self-hosted/agents/mcoda-auto-claude-sonnet'
+          );
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              slug: 'mcoda-auto-claude-sonnet',
+              provider: 'mcoda',
+              default_model: 'mcoda-auto-claude-sonnet',
+              capabilities: ['chat'],
+              supports_tools: true,
+              load_balanced: true,
+              load_balanced_group_id: 'lb_group_123',
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const agents = await api.listSelfHostedAgents({
+              includeLoadBalanced: true,
+            });
+            assert.equal(agents.length, 1);
+            assert.equal(agents[0]?.load_balanced, true);
+            assert.equal(agents[0]?.load_balanced_group_id, 'lb_group_123');
+            assert.deepEqual(agents[0]?.candidate_node_ids, [
+              'shn_lab',
+              'shn_backup',
+            ]);
+            const detail = await api.getSelfHostedAgent(
+              'mcoda-auto-claude-sonnet',
+              { includeLoadBalanced: true }
+            );
+            assert.equal(detail.load_balanced, true);
+            assert.equal(detail.load_balanced_group_id, 'lb_group_123');
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
   'MswarmApi.refreshManagedAgentAuth updates synced managed agents only',
   { concurrency: false },
   async () => {
@@ -1397,6 +1486,166 @@ test(
               const health = await repo.getAgentHealth(agent.id);
               assert.equal(health?.status, 'healthy');
               assert.equal((health?.details as any)?.source, 'mswarm_self_hosted');
+            } finally {
+              await repo.close();
+            }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi.syncSelfHostedAgents keeps direct agents stable and sanitizes auto-routed aliases',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/self-hosted/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          const includeLoadBalanced =
+            url.searchParams.get('include_load_balanced') === 'true';
+          const directAgent = {
+            slug: 'mcoda-lab-claude-sonnet',
+            agent_slug: 'mcoda-lab-claude-sonnet',
+            remote_slug: 'mcoda/lab/claude-sonnet',
+            provider: 'mcoda',
+            adapter: 'claude-cli',
+            source_agent_slug: 'claude-sonnet',
+            default_model: 'mcoda-lab-claude-sonnet',
+            capabilities: ['chat', 'code_write'],
+            health_status: 'healthy',
+            supports_tools: true,
+            sync: {
+              source: 'self_hosted',
+              node_id: 'shn_lab',
+              server_name: 'lab',
+              remote_slug: 'mcoda/lab/claude-sonnet',
+              relay_mode: 'direct',
+            },
+          };
+          const autoAgent = {
+            slug: 'mcoda-auto-claude-sonnet',
+            agent_slug: 'mcoda-auto-claude-sonnet',
+            remote_slug: 'mcoda/load-balanced/claude-sonnet',
+            provider: 'mcoda',
+            adapter: 'claude-cli',
+            source_agent_slug: 'claude-sonnet',
+            default_model: 'mcoda-auto-claude-sonnet',
+            capabilities: ['chat', 'code_write'],
+            health_status: 'healthy',
+            supports_tools: true,
+            load_balanced: true,
+            load_balanced_group_id: 'lb_group_123',
+            selector_fingerprint: 'selector-123',
+            member_count: 2,
+            candidate_node_ids: ['shn_lab', 'shn_backup'],
+            sync: {
+              source: 'self_hosted',
+              node_id: 'lb_group_123',
+              node_ids: ['shn_lab', 'shn_backup'],
+              server_name: 'load-balanced',
+              remote_slug: 'mcoda/load-balanced/claude-sonnet',
+              relay_mode: 'outbound',
+              load_balanced: true,
+              group_id: 'lb_group_123',
+              member_count: 2,
+              token: 'bad-token',
+              api_key: 'bad-api-key',
+              invocation_signing_secret: 'bad-signing-secret',
+              direct_url: 'http://127.0.0.1:18488/',
+            },
+          };
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: includeLoadBalanced
+                ? [directAgent, autoAgent]
+                : [directAgent],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const first = await api.syncSelfHostedAgents();
+            assert.equal(first.created, 1);
+            assert.equal(
+              first.agents[0]?.localSlug,
+              'mswarm-self-hosted-mcoda-lab-claude-sonnet'
+            );
+
+            const second = await api.syncSelfHostedAgents({
+              includeLoadBalanced: true,
+              pruneMissing: true,
+            });
+            assert.equal(second.created, 1);
+            assert.equal(second.updated, 1);
+            assert.equal(second.deleted, 0);
+            assert.ok(
+              second.agents.some(
+                (record) =>
+                  record.localSlug ===
+                    'mswarm-self-hosted-mcoda-lab-claude-sonnet' &&
+                  record.routingMode === 'direct'
+              )
+            );
+            assert.ok(
+              second.agents.some(
+                (record) =>
+                  record.localSlug ===
+                    'mswarm-self-hosted-auto-mcoda-load-balanced-claude-sonnet' &&
+                  record.routingMode === 'auto' &&
+                  record.loadBalanced === true
+              )
+            );
+
+            const repo = await GlobalRepository.create();
+            try {
+              const direct = await repo.getAgentBySlug(
+                'mswarm-self-hosted-mcoda-lab-claude-sonnet'
+              );
+              const auto = await repo.getAgentBySlug(
+                'mswarm-self-hosted-auto-mcoda-load-balanced-claude-sonnet'
+              );
+              assert.ok(direct);
+              assert.ok(auto);
+              assert.equal(
+                (direct.config as any)?.mswarmSelfHosted?.nodeId,
+                'shn_lab'
+              );
+              const autoConfig = (auto.config as any)?.mswarmSelfHosted;
+              assert.equal(autoConfig?.routingMode, 'auto');
+              assert.equal(autoConfig?.loadBalanced, true);
+              assert.equal(autoConfig?.loadBalancedGroupId, 'lb_group_123');
+              assert.equal(autoConfig?.nodeId, undefined);
+              assert.equal(autoConfig?.serverName, undefined);
+              assert.equal(autoConfig?.sync?.group_id, 'lb_group_123');
+              assert.equal(autoConfig?.sync?.node_id, undefined);
+              assert.equal(autoConfig?.sync?.node_ids, undefined);
+              const serializedConfig = JSON.stringify(auto.config);
+              assert.doesNotMatch(serializedConfig, /self-hosted-key/);
+              assert.doesNotMatch(serializedConfig, /bad-token/);
+              assert.doesNotMatch(serializedConfig, /bad-api-key/);
+              assert.doesNotMatch(serializedConfig, /bad-signing-secret/);
+              assert.doesNotMatch(serializedConfig, /127\.0\.0\.1:18488/);
+              assert.doesNotMatch(serializedConfig, /candidate_node_ids/);
+              assert.doesNotMatch(serializedConfig, /node_ids/);
+
+              const auth = await repo.getAgentAuthMetadata(auto.id);
+              assert.equal(auth.configured, true);
             } finally {
               await repo.close();
             }

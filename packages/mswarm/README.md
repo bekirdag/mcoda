@@ -96,11 +96,68 @@ Keep discovery running but expose only allowlisted agents:
 mswarm node install <MSWARM_API_KEY> --no-expose-all
 ```
 
+Set local scheduling capacity during install:
+
+```sh
+mswarm node install <MSWARM_API_KEY> --max-concurrent-jobs 4 --max-concurrent-llm-jobs 2
+```
+
+The node reports additive load telemetry in each heartbeat: runtime protocol
+version, active and queued work, LLM/generic job concurrency, free slots, drain
+state, recent failures, moving average latency, and a fingerprinted local agent
+catalog revision. Existing gateways can ignore the new fields; the legacy
+`capacity.active_jobs` and `capacity.queued_jobs` values are still present.
+
+Use drain mode before maintenance so new scheduled work avoids the node while
+existing in-flight jobs can finish:
+
+```sh
+MSWARM_SELF_HOSTED_DRAIN_MODE=1 mswarm node run
+```
+
+Detailed host metrics are off by default. If enabled by the node owner, the
+heartbeat includes only coarse pressure telemetry such as CPU load ratio, RAM
+bucket/usage ratio, GPU availability/count/CUDA support, and a coarse VRAM tier
+with no exact memory values. It does not include process lists, usernames,
+filesystem paths, environment variables, raw prompts, GPU names, driver
+versions, serial numbers, or exact VRAM values.
+
 Use direct mode only when the node has a public HTTPS or tunnel URL:
 
 ```sh
 mswarm node install <MSWARM_API_KEY> --mode direct --direct-url https://node.example.com
 ```
+
+## Load-Balanced Routing
+
+When an mswarm account has multiple upgraded self-hosted nodes, the hosted
+control plane can expose synthetic `Auto load-balanced` catalog aliases for
+matching local mcoda agents. Selecting an auto alias lets mswarm choose an
+eligible node at request time based on tenant/API-key scope, model or capability
+match, protocol compatibility, heartbeat freshness, drain state, active work,
+and reservations.
+
+This is additive to direct routing:
+
+- Direct self-hosted slugs keep routing to their pinned node.
+- Existing assignments are not migrated automatically.
+- Older direct-only nodes still work as direct targets but are auto-ineligible
+  until they advertise load-balancer protocol, load telemetry, and catalog
+  fingerprint fields.
+- Load-balanced aliases never require browser-visible node tokens, direct URLs,
+  invocation signing secrets, or API keys.
+
+Use drain mode before maintenance so auto routing avoids the node while direct
+operators can decide whether to keep or move pinned traffic:
+
+```sh
+MSWARM_SELF_HOSTED_DRAIN_MODE=1 mswarm node run
+```
+
+Rollback is done from the control plane or consuming product by switching the
+assignment back to a direct slug or omitting load-balanced aliases during
+catalog sync. Keep the node installed; direct routing does not depend on the
+load-balancer protocol fields.
 
 ## Commands
 
@@ -174,3 +231,12 @@ plane; owner-local direct use is for a trusted operator on the node.
 ## Environment
 
 `MSWARM_API_KEY` can replace `--api-key` during legacy `setup`, but the preferred flow is `mswarm node install <MSWARM_API_KEY>` or `mswarm node install --api-key-stdin` so the key is never exported into the shell environment. `MSWARM_GATEWAY_BASE_URL` overrides the gateway. The default discovery mode is `mcoda`, so the node reads `mcoda agent list --json --refresh-health`; set `MSWARM_SELF_HOSTED_DISCOVERY_MODE=ollama` only for raw Ollama fallback discovery. `MSWARM_SELF_HOSTED_EXPOSURE_POLICY=none` disables default exposure while keeping allowlists/blocklists available. `MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS` controls short gateway and inventory requests; self-hosted execution jobs default to one hour and can be overridden with `MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS` or `--job-timeout-ms` during install.
+
+Load-balancer telemetry controls:
+
+- `MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS`: overall advertised job capacity, default `1`
+- `MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS`: LLM/Codali capacity, default matches overall capacity
+- `MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY`: generic job capacity, default `1`
+- `MSWARM_SELF_HOSTED_DRAIN_MODE=1`: report zero free slots for maintenance
+- `MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED=0`: fall back to legacy heartbeat capacity shape
+- `MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED=1`: opt in to coarse pressure telemetry

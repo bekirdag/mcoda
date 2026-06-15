@@ -1,5 +1,6 @@
 import {
   syncedCloudSlug,
+  isLoadBalancedSelfHostedAgent,
   syncedSelfHostedSlug,
   syncedWorkerSlug,
 } from "../headless/catalog.js";
@@ -32,7 +33,11 @@ export function createInMemoryMcodaRuntimeAdapter(
   const syncRemote = (
     remoteAgents: McodaAgentCatalogEntry[],
     slugFor: (agent: McodaAgentCatalogEntry) => string,
-    managedKind: "cloud" | "self_hosted" | "worker"
+    managedKind:
+      | "cloud"
+      | "self_hosted"
+      | "self_hosted_load_balanced"
+      | "worker"
   ): McodaAgentCatalogEntry[] => {
     const remoteLocalSlugs = new Set(remoteAgents.map(slugFor));
     localAgents = localAgents.filter((agent) => {
@@ -59,6 +64,53 @@ export function createInMemoryMcodaRuntimeAdapter(
     return localAgents.filter((agent) => agent.managedKind === managedKind);
   };
 
+  const syncSelfHostedRemote = (
+    remoteAgents: McodaAgentCatalogEntry[],
+    options: McodaAgentSyncInput | undefined
+  ): McodaAgentCatalogEntry[] => {
+    const remoteLocalSlugs = new Set(remoteAgents.map(syncedSelfHostedSlug));
+    localAgents = localAgents.filter((agent) => {
+      if (
+        agent.managedKind !== "self_hosted" &&
+        agent.managedKind !== "self_hosted_load_balanced"
+      ) {
+        return true;
+      }
+      if (
+        agent.managedKind === "self_hosted_load_balanced" &&
+        options?.includeLoadBalanced === false
+      ) {
+        return true;
+      }
+      return remoteLocalSlugs.has(agent.slug);
+    });
+    for (const remote of remoteAgents) {
+      const localSlug = syncedSelfHostedSlug(remote);
+      const managedKind = isLoadBalancedSelfHostedAgent(remote)
+        ? "self_hosted_load_balanced"
+        : "self_hosted";
+      const next: McodaAgentCatalogEntry = {
+        ...remote,
+        slug: localSlug,
+        source: "local_registry",
+        synced: true,
+        managedKind,
+        remoteSlug: remote.remoteSlug ?? remote.slug,
+      };
+      const index = localAgents.findIndex((agent) => agent.slug === localSlug);
+      if (index >= 0) {
+        localAgents[index] = next;
+      } else {
+        localAgents.push(next);
+      }
+    }
+    return localAgents.filter(
+      (agent) =>
+        agent.managedKind === "self_hosted" ||
+        agent.managedKind === "self_hosted_load_balanced"
+    );
+  };
+
   const filterProvider = (
     agents: McodaAgentCatalogEntry[],
     options: McodaAgentListInput | undefined
@@ -66,6 +118,19 @@ export function createInMemoryMcodaRuntimeAdapter(
     options?.provider
       ? agents.filter((agent) => agent.provider === options.provider)
       : agents;
+
+  const filterSelfHosted = (
+    agents: McodaAgentCatalogEntry[],
+    options: McodaAgentListInput | undefined
+  ): McodaAgentCatalogEntry[] => {
+    const providerFiltered = filterProvider(agents, options);
+    if (options?.includeLoadBalanced === false) {
+      return providerFiltered.filter(
+        (agent) => !isLoadBalancedSelfHostedAgent(agent)
+      );
+    }
+    return providerFiltered;
+  };
 
   return {
     runtime: {
@@ -91,7 +156,7 @@ export function createInMemoryMcodaRuntimeAdapter(
       return syncRemote(filterProvider(cloudAgents, options), syncedCloudSlug, "cloud");
     },
     async listSelfHostedAgents(options) {
-      return filterProvider(selfHostedAgents, options).map((agent) => ({
+      return filterSelfHosted(selfHostedAgents, options).map((agent) => ({
         ...agent,
       }));
     },
@@ -99,10 +164,9 @@ export function createInMemoryMcodaRuntimeAdapter(
       if (!configuredApiKey) {
         throw new Error("mswarm api key is required");
       }
-      return syncRemote(
-        filterProvider(selfHostedAgents, options),
-        syncedSelfHostedSlug,
-        "self_hosted"
+      return syncSelfHostedRemote(
+        filterSelfHosted(selfHostedAgents, options),
+        options
       );
     },
     async listWorkerAgents(options) {

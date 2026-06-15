@@ -48,6 +48,16 @@ test("synced slugs use stable mswarm prefixes", () => {
     }),
     "mswarm-self-hosted-suku-qwen-35b"
   );
+  assert.equal(
+    syncedSelfHostedSlug({
+      ...cloudAgent("suku/qwen 35b"),
+      source: "self_hosted_catalog",
+      managedKind: "self_hosted_load_balanced",
+      routingMode: "auto",
+      loadBalancedGroupId: "lb_group_123",
+    }),
+    "mswarm-self-hosted-auto-suku-qwen-35b"
+  );
 });
 
 test("cloud options merge synced local entries with remote catalog metadata", () => {
@@ -106,6 +116,36 @@ test("self-hosted server grouping falls back to remote slug prefix", () => {
   assert.equal(servers[0].remoteSlugPrefix, "bdya-suku");
 });
 
+test("self-hosted load-balanced aliases group under an auto server", () => {
+  const servers = buildSelfHostedServerOptions([], [
+    {
+      ...cloudAgent("auto-qwen-35b"),
+      source: "self_hosted_catalog",
+      managedKind: "self_hosted_load_balanced",
+      routingMode: "auto",
+      loadBalancedGroupId: "lb_group_123",
+      nodeId: null,
+      serverName: null,
+      remoteSlug: "mswarm/load-balanced/qwen-35b",
+    },
+    {
+      ...cloudAgent("auto-llama"),
+      source: "self_hosted_catalog",
+      managedKind: "self_hosted_load_balanced",
+      routingMode: "auto",
+      loadBalancedGroupId: "lb_group_456",
+      remoteSlug: "mswarm/load-balanced/llama",
+    },
+  ]);
+  assert.equal(servers.length, 1);
+  assert.equal(servers[0].id, "auto-load-balanced");
+  assert.equal(servers[0].label, "Auto load-balanced");
+  assert.equal(servers[0].routingMode, "auto");
+  assert.equal(servers[0].nodeId, undefined);
+  assert.equal(servers[0].serverName, undefined);
+  assert.equal(servers[0].agentCount, 2);
+});
+
 test("filtering searches large catalogs without hidden cap", () => {
   const agents = Array.from({ length: 1000 }, (_, index) =>
     cloudAgent(`provider-model-${index}`, {
@@ -147,6 +187,39 @@ test("normalization exposes local runner metadata and search terms", () => {
   assert.equal(agent.localRunner?.supportsJsonSchema, false);
   assert.equal(agent.localRunner?.supportsGbnf, true);
   assert.deepEqual(filterAgentOptions([agent], "vllm 8000 json-object"), [agent]);
+});
+
+test("normalization marks load-balanced self-hosted config as auto-routed", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "mswarm-self-hosted-auto-qwen",
+      defaultModel: "qwen",
+      config: {
+        mswarmSelfHosted: {
+          managed: true,
+          remoteSlug: "mswarm/load-balanced/qwen",
+          agentSlug: "auto-qwen",
+          provider: "mcoda",
+          routingMode: "auto",
+          loadBalanced: true,
+          loadBalancedGroupId: "lb_group_123",
+          sync: {
+            node_id: "lb_group_123",
+            server_name: "load-balanced",
+            group_id: "lb_group_123",
+            load_balanced: true,
+          },
+        },
+      },
+    },
+    { source: "local_registry", synced: true }
+  );
+
+  assert.equal(agent.managedKind, "self_hosted_load_balanced");
+  assert.equal(agent.routingMode, "auto");
+  assert.equal(agent.loadBalancedGroupId, "lb_group_123");
+  assert.equal(agent.nodeId, null);
+  assert.equal(agent.serverName, null);
 });
 
 test("normalization does not infer local runner metadata from generic capabilities", () => {

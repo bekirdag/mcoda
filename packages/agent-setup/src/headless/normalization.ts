@@ -91,12 +91,27 @@ export function normalizeAgentCatalogEntry(
     recordValue(record.sync) ??
     recordValue(mswarmSelfHosted?.sync) ??
     recordValue(mswarmWorker?.sync);
+  const loadBalanced =
+    booleanValue(record.load_balanced) ??
+    booleanValue(record.loadBalanced) ??
+    booleanValue(mswarmSelfHosted?.loadBalanced) ??
+    booleanValue(sync?.load_balanced) ??
+    false;
+  const routingMode =
+    stringValue(record.routingMode) ??
+    stringValue(record.routing_mode) ??
+    stringValue(mswarmSelfHosted?.routingMode) ??
+    (loadBalanced ? "auto" : null);
   const managedKind =
-    fallback.managedKind ??
+    fallback.managedKind === "self_hosted" && routingMode === "auto"
+      ? "self_hosted_load_balanced"
+      : fallback.managedKind ??
     (mswarmCloud
       ? "cloud"
       : mswarmSelfHosted
-        ? "self_hosted"
+        ? routingMode === "auto"
+          ? "self_hosted_load_balanced"
+          : "self_hosted"
         : mswarmWorker
           ? "worker"
           : null);
@@ -143,15 +158,19 @@ export function normalizeAgentCatalogEntry(
     stringValue(health?.status) ??
     stringValue(record.status);
   const nodeId =
-    stringValue(record.nodeId) ??
-    stringValue(record.node_id) ??
-    stringValue(mswarmSelfHosted?.nodeId) ??
-    stringValue(sync?.node_id);
+    routingMode === "auto"
+      ? null
+      : stringValue(record.nodeId) ??
+        stringValue(record.node_id) ??
+        stringValue(mswarmSelfHosted?.nodeId) ??
+        stringValue(sync?.node_id);
   const serverName =
-    stringValue(record.serverName) ??
-    stringValue(record.server_name) ??
-    stringValue(mswarmSelfHosted?.serverName) ??
-    stringValue(sync?.server_name);
+    routingMode === "auto"
+      ? null
+      : stringValue(record.serverName) ??
+        stringValue(record.server_name) ??
+        stringValue(mswarmSelfHosted?.serverName) ??
+        stringValue(sync?.server_name);
 
   return {
     slug,
@@ -159,6 +178,12 @@ export function normalizeAgentCatalogEntry(
     synced: fallback.synced ?? fallback.source === "local_registry",
     remoteSlug,
     managedKind,
+    routingMode: routingMode === "auto" ? "auto" : routingMode === "direct" ? "direct" : null,
+    loadBalancedGroupId:
+      stringValue(record.loadBalancedGroupId) ??
+      stringValue(record.load_balanced_group_id) ??
+      stringValue(mswarmSelfHosted?.loadBalancedGroupId) ??
+      stringValue(sync?.group_id),
     nodeId,
     serverName,
     serverId:

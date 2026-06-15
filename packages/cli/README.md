@@ -35,6 +35,7 @@ mcoda docs pdr generate --workspace-root . --project WEB --rfp-path docs/rfp/web
 - Backlog: `mcoda backlog`, `mcoda task`
 - Jobs/telemetry: `mcoda jobs`, `mcoda tokens`, `mcoda telemetry`
 - Owner-local GPU jobs: `mcoda gpu list`, `mcoda gpu ops`, `mcoda job artifact upload|run|status|logs|events|artifacts|cancel|retry`
+- Self-hosted agents: `mcoda self-hosted agent list`, `mcoda self-hosted agent details`, `mcoda self-hosted agent sync`
 - Agents: `mcoda test-agent`, `mcoda agent-run`
 - Updates: `mcoda update --check`
 
@@ -49,6 +50,18 @@ Environment variables are optional overrides for workspace settings:
 - `MCODA_MSWARM_NODE_BASE_URL`, `MCODA_MSWARM_NODE_ID`, and `MCODA_MSWARM_NODE_SIGNING_SECRET` for owner-local generic GPU job commands.
 - `MCODA_TELEMETRY` set to `off` to disable telemetry.
 - `MCODA_STREAM_IO=1` to emit agent I/O lines to stderr.
+
+## Self-hosted mswarm agents
+
+`mcoda self-hosted agent list` reads direct self-hosted agents and opt-in
+load-balanced aliases from mswarm when the configured API key allows it. Direct
+entries stay pinned to one server. Load-balanced aliases are saved as auto
+routes and let mswarm choose an eligible upgraded node for the requested model
+or capability.
+
+Use direct slugs for rollback or pinned-server workloads. Use auto aliases only
+when the product should allow mswarm to route around busy, drained, stale, or
+incompatible nodes.
 
 ## Programmatic usage
 ```ts

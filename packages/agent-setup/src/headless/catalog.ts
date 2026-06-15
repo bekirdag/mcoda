@@ -5,6 +5,7 @@ import type {
 
 const CLOUD_PREFIX = "mswarm-cloud-";
 const SELF_HOSTED_PREFIX = "mswarm-self-hosted-";
+const SELF_HOSTED_AUTO_PREFIX = "mswarm-self-hosted-auto-";
 const WORKER_PREFIX = "mswarm-worker-";
 
 const normalizeSlugPart = (value: string): string =>
@@ -32,8 +33,20 @@ export function isSelfHostedAgent(agent: McodaAgentCatalogEntry): boolean {
   return (
     agent.source === "self_hosted_catalog" ||
     agent.managedKind === "self_hosted" ||
+    agent.managedKind === "self_hosted_load_balanced" ||
     agent.slug.startsWith(SELF_HOSTED_PREFIX) ||
     Boolean(agent.nodeId || agent.serverName || agent.serverId)
+  );
+}
+
+export function isLoadBalancedSelfHostedAgent(
+  agent: McodaAgentCatalogEntry
+): boolean {
+  return (
+    agent.managedKind === "self_hosted_load_balanced" ||
+    agent.routingMode === "auto" ||
+    Boolean(agent.loadBalancedGroupId) ||
+    agent.slug.startsWith(SELF_HOSTED_AUTO_PREFIX)
   );
 }
 
@@ -54,7 +67,10 @@ export function syncedCloudSlug(agent: McodaAgentCatalogEntry): string {
 export function syncedSelfHostedSlug(agent: McodaAgentCatalogEntry): string {
   if (agent.slug.startsWith(SELF_HOSTED_PREFIX)) return agent.slug;
   const remote = agent.remoteSlug ?? agent.slug;
-  return `${SELF_HOSTED_PREFIX}${normalizeSlugPart(remote) || "agent"}`;
+  const prefix = isLoadBalancedSelfHostedAgent(agent)
+    ? SELF_HOSTED_AUTO_PREFIX
+    : SELF_HOSTED_PREFIX;
+  return `${prefix}${normalizeSlugPart(remote) || "agent"}`;
 }
 
 export function syncedWorkerSlug(agent: McodaAgentCatalogEntry): string {
@@ -200,6 +216,8 @@ export function filterAgentOptions(
         agent.bestUsage,
         agent.serverName,
         agent.serverLabel,
+        agent.routingMode,
+        agent.loadBalancedGroupId,
         agent.nodeId,
         ...(agent.capabilities ?? []),
       ]
@@ -273,6 +291,17 @@ export function getVirtualAgentWindow<T>(
 function resolveSelfHostedServer(
   agent: McodaAgentCatalogEntry
 ): Omit<McodaSelfHostedServer, "agentCount" | "agents"> {
+  if (isLoadBalancedSelfHostedAgent(agent)) {
+    return {
+      id: "auto-load-balanced",
+      label: "Auto load-balanced",
+      routingMode: "auto",
+      loadBalancedGroupId: null,
+      status: agent.healthStatus,
+      remoteSlugPrefix: null,
+    };
+  }
+
   const nodeId = agent.nodeId?.trim() || undefined;
   const serverName = agent.serverName?.trim() || undefined;
   const serverId = agent.serverId?.trim() || undefined;
@@ -283,6 +312,8 @@ function resolveSelfHostedServer(
       label: agent.serverLabel ?? serverName ?? nodeId ?? serverId ?? id,
       nodeId,
       serverName,
+      routingMode: "direct",
+      loadBalancedGroupId: null,
       status: agent.healthStatus,
       remoteSlugPrefix: undefined,
     };
@@ -296,6 +327,8 @@ function resolveSelfHostedServer(
   return {
     id,
     label: remoteSlugPrefix || id,
+    routingMode: "direct",
+    loadBalancedGroupId: null,
     status: agent.healthStatus,
     remoteSlugPrefix: remoteSlugPrefix || null,
   };

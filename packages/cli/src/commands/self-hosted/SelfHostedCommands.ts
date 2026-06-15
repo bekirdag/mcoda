@@ -18,6 +18,7 @@ Subcommands:
     --provider <NAME>       Filter by provider (mcoda|ollama)
     --limit <N>             Limit returned agents
     --include-unreachable   Include unreachable agents in the catalog result
+    --include-load-balanced Include auto-routed load-balanced self-hosted aliases
     --max-cost-per-1m-token <N>
                              Exclude agents above the given cost_per_million
     --sorted-by-catalog-rating
@@ -25,9 +26,11 @@ Subcommands:
     --min-context <N>       Require at least this context window
     --min-reasoning <N>     Require at least this reasoning rating
   agent details <SLUG>      Show a single mswarm self-hosted agent (supports --json)
+    --include-load-balanced Allow details for auto-routed aliases
   agent sync                Sync self-hosted agents into the local mcoda registry
     --provider <NAME>       Filter by provider before syncing
     --include-unreachable   Sync unreachable agents too
+    --include-load-balanced Sync auto-routed load-balanced aliases too
     --limit <N>             Limit synced agents
     --prune                 Remove previously synced self-hosted agents missing from the current catalog result
     --agent-slug-prefix <P> Override the local managed-agent slug prefix
@@ -122,6 +125,9 @@ const formatCapabilities = (capabilities: string[] | undefined): string =>
 const formatBoolean = (value: boolean | undefined): string =>
   value === undefined ? "-" : value ? "yes" : "no";
 
+const agentRoutingMode = (agent: MswarmSelfHostedAgent): "auto" | "direct" =>
+  agent.load_balanced ? "auto" : "direct";
+
 const pad = (value: string, width: number): string => value.padEnd(width, " ");
 
 const renderTable = (headers: string[], rows: string[][]): string => {
@@ -144,6 +150,7 @@ const printAgentList = (agents: MswarmSelfHostedAgent[]): void => {
   }
   const headers = [
     "REMOTE SLUG",
+    "ROUTE",
     "PROVIDER",
     "ADAPTER",
     "MODEL",
@@ -158,6 +165,7 @@ const printAgentList = (agents: MswarmSelfHostedAgent[]): void => {
   ];
   const rows = agents.map((agent) => [
     agent.remote_slug ?? agent.slug,
+    agentRoutingMode(agent),
     agent.provider,
     agent.adapter ?? "-",
     agent.default_model,
@@ -178,6 +186,8 @@ const printAgentDetails = (agent: MswarmSelfHostedAgentDetail): void => {
   const entries: Array<[string, string]> = [
     ["Slug", agent.slug],
     ["Remote slug", agent.remote_slug ?? "-"],
+    ["Route", agentRoutingMode(agent)],
+    ["Load-balanced group", agent.load_balanced_group_id ?? "-"],
     ["Provider", agent.provider],
     ["Adapter", agent.adapter ?? "-"],
     ["Source agent", agent.source_agent_slug ?? "-"],
@@ -193,6 +203,7 @@ const printAgentDetails = (agent: MswarmSelfHostedAgentDetail): void => {
     ["Supports tools", formatBoolean(agent.supports_tools)],
     ["Supports reasoning", formatBoolean(agent.supports_reasoning)],
     ["Health", agent.health_status ?? "-"],
+    ["Members", formatNumber(agent.member_count)],
     ["Capabilities", formatCapabilities(agent.capabilities)],
   ];
   const labelWidth = Math.max(...entries.map(([label]) => label.length));
@@ -212,11 +223,12 @@ const printSyncSummary = (summary: MswarmSyncSummary): void => {
     record.remoteSlug,
     record.localSlug,
     record.action,
+    record.routingMode ?? "-",
     record.provider,
     record.defaultModel,
   ]);
   // eslint-disable-next-line no-console
-  console.log(renderTable(["REMOTE SLUG", "LOCAL SLUG", "ACTION", "PROVIDER", "MODEL"], rows));
+  console.log(renderTable(["REMOTE SLUG", "LOCAL SLUG", "ACTION", "ROUTE", "PROVIDER", "MODEL"], rows));
 };
 
 export class SelfHostedCommands {
@@ -257,6 +269,7 @@ export class SelfHostedCommands {
             provider: resolveString(parsed.flags.provider),
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
             includeUnreachable: Boolean(parsed.flags["include-unreachable"]),
+            includeLoadBalanced: Boolean(parsed.flags["include-load-balanced"]),
             maxCostPerMillion: resolveNonNegativeNumber(
               parsed.flags["max-cost-per-1m-token"],
               "--max-cost-per-1m-token",
@@ -283,7 +296,9 @@ export class SelfHostedCommands {
           if (!slug) {
             throw new Error("Usage: mcoda self-hosted agent details <SLUG> [--json]");
           }
-          const agent = await api.getSelfHostedAgent(slug);
+          const agent = await api.getSelfHostedAgent(slug, {
+            includeLoadBalanced: Boolean(parsed.flags["include-load-balanced"]),
+          });
           if (parsed.flags.json) {
             // eslint-disable-next-line no-console
             console.log(JSON.stringify(agent, null, 2));
@@ -297,6 +312,7 @@ export class SelfHostedCommands {
             provider: resolveString(parsed.flags.provider),
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
             includeUnreachable: Boolean(parsed.flags["include-unreachable"]),
+            includeLoadBalanced: Boolean(parsed.flags["include-load-balanced"]),
             pruneMissing: Boolean(parsed.flags.prune),
           });
           if (parsed.flags.json) {

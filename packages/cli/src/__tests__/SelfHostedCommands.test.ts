@@ -70,6 +70,7 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
       assert.equal(req.headers["x-api-key"], "self-hosted-key");
       assert.equal(url.pathname, "/v1/swarm/self-hosted/agents");
       assert.equal(url.searchParams.get("shape"), "mcoda");
+      assert.equal(url.searchParams.get("include_load_balanced"), "true");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -82,6 +83,8 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
               default_model: "mcoda-lab-claude-sonnet",
               capabilities: ["chat", "code_write"],
               supports_tools: true,
+              load_balanced: true,
+              load_balanced_group_id: "lb_group_123",
             },
           ],
         }),
@@ -96,12 +99,70 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
           baseUrl,
           "--api-key",
           "self-hosted-key",
+          "--include-load-balanced",
         ]),
       );
       const parsed = JSON.parse(logs.join("\n"));
       assert.ok(Array.isArray(parsed));
       assert.equal(parsed[0]?.slug, "mcoda-lab-claude-sonnet");
       assert.equal(parsed[0]?.adapter, "claude-cli");
+      assert.equal(parsed[0]?.load_balanced, true);
+      assert.equal(parsed[0]?.load_balanced_group_id, "lb_group_123");
+    });
+  });
+});
+
+test("self-hosted agent sync JSON identifies auto-routed entries", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await withStubServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      assert.equal(req.headers["x-api-key"], "self-hosted-key");
+      assert.equal(url.pathname, "/v1/swarm/self-hosted/agents");
+      assert.equal(url.searchParams.get("include_load_balanced"), "true");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          agents: [
+            {
+              slug: "mcoda-auto-claude-sonnet",
+              remote_slug: "mcoda/load-balanced/claude-sonnet",
+              provider: "mcoda",
+              adapter: "claude-cli",
+              default_model: "mcoda-auto-claude-sonnet",
+              capabilities: ["chat", "code_write"],
+              supports_tools: true,
+              load_balanced: true,
+              load_balanced_group_id: "lb_group_123",
+              sync: {
+                source: "self_hosted",
+                load_balanced: true,
+                group_id: "lb_group_123",
+              },
+            },
+          ],
+        }),
+      );
+    }, async (baseUrl) => {
+      const logs = await captureLogs(() =>
+        SelfHostedCommands.run([
+          "agent",
+          "sync",
+          "--json",
+          "--base-url",
+          baseUrl,
+          "--api-key",
+          "self-hosted-key",
+          "--include-load-balanced",
+        ]),
+      );
+      const parsed = JSON.parse(logs.join("\n"));
+      assert.equal(parsed.created, 1);
+      assert.equal(
+        parsed.agents[0]?.localSlug,
+        "mswarm-self-hosted-auto-mcoda-load-balanced-claude-sonnet",
+      );
+      assert.equal(parsed.agents[0]?.routingMode, "auto");
+      assert.equal(parsed.agents[0]?.loadBalanced, true);
     });
   });
 });

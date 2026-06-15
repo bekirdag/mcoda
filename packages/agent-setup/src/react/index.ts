@@ -1333,6 +1333,8 @@ function AgentStatusBadge(props: {
   const sourceLabel =
     kind === "cloud"
       ? "Cloud"
+      : kind === "self_hosted_load_balanced"
+        ? "Auto self-hosted"
       : kind === "self_hosted"
         ? "Self-hosted"
         : kind === "worker"
@@ -1347,6 +1349,8 @@ function AgentStatusBadge(props: {
   const className =
     kind === "cloud"
       ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--info"
+      : kind === "self_hosted_load_balanced"
+        ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--success"
       : kind === "self_hosted"
         ? "mcoda-agent-setup__badge mcoda-agent-setup__badge--success"
         : kind === "worker"

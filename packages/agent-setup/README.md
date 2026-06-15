@@ -15,6 +15,26 @@ The default server runtime uses mcoda package APIs directly and does not require
 a preinstalled or configured `mcoda` CLI/client tool. When an admin submits a
 real mswarm API key through `configureMswarmApiKey()`, subsequent cloud and
 self-hosted catalog reads use the real mswarm API via `MswarmApi`.
+Self-hosted catalog reads include mswarm load-balanced aliases by default in
+the setup SDK, and those aliases are exposed as `Auto load-balanced` server
+options with `managedKind: "self_hosted_load_balanced"`. The synced local agent
+config keeps only gateway/group metadata and never needs self-hosted node tokens
+or invocation signing secrets in browser-visible state.
+
+## Self-Hosted Routing Modes
+
+The setup SDK presents two self-hosted routing modes side by side:
+
+- Direct self-hosted entries keep a fixed server/node target and use
+  `managedKind: "self_hosted"` with `routingMode: "direct"`.
+- Auto load-balanced entries are synthetic mswarm aliases and use
+  `managedKind: "self_hosted_load_balanced"` with `routingMode: "auto"`.
+
+Existing saved assignments are not rewritten when auto aliases appear. For a
+safe migration, let an admin choose the `Auto load-balanced` option only after
+the control plane preview shows an eligible upgraded node group. For rollback,
+save a direct self-hosted slug again or hide auto aliases in the backend catalog
+sync; direct server entries remain usable.
 
 For user-scoped mswarm integrations, `configureMswarmApiKey()` can receive
 non-secret connection metadata such as tenant ID, product slug, owner user ID,

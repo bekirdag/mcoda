@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { hostname, homedir, platform, userInfo } from "node:os";
+import { cpus, freemem, hostname, homedir, loadavg, platform, totalmem, userInfo } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
@@ -117,10 +117,15 @@ export interface SelfHostedNodeConfig {
   heartbeatIntervalSeconds: number;
   requestTimeoutMs: number;
   jobTimeoutMs: number;
+  maxConcurrentJobs?: number;
+  maxConcurrentLlmJobs?: number;
   genericJobsEnabled: boolean;
   genericJobTimeoutMs: number;
   genericJobMaxConcurrency: number;
   capabilityProbeTimeoutMs?: number;
+  drainMode?: boolean;
+  loadReportingEnabled?: boolean;
+  hardwareTelemetryEnabled?: boolean;
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
@@ -147,10 +152,15 @@ export interface SelfHostedNodeState {
   node_version?: string;
   request_timeout_ms?: number;
   job_timeout_ms?: number;
+  max_concurrent_jobs?: number;
+  max_concurrent_llm_jobs?: number;
   generic_jobs_enabled?: boolean;
   generic_job_timeout_ms?: number;
   generic_job_max_concurrency?: number;
   capability_probe_timeout_ms?: number;
+  drain_mode?: boolean;
+  load_reporting_enabled?: boolean;
+  hardware_telemetry_enabled?: boolean;
   expose_all_models?: boolean;
   exposure_policy?: SelfHostedExposurePolicy;
   model_allowlist?: string[];
@@ -175,10 +185,15 @@ export interface SelfHostedOwnerSetupConfig {
   heartbeatIntervalSeconds: number;
   requestTimeoutMs: number;
   jobTimeoutMs: number;
+  maxConcurrentJobs: number;
+  maxConcurrentLlmJobs: number;
   genericJobsEnabled: boolean;
   genericJobTimeoutMs: number;
   genericJobMaxConcurrency: number;
   capabilityProbeTimeoutMs?: number;
+  drainMode: boolean;
+  loadReportingEnabled: boolean;
+  hardwareTelemetryEnabled: boolean;
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
@@ -291,6 +306,7 @@ export interface SelfHostedNodeInvocationResult {
   job_id: string;
   request_id: string;
   status: "success" | "failed";
+  pre_start_failure?: boolean;
   openai_response?: Record<string, unknown>;
   stream_events?: Record<string, unknown>[];
   progress_events?: Record<string, unknown>[];
@@ -306,6 +322,14 @@ export interface SelfHostedNodeInvocationResult {
 export interface SelfHostedJobExecutionOptions {
   onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
   onProgress?: (event: Record<string, unknown>) => void | Promise<void>;
+  onStarted?: (event: {
+    job_id: string;
+    request_id: string;
+    node_id: string;
+    agent_slug: string;
+    source_agent_slug?: string | null;
+    model?: string | null;
+  }) => void | Promise<void>;
   /**
    * Per-invocation owner key attached by the mswarm execution envelope for
    * encrypted Docdex access. This must never be read from local model/provider
@@ -359,6 +383,34 @@ export interface MswarmGenericJobExecutionResult {
   };
 }
 
+export type SelfHostedRuntimeExecutionClass = "chat" | "agentic" | "generic_job";
+
+export interface SelfHostedRuntimeExecutionClassCapacity {
+  max_concurrency: number;
+  active_jobs: number;
+  queued_jobs: number;
+  free_slots: number;
+}
+
+export interface SelfHostedRuntimeLoadTelemetry {
+  runtime_protocol_version: number;
+  load_balancer_protocol_version: number;
+  catalog_metadata_version: number;
+  catalog_fingerprint: string;
+  max_concurrency: number;
+  max_concurrent_llm_jobs: number;
+  max_concurrent_generic_jobs: number;
+  active_jobs: number;
+  queued_jobs: number;
+  free_slots: number;
+  drain_mode: boolean;
+  execution_class_capacity: Record<SelfHostedRuntimeExecutionClass, SelfHostedRuntimeExecutionClassCapacity>;
+  avg_latency_ms: number | null;
+  recent_failure_count: number;
+  recent_failures: Array<{ execution_class: SelfHostedRuntimeExecutionClass; code: string; at: string }>;
+  hardware_pressure?: Record<string, unknown>;
+}
+
 export interface SelfHostedNodeHeartbeatResult {
   enrolled: boolean;
   status: "online" | "degraded";
@@ -366,6 +418,7 @@ export interface SelfHostedNodeHeartbeatResult {
   discovery_source: "mcoda" | "ollama";
   mcoda_agent_count?: number;
   ollama_version?: string | null;
+  capacity?: SelfHostedRuntimeLoadTelemetry;
   heartbeat_response: unknown;
 }
 
@@ -502,6 +555,11 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
+const SELF_HOSTED_RUNTIME_PROTOCOL_VERSION = 1;
+const SELF_HOSTED_LOAD_BALANCER_PROTOCOL_VERSION = 1;
+const SELF_HOSTED_CATALOG_METADATA_VERSION = 1;
+const MAX_TELEMETRY_LATENCY_SAMPLES = 50;
+const MAX_TELEMETRY_FAILURES = 20;
 const DEFAULT_MCODA_BIN = "mcoda";
 const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
@@ -994,6 +1052,121 @@ function optionalBoolean(...values: unknown[]): boolean | null {
   return null;
 }
 
+function roundedTelemetryNumber(value: number, digits = 3): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function nonNegativeTelemetryInteger(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function buildCatalogFingerprint(models: SelfHostedModelInput[]): string {
+  const projection = models
+    .map((model) => ({
+      name: optionalText(model.name) || "",
+      provider: optionalText(model.provider) || null,
+      adapter: optionalText(model.adapter) || null,
+      source_agent_slug: optionalText(model.source_agent_slug) || null,
+      model_id: optionalText(model.model_id) || optionalText(model.model) || null,
+      exposed: model.exposed !== false,
+      capabilities: normalizeCapabilities(model.capabilities).sort(),
+      health_status: normalizeHealthStatus(model.health_status)
+    }))
+    .sort((left, right) => `${left.provider || ""}:${left.name}`.localeCompare(`${right.provider || ""}:${right.name}`));
+  return `sha256:${sha256Json(projection)}`;
+}
+
+function executionClassCapacity(input: {
+  maxConcurrency: number;
+  activeJobs: number;
+  queuedJobs: number;
+  drainMode: boolean;
+}): SelfHostedRuntimeExecutionClassCapacity {
+  const maxConcurrency = Math.max(1, Math.floor(input.maxConcurrency));
+  const activeJobs = nonNegativeTelemetryInteger(input.activeJobs);
+  const queuedJobs = nonNegativeTelemetryInteger(input.queuedJobs);
+  return {
+    max_concurrency: maxConcurrency,
+    active_jobs: activeJobs,
+    queued_jobs: queuedJobs,
+    free_slots: input.drainMode ? 0 : Math.max(0, maxConcurrency - activeJobs - queuedJobs)
+  };
+}
+
+function totalHostMemoryBucket(): string {
+  const gib = totalmem() / (1024 ** 3);
+  if (!Number.isFinite(gib) || gib <= 0) return "unknown";
+  if (gib <= 8) return "<=8GiB";
+  if (gib <= 16) return "<=16GiB";
+  if (gib <= 32) return "<=32GiB";
+  if (gib <= 64) return "<=64GiB";
+  if (gib <= 128) return "<=128GiB";
+  return ">128GiB";
+}
+
+function coarsePublicVramTier(value: unknown, gpuCount: number): string {
+  if (
+    value === "none" ||
+    value === "lt8" ||
+    value === "8-15" ||
+    value === "16-31" ||
+    value === "32plus"
+  ) {
+    return value;
+  }
+  return gpuCount > 0 ? "unknown" : "none";
+}
+
+function buildCoarseHardwarePressure(capabilityPayload: MswarmSignedCapabilityPayload | null): Record<string, unknown> {
+  const cpuCount = Math.max(1, cpus().length || 1);
+  const totalMemory = totalmem();
+  const freeMemory = freemem();
+  const projection = (capabilityPayload as unknown as Record<string, unknown> | null)?.public_projection;
+  const projectionRecord = projection && typeof projection === "object" && !Array.isArray(projection)
+    ? projection as Record<string, unknown>
+    : {};
+  const accelerators = projectionRecord.accelerators && typeof projectionRecord.accelerators === "object"
+    ? projectionRecord.accelerators as Record<string, unknown>
+    : {};
+  const gpu = accelerators.gpu && typeof accelerators.gpu === "object" && !Array.isArray(accelerators.gpu)
+    ? accelerators.gpu as Record<string, unknown>
+    : null;
+  const rawGpuCount = gpu?.["count"];
+  const gpuCount = typeof rawGpuCount === "number" && Number.isFinite(rawGpuCount)
+    ? Math.max(0, Math.floor(rawGpuCount))
+    : 0;
+  const vramTier = coarsePublicVramTier(gpu?.["vram_tier"], gpuCount);
+  return {
+    schema_version: 1,
+    collected_at: new Date().toISOString(),
+    cpu: {
+      core_count: cpuCount,
+      load_1m_ratio: roundedTelemetryNumber((loadavg()[0] || 0) / cpuCount)
+    },
+    ram: {
+      used_ratio: totalMemory > 0 ? roundedTelemetryNumber((totalMemory - freeMemory) / totalMemory) : null,
+      total_bucket: totalHostMemoryBucket()
+    },
+    gpu: {
+      available: Boolean(gpu?.["available"]),
+      count: gpuCount,
+      cuda: Boolean(gpu?.["cuda"] || gpu?.["has_cuda"]),
+      vram: {
+        total_tier: vramTier,
+        used_ratio: null
+      }
+    }
+  };
+}
+
 function normalizeCapabilities(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -1199,9 +1372,14 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
     MSWARM_SELF_HOSTED_HEARTBEAT_INTERVAL_SECONDS: String(config.heartbeatIntervalSeconds),
     MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS: String(config.requestTimeoutMs),
     MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: String(config.jobTimeoutMs),
+    MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS: String(config.maxConcurrentJobs || 1),
+    MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS: String(config.maxConcurrentLlmJobs || config.maxConcurrentJobs || 1),
     MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED: config.genericJobsEnabled ? "true" : "false",
     MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS: String(config.genericJobTimeoutMs),
     MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: String(config.genericJobMaxConcurrency),
+    MSWARM_SELF_HOSTED_DRAIN_MODE: config.drainMode ? "true" : "false",
+    MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED: config.loadReportingEnabled === false ? "false" : "true",
+    MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED: config.hardwareTelemetryEnabled ? "true" : "false",
     MSWARM_SELF_HOSTED_CAPABILITY_PROBE_TIMEOUT_MS: config.capabilityProbeTimeoutMs
       ? String(config.capabilityProbeTimeoutMs)
       : null
@@ -1727,6 +1905,14 @@ export async function readSelfHostedNodeConfig(
     optionalText(env.OLLAMA_HOST) ||
     DEFAULT_OLLAMA_BASE_URL;
   const packageNodeVersion = await readPackageNodeVersion();
+  const maxConcurrentJobs = parsePositiveInteger(
+    env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS,
+    state.max_concurrent_jobs || 1
+  );
+  const maxConcurrentLlmJobs = parsePositiveInteger(
+    env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS,
+    state.max_concurrent_llm_jobs || maxConcurrentJobs
+  );
   return {
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
     nodeId,
@@ -1770,6 +1956,8 @@ export async function readSelfHostedNodeConfig(
       env.MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS,
       state.job_timeout_ms || DEFAULT_JOB_TIMEOUT_MS
     ),
+    maxConcurrentJobs,
+    maxConcurrentLlmJobs,
     genericJobsEnabled: parseBoolean(
       env.MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED ?? env.MSWARM_SELF_HOSTED_GENERIC_JOBS,
       state.generic_jobs_enabled === true
@@ -1785,6 +1973,15 @@ export async function readSelfHostedNodeConfig(
     capabilityProbeTimeoutMs: parsePositiveInteger(
       env.MSWARM_SELF_HOSTED_CAPABILITY_PROBE_TIMEOUT_MS,
       state.capability_probe_timeout_ms || DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS
+    ),
+    drainMode: parseBoolean(env.MSWARM_SELF_HOSTED_DRAIN_MODE, state.drain_mode === true),
+    loadReportingEnabled: parseBoolean(
+      env.MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED ?? env.MSWARM_SELF_HOSTED_LOAD_REPORTING,
+      state.load_reporting_enabled !== false
+    ),
+    hardwareTelemetryEnabled: parseBoolean(
+      env.MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED ?? env.MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY,
+      state.hardware_telemetry_enabled === true
     ),
     exposeAllModels: resolveDaemonExposeAllModels(env, state),
     modelAllowlist: parseList(env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST || state.model_allowlist),
@@ -1822,6 +2019,14 @@ export async function readOwnerSetupConfig(
   const allowlist = parseList(options.allow || env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST);
   const blocklist = parseList(options.block || env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST);
   const packageNodeVersion = await readPackageNodeVersion();
+  const maxConcurrentJobs = parsePositiveInteger(
+    options["max-concurrent-jobs"] || env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS,
+    1
+  );
+  const maxConcurrentLlmJobs = parsePositiveInteger(
+    options["max-concurrent-llm-jobs"] || env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS,
+    maxConcurrentJobs
+  );
   return {
     apiKey,
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
@@ -1856,6 +2061,8 @@ export async function readOwnerSetupConfig(
       options["job-timeout-ms"] || env.MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS,
       DEFAULT_JOB_TIMEOUT_MS
     ),
+    maxConcurrentJobs,
+    maxConcurrentLlmJobs,
     genericJobsEnabled: parseBoolean(
       options["enable-generic-jobs"] || env.MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED || env.MSWARM_SELF_HOSTED_GENERIC_JOBS,
       false
@@ -1871,6 +2078,17 @@ export async function readOwnerSetupConfig(
     capabilityProbeTimeoutMs: parsePositiveInteger(
       env.MSWARM_SELF_HOSTED_CAPABILITY_PROBE_TIMEOUT_MS,
       DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS
+    ),
+    drainMode: parseBoolean(options.drain || env.MSWARM_SELF_HOSTED_DRAIN_MODE, false),
+    loadReportingEnabled: parseBoolean(
+      options["disable-load-reporting"] === true
+        ? false
+        : (env.MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED ?? env.MSWARM_SELF_HOSTED_LOAD_REPORTING),
+      true
+    ),
+    hardwareTelemetryEnabled: parseBoolean(
+      options["enable-hardware-telemetry"] || env.MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED || env.MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY,
+      false
     ),
     exposeAllModels: resolveOwnerSetupExposeAllModels(options, env),
     modelAllowlist: allowlist,
@@ -2349,14 +2567,6 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
   };
 }
 
-function isExposedLocalAgent(
-  agent: McodaAgentListEntry,
-  config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
-): boolean {
-  const mapped = mapMcodaAgentToSelfHostedModel(agent, config);
-  return Boolean(mapped?.exposed);
-}
-
 function buildCodaliWorkspace(job: SelfHostedNodeInvocationJob): MswarmCodaliWorkspace | undefined {
   const root = optionalText(job.workspace?.root);
   if (!root) {
@@ -2378,7 +2588,25 @@ const DOCDEX_JOB_ERROR_CODES = new Set([
   "docdex_unavailable",
 ]);
 
+const PRE_START_JOB_ERROR_CODES = new Set([
+  "selected_agent_unavailable",
+  "selected_agent_unhealthy",
+  "validation_failed",
+  "docdex_context_missing",
+  "docdex_api_key_missing",
+]);
+
 class SelfHostedDocdexJobError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = code;
+    this.code = code;
+  }
+}
+
+class SelfHostedPreStartJobError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {
@@ -2462,11 +2690,16 @@ function validateRequiredDocdexContext(
 function selfHostedErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined;
   const code = (error as { code?: unknown }).code;
-  if (typeof code === "string" && DOCDEX_JOB_ERROR_CODES.has(code)) {
+  if (
+    typeof code === "string" &&
+    (DOCDEX_JOB_ERROR_CODES.has(code) || PRE_START_JOB_ERROR_CODES.has(code))
+  ) {
     return code;
   }
   const name = (error as { name?: unknown }).name;
-  return typeof name === "string" && DOCDEX_JOB_ERROR_CODES.has(name) ? name : undefined;
+  return typeof name === "string" && (DOCDEX_JOB_ERROR_CODES.has(name) || PRE_START_JOB_ERROR_CODES.has(name))
+    ? name
+    : undefined;
 }
 
 function redactRuntimeSecretValues(value: string, secrets: Array<string | undefined>): string {
@@ -4319,6 +4552,31 @@ export class MswarmSelfHostedNodeClient {
     );
   }
 
+  async postJobStart(
+    runtimeToken: string,
+    jobId: string,
+    payload: {
+      node_id: string;
+      agent_slug?: string | null;
+      source_agent_slug?: string | null;
+      model?: string | null;
+    }
+  ): Promise<unknown> {
+    return fetchJson<unknown>(
+      this.fetchImpl,
+      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/${encodeURIComponent(jobId)}/start`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${runtimeToken}`
+        },
+        body: JSON.stringify(payload)
+      },
+      this.timeoutMs
+    );
+  }
+
   async postJobEvents(
     runtimeToken: string,
     jobId: string,
@@ -4351,6 +4609,12 @@ export class SelfHostedNodeRuntime {
   private readonly genericRunners: Map<string, MswarmGenericJobRunner>;
   private readonly artifactStore: MswarmGenericJobArtifactStore;
   private readonly capabilityRunner: CommandRunner;
+  private activeLlmJobs = 0;
+  private activeGenericJobs = 0;
+  private queuedLlmJobs = 0;
+  private queuedGenericJobs = 0;
+  private readonly latencySamplesMs: number[] = [];
+  private readonly recentFailures: Array<{ execution_class: SelfHostedRuntimeExecutionClass; code: string; at: string }> = [];
 
   constructor(
     config: SelfHostedNodeConfig,
@@ -4413,6 +4677,119 @@ export class SelfHostedNodeRuntime {
       });
   }
 
+  updateLocalQueueTelemetry(input: { llmQueuedJobs?: number; genericQueuedJobs?: number }): void {
+    if (input.llmQueuedJobs !== undefined) {
+      this.queuedLlmJobs = nonNegativeTelemetryInteger(input.llmQueuedJobs);
+    }
+    if (input.genericQueuedJobs !== undefined) {
+      this.queuedGenericJobs = nonNegativeTelemetryInteger(input.genericQueuedJobs);
+    }
+  }
+
+  private beginExecutionTelemetry(executionClass: "llm" | "generic_job"): void {
+    if (executionClass === "generic_job") {
+      this.activeGenericJobs += 1;
+      return;
+    }
+    this.activeLlmJobs += 1;
+  }
+
+  private finishExecutionTelemetry(input: {
+    executionClass: "llm" | "generic_job";
+    startedAt: number;
+    ok: boolean;
+    code?: string | null;
+  }): void {
+    if (input.executionClass === "generic_job") {
+      this.activeGenericJobs = Math.max(0, this.activeGenericJobs - 1);
+    } else {
+      this.activeLlmJobs = Math.max(0, this.activeLlmJobs - 1);
+    }
+    this.latencySamplesMs.push(Math.max(0, Date.now() - input.startedAt));
+    while (this.latencySamplesMs.length > MAX_TELEMETRY_LATENCY_SAMPLES) {
+      this.latencySamplesMs.shift();
+    }
+    if (!input.ok) {
+      this.recentFailures.unshift({
+        execution_class: input.executionClass === "generic_job" ? "generic_job" : "agentic",
+        code: optionalText(input.code) || "upstream_error",
+        at: new Date().toISOString()
+      });
+      this.recentFailures.splice(MAX_TELEMETRY_FAILURES);
+    }
+  }
+
+  private averageLatencyMs(fallback: number | null = null): number | null {
+    if (this.latencySamplesMs.length === 0) {
+      return fallback;
+    }
+    const total = this.latencySamplesMs.reduce((sum, value) => sum + value, 0);
+    return Math.round(total / this.latencySamplesMs.length);
+  }
+
+  private buildLoadTelemetry(input: {
+    models: SelfHostedModelInput[];
+    discoveryLatencyMs?: number;
+    discoveryFailureCount?: number;
+    capabilityPayload?: MswarmSignedCapabilityPayload | null;
+  }): SelfHostedRuntimeLoadTelemetry {
+    const drainMode = this.config.drainMode === true;
+    const llmMaxConcurrency = Math.max(1, Math.floor(this.config.maxConcurrentLlmJobs || this.config.maxConcurrentJobs || 1));
+    const genericMaxConcurrency = Math.max(1, Math.floor(this.config.genericJobMaxConcurrency || 1));
+    const maxConcurrency = Math.max(
+      1,
+      Math.floor(this.config.maxConcurrentJobs || 1),
+      llmMaxConcurrency,
+      this.config.genericJobsEnabled ? genericMaxConcurrency : 1
+    );
+    const activeLlmJobs = nonNegativeTelemetryInteger(this.activeLlmJobs);
+    const activeGenericJobs = nonNegativeTelemetryInteger(this.activeGenericJobs);
+    const queuedLlmJobs = nonNegativeTelemetryInteger(this.queuedLlmJobs);
+    const queuedGenericJobs = nonNegativeTelemetryInteger(this.queuedGenericJobs);
+    const llmCapacity = executionClassCapacity({
+      maxConcurrency: llmMaxConcurrency,
+      activeJobs: activeLlmJobs,
+      queuedJobs: queuedLlmJobs,
+      drainMode
+    });
+    const genericCapacity = executionClassCapacity({
+      maxConcurrency: genericMaxConcurrency,
+      activeJobs: activeGenericJobs,
+      queuedJobs: queuedGenericJobs,
+      drainMode: drainMode || !this.config.genericJobsEnabled
+    });
+    const activeJobs = activeLlmJobs + activeGenericJobs;
+    const queuedJobs = queuedLlmJobs + queuedGenericJobs;
+    const freeSlots = drainMode ? 0 : Math.max(0, maxConcurrency - activeJobs - queuedJobs);
+    const failures = this.recentFailures.slice(0, 10);
+    const discoveryFailureCount = nonNegativeTelemetryInteger(input.discoveryFailureCount);
+    const telemetry: SelfHostedRuntimeLoadTelemetry = {
+      runtime_protocol_version: SELF_HOSTED_RUNTIME_PROTOCOL_VERSION,
+      load_balancer_protocol_version: SELF_HOSTED_LOAD_BALANCER_PROTOCOL_VERSION,
+      catalog_metadata_version: SELF_HOSTED_CATALOG_METADATA_VERSION,
+      catalog_fingerprint: buildCatalogFingerprint(input.models),
+      max_concurrency: maxConcurrency,
+      max_concurrent_llm_jobs: llmMaxConcurrency,
+      max_concurrent_generic_jobs: this.config.genericJobsEnabled ? genericMaxConcurrency : 0,
+      active_jobs: activeJobs,
+      queued_jobs: queuedJobs,
+      free_slots: freeSlots,
+      drain_mode: drainMode,
+      execution_class_capacity: {
+        chat: llmCapacity,
+        agentic: llmCapacity,
+        generic_job: genericCapacity
+      },
+      avg_latency_ms: this.averageLatencyMs(input.discoveryLatencyMs ?? null),
+      recent_failure_count: failures.length + discoveryFailureCount,
+      recent_failures: failures
+    };
+    if (this.config.hardwareTelemetryEnabled === true) {
+      telemetry.hardware_pressure = buildCoarseHardwarePressure(input.capabilityPayload || null);
+    }
+    return telemetry;
+  }
+
   static async setup(
     setupConfig: SelfHostedOwnerSetupConfig,
     deps?: {
@@ -4448,6 +4825,11 @@ export class SelfHostedNodeRuntime {
       model_allowlist: setupConfig.modelAllowlist,
       model_blocklist: setupConfig.modelBlocklist,
       heartbeat_interval_seconds: setupConfig.heartbeatIntervalSeconds,
+      max_concurrent_jobs: setupConfig.maxConcurrentJobs,
+      max_concurrent_llm_jobs: setupConfig.maxConcurrentLlmJobs,
+      drain_mode: setupConfig.drainMode,
+      load_reporting_enabled: setupConfig.loadReportingEnabled,
+      hardware_telemetry_enabled: setupConfig.hardwareTelemetryEnabled,
       generic_job_max_concurrency: setupConfig.genericJobMaxConcurrency
     });
     const nodeId = optionalText(bootstrap.node?.node_id);
@@ -4478,10 +4860,15 @@ export class SelfHostedNodeRuntime {
       node_version: setupConfig.nodeVersion,
       request_timeout_ms: setupConfig.requestTimeoutMs,
       job_timeout_ms: setupConfig.jobTimeoutMs,
+      max_concurrent_jobs: setupConfig.maxConcurrentJobs,
+      max_concurrent_llm_jobs: setupConfig.maxConcurrentLlmJobs,
       generic_jobs_enabled: setupConfig.genericJobsEnabled,
       generic_job_timeout_ms: setupConfig.genericJobTimeoutMs,
       generic_job_max_concurrency: setupConfig.genericJobMaxConcurrency,
       capability_probe_timeout_ms: setupConfig.capabilityProbeTimeoutMs || DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS,
+      drain_mode: setupConfig.drainMode,
+      load_reporting_enabled: setupConfig.loadReportingEnabled,
+      hardware_telemetry_enabled: setupConfig.hardwareTelemetryEnabled,
       expose_all_models: setupConfig.exposeAllModels,
       exposure_policy: setupConfig.exposeAllModels ? "all" : "none",
       model_allowlist: setupConfig.modelAllowlist,
@@ -4513,10 +4900,15 @@ export class SelfHostedNodeRuntime {
         heartbeatIntervalSeconds: heartbeatInterval,
         requestTimeoutMs: setupConfig.requestTimeoutMs,
         jobTimeoutMs: setupConfig.jobTimeoutMs,
+        maxConcurrentJobs: setupConfig.maxConcurrentJobs,
+        maxConcurrentLlmJobs: setupConfig.maxConcurrentLlmJobs,
         genericJobsEnabled: setupConfig.genericJobsEnabled,
         genericJobTimeoutMs: setupConfig.genericJobTimeoutMs,
         genericJobMaxConcurrency: setupConfig.genericJobMaxConcurrency,
         capabilityProbeTimeoutMs: setupConfig.capabilityProbeTimeoutMs || DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS,
+        drainMode: setupConfig.drainMode,
+        loadReportingEnabled: setupConfig.loadReportingEnabled,
+        hardwareTelemetryEnabled: setupConfig.hardwareTelemetryEnabled,
         exposeAllModels: setupConfig.exposeAllModels,
         modelAllowlist: setupConfig.modelAllowlist,
         modelBlocklist: setupConfig.modelBlocklist
@@ -4638,9 +5030,14 @@ export class SelfHostedNodeRuntime {
       node_version: this.config.nodeVersion,
       request_timeout_ms: this.config.requestTimeoutMs,
       job_timeout_ms: this.config.jobTimeoutMs,
+      max_concurrent_jobs: this.config.maxConcurrentJobs,
+      max_concurrent_llm_jobs: this.config.maxConcurrentLlmJobs,
       generic_jobs_enabled: this.config.genericJobsEnabled,
       generic_job_timeout_ms: this.config.genericJobTimeoutMs,
       generic_job_max_concurrency: this.config.genericJobMaxConcurrency,
+      drain_mode: this.config.drainMode === true,
+      load_reporting_enabled: this.config.loadReportingEnabled !== false,
+      hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
       expose_all_models: this.config.exposeAllModels,
       exposure_policy: this.config.exposeAllModels ? "all" : "none",
       model_allowlist: this.config.modelAllowlist,
@@ -4652,22 +5049,41 @@ export class SelfHostedNodeRuntime {
   }
 
   private async resolveMcodaAgentForJob(job: SelfHostedNodeInvocationJob): Promise<MswarmCodaliAgent> {
-    const selected =
-      optionalText(job.source_agent_slug) ||
-      optionalText(job.agent_slug) ||
-      optionalText(job.model) ||
-      optionalText(job.openai_request.model);
+    const selectedSourceAgentSlug = optionalText(job.source_agent_slug);
+    const selectedAgentSlug = optionalText(job.agent_slug);
+    const selectedModel = optionalText(job.model) || optionalText(job.openai_request.model);
+    const selected = selectedSourceAgentSlug || selectedAgentSlug || selectedModel;
     if (!selected) {
-      throw new Error("mcoda source agent slug is required");
+      throw new SelfHostedPreStartJobError("selected_agent_unavailable", "mcoda source agent slug is required");
     }
     const rawAgents = await this.mcoda.listRawAgents();
+    const strictSelectedAgent = selectedSourceAgentSlug || selectedAgentSlug;
     const agent = rawAgents.find((entry) => {
       const slug = optionalText(entry.slug);
+      if (strictSelectedAgent) {
+        return slug === strictSelectedAgent;
+      }
       const defaultModel = mcodaAgentDefaultModel(entry);
       return slug === selected || defaultModel === selected;
     });
-    if (!agent || !isExposedLocalAgent(agent, this.config)) {
-      throw new Error("selected local mcoda agent is not exposed by this node");
+    if (!agent) {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unavailable",
+        `selected local mcoda agent ${selected} is not available on this node`
+      );
+    }
+    const mapped = mapMcodaAgentToSelfHostedModel(agent, this.config);
+    if (!mapped?.exposed) {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unavailable",
+        `selected local mcoda agent ${selected} is not exposed by this node`
+      );
+    }
+    if (mapped.health_status && mapped.health_status !== "healthy" && mapped.health_status !== "unknown") {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unhealthy",
+        `selected local mcoda agent ${selected} is ${mapped.health_status}`
+      );
     }
     return mapMcodaAgentToCodaliAgent(agent, selected);
   }
@@ -4677,6 +5093,7 @@ export class SelfHostedNodeRuntime {
     options: MswarmGenericJobExecutionOptions = {}
   ): Promise<MswarmGenericJobExecutionResult> {
     const startedAt = Date.now();
+    this.beginExecutionTelemetry("generic_job");
     const events: MswarmJobEvent[] = [];
     let sequence = 0;
     const emitEvent = async (event: Omit<MswarmJobEvent, "job_id" | "sequence" | "timestamp">) => {
@@ -4711,6 +5128,12 @@ export class SelfHostedNodeRuntime {
         },
         finished_at: new Date().toISOString()
       };
+      this.finishExecutionTelemetry({
+        executionClass: "generic_job",
+        startedAt,
+        ok: false,
+        code
+      });
       return {
         job_id: envelope.job_id,
         request_id: envelope.request_id,
@@ -4822,6 +5245,12 @@ export class SelfHostedNodeRuntime {
           runner: runner.id
         }
       });
+      this.finishExecutionTelemetry({
+        executionClass: "generic_job",
+        startedAt,
+        ok: status === "succeeded",
+        code: runnerResult.error?.code || status
+      });
       return {
         job_id: envelope.job_id,
         request_id: envelope.request_id,
@@ -4849,7 +5278,9 @@ export class SelfHostedNodeRuntime {
     options: SelfHostedJobExecutionOptions = {}
   ): Promise<SelfHostedNodeInvocationResult> {
     const startedAt = Date.now();
+    this.beginExecutionTelemetry("llm");
     let selectedAgent: MswarmCodaliAgent | undefined;
+    let jobStarted = false;
     const progressEvents: Record<string, unknown>[] = [];
     const streamEvents: Record<string, unknown>[] = [];
     const recordProgress = async (event: Record<string, unknown>) => {
@@ -4860,13 +5291,35 @@ export class SelfHostedNodeRuntime {
       streamEvents.push(chunk);
       await options.onOpenAIChunk?.(chunk);
     };
+    const acknowledgeStarted = async (agent?: MswarmCodaliAgent) => {
+      if (jobStarted) {
+        return;
+      }
+      await options.onStarted?.({
+        job_id: job.job_id,
+        request_id: job.request_id,
+        node_id: job.node_id,
+        agent_slug: optionalText(job.agent_slug) || agent?.slug || "",
+        source_agent_slug: optionalText(job.source_agent_slug) || agent?.slug || null,
+        model: optionalText(job.model) || optionalText(job.openai_request.model)
+      });
+      jobStarted = true;
+    };
     if (job.node_id !== this.config.nodeId) {
-      return {
+      const result: SelfHostedNodeInvocationResult = {
         job_id: job.job_id,
         request_id: job.request_id,
         status: "failed",
+        pre_start_failure: true,
         error: { code: "validation_failed", message: "job node_id does not match this node" }
       };
+      this.finishExecutionTelemetry({
+        executionClass: "llm",
+        startedAt,
+        ok: false,
+        code: "validation_failed"
+      });
+      return result;
     }
     try {
       if (job.provider === "ollama") {
@@ -4875,7 +5328,8 @@ export class SelfHostedNodeRuntime {
         if (job.openai_request.top_p !== undefined) options.top_p = job.openai_request.top_p;
         if (job.openai_request.max_tokens !== undefined) options.num_predict = job.openai_request.max_tokens;
         if (job.openai_request.stop !== undefined) options.stop = job.openai_request.stop;
-        const result = await this.jobOllama.chat({
+        await acknowledgeStarted();
+        const ollamaResult = await this.jobOllama.chat({
           model: job.model || job.openai_request.model,
           messages: job.openai_request.messages,
           options,
@@ -4888,7 +5342,7 @@ export class SelfHostedNodeRuntime {
             created: Math.floor(Date.now() / 1000),
             model: job.openai_request.model,
             choices: [
-              { index: 0, delta: { content: result.content }, finish_reason: null }
+              { index: 0, delta: { content: ollamaResult.content }, finish_reason: null }
             ]
           });
           await emitOpenAIChunk({
@@ -4901,22 +5355,28 @@ export class SelfHostedNodeRuntime {
             ]
           });
         }
-        return {
+        const invocationResult: SelfHostedNodeInvocationResult = {
           job_id: job.job_id,
           request_id: job.request_id,
           status: "success",
           openai_response: buildOpenAIChatCompletion({
             requestId: job.request_id,
             model: job.openai_request.model,
-            content: result.content,
-            promptTokens: result.promptTokens,
-            completionTokens: result.completionTokens,
-            metadata: { provider: "ollama", raw: result.raw }
+            content: ollamaResult.content,
+            promptTokens: ollamaResult.promptTokens,
+            completionTokens: ollamaResult.completionTokens,
+            metadata: { provider: "ollama", raw: ollamaResult.raw }
           }),
           ...(streamEvents.length ? { stream_events: streamEvents } : {}),
           ...(progressEvents.length ? { progress_events: progressEvents } : {}),
           timing: { local_latency_ms: Date.now() - startedAt }
         };
+        this.finishExecutionTelemetry({
+          executionClass: "llm",
+          startedAt,
+          ok: true
+        });
+        return invocationResult;
       }
       const taskPreview = messagesToPrompt(job.openai_request.messages);
       if (!taskPreview) {
@@ -4926,6 +5386,7 @@ export class SelfHostedNodeRuntime {
       selectedAgent = agent;
       validateRequiredDocdexContext(job, options.attachedMswarmApiKey);
       const attachedMswarmApiKey = attachedMswarmApiKeyForDocdex(job, options.attachedMswarmApiKey);
+      await acknowledgeStarted(agent);
       await recordProgress({
         type: "agent_selected",
         job_id: job.job_id,
@@ -4964,7 +5425,7 @@ export class SelfHostedNodeRuntime {
         }
       });
       const tokens = usageTokens(response.usage);
-      return {
+      const result: SelfHostedNodeInvocationResult = {
         job_id: job.job_id,
         request_id: job.request_id,
         status: "success",
@@ -4990,6 +5451,12 @@ export class SelfHostedNodeRuntime {
         ...(progressEvents.length ? { progress_events: progressEvents } : {}),
         timing: { local_latency_ms: Date.now() - startedAt }
       };
+      this.finishExecutionTelemetry({
+        executionClass: "llm",
+        startedAt,
+        ok: true
+      });
+      return result;
     } catch (error) {
       const message = redactRuntimeSecretValues(
         error instanceof Error ? error.message : String(error),
@@ -5005,10 +5472,11 @@ export class SelfHostedNodeRuntime {
             : /permission|policy|denied/i.test(message)
               ? "policy_denied"
               : "upstream_error");
-      return {
+      const result: SelfHostedNodeInvocationResult = {
         job_id: job.job_id,
         request_id: job.request_id,
         status: "failed",
+        ...(!jobStarted ? { pre_start_failure: true } : {}),
         error: {
           code,
           message
@@ -5017,6 +5485,13 @@ export class SelfHostedNodeRuntime {
         ...(progressEvents.length ? { progress_events: progressEvents } : {}),
         timing: { local_latency_ms: Date.now() - startedAt }
       };
+      this.finishExecutionTelemetry({
+        executionClass: "llm",
+        startedAt,
+        ok: false,
+        code
+      });
+      return result;
     }
   }
 
@@ -5041,12 +5516,49 @@ export class SelfHostedNodeRuntime {
       models = [];
       version = null;
     }
+    const discoveryLatencyMs = Date.now() - startedAt;
     const capabilityPayload = await this.buildCapabilityHeartbeatPayload(enrollment.runtimeToken);
+    const loadTelemetry = this.buildLoadTelemetry({
+      models,
+      discoveryLatencyMs,
+      discoveryFailureCount: recentFailureCount,
+      capabilityPayload
+    });
+    const exposedModelCount = models.filter((model) => model.exposed !== false).length;
+    const loadReportingEnabled = this.config.loadReportingEnabled !== false;
+    const capacityPayload = loadReportingEnabled
+      ? {
+          protocol_version: loadTelemetry.runtime_protocol_version,
+          runtime_protocol_version: loadTelemetry.runtime_protocol_version,
+          load_balancer_protocol_version: loadTelemetry.load_balancer_protocol_version,
+          catalog_metadata_version: loadTelemetry.catalog_metadata_version,
+          catalog_fingerprint: loadTelemetry.catalog_fingerprint,
+          max_concurrency: loadTelemetry.max_concurrency,
+          max_concurrent_llm_jobs: loadTelemetry.max_concurrent_llm_jobs,
+          max_concurrent_generic_jobs: loadTelemetry.max_concurrent_generic_jobs,
+          active_jobs: loadTelemetry.active_jobs,
+          queued_jobs: loadTelemetry.queued_jobs,
+          free_slots: loadTelemetry.free_slots,
+          drain_mode: loadTelemetry.drain_mode,
+          execution_class_capacity: loadTelemetry.execution_class_capacity
+        }
+      : {
+          active_jobs: loadTelemetry.active_jobs,
+          queued_jobs: loadTelemetry.queued_jobs
+        };
     const heartbeatPayload: Record<string, unknown> = {
       node_id: this.config.nodeId,
       node_version: this.config.nodeVersion,
+      runtime_protocol_version: SELF_HOSTED_RUNTIME_PROTOCOL_VERSION,
       config_version: enrollment.state.config_version ?? null,
       status,
+      runtime: {
+        protocol_version: SELF_HOSTED_RUNTIME_PROTOCOL_VERSION,
+        relay_mode: this.config.relayMode || "outbound",
+        load_reporting_enabled: loadReportingEnabled,
+        hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
+        drain_mode: this.config.drainMode === true
+      },
       discovery: {
         source: discoverySource,
         mcoda_status: discoverySource === "mcoda" && status === "online" ? "ok" : status === "degraded" ? "error" : null
@@ -5061,20 +5573,24 @@ export class SelfHostedNodeRuntime {
               status: null,
               version: null
             },
-      capacity: {
-        active_jobs: 0,
-        queued_jobs: 0
-      },
+      capacity: capacityPayload,
       health: {
-        avg_latency_ms: Date.now() - startedAt,
-        recent_failure_count: recentFailureCount,
+        avg_latency_ms: loadTelemetry.avg_latency_ms ?? discoveryLatencyMs,
+        recent_failure_count: loadTelemetry.recent_failure_count,
+        recent_failures: loadTelemetry.recent_failures,
         last_success_at: status === "online" ? new Date().toISOString() : null
       },
+      local_agent_catalog: {
+        revision: loadTelemetry.catalog_fingerprint,
+        metadata_version: loadTelemetry.catalog_metadata_version,
+        model_count: models.length,
+        exposed_model_count: exposedModelCount
+      },
       models,
-      capabilities: capabilityPayload
+      capabilities: capabilityPayload,
+      ...(loadTelemetry.hardware_pressure ? { hardware_pressure: loadTelemetry.hardware_pressure } : {})
     };
     const heartbeatResponse = await this.gateway.heartbeat(enrollment.runtimeToken, heartbeatPayload);
-    const exposedModelCount = models.filter((model) => model.exposed !== false).length;
     return {
       enrolled: enrollment.enrolled,
       status,
@@ -5082,6 +5598,7 @@ export class SelfHostedNodeRuntime {
       discovery_source: discoverySource,
       mcoda_agent_count: discoverySource === "mcoda" ? exposedModelCount : undefined,
       ollama_version: version,
+      capacity: loadTelemetry,
       heartbeat_response: heartbeatResponse
     };
   }
@@ -5126,9 +5643,17 @@ export class SelfHostedNodeRuntime {
     status?: "success" | "failed";
   }> {
     const enrollment = await this.ensureEnrolled();
+    const pollCapacity = this.buildLoadTelemetry({ models: [] });
     const response = await this.gateway.pollJob(enrollment.runtimeToken, {
       node_id: this.config.nodeId,
-      capacity: { active_jobs: 0, max_jobs: 1 },
+      capacity: {
+        active_jobs: pollCapacity.active_jobs,
+        queued_jobs: pollCapacity.queued_jobs,
+        max_jobs: pollCapacity.max_concurrency,
+        max_concurrency: pollCapacity.max_concurrency,
+        free_slots: pollCapacity.free_slots,
+        drain_mode: pollCapacity.drain_mode
+      },
       wait_ms: waitMs
     });
     const job = response.job || null;
@@ -5155,6 +5680,14 @@ export class SelfHostedNodeRuntime {
     };
     const result = await this.executeJob(job, {
       attachedMswarmApiKey: optionalText(response.attached_mswarm_api_key) || undefined,
+      onStarted: async (event) => {
+        await this.gateway.postJobStart(enrollment.runtimeToken, job.job_id, {
+          node_id: this.config.nodeId,
+          agent_slug: event.agent_slug || job.agent_slug,
+          source_agent_slug: event.source_agent_slug || job.source_agent_slug || null,
+          model: event.model || job.model || job.openai_request.model
+        });
+      },
       onOpenAIChunk: async (chunk) => {
         if (job.openai_request.stream !== true || streamEventForwardingFailed) {
           return;
