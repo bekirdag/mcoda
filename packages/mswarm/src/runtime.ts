@@ -1191,13 +1191,25 @@ function normalizeHealthStatus(value: unknown): SelfHostedModelInput["health_sta
   return "unknown";
 }
 
-function isMswarmManagedCloudAgent(agent: McodaAgentListEntry): boolean {
+function isMswarmManagedAgent(agent: McodaAgentListEntry): boolean {
   const config = agent.config && typeof agent.config === "object" ? agent.config : {};
-  const mswarmCloud = config.mswarmCloud;
+  const managedConfigs = [config.mswarmCloud, config.mswarmSelfHosted, config.mswarmWorker];
+  if (
+    managedConfigs.some(
+      (managedConfig) =>
+        Boolean(managedConfig) &&
+        typeof managedConfig === "object" &&
+        (managedConfig as Record<string, unknown>).managed === true
+    )
+  ) {
+    return true;
+  }
+  const slug = optionalText(agent.slug)?.toLowerCase();
   return Boolean(
-    mswarmCloud &&
-      typeof mswarmCloud === "object" &&
-      (mswarmCloud as Record<string, unknown>).managed === true
+    slug &&
+      (slug.startsWith("mswarm-cloud-") ||
+        slug.startsWith("mswarm-self-hosted-") ||
+        slug.startsWith("mswarm-worker-"))
   );
 }
 
@@ -2139,7 +2151,7 @@ export function mapMcodaAgentToSelfHostedModel(
   agent: McodaAgentListEntry,
   config: Pick<SelfHostedNodeConfig, "exposeAllModels" | "modelAllowlist" | "modelBlocklist">
 ): SelfHostedModelInput | null {
-  if (isMswarmManagedCloudAgent(agent)) {
+  if (isMswarmManagedAgent(agent)) {
     return null;
   }
   const slug = optionalText(agent.slug);

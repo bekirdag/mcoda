@@ -862,6 +862,65 @@ describe("self-hosted node runtime", () => {
     expect(mapped).toBeNull();
   });
 
+  it("excludes managed mswarm self-hosted agents from self-hosted mcoda discovery", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        slug: "mswarm-self-hosted-mcoda-sukunahikona-qwen3-6-llama-cpp",
+        adapter: "openai-api",
+        defaultModel: "mcoda-sukunahikona-qwen3-6-llama-cpp",
+        config: {
+          mswarmSelfHosted: {
+            managed: true
+          }
+        }
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+    expect(mapped).toBeNull();
+  });
+
+  it("excludes managed mswarm worker agents from self-hosted mcoda discovery", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        slug: "mswarm-worker-1f6392bc350f4dc3948e474e1e8ebf75",
+        adapter: "openai-api",
+        defaultModel: "mswarm-worker:worker_1f6392bc350f4dc3948e474e1e8ebf75",
+        config: {
+          mswarmWorker: {
+            managed: true
+          }
+        }
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+    expect(mapped).toBeNull();
+  });
+
+  it("excludes legacy managed mswarm aliases by slug prefix", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        slug: "mswarm-self-hosted-mcoda-cassandra-local-mswarm-self-hosted-mcoda-sukunahikona-qwen3-6-llama-cpp",
+        adapter: "openai-api",
+        defaultModel: "mcoda-sukunahikona-qwen3-6-llama-cpp",
+        config: {}
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+    expect(mapped).toBeNull();
+  });
+
   it("loads config from env and persisted runtime state", async () => {
     const statePath = tempStatePath();
     const firstConfig = await readSelfHostedNodeConfig({
