@@ -2072,6 +2072,54 @@ describe("self-hosted node runtime", () => {
     expect(capturedInput.agent.supportsTools).toBe(false);
   });
 
+  it("normalizes OpenAI API mcoda agents to the Codali OpenAI-compatible provider", async () => {
+    const statePath = tempStatePath();
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "qwen3.6-llama.cpp",
+          adapter: "openai-api",
+          defaultModel: "qwen3.6-llama.cpp",
+          supportsTools: false,
+          config: {
+            baseUrl: "http://127.0.0.1:8080/v1"
+          }
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        return successfulCodaliInvocation(input);
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-mcoda-openai-api",
+      request_id: "req-mcoda-openai-api",
+      node_id: "shn_service",
+      agent_slug: "qwen3.6-llama.cpp",
+      source_agent_slug: "qwen3.6-llama.cpp",
+      provider: "mcoda",
+      model: "mcoda-qwen3.6-llama.cpp",
+      openai_request: {
+        model: "mcoda-qwen3.6-llama.cpp",
+        messages: [{ role: "user", content: "Return OK." }]
+      },
+      policy: {
+        allow_tools: true,
+        allowed_tools: ["docdex_search"]
+      }
+    });
+
+    expect(result.status).toBe("success");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.agent.adapter).toBe("openai-api");
+    expect(capturedInput.agent.provider).toBe("openai-compatible");
+    expect(capturedInput.agent.model).toBe("qwen3.6-llama.cpp");
+    expect(capturedInput.agent.baseUrl).toBe("http://127.0.0.1:8080/v1");
+  });
+
   it("routes local OpenAI-compatible mcoda agents to Codali with runner metadata", async () => {
     const cases = [
       { adapter: "vllm-local", runnerKind: "vllm" },

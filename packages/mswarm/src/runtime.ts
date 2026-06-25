@@ -2645,7 +2645,12 @@ function resolveCodaliProviderForAgent(agent: McodaAgentListEntry): string | und
   if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(adapter || "")) {
     return "ollama-remote";
   }
-  if (adapter === "openai" || adapter === "openai-compatible" || adapter === "openai-cli") {
+  if (
+    adapter === "openai" ||
+    adapter === "openai-api" ||
+    adapter === "openai-compatible" ||
+    adapter === "openai-cli"
+  ) {
     return "openai-compatible";
   }
   if (adapter === "codex-cli") return "codex-cli";

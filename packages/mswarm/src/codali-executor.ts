@@ -50,6 +50,18 @@ function isLocalOpenAiCompatibleAdapter(adapter: unknown): boolean {
   return typeof adapter === "string" && LOCAL_OPENAI_COMPATIBLE_ADAPTERS.has(adapter.trim().toLowerCase());
 }
 
+function normalizeCodaliProviderName(providerOrAdapter: unknown): string | undefined {
+  const value = optionalText(providerOrAdapter);
+  if (!value) return undefined;
+  if (isLocalOpenAiCompatibleAdapter(value)) return "openai-compatible";
+  if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(value)) return "ollama-remote";
+  if (value === "openai" || value === "openai-api" || value === "openai-compatible" || value === "openai-cli") {
+    return "openai-compatible";
+  }
+  if (value === "codex-cli") return "codex-cli";
+  return value;
+}
+
 export interface ProviderMessage {
   role: ProviderRole;
   content: string;
@@ -458,25 +470,9 @@ function responseFormatToCodali(
 
 function providerNameForAgent(agent: MswarmCodaliAgent): string {
   if (agent.provider) {
-    return agent.provider;
+    return normalizeCodaliProviderName(agent.provider) || agent.provider;
   }
-  if (isLocalOpenAiCompatibleAdapter(agent.adapter)) {
-    return "openai-compatible";
-  }
-  if (["ollama-remote", "ollama-cli", "ollama", "local-model"].includes(agent.adapter)) {
-    return "ollama-remote";
-  }
-  if (
-    agent.adapter === "openai" ||
-    agent.adapter === "openai-compatible" ||
-    agent.adapter === "openai-cli"
-  ) {
-    return "openai-compatible";
-  }
-  if (agent.adapter === "codex-cli") {
-    return "codex-cli";
-  }
-  return agent.adapter;
+  return normalizeCodaliProviderName(agent.adapter) || agent.adapter;
 }
 
 function runtimeModeForAgent(

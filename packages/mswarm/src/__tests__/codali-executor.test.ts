@@ -220,6 +220,48 @@ test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider
   assert.equal(capturedInput.policy.mode, "protocol_loop");
 });
 
+test("MswarmCodaliExecutor maps OpenAI API agents to the OpenAI-compatible runtime provider", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  await executor.invoke({
+    jobId: "job-openai-api",
+    requestId: "req-openai-api",
+    model: "qwen3.6-llama.cpp",
+    messages: [{ role: "user", content: "Return OK." }],
+    agent: {
+      slug: "qwen3.6-llama.cpp",
+      adapter: "openai-api",
+      provider: "openai-api",
+      model: "qwen3.6-llama.cpp",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "OK",
+        messages: [{ role: "assistant", content: "OK" }],
+        toolCallsExecuted: 0,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-openai-api",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.provider.name, "openai-compatible");
+  assert.equal(capturedInput.agent?.provider, "openai-compatible");
+});
+
 test("MswarmCodaliExecutor maps local OpenAI-compatible agents and forwards runner metadata", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};
