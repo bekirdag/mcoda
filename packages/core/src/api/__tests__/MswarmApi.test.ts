@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { GlobalRepository } from '@mcoda/db';
 import { CryptoHelper } from '@mcoda/shared';
+import { AgentsApi } from '../AgentsApi.js';
 import { MswarmApi, signMswarmGenericJobOpsToken, signMswarmGenericJobToken } from '../MswarmApi.js';
 import { MswarmConfigStore } from '../MswarmConfigStore.js';
 
@@ -1012,6 +1013,13 @@ test(
                   max_complexity: 7,
                   capabilities: ['chat', 'code_write'],
                   health_status: 'healthy',
+                  relay: {
+                    gateway_base_url: 'https://gateway.example',
+                    jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
+                    jobs_start_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/start',
+                    jobs_events_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/events',
+                    jobs_result_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/result',
+                  },
                   context_window: 200000,
                   supports_tools: true,
                   best_usage: 'code_write',
@@ -1406,6 +1414,13 @@ test(
                   max_complexity: 7,
                   capabilities: ['chat', 'code_write'],
                   health_status: 'healthy',
+                  relay: {
+                    gateway_base_url: 'https://gateway.example',
+                    jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
+                    jobs_start_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/start',
+                    jobs_events_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/events',
+                    jobs_result_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/result',
+                  },
                   context_window: 200000,
                   max_output_tokens: 64000,
                   supports_tools: true,
@@ -1499,6 +1514,114 @@ test(
 );
 
 test(
+  'MswarmApi.syncSelfHostedAgents marks lifecycle-incompatible agents degraded',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/self-hosted/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'mcoda-lab-qwen',
+                  agent_slug: 'mcoda-lab-qwen',
+                  remote_slug: 'mcoda/lab/qwen',
+                  provider: 'mcoda',
+                  adapter: 'ollama-cli',
+                  source_agent_slug: 'qwen3.6-llama.cpp',
+                  default_model: 'mcoda-lab-qwen',
+                  capabilities: ['chat', 'code_write'],
+                  health_status: 'healthy',
+                  runtime_package_version: '0.1.80',
+                  relay: {
+                    gateway_base_url: 'https://gateway.example',
+                    jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
+                    jobs_events_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/events',
+                    jobs_result_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/result',
+                  },
+                  supports_tools: true,
+                  sync: {
+                    source: 'self_hosted',
+                    node_id: 'shn_lab',
+                    server_name: 'lab',
+                    remote_slug: 'mcoda/lab/qwen',
+                    relay_mode: 'outbound',
+                  },
+                },
+              ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const summary = await api.syncSelfHostedAgents();
+            assert.equal(summary.created, 1);
+
+            const repo = await GlobalRepository.create();
+            try {
+              const agent = await repo.getAgentBySlug(
+                'mswarm-self-hosted-mcoda-lab-qwen'
+              );
+              assert.ok(agent);
+              const health = await repo.getAgentHealth(agent.id);
+              assert.equal(health?.status, 'degraded');
+              assert.equal(
+                (health?.details as any)?.reason,
+                'self_hosted_protocol_mismatch'
+              );
+              assert.equal(
+                (health?.details as any)?.missingRoute,
+                'POST /v1/swarm/self-hosted/node/jobs/:jobId/start'
+              );
+              assert.equal(
+                (health?.details as any)?.gatewayBaseUrl,
+                'https://gateway.example'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.lifecycle?.compatible,
+                false
+              );
+            } finally {
+              await repo.close();
+            }
+
+            const agentsApi = await AgentsApi.create();
+            try {
+              const agents = await agentsApi.listAgents({ refreshHealth: true });
+              const listed = agents.find(
+                (agent) => agent.slug === 'mswarm-self-hosted-mcoda-lab-qwen'
+              );
+              assert.equal(listed?.health?.status, 'degraded');
+              assert.equal(
+                (listed?.health?.details as any)?.health_reason,
+                'self_hosted_protocol_mismatch'
+              );
+            } finally {
+              await agentsApi.close();
+            }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
   'MswarmApi.syncSelfHostedAgents keeps direct agents stable and sanitizes auto-routed aliases',
   { concurrency: false },
   async () => {
@@ -1524,6 +1647,13 @@ test(
             default_model: 'mcoda-lab-claude-sonnet',
             capabilities: ['chat', 'code_write'],
             health_status: 'healthy',
+            relay: {
+              gateway_base_url: 'https://gateway.example',
+              jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
+              jobs_start_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/start',
+              jobs_events_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/events',
+              jobs_result_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/result',
+            },
             supports_tools: true,
             sync: {
               source: 'self_hosted',
@@ -1543,6 +1673,13 @@ test(
             default_model: 'mcoda-auto-claude-sonnet',
             capabilities: ['chat', 'code_write'],
             health_status: 'healthy',
+            relay: {
+              gateway_base_url: 'https://gateway.example',
+              jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
+              jobs_start_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/start',
+              jobs_events_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/events',
+              jobs_result_path_template: '/v1/swarm/self-hosted/node/jobs/:jobId/result',
+            },
             supports_tools: true,
             load_balanced: true,
             load_balanced_group_id: 'lb_group_123',

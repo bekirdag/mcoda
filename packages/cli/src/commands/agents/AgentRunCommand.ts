@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { AgentsApi } from "@mcoda/core";
 
 const USAGE =
-  "Usage: mcoda agent-run <NAME> [--prompt \"<text>\"] [--prompt-file <PATH>] [--task-file <PATH>] [--stdin] [--json]";
+  "Usage: mcoda agent-run <NAME> [--prompt \"<text>\"] [--prompt-file <PATH>] [--task-file <PATH>] [--stdin] [--json] [--force]";
 
 const parseArgs = (argv: string[]): { flags: Record<string, string | boolean | string[]>; positionals: string[] } => {
   const flags: Record<string, string | boolean | string[]> = {};
@@ -108,7 +108,13 @@ export class AgentRunCommand {
 
     const api = await AgentsApi.create();
     try {
-      const result = await api.runAgent(name, prompts);
+      const force = parsed.flags.force === true;
+      const result = await api.runAgent(
+        name,
+        prompts,
+        force ? { forceAgent: true } : undefined,
+        { force },
+      );
       if (parsed.flags.json) {
         // eslint-disable-next-line no-console
         console.log(

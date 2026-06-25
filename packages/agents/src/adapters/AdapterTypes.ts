@@ -68,6 +68,7 @@ export interface InvocationRequest {
   input: string;
   adapterType?: string;
   authMode?: "api" | "cli" | "local" | "none";
+  force?: boolean;
   metadata?: Record<string, unknown>;
 }
 

@@ -82,6 +82,34 @@ const WINDOW_RESET_FALLBACK_MS: Record<AgentUsageLimitWindowType, number> = {
   weekly: 7 * 24 * 60 * 60 * 1000,
   other: 60 * 60 * 1000,
 };
+const SELF_HOSTED_PROTOCOL_MISMATCH_CODE = "self_hosted_protocol_mismatch";
+const SELF_HOSTED_DIRECT_LOCAL_MITIGATION =
+  "Run a direct local agent/model instead, for example qwen3.6-llama.cpp.";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const optionalText = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+const firstText = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    const text = optionalText(value);
+    if (text) return text;
+  }
+  return undefined;
+};
+
+const firstStringArray = (...values: unknown[]): string[] => {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue;
+    const strings = value
+      .map((entry) => optionalText(entry))
+      .filter((entry): entry is string => Boolean(entry));
+    if (strings.length) return strings;
+  }
+  return [];
+};
 
 const getManagedMswarmKind = (agent: Agent): "cloud" | "self-hosted" | "worker" | undefined => {
   const config = agent.config;
@@ -117,6 +145,53 @@ const getManagedMswarmKind = (agent: Agent): "cloud" | "self-hosted" | "worker" 
     return "worker";
   }
   return undefined;
+};
+
+const isManagedMswarmSelfHostedAgent = (agent: Agent): boolean =>
+  getManagedMswarmKind(agent) === "self-hosted" ||
+  Boolean(agent.slug?.startsWith("mswarm-self-hosted-"));
+
+const selfHostedConfigRecord = (agent: Agent): Record<string, unknown> => {
+  const config = isRecord(agent.config) ? agent.config : {};
+  const selfHosted = isRecord(config.mswarmSelfHosted) ? config.mswarmSelfHosted : {};
+  return selfHosted;
+};
+
+const selfHostedLifecycleInfo = (
+  agent: Agent,
+  health: AgentHealth | undefined,
+): {
+  reason?: string;
+  missingRoute?: string;
+  gatewayUrl?: string;
+  runtimePackageVersion?: string;
+} => {
+  const details = isRecord(health?.details) ? health.details : {};
+  const config = selfHostedConfigRecord(agent);
+  const relay = isRecord(config.relay) ? config.relay : {};
+  const lifecycle = isRecord(config.lifecycle) ? config.lifecycle : {};
+  const missingRoutes = firstStringArray(details.missingRoutes, lifecycle.missingRoutes);
+  return {
+    reason: firstText(details.reason, details.health_reason, config.healthReason, lifecycle.reason),
+    missingRoute: firstText(details.missingRoute, missingRoutes[0]),
+    gatewayUrl: firstText(details.gatewayBaseUrl, relay.gatewayBaseUrl, config.gatewayBaseUrl),
+    runtimePackageVersion: firstText(details.runtimePackageVersion, config.runtimePackageVersion) ?? "unknown",
+  };
+};
+
+const buildSelfHostedProtocolMismatchMessage = (
+  agent: Agent,
+  health: AgentHealth | undefined,
+): string => {
+  const info = selfHostedLifecycleInfo(agent, health);
+  const route = info.missingRoute ?? "missing lifecycle route";
+  const gateway = info.gatewayUrl ?? "unknown gateway";
+  return [
+    `${SELF_HOSTED_PROTOCOL_MISMATCH_CODE}: missing route ${route}`,
+    `gateway URL: ${gateway}`,
+    `runtime package version: ${info.runtimePackageVersion ?? "unknown"}`,
+    SELF_HOSTED_DIRECT_LOCAL_MITIGATION,
+  ].join("; ");
 };
 
 const isIoEnabled = (): boolean => {
@@ -541,6 +616,13 @@ export class AgentService {
     agent: Agent,
     nowMs: number,
   ): Promise<{ available: boolean; earliestResetMs?: number }> {
+    const health = await this.repo.getAgentHealth(agent.id);
+    if (isManagedMswarmSelfHostedAgent(agent) && health?.status && health.status !== "healthy") {
+      return { available: false };
+    }
+    if (health?.status === "unreachable") {
+      return { available: false };
+    }
     const limits = await this.repo.listAgentUsageLimits(agent.id);
     if (!limits.length) return { available: true };
     const limitKey = this.normalizeLimitKey(agent);
@@ -579,6 +661,7 @@ export class AgentService {
       if (candidate.id === baseAgent.id) continue;
       const health = healthByAgentId.get(candidate.id);
       if (health?.status === "unreachable") continue;
+      if (isManagedMswarmSelfHostedAgent(candidate) && health?.status && health.status !== "healthy") continue;
       const candidateCapabilities = await this.repo.getAgentCapabilities(candidate.id);
       const hasAllCapabilities = baseCapabilities.every((capability) => candidateCapabilities.includes(capability));
       if (!hasAllCapabilities) continue;
@@ -692,6 +775,27 @@ export class AgentService {
     }
   }
 
+  private async assertSelfHostedLifecycleSelectable(agent: Agent, request: InvocationRequest): Promise<void> {
+    if (!isManagedMswarmSelfHostedAgent(agent)) {
+      return;
+    }
+    const health = await this.repo.getAgentHealth(agent.id);
+    if (!health || health.status === "healthy") {
+      return;
+    }
+    const info = selfHostedLifecycleInfo(agent, health);
+    if (info.reason === SELF_HOSTED_PROTOCOL_MISMATCH_CODE || info.missingRoute) {
+      throw new Error(buildSelfHostedProtocolMismatchMessage(agent, health));
+    }
+    const forced = request.force === true || request.metadata?.forceAgent === true;
+    if (!forced) {
+      const label = agent.slug ?? agent.id;
+      throw new Error(
+        `Selected mswarm self-hosted agent ${label} is ${health.status}; re-run with --force to use it anyway.`,
+      );
+    }
+  }
+
   async invoke(agentId: string, request: InvocationRequest): Promise<InvocationResult> {
     const baseAgent = await this.resolveAgent(agentId);
     const equivalentAgents = await this.listEquivalentAgents(baseAgent);
@@ -700,6 +804,7 @@ export class AgentService {
     let activeAgent = baseAgent;
     for (;;) {
       attemptedAgentIds.add(activeAgent.id);
+      await this.assertSelfHostedLifecycleSelectable(activeAgent, request);
       const adapter = await this.getAdapter(activeAgent, request.adapterType);
       if (!adapter.invoke) {
         throw new Error("Adapter does not support invoke");
@@ -827,6 +932,7 @@ export class AgentService {
       const failoverEvents: Array<Record<string, unknown>> = [];
       for (;;) {
         attemptedAgentIds.add(activeAgent.id);
+        await self.assertSelfHostedLifecycleSelectable(activeAgent, request);
         const adapter = await self.getAdapter(activeAgent, request.adapterType);
         if (!adapter.invokeStream) {
           throw new Error("Adapter does not support streaming");

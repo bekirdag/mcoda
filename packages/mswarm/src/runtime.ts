@@ -96,6 +96,10 @@ export interface SelfHostedModelInput {
 
 export interface SelfHostedNodeConfig {
   gatewayBaseUrl: string;
+  jobsPollPath?: string | null;
+  jobsStartPathTemplate?: string | null;
+  jobsEventsPathTemplate?: string | null;
+  jobsResultPathTemplate?: string | null;
   nodeId: string;
   serverName?: string | null;
   relayMode?: SelfHostedRelayMode;
@@ -145,6 +149,14 @@ export interface SelfHostedNodeState {
   enrolled_at?: string;
   updated_at?: string;
   gateway_base_url?: string;
+  jobs_poll_path?: string;
+  jobs_start_path_template?: string;
+  jobs_events_path_template?: string;
+  jobs_result_path_template?: string;
+  lifecycle_health_status?: "healthy" | "degraded" | "unreachable";
+  lifecycle_health_reason?: string;
+  lifecycle_health_message?: string;
+  lifecycle_health_updated_at?: string;
   ollama_base_url?: string;
   discovery_mode?: SelfHostedDiscoveryMode;
   mcoda_bin?: string;
@@ -215,6 +227,10 @@ export interface GatewayBootstrapResponse {
   relay?: {
     mode?: SelfHostedRelayMode;
     gateway_base_url?: string;
+    jobs_poll_path?: string;
+    jobs_start_path_template?: string;
+    jobs_events_path_template?: string;
+    jobs_result_path_template?: string;
   };
 }
 
@@ -310,6 +326,11 @@ export interface SelfHostedNodeInvocationResult {
   openai_response?: Record<string, unknown>;
   stream_events?: Record<string, unknown>[];
   progress_events?: Record<string, unknown>[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
   error?: {
     code: string;
     message: string;
@@ -542,6 +563,14 @@ interface GatewayEnrollmentResponse {
   heartbeat_interval_seconds?: number;
   heartbeat_timeout_seconds?: number;
   config_version?: number;
+  relay?: {
+    mode?: SelfHostedRelayMode;
+    gateway_base_url?: string;
+    jobs_poll_path?: string;
+    jobs_start_path_template?: string;
+    jobs_events_path_template?: string;
+    jobs_result_path_template?: string;
+  };
 }
 
 const DEFAULT_GATEWAY_BASE_URL = "http://127.0.0.1:8080";
@@ -565,7 +594,12 @@ const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_LOCAL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_JOB_POLL_WAIT_MS = 25_000;
+const DEFAULT_SELF_HOSTED_JOBS_POLL_PATH = "/v1/swarm/self-hosted/node/jobs/poll";
+const DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/start";
+const DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/events";
+const DEFAULT_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/result";
 const DEFAULT_STREAM_EVENT_BATCH_SIZE = 8;
+const SELF_HOSTED_PROTOCOL_MISMATCH_CODE = "self_hosted_protocol_mismatch";
 const OWNER_LOCAL_TEST_ECHO_JOB_TYPE = "tenant.test-echo";
 const TEST_ECHO_RUNNER_ID = "test.echo";
 const RENDER_BLENDER_JOB_TYPE = "render.blender";
@@ -978,6 +1012,48 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/g, "");
 }
 
+function lifecyclePath(value: unknown, fallback: string): string {
+  return optionalText(value) || fallback;
+}
+
+function resolveLifecycleUrl(gatewayBaseUrl: string, pathOrUrl: string): string {
+  try {
+    return new URL(pathOrUrl).toString();
+  } catch {
+    return new URL(pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`, `${trimTrailingSlash(gatewayBaseUrl)}/`).toString();
+  }
+}
+
+function resolveLifecycleTemplate(template: string, jobId: string): string {
+  const encoded = encodeURIComponent(jobId);
+  return template
+    .replace(/:jobId\b/g, encoded)
+    .replace(/:job_id\b/g, encoded)
+    .replace(/\{jobId\}/g, encoded)
+    .replace(/\{job_id\}/g, encoded);
+}
+
+function usageFromTokenCounts(
+  promptTokens: number | null | undefined,
+  completionTokens: number | null | undefined
+): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+  const prompt = positiveInteger(promptTokens) ?? 0;
+  const completion = positiveInteger(completionTokens) ?? 0;
+  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+}
+
+function openAiUsage(response: Record<string, unknown> | undefined): {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+} {
+  const usage = isRecord(response?.usage) ? response.usage : undefined;
+  const prompt = positiveInteger(usage?.prompt_tokens) ?? 0;
+  const completion = positiveInteger(usage?.completion_tokens) ?? 0;
+  const total = positiveInteger(usage?.total_tokens) ?? prompt + completion;
+  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
+}
+
 function defaultStatePath(): string {
   return join(homedir(), ".mswarm", "self-hosted-node", "config.json");
 }
@@ -1249,6 +1325,24 @@ function isAgentExposed(
   return config.exposeAllModels;
 }
 
+class HttpStatusError extends Error {
+  readonly url: string;
+  readonly status: number;
+  readonly responseText: string;
+
+  constructor(url: string, status: number, responseText: string) {
+    super(`request_failed:${status}:${responseText.slice(0, 200)}`);
+    this.name = "HttpStatusError";
+    this.url = url;
+    this.status = status;
+    this.responseText = responseText;
+  }
+}
+
+function isHttpStatusError(error: unknown, status?: number): error is HttpStatusError {
+  return error instanceof HttpStatusError && (status === undefined || error.status === status);
+}
+
 async function fetchJson<T>(
   fetchImpl: FetchLike,
   url: string,
@@ -1261,7 +1355,7 @@ async function fetchJson<T>(
     const response = await fetchImpl(url, { ...init, signal: controller.signal });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`request_failed:${response.status}:${text.slice(0, 200)}`);
+      throw new HttpStatusError(url, response.status, text);
     }
     return (await response.json()) as T;
   } finally {
@@ -1927,6 +2021,22 @@ export async function readSelfHostedNodeConfig(
   );
   return {
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
+    jobsPollPath:
+      optionalText(env.MSWARM_SELF_HOSTED_JOBS_POLL_PATH) ||
+      state.jobs_poll_path ||
+      DEFAULT_SELF_HOSTED_JOBS_POLL_PATH,
+    jobsStartPathTemplate:
+      optionalText(env.MSWARM_SELF_HOSTED_JOBS_START_PATH_TEMPLATE) ||
+      state.jobs_start_path_template ||
+      DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE,
+    jobsEventsPathTemplate:
+      optionalText(env.MSWARM_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE) ||
+      state.jobs_events_path_template ||
+      DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE,
+    jobsResultPathTemplate:
+      optionalText(env.MSWARM_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE) ||
+      state.jobs_result_path_template ||
+      DEFAULT_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE,
     nodeId,
     serverName: optionalText(env.MSWARM_SELF_HOSTED_SERVER_NAME) || state.server_name || null,
     relayMode: parseRelayMode(env.MSWARM_SELF_HOSTED_RELAY_MODE || state.relay_mode),
@@ -2606,6 +2716,7 @@ const PRE_START_JOB_ERROR_CODES = new Set([
   "validation_failed",
   "docdex_context_missing",
   "docdex_api_key_missing",
+  SELF_HOSTED_PROTOCOL_MISMATCH_CODE,
 ]);
 
 class SelfHostedDocdexJobError extends Error {
@@ -2625,6 +2736,25 @@ class SelfHostedPreStartJobError extends Error {
     super(message);
     this.name = code;
     this.code = code;
+  }
+}
+
+class SelfHostedProtocolMismatchError extends Error {
+  readonly code = SELF_HOSTED_PROTOCOL_MISMATCH_CODE;
+  readonly endpoint: string;
+  readonly gatewayBaseUrl: string;
+  readonly runtimePackageVersion: string;
+
+  constructor(input: { endpoint: string; gatewayBaseUrl: string; runtimePackageVersion: string }) {
+    super(
+      `Gateway is missing lifecycle endpoint ${input.endpoint} at ${input.gatewayBaseUrl} ` +
+        `(runtime package version ${input.runtimePackageVersion}). ` +
+        "Run a direct local agent/model instead, for example qwen3.6-llama.cpp."
+    );
+    this.name = SELF_HOSTED_PROTOCOL_MISMATCH_CODE;
+    this.endpoint = input.endpoint;
+    this.gatewayBaseUrl = input.gatewayBaseUrl;
+    this.runtimePackageVersion = input.runtimePackageVersion;
   }
 }
 
@@ -4430,13 +4560,66 @@ export class McodaLocalAgentExecutor {
 
 export class MswarmSelfHostedNodeClient {
   private readonly gatewayBaseUrl: string;
+  private readonly jobsPollPath: string;
+  private readonly jobsStartPathTemplate: string;
+  private readonly jobsEventsPathTemplate: string;
+  private readonly jobsResultPathTemplate: string;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
 
-  constructor(input: { gatewayBaseUrl: string; fetchImpl?: FetchLike; timeoutMs?: number }) {
+  constructor(input: {
+    gatewayBaseUrl: string;
+    jobsPollPath?: string | null;
+    jobsStartPathTemplate?: string | null;
+    jobsEventsPathTemplate?: string | null;
+    jobsResultPathTemplate?: string | null;
+    fetchImpl?: FetchLike;
+    timeoutMs?: number;
+  }) {
     this.gatewayBaseUrl = trimTrailingSlash(input.gatewayBaseUrl);
+    this.jobsPollPath = lifecyclePath(input.jobsPollPath, DEFAULT_SELF_HOSTED_JOBS_POLL_PATH);
+    this.jobsStartPathTemplate = lifecyclePath(
+      input.jobsStartPathTemplate,
+      DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE
+    );
+    this.jobsEventsPathTemplate = lifecyclePath(
+      input.jobsEventsPathTemplate,
+      DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE
+    );
+    this.jobsResultPathTemplate = lifecyclePath(
+      input.jobsResultPathTemplate,
+      DEFAULT_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE
+    );
     this.fetchImpl = input.fetchImpl || fetch;
     this.timeoutMs = input.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
+  lifecycleEndpoint(kind: "poll" | "start" | "events" | "result"): string {
+    const path =
+      kind === "poll"
+        ? this.jobsPollPath
+        : kind === "start"
+          ? this.jobsStartPathTemplate
+          : kind === "events"
+            ? this.jobsEventsPathTemplate
+            : this.jobsResultPathTemplate;
+    return `POST ${path}`;
+  }
+
+  lifecycleGatewayBaseUrl(): string {
+    return this.gatewayBaseUrl;
+  }
+
+  private lifecycleUrl(kind: "poll" | "start" | "events" | "result", jobId?: string): string {
+    const path =
+      kind === "poll"
+        ? this.jobsPollPath
+        : kind === "start"
+          ? this.jobsStartPathTemplate
+          : kind === "events"
+            ? this.jobsEventsPathTemplate
+            : this.jobsResultPathTemplate;
+    return resolveLifecycleUrl(this.gatewayBaseUrl, jobId ? resolveLifecycleTemplate(path, jobId) : path);
   }
 
   async enroll(nodeId: string, enrollmentToken: string): Promise<GatewayEnrollmentResponse> {
@@ -4531,7 +4714,7 @@ export class MswarmSelfHostedNodeClient {
   ): Promise<{ job?: SelfHostedNodeInvocationJob | null; attached_mswarm_api_key?: string | null }> {
     return fetchJson<{ job?: SelfHostedNodeInvocationJob | null; attached_mswarm_api_key?: string | null }>(
       this.fetchImpl,
-      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/poll`,
+      this.lifecycleUrl("poll"),
       {
         method: "POST",
         headers: {
@@ -4551,7 +4734,7 @@ export class MswarmSelfHostedNodeClient {
   ): Promise<unknown> {
     return fetchJson<unknown>(
       this.fetchImpl,
-      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/${encodeURIComponent(jobId)}/result`,
+      this.lifecycleUrl("result", jobId),
       {
         method: "POST",
         headers: {
@@ -4576,7 +4759,7 @@ export class MswarmSelfHostedNodeClient {
   ): Promise<unknown> {
     return fetchJson<unknown>(
       this.fetchImpl,
-      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/${encodeURIComponent(jobId)}/start`,
+      this.lifecycleUrl("start", jobId),
       {
         method: "POST",
         headers: {
@@ -4596,7 +4779,7 @@ export class MswarmSelfHostedNodeClient {
   ): Promise<unknown> {
     return fetchJson<unknown>(
       this.fetchImpl,
-      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/jobs/${encodeURIComponent(jobId)}/events`,
+      this.lifecycleUrl("events", jobId),
       {
         method: "POST",
         headers: {
@@ -4627,6 +4810,7 @@ export class SelfHostedNodeRuntime {
   private queuedGenericJobs = 0;
   private readonly latencySamplesMs: number[] = [];
   private readonly recentFailures: Array<{ execution_class: SelfHostedRuntimeExecutionClass; code: string; at: string }> = [];
+  private lifecyclePollingDisabled = false;
 
   constructor(
     config: SelfHostedNodeConfig,
@@ -4647,6 +4831,10 @@ export class SelfHostedNodeRuntime {
       deps?.gateway ||
       new MswarmSelfHostedNodeClient({
         gatewayBaseUrl: config.gatewayBaseUrl,
+        jobsPollPath: config.jobsPollPath,
+        jobsStartPathTemplate: config.jobsStartPathTemplate,
+        jobsEventsPathTemplate: config.jobsEventsPathTemplate,
+        jobsResultPathTemplate: config.jobsResultPathTemplate,
         fetchImpl: deps?.fetchImpl,
         timeoutMs: config.requestTimeoutMs
       });
@@ -4729,6 +4917,60 @@ export class SelfHostedNodeRuntime {
       });
       this.recentFailures.splice(MAX_TELEMETRY_FAILURES);
     }
+  }
+
+  private lifecycleProtocolMismatch(
+    kind: "poll" | "start" | "events" | "result",
+    error: unknown
+  ): SelfHostedProtocolMismatchError | undefined {
+    if (!isHttpStatusError(error, 404)) {
+      return undefined;
+    }
+    return new SelfHostedProtocolMismatchError({
+      endpoint: this.gateway.lifecycleEndpoint(kind),
+      gatewayBaseUrl: this.gateway.lifecycleGatewayBaseUrl(),
+      runtimePackageVersion: this.config.nodeVersion
+    });
+  }
+
+  private isLifecycleProtocolDegradedState(state: SelfHostedNodeState | undefined): boolean {
+    return state?.lifecycle_health_reason === SELF_HOSTED_PROTOCOL_MISMATCH_CODE;
+  }
+
+  private async readLifecycleState(): Promise<SelfHostedNodeState> {
+    try {
+      return await readSelfHostedNodeState(this.config.statePath);
+    } catch {
+      return {};
+    }
+  }
+
+  private async markLifecycleProtocolDegraded(error: SelfHostedProtocolMismatchError): Promise<void> {
+    this.lifecyclePollingDisabled = true;
+    this.recentFailures.unshift({
+      execution_class: "agentic",
+      code: SELF_HOSTED_PROTOCOL_MISMATCH_CODE,
+      at: new Date().toISOString()
+    });
+    this.recentFailures.splice(MAX_TELEMETRY_FAILURES);
+    const state = await this.readLifecycleState();
+    await writeSelfHostedNodeState(this.config.statePath, {
+      ...state,
+      lifecycle_health_status: "degraded",
+      lifecycle_health_reason: SELF_HOSTED_PROTOCOL_MISMATCH_CODE,
+      lifecycle_health_message: error.message,
+      lifecycle_health_updated_at: new Date().toISOString()
+    });
+  }
+
+  private jobResultPayload(result: SelfHostedNodeInvocationResult): SelfHostedNodeInvocationResult & { node_id: string } {
+    return {
+      ...result,
+      node_id: this.config.nodeId,
+      ...(result.status === "success"
+        ? { usage: result.usage || openAiUsage(result.openai_response) }
+        : {})
+    };
   }
 
   private averageLatencyMs(fallback: number | null = null): number | null {
@@ -4851,6 +5093,21 @@ export class SelfHostedNodeRuntime {
     }
     const heartbeatInterval =
       bootstrap.heartbeat_interval_seconds || setupConfig.heartbeatIntervalSeconds;
+    const relay = bootstrap.relay || {};
+    const relayGatewayBaseUrl = optionalText(relay.gateway_base_url) || setupConfig.gatewayBaseUrl;
+    const jobsPollPath = lifecyclePath(relay.jobs_poll_path, DEFAULT_SELF_HOSTED_JOBS_POLL_PATH);
+    const jobsStartPathTemplate = lifecyclePath(
+      relay.jobs_start_path_template,
+      DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE
+    );
+    const jobsEventsPathTemplate = lifecyclePath(
+      relay.jobs_events_path_template,
+      DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE
+    );
+    const jobsResultPathTemplate = lifecyclePath(
+      relay.jobs_result_path_template,
+      DEFAULT_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE
+    );
     const state: SelfHostedNodeState = {
       node_id: nodeId,
       server_name: optionalText(bootstrap.node?.server_name) || setupConfig.serverName,
@@ -4864,7 +5121,15 @@ export class SelfHostedNodeRuntime {
       heartbeat_timeout_seconds: bootstrap.heartbeat_timeout_seconds,
       enrolled_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      gateway_base_url: setupConfig.gatewayBaseUrl,
+      gateway_base_url: trimTrailingSlash(relayGatewayBaseUrl),
+      jobs_poll_path: jobsPollPath,
+      jobs_start_path_template: jobsStartPathTemplate,
+      jobs_events_path_template: jobsEventsPathTemplate,
+      jobs_result_path_template: jobsResultPathTemplate,
+      lifecycle_health_status: "healthy",
+      lifecycle_health_reason: undefined,
+      lifecycle_health_message: undefined,
+      lifecycle_health_updated_at: new Date().toISOString(),
       ollama_base_url: setupConfig.ollamaBaseUrl,
       discovery_mode: setupConfig.discoveryMode,
       mcoda_bin: setupConfig.mcodaBin,
@@ -4888,9 +5153,25 @@ export class SelfHostedNodeRuntime {
     };
     await writeSelfHostedNodeState(setupConfig.statePath, state);
     await writeSelfHostedRuntimeToken(setupConfig.runtimeTokenPath, runtimeToken);
+    const runtimeGateway =
+      deps?.gateway && trimTrailingSlash(relayGatewayBaseUrl) === setupConfig.gatewayBaseUrl
+        ? deps.gateway
+        : new MswarmSelfHostedNodeClient({
+            gatewayBaseUrl: trimTrailingSlash(relayGatewayBaseUrl),
+            jobsPollPath,
+            jobsStartPathTemplate,
+            jobsEventsPathTemplate,
+            jobsResultPathTemplate,
+            fetchImpl: deps?.fetchImpl,
+            timeoutMs: setupConfig.requestTimeoutMs
+          });
     const runtime = new SelfHostedNodeRuntime(
       {
-        gatewayBaseUrl: setupConfig.gatewayBaseUrl,
+        gatewayBaseUrl: trimTrailingSlash(relayGatewayBaseUrl),
+        jobsPollPath,
+        jobsStartPathTemplate,
+        jobsEventsPathTemplate,
+        jobsResultPathTemplate,
         nodeId,
         serverName: state.server_name,
         relayMode: state.relay_mode || setupConfig.relayMode,
@@ -4925,7 +5206,7 @@ export class SelfHostedNodeRuntime {
         modelAllowlist: setupConfig.modelAllowlist,
         modelBlocklist: setupConfig.modelBlocklist
       },
-      { ...deps, gateway }
+      { ...deps, gateway: runtimeGateway }
     );
     const once = await runtime.runOnce();
     return {
@@ -5025,6 +5306,21 @@ export class SelfHostedNodeRuntime {
     if (!runtimeToken) {
       throw new Error("Enrollment response did not include runtime_token");
     }
+    const relay = response.relay || {};
+    const gatewayBaseUrl = trimTrailingSlash(optionalText(relay.gateway_base_url) || this.config.gatewayBaseUrl);
+    const jobsPollPath = lifecyclePath(relay.jobs_poll_path || this.config.jobsPollPath, DEFAULT_SELF_HOSTED_JOBS_POLL_PATH);
+    const jobsStartPathTemplate = lifecyclePath(
+      relay.jobs_start_path_template || this.config.jobsStartPathTemplate,
+      DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE
+    );
+    const jobsEventsPathTemplate = lifecyclePath(
+      relay.jobs_events_path_template || this.config.jobsEventsPathTemplate,
+      DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE
+    );
+    const jobsResultPathTemplate = lifecyclePath(
+      relay.jobs_result_path_template || this.config.jobsResultPathTemplate,
+      DEFAULT_SELF_HOSTED_JOBS_RESULT_PATH_TEMPLATE
+    );
     const nextState: SelfHostedNodeState = {
       ...currentState,
       node_id: this.config.nodeId,
@@ -5034,7 +5330,15 @@ export class SelfHostedNodeRuntime {
       heartbeat_timeout_seconds: response.heartbeat_timeout_seconds,
       enrolled_at: currentState.enrolled_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      gateway_base_url: this.config.gatewayBaseUrl,
+      gateway_base_url: gatewayBaseUrl,
+      jobs_poll_path: jobsPollPath,
+      jobs_start_path_template: jobsStartPathTemplate,
+      jobs_events_path_template: jobsEventsPathTemplate,
+      jobs_result_path_template: jobsResultPathTemplate,
+      lifecycle_health_status: "healthy",
+      lifecycle_health_reason: undefined,
+      lifecycle_health_message: undefined,
+      lifecycle_health_updated_at: new Date().toISOString(),
       ollama_base_url: this.config.ollamaBaseUrl,
       discovery_mode: this.config.discoveryMode,
       mcoda_bin: this.config.mcodaBin,
@@ -5367,6 +5671,8 @@ export class SelfHostedNodeRuntime {
             ]
           });
         }
+        const promptTokens = positiveInteger(ollamaResult.promptTokens);
+        const completionTokens = positiveInteger(ollamaResult.completionTokens);
         const invocationResult: SelfHostedNodeInvocationResult = {
           job_id: job.job_id,
           request_id: job.request_id,
@@ -5375,10 +5681,11 @@ export class SelfHostedNodeRuntime {
             requestId: job.request_id,
             model: job.openai_request.model,
             content: ollamaResult.content,
-            promptTokens: ollamaResult.promptTokens,
-            completionTokens: ollamaResult.completionTokens,
+            promptTokens,
+            completionTokens,
             metadata: { provider: "ollama", raw: ollamaResult.raw }
           }),
+          usage: usageFromTokenCounts(promptTokens, completionTokens),
           ...(streamEvents.length ? { stream_events: streamEvents } : {}),
           ...(progressEvents.length ? { progress_events: progressEvents } : {}),
           timing: { local_latency_ms: Date.now() - startedAt }
@@ -5459,6 +5766,7 @@ export class SelfHostedNodeRuntime {
             mode: response.metadata.mode
           }
         }),
+        usage: usageFromTokenCounts(tokens.promptTokens, tokens.completionTokens),
         ...(streamEvents.length ? { stream_events: streamEvents } : {}),
         ...(progressEvents.length ? { progress_events: progressEvents } : {}),
         timing: { local_latency_ms: Date.now() - startedAt }
@@ -5528,6 +5836,13 @@ export class SelfHostedNodeRuntime {
       models = [];
       version = null;
     }
+    const lifecycleState = await this.readLifecycleState();
+    const lifecycleProtocolDegraded = this.isLifecycleProtocolDegradedState(lifecycleState);
+    if (lifecycleProtocolDegraded) {
+      status = "degraded";
+      recentFailureCount = Math.max(recentFailureCount, 1);
+      this.lifecyclePollingDisabled = true;
+    }
     const discoveryLatencyMs = Date.now() - startedAt;
     const capabilityPayload = await this.buildCapabilityHeartbeatPayload(enrollment.runtimeToken);
     const loadTelemetry = this.buildLoadTelemetry({
@@ -5569,7 +5884,17 @@ export class SelfHostedNodeRuntime {
         relay_mode: this.config.relayMode || "outbound",
         load_reporting_enabled: loadReportingEnabled,
         hardware_telemetry_enabled: this.config.hardwareTelemetryEnabled === true,
-        drain_mode: this.config.drainMode === true
+        drain_mode: this.config.drainMode === true,
+        ...(lifecycleProtocolDegraded
+          ? {
+              lifecycle: {
+                status: "degraded",
+                reason: lifecycleState.lifecycle_health_reason,
+                message: lifecycleState.lifecycle_health_message,
+                updated_at: lifecycleState.lifecycle_health_updated_at
+              }
+            }
+          : {})
       },
       discovery: {
         source: discoverySource,
@@ -5590,7 +5915,14 @@ export class SelfHostedNodeRuntime {
         avg_latency_ms: loadTelemetry.avg_latency_ms ?? discoveryLatencyMs,
         recent_failure_count: loadTelemetry.recent_failure_count,
         recent_failures: loadTelemetry.recent_failures,
-        last_success_at: status === "online" ? new Date().toISOString() : null
+        last_success_at: status === "online" ? new Date().toISOString() : null,
+        ...(lifecycleProtocolDegraded
+          ? {
+              lifecycle_status: "degraded",
+              lifecycle_reason: lifecycleState.lifecycle_health_reason,
+              lifecycle_message: lifecycleState.lifecycle_health_message
+            }
+          : {})
       },
       local_agent_catalog: {
         revision: loadTelemetry.catalog_fingerprint,
@@ -5654,20 +5986,35 @@ export class SelfHostedNodeRuntime {
     job_id?: string;
     status?: "success" | "failed";
   }> {
+    const lifecycleState = await this.readLifecycleState();
+    if (this.lifecyclePollingDisabled || this.isLifecycleProtocolDegradedState(lifecycleState)) {
+      this.lifecyclePollingDisabled = true;
+      return { executed: false, status: "failed" };
+    }
     const enrollment = await this.ensureEnrolled();
     const pollCapacity = this.buildLoadTelemetry({ models: [] });
-    const response = await this.gateway.pollJob(enrollment.runtimeToken, {
-      node_id: this.config.nodeId,
-      capacity: {
-        active_jobs: pollCapacity.active_jobs,
-        queued_jobs: pollCapacity.queued_jobs,
-        max_jobs: pollCapacity.max_concurrency,
-        max_concurrency: pollCapacity.max_concurrency,
-        free_slots: pollCapacity.free_slots,
-        drain_mode: pollCapacity.drain_mode
-      },
-      wait_ms: waitMs
-    });
+    let response: { job?: SelfHostedNodeInvocationJob | null; attached_mswarm_api_key?: string | null };
+    try {
+      response = await this.gateway.pollJob(enrollment.runtimeToken, {
+        node_id: this.config.nodeId,
+        capacity: {
+          active_jobs: pollCapacity.active_jobs,
+          queued_jobs: pollCapacity.queued_jobs,
+          max_jobs: pollCapacity.max_concurrency,
+          max_concurrency: pollCapacity.max_concurrency,
+          free_slots: pollCapacity.free_slots,
+          drain_mode: pollCapacity.drain_mode
+        },
+        wait_ms: waitMs
+      });
+    } catch (error) {
+      const mismatch = this.lifecycleProtocolMismatch("poll", error);
+      if (mismatch) {
+        await this.markLifecycleProtocolDegraded(mismatch);
+        return { executed: false, status: "failed" };
+      }
+      throw error;
+    }
     const job = response.job || null;
     if (!job) {
       return { executed: false };
@@ -5686,19 +6033,34 @@ export class SelfHostedNodeRuntime {
           stream_events
         });
         forwardedStreamEventCount += stream_events.length;
-      } catch {
+      } catch (error) {
+        const mismatch = this.lifecycleProtocolMismatch("events", error);
+        if (mismatch) {
+          streamEventForwardingFailed = true;
+          await this.markLifecycleProtocolDegraded(mismatch);
+          throw mismatch;
+        }
         streamEventForwardingFailed = true;
       }
     };
-    const result = await this.executeJob(job, {
+    let result = await this.executeJob(job, {
       attachedMswarmApiKey: optionalText(response.attached_mswarm_api_key) || undefined,
       onStarted: async (event) => {
-        await this.gateway.postJobStart(enrollment.runtimeToken, job.job_id, {
-          node_id: this.config.nodeId,
-          agent_slug: event.agent_slug || job.agent_slug,
-          source_agent_slug: event.source_agent_slug || job.source_agent_slug || null,
-          model: event.model || job.model || job.openai_request.model
-        });
+        try {
+          await this.gateway.postJobStart(enrollment.runtimeToken, job.job_id, {
+            node_id: this.config.nodeId,
+            agent_slug: event.agent_slug || job.agent_slug,
+            source_agent_slug: event.source_agent_slug || job.source_agent_slug || null,
+            model: event.model || job.model || job.openai_request.model
+          });
+        } catch (error) {
+          const mismatch = this.lifecycleProtocolMismatch("start", error);
+          if (mismatch) {
+            await this.markLifecycleProtocolDegraded(mismatch);
+            throw mismatch;
+          }
+          throw error;
+        }
       },
       onOpenAIChunk: async (chunk) => {
         if (job.openai_request.stream !== true || streamEventForwardingFailed) {
@@ -5710,7 +6072,22 @@ export class SelfHostedNodeRuntime {
         }
       },
     });
-    await flushStreamEvents();
+    try {
+      await flushStreamEvents();
+    } catch (error) {
+      if (!(error instanceof SelfHostedProtocolMismatchError)) {
+        throw error;
+      }
+      result = {
+        job_id: job.job_id,
+        request_id: job.request_id,
+        status: "failed",
+        error: { code: SELF_HOSTED_PROTOCOL_MISMATCH_CODE, message: error.message },
+        ...(result.stream_events?.length ? { stream_events: result.stream_events } : {}),
+        ...(result.progress_events?.length ? { progress_events: result.progress_events } : {}),
+        timing: result.timing
+      };
+    }
     const postedResult = job.openai_request.stream === true
       ? streamEventForwardingFailed
         ? {
@@ -5719,10 +6096,20 @@ export class SelfHostedNodeRuntime {
           }
         : (({ stream_events: _streamEvents, ...rest }) => rest)(result)
       : result;
-    await this.gateway.postJobResult(enrollment.runtimeToken, job.job_id, {
-      ...postedResult,
-      node_id: this.config.nodeId
-    });
+    try {
+      await this.gateway.postJobResult(
+        enrollment.runtimeToken,
+        job.job_id,
+        this.jobResultPayload(postedResult)
+      );
+    } catch (error) {
+      const mismatch = this.lifecycleProtocolMismatch("result", error);
+      if (mismatch) {
+        await this.markLifecycleProtocolDegraded(mismatch);
+        return { executed: true, job_id: job.job_id, status: "failed" };
+      }
+      throw error;
+    }
     return { executed: true, job_id: job.job_id, status: result.status };
   }
 
@@ -5764,7 +6151,7 @@ export class SelfHostedNodeRuntime {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let polling = false;
     const poll = () => {
-      if (stopped || polling || this.config.relayMode === "direct") return;
+      if (stopped || polling || this.lifecyclePollingDisabled || this.config.relayMode === "direct") return;
       polling = true;
       void this.pollAndExecuteJob()
         .catch(() => undefined)

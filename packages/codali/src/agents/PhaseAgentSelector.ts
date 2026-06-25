@@ -116,6 +116,20 @@ const isManagedMswarmWorkerAgent = (agent: Agent): boolean => {
   );
 };
 
+const isManagedMswarmSelfHostedAgent = (agent: Agent): boolean => {
+  const config = agent.config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    return Boolean(agent.slug?.startsWith("mswarm-self-hosted-"));
+  }
+  const managed = (config as Record<string, unknown>).mswarmSelfHosted;
+  return Boolean(
+    managed &&
+      typeof managed === "object" &&
+      !Array.isArray(managed) &&
+      (managed as Record<string, unknown>).managed === true,
+  );
+};
+
 const isCloudModel = (agent: Agent): boolean => {
   if (isManagedMswarmCloudAgent(agent)) {
     return true;
@@ -288,6 +302,11 @@ export const selectPhaseAgents = async (
         if (!options.allowCloudModels && isCloudModel(agent)) continue;
         const readiness = await getReadiness(agent);
         if (readiness.healthStatus === "unreachable") continue;
+        if (
+          isManagedMswarmSelfHostedAgent(agent) &&
+          readiness.healthStatus &&
+          readiness.healthStatus !== "healthy"
+        ) continue;
         const caps = await getCaps(agent);
         const requiredHits = countMatches(caps, PHASE_REQUIRED_CAPS[phase]);
         const structuredHits = countMatches(caps, STRUCTURED_OUTPUT_CAPABILITIES);

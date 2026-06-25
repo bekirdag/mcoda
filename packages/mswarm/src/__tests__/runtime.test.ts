@@ -2290,6 +2290,67 @@ describe("self-hosted node runtime", () => {
     expect(JSON.stringify(postedResult)).not.toContain(secret);
   });
 
+  it("uses relay lifecycle metadata for outbound job calls", async () => {
+    const statePath = tempStatePath();
+    const seenUrls: string[] = [];
+    let postedResult: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      seenUrls.push(target);
+      if (target === "https://relay.test/custom/node/jobs/poll") {
+        return jsonResponse({
+          job: {
+            job_id: "job-custom-lifecycle",
+            request_id: "req-custom-lifecycle",
+            node_id: "shn_service",
+            agent_slug: "qwen-reviewer",
+            source_agent_slug: "qwen-reviewer",
+            provider: "mcoda",
+            model: "mcoda-qwen-reviewer",
+            openai_request: {
+              model: "mcoda-qwen-reviewer",
+              messages: [{ role: "user", content: "Use relay lifecycle metadata." }]
+            }
+          }
+        });
+      }
+      if (target === "https://relay.test/custom/node/jobs/job-custom-lifecycle/start") {
+        return jsonResponse({ accepted: true, status: "started" });
+      }
+      if (target === "https://relay.test/custom/node/jobs/job-custom-lifecycle/result") {
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(
+      {
+        ...permissiveServiceConfigFor(statePath),
+        gatewayBaseUrl: "https://relay.test",
+        jobsPollPath: "/custom/node/jobs/poll",
+        jobsStartPathTemplate: "/custom/node/jobs/:jobId/start",
+        jobsEventsPathTemplate: "/custom/node/jobs/:jobId/events",
+        jobsResultPathTemplate: "/custom/node/jobs/:jobId/result"
+      },
+      {
+        fetchImpl,
+        mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+        codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input, "metadata ok"))
+      }
+    );
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("success");
+    expect(seenUrls).toContain("https://relay.test/custom/node/jobs/poll");
+    expect(seenUrls).toContain("https://relay.test/custom/node/jobs/job-custom-lifecycle/start");
+    expect(seenUrls).toContain("https://relay.test/custom/node/jobs/job-custom-lifecycle/result");
+    const posted = postedResult as Record<string, unknown> | null;
+    assert.ok(posted);
+    expect((posted.usage as { total_tokens?: number } | undefined)?.total_tokens).toBe(13);
+  });
+
   it("posts pre-start relay failures without acknowledging job start", async () => {
     const statePath = tempStatePath();
     let startCalled = false;
@@ -2343,6 +2404,70 @@ describe("self-hosted node runtime", () => {
     assert.ok(posted);
     expect(posted.pre_start_failure).toBe(true);
     expect((posted.error as { code?: string }).code).toBe("selected_agent_unavailable");
+  });
+
+  it("fails and degrades when the gateway is missing the start lifecycle endpoint", async () => {
+    const statePath = tempStatePath();
+    let executorCalled = false;
+    let postedResult: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/poll") {
+        return jsonResponse({
+          job: {
+            job_id: "job-missing-start",
+            request_id: "req-missing-start",
+            node_id: "shn_service",
+            agent_slug: "qwen-reviewer",
+            source_agent_slug: "qwen-reviewer",
+            provider: "mcoda",
+            model: "mcoda-qwen-reviewer",
+            openai_request: {
+              model: "mcoda-qwen-reviewer",
+              messages: [{ role: "user", content: "This should not execute." }]
+            }
+          }
+        });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-missing-start/start") {
+        return jsonResponse({ error: "missing route" }, 404);
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-missing-start/result") {
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        executorCalled = true;
+        return successfulCodaliInvocation(input);
+      })
+    });
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(executorCalled).toBe(false);
+    const posted = postedResult as Record<string, unknown> | null;
+    assert.ok(posted);
+    expect(posted.node_id).toBe("shn_service");
+    expect(posted.pre_start_failure).toBe(true);
+    expect((posted.error as { code?: string }).code).toBe("self_hosted_protocol_mismatch");
+    expect((posted.error as { message?: string }).message || "").toContain(
+      "POST /v1/swarm/self-hosted/node/jobs/:jobId/start"
+    );
+    expect((posted.error as { message?: string }).message || "").toContain("https://gateway.test");
+    const persisted = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    expect(persisted.lifecycle_health_status).toBe("degraded");
+    expect(persisted.lifecycle_health_reason).toBe("self_hosted_protocol_mismatch");
+
+    const nextPoll = await runtime.pollAndExecuteJob(1);
+    expect(nextPoll.executed).toBe(false);
+    expect(nextPoll.status).toBe("failed");
   });
 
   it("posts outbound relay stream events while executing streamed jobs", async () => {

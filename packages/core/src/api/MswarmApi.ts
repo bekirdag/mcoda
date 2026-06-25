@@ -30,6 +30,7 @@ export interface MswarmCloudAgent {
   max_complexity?: number;
   capabilities: string[];
   health_status?: string;
+  health_reason?: string;
   context_window?: number;
   max_output_tokens?: number;
   supports_tools: boolean;
@@ -64,6 +65,19 @@ export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
   execution_class?: string;
   policy_class?: string;
   context_tier?: string;
+  runtime_package_version?: string;
+  gateway_base_url?: string;
+  jobs_poll_path?: string;
+  jobs_start_path_template?: string;
+  jobs_events_path_template?: string;
+  jobs_result_path_template?: string;
+  relay?: {
+    gateway_base_url?: string;
+    jobs_poll_path?: string;
+    jobs_start_path_template?: string;
+    jobs_events_path_template?: string;
+    jobs_result_path_template?: string;
+  };
 }
 
 export interface MswarmWorkerAgent extends MswarmCloudAgent {
@@ -231,6 +245,21 @@ export interface ManagedMswarmSelfHostedConfig {
   displayName?: string;
   description?: string;
   supportsReasoning?: boolean;
+  healthReason?: string;
+  runtimePackageVersion?: string;
+  relay?: {
+    gatewayBaseUrl?: string;
+    jobsPollPath?: string;
+    jobsStartPathTemplate?: string;
+    jobsEventsPathTemplate?: string;
+    jobsResultPathTemplate?: string;
+  };
+  lifecycle?: {
+    compatible: boolean;
+    reason?: string;
+    missingRoutes?: string[];
+    checkedAt: string;
+  };
   catalogBaseUrl: string;
   openAiBaseUrl: string;
   sync?: Record<string, unknown>;
@@ -963,6 +992,109 @@ const selfHostedLoadBalancedGroupId = (
   );
 };
 
+const SELF_HOSTED_PROTOCOL_MISMATCH_CODE = 'self_hosted_protocol_mismatch';
+const SELF_HOSTED_DEFAULT_GATEWAY_JOBS_POLL_PATH =
+  '/v1/swarm/self-hosted/node/jobs/poll';
+const SELF_HOSTED_REQUIRED_LIFECYCLE_ENDPOINTS = [
+  {
+    field: 'jobsStartPathTemplate',
+    endpoint: 'POST /v1/swarm/self-hosted/node/jobs/:jobId/start',
+  },
+  {
+    field: 'jobsEventsPathTemplate',
+    endpoint: 'POST /v1/swarm/self-hosted/node/jobs/:jobId/events',
+  },
+  {
+    field: 'jobsResultPathTemplate',
+    endpoint: 'POST /v1/swarm/self-hosted/node/jobs/:jobId/result',
+  },
+] as const;
+
+type SelfHostedRelayMetadata = NonNullable<ManagedMswarmSelfHostedConfig['relay']>;
+
+const selfHostedRelayMetadata = (
+  agent: MswarmSelfHostedAgent
+): SelfHostedRelayMetadata => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  const relay = isRecord(agent.relay) ? agent.relay : {};
+  const syncRelay = isRecord(sync.relay) ? sync.relay : {};
+  return {
+    gatewayBaseUrl:
+      agent.gateway_base_url ??
+      resolveString(relay.gateway_base_url) ??
+      resolveString(syncRelay.gateway_base_url) ??
+      resolveString(sync.gateway_base_url),
+    jobsPollPath:
+      agent.jobs_poll_path ??
+      resolveString(relay.jobs_poll_path) ??
+      resolveString(syncRelay.jobs_poll_path) ??
+      resolveString(sync.jobs_poll_path) ??
+      SELF_HOSTED_DEFAULT_GATEWAY_JOBS_POLL_PATH,
+    jobsStartPathTemplate:
+      agent.jobs_start_path_template ??
+      resolveString(relay.jobs_start_path_template) ??
+      resolveString(syncRelay.jobs_start_path_template) ??
+      resolveString(sync.jobs_start_path_template),
+    jobsEventsPathTemplate:
+      agent.jobs_events_path_template ??
+      resolveString(relay.jobs_events_path_template) ??
+      resolveString(syncRelay.jobs_events_path_template) ??
+      resolveString(sync.jobs_events_path_template),
+    jobsResultPathTemplate:
+      agent.jobs_result_path_template ??
+      resolveString(relay.jobs_result_path_template) ??
+      resolveString(syncRelay.jobs_result_path_template) ??
+      resolveString(sync.jobs_result_path_template),
+  };
+};
+
+const selfHostedRuntimePackageVersion = (
+  agent: MswarmSelfHostedAgent
+): string | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return (
+    agent.runtime_package_version ??
+    resolveString(sync.runtime_package_version) ??
+    resolveString(sync.node_version)
+  );
+};
+
+const selfHostedHealthReason = (
+  agent: MswarmSelfHostedAgent
+): string | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return (
+    agent.health_reason ??
+    resolveString(sync.health_reason) ??
+    resolveString(sync.lifecycle_health_reason) ??
+    resolveString(sync.reason)
+  );
+};
+
+const selfHostedLifecycleSmokeCheck = (
+  agent: MswarmSelfHostedAgent,
+  checkedAt: string
+): NonNullable<ManagedMswarmSelfHostedConfig['lifecycle']> & {
+  relay: SelfHostedRelayMetadata;
+  status?: AgentHealthStatus;
+} => {
+  const relay = selfHostedRelayMetadata(agent);
+  const missingRoutes = SELF_HOSTED_REQUIRED_LIFECYCLE_ENDPOINTS
+    .filter(({ field }) => !relay[field])
+    .map(({ endpoint }) => endpoint);
+  const remoteReason = selfHostedHealthReason(agent);
+  const remoteMismatch = remoteReason === SELF_HOSTED_PROTOCOL_MISMATCH_CODE;
+  const compatible = missingRoutes.length === 0 && !remoteMismatch;
+  return {
+    compatible,
+    reason: compatible ? undefined : SELF_HOSTED_PROTOCOL_MISMATCH_CODE,
+    missingRoutes,
+    checkedAt,
+    relay,
+    status: compatible ? toHealthStatus(agent.health_status) : 'degraded',
+  };
+};
+
 const sanitizeLoadBalancedSelfHostedSync = (
   agent: MswarmSelfHostedAgent
 ): Record<string, unknown> | undefined => {
@@ -1114,6 +1246,8 @@ const toManagedSelfHostedConfig = (
   const sync = isRecord(agent.sync) ? agent.sync : {};
   const routingMode = selfHostedRoutingMode(agent);
   const loadBalanced = routingMode === 'auto';
+  const lifecycle = selfHostedLifecycleSmokeCheck(agent, syncedAt);
+  const missingRoutes = lifecycle.missingRoutes ?? [];
   const sanitizedSync = loadBalanced
     ? sanitizeLoadBalancedSelfHostedSync(agent)
     : Object.keys(sync).length > 0
@@ -1141,6 +1275,17 @@ const toManagedSelfHostedConfig = (
       displayName: agent.display_name,
       description: agent.description,
       supportsReasoning: agent.supports_reasoning,
+      healthReason: lifecycle.reason ?? selfHostedHealthReason(agent),
+      runtimePackageVersion: selfHostedRuntimePackageVersion(agent),
+      relay: lifecycle.relay,
+      lifecycle: {
+        compatible: lifecycle.compatible,
+        reason: lifecycle.reason,
+        missingRoutes: missingRoutes.length
+          ? missingRoutes
+          : undefined,
+        checkedAt: lifecycle.checkedAt,
+      },
       catalogBaseUrl,
       openAiBaseUrl,
       sync: sanitizedSync,
@@ -1267,6 +1412,11 @@ const toCloudAgent = (value: unknown): MswarmCloudAgent => {
     health_status: resolveFromRecordOrShape(
       value,
       ['health_status', 'healthStatus'],
+      resolveString
+    ),
+    health_reason: resolveFromRecordOrShape(
+      value,
+      ['health_reason', 'healthReason'],
       resolveString
     ),
     context_window: resolveFromRecordOrShape(
@@ -1416,6 +1566,45 @@ const toSelfHostedAgent = (value: unknown): MswarmSelfHostedAgent => {
       ['context_tier', 'contextTier'],
       resolveString
     ),
+    runtime_package_version: resolveFromRecordOrShape(
+      record,
+      ['runtime_package_version', 'runtimePackageVersion'],
+      resolveString
+    ),
+    gateway_base_url: resolveFromRecordOrShape(
+      record,
+      ['gateway_base_url', 'gatewayBaseUrl'],
+      resolveString
+    ),
+    jobs_poll_path: resolveFromRecordOrShape(
+      record,
+      ['jobs_poll_path', 'jobsPollPath'],
+      resolveString
+    ),
+    jobs_start_path_template: resolveFromRecordOrShape(
+      record,
+      ['jobs_start_path_template', 'jobsStartPathTemplate'],
+      resolveString
+    ),
+    jobs_events_path_template: resolveFromRecordOrShape(
+      record,
+      ['jobs_events_path_template', 'jobsEventsPathTemplate'],
+      resolveString
+    ),
+    jobs_result_path_template: resolveFromRecordOrShape(
+      record,
+      ['jobs_result_path_template', 'jobsResultPathTemplate'],
+      resolveString
+    ),
+    relay: isRecord(record.relay)
+      ? {
+          gateway_base_url: resolveString(record.relay.gateway_base_url),
+          jobs_poll_path: resolveString(record.relay.jobs_poll_path),
+          jobs_start_path_template: resolveString(record.relay.jobs_start_path_template),
+          jobs_events_path_template: resolveString(record.relay.jobs_events_path_template),
+          jobs_result_path_template: resolveString(record.relay.jobs_result_path_template),
+        }
+      : undefined,
   };
 };
 
@@ -2332,7 +2521,9 @@ export class MswarmApi {
       const existingHealth = existing
         ? await this.repo.getAgentHealth(existing.id)
         : undefined;
-      const mappedHealth = toHealthStatus(agent.health_status);
+      const lifecycle = selfHostedLifecycleSmokeCheck(agent, syncedAt);
+      const missingRoutes = lifecycle.missingRoutes ?? [];
+      const mappedHealth = lifecycle.status ?? toHealthStatus(agent.health_status);
       if (mappedHealth && shouldReplaceManagedHealth(existingHealth)) {
         const health: AgentHealth = {
           agentId: stored.id,
@@ -2344,6 +2535,19 @@ export class MswarmApi {
             agentSlug: agent.agent_slug ?? agent.slug,
             provider: agent.provider,
             remoteHealthStatus: agent.health_status,
+            remoteHealthReason: selfHostedHealthReason(agent),
+            health_reason: lifecycle.reason ?? selfHostedHealthReason(agent),
+            reason: lifecycle.reason ?? selfHostedHealthReason(agent),
+            lifecycleCompatible: lifecycle.compatible,
+            missingRoute: missingRoutes[0],
+            missingRoutes,
+            gatewayBaseUrl: lifecycle.relay.gatewayBaseUrl ?? this.options.baseUrl,
+            jobsPollPath: lifecycle.relay.jobsPollPath,
+            jobsStartPathTemplate: lifecycle.relay.jobsStartPathTemplate,
+            jobsEventsPathTemplate: lifecycle.relay.jobsEventsPathTemplate,
+            jobsResultPathTemplate: lifecycle.relay.jobsResultPathTemplate,
+            runtimePackageVersion:
+              selfHostedRuntimePackageVersion(agent) ?? 'unknown',
           },
         };
         await this.repo.setAgentHealth(health);

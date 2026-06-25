@@ -32,6 +32,10 @@ export interface ListAgentsOptions {
   refreshHealth?: boolean;
 }
 
+export interface RunAgentOptions {
+  force?: boolean;
+}
+
 const isManagedMswarmAgent = (agent: Agent): boolean => {
   const config = agent.config;
   if (!config || typeof config !== "object" || Array.isArray(config)) {
@@ -465,6 +469,7 @@ export class AgentsApi {
     idOrSlug: string,
     prompts: string[],
     metadata?: Record<string, unknown>,
+    options: RunAgentOptions = {},
   ): Promise<{ agent: Pick<Agent, "id" | "slug">; prompts: string[]; responses: InvocationResult[] }> {
     const agent = await this.resolveAgent(idOrSlug);
     const cleaned = prompts.map((prompt) => prompt.trim()).filter(Boolean);
@@ -482,6 +487,7 @@ export class AgentsApi {
           const startedAt = new Date(startedAtMs).toISOString();
           const response = await this.agentService.invoke(agent.id, {
             input,
+            force: options.force === true,
             metadata: {
               command: "agent-run",
               promptIndex: index,

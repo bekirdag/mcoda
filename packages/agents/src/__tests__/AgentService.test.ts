@@ -158,6 +158,98 @@ test("adapter override rejects unsupported adapter types", async () => {
   );
 });
 
+test("invoke fails fast for degraded managed mswarm self-hosted lifecycle mismatch", async () => {
+  const agent = await repo.createAgent({
+    slug: "mswarm-self-hosted-mcoda-lab-qwen",
+    adapter: "openai-api",
+    defaultModel: "mcoda-lab-qwen",
+    capabilities: ["chat", "code_write"],
+    config: {
+      baseUrl: "https://gateway.example/v1/swarm/self-hosted/openai/",
+      mswarmSelfHosted: {
+        managed: true,
+        remoteSlug: "mcoda/lab/qwen",
+        agentSlug: "mcoda-lab-qwen",
+        provider: "mcoda",
+        runtimePackageVersion: "0.1.80",
+        relay: { gatewayBaseUrl: "https://gateway.example" },
+        lifecycle: {
+          compatible: false,
+          reason: "self_hosted_protocol_mismatch",
+          missingRoutes: ["POST /v1/swarm/self-hosted/node/jobs/:jobId/start"],
+          checkedAt: new Date().toISOString(),
+        },
+      },
+    },
+  });
+  await repo.setAgentHealth({
+    agentId: agent.id,
+    status: "degraded",
+    lastCheckedAt: new Date().toISOString(),
+    details: {
+      source: "mswarm_self_hosted",
+      reason: "self_hosted_protocol_mismatch",
+      missingRoute: "POST /v1/swarm/self-hosted/node/jobs/:jobId/start",
+      gatewayBaseUrl: "https://gateway.example",
+      runtimePackageVersion: "0.1.80",
+    },
+  });
+  let adapterCalled = false;
+  service.getAdapter = async () => {
+    adapterCalled = true;
+    throw new Error("adapter should not be created");
+  };
+
+  await assert.rejects(
+    service.invoke(agent.id, { input: "ping" }),
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.match(message, /self_hosted_protocol_mismatch/);
+      assert.match(message, /POST \/v1\/swarm\/self-hosted\/node\/jobs\/:jobId\/start/);
+      assert.match(message, /https:\/\/gateway\.example/);
+      assert.match(message, /runtime package version: 0\.1\.80/);
+      assert.match(message, /qwen3\.6-llama\.cpp/);
+      return true;
+    },
+  );
+  assert.equal(adapterCalled, false);
+});
+
+test("forced degraded mswarm self-hosted protocol mismatch returns clear error", async () => {
+  const agent = await repo.createAgent({
+    slug: "mswarm-self-hosted-mcoda-forced",
+    adapter: "openai-api",
+    defaultModel: "mcoda-forced",
+    capabilities: ["chat"],
+    config: {
+      mswarmSelfHosted: {
+        managed: true,
+        remoteSlug: "mcoda/forced",
+        agentSlug: "mcoda-forced",
+        provider: "mcoda",
+        runtimePackageVersion: "0.1.81",
+        relay: { gatewayBaseUrl: "https://gateway.example" },
+      },
+    },
+  });
+  await repo.setAgentHealth({
+    agentId: agent.id,
+    status: "degraded",
+    lastCheckedAt: new Date().toISOString(),
+    details: {
+      reason: "self_hosted_protocol_mismatch",
+      missingRoute: "POST /v1/swarm/self-hosted/node/jobs/:jobId/events",
+      gatewayBaseUrl: "https://gateway.example",
+      runtimePackageVersion: "0.1.81",
+    },
+  });
+
+  await assert.rejects(
+    service.invoke(agent.id, { input: "ping", force: true }),
+    /self_hosted_protocol_mismatch.*events.*gateway URL: https:\/\/gateway\.example.*0\.1\.81/s,
+  );
+});
+
 test("CLI adapter reports unreachable health when binary is missing", async () => {
   const agent = await repo.createAgent({
     slug: "cli-health",
@@ -772,6 +864,81 @@ test("invoke switches to equivalent available agent on technical failures", asyn
         event.fromAgentId === primary.id &&
         event.toAgentId === backup.id &&
         event.reason === "technical_issue",
+    ),
+  );
+});
+
+test("invoke skips degraded managed mswarm self-hosted failover candidates", async () => {
+  const primary = await repo.createAgent({
+    slug: "skip-self-hosted-primary",
+    adapter: "local-model",
+    defaultModel: "gpt-5.2-codex",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  const degradedSelfHosted = await repo.createAgent({
+    slug: "mswarm-self-hosted-skip-degraded",
+    adapter: "openai-api",
+    defaultModel: "mcoda-degraded",
+    rating: 9,
+    reasoningRating: 9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+    config: {
+      mswarmSelfHosted: {
+        managed: true,
+        remoteSlug: "mcoda/degraded",
+        agentSlug: "mcoda-degraded",
+        provider: "mcoda",
+      },
+    },
+  });
+  const directFallback = await repo.createAgent({
+    slug: "qwen3-6-llama-cpp",
+    adapter: "local-model",
+    defaultModel: "qwen3.6-llama.cpp",
+    rating: 8.9,
+    reasoningRating: 8.9,
+    maxComplexity: 8,
+    capabilities: ["chat", "code_write"],
+  });
+  await repo.setAgentHealth({
+    agentId: degradedSelfHosted.id,
+    status: "degraded",
+    lastCheckedAt: new Date().toISOString(),
+    details: {
+      reason: "self_hosted_protocol_mismatch",
+      missingRoute: "POST /v1/swarm/self-hosted/node/jobs/:jobId/start",
+    },
+  });
+  const calls: string[] = [];
+  // @ts-expect-error override for test
+  service.getAdapter = async (agent: any) => ({
+    invoke: async () => {
+      calls.push(agent.id);
+      if (agent.id === primary.id) {
+        throw new Error("503 service unavailable");
+      }
+      if (agent.id === degradedSelfHosted.id) {
+        throw new Error("degraded self-hosted should have been skipped");
+      }
+      return { output: "ok:direct-fallback", adapter: "local-model", model: directFallback.defaultModel };
+    },
+  });
+
+  const result = await service.invoke(primary.id, { input: "ping" });
+
+  assert.equal(result.output, "ok:direct-fallback");
+  assert.deepEqual(calls, [primary.id, directFallback.id]);
+  const failoverEvents = ((result.metadata as any)?.failoverEvents ?? []) as Array<Record<string, unknown>>;
+  assert.ok(
+    failoverEvents.some(
+      (event) =>
+        event.type === "switch_agent" &&
+        event.fromAgentId === primary.id &&
+        event.toAgentId === directFallback.id,
     ),
   );
 });

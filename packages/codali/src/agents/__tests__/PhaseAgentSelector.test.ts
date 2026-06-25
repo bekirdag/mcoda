@@ -275,6 +275,74 @@ test("selectPhaseAgents treats managed mswarm agents as cloud-gated candidates",
   });
 });
 
+test("selectPhaseAgents skips degraded managed self-hosted agents automatically", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    const repo = await GlobalRepository.create();
+    try {
+      const degradedSelfHosted = await repo.createAgent({
+        slug: "mswarm-self-hosted-mcoda-degraded-builder",
+        adapter: "openai-api",
+        defaultModel: "mcoda-degraded-builder",
+        rating: 10,
+        reasoningRating: 10,
+        costPerMillion: 0,
+        maxComplexity: 9,
+        bestUsage: "code_write",
+        openaiCompatible: true,
+        config: {
+          mswarmSelfHosted: {
+            managed: true,
+            remoteSlug: "mcoda/degraded-builder",
+            agentSlug: "mcoda-degraded-builder",
+            provider: "mcoda",
+          },
+        },
+      });
+      await repo.setAgentCapabilities(degradedSelfHosted.id, [
+        "code_write",
+        "simple_refactor",
+        "iterative_coding",
+      ]);
+      await repo.setAgentAuth(degradedSelfHosted.id, await CryptoHelper.encryptSecret("key-self-hosted"));
+      await repo.setAgentHealth({
+        agentId: degradedSelfHosted.id,
+        status: "degraded",
+        lastCheckedAt: new Date().toISOString(),
+        details: {
+          reason: "self_hosted_protocol_mismatch",
+          missingRoute: "POST /v1/swarm/self-hosted/node/jobs/:jobId/start",
+        },
+      });
+
+      const directLocal = await repo.createAgent({
+        slug: "qwen3-6-llama-cpp",
+        adapter: "ollama-remote",
+        defaultModel: "qwen3.6-llama.cpp",
+        config: { baseUrl: "http://localhost:11434" },
+        rating: 7,
+        reasoningRating: 7,
+        costPerMillion: 0,
+        maxComplexity: 6,
+        bestUsage: "code_write",
+      });
+      await repo.setAgentCapabilities(directLocal.id, [
+        "code_write",
+        "simple_refactor",
+        "iterative_coding",
+      ]);
+    } finally {
+      await repo.close();
+    }
+
+    const selections = await selectPhaseAgents({
+      overrides: {},
+      builderMode: "freeform",
+      allowCloudModels: true,
+    });
+    assert.equal(selections.builder.agent?.slug, "qwen3-6-llama-cpp");
+  });
+});
+
 test("selectPhaseAgents gates managed worker agents unless explicitly allowed or pinned", { concurrency: false }, async () => {
   await withTempHome(async () => {
     const repo = await GlobalRepository.create();
