@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cpus, freemem, hostname, homedir, loadavg, platform, totalmem, userInfo } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { GlobalRepository } from "@mcoda/db";
 import {
   MswarmCodaliExecutor,
   type LocalOpenAiCompatibleRunnerConfig,
@@ -13,6 +14,7 @@ import {
 } from "./codali-executor.js";
 import {
   MSWARM_CAPABILITY_SCHEMA_VERSION,
+  CryptoHelper,
   assertMswarmSafeRelativePath,
   validateMswarmArchiveEntry,
   buildMswarmCapabilityNames,
@@ -557,6 +559,8 @@ interface McodaAgentListEntry {
     is_default?: boolean | null;
   }> | null;
 }
+
+type McodaAgentAuthResolver = (agent: McodaAgentListEntry) => Promise<string | undefined>;
 
 interface GatewayEnrollmentResponse {
   runtime_token?: string;
@@ -2627,6 +2631,20 @@ function configText(config: Record<string, unknown> | null | undefined, ...keys:
   return undefined;
 }
 
+async function defaultMcodaAgentAuthResolver(agent: McodaAgentListEntry): Promise<string | undefined> {
+  const agentId = optionalText(agent.id);
+  if (!agentId) {
+    return undefined;
+  }
+  const repo = await GlobalRepository.create();
+  try {
+    const secret = await repo.getAgentAuthSecret(agentId);
+    return secret?.encryptedSecret ? CryptoHelper.decryptSecret(secret.encryptedSecret) : undefined;
+  } finally {
+    await repo.close();
+  }
+}
+
 function mcodaAgentDefaultModel(agent: McodaAgentListEntry): string | null {
   return (
     optionalText(agent.defaultModel) ||
@@ -2657,11 +2675,26 @@ function resolveCodaliProviderForAgent(agent: McodaAgentListEntry): string | und
   return adapter || undefined;
 }
 
+function mcodaAgentRequiresApiKey(agent: McodaAgentListEntry, mapped: MswarmCodaliAgent): boolean {
+  if (mapped.provider !== "openai-compatible") {
+    return false;
+  }
+  if (mapped.localRunner) {
+    return mapped.authMode === "bearer";
+  }
+  const adapter = optionalText(agent.adapter) || "";
+  if (["openai", "openai-api", "openai-compatible"].includes(adapter)) {
+    return mapped.authMode !== "none";
+  }
+  return mapped.authMode === "bearer";
+}
+
 function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: string): MswarmCodaliAgent {
   const adapter = optionalText(agent.adapter) || "unknown";
   const model = mcodaAgentDefaultModel(agent) || fallbackSlug;
   const config = agent.config ?? null;
   const localRunner = normalizeMcodaLocalRunnerConfig(adapter, config);
+  const configAuthMode = normalizeLocalRunnerAuthMode(config?.authMode);
   const supportsTools = optionalBoolean(agent.supportsTools, agent.supports_tools, localRunner?.supportsTools) === true;
   return {
     slug: optionalText(agent.slug) || fallbackSlug,
@@ -2676,7 +2709,7 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
       : configText(config, "apiKey", "api_key"),
     localRunner,
     runnerKind: localRunner?.runnerKind,
-    authMode: localRunner?.authMode,
+    authMode: localRunner?.authMode ?? configAuthMode,
     dummyBearerToken: localRunner?.dummyBearerToken,
     headers: localRunner?.headers,
     extraBody: localRunner?.extraBody,
@@ -2717,6 +2750,7 @@ const DOCDEX_JOB_ERROR_CODES = new Set([
 
 const PRE_START_JOB_ERROR_CODES = new Set([
   "selected_agent_unavailable",
+  "selected_agent_auth_unavailable",
   "selected_agent_unhealthy",
   "validation_failed",
   "docdex_context_missing",
@@ -4802,6 +4836,7 @@ export class SelfHostedNodeRuntime {
   private readonly config: SelfHostedNodeConfig;
   private readonly gateway: MswarmSelfHostedNodeClient;
   private readonly mcoda: McodaAgentInventoryClient;
+  private readonly mcodaAgentAuthResolver: McodaAgentAuthResolver;
   private readonly mcodaExecutor: McodaLocalAgentExecutor;
   private readonly codaliExecutor: MswarmCodaliExecutor;
   private readonly ollama: OllamaClient;
@@ -4822,6 +4857,7 @@ export class SelfHostedNodeRuntime {
     deps?: {
       gateway?: MswarmSelfHostedNodeClient;
       mcoda?: McodaAgentInventoryClient;
+      mcodaAgentAuthResolver?: McodaAgentAuthResolver;
       mcodaExecutor?: McodaLocalAgentExecutor;
       codaliExecutor?: MswarmCodaliExecutor;
       ollama?: OllamaClient;
@@ -4850,6 +4886,7 @@ export class SelfHostedNodeRuntime {
         args: config.mcodaListArgs,
           timeoutMs: config.requestTimeoutMs
         });
+    this.mcodaAgentAuthResolver = deps?.mcodaAgentAuthResolver || defaultMcodaAgentAuthResolver;
     this.mcodaExecutor =
       deps?.mcodaExecutor ||
       new McodaLocalAgentExecutor({
@@ -5406,7 +5443,26 @@ export class SelfHostedNodeRuntime {
         `selected local mcoda agent ${selected} is ${mapped.health_status}`
       );
     }
-    return mapMcodaAgentToCodaliAgent(agent, selected);
+    const codaliAgent = mapMcodaAgentToCodaliAgent(agent, selected);
+    if (!codaliAgent.apiKey && mcodaAgentRequiresApiKey(agent, codaliAgent)) {
+      let apiKey: string | undefined;
+      try {
+        apiKey = optionalText(await this.mcodaAgentAuthResolver(agent)) || undefined;
+      } catch {
+        throw new SelfHostedPreStartJobError(
+          "selected_agent_auth_unavailable",
+          `selected local mcoda agent ${selected} auth could not be loaded`
+        );
+      }
+      if (!apiKey) {
+        throw new SelfHostedPreStartJobError(
+          "selected_agent_auth_unavailable",
+          `selected local mcoda agent ${selected} requires an API key; run "mcoda agent auth set ${selected}" on this node`
+        );
+      }
+      codaliAgent.apiKey = apiKey;
+    }
+    return codaliAgent;
   }
 
   async executeGenericJob(

@@ -2078,15 +2078,19 @@ describe("self-hosted node runtime", () => {
     const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
       mcoda: mcodaAgentListClient([
         healthyMcodaAgent({
+          id: "agent-qwen36-llama-cpp",
           slug: "qwen3.6-llama.cpp",
           adapter: "openai-api",
           defaultModel: "qwen3.6-llama.cpp",
           supportsTools: false,
           config: {
-            baseUrl: "http://127.0.0.1:8080/v1"
+            baseUrl: "http://127.0.0.1:8080/v1",
+            authMode: "bearer"
           }
         })
       ]),
+      mcodaAgentAuthResolver: async (agent) =>
+        agent.id === "agent-qwen36-llama-cpp" ? "stored-local-openai-key" : undefined,
       codaliExecutor: new StubCodaliExecutor(async (input) => {
         captured.value = input;
         return successfulCodaliInvocation(input);
@@ -2118,6 +2122,50 @@ describe("self-hosted node runtime", () => {
     expect(capturedInput.agent.provider).toBe("openai-compatible");
     expect(capturedInput.agent.model).toBe("qwen3.6-llama.cpp");
     expect(capturedInput.agent.baseUrl).toBe("http://127.0.0.1:8080/v1");
+    expect(capturedInput.agent.authMode).toBe("bearer");
+    expect(capturedInput.agent.apiKey).toBe("stored-local-openai-key");
+    expect(JSON.stringify(result)).not.toContain("stored-local-openai-key");
+  });
+
+  it("fails before start when an OpenAI API mcoda agent requires auth but no secret is available", async () => {
+    const statePath = tempStatePath();
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          id: "agent-qwen36-missing-auth",
+          slug: "qwen3.6-llama.cpp",
+          adapter: "openai-api",
+          defaultModel: "qwen3.6-llama.cpp",
+          supportsTools: false,
+          config: {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            authMode: "bearer"
+          }
+        })
+      ]),
+      mcodaAgentAuthResolver: async () => undefined,
+      codaliExecutor: new StubCodaliExecutor(async () => {
+        throw new Error("codali should not be invoked without local agent auth");
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-mcoda-openai-api-missing-auth",
+      request_id: "req-mcoda-openai-api-missing-auth",
+      node_id: "shn_service",
+      agent_slug: "qwen3.6-llama.cpp",
+      source_agent_slug: "qwen3.6-llama.cpp",
+      provider: "mcoda",
+      model: "mcoda-qwen3.6-llama.cpp",
+      openai_request: {
+        model: "mcoda-qwen3.6-llama.cpp",
+        messages: [{ role: "user", content: "Return OK." }]
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.pre_start_failure).toBe(true);
+    expect(result.error?.code).toBe("selected_agent_auth_unavailable");
   });
 
   it("routes local OpenAI-compatible mcoda agents to Codali with runner metadata", async () => {
