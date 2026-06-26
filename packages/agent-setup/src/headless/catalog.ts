@@ -93,6 +93,7 @@ export function mergeCatalogEntries(
     model: local.model ?? catalog.model,
     defaultModel: local.defaultModel ?? catalog.defaultModel,
     healthStatus: local.healthStatus ?? catalog.healthStatus,
+    healthReason: local.healthReason ?? catalog.healthReason,
     supportsTools: local.supportsTools ?? catalog.supportsTools,
     rating: local.rating ?? catalog.rating,
     reasoningRating: local.reasoningRating ?? catalog.reasoningRating,
@@ -101,6 +102,10 @@ export function mergeCatalogEntries(
     contextWindow: local.contextWindow ?? catalog.contextWindow,
     maxOutputTokens: local.maxOutputTokens ?? catalog.maxOutputTokens,
     bestUsage: local.bestUsage ?? catalog.bestUsage,
+    selfHostedLifecycle: mergeSelfHostedLifecycle(
+      local.selfHostedLifecycle,
+      catalog.selfHostedLifecycle
+    ),
     capabilities: local.capabilities?.length
       ? local.capabilities
       : catalog.capabilities,
@@ -110,6 +115,49 @@ export function mergeCatalogEntries(
     },
     source: local.source,
     synced: true,
+  };
+}
+
+function mergeSelfHostedLifecycle(
+  local: McodaAgentCatalogEntry["selfHostedLifecycle"],
+  catalog: McodaAgentCatalogEntry["selfHostedLifecycle"]
+): McodaAgentCatalogEntry["selfHostedLifecycle"] {
+  if (!local) return catalog ?? null;
+  if (!catalog) return local;
+  const relay =
+    local.relay || catalog.relay
+      ? {
+          gatewayBaseUrl:
+            local.relay?.gatewayBaseUrl ?? catalog.relay?.gatewayBaseUrl ?? null,
+          jobsPollPath:
+            local.relay?.jobsPollPath ?? catalog.relay?.jobsPollPath ?? null,
+          jobsStartPathTemplate:
+            local.relay?.jobsStartPathTemplate ??
+            catalog.relay?.jobsStartPathTemplate ??
+            null,
+          jobsEventsPathTemplate:
+            local.relay?.jobsEventsPathTemplate ??
+            catalog.relay?.jobsEventsPathTemplate ??
+            null,
+          jobsResultPathTemplate:
+            local.relay?.jobsResultPathTemplate ??
+            catalog.relay?.jobsResultPathTemplate ??
+            null,
+        }
+      : null;
+  const missingRoutes = local.missingRoutes.length
+    ? local.missingRoutes
+    : catalog.missingRoutes;
+  return {
+    compatible: local.compatible ?? catalog.compatible,
+    reason: local.reason ?? catalog.reason,
+    missingRoute:
+      local.missingRoute ?? catalog.missingRoute ?? missingRoutes[0] ?? null,
+    missingRoutes,
+    checkedAt: local.checkedAt ?? catalog.checkedAt,
+    runtimePackageVersion:
+      local.runtimePackageVersion ?? catalog.runtimePackageVersion,
+    relay,
   };
 }
 
@@ -154,6 +202,9 @@ export function buildSelfHostedServerOptions(
       existing.agents.push(agent);
       existing.agentCount = existing.agents.length;
       existing.status = mergeServerStatus(existing.status, server.status);
+      existing.statusReason =
+        existing.statusReason ?? server.statusReason ?? null;
+      existing.lifecycle = existing.lifecycle ?? server.lifecycle ?? null;
       continue;
     }
     servers.set(server.id, {
@@ -213,6 +264,14 @@ export function filterAgentOptions(
         agent.localRunner?.authMode,
         agent.localRunner?.responseFormatStrategy,
         agent.healthStatus,
+        agent.healthReason,
+        agent.selfHostedLifecycle?.reason,
+        agent.selfHostedLifecycle?.missingRoute,
+        agent.selfHostedLifecycle?.runtimePackageVersion,
+        agent.selfHostedLifecycle?.relay?.gatewayBaseUrl,
+        agent.selfHostedLifecycle?.relay?.jobsStartPathTemplate,
+        agent.selfHostedLifecycle?.relay?.jobsEventsPathTemplate,
+        agent.selfHostedLifecycle?.relay?.jobsResultPathTemplate,
         agent.bestUsage,
         agent.serverName,
         agent.serverLabel,
@@ -298,6 +357,9 @@ function resolveSelfHostedServer(
       routingMode: "auto",
       loadBalancedGroupId: null,
       status: agent.healthStatus,
+      statusReason:
+        agent.healthReason ?? agent.selfHostedLifecycle?.reason ?? null,
+      lifecycle: agent.selfHostedLifecycle ?? null,
       remoteSlugPrefix: null,
     };
   }
@@ -315,6 +377,9 @@ function resolveSelfHostedServer(
       routingMode: "direct",
       loadBalancedGroupId: null,
       status: agent.healthStatus,
+      statusReason:
+        agent.healthReason ?? agent.selfHostedLifecycle?.reason ?? null,
+      lifecycle: agent.selfHostedLifecycle ?? null,
       remoteSlugPrefix: undefined,
     };
   }
@@ -330,6 +395,8 @@ function resolveSelfHostedServer(
     routingMode: "direct",
     loadBalancedGroupId: null,
     status: agent.healthStatus,
+    statusReason: agent.healthReason ?? agent.selfHostedLifecycle?.reason ?? null,
+    lifecycle: agent.selfHostedLifecycle ?? null,
     remoteSlugPrefix: remoteSlugPrefix || null,
   };
 }

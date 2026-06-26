@@ -541,11 +541,30 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
             slug: "real-self-hosted",
             provider: "ollama",
             default_model: "qwen-local",
+            health_status: "degraded",
+            health_reason: "self_hosted_protocol_mismatch",
             supports_tools: true,
             capabilities: ["local"],
+            runtime_package_version: "0.1.81",
+            relay: {
+              gateway_base_url: "https://gateway.example.test",
+              jobs_poll_path: "/v1/swarm/self-hosted/node/jobs/poll",
+              jobs_events_path_template:
+                "/v1/swarm/self-hosted/node/jobs/:jobId/events",
+              jobs_result_path_template:
+                "/v1/swarm/self-hosted/node/jobs/:jobId/result",
+            },
             sync: {
               node_id: "suku",
               server_name: "suku-gpu-box",
+              lifecycle: {
+                compatible: false,
+                reason: "self_hosted_protocol_mismatch",
+                missingRoutes: [
+                  "POST /v1/swarm/self-hosted/node/jobs/:jobId/start",
+                ],
+                checkedAt: "2026-06-26T10:00:00.000Z",
+              },
             },
           },
         ];
@@ -631,6 +650,21 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
       "real-self-hosted"
     );
     assert.equal(snapshot.catalog.selfHostedServers[0].nodeId, "suku");
+    assert.equal(snapshot.catalog.selfHostedServers[0].status, "degraded");
+    assert.equal(
+      snapshot.catalog.selfHostedServers[0].statusReason,
+      "self_hosted_protocol_mismatch"
+    );
+    assert.equal(
+      snapshot.catalog.selfHostedServers[0].agents[0].selfHostedLifecycle
+        ?.missingRoute,
+      "POST /v1/swarm/self-hosted/node/jobs/:jobId/start"
+    );
+    assert.equal(
+      snapshot.catalog.selfHostedServers[0].agents[0].selfHostedLifecycle?.relay
+        ?.gatewayBaseUrl,
+      "https://gateway.example.test"
+    );
     assert.ok(capturedMswarmOptions.length >= 4);
     assert.ok(
       capturedMswarmOptions.every(

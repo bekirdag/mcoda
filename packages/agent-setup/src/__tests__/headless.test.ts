@@ -222,6 +222,64 @@ test("normalization marks load-balanced self-hosted config as auto-routed", () =
   assert.equal(agent.serverName, null);
 });
 
+test("normalization exposes self-hosted lifecycle protocol metadata", () => {
+  const missingRoute = "POST /v1/swarm/self-hosted/node/jobs/:jobId/start";
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "mswarm-self-hosted-suku-qwen",
+      defaultModel: "qwen",
+      health_status: "degraded",
+      health_reason: "self_hosted_protocol_mismatch",
+      config: {
+        mswarmSelfHosted: {
+          managed: true,
+          remoteSlug: "suku-qwen",
+          agentSlug: "suku-qwen",
+          provider: "ollama",
+          nodeId: "suku",
+          serverName: "suku-gpu-box",
+          runtimePackageVersion: "0.1.81",
+          relay: {
+            gatewayBaseUrl: "https://gateway.example.test",
+            jobsPollPath: "/v1/swarm/self-hosted/node/jobs/poll",
+            jobsEventsPathTemplate:
+              "/v1/swarm/self-hosted/node/jobs/:jobId/events",
+            jobsResultPathTemplate:
+              "/v1/swarm/self-hosted/node/jobs/:jobId/result",
+          },
+          lifecycle: {
+            compatible: false,
+            reason: "self_hosted_protocol_mismatch",
+            missingRoutes: [missingRoute],
+            checkedAt: "2026-06-26T10:00:00.000Z",
+          },
+        },
+      },
+    },
+    { source: "local_registry", synced: true }
+  );
+
+  assert.equal(agent.healthReason, "self_hosted_protocol_mismatch");
+  assert.equal(agent.selfHostedLifecycle?.compatible, false);
+  assert.equal(agent.selfHostedLifecycle?.missingRoute, missingRoute);
+  assert.deepEqual(agent.selfHostedLifecycle?.missingRoutes, [missingRoute]);
+  assert.equal(agent.selfHostedLifecycle?.runtimePackageVersion, "0.1.81");
+  assert.equal(
+    agent.selfHostedLifecycle?.relay?.gatewayBaseUrl,
+    "https://gateway.example.test"
+  );
+  assert.equal(
+    agent.selfHostedLifecycle?.relay?.jobsStartPathTemplate,
+    null
+  );
+  assert.deepEqual(filterAgentOptions([agent], "protocol mismatch start"), [agent]);
+
+  const servers = buildSelfHostedServerOptions([agent], []);
+  assert.equal(servers[0].status, "degraded");
+  assert.equal(servers[0].statusReason, "self_hosted_protocol_mismatch");
+  assert.equal(servers[0].lifecycle?.missingRoute, missingRoute);
+});
+
 test("normalization does not infer local runner metadata from generic capabilities", () => {
   const agent = normalizeAgentCatalogEntry(
     {

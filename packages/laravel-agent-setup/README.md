@@ -160,6 +160,13 @@ The Laravel routes and manager also normalize the Node handler aliases `apiKey`,
 snake_case connection metadata fields before local fallback or remote backend
 calls.
 
+Snapshot catalog payloads intentionally preserve the Node SDK self-hosted
+lifecycle fields. Degraded self-hosted agents can include
+`healthReason: "self_hosted_protocol_mismatch"` and `selfHostedLifecycle` with
+gateway relay metadata, runtime package version, and the missing lifecycle
+route; the bundled Blade sample includes that status in filtering and option
+labels.
+
 ## Owner-Local GPU Jobs
 
 The package binds a GPU job client for trusted backend use:

@@ -3,6 +3,8 @@ import type {
   McodaAgentManagedKind,
   McodaAgentSource,
   McodaLocalRunnerCatalogMetadata,
+  McodaSelfHostedLifecycleMetadata,
+  McodaSelfHostedRelayMetadata,
 } from "../types.js";
 
 const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
@@ -152,11 +154,16 @@ export function normalizeAgentCatalogEntry(
     adapter
   );
   const health = recordValue(record.health);
+  const healthDetails = recordValue(health?.details);
   const healthStatus =
     stringValue(record.healthStatus) ??
     stringValue(record.health_status) ??
     stringValue(health?.status) ??
     stringValue(record.status);
+  const healthReason = stringFromRecords(
+    [record, health, healthDetails, mswarmSelfHosted, sync],
+    ["healthReason", "health_reason", "reason", "lifecycle_health_reason"]
+  );
   const nodeId =
     routingMode === "auto"
       ? null
@@ -171,6 +178,13 @@ export function normalizeAgentCatalogEntry(
         stringValue(record.server_name) ??
         stringValue(mswarmSelfHosted?.serverName) ??
         stringValue(sync?.server_name);
+  const selfHostedLifecycle = normalizeSelfHostedLifecycleMetadata(
+    record,
+    mswarmSelfHosted,
+    sync,
+    health,
+    healthDetails
+  );
 
   return {
     slug,
@@ -209,6 +223,7 @@ export function normalizeAgentCatalogEntry(
     model,
     defaultModel,
     healthStatus,
+    healthReason: healthReason ?? selfHostedLifecycle?.reason ?? null,
     supportsTools:
       booleanValue(record.supportsTools) ??
       booleanValue(record.supports_tools),
@@ -232,11 +247,116 @@ export function normalizeAgentCatalogEntry(
       stringValue(record.bestUsage) ??
       stringValue(record.best_usage),
     localRunner: localRunnerMetadata,
+    selfHostedLifecycle,
     capabilities: stringArrayValue(record.capabilities),
     metadata: {
       raw,
     },
   };
+}
+
+function normalizeSelfHostedLifecycleMetadata(
+  record: Record<string, unknown>,
+  mswarmSelfHosted: Record<string, unknown> | undefined,
+  sync: Record<string, unknown> | undefined,
+  health: Record<string, unknown> | undefined,
+  healthDetails: Record<string, unknown> | undefined
+): McodaSelfHostedLifecycleMetadata | null {
+  const lifecycle =
+    recordValue(record.lifecycle) ??
+    recordValue(mswarmSelfHosted?.lifecycle) ??
+    recordValue(sync?.lifecycle);
+  const relay = normalizeSelfHostedRelayMetadata(
+    record,
+    mswarmSelfHosted,
+    sync,
+    healthDetails
+  );
+  const reason = stringFromRecords(
+    [record, health, healthDetails, mswarmSelfHosted, lifecycle, sync],
+    ["healthReason", "health_reason", "reason", "lifecycle_health_reason"]
+  );
+  const missingRoute = stringFromRecords(
+    [record, healthDetails, lifecycle, sync],
+    ["missingRoute", "missing_route"]
+  );
+  const missingRoutes =
+    stringArrayValue(record.missingRoutes) ??
+    stringArrayValue(record.missing_routes) ??
+    stringArrayValue(healthDetails?.missingRoutes) ??
+    stringArrayValue(healthDetails?.missing_routes) ??
+    stringArrayValue(lifecycle?.missingRoutes) ??
+    stringArrayValue(lifecycle?.missing_routes) ??
+    (missingRoute ? [missingRoute] : []);
+  const compatible =
+    booleanFromRecords(
+      [record, healthDetails, mswarmSelfHosted, lifecycle, sync],
+      ["lifecycleCompatible", "lifecycle_compatible", "compatible"]
+    ) ?? (reason === "self_hosted_protocol_mismatch" ? false : null);
+  const checkedAt = stringFromRecords(
+    [record, health, healthDetails, lifecycle, sync],
+    ["checkedAt", "checked_at", "lastCheckedAt", "last_checked_at"]
+  );
+  const runtimePackageVersion = stringFromRecords(
+    [record, healthDetails, mswarmSelfHosted, sync],
+    ["runtimePackageVersion", "runtime_package_version", "node_version"]
+  );
+  const hasLifecycle =
+    Boolean(lifecycle) ||
+    Boolean(relay) ||
+    Boolean(reason) ||
+    missingRoutes.length > 0 ||
+    Boolean(runtimePackageVersion);
+  if (!hasLifecycle) return null;
+  return {
+    compatible,
+    reason,
+    missingRoute: missingRoutes[0] ?? missingRoute ?? null,
+    missingRoutes,
+    checkedAt,
+    runtimePackageVersion,
+    relay,
+  };
+}
+
+function normalizeSelfHostedRelayMetadata(
+  record: Record<string, unknown>,
+  mswarmSelfHosted: Record<string, unknown> | undefined,
+  sync: Record<string, unknown> | undefined,
+  healthDetails: Record<string, unknown> | undefined
+): McodaSelfHostedRelayMetadata | null {
+  const relay = recordValue(record.relay);
+  const configRelay = recordValue(mswarmSelfHosted?.relay);
+  const syncRelay = recordValue(sync?.relay);
+  const records = [
+    record,
+    relay,
+    mswarmSelfHosted,
+    configRelay,
+    sync,
+    syncRelay,
+    healthDetails,
+  ];
+  const value: McodaSelfHostedRelayMetadata = {
+    gatewayBaseUrl: stringFromRecords(records, [
+      "gatewayBaseUrl",
+      "gateway_base_url",
+    ]),
+    jobsPollPath: stringFromRecords(records, ["jobsPollPath", "jobs_poll_path"]),
+    jobsStartPathTemplate: stringFromRecords(records, [
+      "jobsStartPathTemplate",
+      "jobs_start_path_template",
+    ]),
+    jobsEventsPathTemplate: stringFromRecords(records, [
+      "jobsEventsPathTemplate",
+      "jobs_events_path_template",
+    ]),
+    jobsResultPathTemplate: stringFromRecords(records, [
+      "jobsResultPathTemplate",
+      "jobs_result_path_template",
+    ]),
+  };
+  return Object.values(value).some(Boolean) ? value : null;
 }
 
 function normalizeLocalRunnerMetadata(

@@ -1,6 +1,6 @@
 # mcoda Agent Setup SDK Install And Usage
 
-Last verified: 2026-06-15
+Last verified: 2026-06-26
 
 This document explains how an application can install and use the public
 `@mcoda/agent-setup` SDK to configure mcoda/mswarm agents from an app UI.
@@ -11,17 +11,17 @@ This release targets:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.78
+# 0.1.84
 ```
 
-Published `@mcoda/agent-setup@0.1.78` exports:
+Published `@mcoda/agent-setup@0.1.84` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.78`.
+It depends on public `@mcoda/core@0.1.84`.
 
 ## What The SDK Does
 
@@ -37,6 +37,10 @@ The SDK provides:
 - Load-balanced self-hosted mswarm aliases surfaced as auto-routed
   `self_hosted_load_balanced` entries under an `Auto load-balanced` server
   choice.
+- Self-hosted lifecycle diagnostics surfaced as `healthReason` and
+  `selfHostedLifecycle`, including relay gateway URL, job lifecycle route
+  templates, runtime package version, and missing-route protocol mismatch
+  details.
 - A backend-only owner-local GPU/generic job client for trusted applications
   that own a self-hosted node token or signing secret.
 
@@ -94,6 +98,10 @@ sets visible so a product can migrate deliberately:
 - Store only the selected slug and non-secret gateway/group metadata in app
   settings. Do not store node runtime tokens, direct URLs, invocation signing
   secrets, or raw API keys in browser-visible state.
+- Treat `healthReason: "self_hosted_protocol_mismatch"` and
+  `selfHostedLifecycle.missingRoute` as terminal setup diagnostics. The SDK
+  keeps those agents visible for admin repair but host apps should not
+  auto-select them while degraded.
 - Roll back by saving a direct slug again or by hiding auto aliases from the
   backend catalog sync. Do not delete direct agents or node records to disable
   auto routing.

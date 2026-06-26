@@ -1391,12 +1391,19 @@ function agentMetadata(agent: McodaAgentCatalogEntry): string {
         .filter(Boolean)
         .join(" / ")
     : null;
+  const lifecycleDetail = [
+    agent.healthStatus && agent.healthStatus !== "-" ? agent.healthStatus : null,
+    agent.healthReason ?? agent.selfHostedLifecycle?.reason,
+    agent.selfHostedLifecycle?.missingRoute,
+  ]
+    .filter(Boolean)
+    .join(": ");
   return (
     [
       agent.defaultModel ?? agent.model,
       agent.provider,
       runnerDetail,
-      agent.healthStatus && agent.healthStatus !== "-" ? agent.healthStatus : null,
+      lifecycleDetail || null,
     ]
       .filter(Boolean)
       .join(" / ") || agent.slug

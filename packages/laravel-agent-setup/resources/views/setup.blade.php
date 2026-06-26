@@ -370,6 +370,17 @@
         ];
     }
 
+    function agentLifecycleText(agent) {
+        const lifecycle = agent.selfHostedLifecycle ?? {};
+        return [
+            agent.healthStatus && agent.healthStatus !== '-' ? agent.healthStatus : null,
+            agent.healthReason ?? lifecycle.reason,
+            lifecycle.missingRoute,
+        ]
+            .filter(Boolean)
+            .join(': ');
+    }
+
     function renderErrors(snapshot) {
         const catalogErrors = snapshot?.catalog?.errors ?? {};
         const entries = Object.entries(catalogErrors).filter(([, value]) => value);
@@ -664,7 +675,20 @@
         const agents = allAgents(snapshot).filter((agent) => {
             const term = state.filter.trim().toLowerCase();
             if (!term) return true;
-            return [agent.slug, agent.displayName, agent.provider, agent.model, agent.serverLabel, agent.serverName]
+            return [
+                agent.slug,
+                agent.displayName,
+                agent.provider,
+                agent.model,
+                agent.serverLabel,
+                agent.serverName,
+                agentLifecycleText(agent),
+                agent.selfHostedLifecycle?.runtimePackageVersion,
+                agent.selfHostedLifecycle?.relay?.gatewayBaseUrl,
+                agent.selfHostedLifecycle?.relay?.jobsStartPathTemplate,
+                agent.selfHostedLifecycle?.relay?.jobsEventsPathTemplate,
+                agent.selfHostedLifecycle?.relay?.jobsResultPathTemplate,
+            ]
                 .filter(Boolean)
                 .some((value) => String(value).toLowerCase().includes(term));
         });
@@ -683,7 +707,12 @@
             select.dataset.stageKey = stage.stageKey;
             select.append(new Option('Unassigned', ''));
             for (const agent of agents) {
-                const text = [agent.displayName || agent.slug, agent.model, agent.provider]
+                const text = [
+                    agent.displayName || agent.slug,
+                    agent.model,
+                    agent.provider,
+                    agentLifecycleText(agent),
+                ]
                     .filter(Boolean)
                     .join(' - ');
                 select.append(new Option(text, agent.slug));

@@ -20,6 +20,9 @@ the setup SDK, and those aliases are exposed as `Auto load-balanced` server
 options with `managedKind: "self_hosted_load_balanced"`. The synced local agent
 config keeps only gateway/group metadata and never needs self-hosted node tokens
 or invocation signing secrets in browser-visible state.
+Self-hosted entries also expose lifecycle diagnostics through `healthReason` and
+`selfHostedLifecycle`, including relay gateway URL, lifecycle route templates,
+runtime package version, and missing-route protocol mismatch details.
 
 ## Self-Hosted Routing Modes
 
@@ -35,6 +38,13 @@ safe migration, let an admin choose the `Auto load-balanced` option only after
 the control plane preview shows an eligible upgraded node group. For rollback,
 save a direct self-hosted slug again or hide auto aliases in the backend catalog
 sync; direct server entries remain usable.
+
+If the gateway/node lifecycle protocol is incompatible, catalog entries surface
+`healthStatus: "degraded"`,
+`healthReason: "self_hosted_protocol_mismatch"`, and
+`selfHostedLifecycle.missingRoute` rather than showing the agent as healthy.
+Host apps should display that reason and avoid selecting degraded self-hosted
+entries automatically.
 
 For user-scoped mswarm integrations, `configureMswarmApiKey()` can receive
 non-secret connection metadata such as tenant ID, product slug, owner user ID,

@@ -66,6 +66,24 @@ export interface McodaLocalRunnerCatalogMetadata {
   supportsGbnf: boolean | null;
 }
 
+export interface McodaSelfHostedRelayMetadata {
+  gatewayBaseUrl: string | null;
+  jobsPollPath: string | null;
+  jobsStartPathTemplate: string | null;
+  jobsEventsPathTemplate: string | null;
+  jobsResultPathTemplate: string | null;
+}
+
+export interface McodaSelfHostedLifecycleMetadata {
+  compatible: boolean | null;
+  reason: string | null;
+  missingRoute: string | null;
+  missingRoutes: string[];
+  checkedAt: string | null;
+  runtimePackageVersion: string | null;
+  relay: McodaSelfHostedRelayMetadata | null;
+}
+
 export type McodaMswarmConnectionValidationMode =
   | "auto"
   | "required"
@@ -131,6 +149,7 @@ export interface McodaAgentCatalogEntry {
   model: string | null;
   defaultModel: string | null;
   healthStatus: string | null;
+  healthReason?: string | null;
   supportsTools: boolean | null;
   rating: number | null;
   reasoningRating: number | null;
@@ -140,6 +159,7 @@ export interface McodaAgentCatalogEntry {
   maxOutputTokens?: number | null;
   bestUsage?: string | null;
   localRunner?: McodaLocalRunnerCatalogMetadata | null;
+  selfHostedLifecycle?: McodaSelfHostedLifecycleMetadata | null;
   capabilities?: string[];
   metadata?: Record<string, unknown>;
 }
@@ -152,6 +172,8 @@ export interface McodaSelfHostedServer {
   routingMode?: McodaSelfHostedRoutingMode | null;
   loadBalancedGroupId?: string | null;
   status?: string | null;
+  statusReason?: string | null;
+  lifecycle?: McodaSelfHostedLifecycleMetadata | null;
   remoteSlugPrefix?: string | null;
   agentCount: number;
   agents: McodaAgentCatalogEntry[];
