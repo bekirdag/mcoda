@@ -11,17 +11,17 @@ This release targets:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.84
+# 0.1.85
 ```
 
-Published `@mcoda/agent-setup@0.1.84` exports:
+Published `@mcoda/agent-setup@0.1.85` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.84`.
+It depends on public `@mcoda/core@0.1.85`.
 
 ## What The SDK Does
 

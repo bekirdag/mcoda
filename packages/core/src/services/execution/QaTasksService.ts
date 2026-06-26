@@ -612,6 +612,7 @@ export class QaTasksService {
   private qaProfilePlan?: Map<string, QaProfile[]>;
   private qaTaskPlans?: Map<string, QaTaskPlan>;
   private projectKeyById = new Map<string, string>();
+  private taskLogSeq = new Map<string, number>();
 
   constructor(
     private workspace: WorkspaceResolution,
@@ -3034,10 +3035,16 @@ export class QaTasksService {
     });
   }
 
+  private nextLogSeq(taskRunId: string): number {
+    const next = (this.taskLogSeq.get(taskRunId) ?? 0) + 1;
+    this.taskLogSeq.set(taskRunId, next);
+    return next;
+  }
+
   private async logTask(taskRunId: string, message: string, source?: string, details?: Record<string, unknown>): Promise<void> {
     await this.deps.workspaceRepo.insertTaskLog({
       taskRunId,
-      sequence: Math.floor(Math.random() * 1000000),
+      sequence: this.nextLogSeq(taskRunId),
       timestamp: new Date().toISOString(),
       source: source ?? 'qa-tasks',
       message,

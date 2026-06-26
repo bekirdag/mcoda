@@ -1067,6 +1067,11 @@ test("qa-tasks aggregates multiple profiles when available", async () => {
     const qaRuns = await repo.listTaskQaRuns(task.id);
     assert.equal(qaRuns.length, 1);
     assert.equal((qaRuns[0].metadata as any)?.runCount, 2);
+    const taskLogs = await repo
+      .getDb()
+      .all<{ task_run_id: string; sequence: number }[]>("SELECT task_run_id, sequence FROM task_logs");
+    const uniqueLogSequences = new Set(taskLogs.map((log) => `${log.task_run_id}:${log.sequence}`));
+    assert.equal(uniqueLogSequences.size, taskLogs.length);
   } finally {
     await repo.close();
     await fs.rm(dir, { recursive: true, force: true });
