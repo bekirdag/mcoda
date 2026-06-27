@@ -1347,6 +1347,16 @@ function isHttpStatusError(error: unknown, status?: number): error is HttpStatus
   return error instanceof HttpStatusError && (status === undefined || error.status === status);
 }
 
+const RELAY_RESULT_POST_RETRY_DELAYS_MS = [250, 1_000, 2_500] as const;
+
+function runtimeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchJson<T>(
   fetchImpl: FetchLike,
   url: string,
@@ -6157,13 +6167,33 @@ export class SelfHostedNodeRuntime {
           }
         : (({ stream_events: _streamEvents, ...rest }) => rest)(result)
       : result;
-    try {
-      await this.gateway.postJobResult(
-        enrollment.runtimeToken,
-        job.job_id,
-        this.jobResultPayload(postedResult)
-      );
-    } catch (error) {
+    let resultPostError: unknown = null;
+    for (let attempt = 0; attempt <= RELAY_RESULT_POST_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        await this.gateway.postJobResult(
+          enrollment.runtimeToken,
+          job.job_id,
+          this.jobResultPayload(postedResult)
+        );
+        resultPostError = null;
+        break;
+      } catch (error) {
+        resultPostError = error;
+        const attemptNumber = attempt + 1;
+        const maxAttempts = RELAY_RESULT_POST_RETRY_DELAYS_MS.length + 1;
+        const retryDelayMs = RELAY_RESULT_POST_RETRY_DELAYS_MS[attempt];
+        if (retryDelayMs === undefined) {
+          break;
+        }
+        console.warn(
+          `[mswarm] self-hosted result post failed for ${job.job_id} ` +
+            `(attempt ${attemptNumber}/${maxAttempts}): ${runtimeErrorMessage(error)}`
+        );
+        await sleep(retryDelayMs);
+      }
+    }
+    if (resultPostError) {
+      const error = resultPostError;
       const mismatch = this.lifecycleProtocolMismatch("result", error);
       if (mismatch) {
         await this.markLifecycleProtocolDegraded(mismatch);
@@ -6215,7 +6245,9 @@ export class SelfHostedNodeRuntime {
       if (stopped || polling || this.lifecyclePollingDisabled || this.config.relayMode === "direct") return;
       polling = true;
       void this.pollAndExecuteJob()
-        .catch(() => undefined)
+        .catch((error) => {
+          console.error(`[mswarm] self-hosted relay poll failed: ${runtimeErrorMessage(error)}`);
+        })
         .finally(() => {
           polling = false;
           if (!stopped) {

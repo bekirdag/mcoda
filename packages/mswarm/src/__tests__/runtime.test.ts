@@ -2447,6 +2447,58 @@ describe("self-hosted node runtime", () => {
     expect((posted.usage as { total_tokens?: number } | undefined)?.total_tokens).toBe(13);
   });
 
+  it("retries transient outbound relay result post failures", async () => {
+    const statePath = tempStatePath();
+    let resultAttempts = 0;
+    let postedResult: Record<string, unknown> | null = null;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/poll") {
+        return jsonResponse({
+          job: {
+            job_id: "job-result-retry",
+            request_id: "req-result-retry",
+            node_id: "shn_service",
+            agent_slug: "qwen-reviewer",
+            source_agent_slug: "qwen-reviewer",
+            provider: "mcoda",
+            model: "mcoda-qwen-reviewer",
+            openai_request: {
+              model: "mcoda-qwen-reviewer",
+              messages: [{ role: "user", content: "Retry result posting." }]
+            }
+          }
+        });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-result-retry/start") {
+        return jsonResponse({ accepted: true, status: "started" });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-result-retry/result") {
+        resultAttempts += 1;
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (resultAttempts === 1) {
+          return jsonResponse({ error: "temporary gateway failure" }, 503);
+        }
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input, "retry ok"))
+    });
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("success");
+    expect(resultAttempts).toBe(2);
+    const posted = postedResult as Record<string, unknown> | null;
+    assert.ok(posted);
+    expect((posted.openai_response as { choices?: unknown[] } | undefined)?.choices).toHaveLength(1);
+  });
+
   it("posts pre-start relay failures without acknowledging job start", async () => {
     const statePath = tempStatePath();
     let startCalled = false;
