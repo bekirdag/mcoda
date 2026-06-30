@@ -7,7 +7,13 @@ import { createHmac } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { buildInstallSetupArgs, buildSelfHostedNodeApp, isSelfHostedNodeDirectRun, normalizeMswarmCommand } from "../server.js";
+import {
+  buildInstallSetupArgs,
+  buildNodeInstallSetupArgs,
+  buildSelfHostedNodeApp,
+  isSelfHostedNodeDirectRun,
+  normalizeMswarmCommand
+} from "../server.js";
 import {
   MswarmCodaliExecutor,
   type MswarmCodaliInvocationInput,
@@ -169,7 +175,8 @@ function serviceConfigFor(statePath: string): SelfHostedNodeConfig {
     hardwareTelemetryEnabled: false,
     exposeAllModels: true,
     modelAllowlist: ["phi3-reviewer"],
-    modelBlocklist: ["nomic-embed-text:latest"]
+    modelBlocklist: ["nomic-embed-text:latest"],
+    clientAllowlist: []
   };
 }
 
@@ -1059,7 +1066,9 @@ describe("self-hosted node runtime", () => {
         "2",
         "--enable-hardware-telemetry",
         "--allow",
-        "phi3-reviewer"
+        "phi3-reviewer",
+        "--clients",
+        "heka,wodo,192.0.2.10,550E8400-E29B-41D4-A716-446655440000"
       ],
       {
         MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
@@ -1080,6 +1089,12 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.artifactStorePath).toBe(tempArtifactStorePath(statePath));
     expect(setupConfig.exposeAllModels).toBe(true);
     expect(setupConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
+    expect(setupConfig.clientAllowlist).toEqual([
+      { kind: "domain", value: "heka" },
+      { kind: "domain", value: "wodo" },
+      { kind: "ip", value: "192.0.2.10" },
+      { kind: "uuid", value: "550e8400-e29b-41d4-a716-446655440000" }
+    ]);
 
     const firstMachineId = await readOrCreateSelfHostedMachineId(machinePath);
     const secondMachineId = await readOrCreateSelfHostedMachineId(machinePath);
@@ -1123,6 +1138,34 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.gatewayBaseUrl).toBe("https://gateway.test");
     expect(setupConfig.serverName).toBe("bekir-macbook-pro");
     expect(setupConfig.exposeAllModels).toBe(true);
+  });
+
+  it("parses node install positional clients without treating them as an API key", async () => {
+    const statePath = tempStatePath();
+    const machinePath = join(dirname(statePath), "machine.id");
+    const setupArgs = await buildNodeInstallSetupArgs([
+      "heka,wodo,192.0.2.10",
+      "--api-key",
+      "msw_owner",
+      "--gateway",
+      "https://gateway.test/",
+      "--server-name",
+      "Bekir MacBook Pro"
+    ]);
+
+    expect(setupArgs.slice(0, 2)).toEqual(["--clients", "heka,wodo,192.0.2.10"]);
+    const setupConfig = await readOwnerSetupConfig(setupArgs, {
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath),
+      MSWARM_SELF_HOSTED_MACHINE_ID_PATH: machinePath
+    } as NodeJS.ProcessEnv);
+
+    expect(setupConfig.apiKey).toBe("msw_owner");
+    expect(setupConfig.clientAllowlist).toEqual([
+      { kind: "domain", value: "heka" },
+      { kind: "domain", value: "wodo" },
+      { kind: "ip", value: "192.0.2.10" }
+    ]);
   });
 
   it("uses one hour as the default mcoda job execution timeout", async () => {
@@ -4320,6 +4363,10 @@ describe("self-hosted node runtime", () => {
         expect(body.drain_mode).toBe(false);
         expect(body.load_reporting_enabled).toBe(true);
         expect(body.hardware_telemetry_enabled).toBe(false);
+        expect(body.client_allowlist).toEqual([
+          { kind: "domain", value: "heka" },
+          { kind: "domain", value: "wodo" }
+        ]);
         return jsonResponse({
           created: true,
           enrolled: true,
@@ -4335,6 +4382,10 @@ describe("self-hosted node runtime", () => {
         expect((init?.headers as Record<string, string>).authorization).toBe("Bearer msn_setup");
         const body = JSON.parse(String(init?.body));
         expect(body.node_id).toBe("shn_setup");
+        expect(body.client_allowlist).toEqual([
+          { kind: "domain", value: "heka" },
+          { kind: "domain", value: "wodo" }
+        ]);
         expect(body.models).toHaveLength(1);
         return jsonResponse({ accepted: true });
       }
@@ -4363,6 +4414,8 @@ describe("self-hosted node runtime", () => {
         "https://gateway.test",
         "--server-name",
         "setup-box",
+        "--clients",
+        "heka,wodo",
         "--allow",
         "phi3-reviewer",
         "--expose-all"
@@ -4389,6 +4442,10 @@ describe("self-hosted node runtime", () => {
     expect(savedState.drain_mode).toBe(false);
     expect(savedState.load_reporting_enabled).toBe(true);
     expect(savedState.hardware_telemetry_enabled).toBe(false);
+    expect(savedState.client_allowlist).toEqual([
+      { kind: "domain", value: "heka" },
+      { kind: "domain", value: "wodo" }
+    ]);
     expect((await readFile(tempRuntimeTokenPath(statePath), "utf8")).trim()).toBe("msn_setup");
     const daemonConfig = await readSelfHostedNodeConfig({
       MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
@@ -4403,6 +4460,10 @@ describe("self-hosted node runtime", () => {
     expect(daemonConfig.loadReportingEnabled).toBe(true);
     expect(daemonConfig.hardwareTelemetryEnabled).toBe(false);
     expect(daemonConfig.modelAllowlist).toEqual(["phi3-reviewer"]);
+    expect(daemonConfig.clientAllowlist).toEqual([
+      { kind: "domain", value: "heka" },
+      { kind: "domain", value: "wodo" }
+    ]);
     expect(daemonConfig.discoveryMode).toBe("mcoda");
     expect(daemonConfig.nodeVersion).toBe(await packageVersion());
     expect(calls.filter((call) => call.url.endsWith("/node/bootstrap"))).toHaveLength(1);
@@ -4548,7 +4609,8 @@ describe("self-hosted node runtime", () => {
         genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
-        modelBlocklist: []
+        modelBlocklist: [],
+        clientAllowlist: []
       },
       { fetchImpl }
     );
@@ -4586,7 +4648,8 @@ describe("self-hosted node runtime", () => {
         genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
-        modelBlocklist: []
+        modelBlocklist: [],
+        clientAllowlist: []
       },
       { fetchImpl }
     );
@@ -4662,7 +4725,8 @@ describe("self-hosted node runtime", () => {
         genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
-        modelBlocklist: []
+        modelBlocklist: [],
+        clientAllowlist: []
       },
       { fetchImpl, mcoda }
     );
@@ -5072,7 +5136,8 @@ describe("self-hosted node runtime", () => {
         genericJobMaxConcurrency: 1,
         exposeAllModels: true,
         modelAllowlist: [],
-        modelBlocklist: []
+        modelBlocklist: [],
+        clientAllowlist: []
       },
       { fetchImpl }
     );

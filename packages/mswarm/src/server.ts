@@ -38,11 +38,16 @@ import {
 import {
   controlSelfHostedNodeService,
   installSelfHostedNodeService,
+  addSelfHostedNodeClients,
+  normalizeSelfHostedNodeClientAllowlist,
   readOwnerSetupConfig,
+  readSelfHostedNodeState,
   readSelfHostedNodeConfig,
+  removeSelfHostedNodeClients,
   resolveSelfHostedNodeServiceLayout,
   SelfHostedNodeRuntime,
   uninstallSelfHostedNodeService,
+  writeSelfHostedNodeState,
   genericJobCapabilityMismatch,
   type SelfHostedGenericNodeJob,
   type SelfHostedNodeConfig,
@@ -67,7 +72,7 @@ function printUsage(): void {
   console.log(`Usage: mswarm <node|install|setup|start|doctor|once|daemon|serve|enroll|models|agents|status>
 
 Commands:
-  node install [options]   Bootstrap this machine and install a persistent background daemon
+  node install [clients] [options]  Bootstrap this machine and install a persistent background daemon
   node start               Start the installed background daemon
   node stop                Stop the installed background daemon
   node restart             Restart the installed background daemon
@@ -75,11 +80,13 @@ Commands:
   node health              Run node health checks
   node doctor              Run deep node diagnostics
   node logs [options]      Print daemon logs
+  node add-client <clients>     Add allowed client domains, IPs, or UUIDs
+  node remove-client <clients>  Remove allowed client domains, IPs, or UUIDs
   node uninstall           Remove the installed daemon, then mark the gateway node unreachable
   node run                 Run the node in the foreground
 
 Compatibility aliases:
-  install <API_KEY>        Alias for node install <API_KEY>
+  install <API_KEY>        Legacy install flow with positional owner API key
   setup --api-key <KEY>   Bootstrap without installing a daemon
   start                   Foreground node run; node start controls the daemon
   doctor                  Alias for node doctor
@@ -114,9 +121,10 @@ Environment:
   MSWARM_SELF_HOSTED_EXPOSURE_POLICY       all or none, defaults to all
 
 Setup options:
-  node install <KEY>       Quick setup flow; avoids shell-exporting the API key
+  node install <CLIENTS>   Preferred setup flow; comma-separated client domains/IPs/UUIDs
   --api-key <KEY>           Owner mswarm API key; fallback MSWARM_API_KEY
   --api-key-stdin           Read owner API key from stdin for automation
+  --clients <CLIENTS>       Comma-separated client domains, IPs, or UUIDs
   --gateway <URL>           Defaults to https://api.mswarm.org
   --server-name <NAME>      Defaults to os.hostname()
   --mode <outbound|direct>  Defaults to outbound
@@ -150,6 +158,19 @@ export function buildInstallSetupArgs(argv: string[]): string[] {
   return argv;
 }
 
+export function buildNodeClientSetupArgs(argv: string[]): string[] {
+  const [first, ...rest] = argv;
+  if (!first || first.startsWith("--")) {
+    return argv;
+  }
+  if (/^msw[_-]/i.test(first)) {
+    throw new Error(
+      "mswarm node install positional input is now a client allowlist; pass the owner API key with --api-key or --api-key-stdin, or use legacy mswarm install <API_KEY>."
+    );
+  }
+  return ["--clients", first, ...rest];
+}
+
 export function normalizeMswarmCommand(argv: string[]): { namespace: "node" | null; command: string; args: string[] } {
   const command = argv[2] || "once";
   if (command === "node") {
@@ -159,7 +180,11 @@ export function normalizeMswarmCommand(argv: string[]): { namespace: "node" | nu
 }
 
 function hasApiKeyArg(argv: string[]): boolean {
-  return argv.some((entry, index) => entry === "--api-key" && typeof argv[index + 1] === "string");
+  return argv.some(
+    (entry, index) =>
+      entry.startsWith("--api-key=") ||
+      (entry === "--api-key" && typeof argv[index + 1] === "string")
+  );
 }
 
 function headerText(
@@ -188,21 +213,21 @@ async function readApiKeyFromStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
-async function buildNodeInstallSetupArgs(argv: string[]): Promise<string[]> {
+export async function buildNodeInstallSetupArgs(argv: string[]): Promise<string[]> {
   const args = [...argv];
   const stdinIndex = args.indexOf("--api-key-stdin");
   if (stdinIndex >= 0) {
     args.splice(stdinIndex, 1);
-    if (hasApiKeyArg(args) || (args[0] && !args[0].startsWith("--"))) {
-      throw new Error("Use either --api-key, a positional API key, or --api-key-stdin; not more than one");
+    if (hasApiKeyArg(args)) {
+      throw new Error("Use either --api-key or --api-key-stdin; not more than one");
     }
     const apiKey = await readApiKeyFromStdin();
     if (!apiKey) {
       throw new Error("No API key received on stdin");
     }
-    return ["--api-key", apiKey, ...args];
+    return ["--api-key", apiKey, ...buildNodeClientSetupArgs(args)];
   }
-  return buildInstallSetupArgs(args);
+  return buildNodeClientSetupArgs(args);
 }
 
 function parsePositiveLineCount(argv: string[], fallback: number): number {
@@ -1966,7 +1991,7 @@ export async function main(argv = process.argv): Promise<void> {
     return;
   }
   if (command === "install") {
-    await installNode(parsed.args, argv);
+    await installNode(parsed.args, argv, { legacyPositionalApiKey: true });
     return;
   }
   if (command === "setup") {
@@ -2030,9 +2055,16 @@ export async function main(argv = process.argv): Promise<void> {
   throw new Error(`Unknown command: ${command}`);
 }
 
-async function installNode(args: string[], argv: string[]): Promise<void> {
+async function installNode(
+  args: string[],
+  argv: string[],
+  options: { legacyPositionalApiKey?: boolean } = {}
+): Promise<void> {
   const commandPath = realpathSync(argv[1] || fileURLToPath(import.meta.url));
-  const setupConfig = await readOwnerSetupConfig(await buildNodeInstallSetupArgs(args));
+  const setupArgs = options.legacyPositionalApiKey
+    ? buildInstallSetupArgs(args)
+    : await buildNodeInstallSetupArgs(args);
+  const setupConfig = await readOwnerSetupConfig(setupArgs);
   const result = await SelfHostedNodeRuntime.setup(setupConfig);
   const config = await readSelfHostedNodeConfig();
   const service = await installSelfHostedNodeService(config, {
@@ -2073,6 +2105,7 @@ async function runNodeStatus(): Promise<void> {
       server_name: config.serverName,
       relay_mode: config.relayMode,
       gateway_base_url: config.gatewayBaseUrl,
+      client_allowlist: config.clientAllowlist,
       state_path: config.statePath,
       runtime_token_path: config.runtimeTokenPath
     };
@@ -2088,6 +2121,67 @@ async function runNodeLogs(args: string[]): Promise<void> {
   const lines = parsePositiveLineCount(args, 200);
   const content = await readFile(path, "utf8");
   console.log(lastLines(content, lines));
+}
+
+async function runNodeClientMutation(args: string[], action: "add" | "remove"): Promise<void> {
+  const noSync = args.includes("--no-sync");
+  const rawClients = args
+    .filter((entry) => !entry.startsWith("--"))
+    .join(",");
+  if (!rawClients) {
+    throw new Error(`mswarm node ${action}-client requires at least one client identifier`);
+  }
+  const clients = normalizeSelfHostedNodeClientAllowlist(rawClients);
+  if (clients.length === 0) {
+    throw new Error(`mswarm node ${action}-client requires at least one client identifier`);
+  }
+  const config = await readSelfHostedNodeConfig();
+  const currentState = await readSelfHostedNodeState(config.statePath);
+  const currentClients = normalizeSelfHostedNodeClientAllowlist(
+    currentState.client_allowlist || config.clientAllowlist
+  );
+  const nextClients =
+    action === "add"
+      ? addSelfHostedNodeClients(currentClients, clients)
+      : removeSelfHostedNodeClients(currentClients, clients);
+  await writeSelfHostedNodeState(config.statePath, {
+    ...currentState,
+    client_allowlist: nextClients,
+    updated_at: new Date().toISOString()
+  });
+
+  let sync: Record<string, unknown> = { attempted: false };
+  if (!noSync) {
+    try {
+      const nextConfig = await readSelfHostedNodeConfig();
+      const result = await new SelfHostedNodeRuntime(nextConfig).runOnce();
+      sync = {
+        attempted: true,
+        status: result.status,
+        model_count: result.model_count
+      };
+    } catch (error) {
+      sync = {
+        attempted: true,
+        error: error instanceof Error ? error.message : String(error)
+      };
+      process.exitCode = 1;
+    }
+  }
+
+  console.log(
+    JSON.stringify(
+      {
+        action,
+        clients,
+        client_allowlist: nextClients,
+        state_path: config.statePath,
+        sync
+      },
+      null,
+      2
+    )
+  );
 }
 
 async function runNodeUninstall(): Promise<void> {
@@ -2171,6 +2265,14 @@ async function handleNodeCommand(command: string, args: string[], argv: string[]
   }
   if (command === "logs") {
     await runNodeLogs(args);
+    return;
+  }
+  if (command === "add-client") {
+    await runNodeClientMutation(args, "add");
+    return;
+  }
+  if (command === "remove-client" || command === "remove-clint") {
+    await runNodeClientMutation(args, "remove");
     return;
   }
   if (command === "uninstall") {

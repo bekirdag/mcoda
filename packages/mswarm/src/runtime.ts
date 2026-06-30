@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cpus, freemem, hostname, homedir, loadavg, platform, totalmem, userInfo } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { GlobalRepository } from "@mcoda/db";
 import {
   MswarmCodaliExecutor,
@@ -50,12 +51,19 @@ export type FetchLike = typeof fetch;
 export type SelfHostedDiscoveryMode = "mcoda" | "ollama";
 export type SelfHostedRelayMode = "outbound" | "direct";
 export type SelfHostedExposurePolicy = "all" | "none";
+export type SelfHostedNodeClientKind = "domain" | "ip" | "uuid";
 export type CommandRunner = (
   command: string,
   args: string[],
   options: { timeoutMs: number; maxBuffer: number; input?: string; signal?: AbortSignal }
 ) => Promise<{ stdout: string; stderr: string }>;
 export type SelfHostedModelHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown" | "blocked";
+
+export interface SelfHostedNodeClientIdentity {
+  kind: SelfHostedNodeClientKind;
+  value: string;
+  added_at?: string;
+}
 
 export interface SelfHostedModelInput {
   name: string;
@@ -135,6 +143,7 @@ export interface SelfHostedNodeConfig {
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
+  clientAllowlist: SelfHostedNodeClientIdentity[];
 }
 
 export interface SelfHostedNodeState {
@@ -179,6 +188,7 @@ export interface SelfHostedNodeState {
   exposure_policy?: SelfHostedExposurePolicy;
   model_allowlist?: string[];
   model_blocklist?: string[];
+  client_allowlist?: SelfHostedNodeClientIdentity[];
 }
 
 export interface SelfHostedOwnerSetupConfig {
@@ -211,6 +221,7 @@ export interface SelfHostedOwnerSetupConfig {
   exposeAllModels: boolean;
   modelAllowlist: string[];
   modelBlocklist: string[];
+  clientAllowlist: SelfHostedNodeClientIdentity[];
   start: boolean;
 }
 
@@ -952,6 +963,105 @@ function parseList(value: unknown): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+function normalizeSelfHostedDomainClient(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/\.+$/g, "");
+  if (!normalized || normalized.length > 253 || normalized.includes("..")) {
+    return null;
+  }
+  const labels = normalized.split(".");
+  if (!labels.every((label) => DOMAIN_LABEL_PATTERN.test(label))) {
+    return null;
+  }
+  return normalized;
+}
+
+export function normalizeSelfHostedNodeClientIdentity(value: unknown): SelfHostedNodeClientIdentity | null {
+  if (isRecord(value)) {
+    const kind = optionalText(value.kind)?.toLowerCase();
+    const rawValue = optionalText(value.value);
+    const normalized = normalizeSelfHostedNodeClientIdentity(rawValue);
+    if (!normalized) {
+      return null;
+    }
+    if (kind && kind !== normalized.kind) {
+      return null;
+    }
+    const addedAt = optionalText(value.added_at);
+    return addedAt ? { ...normalized, added_at: addedAt } : normalized;
+  }
+  const raw = optionalText(value);
+  if (!raw) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (isIP(trimmed) !== 0) {
+    return { kind: "ip", value: trimmed.toLowerCase() };
+  }
+  if (UUID_PATTERN.test(trimmed)) {
+    return { kind: "uuid", value: trimmed.toLowerCase() };
+  }
+  const domain = normalizeSelfHostedDomainClient(trimmed);
+  if (domain) {
+    return { kind: "domain", value: domain };
+  }
+  return null;
+}
+
+export function normalizeSelfHostedNodeClientAllowlist(value: unknown): SelfHostedNodeClientIdentity[] {
+  const entries = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? parseList(value)
+      : value == null || value === false
+        ? []
+        : [value];
+  const byKey = new Map<string, SelfHostedNodeClientIdentity>();
+  for (const entry of entries) {
+    const identity = normalizeSelfHostedNodeClientIdentity(entry);
+    if (!identity) {
+      throw new Error(
+        typeof entry === "string"
+          ? `Invalid mswarm node client identifier: ${entry}`
+          : "Invalid mswarm node client identifier"
+      );
+    }
+    byKey.set(`${identity.kind}:${identity.value}`, identity);
+  }
+  return [...byKey.values()];
+}
+
+export function addSelfHostedNodeClients(
+  current: SelfHostedNodeClientIdentity[],
+  additions: SelfHostedNodeClientIdentity[],
+  now = new Date().toISOString()
+): SelfHostedNodeClientIdentity[] {
+  const byKey = new Map<string, SelfHostedNodeClientIdentity>();
+  for (const entry of current) {
+    const normalized = normalizeSelfHostedNodeClientIdentity(entry);
+    if (normalized) {
+      byKey.set(`${normalized.kind}:${normalized.value}`, normalized);
+    }
+  }
+  for (const entry of additions) {
+    byKey.set(`${entry.kind}:${entry.value}`, { ...entry, added_at: entry.added_at || now });
+  }
+  return [...byKey.values()];
+}
+
+export function removeSelfHostedNodeClients(
+  current: SelfHostedNodeClientIdentity[],
+  removals: SelfHostedNodeClientIdentity[]
+): SelfHostedNodeClientIdentity[] {
+  const removeKeys = new Set(removals.map((entry) => `${entry.kind}:${entry.value}`));
+  return current
+    .map((entry) => normalizeSelfHostedNodeClientIdentity(entry))
+    .filter((entry): entry is SelfHostedNodeClientIdentity => Boolean(entry))
+    .filter((entry) => !removeKeys.has(`${entry.kind}:${entry.value}`));
 }
 
 function parseArgs(value: unknown, fallback: string[]): string[] {
@@ -2121,7 +2231,12 @@ export async function readSelfHostedNodeConfig(
     ),
     exposeAllModels: resolveDaemonExposeAllModels(env, state),
     modelAllowlist: parseList(env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST || state.model_allowlist),
-    modelBlocklist: parseList(env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST || state.model_blocklist)
+    modelBlocklist: parseList(env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST || state.model_blocklist),
+    clientAllowlist: normalizeSelfHostedNodeClientAllowlist(
+      env.MSWARM_SELF_HOSTED_CLIENT_ALLOWLIST ||
+        env.MSWARM_SELF_HOSTED_CLIENTS ||
+        state.client_allowlist
+    )
   };
 }
 
@@ -2154,6 +2269,12 @@ export async function readOwnerSetupConfig(
     DEFAULT_OLLAMA_BASE_URL;
   const allowlist = parseList(options.allow || env.MSWARM_SELF_HOSTED_MODEL_ALLOWLIST);
   const blocklist = parseList(options.block || env.MSWARM_SELF_HOSTED_MODEL_BLOCKLIST);
+  const clientAllowlist = normalizeSelfHostedNodeClientAllowlist(
+    options.clients ||
+      options.client ||
+      env.MSWARM_SELF_HOSTED_CLIENT_ALLOWLIST ||
+      env.MSWARM_SELF_HOSTED_CLIENTS
+  );
   const packageNodeVersion = await readPackageNodeVersion();
   const maxConcurrentJobs = parsePositiveInteger(
     options["max-concurrent-jobs"] || env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS,
@@ -2229,6 +2350,7 @@ export async function readOwnerSetupConfig(
     exposeAllModels: resolveOwnerSetupExposeAllModels(options, env),
     modelAllowlist: allowlist,
     modelBlocklist: blocklist,
+    clientAllowlist,
     start: options.start === true
   };
 }
@@ -5130,6 +5252,7 @@ export class SelfHostedNodeRuntime {
       expose_all_models: setupConfig.exposeAllModels,
       model_allowlist: setupConfig.modelAllowlist,
       model_blocklist: setupConfig.modelBlocklist,
+      client_allowlist: setupConfig.clientAllowlist,
       heartbeat_interval_seconds: setupConfig.heartbeatIntervalSeconds,
       max_concurrent_jobs: setupConfig.maxConcurrentJobs,
       max_concurrent_llm_jobs: setupConfig.maxConcurrentLlmJobs,
@@ -5201,7 +5324,8 @@ export class SelfHostedNodeRuntime {
       expose_all_models: setupConfig.exposeAllModels,
       exposure_policy: setupConfig.exposeAllModels ? "all" : "none",
       model_allowlist: setupConfig.modelAllowlist,
-      model_blocklist: setupConfig.modelBlocklist
+      model_blocklist: setupConfig.modelBlocklist,
+      client_allowlist: setupConfig.clientAllowlist
     };
     await writeSelfHostedNodeState(setupConfig.statePath, state);
     await writeSelfHostedRuntimeToken(setupConfig.runtimeTokenPath, runtimeToken);
@@ -5256,7 +5380,8 @@ export class SelfHostedNodeRuntime {
         hardwareTelemetryEnabled: setupConfig.hardwareTelemetryEnabled,
         exposeAllModels: setupConfig.exposeAllModels,
         modelAllowlist: setupConfig.modelAllowlist,
-        modelBlocklist: setupConfig.modelBlocklist
+        modelBlocklist: setupConfig.modelBlocklist,
+        clientAllowlist: setupConfig.clientAllowlist
       },
       { ...deps, gateway: runtimeGateway }
     );
@@ -5409,7 +5534,8 @@ export class SelfHostedNodeRuntime {
       expose_all_models: this.config.exposeAllModels,
       exposure_policy: this.config.exposeAllModels ? "all" : "none",
       model_allowlist: this.config.modelAllowlist,
-      model_blocklist: this.config.modelBlocklist
+      model_blocklist: this.config.modelBlocklist,
+      client_allowlist: this.config.clientAllowlist
     };
     await writeSelfHostedNodeState(this.config.statePath, nextState);
     await writeSelfHostedRuntimeToken(this.config.runtimeTokenPath, runtimeToken);
@@ -6001,6 +6127,7 @@ export class SelfHostedNodeRuntime {
         model_count: models.length,
         exposed_model_count: exposedModelCount
       },
+      client_allowlist: this.config.clientAllowlist,
       models,
       capabilities: capabilityPayload,
       ...(loadTelemetry.hardware_pressure ? { hardware_pressure: loadTelemetry.hardware_pressure } : {})
