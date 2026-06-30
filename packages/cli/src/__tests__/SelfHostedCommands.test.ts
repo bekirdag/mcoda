@@ -60,7 +60,9 @@ test("self-hosted --help prints usage", { concurrency: false }, async () => {
   const output = logs.join("\n");
   assert.match(output, /Usage: mcoda self-hosted agent/);
   assert.match(output, /npm install -g @mcoda\/mswarm/);
-  assert.match(output, /mswarm install <KEY>/);
+  assert.match(output, /--client-identity <ID>/);
+  assert.match(output, /MCODA_MSWARM_CLIENT_IDENTITY/);
+  assert.match(output, /mswarm node install <CLIENTS>/);
 });
 
 test("self-hosted agent list supports JSON output", { concurrency: false }, async () => {
@@ -68,9 +70,12 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
     await withStubServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       assert.equal(req.headers["x-api-key"], "self-hosted-key");
+      assert.equal(req.headers["x-mswarm-client-identity"], "heka");
+      assert.equal(req.headers["x-mswarm-client"], "heka");
       assert.equal(url.pathname, "/v1/swarm/self-hosted/agents");
       assert.equal(url.searchParams.get("shape"), "mcoda");
       assert.equal(url.searchParams.get("include_load_balanced"), "true");
+      assert.equal(url.searchParams.get("client_identity"), "heka");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -85,6 +90,9 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
               supports_tools: true,
               load_balanced: true,
               load_balanced_group_id: "lb_group_123",
+              client_identity: "heka",
+              client_allowlist: [{ kind: "domain", value: "heka" }],
+              client_allowlist_count: 1,
             },
           ],
         }),
@@ -100,6 +108,8 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
           "--api-key",
           "self-hosted-key",
           "--include-load-balanced",
+          "--client-identity",
+          "heka",
         ]),
       );
       const parsed = JSON.parse(logs.join("\n"));
@@ -108,6 +118,8 @@ test("self-hosted agent list supports JSON output", { concurrency: false }, asyn
       assert.equal(parsed[0]?.adapter, "claude-cli");
       assert.equal(parsed[0]?.load_balanced, true);
       assert.equal(parsed[0]?.load_balanced_group_id, "lb_group_123");
+      assert.equal(parsed[0]?.client_identity, "heka");
+      assert.equal(parsed[0]?.client_allowlist_count, 1);
     });
   });
 });
@@ -117,8 +129,10 @@ test("self-hosted agent sync JSON identifies auto-routed entries", { concurrency
     await withStubServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       assert.equal(req.headers["x-api-key"], "self-hosted-key");
+      assert.equal(req.headers["x-mswarm-client-identity"], "heka");
       assert.equal(url.pathname, "/v1/swarm/self-hosted/agents");
       assert.equal(url.searchParams.get("include_load_balanced"), "true");
+      assert.equal(url.searchParams.get("client_identity"), "heka");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -133,6 +147,7 @@ test("self-hosted agent sync JSON identifies auto-routed entries", { concurrency
               supports_tools: true,
               load_balanced: true,
               load_balanced_group_id: "lb_group_123",
+              client_identity: "heka",
               sync: {
                 source: "self_hosted",
                 load_balanced: true,
@@ -153,6 +168,8 @@ test("self-hosted agent sync JSON identifies auto-routed entries", { concurrency
           "--api-key",
           "self-hosted-key",
           "--include-load-balanced",
+          "--client-identity",
+          "heka",
         ]),
       );
       const parsed = JSON.parse(logs.join("\n"));
@@ -163,6 +180,7 @@ test("self-hosted agent sync JSON identifies auto-routed entries", { concurrency
       );
       assert.equal(parsed.agents[0]?.routingMode, "auto");
       assert.equal(parsed.agents[0]?.loadBalanced, true);
+      assert.equal(parsed.agents[0]?.clientIdentity, "heka");
     });
   });
 });

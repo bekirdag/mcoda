@@ -238,6 +238,12 @@ test("normalization exposes self-hosted lifecycle protocol metadata", () => {
           provider: "ollama",
           nodeId: "suku",
           serverName: "suku-gpu-box",
+          clientIdentity: "heka",
+          clientAllowlist: [
+            { kind: "domain", value: "heka", added_at: "2026-06-30T10:00:00.000Z" },
+            { kind: "uuid", value: "tenant-heka-uuid" },
+          ],
+          clientAllowlistCount: 2,
           runtimePackageVersion: "0.1.81",
           relay: {
             gatewayBaseUrl: "https://gateway.example.test",
@@ -260,6 +266,12 @@ test("normalization exposes self-hosted lifecycle protocol metadata", () => {
   );
 
   assert.equal(agent.healthReason, "self_hosted_protocol_mismatch");
+  assert.equal(agent.clientIdentity, "heka");
+  assert.equal(agent.clientAllowlistCount, 2);
+  assert.deepEqual(
+    agent.clientAllowlist?.map((client) => `${client.kind}:${client.value}`),
+    ["domain:heka", "uuid:tenant-heka-uuid"]
+  );
   assert.equal(agent.selfHostedLifecycle?.compatible, false);
   assert.equal(agent.selfHostedLifecycle?.missingRoute, missingRoute);
   assert.deepEqual(agent.selfHostedLifecycle?.missingRoutes, [missingRoute]);
@@ -273,10 +285,13 @@ test("normalization exposes self-hosted lifecycle protocol metadata", () => {
     null
   );
   assert.deepEqual(filterAgentOptions([agent], "protocol mismatch start"), [agent]);
+  assert.deepEqual(filterAgentOptions([agent], "heka tenant-heka-uuid"), [agent]);
 
   const servers = buildSelfHostedServerOptions([agent], []);
   assert.equal(servers[0].status, "degraded");
   assert.equal(servers[0].statusReason, "self_hosted_protocol_mismatch");
+  assert.equal(servers[0].clientIdentity, "heka");
+  assert.equal(servers[0].clientAllowlistCount, 2);
   assert.equal(servers[0].lifecycle?.missingRoute, missingRoute);
 });
 

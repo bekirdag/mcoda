@@ -47,7 +47,7 @@ const TOP_LEVEL_USAGE =
   'Self-hosted agents: use `mcoda self-hosted agent list|details|sync` to discover and materialize owner-hosted mswarm agents.\n' +
   'Workers: use `mcoda workers list|details|sync|run` to discover, materialize, and invoke mswarm Workers.\n' +
   'GPU jobs: use `mcoda gpu list` and `mcoda job artifact upload|run|status|logs|events|artifacts|cancel` for owner-local generic GPU jobs.\n' +
-  'Expose this machine: install `@mcoda/mswarm`, then run `mswarm install <KEY>`.\n' +
+  'Expose this machine: install `@mcoda/mswarm`, then run `mswarm node install <CLIENTS>`.\n' +
   'Aliases: `tasks order-by-deps` forwards to `order-tasks` (dependency-aware ordering), `task`/`task-detail` show a single task.\n' +
   'Help: use `mcoda help`, `mcoda --help`, `mcoda -h`, or `mcoda -H` for this overview.\n' +
   'Job commands (mcoda job --help for details): list|status|watch|logs|inspect|resume|cancel|tokens plus GPU job artifact|run|events|artifacts with node options\n' +

@@ -20,6 +20,19 @@ import { MswarmConfigStore } from './MswarmConfigStore.js';
 
 export type { MswarmGenericJobLifecycleSnapshot } from '@mcoda/shared';
 
+export type MswarmSelfHostedNodeClientIdentityKind =
+  | 'domain'
+  | 'ip'
+  | 'uuid'
+  | string;
+
+export interface MswarmSelfHostedNodeClientIdentity {
+  kind: MswarmSelfHostedNodeClientIdentityKind;
+  value: string;
+  added_at?: string;
+  addedAt?: string;
+}
+
 export interface MswarmCloudAgent {
   slug: string;
   provider: string;
@@ -65,6 +78,9 @@ export interface MswarmSelfHostedAgent extends MswarmCloudAgent {
   execution_class?: string;
   policy_class?: string;
   context_tier?: string;
+  client_identity?: string;
+  client_allowlist?: MswarmSelfHostedNodeClientIdentity[];
+  client_allowlist_count?: number;
   runtime_package_version?: string;
   gateway_base_url?: string;
   jobs_poll_path?: string;
@@ -129,10 +145,12 @@ export interface ListMswarmSelfHostedAgentsOptions
   extends ListMswarmCloudAgentsOptions {
   includeUnreachable?: boolean;
   includeLoadBalanced?: boolean;
+  clientIdentity?: string;
 }
 
 export interface GetMswarmSelfHostedAgentOptions {
   includeLoadBalanced?: boolean;
+  clientIdentity?: string;
 }
 
 export interface ListMswarmWorkerAgentsOptions
@@ -157,6 +175,7 @@ export interface MswarmApiOptions {
   agentSlugPrefix?: string;
   selfHostedAgentSlugPrefix?: string;
   workerAgentSlugPrefix?: string;
+  clientIdentity?: string;
 }
 
 export interface MswarmConsentResponse {
@@ -203,6 +222,7 @@ interface ResolvedMswarmApiOptions {
   agentSlugPrefix: string;
   selfHostedAgentSlugPrefix: string;
   workerAgentSlugPrefix: string;
+  clientIdentity?: string;
 }
 
 export interface ManagedMswarmCloudConfig {
@@ -246,6 +266,9 @@ export interface ManagedMswarmSelfHostedConfig {
   description?: string;
   supportsReasoning?: boolean;
   healthReason?: string;
+  clientIdentity?: string;
+  clientAllowlist?: MswarmSelfHostedNodeClientIdentity[];
+  clientAllowlistCount?: number;
   runtimePackageVersion?: string;
   relay?: {
     gatewayBaseUrl?: string;
@@ -304,6 +327,7 @@ export interface MswarmSyncRecord {
   pricingVersion?: string;
   routingMode?: 'direct' | 'auto';
   loadBalanced?: boolean;
+  clientIdentity?: string;
 }
 
 export interface MswarmSyncSummary {
@@ -563,6 +587,62 @@ const resolveStringArray = (value: unknown): string[] => {
   );
 };
 
+const resolveSelfHostedClientIdentity = (
+  value: unknown
+): MswarmSelfHostedNodeClientIdentity | undefined => {
+  const direct = resolveString(value)?.trim();
+  if (direct) {
+    return { kind: 'domain', value: direct };
+  }
+  if (!isRecord(value)) return undefined;
+  const kind =
+    resolveString(value.kind)?.trim() ??
+    resolveString(value.type)?.trim() ??
+    'domain';
+  const identity =
+    resolveString(value.value)?.trim() ??
+    resolveString(value.domain)?.trim() ??
+    resolveString(value.ip)?.trim() ??
+    resolveString(value.uuid)?.trim() ??
+    resolveString(value.id)?.trim() ??
+    resolveString(value.client)?.trim();
+  if (!identity) return undefined;
+  const addedAt =
+    resolveString(value.added_at)?.trim() ??
+    resolveString(value.addedAt)?.trim();
+  return {
+    kind,
+    value: identity,
+    added_at: addedAt,
+    addedAt,
+  };
+};
+
+const resolveSelfHostedClientAllowlist = (
+  value: unknown
+): MswarmSelfHostedNodeClientIdentity[] | undefined => {
+  const entries = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const identities = entries
+    .map(resolveSelfHostedClientIdentity)
+    .filter((entry): entry is MswarmSelfHostedNodeClientIdentity => Boolean(entry));
+  if (identities.length === 0) return undefined;
+  const seen = new Set<string>();
+  return identities.filter((entry) => {
+    const key = `${entry.kind}:${entry.value}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const resolveClientIdentity = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    const resolved = resolveString(value)?.trim();
+    if (resolved) return resolved;
+  }
+  return undefined;
+};
+
 const resolveNullableString = (value: unknown): string | null =>
   resolveString(value) ?? null;
 
@@ -743,6 +823,10 @@ const resolveOptions = async (
   const directWorkerAgentSlugPrefix =
     options.workerAgentSlugPrefix ??
     process.env.MCODA_MSWARM_WORKER_AGENT_SLUG_PREFIX;
+  const directClientIdentity =
+    options.clientIdentity ??
+    process.env.MCODA_MSWARM_CLIENT_IDENTITY ??
+    process.env.MSWARM_CLIENT_IDENTITY;
   const needsStoredFallback =
     directBaseUrl === undefined ||
     directApiKey === undefined ||
@@ -776,6 +860,7 @@ const resolveOptions = async (
     workerAgentSlugPrefix:
       resolveString(directWorkerAgentSlugPrefix) ??
       DEFAULT_WORKER_AGENT_SLUG_PREFIX,
+    clientIdentity: resolveClientIdentity(directClientIdentity),
   };
 };
 
@@ -1059,6 +1144,42 @@ const selfHostedRuntimePackageVersion = (
   );
 };
 
+const selfHostedClientIdentity = (
+  agent: MswarmSelfHostedAgent
+): string | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return resolveClientIdentity(
+    agent.client_identity,
+    sync.client_identity,
+    sync.clientIdentity,
+    sync.client
+  );
+};
+
+const selfHostedClientAllowlist = (
+  agent: MswarmSelfHostedAgent
+): MswarmSelfHostedNodeClientIdentity[] | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return (
+    resolveSelfHostedClientAllowlist(agent.client_allowlist) ??
+    resolveSelfHostedClientAllowlist(sync.client_allowlist) ??
+    resolveSelfHostedClientAllowlist(sync.clientAllowlist) ??
+    resolveSelfHostedClientAllowlist(sync.clients)
+  );
+};
+
+const selfHostedClientAllowlistCount = (
+  agent: MswarmSelfHostedAgent
+): number | undefined => {
+  const sync = isRecord(agent.sync) ? agent.sync : {};
+  return (
+    resolveNumber(agent.client_allowlist_count) ??
+    resolveNumber(sync.client_allowlist_count) ??
+    resolveNumber(sync.clientAllowlistCount) ??
+    selfHostedClientAllowlist(agent)?.length
+  );
+};
+
 const selfHostedHealthReason = (
   agent: MswarmSelfHostedAgent
 ): string | undefined => {
@@ -1241,7 +1362,8 @@ const toManagedSelfHostedConfig = (
   catalogBaseUrl: string,
   openAiBaseUrl: string,
   agent: MswarmSelfHostedAgent,
-  syncedAt: string
+  syncedAt: string,
+  clientIdentity?: string
 ): ManagedMswarmSelfHostedAgentConfig => {
   const sync = isRecord(agent.sync) ? agent.sync : {};
   const routingMode = selfHostedRoutingMode(agent);
@@ -1276,6 +1398,12 @@ const toManagedSelfHostedConfig = (
       description: agent.description,
       supportsReasoning: agent.supports_reasoning,
       healthReason: lifecycle.reason ?? selfHostedHealthReason(agent),
+      clientIdentity: resolveClientIdentity(
+        clientIdentity,
+        selfHostedClientIdentity(agent)
+      ),
+      clientAllowlist: selfHostedClientAllowlist(agent),
+      clientAllowlistCount: selfHostedClientAllowlistCount(agent),
       runtimePackageVersion: selfHostedRuntimePackageVersion(agent),
       relay: lifecycle.relay,
       lifecycle: {
@@ -1354,6 +1482,7 @@ const toManagedSelfHostedSyncRecord = (
   defaultModel,
   routingMode: selfHostedConfigRoutingMode(config),
   loadBalanced: selfHostedConfigRoutingMode(config) === 'auto',
+  clientIdentity: config.mswarmSelfHosted.clientIdentity,
 });
 
 const toManagedWorkerSyncRecord = (
@@ -1565,6 +1694,21 @@ const toSelfHostedAgent = (value: unknown): MswarmSelfHostedAgent => {
       record,
       ['context_tier', 'contextTier'],
       resolveString
+    ),
+    client_identity: resolveFromRecordOrShape(
+      record,
+      ['client_identity', 'clientIdentity', 'client'],
+      resolveString
+    ),
+    client_allowlist: resolveFromRecordOrShape(
+      record,
+      ['client_allowlist', 'clientAllowlist', 'clients'],
+      resolveSelfHostedClientAllowlist
+    ),
+    client_allowlist_count: resolveFromRecordOrShape(
+      record,
+      ['client_allowlist_count', 'clientAllowlistCount'],
+      resolveNumber
     ),
     runtime_package_version: resolveFromRecordOrShape(
       record,
@@ -2092,6 +2236,7 @@ export class MswarmApi {
       body?: unknown;
       headers?: Record<string, string>;
       baseUrl?: string;
+      clientIdentity?: string;
     }
   ): Promise<T> {
     const url = new URL(pathname, init?.baseUrl ?? this.options.baseUrl);
@@ -2113,6 +2258,11 @@ export class MswarmApi {
       };
       if (this.options.apiKey) {
         headers['x-api-key'] = this.options.apiKey;
+      }
+      const clientIdentity = resolveClientIdentity(init?.clientIdentity);
+      if (clientIdentity) {
+        headers['x-mswarm-client-identity'] = clientIdentity;
+        headers['x-mswarm-client'] = clientIdentity;
       }
       let body: string | undefined;
       if (init?.body !== undefined) {
@@ -2184,6 +2334,10 @@ export class MswarmApi {
     const remoteLimit = hasAdvancedCloudAgentSelection(options)
       ? undefined
       : options.limit;
+    const clientIdentity = resolveClientIdentity(
+      options.clientIdentity,
+      this.options.clientIdentity
+    );
     const payload = await this.requestJson<ListMswarmCloudAgentsResponse>(
       '/v1/swarm/self-hosted/agents',
       {
@@ -2192,6 +2346,10 @@ export class MswarmApi {
         limit: remoteLimit,
         include_unreachable: options.includeUnreachable ? 'true' : undefined,
         include_load_balanced: options.includeLoadBalanced ? 'true' : undefined,
+        client_identity: clientIdentity,
+      },
+      {
+        clientIdentity,
       }
     );
     let agents = (Array.isArray(payload.agents) ? payload.agents : []).map(
@@ -2210,10 +2368,18 @@ export class MswarmApi {
     if (!slug.trim()) {
       throw new Error('Self-hosted agent slug is required');
     }
+    const clientIdentity = resolveClientIdentity(
+      options.clientIdentity,
+      this.options.clientIdentity
+    );
     const payload = await this.requestJson<unknown>(
       `/v1/swarm/self-hosted/agents/${encodeURIComponent(slug)}`,
       {
         include_load_balanced: options.includeLoadBalanced ? 'true' : undefined,
+        client_identity: clientIdentity,
+      },
+      {
+        clientIdentity,
       }
     );
     return toSelfHostedAgentDetail(payload);
@@ -2459,7 +2625,14 @@ export class MswarmApi {
         'pruneMissing cannot be combined with limit or advanced self-hosted agent filters'
       );
     }
-    const agents = await this.listSelfHostedAgents(options);
+    const clientIdentity = resolveClientIdentity(
+      options.clientIdentity,
+      this.options.clientIdentity
+    );
+    const agents = await this.listSelfHostedAgents({
+      ...options,
+      clientIdentity,
+    });
     const openAiBaseUrl =
       this.options.openAiBaseUrl ??
       new URL('/v1/swarm/self-hosted/openai/', this.options.baseUrl).toString();
@@ -2493,7 +2666,8 @@ export class MswarmApi {
         this.options.baseUrl,
         openAiBaseUrl,
         agent,
-        syncedAt
+        syncedAt,
+        clientIdentity
       );
       const createInput = toSyncedAgentInput(
         existing,

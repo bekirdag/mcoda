@@ -29,6 +29,7 @@ export interface ProgrammaticMcodaRuntimeAdapterInput {
     agentSlugPrefix?: string;
     selfHostedAgentSlugPrefix?: string;
     workerAgentSlugPrefix?: string;
+    clientIdentity?: string;
   };
   store?: MswarmConfigStore;
 }
@@ -47,6 +48,7 @@ export function createProgrammaticMcodaRuntimeAdapter(
       agentSlugPrefix: input.mswarm?.agentSlugPrefix ?? stored.agentSlugPrefix,
       selfHostedAgentSlugPrefix: input.mswarm?.selfHostedAgentSlugPrefix,
       workerAgentSlugPrefix: input.mswarm?.workerAgentSlugPrefix,
+      clientIdentity: input.mswarm?.clientIdentity,
     });
   };
 
@@ -338,6 +340,7 @@ function toSelfHostedOptions(
     provider: options?.provider,
     includeUnreachable: options?.includeUnreachable ?? true,
     includeLoadBalanced: options?.includeLoadBalanced ?? true,
+    clientIdentity: options?.clientIdentity,
   };
 }
 
@@ -349,6 +352,7 @@ function toSelfHostedSyncOptions(
     includeUnreachable: options?.includeUnreachable ?? true,
     includeLoadBalanced: options?.includeLoadBalanced ?? true,
     pruneMissing: options?.pruneMissing ?? true,
+    clientIdentity: options?.clientIdentity,
   };
 }
 

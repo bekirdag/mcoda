@@ -3,6 +3,7 @@ import type {
   McodaAgentManagedKind,
   McodaAgentSource,
   McodaLocalRunnerCatalogMetadata,
+  McodaSelfHostedClientIdentity,
   McodaSelfHostedLifecycleMetadata,
   McodaSelfHostedRelayMetadata,
 } from "../types.js";
@@ -64,6 +65,73 @@ const booleanFromRecords = (
     }
   }
   return null;
+};
+
+const numberFromRecords = (
+  records: Array<Record<string, unknown> | undefined>,
+  keys: string[]
+): number | null => {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = numberValue(record[key]);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+};
+
+const normalizeSelfHostedClientIdentity = (
+  value: unknown
+): McodaSelfHostedClientIdentity | null => {
+  const direct = stringValue(value);
+  if (direct) return { kind: "domain", value: direct };
+  if (!isRecord(value)) return null;
+  const identity =
+    stringValue(value.value) ??
+    stringValue(value.domain) ??
+    stringValue(value.ip) ??
+    stringValue(value.uuid) ??
+    stringValue(value.id) ??
+    stringValue(value.client);
+  if (!identity) return null;
+  const addedAt =
+    stringValue(value.addedAt) ??
+    stringValue(value.added_at);
+  return {
+    kind: stringValue(value.kind) ?? stringValue(value.type) ?? "domain",
+    value: identity,
+    addedAt,
+    added_at: addedAt,
+  };
+};
+
+const clientAllowlistFromRecords = (
+  records: Array<Record<string, unknown> | undefined>,
+  keys: string[]
+): McodaSelfHostedClientIdentity[] | undefined => {
+  const entries: McodaSelfHostedClientIdentity[] = [];
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const raw = record[key];
+      const values = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+      for (const value of values) {
+        const identity = normalizeSelfHostedClientIdentity(value);
+        if (identity) entries.push(identity);
+      }
+      if (entries.length) break;
+    }
+    if (entries.length) break;
+  }
+  if (!entries.length) return undefined;
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const key = `${entry.kind}:${entry.value}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 };
 
 const defaultRunnerKindForAdapter = (adapter: string | null): string | null => {
@@ -185,6 +253,19 @@ export function normalizeAgentCatalogEntry(
     health,
     healthDetails
   );
+  const clientIdentity = stringFromRecords(
+    [record, mswarmSelfHosted, sync],
+    ["clientIdentity", "client_identity", "client"]
+  );
+  const clientAllowlist = clientAllowlistFromRecords(
+    [record, mswarmSelfHosted, sync],
+    ["clientAllowlist", "client_allowlist", "clients"]
+  );
+  const clientAllowlistCount =
+    numberFromRecords(
+      [record, mswarmSelfHosted, sync],
+      ["clientAllowlistCount", "client_allowlist_count"]
+    ) ?? clientAllowlist?.length ?? null;
 
   return {
     slug,
@@ -224,6 +305,9 @@ export function normalizeAgentCatalogEntry(
     defaultModel,
     healthStatus,
     healthReason: healthReason ?? selfHostedLifecycle?.reason ?? null,
+    clientIdentity,
+    clientAllowlist,
+    clientAllowlistCount,
     supportsTools:
       booleanValue(record.supportsTools) ??
       booleanValue(record.supports_tools),

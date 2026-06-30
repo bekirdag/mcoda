@@ -19,6 +19,7 @@ Subcommands:
     --limit <N>             Limit returned agents
     --include-unreachable   Include unreachable agents in the catalog result
     --include-load-balanced Include auto-routed load-balanced self-hosted aliases
+    --client-identity <ID>  Request agents allowed for this tenant/client identity
     --max-cost-per-1m-token <N>
                              Exclude agents above the given cost_per_million
     --sorted-by-catalog-rating
@@ -27,10 +28,12 @@ Subcommands:
     --min-reasoning <N>     Require at least this reasoning rating
   agent details <SLUG>      Show a single mswarm self-hosted agent (supports --json)
     --include-load-balanced Allow details for auto-routed aliases
+    --client-identity <ID>  Request details through this tenant/client identity
   agent sync                Sync self-hosted agents into the local mcoda registry
     --provider <NAME>       Filter by provider before syncing
     --include-unreachable   Sync unreachable agents too
     --include-load-balanced Sync auto-routed load-balanced aliases too
+    --client-identity <ID>  Sync agents allowed for this tenant/client identity
     --limit <N>             Limit synced agents
     --prune                 Remove previously synced self-hosted agents missing from the current catalog result
     --agent-slug-prefix <P> Override the local managed-agent slug prefix
@@ -46,12 +49,13 @@ Environment:
   MCODA_MSWARM_OPENAI_BASE_URL
   MCODA_MSWARM_API_KEY
   MCODA_MSWARM_TIMEOUT_MS
+  MCODA_MSWARM_CLIENT_IDENTITY
   MCODA_MSWARM_SELF_HOSTED_AGENT_SLUG_PREFIX
   Or persist the API key with: mcoda config set mswarm-api-key <KEY>
 
 To expose this machine's local agents:
   npm install -g @mcoda/mswarm
-  mswarm install <KEY>
+  mswarm node install <CLIENTS>
 
 Flags:
   --json                    Emit JSON for supported commands
@@ -124,6 +128,13 @@ const formatCapabilities = (capabilities: string[] | undefined): string =>
 
 const formatBoolean = (value: boolean | undefined): string =>
   value === undefined ? "-" : value ? "yes" : "no";
+
+const formatClientAllowlist = (
+  allowlist: MswarmSelfHostedAgent["client_allowlist"],
+): string =>
+  allowlist && allowlist.length
+    ? allowlist.map((entry) => `${entry.kind}:${entry.value}`).join(",")
+    : "-";
 
 const agentRoutingMode = (agent: MswarmSelfHostedAgent): "auto" | "direct" =>
   agent.load_balanced ? "auto" : "direct";
@@ -203,6 +214,8 @@ const printAgentDetails = (agent: MswarmSelfHostedAgentDetail): void => {
     ["Supports tools", formatBoolean(agent.supports_tools)],
     ["Supports reasoning", formatBoolean(agent.supports_reasoning)],
     ["Health", agent.health_status ?? "-"],
+    ["Client identity", agent.client_identity ?? "-"],
+    ["Client allowlist", formatClientAllowlist(agent.client_allowlist)],
     ["Members", formatNumber(agent.member_count)],
     ["Capabilities", formatCapabilities(agent.capabilities)],
   ];
@@ -254,12 +267,16 @@ export class SelfHostedCommands {
     }
 
     const parsed = parseArgs(rest);
+    const clientIdentity =
+      resolveString(parsed.flags["client-identity"]) ??
+      resolveString(parsed.flags.client);
     const api = await MswarmApi.create({
       baseUrl: resolveString(parsed.flags["base-url"]),
       openAiBaseUrl: resolveString(parsed.flags["openai-base-url"]),
       apiKey: resolveString(parsed.flags["api-key"]),
       timeoutMs: resolvePositiveInt(parsed.flags["timeout-ms"], "--timeout-ms"),
       selfHostedAgentSlugPrefix: resolveString(parsed.flags["agent-slug-prefix"]),
+      clientIdentity,
     });
 
     try {
@@ -270,6 +287,7 @@ export class SelfHostedCommands {
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
             includeUnreachable: Boolean(parsed.flags["include-unreachable"]),
             includeLoadBalanced: Boolean(parsed.flags["include-load-balanced"]),
+            clientIdentity,
             maxCostPerMillion: resolveNonNegativeNumber(
               parsed.flags["max-cost-per-1m-token"],
               "--max-cost-per-1m-token",
@@ -298,6 +316,7 @@ export class SelfHostedCommands {
           }
           const agent = await api.getSelfHostedAgent(slug, {
             includeLoadBalanced: Boolean(parsed.flags["include-load-balanced"]),
+            clientIdentity,
           });
           if (parsed.flags.json) {
             // eslint-disable-next-line no-console
@@ -313,6 +332,7 @@ export class SelfHostedCommands {
             limit: resolvePositiveInt(parsed.flags.limit, "--limit"),
             includeUnreachable: Boolean(parsed.flags["include-unreachable"]),
             includeLoadBalanced: Boolean(parsed.flags["include-load-balanced"]),
+            clientIdentity,
             pruneMissing: Boolean(parsed.flags.prune),
           });
           if (parsed.flags.json) {

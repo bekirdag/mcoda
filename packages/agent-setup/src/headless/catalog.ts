@@ -94,6 +94,12 @@ export function mergeCatalogEntries(
     defaultModel: local.defaultModel ?? catalog.defaultModel,
     healthStatus: local.healthStatus ?? catalog.healthStatus,
     healthReason: local.healthReason ?? catalog.healthReason,
+    clientIdentity: local.clientIdentity ?? catalog.clientIdentity,
+    clientAllowlist: local.clientAllowlist?.length
+      ? local.clientAllowlist
+      : catalog.clientAllowlist,
+    clientAllowlistCount:
+      local.clientAllowlistCount ?? catalog.clientAllowlistCount,
     supportsTools: local.supportsTools ?? catalog.supportsTools,
     rating: local.rating ?? catalog.rating,
     reasoningRating: local.reasoningRating ?? catalog.reasoningRating,
@@ -204,6 +210,13 @@ export function buildSelfHostedServerOptions(
       existing.status = mergeServerStatus(existing.status, server.status);
       existing.statusReason =
         existing.statusReason ?? server.statusReason ?? null;
+      existing.clientIdentity =
+        existing.clientIdentity ?? server.clientIdentity ?? null;
+      existing.clientAllowlist = existing.clientAllowlist?.length
+        ? existing.clientAllowlist
+        : server.clientAllowlist;
+      existing.clientAllowlistCount =
+        existing.clientAllowlistCount ?? server.clientAllowlistCount ?? null;
       existing.lifecycle = existing.lifecycle ?? server.lifecycle ?? null;
       continue;
     }
@@ -272,6 +285,11 @@ export function filterAgentOptions(
         agent.selfHostedLifecycle?.relay?.jobsStartPathTemplate,
         agent.selfHostedLifecycle?.relay?.jobsEventsPathTemplate,
         agent.selfHostedLifecycle?.relay?.jobsResultPathTemplate,
+        agent.clientIdentity,
+        ...(agent.clientAllowlist ?? []).flatMap((client) => [
+          client.kind,
+          client.value,
+        ]),
         agent.bestUsage,
         agent.serverName,
         agent.serverLabel,
@@ -359,6 +377,9 @@ function resolveSelfHostedServer(
       status: agent.healthStatus,
       statusReason:
         agent.healthReason ?? agent.selfHostedLifecycle?.reason ?? null,
+      clientIdentity: agent.clientIdentity ?? null,
+      clientAllowlist: agent.clientAllowlist,
+      clientAllowlistCount: agent.clientAllowlistCount ?? null,
       lifecycle: agent.selfHostedLifecycle ?? null,
       remoteSlugPrefix: null,
     };
@@ -379,6 +400,9 @@ function resolveSelfHostedServer(
       status: agent.healthStatus,
       statusReason:
         agent.healthReason ?? agent.selfHostedLifecycle?.reason ?? null,
+      clientIdentity: agent.clientIdentity ?? null,
+      clientAllowlist: agent.clientAllowlist,
+      clientAllowlistCount: agent.clientAllowlistCount ?? null,
       lifecycle: agent.selfHostedLifecycle ?? null,
       remoteSlugPrefix: undefined,
     };
@@ -396,6 +420,9 @@ function resolveSelfHostedServer(
     loadBalancedGroupId: null,
     status: agent.healthStatus,
     statusReason: agent.healthReason ?? agent.selfHostedLifecycle?.reason ?? null,
+    clientIdentity: agent.clientIdentity ?? null,
+    clientAllowlist: agent.clientAllowlist,
+    clientAllowlistCount: agent.clientAllowlistCount ?? null,
     lifecycle: agent.selfHostedLifecycle ?? null,
     remoteSlugPrefix: remoteSlugPrefix || null,
   };

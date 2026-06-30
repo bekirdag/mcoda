@@ -2,6 +2,8 @@
 
 ## Unreleased
 - Initial public packaging for @mcoda/core.
+- Add self-hosted mswarm client identity headers, query params, sync metadata,
+  and node allowlist normalization to `MswarmApi`.
 
 ## 0.1.78
 - Add MswarmApi owner-local generic GPU job helpers for capability reads,

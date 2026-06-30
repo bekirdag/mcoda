@@ -1,6 +1,6 @@
 # mcoda Agent Setup SDK Install And Usage
 
-Last verified: 2026-06-26
+Last verified: 2026-06-30
 
 This document explains how an application can install and use the public
 `@mcoda/agent-setup` SDK to configure mcoda/mswarm agents from an app UI.
@@ -11,17 +11,17 @@ This release targets:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.85
+# 0.1.87
 ```
 
-Published `@mcoda/agent-setup@0.1.85` exports:
+Published `@mcoda/agent-setup@0.1.87` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.85`.
+It depends on public `@mcoda/core@0.1.87`.
 
 ## What The SDK Does
 
@@ -41,6 +41,9 @@ The SDK provides:
   `selfHostedLifecycle`, including relay gateway URL, job lifecycle route
   templates, runtime package version, and missing-route protocol mismatch
   details.
+- Tenant/client scoped self-hosted node access surfaced as `clientIdentity`,
+  `clientAllowlist`, and `clientAllowlistCount` on self-hosted catalog entries
+  and server groups.
 - A backend-only owner-local GPU/generic job client for trusted applications
   that own a self-hosted node token or signing secret.
 
@@ -82,6 +85,28 @@ Use this split:
 
 Do not send the mswarm API key directly to a third-party browser-only client or
 store it in frontend state beyond the submit request.
+
+## Tenant-Scoped Self-Hosted Nodes
+
+When a tenant product should only see mswarm self-hosted nodes allowlisted for
+that tenant/client, configure the backend runtime with a client identity:
+
+```ts
+import { createProgrammaticMcodaRuntimeAdapter } from "@mcoda/agent-setup/server";
+
+const mcoda = createProgrammaticMcodaRuntimeAdapter({
+  mswarm: {
+    apiKey: process.env.MCODA_MSWARM_API_KEY,
+    clientIdentity: process.env.MCODA_MSWARM_CLIENT_IDENTITY,
+  },
+});
+```
+
+The same value can be passed per request as `clientIdentity` on
+`listSelfHostedAgents()` / `syncSelfHostedAgents()` input, or through the CLI
+fallback with `mcoda self-hosted agent list --client-identity <ID>`. Returned
+self-hosted entries include `clientIdentity`, `clientAllowlist`, and
+`clientAllowlistCount` when mswarm returns node access metadata.
 
 ## Self-Hosted Load-Balancer Migration
 

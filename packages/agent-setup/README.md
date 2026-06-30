@@ -23,6 +23,11 @@ or invocation signing secrets in browser-visible state.
 Self-hosted entries also expose lifecycle diagnostics through `healthReason` and
 `selfHostedLifecycle`, including relay gateway URL, lifecycle route templates,
 runtime package version, and missing-route protocol mismatch details.
+Tenant-scoped self-hosted node access is represented by optional
+`clientIdentity`, `clientAllowlist`, and `clientAllowlistCount` catalog fields.
+Set `clientIdentity` on the programmatic runtime or use
+`MCODA_MSWARM_CLIENT_IDENTITY` so catalog reads and syncs only show nodes
+allowlisted for that tenant/client.
 
 ## Self-Hosted Routing Modes
 

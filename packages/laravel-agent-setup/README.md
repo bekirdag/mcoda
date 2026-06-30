@@ -101,6 +101,13 @@ When `MCODA_AGENT_SETUP_BACKEND_URL` is empty, the package runs in local fallbac
 mode. Fallback mode can render the UI, store non-secret API-key metadata, and
 save assignments, but it cannot sync or test real agents.
 
+For tenant-scoped mswarm self-hosted node access, set
+`MCODA_MSWARM_CLIENT_IDENTITY` on the Node SDK-compatible backend. The Laravel
+package proxies snapshot arrays without narrowing catalog entry fields, so
+Node SDK fields such as `clientIdentity`, `clientAllowlist`, and
+`clientAllowlistCount` are preserved in `selfHostedAgents` and
+`selfHostedServers`.
+
 Config keys:
 
 - `web_path`: path for the Blade setup page.

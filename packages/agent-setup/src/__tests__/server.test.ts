@@ -429,15 +429,20 @@ test("programmatic runtime reads injected config store for later API calls", asy
     agents: [],
   });
   try {
-    const adapter = createProgrammaticMcodaRuntimeAdapter({ store });
+    const adapter = createProgrammaticMcodaRuntimeAdapter({
+      store,
+      mswarm: { clientIdentity: "heka" },
+    });
     await adapter.configureMswarmApiKey({ apiKey: "sk_store_9999" });
     await adapter.listCloudAgents();
-    await adapter.listSelfHostedAgents();
+    await adapter.listSelfHostedAgents({ clientIdentity: "wodo" });
     assert.equal((capturedOptions as any).apiKey, "sk_store_9999");
+    assert.equal((capturedOptions as any).clientIdentity, "heka");
     assert.equal(
       (capturedSelfHostedListOptions as any)?.includeLoadBalanced,
       true
     );
+    assert.equal((capturedSelfHostedListOptions as any)?.clientIdentity, "wodo");
   } finally {
     (MswarmApi as any).create = originalCreate;
     (MswarmApi as any).refreshManagedAgentAuth = originalRefresh;
@@ -543,6 +548,12 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
             default_model: "qwen-local",
             health_status: "degraded",
             health_reason: "self_hosted_protocol_mismatch",
+            client_identity: "bdya",
+            client_allowlist: [
+              { kind: "domain", value: "bdya" },
+              { kind: "uuid", value: "tenant-bdya-uuid" },
+            ],
+            client_allowlist_count: 2,
             supports_tools: true,
             capabilities: ["local"],
             runtime_package_version: "0.1.81",
@@ -628,6 +639,12 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
               modelId: "qwen-local",
               nodeId: "suku",
               serverName: "suku-gpu-box",
+              clientIdentity: "bdya",
+              clientAllowlist: [
+                { kind: "domain", value: "bdya" },
+                { kind: "uuid", value: "tenant-bdya-uuid" },
+              ],
+              clientAllowlistCount: 2,
             },
           },
         },
@@ -638,7 +655,10 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
   try {
     const service = createMcodaAgentSetupService({
       settingsStore: createInMemoryMcodaAgentSettingsStore(),
-      mcoda: createProgrammaticMcodaRuntimeAdapter({ store }),
+      mcoda: createProgrammaticMcodaRuntimeAdapter({
+        store,
+        mswarm: { clientIdentity: "bdya" },
+      }),
       defaultStages: stages,
     });
     const snapshot = await service.configureMswarmApiKey({
@@ -650,6 +670,8 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
       "real-self-hosted"
     );
     assert.equal(snapshot.catalog.selfHostedServers[0].nodeId, "suku");
+    assert.equal(snapshot.catalog.selfHostedServers[0].clientIdentity, "bdya");
+    assert.equal(snapshot.catalog.selfHostedServers[0].clientAllowlistCount, 2);
     assert.equal(snapshot.catalog.selfHostedServers[0].status, "degraded");
     assert.equal(
       snapshot.catalog.selfHostedServers[0].statusReason,
@@ -665,10 +687,21 @@ test("programmatic runtime uses submitted mswarm key for real cloud and self-hos
         ?.gatewayBaseUrl,
       "https://gateway.example.test"
     );
+    assert.deepEqual(
+      snapshot.catalog.selfHostedServers[0].agents[0].clientAllowlist?.map(
+        (client) => `${client.kind}:${client.value}`
+      ),
+      ["domain:bdya", "uuid:tenant-bdya-uuid"]
+    );
     assert.ok(capturedMswarmOptions.length >= 4);
     assert.ok(
       capturedMswarmOptions.every(
         (options) => (options as any).apiKey === "sk_real_catalog_1234"
+      )
+    );
+    assert.ok(
+      capturedMswarmOptions.every(
+        (options) => (options as any).clientIdentity === "bdya"
       )
     );
   } finally {
@@ -696,4 +729,17 @@ test("CLI runtime adapter refuses API key configuration and does not spawn with 
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].args, ["cloud", "agent", "list", "--json"]);
   assert.doesNotMatch(calls[0].args.join(" "), /secret-value/);
+  await adapter.listSelfHostedAgents({ clientIdentity: "heka" });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args, [
+    "self-hosted",
+    "agent",
+    "list",
+    "--provider",
+    "mcoda",
+    "--include-load-balanced",
+    "--client-identity",
+    "heka",
+    "--json",
+  ]);
 });

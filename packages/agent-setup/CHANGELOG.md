@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Surface self-hosted mswarm client identity and allowlist metadata in catalog
+  entries, server groups, runtime adapters, and SDK docs.
+
 ## 0.1.78
 
 - Add the trusted backend `createMcodaGpuJobClient()` helper for owner-local

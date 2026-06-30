@@ -106,6 +106,9 @@ export function createCliMcodaRuntimeAdapter(
           ...(options?.includeLoadBalanced ?? true
             ? ["--include-load-balanced"]
             : []),
+          ...(options?.clientIdentity
+            ? ["--client-identity", options.clientIdentity]
+            : []),
           "--json",
         ],
         {
@@ -124,6 +127,9 @@ export function createCliMcodaRuntimeAdapter(
         options?.provider ?? "mcoda",
         ...(options?.includeLoadBalanced ?? true
           ? ["--include-load-balanced"]
+          : []),
+        ...(options?.clientIdentity
+          ? ["--client-identity", options.clientIdentity]
           : []),
         "--prune",
         "--json",

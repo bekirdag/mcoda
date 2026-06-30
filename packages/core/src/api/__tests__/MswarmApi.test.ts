@@ -990,11 +990,14 @@ test(
         (req, res) => {
           const url = new URL(req.url ?? '/', 'http://127.0.0.1');
           assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          assert.equal(req.headers['x-mswarm-client-identity'], 'heka');
+          assert.equal(req.headers['x-mswarm-client'], 'heka');
           assert.equal(url.pathname, '/v1/swarm/self-hosted/agents');
           assert.equal(url.searchParams.get('shape'), 'mcoda');
           assert.equal(url.searchParams.get('provider'), 'mcoda');
           assert.equal(url.searchParams.get('limit'), '3');
           assert.equal(url.searchParams.get('include_unreachable'), 'true');
+          assert.equal(url.searchParams.get('client_identity'), 'heka');
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(
             JSON.stringify({
@@ -1013,6 +1016,15 @@ test(
                   max_complexity: 7,
                   capabilities: ['chat', 'code_write'],
                   health_status: 'healthy',
+                  client_identity: 'heka',
+                  client_allowlist: [
+                    {
+                      kind: 'domain',
+                      value: 'heka',
+                      added_at: '2026-06-30T10:00:00.000Z',
+                    },
+                  ],
+                  client_allowlist_count: 1,
                   relay: {
                     gateway_base_url: 'https://gateway.example',
                     jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
@@ -1041,6 +1053,7 @@ test(
           const api = await MswarmApi.create({
             baseUrl,
             apiKey: 'self-hosted-key',
+            clientIdentity: 'heka',
           });
           try {
             const agents = await api.listSelfHostedAgents({
@@ -1053,6 +1066,10 @@ test(
             assert.equal(agents[0]?.remote_slug, 'mcoda/lab/claude-sonnet');
             assert.equal(agents[0]?.adapter, 'claude-cli');
             assert.equal(agents[0]?.source_agent_slug, 'claude-sonnet');
+            assert.equal(agents[0]?.client_identity, 'heka');
+            assert.equal(agents[0]?.client_allowlist?.[0]?.kind, 'domain');
+            assert.equal(agents[0]?.client_allowlist?.[0]?.value, 'heka');
+            assert.equal(agents[0]?.client_allowlist_count, 1);
           } finally {
             await api.close();
           }
@@ -1396,6 +1413,8 @@ test(
             return;
           }
           assert.equal(req.headers['x-api-key'], 'self-hosted-key');
+          assert.equal(req.headers['x-mswarm-client-identity'], 'heka');
+          assert.equal(url.searchParams.get('client_identity'), 'heka');
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(
             JSON.stringify({
@@ -1414,6 +1433,12 @@ test(
                   max_complexity: 7,
                   capabilities: ['chat', 'code_write'],
                   health_status: 'healthy',
+                  client_identity: 'heka',
+                  client_allowlist: [
+                    { kind: 'domain', value: 'heka' },
+                    { kind: 'uuid', value: 'tenant-heka-uuid' },
+                  ],
+                  client_allowlist_count: 2,
                   relay: {
                     gateway_base_url: 'https://gateway.example',
                     jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
@@ -1445,17 +1470,19 @@ test(
           const api = await MswarmApi.create({
             baseUrl,
             apiKey: 'self-hosted-key',
+            clientIdentity: 'heka',
           });
           try {
             const summary = await api.syncSelfHostedAgents();
             assert.equal(summary.created, 1);
             assert.equal(summary.updated, 0);
             assert.equal(
-              summary.agents[0]?.localSlug,
-              'mswarm-self-hosted-mcoda-lab-claude-sonnet'
-            );
+                summary.agents[0]?.localSlug,
+                'mswarm-self-hosted-mcoda-lab-claude-sonnet'
+              );
+              assert.equal(summary.agents[0]?.clientIdentity, 'heka');
 
-            const repo = await GlobalRepository.create();
+              const repo = await GlobalRepository.create();
             try {
               const agent = await repo.getAgentBySlug(
                 'mswarm-self-hosted-mcoda-lab-claude-sonnet'
@@ -1490,6 +1517,20 @@ test(
               assert.equal(
                 (agent.config as any)?.mswarmSelfHosted?.nodeId,
                 'shn_lab'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.clientIdentity,
+                'heka'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.clientAllowlistCount,
+                2
+              );
+              assert.deepEqual(
+                (agent.config as any)?.mswarmSelfHosted?.clientAllowlist?.map(
+                  (entry: any) => `${entry.kind}:${entry.value}`
+                ),
+                ['domain:heka', 'uuid:tenant-heka-uuid']
               );
 
               const auth = await repo.getAgentAuthMetadata(agent.id);
