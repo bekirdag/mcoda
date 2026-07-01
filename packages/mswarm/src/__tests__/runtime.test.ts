@@ -543,6 +543,20 @@ function successfulCodaliInvocation(
   input: MswarmCodaliInvocationInput,
   output = "{\"decision\":\"approve\"}"
 ): MswarmCodaliInvocationResult {
+  const mode: MswarmCodaliInvocationResult["metadata"]["mode"] =
+    input.policy?.allowTools === false ? "freeform" : "tool_loop";
+  const telemetry = {
+    runId: `run-${input.requestId}`,
+    runtime: "codali" as const,
+    mode,
+    toolCallCount: 0,
+    calledTools: [],
+    consideredTools: [],
+    registeredDynamicTools: [],
+    skippedDynamicTools: [],
+    dynamicToolCalls: [],
+    warnings: []
+  };
   return {
     output,
     usage: { inputTokens: 9, outputTokens: 4, totalTokens: 13 },
@@ -554,7 +568,8 @@ function successfulCodaliInvocation(
       touchedFiles: [],
       warnings: [],
       events: [],
-      runId: `run-${input.requestId}`
+      runId: `run-${input.requestId}`,
+      telemetry
     },
     openAIChunks: [],
     metadata: {
@@ -562,11 +577,18 @@ function successfulCodaliInvocation(
       adapter: input.agent.adapter,
       local_model: input.agent.model,
       agent_slug: input.agent.slug,
+      runtime: "codali",
       run_id: `run-${input.requestId}`,
       tool_calls_executed: 0,
+      called_tools: [],
+      dynamic_tools_considered: [],
+      dynamic_tools_registered: [],
+      dynamic_tools_skipped: [],
+      tool_call_details: [],
+      telemetry,
       touched_files: [],
       warnings: [],
-      mode: input.policy?.allowTools === false ? "freeform" : "tool_loop"
+      mode
     }
   };
 }
@@ -2003,6 +2025,268 @@ describe("self-hosted node runtime", () => {
       "{\"decision\":\"approve\"}"
     );
     expect(((result.openai_response?.metadata as Record<string, unknown>) || {}).codali_run_id).toBe("run-req-mcoda-json");
+  });
+
+  it("forwards runtime tool contracts from self-hosted jobs to Codali metadata", async () => {
+    const statePath = tempStatePath();
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ supportsTools: true })]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        const invocation = successfulCodaliInvocation(input, "contract ok");
+        invocation.metadata = {
+          ...invocation.metadata,
+          tool_calls_executed: 1,
+          called_tools: ["okacam_daily_logs"],
+          dynamic_tools_considered: ["docdex_search", "okacam_daily_logs"],
+          dynamic_tools_registered: ["okacam_daily_logs"],
+          dynamic_tools_skipped: [],
+          tool_call_details: [
+            {
+              name: "okacam_daily_logs",
+              backingTool: "docdex_search",
+              status: "success",
+              latencyMs: 5
+            }
+          ],
+          telemetry: {
+            runId: invocation.metadata.run_id,
+            runtime: "codali",
+            mode: invocation.metadata.mode,
+            toolCallCount: 1,
+            calledTools: ["okacam_daily_logs"],
+            consideredTools: ["docdex_search", "okacam_daily_logs"],
+            registeredDynamicTools: ["okacam_daily_logs"],
+            skippedDynamicTools: [],
+            dynamicToolCalls: [
+              {
+                name: "okacam_daily_logs",
+                backingTool: "docdex_search",
+                status: "success",
+                latencyMs: 5
+              }
+            ],
+            warnings: []
+          }
+        };
+        return invocation;
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-runtime-contracts",
+      request_id: "req-runtime-contracts",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      execution_runtime: "codali",
+      workspace: {
+        root: "/tmp/workspace",
+        read_only: true
+      },
+      docdex: {
+        base_url: "http://docdex.test",
+        repo_root: "/tmp/workspace",
+        tool_manifest: {
+          actualTools: ["docdex_search"],
+          virtualTools: ["okacam_daily_logs"]
+        },
+        allow_web: false,
+        allow_memory_write: false,
+        allow_profile_write: false,
+        allow_index_rebuild: false
+      },
+      policy: {
+        allowed_tools: ["docdex_search", "okacam_daily_logs"],
+        denied_tools: ["github_search"],
+        app_tool_contracts: {
+          generic_tenant_lookup: {
+            executionMode: "server_supplied_snapshot_plus_docdex",
+            callSchema: { type: "object" },
+            backingTools: ["docdex_search"]
+          }
+        },
+        okacam_tool_contracts: {
+          okacam_daily_logs: {
+            executionMode: "server_supplied_snapshot_plus_docdex",
+            callSchema: { type: "object" },
+            resultContract: "daily log search results",
+            backingTools: ["docdex_search"]
+          }
+        },
+        okacam_virtual_tools: ["okacam_daily_logs"],
+        allow_shell: false,
+        allow_writes: false,
+        max_tool_calls: 5
+      },
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "What changed in daily logs?" }]
+      }
+    });
+
+    expect(result.status).toBe("success");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.docdex?.toolManifest).toEqual({
+      actualTools: ["docdex_search"],
+      virtualTools: ["okacam_daily_logs"]
+    });
+    expect(capturedInput.policy?.allowedTools).toEqual(["docdex_search", "okacam_daily_logs"]);
+    expect(capturedInput.policy?.deniedTools).toEqual(["github_search"]);
+    assert.deepEqual(capturedInput.policy?.appToolContracts, {
+      generic_tenant_lookup: {
+        executionMode: "server_supplied_snapshot_plus_docdex",
+        callSchema: { type: "object" },
+        backingTools: ["docdex_search"]
+      }
+    });
+    assert.deepEqual(capturedInput.policy?.okacamToolContracts, {
+      okacam_daily_logs: {
+        executionMode: "server_supplied_snapshot_plus_docdex",
+        callSchema: { type: "object" },
+        resultContract: "daily log search results",
+        backingTools: ["docdex_search"]
+      }
+    });
+    expect(capturedInput.policy?.okacamVirtualTools).toEqual(["okacam_daily_logs"]);
+    const metadata = (result.openai_response?.metadata as Record<string, unknown>) || {};
+    expect(metadata.runtime).toBe("codali");
+    expect(metadata.called_tools).toEqual(["okacam_daily_logs"]);
+    expect(metadata.dynamic_tools_registered).toEqual(["okacam_daily_logs"]);
+    assert.equal((metadata.tool_call_details as Array<{ backingTool?: string }>)[0]?.backingTool, "docdex_search");
+  });
+
+  it("forwards codali_job payloads through Codali and preserves job telemetry", async () => {
+    const statePath = tempStatePath();
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([healthyMcodaAgent({ supportsTools: true })]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        await input.onJobEvent?.({
+          type: "stage_start",
+          jobId: "job-codali-job",
+          stageId: "worker",
+          kind: "worker",
+          at: "2026-07-01T00:00:00.000Z"
+        });
+        const invocation = successfulCodaliInvocation(input, "job answer");
+        invocation.metadata = {
+          ...invocation.metadata,
+          tool_calls_executed: 1,
+          called_tools: ["tenant_daily_logs"],
+          dynamic_tools_considered: ["docdex_search", "tenant_daily_logs"],
+          codali_job_id: "job-codali-job",
+          codali_job_type: "tenant_chat",
+          codali_job_status: "succeeded",
+          codali_job_stage_count: 2,
+          codali_job_stages: [
+            {
+              id: "worker",
+              kind: "worker",
+              status: "completed",
+              attempt: 1,
+              durationMs: 7,
+              toolCallsExecuted: 1
+            }
+          ],
+          codali_job_errors: [],
+          telemetry: {
+            runId: "run-job-codali-job",
+            runtime: "codali",
+            mode: "job",
+            jobId: "job-codali-job",
+            jobType: "tenant_chat",
+            status: "succeeded",
+            stageCount: 2,
+            toolCallCount: 1,
+            calledTools: ["tenant_daily_logs"],
+            consideredTools: ["docdex_search", "tenant_daily_logs"],
+            warnings: [],
+            errors: [],
+            stages: [
+              {
+                id: "worker",
+                kind: "worker",
+                status: "completed",
+                attempt: 1,
+                durationMs: 7,
+                toolCallsExecuted: 1
+              }
+            ]
+          }
+        };
+        return invocation;
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-codali-job",
+      request_id: "req-codali-job",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      execution_runtime: "codali",
+      workspace: {
+        root: "/tmp/workspace",
+        read_only: true
+      },
+      docdex: {
+        base_url: "http://docdex.test",
+        repo_root: "/tmp/workspace",
+        tool_manifest: {
+          actualTools: ["docdex_search"],
+          virtualTools: ["tenant_daily_logs"]
+        }
+      },
+      codali_job: {
+        job_type: "tenant_chat",
+        input: { question: "What changed?" },
+        stages: [
+          { id: "worker", kind: "worker", role: "evidence_collector", max_tool_calls: 1 },
+          { id: "synth", kind: "synthesizer", depends_on: ["worker"], max_tool_calls: 0 }
+        ],
+        budgets: {
+          max_tool_calls: 1,
+          max_parallel_stages: 1
+        }
+      },
+      policy: {
+        allowed_tools: ["docdex_search", "tenant_daily_logs"],
+        allow_shell: false,
+        allow_writes: false,
+        max_tool_calls: 3
+      },
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "What changed?" }]
+      }
+    });
+
+    expect(result.status).toBe("success");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.codaliJob?.jobType).toBe("tenant_chat");
+    expect(capturedInput.codaliJob?.id).toBe("job-codali-job");
+    expect(capturedInput.codaliJob?.stages?.[0]?.role).toBe("evidence_collector");
+    expect(capturedInput.codaliJob?.stages?.[0]?.maxToolCalls).toBe(1);
+    expect(capturedInput.codaliJob?.stages?.[1]?.dependsOn).toEqual(["worker"]);
+    expect(capturedInput.codaliJob?.budgets?.maxToolCalls).toBe(1);
+    expect(capturedInput.codaliJob?.toolManifest).toEqual({
+      actualTools: ["docdex_search"],
+      virtualTools: ["tenant_daily_logs"]
+    });
+    const metadata = (result.openai_response?.metadata as Record<string, unknown>) || {};
+    expect(metadata.codali_job_status).toBe("succeeded");
+    expect(metadata.codali_job_stage_count).toBe(2);
+    expect(metadata.called_tools).toEqual(["tenant_daily_logs"]);
+    expect(result.progress_events?.some((event) => event.type === "stage_start" && event.stage_id === "worker")).toBe(true);
   });
 
   it("fails before start when the selected mcoda agent is missing instead of substituting by model", async () => {

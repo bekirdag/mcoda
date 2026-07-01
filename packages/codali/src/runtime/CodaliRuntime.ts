@@ -37,7 +37,13 @@ import { createFileTools } from "../tools/filesystem/FileTools.js";
 import { createSearchTool } from "../tools/search/SearchTool.js";
 import { createShellTool } from "../tools/shell/ShellTool.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
-import type { ToolContext, ToolDefinition, ToolExecutionResult } from "../tools/ToolTypes.js";
+import {
+  ToolExecutionError,
+  type ToolContext,
+  type ToolDefinition,
+  type ToolExecutionResult,
+  type ToolInputSchema,
+} from "../tools/ToolTypes.js";
 import { formatInstructionBlocks, loadInstructionBlocks, type InstructionBlock } from "../session/InstructionLoader.js";
 import { SessionStore, type CodaliResumeBundle, type CodaliSessionMetadata } from "../session/SessionStore.js";
 import {
@@ -92,6 +98,82 @@ export interface CodaliRuntimeDocdexInput {
   allowMemoryWrite?: boolean;
   allowProfileWrite?: boolean;
   allowIndexRebuild?: boolean;
+  toolManifest?: CodaliRuntimeToolManifest;
+}
+
+export interface CodaliRuntimeToolManifest extends Record<string, unknown> {
+  actualTools?: unknown[];
+  virtualTools?: unknown[];
+  actual_tools?: unknown[];
+  virtual_tools?: unknown[];
+}
+
+export interface CodaliRuntimeAppToolGatewayContract extends Record<string, unknown> {
+  endpoint?: string;
+  readOnly?: boolean;
+  signatureRequired?: boolean;
+  signature_required?: boolean;
+  signature?: string;
+}
+
+export interface CodaliRuntimeAppToolContract extends Record<string, unknown> {
+  name?: string;
+  tool?: string;
+  toolName?: string;
+  tool_name?: string;
+  description?: string;
+  enabled?: boolean;
+  readOnly?: boolean;
+  read_only?: boolean;
+  executionMode?: string;
+  execution_mode?: string;
+  callSchema?: Record<string, unknown>;
+  call_schema?: Record<string, unknown>;
+  resultContract?: string;
+  result_contract?: string;
+  resultSources?: string[];
+  result_sources?: string[];
+  backingTools?: string[];
+  backing_tools?: string[];
+  sourcePaths?: string[];
+  source_paths?: string[];
+  sourceTypes?: string[];
+  source_types?: string[];
+  suppliedSnapshots?: string[];
+  supplied_snapshots?: string[];
+  gateway?: CodaliRuntimeAppToolGatewayContract;
+  metadata?: Record<string, unknown>;
+}
+
+export type CodaliRuntimeAppToolContracts =
+  | Record<string, CodaliRuntimeAppToolContract | unknown>
+  | CodaliRuntimeAppToolContract[];
+
+export interface CodaliRuntimeToolTelemetryEntry {
+  name: string;
+  backingTool?: string;
+  status: "success" | "failed" | "blocked";
+  latencyMs: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface CodaliRuntimeDynamicToolSkip {
+  name: string;
+  reason: string;
+}
+
+export interface CodaliRuntimeTelemetry {
+  runId: string;
+  runtime: "codali";
+  mode: CodaliRuntimePolicy["mode"];
+  toolCallCount: number;
+  calledTools: string[];
+  consideredTools: string[];
+  registeredDynamicTools: string[];
+  skippedDynamicTools: CodaliRuntimeDynamicToolSkip[];
+  dynamicToolCalls: CodaliRuntimeToolTelemetryEntry[];
+  warnings: string[];
 }
 
 export interface CodaliRuntimeAgentInput {
@@ -116,6 +198,11 @@ export interface CodaliRuntimePolicy {
   allowOutsideWorkspace: boolean;
   allowedTools?: string[];
   deniedTools?: string[];
+  appToolContracts?: CodaliRuntimeAppToolContracts;
+  appVirtualTools?: string[];
+  appToolGateway?: CodaliRuntimeAppToolGatewayContract;
+  okacamToolContracts?: CodaliRuntimeAppToolContracts;
+  okacamVirtualTools?: string[];
   maxSteps: number;
   maxToolCalls: number;
   maxTokens?: number;
@@ -221,6 +308,7 @@ export interface CodaliRuntimeResult {
   warnings: string[];
   events: CodaliRuntimeEvent[];
   runId: string;
+  telemetry: CodaliRuntimeTelemetry;
   session?: {
     id: string;
     summaryRefs: string[];
@@ -244,6 +332,33 @@ const WEB_TOOL_NAMES = new Set(["docdex_web_research"]);
 const MEMORY_WRITE_TOOL_NAMES = new Set(["docdex_memory_save"]);
 const PROFILE_WRITE_TOOL_NAMES = new Set(["docdex_save_preference"]);
 const INDEX_REBUILD_TOOL_NAMES = new Set(["docdex_index_rebuild", "docdex_index_ingest"]);
+const READ_ONLY_DYNAMIC_BACKING_TOOLS = new Set([
+  "docdex_search",
+  "docdex_batch_search",
+  "docdex_open",
+  "docdex_files",
+  "docdex_tree",
+  "docdex_stats",
+]);
+const FORBIDDEN_DYNAMIC_ARG_KEYS = new Set([
+  "authorization",
+  "apiKey",
+  "api_key",
+  "baseUrl",
+  "base_url",
+  "credential",
+  "credentials",
+  "credentialSource",
+  "credential_source",
+  "repoId",
+  "repo_id",
+  "repoRoot",
+  "repo_root",
+  "tenantId",
+  "tenant_id",
+  "workspaceRoot",
+  "workspace_root",
+]);
 const DOCDEX_TOOL_OPERATIONS = new Map<string, DocdexRuntimeOperation[]>([
   ["docdex_health", ["health"]],
   ["docdex_initialize", ["initialize"]],
@@ -320,6 +435,457 @@ const stripUndefined = (input: Record<string, unknown>): Record<string, unknown>
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+interface DynamicToolRegistryState {
+  consideredTools: string[];
+  registeredDynamicTools: string[];
+  skippedDynamicTools: CodaliRuntimeDynamicToolSkip[];
+  dynamicToolCalls: CodaliRuntimeToolTelemetryEntry[];
+}
+
+interface RuntimeToolContractCandidate {
+  name: string;
+  contract?: CodaliRuntimeAppToolContract;
+}
+
+const createDynamicToolRegistryState = (): DynamicToolRegistryState => ({
+  consideredTools: [],
+  registeredDynamicTools: [],
+  skippedDynamicTools: [],
+  dynamicToolCalls: [],
+});
+
+const pushUnique = (target: string[], value: string): void => {
+  if (!target.includes(value)) target.push(value);
+};
+
+const recordSkippedDynamicTool = (
+  state: DynamicToolRegistryState,
+  name: string,
+  reason: string,
+): void => {
+  if (!state.skippedDynamicTools.some((entry) => entry.name === name && entry.reason === reason)) {
+    state.skippedDynamicTools.push({ name, reason });
+  }
+};
+
+const stringArrayFromUnknown = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+};
+
+const toolNameFromRecord = (value: Record<string, unknown>): string | undefined => {
+  for (const key of ["name", "tool", "toolName", "tool_name", "id"]) {
+    const entry = value[key];
+    if (typeof entry === "string" && entry.trim()) return entry.trim();
+  }
+  return undefined;
+};
+
+const toolNamesFromManifestEntries = (entries: unknown): string[] => {
+  if (!Array.isArray(entries)) return [];
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry === "string" && entry.trim()) {
+      pushUnique(names, entry.trim());
+      continue;
+    }
+    if (isRecord(entry)) {
+      const name = toolNameFromRecord(entry);
+      if (name) pushUnique(names, name);
+    }
+  }
+  return names;
+};
+
+const toolNamesFromManifest = (manifest: CodaliRuntimeToolManifest | undefined): string[] => {
+  if (!manifest) return [];
+  const names: string[] = [];
+  for (const list of [
+    manifest.actualTools,
+    manifest.virtualTools,
+    manifest.actual_tools,
+    manifest.virtual_tools,
+  ]) {
+    for (const name of toolNamesFromManifestEntries(list)) pushUnique(names, name);
+  }
+  return names;
+};
+
+const normalizeRuntimeToolContractEntries = (
+  contracts: CodaliRuntimeAppToolContracts | undefined,
+): Array<[string, CodaliRuntimeAppToolContract]> => {
+  if (!contracts) return [];
+  if (Array.isArray(contracts)) {
+    const entries: Array<[string, CodaliRuntimeAppToolContract]> = [];
+    for (const contract of contracts) {
+      if (!isRecord(contract)) continue;
+      const name = toolNameFromRecord(contract);
+      if (name) entries.push([name, contract as CodaliRuntimeAppToolContract]);
+    }
+    return entries;
+  }
+  if (!isRecord(contracts)) return [];
+  const entries: Array<[string, CodaliRuntimeAppToolContract]> = [];
+  for (const [key, value] of Object.entries(contracts)) {
+    if (!key.trim()) continue;
+    const contract = isRecord(value)
+      ? ({ name: key, ...value } as CodaliRuntimeAppToolContract)
+      : ({ name: key, metadata: { valueType: typeof value } } as CodaliRuntimeAppToolContract);
+    entries.push([key, contract]);
+  }
+  return entries;
+};
+
+const contractString = (
+  contract: CodaliRuntimeAppToolContract,
+  camelKey: keyof CodaliRuntimeAppToolContract,
+  snakeKey: keyof CodaliRuntimeAppToolContract,
+): string | undefined => {
+  const value = contract[camelKey] ?? contract[snakeKey];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+};
+
+const contractBoolean = (
+  contract: CodaliRuntimeAppToolContract,
+  camelKey: keyof CodaliRuntimeAppToolContract,
+  snakeKey: keyof CodaliRuntimeAppToolContract,
+): boolean | undefined => {
+  const value = contract[camelKey] ?? contract[snakeKey];
+  return typeof value === "boolean" ? value : undefined;
+};
+
+const contractStringArray = (
+  contract: CodaliRuntimeAppToolContract,
+  camelKey: keyof CodaliRuntimeAppToolContract,
+  snakeKey: keyof CodaliRuntimeAppToolContract,
+): string[] => {
+  return stringArrayFromUnknown(contract[camelKey] ?? contract[snakeKey]);
+};
+
+const contractCallSchema = (contract: CodaliRuntimeAppToolContract): ToolInputSchema => {
+  const schema = contract.callSchema ?? contract.call_schema;
+  if (isRecord(schema) && (schema.type === undefined || schema.type === "object")) {
+    return {
+      ...schema,
+      type: "object",
+    } as ToolInputSchema;
+  }
+  return { type: "object", additionalProperties: true };
+};
+
+const findForbiddenDynamicArgKeys = (
+  value: unknown,
+  path = "$",
+  matches: string[] = [],
+): string[] => {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => findForbiddenDynamicArgKeys(entry, `${path}[${index}]`, matches));
+    return matches;
+  }
+  if (!isRecord(value)) return matches;
+  for (const [key, entry] of Object.entries(value)) {
+    const childPath = `${path}.${key}`;
+    if (FORBIDDEN_DYNAMIC_ARG_KEYS.has(key)) {
+      matches.push(childPath);
+    }
+    findForbiddenDynamicArgKeys(entry, childPath, matches);
+  }
+  return matches;
+};
+
+const assertDynamicArgsStayInScope = (toolName: string, args: unknown): void => {
+  const forbidden = findForbiddenDynamicArgKeys(args);
+  if (forbidden.length) {
+    throw new ToolExecutionError("tool_permission_denied", "Dynamic tool arguments cannot override tenant or repo scope", {
+      retryable: false,
+      details: { tool: toolName, forbidden },
+    });
+  }
+};
+
+const readStringArg = (args: Record<string, unknown>, keys: string[]): string | undefined => {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+};
+
+const readStringArrayArg = (args: Record<string, unknown>, keys: string[]): string[] => {
+  for (const key of keys) {
+    const values = stringArrayFromUnknown(args[key]);
+    if (values.length) return values;
+  }
+  return [];
+};
+
+const readNumberArg = (args: Record<string, unknown>, keys: string[]): number | undefined => {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+};
+
+const readBooleanArg = (args: Record<string, unknown>, keys: string[]): boolean | undefined => {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+};
+
+const selectDocdexBackingCall = (
+  toolName: string,
+  backingTools: string[],
+  args: unknown,
+): { toolName: string; args: Record<string, unknown> } => {
+  const record = isRecord(args) ? args : {};
+  const limit = readNumberArg(record, ["limit", "maxResults", "max_results"]);
+  const queries = readStringArrayArg(record, ["queries"]);
+  if (queries.length && backingTools.includes("docdex_batch_search")) {
+    return {
+      toolName: "docdex_batch_search",
+      args: stripUndefined({
+        queries,
+        limit,
+        includeLibs: readBooleanArg(record, ["includeLibs", "include_libs"]),
+      }),
+    };
+  }
+
+  const query = readStringArg(record, ["query", "q", "search", "question", "prompt", "text"]);
+  if (query && backingTools.includes("docdex_search")) {
+    return { toolName: "docdex_search", args: stripUndefined({ query, limit }) };
+  }
+
+  const path = readStringArg(record, ["path", "relPath", "rel_path", "file", "sourcePath", "source_path"]);
+  const docId = readStringArg(record, ["docId", "doc_id"]);
+  if ((path || docId) && backingTools.includes("docdex_open")) {
+    return {
+      toolName: "docdex_open",
+      args: stripUndefined({
+        path,
+        docId,
+        window: readNumberArg(record, ["window"]),
+        textOnly: readBooleanArg(record, ["textOnly", "text_only"]),
+        startLine: readNumberArg(record, ["startLine", "start_line"]),
+        endLine: readNumberArg(record, ["endLine", "end_line"]),
+        head: readNumberArg(record, ["head"]),
+        clamp: readBooleanArg(record, ["clamp"]),
+      }),
+    };
+  }
+
+  if (backingTools.includes("docdex_tree")) {
+    return {
+      toolName: "docdex_tree",
+      args: stripUndefined({
+        path,
+        maxDepth: readNumberArg(record, ["maxDepth", "max_depth"]),
+        dirsOnly: readBooleanArg(record, ["dirsOnly", "dirs_only"]),
+        includeHidden: readBooleanArg(record, ["includeHidden", "include_hidden"]),
+      }),
+    };
+  }
+
+  if (backingTools.includes("docdex_files")) {
+    return {
+      toolName: "docdex_files",
+      args: stripUndefined({
+        limit,
+        offset: readNumberArg(record, ["offset"]),
+      }),
+    };
+  }
+
+  if (backingTools.includes("docdex_stats")) {
+    return { toolName: "docdex_stats", args: {} };
+  }
+
+  throw new ToolExecutionError("tool_invalid_args", "Dynamic tool arguments do not match its read-only backing tools", {
+    retryable: false,
+    details: { tool: toolName, backingTools },
+  });
+};
+
+const createDocdexBackedDynamicTool = (options: {
+  name: string;
+  contract: CodaliRuntimeAppToolContract;
+  registry: ToolRegistry;
+  backingTools: string[];
+  state: DynamicToolRegistryState;
+}): ToolDefinition => {
+  const { name, contract, registry, backingTools, state } = options;
+  const executionMode =
+    contractString(contract, "executionMode", "execution_mode") ?? "server_supplied_snapshot_plus_docdex";
+  return {
+    name,
+    description:
+      contract.description ??
+      `Read-only runtime tool. Uses ${backingTools.join(", ")} and returns ${contract.resultContract ?? contract.result_contract ?? "contracted app context"}.`,
+    inputSchema: contractCallSchema(contract),
+    handler: async (args, context) => {
+      const startedAt = Date.now();
+      let backingTool: string | undefined;
+      let recorded = false;
+      try {
+        assertDynamicArgsStayInScope(name, args);
+        const backingCall = selectDocdexBackingCall(name, backingTools, args);
+        backingTool = backingCall.toolName;
+        const result = await registry.execute(backingCall.toolName, backingCall.args, context);
+        if (!result.ok) {
+          state.dynamicToolCalls.push({
+            name,
+            backingTool,
+            status: "failed",
+            latencyMs: Date.now() - startedAt,
+            errorCode: result.error?.code,
+            errorMessage: result.error?.message,
+          });
+          recorded = true;
+          throw new ToolExecutionError(result.error?.code ?? "tool_execution_failed", result.error?.message ?? "Backing tool failed", {
+            retryable: result.error?.retryable,
+            details: { tool: name, backingTool, backingError: result.error?.details },
+          });
+        }
+        const data = {
+          tool: name,
+          executionMode,
+          resultContract: contract.resultContract ?? contract.result_contract,
+          resultSources: contractStringArray(contract, "resultSources", "result_sources"),
+          sourcePaths: contractStringArray(contract, "sourcePaths", "source_paths"),
+          sourceTypes: contractStringArray(contract, "sourceTypes", "source_types"),
+          suppliedSnapshots: contractStringArray(contract, "suppliedSnapshots", "supplied_snapshots"),
+          backingTool,
+          result: payloadForToolResult(result),
+        };
+        state.dynamicToolCalls.push({
+          name,
+          backingTool,
+          status: "success",
+          latencyMs: Date.now() - startedAt,
+        });
+        recorded = true;
+        return {
+          output: JSON.stringify(data, null, 2),
+          data,
+        };
+      } catch (error) {
+        if (!recorded) {
+          state.dynamicToolCalls.push({
+            name,
+            backingTool,
+            status: "failed",
+            latencyMs: Date.now() - startedAt,
+            errorCode: error instanceof ToolExecutionError ? error.code : "tool_execution_failed",
+            errorMessage: error instanceof Error ? error.message : String(error),
+          });
+        }
+        throw error;
+      }
+    },
+  };
+};
+
+const resolveGatewayContract = (
+  contract: CodaliRuntimeAppToolContract,
+  policyGateway: CodaliRuntimeAppToolGatewayContract | undefined,
+): CodaliRuntimeAppToolGatewayContract | undefined => {
+  const gateway = contract.gateway;
+  if (!gateway && !policyGateway) return undefined;
+  return { ...(policyGateway ?? {}), ...(gateway ?? {}) };
+};
+
+const createGatewayDynamicTool = (options: {
+  name: string;
+  contract: CodaliRuntimeAppToolContract;
+  gateway: CodaliRuntimeAppToolGatewayContract;
+  input: CodaliRuntimeInput;
+  state: DynamicToolRegistryState;
+}): ToolDefinition => {
+  const { name, contract, gateway, input, state } = options;
+  const endpoint = typeof gateway.endpoint === "string" ? gateway.endpoint : undefined;
+  const signature = typeof gateway.signature === "string" ? gateway.signature : undefined;
+  return {
+    name,
+    description:
+      contract.description ??
+      `Read-only app tool dispatched through the runtime app_tool_gateway for ${name}.`,
+    inputSchema: contractCallSchema(contract),
+    handler: async (args, context) => {
+      const startedAt = Date.now();
+      try {
+        assertDynamicArgsStayInScope(name, args);
+        if (!endpoint) {
+          throw new ToolExecutionError("tool_permission_denied", "App tool gateway endpoint is not configured", {
+            retryable: false,
+            details: { tool: name },
+          });
+        }
+        const signatureRequired =
+          gateway.signatureRequired === true || gateway.signature_required === true;
+        if (signatureRequired && !signature) {
+          throw new ToolExecutionError("tool_permission_denied", "App tool gateway signature is required", {
+            retryable: false,
+            details: { tool: name },
+          });
+        }
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: stripUndefined({
+            "content-type": "application/json",
+            "x-codali-app-tool-signature": signature,
+          }) as Record<string, string>,
+          body: JSON.stringify({
+            tenant: input.metadata?.tenantId ? { id: input.metadata.tenantId } : undefined,
+            tool: name,
+            args,
+            run_id: context.runId,
+            session_id: input.session?.id,
+            request_id: input.metadata?.requestId,
+            read_only: true,
+            result_contract: contract.resultContract ?? contract.result_contract,
+          }),
+        });
+        const text = await response.text();
+        if (!response.ok) {
+          throw new ToolExecutionError("tool_execution_failed", `App tool gateway failed with HTTP ${response.status}`, {
+            retryable: response.status >= 500,
+            details: { tool: name, status: response.status, body: text.slice(0, 1_000) },
+          });
+        }
+        const parsed = parseJsonPayload(text);
+        state.dynamicToolCalls.push({
+          name,
+          backingTool: "app_tool_gateway",
+          status: "success",
+          latencyMs: Date.now() - startedAt,
+        });
+        return {
+          output: text,
+          data: parsed ?? text,
+        };
+      } catch (error) {
+        state.dynamicToolCalls.push({
+          name,
+          backingTool: "app_tool_gateway",
+          status: "failed",
+          latencyMs: Date.now() - startedAt,
+          errorCode: error instanceof ToolExecutionError ? error.code : "tool_execution_failed",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+  };
 };
 
 const parseJsonPayload = (output: string): unknown | undefined => {
@@ -905,8 +1471,158 @@ const registerRuntimeTool = (
   }
 };
 
-const buildRuntimeToolRegistry = (input: CodaliRuntimeInput): ToolRegistry => {
+const collectRuntimeToolContractCandidates = (input: CodaliRuntimeInput): RuntimeToolContractCandidate[] => {
+  const contracts = new Map<string, CodaliRuntimeAppToolContract>();
+  for (const [name, contract] of normalizeRuntimeToolContractEntries(input.policy.okacamToolContracts)) {
+    contracts.set(name, contract);
+  }
+  for (const [name, contract] of normalizeRuntimeToolContractEntries(input.policy.appToolContracts)) {
+    contracts.set(name, contract);
+  }
+
+  const names = new Set<string>();
+  for (const name of toolNamesFromManifest(input.docdex?.toolManifest)) names.add(name);
+  for (const name of stringArrayFromUnknown(input.policy.okacamVirtualTools)) names.add(name);
+  for (const name of stringArrayFromUnknown(input.policy.appVirtualTools)) names.add(name);
+  for (const name of contracts.keys()) names.add(name);
+
+  return Array.from(names)
+    .sort()
+    .map((name) => ({ name, contract: contracts.get(name) }));
+};
+
+const registerRuntimeContractTools = (
+  registry: ToolRegistry,
+  input: CodaliRuntimeInput,
+  state: DynamicToolRegistryState,
+  warnings: string[],
+): void => {
+  const candidates = collectRuntimeToolContractCandidates(input);
+  if (!candidates.length) return;
+
+  const registryNames = new Set(registry.list().map((tool) => tool.name));
+  for (const candidate of candidates) {
+    const name = candidate.name.trim();
+    if (!name) continue;
+    pushUnique(state.consideredTools, name);
+
+    if (!candidate.contract) {
+      if (!registryNames.has(name)) recordSkippedDynamicTool(state, name, "missing_contract");
+      continue;
+    }
+    if (candidate.contract.enabled === false) {
+      recordSkippedDynamicTool(state, name, "contract_disabled");
+      continue;
+    }
+    if (!isRuntimeToolAllowed(name, input.policy) || !isDocdexToolAllowed(name, input.docdex)) {
+      recordSkippedDynamicTool(state, name, "policy_disallowed");
+      continue;
+    }
+    if (registryNames.has(name)) {
+      recordSkippedDynamicTool(state, name, "already_registered");
+      continue;
+    }
+
+    const readOnly = contractBoolean(candidate.contract, "readOnly", "read_only");
+    if (readOnly === false) {
+      recordSkippedDynamicTool(state, name, "not_read_only");
+      continue;
+    }
+
+    const executionMode =
+      contractString(candidate.contract, "executionMode", "execution_mode") ??
+      "server_supplied_snapshot_plus_docdex";
+    const gateway = resolveGatewayContract(candidate.contract, input.policy.appToolGateway);
+    if (executionMode === "app_tool_gateway" || gateway?.endpoint) {
+      if (!gateway) {
+        recordSkippedDynamicTool(state, name, "gateway_not_configured");
+        continue;
+      }
+      if (gateway.readOnly === false) {
+        recordSkippedDynamicTool(state, name, "gateway_not_read_only");
+        continue;
+      }
+      const gatewayEndpoint = typeof gateway.endpoint === "string" && gateway.endpoint.trim()
+        ? gateway.endpoint.trim()
+        : undefined;
+      if (!gatewayEndpoint) {
+        recordSkippedDynamicTool(state, name, "gateway_endpoint_missing");
+        continue;
+      }
+      if ((gateway.signatureRequired === true || gateway.signature_required === true) && !gateway.signature) {
+        recordSkippedDynamicTool(state, name, "gateway_signature_missing");
+        continue;
+      }
+      registerRuntimeTool(
+        registry,
+        createGatewayDynamicTool({
+          name,
+          contract: candidate.contract,
+          gateway: { ...gateway, endpoint: gatewayEndpoint },
+          input,
+          state,
+        }),
+        input.policy,
+        input.docdex,
+      );
+      registryNames.add(name);
+      pushUnique(state.registeredDynamicTools, name);
+      continue;
+    }
+
+    const declaredBackingTools = contractStringArray(
+      candidate.contract,
+      "backingTools",
+      "backing_tools",
+    );
+    if (!declaredBackingTools.length) {
+      recordSkippedDynamicTool(state, name, "missing_backing_tools");
+      continue;
+    }
+    const unsafeBackingTool = declaredBackingTools.find((toolName) => !READ_ONLY_DYNAMIC_BACKING_TOOLS.has(toolName));
+    if (unsafeBackingTool) {
+      recordSkippedDynamicTool(state, name, `unsafe_backing_tool:${unsafeBackingTool}`);
+      continue;
+    }
+    const availableBackingTools = declaredBackingTools.filter((toolName) => registryNames.has(toolName));
+    if (!availableBackingTools.length) {
+      recordSkippedDynamicTool(state, name, "backing_tool_unavailable");
+      continue;
+    }
+
+    registerRuntimeTool(
+      registry,
+      createDocdexBackedDynamicTool({
+        name,
+        contract: candidate.contract,
+        registry,
+        backingTools: availableBackingTools,
+        state,
+      }),
+      input.policy,
+      input.docdex,
+    );
+    registryNames.add(name);
+    pushUnique(state.registeredDynamicTools, name);
+  }
+
+  const warningSkips = state.skippedDynamicTools.filter((entry) => entry.reason !== "already_registered");
+  if (warningSkips.length) {
+    warnings.push(
+      `Runtime tool contracts skipped: ${warningSkips
+        .map((entry) => `${entry.name}:${entry.reason}`)
+        .join(", ")}`,
+    );
+  }
+};
+
+const buildRuntimeToolRegistry = (
+  input: CodaliRuntimeInput,
+  dynamicToolState: DynamicToolRegistryState,
+  warnings: string[],
+): ToolRegistry => {
   if (input.toolRegistry) {
+    registerRuntimeContractTools(input.toolRegistry, input, dynamicToolState, warnings);
     return input.toolRegistry;
   }
   const registry = new ToolRegistry();
@@ -914,6 +1630,7 @@ const buildRuntimeToolRegistry = (input: CodaliRuntimeInput): ToolRegistry => {
   const explicitTools = input.tools;
   if (explicitTools) {
     for (const tool of explicitTools) register(tool);
+    registerRuntimeContractTools(registry, input, dynamicToolState, warnings);
     return registry;
   }
 
@@ -936,6 +1653,7 @@ const buildRuntimeToolRegistry = (input: CodaliRuntimeInput): ToolRegistry => {
     capabilities: input.docdex?.capabilities,
   });
   for (const tool of createDocdexTools(docdexClient)) register(tool);
+  registerRuntimeContractTools(registry, input, dynamicToolState, warnings);
   return registry;
 };
 
@@ -1248,6 +1966,32 @@ const emitRuntimeEvent = (
   } catch (error) {
     warnings.push(error instanceof Error ? error.message : String(error));
   }
+};
+
+const buildRuntimeTelemetry = (options: {
+  input: CodaliRuntimeInput;
+  runId: string;
+  toolCallsExecuted: number;
+  events: CodaliRuntimeEvent[];
+  warnings: string[];
+  dynamicToolState: DynamicToolRegistryState;
+}): CodaliRuntimeTelemetry => {
+  const calledTools: string[] = [];
+  for (const event of options.events) {
+    if (event.type === "tool_call") pushUnique(calledTools, event.name);
+  }
+  return {
+    runId: options.runId,
+    runtime: "codali",
+    mode: options.input.policy.mode,
+    toolCallCount: options.toolCallsExecuted,
+    calledTools,
+    consideredTools: [...options.dynamicToolState.consideredTools],
+    registeredDynamicTools: [...options.dynamicToolState.registeredDynamicTools],
+    skippedDynamicTools: [...options.dynamicToolState.skippedDynamicTools],
+    dynamicToolCalls: [...options.dynamicToolState.dynamicToolCalls],
+    warnings: [...options.warnings],
+  };
 };
 
 const createSubagentRunner = (options: {
@@ -1739,6 +2483,7 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
   const touchedFiles = new Set<string>();
   const warnings: string[] = [];
   const events: CodaliRuntimeEvent[] = [];
+  const dynamicToolState = createDynamicToolRegistryState();
   let eventSequence = 0;
   const session = await initializeRuntimeSession(input, runId, warnings);
 
@@ -1748,7 +2493,7 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
   };
 
   const provider = input.providerInstance ?? createRuntimeProvider(input.provider);
-  const registry = buildRuntimeToolRegistry(input);
+  const registry = buildRuntimeToolRegistry(input, dynamicToolState, warnings);
   const originalRecordTouchedFile = input.toolContext?.recordTouchedFile;
   const toolContext: ToolContext = {
     ...input.toolContext,
@@ -1807,6 +2552,14 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
         warnings,
         events,
         runId,
+        telemetry: buildRuntimeTelemetry({
+          input,
+          runId,
+          toolCallsExecuted: result.toolCallsExecuted,
+          events,
+          warnings,
+          dynamicToolState,
+        }),
         session: toSessionSummary(finalSession),
       };
     } catch (error) {
@@ -1865,6 +2618,14 @@ export const runCodaliTask = async (input: CodaliRuntimeInput): Promise<CodaliRu
       warnings,
       events,
       runId,
+      telemetry: buildRuntimeTelemetry({
+        input,
+        runId,
+        toolCallsExecuted: result.toolCallsExecuted,
+        events,
+        warnings,
+        dynamicToolState,
+      }),
       session: toSessionSummary(finalSession),
     };
   } catch (error) {

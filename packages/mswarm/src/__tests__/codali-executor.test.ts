@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MswarmCodaliExecutor,
+  type CodaliJobRuntimeInput,
+  type CodaliJobRuntimeResult,
   type CodaliRuntimeInput,
   type CodaliRuntimeResult,
 } from "../codali-executor.js";
@@ -176,6 +178,227 @@ test("MswarmCodaliExecutor routes non-tool agents to protocol_loop when tools ar
   assert.equal(capturedInput.docdex?.allowWeb, true);
   assert.equal(result.metadata.mode, "protocol_loop");
   assert.equal(result.metadata.tool_calls_executed, 2);
+});
+
+test("MswarmCodaliExecutor forwards runtime app tool contracts and telemetry", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  const result = await executor.invoke({
+    jobId: "job-runtime-tools",
+    requestId: "req-runtime-tools",
+    model: "mcoda-local",
+    messages: [{ role: "user", content: "Search tenant context." }],
+    agent: {
+      slug: "local-tool-agent",
+      adapter: "openai-compatible-local",
+      model: "tool-agent",
+      supportsTools: true,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "http://docdex.test",
+      repoRoot: "/tmp/workspace",
+      allowWeb: false,
+      allowMemoryWrite: false,
+      allowProfileWrite: false,
+      allowIndexRebuild: false,
+      toolManifest: {
+        actualTools: ["docdex_search"],
+        virtualTools: ["okacam_daily_logs"],
+      },
+    },
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      allowedTools: ["docdex_search", "okacam_daily_logs"],
+      appToolContracts: {
+        okacam_daily_logs: {
+          executionMode: "server_supplied_snapshot_plus_docdex",
+          callSchema: { type: "object" },
+          resultContract: "daily log results",
+          backingTools: ["docdex_search"],
+        },
+      },
+      okacamVirtualTools: ["okacam_daily_logs"],
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "done",
+        messages: [{ role: "assistant", content: "done" }],
+        toolCallsExecuted: 1,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-runtime-tools",
+        telemetry: {
+          runId: "run-runtime-tools",
+          runtime: "codali",
+          mode: input.policy.mode,
+          toolCallCount: 1,
+          calledTools: ["okacam_daily_logs"],
+          consideredTools: ["docdex_search", "okacam_daily_logs"],
+          registeredDynamicTools: ["okacam_daily_logs"],
+          skippedDynamicTools: [],
+          dynamicToolCalls: [
+            {
+              name: "okacam_daily_logs",
+              backingTool: "docdex_search",
+              status: "success",
+              latencyMs: 12,
+            },
+          ],
+          warnings: [],
+        },
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.deepEqual(capturedInput.docdex?.toolManifest, {
+    actualTools: ["docdex_search"],
+    virtualTools: ["okacam_daily_logs"],
+  });
+  assert.deepEqual(capturedInput.policy.appToolContracts, {
+    okacam_daily_logs: {
+      executionMode: "server_supplied_snapshot_plus_docdex",
+      callSchema: { type: "object" },
+      resultContract: "daily log results",
+      backingTools: ["docdex_search"],
+    },
+  });
+  assert.deepEqual(capturedInput.policy.okacamVirtualTools, ["okacam_daily_logs"]);
+  assert.equal(result.metadata.runtime, "codali");
+  assert.deepEqual(result.metadata.called_tools, ["okacam_daily_logs"]);
+  assert.deepEqual(result.metadata.dynamic_tools_registered, ["okacam_daily_logs"]);
+  assert.equal(result.metadata.tool_call_details[0]?.backingTool, "docdex_search");
+  assert.equal(result.metadata.telemetry?.runId, "run-runtime-tools");
+});
+
+test("MswarmCodaliExecutor invokes runCodaliJob for codaliJob payloads and returns job telemetry", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const captured: { value?: CodaliJobRuntimeInput } = {};
+  const jobEvents: Record<string, unknown>[] = [];
+
+  const result = await executor.invoke({
+    jobId: "job-multistage",
+    requestId: "req-multistage",
+    model: "mcoda-local",
+    messages: [{ role: "user", content: "Answer from tenant runtime tools." }],
+    agent: {
+      slug: "local-tool-agent",
+      adapter: "openai-compatible-local",
+      model: "tool-agent",
+      supportsTools: true,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "http://docdex.test",
+      repoRoot: "/tmp/workspace",
+      toolManifest: {
+        actualTools: ["docdex_search"],
+        virtualTools: ["tenant_daily_logs"],
+      },
+    },
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      allowedTools: ["docdex_search", "tenant_daily_logs"],
+      maxToolCalls: 5,
+    },
+    codaliJob: {
+      jobType: "tenant_chat",
+      input: "Answer from tenant runtime tools.",
+      stages: [
+        { id: "worker", kind: "worker", maxToolCalls: 1 },
+        { id: "synthesizer", kind: "synthesizer", dependsOn: ["worker"], maxToolCalls: 0 },
+      ],
+      budgets: { maxToolCalls: 1 },
+    },
+    onJobEvent: async (event) => {
+      jobEvents.push(event);
+    },
+    runCodali: async () => {
+      throw new Error("runCodaliTask should not be used for codaliJob payloads");
+    },
+    runCodaliJob: async (input) => {
+      captured.value = input;
+      await input.onEvent?.({
+        type: "stage_start",
+        runId: "run-job",
+        jobId: "job-multistage",
+        stageId: "worker",
+        kind: "worker",
+        at: "2026-07-01T00:00:00.000Z",
+      });
+      return {
+        output: "job answer",
+        status: "succeeded",
+        runId: "run-job",
+        jobId: "job-multistage",
+        jobType: "tenant_chat",
+        stages: [
+          {
+            id: "worker",
+            kind: "worker",
+            status: "completed",
+            attempt: 1,
+            output: "worker answer",
+            toolCallsExecuted: 1,
+            warnings: [],
+            durationMs: 7,
+          },
+        ],
+        usage: { inputTokens: 11, outputTokens: 13, totalTokens: 24 },
+        toolCallsExecuted: 1,
+        touchedFiles: [],
+        warnings: [],
+        errors: [],
+        telemetry: {
+          runId: "run-job",
+          runtime: "codali",
+          mode: "job",
+          jobId: "job-multistage",
+          jobType: "tenant_chat",
+          status: "succeeded",
+          stageCount: 1,
+          toolCallCount: 1,
+          calledTools: ["tenant_daily_logs"],
+          consideredTools: ["docdex_search", "tenant_daily_logs"],
+          warnings: [],
+          errors: [],
+          stages: [
+            {
+              id: "worker",
+              kind: "worker",
+              status: "completed",
+              attempt: 1,
+              durationMs: 7,
+              toolCallsExecuted: 1,
+            },
+          ],
+        },
+      } satisfies CodaliJobRuntimeResult;
+    },
+  });
+
+  const capturedInput = captured.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.request.id, "job-multistage");
+  assert.equal(capturedInput.request.jobType, "tenant_chat");
+  assert.deepEqual(capturedInput.request.toolManifest, {
+    actualTools: ["docdex_search"],
+    virtualTools: ["tenant_daily_logs"],
+  });
+  assert.equal(capturedInput.runtime.policy.maxToolCalls, 5);
+  assert.equal(result.output, "job answer");
+  assert.equal(result.metadata.codali_job_status, "succeeded");
+  assert.equal(result.metadata.codali_job_stage_count, 1);
+  assert.deepEqual(result.metadata.called_tools, ["tenant_daily_logs"]);
+  assert.equal(result.metadata.telemetry?.mode, "job");
+  assert.equal(jobEvents[0]?.type, "stage_start");
 });
 
 test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider", async () => {

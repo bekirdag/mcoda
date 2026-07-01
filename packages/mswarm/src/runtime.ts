@@ -10,6 +10,7 @@ import {
   type LocalOpenAiCompatibleRunnerConfig,
   type MswarmCodaliAgent,
   type MswarmCodaliDocdex,
+  type MswarmCodaliJob,
   type MswarmCodaliPolicy,
   type MswarmCodaliWorkspace
 } from "./codali-executor.js";
@@ -269,6 +270,24 @@ export interface SelfHostedOpenAIChatMessage {
   content: string | Array<{ type: string; text?: string }>;
 }
 
+export interface SelfHostedNodeCodaliJobPayload {
+  id?: string;
+  job_type?: string;
+  jobType?: string;
+  input?: unknown;
+  context?: Record<string, unknown>;
+  tenant?: Record<string, unknown>;
+  requester?: Record<string, unknown>;
+  tool_manifest?: Record<string, unknown>;
+  toolManifest?: Record<string, unknown>;
+  stages?: Array<Record<string, unknown>>;
+  budgets?: Record<string, unknown>;
+  agent_policy?: Record<string, unknown>;
+  agentPolicy?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
 export interface SelfHostedNodeInvocationJob {
   job_id: string;
   request_id: string;
@@ -277,6 +296,7 @@ export interface SelfHostedNodeInvocationJob {
   remote_slug?: string;
   provider?: "mcoda" | "ollama";
   execution_runtime?: "codali" | "raw" | string;
+  codali_job?: SelfHostedNodeCodaliJobPayload;
   adapter?: string | null;
   source_agent_slug?: string | null;
   model?: string | null;
@@ -298,6 +318,7 @@ export interface SelfHostedNodeInvocationJob {
     allow_memory_write?: boolean;
     allow_profile_write?: boolean;
     allow_index_rebuild?: boolean;
+    tool_manifest?: Record<string, unknown>;
   };
   openai_request: {
     model: string;
@@ -316,6 +337,11 @@ export interface SelfHostedNodeInvocationJob {
     allow_images?: boolean;
     allowed_tools?: string[];
     denied_tools?: string[];
+    app_tool_contracts?: Record<string, unknown> | Array<Record<string, unknown>>;
+    app_virtual_tools?: string[];
+    app_tool_gateway?: Record<string, unknown>;
+    okacam_tool_contracts?: Record<string, unknown> | Array<Record<string, unknown>>;
+    okacam_virtual_tools?: string[];
     allow_shell?: boolean;
     allow_writes?: boolean;
     allow_outside_workspace?: boolean;
@@ -2960,6 +2986,7 @@ function buildCodaliDocdex(job: SelfHostedNodeInvocationJob): MswarmCodaliDocdex
     allowMemoryWrite: job.docdex.allow_memory_write === true,
     allowProfileWrite: job.docdex.allow_profile_write === true,
     allowIndexRebuild: job.docdex.allow_index_rebuild === true,
+    toolManifest: objectRecord(job.docdex.tool_manifest) || undefined,
   };
 }
 
@@ -3028,11 +3055,112 @@ function redactRuntimeSecretValues(value: string, secrets: Array<string | undefi
   );
 }
 
+function normalizeRuntimeToolContractPayload(
+  value: unknown,
+): Record<string, unknown> | Array<Record<string, unknown>> | undefined {
+  if (Array.isArray(value)) {
+    const entries = value.filter((entry): entry is Record<string, unknown> => Boolean(objectRecord(entry)));
+    return entries.length ? entries : undefined;
+  }
+  return objectRecord(value) || undefined;
+}
+
+function normalizeCodaliJobStages(value: unknown): MswarmCodaliJob["stages"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const stages = value.map((entry, index): NonNullable<MswarmCodaliJob["stages"]>[number] | null => {
+    const record = objectRecord(entry);
+    if (!record) return null;
+    const id = optionalText(record.id) || `stage-${index + 1}`;
+    const kind =
+      optionalText(record.kind) ||
+      optionalText(record.stage_kind) ||
+      "worker";
+    const role = optionalText(record.role);
+    const dependsOn = parseList(record.dependsOn ?? record.depends_on);
+    return {
+      id,
+      kind,
+      role: role || undefined,
+      title: optionalText(record.title) || undefined,
+      goal: optionalText(record.goal) || undefined,
+      prompt: optionalText(record.prompt) || optionalText(record.instructions) || undefined,
+      dependsOn: dependsOn.length ? dependsOn : undefined,
+      optional: record.optional === true,
+      maxSteps: optionalNumber(record.maxSteps, record.max_steps) ?? undefined,
+      maxToolCalls: optionalNumber(record.maxToolCalls, record.max_tool_calls) ?? undefined,
+      timeoutMs: optionalNumber(record.timeoutMs, record.timeout_ms) ?? undefined,
+      mode:
+        record.mode === "tool_loop" ||
+        record.mode === "protocol_loop" ||
+        record.mode === "smart_pipeline" ||
+        record.mode === "patch_json" ||
+        record.mode === "freeform"
+          ? record.mode
+          : undefined,
+      response: objectRecord(record.response) as NonNullable<MswarmCodaliJob["stages"]>[number]["response"],
+      outputSchema: objectRecord(record.outputSchema) || objectRecord(record.output_schema) || undefined,
+      metadata: objectRecord(record.metadata) || undefined,
+    };
+  }).filter((stage): stage is NonNullable<MswarmCodaliJob["stages"]>[number] => Boolean(stage));
+  return stages.length ? stages : undefined;
+}
+
+function normalizeCodaliJobBudgets(value: unknown): MswarmCodaliJob["budgets"] | undefined {
+  const record = objectRecord(value);
+  if (!record) return undefined;
+  const budgets: NonNullable<MswarmCodaliJob["budgets"]> = {};
+  const maxRuntimeMs = optionalNumber(record.maxRuntimeMs, record.max_runtime_ms);
+  const maxToolCalls = optionalNumber(record.maxToolCalls, record.max_tool_calls);
+  const maxFollowups = optionalNumber(record.maxFollowups, record.max_followups);
+  const maxParallelStages = optionalNumber(record.maxParallelStages, record.max_parallel_stages);
+  if (maxRuntimeMs !== null) budgets.maxRuntimeMs = maxRuntimeMs;
+  if (maxToolCalls !== null) budgets.maxToolCalls = maxToolCalls;
+  if (maxFollowups !== null) budgets.maxFollowups = maxFollowups;
+  if (maxParallelStages !== null) budgets.maxParallelStages = maxParallelStages;
+  return Object.keys(budgets).length ? budgets : undefined;
+}
+
+function buildCodaliJob(job: SelfHostedNodeInvocationJob): MswarmCodaliJob | undefined {
+  const payload = job.codali_job;
+  if (!payload) return undefined;
+  const jobType =
+    optionalText(payload.jobType) ||
+    optionalText(payload.job_type) ||
+    optionalText(job.execution_runtime) ||
+    "codali_job";
+  return {
+    id: optionalText(payload.id) || job.job_id,
+    jobType,
+    input: payload.input ?? messagesToPrompt(job.openai_request.messages),
+    context: objectRecord(payload.context) || undefined,
+    tenant: objectRecord(payload.tenant) || undefined,
+    requester: objectRecord(payload.requester) || undefined,
+    toolManifest:
+      objectRecord(payload.toolManifest) ||
+      objectRecord(payload.tool_manifest) ||
+      objectRecord(job.docdex?.tool_manifest) ||
+      undefined,
+    stages: normalizeCodaliJobStages(payload.stages),
+    budgets: normalizeCodaliJobBudgets(payload.budgets),
+    agentPolicy:
+      (objectRecord(payload.agentPolicy) || objectRecord(payload.agent_policy) || undefined) as
+        | MswarmCodaliJob["agentPolicy"]
+        | undefined,
+    response: objectRecord(payload.response) as MswarmCodaliJob["response"] | undefined,
+    metadata: objectRecord(payload.metadata) || undefined,
+  };
+}
+
 function buildCodaliPolicy(job: SelfHostedNodeInvocationJob): MswarmCodaliPolicy {
   return {
     allowTools: job.policy?.allow_tools !== false,
     allowedTools: job.policy?.allowed_tools,
     deniedTools: job.policy?.denied_tools,
+    appToolContracts: normalizeRuntimeToolContractPayload(job.policy?.app_tool_contracts),
+    appVirtualTools: normalizeCapabilities(job.policy?.app_virtual_tools),
+    appToolGateway: objectRecord(job.policy?.app_tool_gateway) || undefined,
+    okacamToolContracts: normalizeRuntimeToolContractPayload(job.policy?.okacam_tool_contracts),
+    okacamVirtualTools: normalizeCapabilities(job.policy?.okacam_virtual_tools),
     allowShell: job.policy?.allow_shell === true,
     allowWrites: job.policy?.allow_writes === true,
     allowDestructiveOperations: job.policy?.allow_destructive_operations === true,
@@ -5911,6 +6039,7 @@ export class SelfHostedNodeRuntime {
         adapter: agent.adapter,
         supports_tools: agent.supportsTools === true
       });
+      const codaliJob = buildCodaliJob(job);
       const response = await this.codaliExecutor.invoke({
         jobId: job.job_id,
         requestId: job.request_id,
@@ -5924,6 +6053,7 @@ export class SelfHostedNodeRuntime {
         temperature: job.openai_request.temperature,
         responseFormat: job.openai_request.response_format ?? null,
         stream: job.openai_request.stream === true,
+        codaliJob,
         onOpenAIChunk: emitOpenAIChunk,
         onRuntimeEvent: async (event) => {
           if (event.type === "status" || event.type === "tool_call" || event.type === "tool_result" || event.type === "error") {
@@ -5935,6 +6065,26 @@ export class SelfHostedNodeRuntime {
               ...(event.type === "tool_call" ? { name: event.name } : {}),
               ...(event.type === "tool_result" ? { name: event.name, ok: event.ok, error_code: event.errorCode } : {}),
               ...(event.type === "error" ? { message: event.message, code: event.code } : {}),
+              at: event.at
+            });
+          }
+        },
+        onJobEvent: async (event) => {
+          if (
+            event.type === "job_start" ||
+            event.type === "stage_start" ||
+            event.type === "stage_result" ||
+            event.type === "stage_error" ||
+            event.type === "job_result"
+          ) {
+            await recordProgress({
+              type: event.type,
+              job_id: job.job_id,
+              request_id: job.request_id,
+              codali_job_id: event.jobId,
+              stage_id: event.stageId,
+              kind: event.kind,
+              status: event.status,
               at: event.at
             });
           }
@@ -5956,8 +6106,21 @@ export class SelfHostedNodeRuntime {
             adapter: response.metadata.adapter,
             local_model: response.metadata.local_model,
             agent_slug: response.metadata.agent_slug,
+            runtime: response.metadata.runtime,
             codali_run_id: response.metadata.run_id,
             tool_calls_executed: response.metadata.tool_calls_executed,
+            called_tools: response.metadata.called_tools,
+            dynamic_tools_considered: response.metadata.dynamic_tools_considered,
+            dynamic_tools_registered: response.metadata.dynamic_tools_registered,
+            dynamic_tools_skipped: response.metadata.dynamic_tools_skipped,
+            tool_call_details: response.metadata.tool_call_details,
+            telemetry: response.metadata.telemetry,
+            codali_job_id: response.metadata.codali_job_id,
+            codali_job_type: response.metadata.codali_job_type,
+            codali_job_status: response.metadata.codali_job_status,
+            codali_job_stage_count: response.metadata.codali_job_stage_count,
+            codali_job_stages: response.metadata.codali_job_stages,
+            codali_job_errors: response.metadata.codali_job_errors,
             touched_files: response.metadata.touched_files,
             warnings: response.metadata.warnings,
             mode: response.metadata.mode

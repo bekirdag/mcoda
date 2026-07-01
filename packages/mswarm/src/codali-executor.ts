@@ -118,6 +118,7 @@ export interface CodaliRuntimeDocdexInput {
   allowMemoryWrite?: boolean;
   allowProfileWrite?: boolean;
   allowIndexRebuild?: boolean;
+  toolManifest?: Record<string, unknown>;
 }
 
 export interface CodaliRuntimeAgentInput {
@@ -152,6 +153,11 @@ export interface CodaliRuntimePolicy {
   allowOutsideWorkspace: boolean;
   allowedTools?: string[];
   deniedTools?: string[];
+  appToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
+  appVirtualTools?: string[];
+  appToolGateway?: Record<string, unknown>;
+  okacamToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
+  okacamVirtualTools?: string[];
   maxSteps: number;
   maxToolCalls: number;
   maxTokens?: number;
@@ -249,6 +255,7 @@ export interface CodaliRuntimeResult {
   warnings: string[];
   events: CodaliRuntimeEvent[];
   runId: string;
+  telemetry?: CodaliRuntimeTelemetry;
   session?: {
     id: string;
     summaryRefs: string[];
@@ -256,8 +263,171 @@ export interface CodaliRuntimeResult {
   };
 }
 
+export interface CodaliRuntimeTelemetry {
+  runId: string;
+  runtime: "codali";
+  mode: CodaliRuntimePolicy["mode"];
+  toolCallCount: number;
+  calledTools: string[];
+  consideredTools: string[];
+  registeredDynamicTools: string[];
+  skippedDynamicTools: Array<{ name: string; reason: string }>;
+  dynamicToolCalls: Array<{
+    name: string;
+    backingTool?: string;
+    status: "success" | "failed" | "blocked";
+    latencyMs: number;
+    errorCode?: string;
+    errorMessage?: string;
+  }>;
+  warnings: string[];
+}
+
+export interface CodaliJobStageDefinition {
+  id: string;
+  kind: string;
+  role?: string;
+  title?: string;
+  goal?: string;
+  prompt?: string;
+  dependsOn?: string[];
+  optional?: boolean;
+  maxSteps?: number;
+  maxToolCalls?: number;
+  timeoutMs?: number;
+  mode?: CodaliRuntimePolicy["mode"];
+  agent?: CodaliRuntimeAgentInput;
+  provider?: CodaliRuntimeProviderInput;
+  response?: CodaliRuntimeInput["response"];
+  outputSchema?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CodaliJobBudgets {
+  maxRuntimeMs?: number;
+  maxToolCalls?: number;
+  maxFollowups?: number;
+  maxParallelStages?: number;
+}
+
+export interface CodaliJobAgentPolicy {
+  defaultAgent?: CodaliRuntimeAgentInput;
+  defaultProvider?: CodaliRuntimeProviderInput;
+  stageAgents?: Record<string, CodaliRuntimeAgentInput>;
+  stageProviders?: Record<string, CodaliRuntimeProviderInput>;
+  preferSmallLocal?: boolean;
+  allowCloudFallback?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MswarmCodaliJob {
+  id?: string;
+  jobType: string;
+  input?: unknown;
+  context?: Record<string, unknown>;
+  tenant?: Record<string, unknown>;
+  requester?: Record<string, unknown>;
+  toolManifest?: Record<string, unknown>;
+  stages?: CodaliJobStageDefinition[];
+  budgets?: CodaliJobBudgets;
+  agentPolicy?: CodaliJobAgentPolicy;
+  response?: {
+    format?: "text" | "json" | "json_schema";
+    schema?: Record<string, unknown>;
+    requireEvidence?: boolean;
+    metadata?: Record<string, unknown>;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export interface CodaliJobEvent {
+  type: string;
+  at?: string;
+  runId?: string;
+  jobId?: string;
+  stageId?: string;
+  kind?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
+export interface CodaliJobRuntimeInput {
+  request: MswarmCodaliJob;
+  runtime: Omit<CodaliRuntimeInput, "task" | "messages" | "metadata" | "onEvent"> & {
+    messages?: ProviderMessage[];
+    metadata?: CodaliRuntimeInput["metadata"];
+    onEvent?: CodaliRuntimeInput["onEvent"];
+  };
+  onEvent?: (event: CodaliJobEvent) => void | Promise<void>;
+}
+
+export interface CodaliJobRuntimeError {
+  stageId?: string;
+  code: string;
+  message: string;
+  retryable?: boolean;
+}
+
+export interface CodaliJobStageResult {
+  id: string;
+  kind: string;
+  status: "completed" | "failed" | "skipped";
+  attempt: number;
+  output: string;
+  toolCallsExecuted: number;
+  warnings: string[];
+  durationMs: number;
+  agentSlug?: string;
+  model?: string;
+  error?: CodaliJobRuntimeError;
+}
+
+export interface CodaliJobTelemetry {
+  runId: string;
+  runtime: "codali";
+  mode: "job";
+  jobId: string;
+  jobType: string;
+  status: "succeeded" | "failed" | "partial" | "needs_clarification";
+  stageCount: number;
+  toolCallCount: number;
+  calledTools: string[];
+  consideredTools: string[];
+  warnings: string[];
+  errors: CodaliJobRuntimeError[];
+  stages: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    attempt: number;
+    durationMs: number;
+    toolCallsExecuted: number;
+    agentSlug?: string;
+    model?: string;
+    errorCode?: string;
+  }>;
+}
+
+export interface CodaliJobRuntimeResult {
+  output: string;
+  status: CodaliJobTelemetry["status"];
+  runId: string;
+  jobId: string;
+  jobType: string;
+  stages: CodaliJobStageResult[];
+  usage?: ProviderUsage;
+  toolCallsExecuted: number;
+  touchedFiles: string[];
+  warnings: string[];
+  errors: CodaliJobRuntimeError[];
+  telemetry: CodaliJobTelemetry;
+  messages?: ProviderMessage[];
+  events?: CodaliJobEvent[];
+}
+
 interface CodaliModule {
   runCodaliTask(input: CodaliRuntimeInput): Promise<CodaliRuntimeResult>;
+  runCodaliJob?(input: CodaliJobRuntimeInput): Promise<CodaliJobRuntimeResult>;
   codaliEventToOpenAIChatCompletionChunk(
     event: CodaliRuntimeEvent,
     options: { requestId: string; model: string },
@@ -315,12 +485,18 @@ export interface MswarmCodaliDocdex {
   allowMemoryWrite?: boolean;
   allowProfileWrite?: boolean;
   allowIndexRebuild?: boolean;
+  toolManifest?: Record<string, unknown>;
 }
 
 export interface MswarmCodaliPolicy {
   allowTools?: boolean;
   allowedTools?: string[];
   deniedTools?: string[];
+  appToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
+  appVirtualTools?: string[];
+  appToolGateway?: Record<string, unknown>;
+  okacamToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
+  okacamVirtualTools?: string[];
   allowShell?: boolean;
   allowWrites?: boolean;
   allowDestructiveOperations?: boolean;
@@ -349,23 +525,40 @@ export interface MswarmCodaliInvocationInput {
   temperature?: number;
   responseFormat?: Record<string, unknown> | null;
   stream?: boolean;
+  codaliJob?: MswarmCodaliJob;
   onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
   onRuntimeEvent?: (event: CodaliRuntimeEvent) => void | Promise<void>;
+  onJobEvent?: (event: CodaliJobEvent) => void | Promise<void>;
   runCodali?: (input: CodaliRuntimeInput) => Promise<CodaliRuntimeResult>;
+  runCodaliJob?: (input: CodaliJobRuntimeInput) => Promise<CodaliJobRuntimeResult>;
 }
 
 export interface MswarmCodaliInvocationResult {
   output: string;
   usage?: ProviderUsage;
-  runtimeResult: CodaliRuntimeResult;
+  runtimeResult: CodaliRuntimeResult | CodaliJobRuntimeResult;
+  jobResult?: CodaliJobRuntimeResult;
   openAIChunks: Record<string, unknown>[];
   metadata: {
     provider: string;
     adapter: string;
     local_model: string;
     agent_slug: string;
+    runtime: "codali";
     run_id: string;
     tool_calls_executed: number;
+    called_tools: string[];
+    dynamic_tools_considered: string[];
+    dynamic_tools_registered: string[];
+    dynamic_tools_skipped: Array<{ name: string; reason: string }>;
+    tool_call_details: CodaliRuntimeTelemetry["dynamicToolCalls"];
+    telemetry?: CodaliRuntimeTelemetry | CodaliJobTelemetry;
+    codali_job_id?: string;
+    codali_job_type?: string;
+    codali_job_status?: CodaliJobRuntimeResult["status"];
+    codali_job_stage_count?: number;
+    codali_job_stages?: CodaliJobTelemetry["stages"];
+    codali_job_errors?: CodaliJobRuntimeError[];
     touched_files: string[];
     warnings: string[];
     mode: CodaliRuntimeInput["policy"]["mode"];
@@ -504,6 +697,11 @@ function buildRuntimePolicy(
     allowOutsideWorkspace: policy?.allowOutsideWorkspace === true,
     allowedTools: allowTools ? policy?.allowedTools : [],
     deniedTools: policy?.deniedTools,
+    appToolContracts: policy?.appToolContracts,
+    appVirtualTools: policy?.appVirtualTools,
+    appToolGateway: policy?.appToolGateway,
+    okacamToolContracts: policy?.okacamToolContracts,
+    okacamVirtualTools: policy?.okacamVirtualTools,
     maxSteps: allowRuntimeTools ? DEFAULT_MAX_STEPS : 2,
     maxToolCalls:
       allowRuntimeTools
@@ -547,6 +745,7 @@ function buildRuntimeDocdex(
     allowMemoryWrite: docdex?.allowMemoryWrite ?? false,
     allowProfileWrite: docdex?.allowProfileWrite ?? false,
     allowIndexRebuild: docdex?.allowIndexRebuild ?? false,
+    toolManifest: docdex?.toolManifest,
   };
 }
 
@@ -598,8 +797,19 @@ export class MswarmCodaliExecutor {
       openAIChunks.push(chunk);
       await input.onOpenAIChunk?.(chunk);
     };
-    const runCodali = input.runCodali ?? codali.runCodaliTask;
-    const runtimeResult = await runCodali({
+    const handleRuntimeEvent = async (event: CodaliRuntimeEvent) => {
+      await input.onRuntimeEvent?.(event);
+      if (input.stream) {
+        const chunk = codali.codaliEventToOpenAIChatCompletionChunk(
+          event,
+          openAIChunkOptions(input),
+        );
+        if (chunk) {
+          await emitChunk(chunk);
+        }
+      }
+    };
+    const runtimeInput: CodaliRuntimeInput = {
       task: messagesToTask(input.messages),
       messages: toProviderMessages(input.messages),
       workspace,
@@ -641,36 +851,67 @@ export class MswarmCodaliExecutor {
         requestId: input.requestId,
         agentSlug: input.agent.slug,
       },
-      onEvent: async (event: CodaliRuntimeEvent) => {
-        await input.onRuntimeEvent?.(event);
-        if (input.stream) {
-          const chunk = codali.codaliEventToOpenAIChatCompletionChunk(
-            event,
-            openAIChunkOptions(input),
-          );
-          if (chunk) {
-            await emitChunk(chunk);
-          }
-        }
-      },
-    });
+      onEvent: handleRuntimeEvent,
+    };
+
+    let runtimeResult: CodaliRuntimeResult | undefined;
+    let jobResult: CodaliJobRuntimeResult | undefined;
+    if (input.codaliJob) {
+      const runCodaliJob = input.runCodaliJob ?? codali.runCodaliJob;
+      if (!runCodaliJob) {
+        throw new Error("Codali module does not expose runCodaliJob for codali_job payloads");
+      }
+      jobResult = await runCodaliJob({
+        request: {
+          ...input.codaliJob,
+          id: input.codaliJob.id ?? input.jobId,
+          toolManifest: input.codaliJob.toolManifest ?? input.docdex?.toolManifest,
+        },
+        runtime: runtimeInput,
+        onEvent: input.onJobEvent,
+      });
+    } else {
+      const runCodali = input.runCodali ?? codali.runCodaliTask;
+      runtimeResult = await runCodali(runtimeInput);
+    }
+
+    const invocationResult = jobResult ?? runtimeResult;
+    if (!invocationResult) {
+      throw new Error("Codali invocation produced no result");
+    }
+    const telemetry = invocationResult.telemetry;
+    const runtimeTelemetry = runtimeResult?.telemetry;
 
     return {
-      output: runtimeResult.finalMessage,
-      usage: runtimeResult.usage,
-      runtimeResult,
+      output: jobResult?.output ?? runtimeResult?.finalMessage ?? "",
+      usage: invocationResult.usage,
+      runtimeResult: invocationResult,
+      jobResult,
       openAIChunks,
       metadata: {
         provider: providerName,
         adapter: input.agent.adapter,
         local_model: optionalText(input.agent.model) ?? input.model,
         agent_slug: input.agent.slug,
-        run_id: runtimeResult.runId,
-        tool_calls_executed: runtimeResult.toolCallsExecuted,
-        touched_files: runtimeResult.touchedFiles,
-        warnings: runtimeResult.warnings,
+        runtime: "codali",
+        run_id: invocationResult.runId,
+        tool_calls_executed: invocationResult.toolCallsExecuted,
+        called_tools: telemetry?.calledTools ?? [],
+        dynamic_tools_considered: telemetry?.consideredTools ?? [],
+        dynamic_tools_registered: runtimeTelemetry?.registeredDynamicTools ?? [],
+        dynamic_tools_skipped: runtimeTelemetry?.skippedDynamicTools ?? [],
+        tool_call_details: runtimeTelemetry?.dynamicToolCalls ?? [],
+        telemetry,
+        codali_job_id: jobResult?.jobId,
+        codali_job_type: jobResult?.jobType,
+        codali_job_status: jobResult?.status,
+        codali_job_stage_count: jobResult?.stages.length,
+        codali_job_stages: jobResult?.telemetry.stages,
+        codali_job_errors: jobResult?.errors,
+        touched_files: invocationResult.touchedFiles,
+        warnings: invocationResult.warnings,
         mode: runtimePolicy.mode,
-        session_id: runtimeResult.session?.id,
+        session_id: runtimeResult?.session?.id,
       },
     };
   }

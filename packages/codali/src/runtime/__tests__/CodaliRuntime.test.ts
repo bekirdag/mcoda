@@ -265,6 +265,124 @@ test("runCodaliTask scopes Docdex tools by runtime policy", { concurrency: false
   );
 });
 
+test("runCodaliTask registers runtime app tool contracts as Docdex-backed virtual tools", {
+  concurrency: false,
+}, async () => {
+  const backingCalls: unknown[] = [];
+  const docdexSearch: ToolDefinition = {
+    name: "docdex_search",
+    description: "tenant-scoped search",
+    inputSchema: {
+      type: "object",
+      required: ["query"],
+      properties: { query: { type: "string" }, limit: { type: "number" } },
+    },
+    handler: async (args) => {
+      backingCalls.push(args);
+      return {
+        output: "search result",
+        data: { results: [{ rel_path: "daily-logs/alpha.json", summary: "Blocker cleared" }] },
+      };
+    },
+  };
+  const provider = new StubProvider([
+    {
+      message: { role: "assistant", content: "" },
+      toolCalls: [
+        {
+          id: "call-okacam",
+          name: "okacam_daily_logs",
+          args: { query: "latest blockers", limit: 2 },
+        },
+      ],
+    },
+    { message: { role: "assistant", content: "Blocker was cleared." } },
+  ]);
+
+  const result = await runCodaliTask({
+    task: "What happened with blockers?",
+    workspace: { root: process.cwd() },
+    provider: { name: "stub", model: "stub" },
+    providerInstance: provider,
+    tools: [docdexSearch],
+    docdex: {
+      toolManifest: {
+        actualTools: ["docdex_search"],
+        virtualTools: ["okacam_daily_logs"],
+      },
+    },
+    policy: basePolicy({
+      allowedTools: ["docdex_search", "okacam_daily_logs"],
+      appToolContracts: {
+        okacam_daily_logs: {
+          executionMode: "server_supplied_snapshot_plus_docdex",
+          callSchema: {
+            type: "object",
+            required: ["query"],
+            additionalProperties: false,
+            properties: { query: { type: "string" }, limit: { type: "number" } },
+          },
+          resultContract: "tenant daily log search results",
+          resultSources: ["docdex"],
+          backingTools: ["docdex_search"],
+          sourcePaths: ["server/src/services/tenant-ai-chat-service.ts"],
+          sourceTypes: ["daily_logs"],
+          suppliedSnapshots: ["tenant_capabilities"],
+        },
+      },
+    }),
+  });
+
+  const offeredTools = provider.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.ok(offeredTools.includes("okacam_daily_logs"));
+  assert.deepEqual(backingCalls, [{ query: "latest blockers", limit: 2 }]);
+  assert.equal(result.finalMessage, "Blocker was cleared.");
+  assert.equal(result.toolCallsExecuted, 1);
+  assert.deepEqual(result.telemetry.calledTools, ["okacam_daily_logs"]);
+  assert.deepEqual(result.telemetry.registeredDynamicTools, ["okacam_daily_logs"]);
+  assert.equal(result.telemetry.dynamicToolCalls[0]?.name, "okacam_daily_logs");
+  assert.equal(result.telemetry.dynamicToolCalls[0]?.backingTool, "docdex_search");
+  assert.equal(result.telemetry.dynamicToolCalls[0]?.status, "success");
+});
+
+test("runCodaliTask skips runtime app tool contracts with unsafe backing tools", {
+  concurrency: false,
+}, async () => {
+  const provider = new StubProvider([{ message: { role: "assistant", content: "done" } }]);
+
+  const result = await runCodaliTask({
+    task: "inspect unsafe virtual tools",
+    workspace: { root: process.cwd() },
+    provider: { name: "stub", model: "stub" },
+    providerInstance: provider,
+    tools: [],
+    docdex: {
+      toolManifest: {
+        virtualTools: ["okacam_writeback"],
+      },
+    },
+    policy: basePolicy({
+      allowedTools: ["okacam_writeback", "write_file"],
+      appToolContracts: {
+        okacam_writeback: {
+          executionMode: "server_supplied_snapshot_plus_docdex",
+          callSchema: { type: "object" },
+          backingTools: ["write_file"],
+        },
+      },
+    }),
+  });
+
+  const offeredTools = provider.requests[0]?.tools?.map((tool) => tool.name) ?? [];
+  assert.ok(!offeredTools.includes("okacam_writeback"));
+  assert.deepEqual(result.telemetry.registeredDynamicTools, []);
+  assert.ok(
+    result.telemetry.skippedDynamicTools.some(
+      (entry) => entry.name === "okacam_writeback" && entry.reason === "unsafe_backing_tool:write_file",
+    ),
+  );
+});
+
 test("runCodaliTask scopes built-in Docdex tools by encrypted runtime operations", {
   concurrency: false,
 }, async () => {
