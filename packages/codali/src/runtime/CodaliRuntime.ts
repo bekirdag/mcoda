@@ -31,6 +31,12 @@ import {
   normalizeDocdexRuntimeOperation,
   type DocdexRuntimeOperation,
 } from "../docdex/DocdexClient.js";
+import {
+  AppToolGatewayDispatchError,
+  dispatchAppToolGateway,
+  type CodaliAppToolGatewayRequesterScope,
+  type CodaliAppToolGatewayScope,
+} from "../gateway/AppToolGatewayDispatcher.js";
 import { createDiffTool } from "../tools/diff/DiffTool.js";
 import { createDocdexTools } from "../tools/docdex/DocdexTools.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
@@ -41,6 +47,7 @@ import {
   ToolExecutionError,
   type ToolContext,
   type ToolDefinition,
+  type ToolErrorCode,
   type ToolExecutionResult,
   type ToolInputSchema,
 } from "../tools/ToolTypes.js";
@@ -93,6 +100,7 @@ export interface CodaliRuntimeDocdexInput {
   required?: boolean;
   allowedOperations?: string[];
   capabilities?: Record<string, boolean | undefined>;
+  immutableRuntimeContext?: boolean;
   initialize?: boolean;
   allowWeb?: boolean;
   allowMemoryWrite?: boolean;
@@ -111,9 +119,15 @@ export interface CodaliRuntimeToolManifest extends Record<string, unknown> {
 export interface CodaliRuntimeAppToolGatewayContract extends Record<string, unknown> {
   endpoint?: string;
   readOnly?: boolean;
+  read_only?: boolean;
   signatureRequired?: boolean;
   signature_required?: boolean;
   signature?: string;
+  signatureSecret?: string;
+  signature_secret?: string;
+  signingSecret?: string;
+  signing_secret?: string;
+  secret?: string;
 }
 
 export interface CodaliRuntimeAppToolContract extends Record<string, unknown> {
@@ -804,6 +818,81 @@ const resolveGatewayContract = (
   return { ...(policyGateway ?? {}), ...(gateway ?? {}) };
 };
 
+const gatewayString = (
+  gateway: CodaliRuntimeAppToolGatewayContract | undefined,
+  keys: readonly string[],
+): string | undefined => {
+  if (!gateway) return undefined;
+  for (const key of keys) {
+    const value = gateway[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+};
+
+const gatewayBoolean = (
+  gateway: CodaliRuntimeAppToolGatewayContract | undefined,
+  keys: readonly string[],
+): boolean | undefined => {
+  if (!gateway) return undefined;
+  for (const key of keys) {
+    const value = gateway[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const gatewayEndpoint = (
+  gateway: CodaliRuntimeAppToolGatewayContract | undefined,
+): string | undefined => gatewayString(gateway, ["endpoint"]);
+
+const gatewaySigningSecret = (
+  gateway: CodaliRuntimeAppToolGatewayContract | undefined,
+): string | undefined =>
+  gatewayString(gateway, [
+    "signatureSecret",
+    "signature_secret",
+    "signingSecret",
+    "signing_secret",
+    "secret",
+    "signature",
+  ]);
+
+const appToolGatewayTenantScope = (
+  input: CodaliRuntimeInput,
+): CodaliAppToolGatewayScope =>
+  stripUndefined({
+    tenant_id: input.metadata?.tenantId,
+    docdex_repo_id: input.docdex?.repoId,
+  }) as CodaliAppToolGatewayScope;
+
+const appToolGatewayRequesterScope = (
+  input: CodaliRuntimeInput,
+): CodaliAppToolGatewayRequesterScope =>
+  stripUndefined({
+    request_id: input.metadata?.requestId,
+    owner_user_id: input.metadata?.ownerUserId,
+    api_key_id: input.metadata?.apiKeyId,
+    agent_slug: input.metadata?.agentSlug,
+  }) as CodaliAppToolGatewayRequesterScope;
+
+const gatewayDispatchToolErrorCode = (
+  error: AppToolGatewayDispatchError,
+): ToolErrorCode => {
+  if (error.code === "GATEWAY_INVALID_ARGS") return "tool_invalid_args";
+  if (
+    error.code === "GATEWAY_HTTP_FAILED" ||
+    error.code === "GATEWAY_RESPONSE_MALFORMED"
+  ) {
+    return "tool_execution_failed";
+  }
+  return "tool_permission_denied";
+};
+
 const createGatewayDynamicTool = (options: {
   name: string;
   contract: CodaliRuntimeAppToolContract;
@@ -812,8 +901,6 @@ const createGatewayDynamicTool = (options: {
   state: DynamicToolRegistryState;
 }): ToolDefinition => {
   const { name, contract, gateway, input, state } = options;
-  const endpoint = typeof gateway.endpoint === "string" ? gateway.endpoint : undefined;
-  const signature = typeof gateway.signature === "string" ? gateway.signature : undefined;
   return {
     name,
     description:
@@ -824,45 +911,19 @@ const createGatewayDynamicTool = (options: {
       const startedAt = Date.now();
       try {
         assertDynamicArgsStayInScope(name, args);
-        if (!endpoint) {
-          throw new ToolExecutionError("tool_permission_denied", "App tool gateway endpoint is not configured", {
-            retryable: false,
-            details: { tool: name },
-          });
-        }
-        const signatureRequired =
-          gateway.signatureRequired === true || gateway.signature_required === true;
-        if (signatureRequired && !signature) {
-          throw new ToolExecutionError("tool_permission_denied", "App tool gateway signature is required", {
-            retryable: false,
-            details: { tool: name },
-          });
-        }
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: stripUndefined({
-            "content-type": "application/json",
-            "x-codali-app-tool-signature": signature,
-          }) as Record<string, string>,
-          body: JSON.stringify({
-            tenant: input.metadata?.tenantId ? { id: input.metadata.tenantId } : undefined,
-            tool: name,
-            args,
-            run_id: context.runId,
-            session_id: input.session?.id,
-            request_id: input.metadata?.requestId,
-            read_only: true,
-            result_contract: contract.resultContract ?? contract.result_contract,
-          }),
+        const dispatched = await dispatchAppToolGateway({
+          runId: context.runId ?? input.metadata?.requestId ?? input.metadata?.jobId ?? "codali-runtime",
+          sessionId: input.session?.id,
+          requestId: input.metadata?.requestId,
+          tenantScope: appToolGatewayTenantScope(input),
+          requesterScope: appToolGatewayRequesterScope(input),
+          toolName: name,
+          args,
+          contract,
+          gateway,
+          allowedTools: input.policy.allowedTools,
+          deniedTools: input.policy.deniedTools,
         });
-        const text = await response.text();
-        if (!response.ok) {
-          throw new ToolExecutionError("tool_execution_failed", `App tool gateway failed with HTTP ${response.status}`, {
-            retryable: response.status >= 500,
-            details: { tool: name, status: response.status, body: text.slice(0, 1_000) },
-          });
-        }
-        const parsed = parseJsonPayload(text);
         state.dynamicToolCalls.push({
           name,
           backingTool: "app_tool_gateway",
@@ -870,19 +931,30 @@ const createGatewayDynamicTool = (options: {
           latencyMs: Date.now() - startedAt,
         });
         return {
-          output: text,
-          data: parsed ?? text,
+          output: JSON.stringify(dispatched.evidencePayload, null, 2),
+          data: dispatched.evidencePayload,
         };
       } catch (error) {
+        const toolError =
+          error instanceof AppToolGatewayDispatchError
+            ? new ToolExecutionError(gatewayDispatchToolErrorCode(error), error.message, {
+                retryable: error.retryable,
+                details: stripUndefined({
+                  tool: name,
+                  gatewayErrorCode: error.code,
+                  gatewayDetails: error.details,
+                }),
+              })
+            : error;
         state.dynamicToolCalls.push({
           name,
           backingTool: "app_tool_gateway",
           status: "failed",
           latencyMs: Date.now() - startedAt,
-          errorCode: error instanceof ToolExecutionError ? error.code : "tool_execution_failed",
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorCode: toolError instanceof ToolExecutionError ? toolError.code : "tool_execution_failed",
+          errorMessage: toolError instanceof Error ? toolError.message : String(toolError),
         });
-        throw error;
+        throw toolError;
       }
     },
   };
@@ -1460,6 +1532,12 @@ const isDocdexToolAllowed = (
   return true;
 };
 
+const isImmutableDocdexRuntimeContext = (
+  docdex: CodaliRuntimeDocdexInput | undefined,
+): boolean =>
+  docdex?.immutableRuntimeContext === true ||
+  docdex?.credentialSource === "attached_mswarm_api_key";
+
 const registerRuntimeTool = (
   registry: ToolRegistry,
   tool: ToolDefinition,
@@ -1533,23 +1611,25 @@ const registerRuntimeContractTools = (
       contractString(candidate.contract, "executionMode", "execution_mode") ??
       "server_supplied_snapshot_plus_docdex";
     const gateway = resolveGatewayContract(candidate.contract, input.policy.appToolGateway);
-    if (executionMode === "app_tool_gateway" || gateway?.endpoint) {
+    const resolvedGatewayEndpoint = gatewayEndpoint(gateway);
+    if (executionMode === "app_tool_gateway" || resolvedGatewayEndpoint) {
       if (!gateway) {
         recordSkippedDynamicTool(state, name, "gateway_not_configured");
         continue;
       }
-      if (gateway.readOnly === false) {
+      if (readOnly !== true) {
+        recordSkippedDynamicTool(state, name, "not_read_only");
+        continue;
+      }
+      if (gatewayBoolean(gateway, ["readOnly", "read_only"]) !== true) {
         recordSkippedDynamicTool(state, name, "gateway_not_read_only");
         continue;
       }
-      const gatewayEndpoint = typeof gateway.endpoint === "string" && gateway.endpoint.trim()
-        ? gateway.endpoint.trim()
-        : undefined;
-      if (!gatewayEndpoint) {
+      if (!resolvedGatewayEndpoint) {
         recordSkippedDynamicTool(state, name, "gateway_endpoint_missing");
         continue;
       }
-      if ((gateway.signatureRequired === true || gateway.signature_required === true) && !gateway.signature) {
+      if (!gatewaySigningSecret(gateway)) {
         recordSkippedDynamicTool(state, name, "gateway_signature_missing");
         continue;
       }
@@ -1558,7 +1638,7 @@ const registerRuntimeContractTools = (
         createGatewayDynamicTool({
           name,
           contract: candidate.contract,
-          gateway: { ...gateway, endpoint: gatewayEndpoint },
+          gateway: { ...gateway, endpoint: resolvedGatewayEndpoint },
           input,
           state,
         }),
@@ -1641,16 +1721,22 @@ const buildRuntimeToolRegistry = (
     register(createShellTool());
   }
 
+  const immutableDocdexContext = isImmutableDocdexRuntimeContext(input.docdex);
   const docdexClient = new DocdexClient({
-    baseUrl: input.docdex?.baseUrl ?? DEFAULT_DOCDEX_BASE_URL,
+    baseUrl: immutableDocdexContext
+      ? input.docdex?.baseUrl ?? ""
+      : input.docdex?.baseUrl ?? DEFAULT_DOCDEX_BASE_URL,
     repoId: input.docdex?.repoId,
-    repoRoot: input.docdex?.repoRoot ?? input.workspace.root,
+    repoRoot: immutableDocdexContext
+      ? undefined
+      : input.docdex?.repoRoot ?? input.workspace.root,
     dagSessionId: input.docdex?.dagSessionId ?? input.metadata?.requestId,
     apiKey: input.docdex?.apiKey,
     credentialSource: input.docdex?.credentialSource,
     required: input.docdex?.required,
     allowedOperations: input.docdex?.allowedOperations,
     capabilities: input.docdex?.capabilities,
+    immutableRuntimeContext: immutableDocdexContext,
   });
   for (const tool of createDocdexTools(docdexClient)) register(tool);
   registerRuntimeContractTools(registry, input, dynamicToolState, warnings);

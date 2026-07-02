@@ -11,6 +11,7 @@ const HELP_TEXT =
   "   or: codali run [--workspace-root <path>] --provider <name> --model <model> [--task <file>]\n" +
   "   or: codali <fix|review|explain|test> [run options] [--task <file>]\n" +
   "   or: codali eval --suite <path> [eval options]\n" +
+  "   or: codali eval --gateway-live-smoke [eval options]\n" +
   "   or: codali learn --file <path/to/file> [--confirm <dedupe_key> ...]\n" +
   "   or: codali learn --confirm <dedupe_key> [--confirm <dedupe_key> ...]\n" +
   "\n" +

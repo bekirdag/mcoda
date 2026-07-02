@@ -17,10 +17,15 @@ export interface DocdexClientOptions {
   required?: boolean;
   allowedOperations?: readonly string[];
   capabilities?: Record<string, boolean | undefined>;
+  immutableRuntimeContext?: boolean;
   dagSessionId?: string;
 }
 
 export type DocdexRuntimeErrorCode =
+  | "missing_credentials"
+  | "repo_access_denied"
+  | "scope_denied"
+  | "encrypted_operation_disabled"
   | "docdex_context_missing"
   | "docdex_api_key_missing"
   | "docdex_operation_not_allowed"
@@ -160,6 +165,10 @@ const CAPABILITY_KEYS = [
 ] as const;
 
 const DOCDEX_RUNTIME_ERROR_CODES = new Set<DocdexRuntimeErrorCode>([
+  "missing_credentials",
+  "repo_access_denied",
+  "scope_denied",
+  "encrypted_operation_disabled",
   "docdex_context_missing",
   "docdex_api_key_missing",
   "docdex_operation_not_allowed",
@@ -326,6 +335,27 @@ export class DocdexClient {
     return undefined;
   }
 
+  private isImmutableRuntimeContext(): boolean {
+    return (
+      this.options.immutableRuntimeContext === true ||
+      this.options.credentialSource === "attached_mswarm_api_key"
+    );
+  }
+
+  private missingCredentialCode(): DocdexRuntimeErrorCode {
+    return this.isImmutableRuntimeContext() ? "missing_credentials" : "docdex_api_key_missing";
+  }
+
+  private missingScopeCode(): DocdexRuntimeErrorCode {
+    return this.isImmutableRuntimeContext() ? "scope_denied" : "docdex_context_missing";
+  }
+
+  private operationDisabledCode(): DocdexRuntimeErrorCode {
+    return this.isImmutableRuntimeContext()
+      ? "encrypted_operation_disabled"
+      : "docdex_operation_not_allowed";
+  }
+
   private redactSensitiveText(text: string): string {
     let output = text;
     for (const secret of [this.options.apiKey, this.options.authToken]) {
@@ -357,22 +387,36 @@ export class DocdexClient {
     const requiresAttachedKey = credentialSource === "attached_mswarm_api_key";
     if (requiresAttachedKey && (!this.options.apiKey || this.options.apiKey.trim().length === 0)) {
       throw this.runtimeError(
-        "docdex_api_key_missing",
+        this.missingCredentialCode(),
         "Docdex attached mswarm API key is required but was not provided.",
         { retryable: false, details: { operation, credential_source: credentialSource } },
       );
     }
-    if (this.options.required && this.resolveBaseUrl().length === 0) {
-      throw this.runtimeError("docdex_context_missing", "Docdex base_url is required for this job.", {
+    if ((this.options.required || this.isImmutableRuntimeContext()) && this.resolveBaseUrl().length === 0) {
+      throw this.runtimeError(this.missingScopeCode(), "Docdex base_url is required for this job.", {
         retryable: false,
         details: { operation },
       });
     }
-    if (this.options.required && requiresAttachedKey && !this.repoId) {
-      throw this.runtimeError("docdex_context_missing", "Docdex repo_id is required for this job.", {
+    if ((this.options.required || this.isImmutableRuntimeContext()) && requiresAttachedKey && !this.repoId) {
+      throw this.runtimeError(this.missingScopeCode(), "Docdex repo_id is required for this job.", {
         retryable: false,
         details: { operation },
       });
+    }
+    if (this.isImmutableRuntimeContext() && !this.options.allowedOperations?.length) {
+      throw this.runtimeError(
+        "scope_denied",
+        "Docdex allowedOperations are required for immutable encrypted jobs.",
+        { retryable: false, details: { operation, missing: "allowedOperations" } },
+      );
+    }
+    if (this.isImmutableRuntimeContext() && !this.options.capabilities) {
+      throw this.runtimeError(
+        "scope_denied",
+        "Docdex capability map is required for immutable encrypted jobs.",
+        { retryable: false, details: { operation, missing: "capabilities" } },
+      );
     }
   }
 
@@ -381,14 +425,14 @@ export class DocdexClient {
     const allowedOperations = this.runtimeAllowedOperations();
     if (allowedOperations && !allowedOperations.has(operation)) {
       throw this.runtimeError(
-        "docdex_operation_not_allowed",
+        this.operationDisabledCode(),
         `Docdex operation is not allowed by this job: ${operation}`,
         { retryable: false, details: { operation } },
       );
     }
     if (this.runtimeCapability(operation) === false) {
       throw this.runtimeError(
-        "docdex_operation_not_allowed",
+        this.operationDisabledCode(),
         `Docdex operation is disabled by this job capability map: ${operation}`,
         { retryable: false, details: { operation } },
       );
@@ -408,7 +452,9 @@ export class DocdexClient {
       headers.authorization = `Bearer ${this.options.authToken}`;
     }
     if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
-    if (this.options.repoRoot) headers["x-docdex-repo-root"] = path.resolve(this.options.repoRoot);
+    if (this.options.repoRoot && !this.isImmutableRuntimeContext()) {
+      headers["x-docdex-repo-root"] = path.resolve(this.options.repoRoot);
+    }
     const resolvedDagSessionId = dagSessionId ?? this.dagSessionId;
     if (resolvedDagSessionId) headers["x-docdex-dag-session"] = resolvedDagSessionId;
     return headers;
@@ -435,6 +481,9 @@ export class DocdexClient {
   }
 
   async healthCheck(): Promise<boolean> {
+    if (this.isImmutableRuntimeContext()) {
+      this.assertRuntimeContext("health");
+    }
     let response: Response;
     try {
       response = await fetch(`${this.resolveBaseUrl()}/healthz`);
@@ -472,6 +521,7 @@ export class DocdexClient {
   }
 
   private async ensureRepoInitialized(): Promise<void> {
+    if (this.isImmutableRuntimeContext()) return;
     if (this.repoId || this.repoInitializeAttempted || !this.options.repoRoot) return;
     this.repoInitializeAttempted = true;
     try {
@@ -484,7 +534,9 @@ export class DocdexClient {
 
   private withRepoId(params: URLSearchParams): void {
     if (this.repoId) params.set("repo_id", this.repoId);
-    if (this.options.repoRoot) params.set("repo_root", path.resolve(this.options.repoRoot));
+    if (this.options.repoRoot && !this.isImmutableRuntimeContext()) {
+      params.set("repo_root", path.resolve(this.options.repoRoot));
+    }
   }
 
   private extractErrorCode(body: string): string | undefined {
@@ -500,29 +552,97 @@ export class DocdexClient {
 
   private mapResponseErrorCode(status: number, body: string): DocdexRuntimeErrorCode {
     const extracted = this.extractErrorCode(body);
-    if (isDocdexRuntimeErrorCode(extracted)) return extracted;
+    if (isDocdexRuntimeErrorCode(extracted)) {
+      if (this.isImmutableRuntimeContext()) {
+        if (extracted === "docdex_api_key_missing" || extracted === "docdex_auth_failed") {
+          return "missing_credentials";
+        }
+        if (extracted === "docdex_repo_access_denied") {
+          return "repo_access_denied";
+        }
+        if (extracted === "docdex_context_missing") {
+          return "scope_denied";
+        }
+        if (extracted === "docdex_operation_not_allowed") {
+          return "encrypted_operation_disabled";
+        }
+      }
+      return extracted;
+    }
     const normalized = `${extracted ?? ""} ${body}`.toLowerCase();
     if (/introspection_unavailable|unavailable|timeout|timed out|econnrefused|enotfound/.test(normalized)) {
       return "docdex_unavailable";
     }
     if (/repo_access_denied|unknown_repo|repo.*denied|denied.*repo/.test(normalized)) {
-      return "docdex_repo_access_denied";
+      return this.isImmutableRuntimeContext() ? "repo_access_denied" : "docdex_repo_access_denied";
     }
-    if (/scope_denied|operation_not_allowed|encrypted_operation_disabled|not allowed|forbidden_operation/.test(normalized)) {
-      return "docdex_operation_not_allowed";
+    if (/scope_denied/.test(normalized)) {
+      return this.isImmutableRuntimeContext() ? "scope_denied" : "docdex_operation_not_allowed";
+    }
+    if (/operation_not_allowed|encrypted_operation_disabled|not allowed|forbidden_operation/.test(normalized)) {
+      return this.operationDisabledCode();
     }
     if (status === 401 || status === 403 || /invalid_credentials|missing_credentials|ambiguous_credentials/.test(normalized)) {
-      return "docdex_auth_failed";
+      return this.isImmutableRuntimeContext() ? "missing_credentials" : "docdex_auth_failed";
     }
     return "docdex_unavailable";
   }
 
-  private async throwResponseError(response: Response, operation: string): Promise<never> {
-    const body = await response.text();
-    this.throwResponseBodyError(response.status, body, operation);
+  private responseRequestId(response: Response): string | undefined {
+    for (const key of [
+      "x-docdex-request-id",
+      "x-request-id",
+      "x-mswarm-request-id",
+      "x-correlation-id",
+      "traceparent",
+    ]) {
+      const value = response.headers.get(key);
+      if (value?.trim()) return value.trim();
+    }
+    return undefined;
   }
 
-  private throwResponseBodyError(status: number, body: string, operation: string): never {
+  private attachResponseMetadata(
+    payload: unknown,
+    response: Response,
+    operation: string,
+  ): unknown {
+    const headerRequestId = this.responseRequestId(response);
+    if (!headerRequestId || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return payload;
+    }
+    const record = payload as Record<string, unknown>;
+    const existingMeta =
+      record.meta && typeof record.meta === "object" && !Array.isArray(record.meta)
+        ? record.meta as Record<string, unknown>
+        : {};
+    const existingRequestId =
+      typeof existingMeta.docdex_request_id === "string"
+        ? existingMeta.docdex_request_id
+        : typeof existingMeta.request_id === "string"
+          ? existingMeta.request_id
+          : undefined;
+    return {
+      ...record,
+      meta: {
+        ...existingMeta,
+        docdex_request_id: existingRequestId ?? headerRequestId,
+        docdex_operation: operation,
+      },
+    };
+  }
+
+  private async throwResponseError(response: Response, operation: string): Promise<never> {
+    const body = await response.text();
+    this.throwResponseBodyError(response.status, body, operation, this.responseRequestId(response));
+  }
+
+  private throwResponseBodyError(
+    status: number,
+    body: string,
+    operation: string,
+    requestId?: string,
+  ): never {
     const code = this.mapResponseErrorCode(status, body);
     throw this.runtimeError(
       code,
@@ -530,7 +650,7 @@ export class DocdexClient {
       {
         status,
         retryable: code === "docdex_unavailable" && status >= 500,
-        details: { operation },
+        details: requestId ? { operation, docdex_request_id: requestId } : { operation },
       },
     );
   }
@@ -558,7 +678,11 @@ export class DocdexClient {
       if (retryQuery) {
         const retryResponse = await executeSearch(retryQuery);
         if (retryResponse.ok) {
-          const retryPayload = await retryResponse.json();
+          const retryPayload = this.attachResponseMetadata(
+            await retryResponse.json(),
+            retryResponse,
+            "search",
+          );
           if (retryPayload && typeof retryPayload === "object" && !Array.isArray(retryPayload)) {
             const payloadRecord = retryPayload as Record<string, unknown>;
             const meta =
@@ -580,11 +704,16 @@ export class DocdexClient {
           return retryPayload;
         }
         const retryBody = await retryResponse.text();
-        this.throwResponseBodyError(retryResponse.status, retryBody, "search");
+        this.throwResponseBodyError(
+          retryResponse.status,
+          retryBody,
+          "search",
+          this.responseRequestId(retryResponse),
+        );
       }
-      this.throwResponseBodyError(response.status, body, "search");
+      this.throwResponseBodyError(response.status, body, "search", this.responseRequestId(response));
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "search");
   }
 
   async openSnippet(docId: string, options: DocdexSnippetOptions = {}): Promise<unknown> {
@@ -603,7 +732,7 @@ export class DocdexClient {
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
-      return response.json();
+      return this.attachResponseMetadata(await response.json(), response, "snippet");
     }
     return response.text();
   }
@@ -623,7 +752,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "impact graph");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "impact_graph");
   }
 
   async impactDiagnostics(options: DocdexImpactDiagnosticsOptions = {}): Promise<unknown> {
@@ -641,7 +770,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "impact diagnostics");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "impact_diagnostics");
   }
 
   async indexRebuild(libsSources?: string): Promise<unknown> {
@@ -655,7 +784,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "index rebuild");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "index_rebuild");
   }
 
   async indexIngest(file: string): Promise<unknown> {
@@ -669,7 +798,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "index ingest");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "index_ingest");
   }
 
   async hooksValidate(files: string[]): Promise<unknown> {
@@ -683,7 +812,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "hooks validate");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "hooks_validate");
   }
 
   async delegate(payload: Record<string, unknown>): Promise<unknown> {
@@ -697,7 +826,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "delegate");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "delegate");
   }
 
   async chatContext(
@@ -723,7 +852,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "chat context");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "chat_context");
   }
 
   async dagExport(sessionId: string, options: DocdexDagOptions = {}): Promise<unknown> {
@@ -746,14 +875,17 @@ export class DocdexClient {
         {
           status: response.status,
           retryable: code === "docdex_unavailable" && response.status >= 500,
-          details: { operation: "dag_export" },
+          details: {
+            operation: "dag_export",
+            ...(this.responseRequestId(response) ? { docdex_request_id: this.responseRequestId(response) } : {}),
+          },
         },
       );
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       try {
-        return JSON.parse(body) as unknown;
+        return this.attachResponseMetadata(JSON.parse(body) as unknown, response, "dag_export");
       } catch {
         return body;
       }
@@ -793,7 +925,11 @@ export class DocdexClient {
         details: { method },
       });
     }
-    return this.normalizeMcpResult(raw.result) as T;
+    return this.attachResponseMetadata(
+      this.normalizeMcpResult(raw.result),
+      response,
+      operation ?? method,
+    ) as T;
   }
 
   private normalizeMcpResult(payload: unknown): unknown {
@@ -844,6 +980,9 @@ export class DocdexClient {
   }
 
   private buildProjectParams(extra: Record<string, unknown>): Record<string, unknown> {
+    if (this.isImmutableRuntimeContext()) {
+      return { ...extra };
+    }
     return {
       project_root: this.options.repoRoot,
       ...extra,
@@ -1023,7 +1162,7 @@ export class DocdexClient {
     if (!response.ok) {
       await this.throwResponseError(response, "web research");
     }
-    return response.json();
+    return this.attachResponseMetadata(await response.json(), response, "web_research");
   }
 
   rerank(query: string, candidates: unknown[], limit?: number): Promise<unknown> {

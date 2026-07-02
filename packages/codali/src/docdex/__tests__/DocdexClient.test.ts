@@ -12,12 +12,31 @@ type StubResponse = {
 
 type FetchHandler = (url: string, init?: RequestInit) => StubResponse;
 
-const makeJsonResponse = (payload: unknown): StubResponse => ({
+const makeHeaders = (
+  contentType: string,
+  headers: Record<string, string> = {},
+): StubResponse["headers"] => {
+  const normalizedHeaders = new Map(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  return {
+    get: (key: string) => {
+      const normalized = key.toLowerCase();
+      if (normalized === "content-type") return contentType;
+      return normalizedHeaders.get(normalized) ?? null;
+    },
+  };
+};
+
+const makeJsonResponse = (
+  payload: unknown,
+  headers: Record<string, string> = {},
+): StubResponse => ({
   ok: true,
   status: 200,
   json: async () => payload,
   text: async () => JSON.stringify(payload),
-  headers: { get: () => "application/json" },
+  headers: makeHeaders("application/json", headers),
 });
 
 const makeTextResponse = (body: string): StubResponse => ({
@@ -25,15 +44,19 @@ const makeTextResponse = (body: string): StubResponse => ({
   status: 200,
   json: async () => ({}),
   text: async () => body,
-  headers: { get: () => "text/plain" },
+  headers: makeHeaders("text/plain"),
 });
 
-const makeErrorResponse = (status: number, body: string): StubResponse => ({
+const makeErrorResponse = (
+  status: number,
+  body: string,
+  headers: Record<string, string> = {},
+): StubResponse => ({
   ok: false,
   status,
   json: async () => ({ error: body }),
   text: async () => body,
-  headers: { get: () => "text/plain" },
+  headers: makeHeaders("text/plain", headers),
 });
 
 const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>): Promise<void> => {
@@ -120,6 +143,153 @@ test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo
   });
 });
 
+test("DocdexClient treats attached-key repo context as immutable and records request ids", {
+  concurrency: false,
+}, async () => {
+  await withStubbedFetch((url, init) => {
+    if (url.endsWith("/healthz")) {
+      return makeTextResponse("ok");
+    }
+    if (url.startsWith("http://127.0.0.1:28491/search?")) {
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get("repo_id"), "secure-repo");
+      assert.equal(parsed.searchParams.get("repo_root"), null);
+      const headers = init?.headers as Record<string, string> | undefined;
+      assert.equal(headers?.["x-api-key"], "msw_docdex_secret");
+      assert.equal(headers?.["x-docdex-repo-id"], "secure-repo");
+      assert.equal(headers?.["x-docdex-repo-root"], undefined);
+      return makeJsonResponse(
+        {
+          results: [{ doc_id: "doc-1", rel_path: "tenant/policy.md" }],
+          meta: { source: "encrypted-docdex" },
+        },
+        { "x-docdex-request-id": "docdex-req-1" },
+      );
+    }
+    assert.notEqual(new URL(url).pathname, "/v1/initialize");
+    return makeErrorResponse(404, "not found");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoRoot: process.cwd(),
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      capabilities: { search: true },
+    });
+    const result = await client.search("tenant policy", { limit: 1 });
+    assert.deepEqual(result, {
+      results: [{ doc_id: "doc-1", rel_path: "tenant/policy.md" }],
+      meta: {
+        source: "encrypted-docdex",
+        docdex_request_id: "docdex-req-1",
+        docdex_operation: "search",
+      },
+    });
+  });
+});
+
+test("DocdexClient rejects immutable encrypted jobs without repo id before local initialization", {
+  concurrency: false,
+}, async () => {
+  let fetchCalls = 0;
+  await withStubbedFetch(() => {
+    fetchCalls += 1;
+    return makeErrorResponse(500, "should not call network");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoRoot: process.cwd(),
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      capabilities: { search: true },
+    });
+    await assert.rejects(
+      () => client.search("tenant policy"),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "scope_denied");
+        return true;
+      },
+    );
+  });
+  assert.equal(fetchCalls, 0);
+});
+
+test("DocdexClient requires immutable encrypted operation and capability contracts", {
+  concurrency: false,
+}, async () => {
+  let fetchCalls = 0;
+  await withStubbedFetch(() => {
+    fetchCalls += 1;
+    return makeErrorResponse(500, "should not call network");
+  }, async () => {
+    const missingAllowedOperations = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      capabilities: { search: true },
+    });
+    await assert.rejects(
+      () => missingAllowedOperations.search("tenant policy"),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "scope_denied");
+        return true;
+      },
+    );
+
+    const missingCapabilities = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+    });
+    await assert.rejects(
+      () => missingCapabilities.search("tenant policy"),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "scope_denied");
+        return true;
+      },
+    );
+  });
+  assert.equal(fetchCalls, 0);
+});
+
+test("DocdexClient blocks encrypted capability-disabled operations before network access", {
+  concurrency: false,
+}, async () => {
+  let fetchCalls = 0;
+  await withStubbedFetch(() => {
+    fetchCalls += 1;
+    return makeErrorResponse(500, "should not call network");
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "http://127.0.0.1:28491",
+      repoId: "secure-repo",
+      apiKey: "msw_docdex_secret",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      capabilities: { search: false },
+    });
+    await assert.rejects(
+      () => client.search("tenant policy"),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "encrypted_operation_disabled");
+        return true;
+      },
+    );
+  });
+  assert.equal(fetchCalls, 0);
+});
+
 test("DocdexClient retries invalid parser search queries with sanitized plain text", {
   concurrency: false,
 }, async () => {
@@ -157,6 +327,7 @@ test("DocdexClient retries invalid parser search queries with sanitized plain te
       credentialSource: "attached_mswarm_api_key",
       required: true,
       allowedOperations: ["search"],
+      capabilities: { search: true },
     });
     const result = await client.search(originalQuery, { limit: 2 });
     assert.deepEqual(seenQueries, [originalQuery, retryQuery]);
@@ -232,11 +403,12 @@ test("DocdexClient blocks disallowed encrypted repo operations before network ac
       credentialSource: "attached_mswarm_api_key",
       required: true,
       allowedOperations: ["search"],
+      capabilities: { search: true },
     });
     await assert.rejects(
       () => client.openSnippet("doc-1"),
       (error: unknown) => {
-        assert.equal((error as { code?: string }).code, "docdex_operation_not_allowed");
+        assert.equal((error as { code?: string }).code, "encrypted_operation_disabled");
         return true;
       },
     );
@@ -262,7 +434,7 @@ test("DocdexClient fails required attached-key jobs before network access when k
     await assert.rejects(
       () => client.search("runtime context"),
       (error: unknown) => {
-        assert.equal((error as { code?: string }).code, "docdex_api_key_missing");
+        assert.equal((error as { code?: string }).code, "missing_credentials");
         return true;
       },
     );
@@ -292,12 +464,13 @@ test("DocdexClient maps and redacts encrypted repo auth failures", {
       credentialSource: "attached_mswarm_api_key",
       required: true,
       allowedOperations: ["search"],
+      capabilities: { search: true },
     });
     await assert.rejects(
       () => client.search("runtime context"),
       (error: unknown) => {
         const runtimeError = error as { code?: string; message?: string };
-        assert.equal(runtimeError.code, "docdex_auth_failed");
+        assert.equal(runtimeError.code, "missing_credentials");
         assert.ok(!String(runtimeError.message).includes("msw_docdex_secret"));
         assert.ok(String(runtimeError.message).includes("[redacted]"));
         return true;

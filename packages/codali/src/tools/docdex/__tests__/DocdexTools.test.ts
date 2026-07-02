@@ -13,12 +13,31 @@ type StubResponse = {
 
 type FetchHandler = (url: string, init?: RequestInit) => StubResponse;
 
-const makeJsonResponse = (payload: unknown): StubResponse => ({
+const makeHeaders = (
+  contentType: string,
+  headers: Record<string, string> = {},
+): StubResponse["headers"] => {
+  const normalizedHeaders = new Map(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  return {
+    get: (key: string) => {
+      const normalized = key.toLowerCase();
+      if (normalized === "content-type") return contentType;
+      return normalizedHeaders.get(normalized) ?? null;
+    },
+  };
+};
+
+const makeJsonResponse = (
+  payload: unknown,
+  headers: Record<string, string> = {},
+): StubResponse => ({
   ok: true,
   status: 200,
   json: async () => payload,
   text: async () => JSON.stringify(payload),
-  headers: { get: () => "application/json" },
+  headers: makeHeaders("application/json", headers),
 });
 
 const makeTextResponse = (body: string): StubResponse => ({
@@ -26,15 +45,19 @@ const makeTextResponse = (body: string): StubResponse => ({
   status: 200,
   json: async () => ({}),
   text: async () => body,
-  headers: { get: () => "text/plain" },
+  headers: makeHeaders("text/plain"),
 });
 
-const makeErrorResponse = (status: number, body: string): StubResponse => ({
+const makeErrorResponse = (
+  status: number,
+  body: string,
+  headers: Record<string, string> = {},
+): StubResponse => ({
   ok: false,
   status,
   json: async () => ({ error: body }),
   text: async () => body,
-  headers: { get: () => "text/plain" },
+  headers: makeHeaders("text/plain", headers),
 });
 
 const withStubbedFetch = async (handler: FetchHandler, fn: () => Promise<void>): Promise<void> => {

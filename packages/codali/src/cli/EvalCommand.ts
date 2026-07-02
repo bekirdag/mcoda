@@ -11,6 +11,14 @@ import { type EvalReport, serializeEvalReport } from "../eval/ReportSerializer.j
 import { ReportStore } from "../eval/ReportStore.js";
 import { loadSuiteFromFile } from "../eval/SuiteLoader.js";
 import { SuiteValidationError } from "../eval/SuiteSchema.js";
+import {
+  formatCodaliGatewayLiveHarnessTextReport,
+  runCodaliGatewayLiveHarness,
+} from "../eval/CodaliGatewayLiveHarness.js";
+import {
+  formatCodaliGatewayEvalTextReport,
+  runCodaliGatewayEvalSuite,
+} from "../eval/GatewayEvalSuite.js";
 import { resolveWorkspaceRoot } from "./RunCommand.js";
 
 export const EVAL_EXIT_CODES = {
@@ -49,13 +57,25 @@ export interface ParsedEvalArgs {
   workflow_profile?: string;
   smart?: boolean;
   no_deep_investigation?: boolean;
+  gateway_smoke?: boolean;
+  gateway_live_smoke?: boolean;
+  live_timeout_ms?: number;
+  live_mcoda_command?: string;
+  live_allow_cloud_fallback?: boolean;
+  live_no_image_worker?: boolean;
+  live_agent_run_force?: boolean;
+  live_strict?: boolean;
   help?: boolean;
 }
 
 const HELP_TEXT =
-  "Usage: codali eval --suite <path> [options]\n\n"
+  "Usage: codali eval --suite <path> [options]\n"
+  + "   or: codali eval --gateway-smoke [options]\n"
+  + "   or: codali eval --gateway-live-smoke [options]\n\n"
   + "Options:\n"
   + "  --suite <path>               Path to eval suite JSON (required)\n"
+  + "  --gateway-smoke              Run deterministic Codali gateway eval smoke suite\n"
+  + "  --gateway-live-smoke         Run Codali gateway live model smoke harness\n"
   + "  --output <text|json>         Output mode (default: text)\n"
   + "  --baseline <path>            Optional baseline report for regression diff\n"
   + "  --report-dir <path>          Override eval report output directory\n"
@@ -70,6 +90,12 @@ const HELP_TEXT =
   + "  --profile <name>             Workflow profile override for task runs\n"
   + "  --smart                      Force smart mode for task runs\n"
   + "  --no-deep-investigation      Disable deep investigation for task runs\n"
+  + "  --live-timeout-ms <n>        Timeout per live smoke command (default: 120000)\n"
+  + "  --live-mcoda-command <cmd>   mcoda command path for live smoke (default: mcoda)\n"
+  + "  --allow-cloud-fallback       Allow cloud candidates in live tier resolution\n"
+  + "  --no-image-worker            Disable image-worker requirement in live smoke\n"
+  + "  --agent-run-force            Pass --force to mcoda agent-run live checks\n"
+  + "  --strict                     Fail live smoke on degraded status\n"
   + "  --config <path>              Config file path\n"
   + "  --help                       Show help\n";
 
@@ -79,6 +105,17 @@ const expectValue = (argv: string[], index: number, flag: string): string => {
     throw new EvalCommandError(`Missing value for ${flag}.`, EVAL_EXIT_CODES.usage_error);
   }
   return value;
+};
+
+const parsePositiveIntegerFlag = (value: string, flag: string): number => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new EvalCommandError(
+      `Invalid ${flag} value. Expected a positive integer.`,
+      EVAL_EXIT_CODES.usage_error,
+    );
+  }
+  return parsed;
 };
 
 export const parseEvalArgs = (argv: string[]): ParsedEvalArgs => {
@@ -94,6 +131,14 @@ export const parseEvalArgs = (argv: string[]): ParsedEvalArgs => {
     if (arg === "--suite") {
       parsed.suite_path = expectValue(argv, index, "--suite");
       index += 1;
+      continue;
+    }
+    if (arg === "--gateway-live-smoke") {
+      parsed.gateway_live_smoke = true;
+      continue;
+    }
+    if (arg === "--gateway-smoke") {
+      parsed.gateway_smoke = true;
       continue;
     }
     if (arg === "--output") {
@@ -176,6 +221,35 @@ export const parseEvalArgs = (argv: string[]): ParsedEvalArgs => {
       parsed.no_deep_investigation = true;
       continue;
     }
+    if (arg === "--live-timeout-ms") {
+      parsed.live_timeout_ms = parsePositiveIntegerFlag(
+        expectValue(argv, index, "--live-timeout-ms"),
+        "--live-timeout-ms",
+      );
+      index += 1;
+      continue;
+    }
+    if (arg === "--live-mcoda-command") {
+      parsed.live_mcoda_command = expectValue(argv, index, "--live-mcoda-command");
+      index += 1;
+      continue;
+    }
+    if (arg === "--allow-cloud-fallback") {
+      parsed.live_allow_cloud_fallback = true;
+      continue;
+    }
+    if (arg === "--no-image-worker") {
+      parsed.live_no_image_worker = true;
+      continue;
+    }
+    if (arg === "--agent-run-force") {
+      parsed.live_agent_run_force = true;
+      continue;
+    }
+    if (arg === "--strict") {
+      parsed.live_strict = true;
+      continue;
+    }
     throw new EvalCommandError(`Unknown eval flag: ${arg}`, EVAL_EXIT_CODES.usage_error);
   }
   return parsed;
@@ -248,6 +322,52 @@ export class EvalCommand {
     if (parsed.help) {
       // eslint-disable-next-line no-console
       console.log(HELP_TEXT);
+      return;
+    }
+    if (parsed.gateway_smoke) {
+      const result = await runCodaliGatewayEvalSuite();
+      if (parsed.output === "json") {
+        // eslint-disable-next-line no-console
+        console.log(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(formatCodaliGatewayEvalTextReport(result));
+      }
+      if (result.summary.status !== "passed" || !result.gates.passed) {
+        throw new EvalCommandError(
+          "Codali gateway smoke gates failed.",
+          EVAL_EXIT_CODES.gate_failure,
+        );
+      }
+      return;
+    }
+    if (parsed.gateway_live_smoke) {
+      const result = await runCodaliGatewayLiveHarness({
+        command: parsed.live_mcoda_command,
+        timeoutMs: parsed.live_timeout_ms,
+        allowCloudFallback: parsed.live_allow_cloud_fallback,
+        allowImageWorker: parsed.live_no_image_worker ? false : true,
+        forceAgentRun: parsed.live_agent_run_force,
+      });
+      if (parsed.output === "json") {
+        // eslint-disable-next-line no-console
+        console.log(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(formatCodaliGatewayLiveHarnessTextReport(result));
+      }
+      if (result.summary.status === "failed") {
+        throw new EvalCommandError(
+          "Codali gateway live smoke failed.",
+          EVAL_EXIT_CODES.run_failure,
+        );
+      }
+      if (parsed.live_strict && result.summary.status !== "passed") {
+        throw new EvalCommandError(
+          "Codali gateway live smoke did not pass strict mode.",
+          EVAL_EXIT_CODES.gate_failure,
+        );
+      }
       return;
     }
     if (!parsed.suite_path) {

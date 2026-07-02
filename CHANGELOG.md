@@ -1,6 +1,19 @@
 # Changelog
 
 ## Unreleased
+
+## 0.1.89 - 2026-07-02
+- Add the product-neutral Codali agentic orchestration gateway with runtime
+  policy compilation, dynamic tool contracts, mcoda agent-tier resolution,
+  worker execution, evidence normalization, verification, context packing,
+  final large-model synthesis, trace/replay, evaluations, and production
+  safety boundaries.
+- Expose the gateway through mswarm `codali_gateway` payloads while preserving
+  existing `codali_job` and single-task runtime compatibility.
+- Harden encrypted Docdex repository access and signed read-only app tool
+  gateway dispatch for tenant-scoped product integrations.
+
+## 0.1.88
 - Add OSS docs, CI, release automation, and npm packaging metadata.
 - Align mcoda SDK, agent setup SDK, and CLI self-hosted mswarm access with
   tenant/client identity headers, allowlist metadata, and catalog filtering.

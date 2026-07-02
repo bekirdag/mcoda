@@ -45,6 +45,10 @@ export type ToolErrorCode =
   | "tool_permission_denied"
   | "tool_timeout"
   | "tool_execution_failed"
+  | "missing_credentials"
+  | "repo_access_denied"
+  | "scope_denied"
+  | "encrypted_operation_disabled"
   | "docdex_context_missing"
   | "docdex_api_key_missing"
   | "docdex_operation_not_allowed"
@@ -106,6 +110,10 @@ export const toolErrorCategoryForCode = (code: ToolErrorCode): ToolErrorCategory
   if (code === "tool_timeout") return "timeout";
   if (code === "docdex_context_missing") return "validation";
   if (
+    code === "missing_credentials" ||
+    code === "repo_access_denied" ||
+    code === "scope_denied" ||
+    code === "encrypted_operation_disabled" ||
     code === "docdex_api_key_missing" ||
     code === "docdex_operation_not_allowed" ||
     code === "docdex_auth_failed" ||

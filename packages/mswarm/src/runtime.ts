@@ -10,8 +10,10 @@ import {
   type LocalOpenAiCompatibleRunnerConfig,
   type MswarmCodaliAgent,
   type MswarmCodaliDocdex,
+  type MswarmCodaliGateway,
   type MswarmCodaliJob,
   type MswarmCodaliPolicy,
+  type MswarmCodaliSession,
   type MswarmCodaliWorkspace
 } from "./codali-executor.js";
 import {
@@ -288,6 +290,40 @@ export interface SelfHostedNodeCodaliJobPayload {
   metadata?: Record<string, unknown>;
 }
 
+export interface SelfHostedNodeCodaliGatewayPayload {
+  id?: string;
+  query?: string;
+  mode?: "fast" | "balanced" | "deep" | "cheap" | "image";
+  product?: Record<string, unknown>;
+  tenant?: Record<string, unknown>;
+  requester?: Record<string, unknown>;
+  conversation?: Record<string, unknown>;
+  docdex?: Record<string, unknown>;
+  tools?: Record<string, unknown>;
+  tool_manifest?: Record<string, unknown>;
+  toolManifest?: Record<string, unknown>;
+  policy?: Record<string, unknown>;
+  agent_policy?: Record<string, unknown>;
+  agentPolicy?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SelfHostedNodeCodaliSessionPayload {
+  id?: string;
+  storage_dir?: string;
+  storageDir?: string;
+  resume?: boolean;
+  compact_on_finish?: boolean;
+  compactOnFinish?: boolean;
+  load_instructions?: boolean;
+  loadInstructions?: boolean;
+  include_local_instructions?: boolean;
+  includeLocalInstructions?: boolean;
+  focus_paths?: string[];
+  focusPaths?: string[];
+}
+
 export interface SelfHostedNodeInvocationJob {
   job_id: string;
   request_id: string;
@@ -296,7 +332,9 @@ export interface SelfHostedNodeInvocationJob {
   remote_slug?: string;
   provider?: "mcoda" | "ollama";
   execution_runtime?: "codali" | "raw" | string;
+  codali_gateway?: SelfHostedNodeCodaliGatewayPayload;
   codali_job?: SelfHostedNodeCodaliJobPayload;
+  session?: SelfHostedNodeCodaliSessionPayload;
   adapter?: string | null;
   source_agent_slug?: string | null;
   model?: string | null;
@@ -3171,6 +3209,171 @@ function buildCodaliPolicy(job: SelfHostedNodeInvocationJob): MswarmCodaliPolicy
   };
 }
 
+type MswarmCodaliGatewayConversationMessage =
+  NonNullable<NonNullable<MswarmCodaliGateway["conversation"]>["messages"]>[number];
+
+function normalizeGatewayConversation(
+  job: SelfHostedNodeInvocationJob,
+  value: unknown,
+): MswarmCodaliGateway["conversation"] | undefined {
+  const record = objectRecord(value);
+  const rawMessages = Array.isArray(record?.messages) ? record.messages : job.openai_request.messages;
+  const messages = rawMessages
+    .map((entry): MswarmCodaliGatewayConversationMessage | null => {
+      const message = objectRecord(entry);
+      if (!message) return null;
+      const role = optionalText(message.role) || "user";
+      if (role !== "system" && role !== "assistant" && role !== "user") {
+        return null;
+      }
+      const content = typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content
+            .map((part) => {
+              const partRecord = objectRecord(part);
+              return partRecord?.type === "text" && typeof partRecord.text === "string"
+                ? partRecord.text
+                : "";
+            })
+            .filter(Boolean)
+            .join("\n")
+          : "";
+      return content.trim() ? { role, content } : null;
+    })
+    .filter(
+      (
+        message,
+      ): message is MswarmCodaliGatewayConversationMessage =>
+        Boolean(message),
+    );
+  const id = optionalText(record?.id) || optionalText(job.session?.id) || undefined;
+  if (!id && messages.length === 0) return undefined;
+  return {
+    ...(id ? { id } : {}),
+    ...(messages.length ? { messages } : {}),
+  };
+}
+
+function normalizeGatewayDocdex(
+  job: SelfHostedNodeInvocationJob,
+  value: unknown,
+): MswarmCodaliGateway["docdex"] | undefined {
+  const inherited = buildCodaliDocdex(job);
+  const record = objectRecord(value);
+  if (!record) {
+    return inherited;
+  }
+  const allowedOperations = normalizeCapabilities(record.allowedOperations ?? record.allowed_operations);
+  return {
+    ...inherited,
+    enabled: typeof record.enabled === "boolean" ? record.enabled : inherited?.enabled,
+    baseUrl: optionalText(record.baseUrl) || optionalText(record.base_url) || inherited?.baseUrl,
+    repoRoot:
+      optionalText(record.repoRoot) ||
+      optionalText(record.repo_root) ||
+      inherited?.repoRoot,
+    repoId: optionalText(record.repoId) || optionalText(record.repo_id) || inherited?.repoId,
+    dagSessionId:
+      optionalText(record.dagSessionId) ||
+      optionalText(record.dag_session_id) ||
+      inherited?.dagSessionId,
+    required: typeof record.required === "boolean" ? record.required : inherited?.required,
+    allowedOperations: allowedOperations.length ? allowedOperations : inherited?.allowedOperations,
+    credentialSource:
+      optionalText(record.credentialSource) ||
+      optionalText(record.credential_source) ||
+      inherited?.credentialSource,
+    capabilities: normalizeDocdexCapabilityMap(record.capabilities) ?? inherited?.capabilities,
+    initialize: typeof record.initialize === "boolean" ? record.initialize : inherited?.initialize,
+    allowWeb: typeof record.allowWeb === "boolean"
+      ? record.allowWeb
+      : typeof record.allow_web === "boolean"
+        ? record.allow_web
+        : inherited?.allowWeb,
+    allowMemoryWrite: typeof record.allowMemoryWrite === "boolean"
+      ? record.allowMemoryWrite
+      : typeof record.allow_memory_write === "boolean"
+        ? record.allow_memory_write
+        : inherited?.allowMemoryWrite,
+    allowProfileWrite: typeof record.allowProfileWrite === "boolean"
+      ? record.allowProfileWrite
+      : typeof record.allow_profile_write === "boolean"
+        ? record.allow_profile_write
+        : inherited?.allowProfileWrite,
+    allowIndexRebuild: typeof record.allowIndexRebuild === "boolean"
+      ? record.allowIndexRebuild
+      : typeof record.allow_index_rebuild === "boolean"
+        ? record.allow_index_rebuild
+        : inherited?.allowIndexRebuild,
+    toolManifest:
+      objectRecord(record.toolManifest) ||
+      objectRecord(record.tool_manifest) ||
+      inherited?.toolManifest,
+  };
+}
+
+function buildCodaliGateway(job: SelfHostedNodeInvocationJob): MswarmCodaliGateway | undefined {
+  const payload = job.codali_gateway;
+  if (!payload) return undefined;
+  const query = optionalText(payload.query) || messagesToPrompt(job.openai_request.messages);
+  return {
+    id: optionalText(payload.id) || job.job_id,
+    query,
+    mode: payload.mode,
+    product: objectRecord(payload.product) || undefined,
+    tenant: objectRecord(payload.tenant) || undefined,
+    requester: objectRecord(payload.requester) || undefined,
+    conversation: normalizeGatewayConversation(job, payload.conversation),
+    docdex: normalizeGatewayDocdex(job, payload.docdex),
+    tools:
+      objectRecord(payload.tools) ||
+      objectRecord(payload.toolManifest) ||
+      objectRecord(payload.tool_manifest) ||
+      objectRecord(job.docdex?.tool_manifest) ||
+      undefined,
+    policy: (objectRecord(payload.policy) || {}) as MswarmCodaliGateway["policy"],
+    agentPolicy:
+      objectRecord(payload.agentPolicy) ||
+      objectRecord(payload.agent_policy) ||
+      undefined,
+    response: objectRecord(payload.response) || undefined,
+    metadata: {
+      ...(objectRecord(payload.metadata) || {}),
+      execution_runtime: job.execution_runtime,
+      request_id: job.request_id,
+      ...(job.session?.id ? { session_id: job.session.id } : {}),
+    },
+  };
+}
+
+function buildCodaliSession(job: SelfHostedNodeInvocationJob): MswarmCodaliSession | undefined {
+  const session = job.session;
+  if (!session) return undefined;
+  const focusPaths = parseList(session.focusPaths ?? session.focus_paths);
+  const normalized: MswarmCodaliSession = {
+    id: optionalText(session.id) || undefined,
+    storageDir: optionalText(session.storageDir) || optionalText(session.storage_dir) || undefined,
+    resume: session.resume,
+    compactOnFinish:
+      typeof session.compactOnFinish === "boolean"
+        ? session.compactOnFinish
+        : session.compact_on_finish,
+    loadInstructions:
+      typeof session.loadInstructions === "boolean"
+        ? session.loadInstructions
+        : session.load_instructions,
+    includeLocalInstructions:
+      typeof session.includeLocalInstructions === "boolean"
+        ? session.includeLocalInstructions
+        : session.include_local_instructions,
+    focusPaths: focusPaths.length ? focusPaths : undefined,
+  };
+  return Object.values(normalized).some((value) => typeof value !== "undefined")
+    ? normalized
+    : undefined;
+}
+
 function numberArg(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -6039,7 +6242,9 @@ export class SelfHostedNodeRuntime {
         adapter: agent.adapter,
         supports_tools: agent.supportsTools === true
       });
+      const codaliGateway = buildCodaliGateway(job);
       const codaliJob = buildCodaliJob(job);
+      const codaliSession = buildCodaliSession(job);
       const response = await this.codaliExecutor.invoke({
         jobId: job.job_id,
         requestId: job.request_id,
@@ -6053,7 +6258,9 @@ export class SelfHostedNodeRuntime {
         temperature: job.openai_request.temperature,
         responseFormat: job.openai_request.response_format ?? null,
         stream: job.openai_request.stream === true,
+        codaliGateway,
         codaliJob,
+        session: codaliSession,
         onOpenAIChunk: emitOpenAIChunk,
         onRuntimeEvent: async (event) => {
           if (event.type === "status" || event.type === "tool_call" || event.type === "tool_result" || event.type === "error") {
@@ -6065,6 +6272,23 @@ export class SelfHostedNodeRuntime {
               ...(event.type === "tool_call" ? { name: event.name } : {}),
               ...(event.type === "tool_result" ? { name: event.name, ok: event.ok, error_code: event.errorCode } : {}),
               ...(event.type === "error" ? { message: event.message, code: event.code } : {}),
+              at: event.at
+            });
+          }
+        },
+        onGatewayEvent: async (event) => {
+          if (event.type === "gateway_start" || event.type === "gateway_result") {
+            await recordProgress({
+              type: event.type,
+              job_id: job.job_id,
+              request_id: job.request_id,
+              codali_gateway_id: event.runId,
+              status: event.status,
+              mode: event.mode,
+              tool_call_count: event.tool_call_count,
+              model_call_count: event.model_call_count,
+              source_count: event.source_count,
+              evidence_count: event.evidence_count,
               at: event.at
             });
           }
@@ -6121,9 +6345,21 @@ export class SelfHostedNodeRuntime {
             codali_job_stage_count: response.metadata.codali_job_stage_count,
             codali_job_stages: response.metadata.codali_job_stages,
             codali_job_errors: response.metadata.codali_job_errors,
+            codali_gateway_id: response.metadata.codali_gateway_id,
+            codali_gateway_status: response.metadata.codali_gateway_status,
+            codali_gateway_mode: response.metadata.codali_gateway_mode,
+            codali_gateway_task_count: response.metadata.codali_gateway_task_count,
+            codali_gateway_tool_call_count: response.metadata.codali_gateway_tool_call_count,
+            codali_gateway_model_call_count: response.metadata.codali_gateway_model_call_count,
+            codali_gateway_source_count: response.metadata.codali_gateway_source_count,
+            codali_gateway_evidence_count: response.metadata.codali_gateway_evidence_count,
+            codali_gateway_warnings: response.metadata.codali_gateway_warnings,
+            codali_gateway_errors: response.metadata.codali_gateway_errors,
+            codali_gateway_trace: response.metadata.codali_gateway_trace,
             touched_files: response.metadata.touched_files,
             warnings: response.metadata.warnings,
-            mode: response.metadata.mode
+            mode: response.metadata.mode,
+            session_id: response.metadata.session_id
           }
         }),
         usage: usageFromTokenCounts(tokens.promptTokens, tokens.completionTokens),

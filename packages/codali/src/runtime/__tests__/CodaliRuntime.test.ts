@@ -9,6 +9,10 @@ import {
   runCodaliTask,
   type CodaliRuntimePolicy,
 } from "../CodaliRuntime.js";
+import {
+  verifyAppToolGatewayRequestSignature,
+  type CodaliAppToolGatewaySignedRequest,
+} from "../../gateway/AppToolGatewayDispatcher.js";
 import type { Provider, ProviderRequest, ProviderResponse } from "../../providers/ProviderTypes.js";
 import type { ToolDefinition } from "../../tools/ToolTypes.js";
 
@@ -343,6 +347,107 @@ test("runCodaliTask registers runtime app tool contracts as Docdex-backed virtua
   assert.equal(result.telemetry.dynamicToolCalls[0]?.name, "okacam_daily_logs");
   assert.equal(result.telemetry.dynamicToolCalls[0]?.backingTool, "docdex_search");
   assert.equal(result.telemetry.dynamicToolCalls[0]?.status, "success");
+});
+
+test("runCodaliTask dispatches app_tool_gateway contracts with signed read-only scope", {
+  concurrency: false,
+}, async () => {
+  const capturedBodies: CodaliAppToolGatewaySignedRequest[] = [];
+  await withRuntimeStubbedFetch((url, init) => {
+    assert.equal(url, "https://app.example.test/tools");
+    const body = JSON.parse(String(init?.body)) as CodaliAppToolGatewaySignedRequest;
+    capturedBodies.push(body);
+    return runtimeJsonResponse({
+      facts: [
+        {
+          claim: "SmartClick CRM is enabled for the tenant.",
+          source: { id: "crm-tenant-1", title: "SmartClick tenant profile" },
+          confidence: 0.91,
+        },
+      ],
+    });
+  }, async () => {
+    const provider = new StubProvider([
+      {
+        message: { role: "assistant", content: "" },
+        toolCalls: [
+          {
+            id: "call-crm",
+            name: "crm_lookup",
+            args: { query: "status", limit: 1 },
+          },
+        ],
+      },
+      { message: { role: "assistant", content: "SmartClick CRM is enabled." } },
+    ]);
+
+    const result = await runCodaliTask({
+      task: "Is SmartClick enabled?",
+      workspace: { root: process.cwd() },
+      provider: { name: "stub", model: "stub" },
+      providerInstance: provider,
+      docdex: {
+        repoId: "tenant-repo-1",
+        toolManifest: { virtualTools: ["crm_lookup"] },
+      },
+      metadata: {
+        requestId: "request-1",
+        tenantId: "tenant-1",
+        ownerUserId: "user-1",
+        apiKeyId: "api-key-1",
+        agentSlug: "codali-agent",
+      },
+      session: { id: "session-1" },
+      policy: basePolicy({
+        allowedTools: ["crm_lookup"],
+        appVirtualTools: ["crm_lookup"],
+        appToolGateway: {
+          endpoint: "https://app.example.test/tools",
+          readOnly: true,
+          signatureSecret: "shared-secret",
+        },
+        appToolContracts: {
+          crm_lookup: {
+            executionMode: "app_tool_gateway",
+            readOnly: true,
+            callSchema: {
+              type: "object",
+              required: ["query"],
+              additionalProperties: false,
+              properties: {
+                query: { type: "string" },
+                limit: { type: "integer" },
+              },
+            },
+            resultContract: "tenant CRM facts",
+            resultSources: ["smartclick"],
+            sourceTypes: ["smartclick_crm"],
+          },
+        },
+      }),
+    });
+
+    assert.equal(result.finalMessage, "SmartClick CRM is enabled.");
+    assert.equal(result.toolCallsExecuted, 1);
+    assert.deepEqual(result.telemetry.calledTools, ["crm_lookup"]);
+    assert.deepEqual(result.telemetry.registeredDynamicTools, ["crm_lookup"]);
+    assert.equal(result.telemetry.dynamicToolCalls[0]?.backingTool, "app_tool_gateway");
+    assert.equal(result.telemetry.dynamicToolCalls[0]?.status, "success");
+  });
+
+  assert.equal(capturedBodies.length, 1);
+  assert.equal(
+    verifyAppToolGatewayRequestSignature(capturedBodies[0], "shared-secret"),
+    true,
+  );
+  assert.equal(capturedBodies[0]?.read_only, true);
+  assert.equal(capturedBodies[0]?.run_id, "request-1");
+  assert.equal(capturedBodies[0]?.session_id, "session-1");
+  assert.equal(capturedBodies[0]?.tenant_scope?.tenant_id, "tenant-1");
+  assert.equal(capturedBodies[0]?.tenant_scope?.docdex_repo_id, "tenant-repo-1");
+  assert.equal(capturedBodies[0]?.requester_scope?.owner_user_id, "user-1");
+  assert.equal(capturedBodies[0]?.requester_scope?.api_key_id, "api-key-1");
+  assert.deepEqual(capturedBodies[0]?.validated_args, { query: "status", limit: 1 });
 });
 
 test("runCodaliTask skips runtime app tool contracts with unsafe backing tools", {

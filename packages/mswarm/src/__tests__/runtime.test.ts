@@ -2289,6 +2289,177 @@ describe("self-hosted node runtime", () => {
     expect(result.progress_events?.some((event) => event.type === "stage_start" && event.stage_id === "worker")).toBe(true);
   });
 
+  it("forwards codali_gateway payloads through Codali and preserves gateway telemetry", async () => {
+    const statePath = tempStatePath();
+    const captured: { value?: MswarmCodaliInvocationInput } = {};
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          supportsTools: true,
+          supportsJsonSchema: true,
+          capabilities: ["final_answer_synthesis"],
+          contextWindow: 131_072
+        })
+      ]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => {
+        captured.value = input;
+        await input.onGatewayEvent?.({
+          type: "gateway_start",
+          runId: "job-codali-gateway",
+          mode: "balanced",
+          at: "2026-07-02T00:00:00.000Z"
+        });
+        await input.onGatewayEvent?.({
+          type: "gateway_result",
+          runId: "run-codali-gateway",
+          status: "succeeded",
+          mode: "balanced",
+          tool_call_count: 1,
+          model_call_count: 4,
+          source_count: 1,
+          evidence_count: 1,
+          at: "2026-07-02T00:00:01.000Z"
+        });
+        const invocation = successfulCodaliInvocation(input, "gateway answer");
+        invocation.metadata = {
+          ...invocation.metadata,
+          tool_calls_executed: 1,
+          called_tools: ["tenant_daily_logs"],
+          dynamic_tools_considered: ["docdex_search", "tenant_daily_logs"],
+          telemetry: {
+            runId: "run-codali-gateway",
+            runtime: "codali",
+            mode: "gateway",
+            status: "succeeded",
+            toolCallCount: 1,
+            modelCallCount: 4,
+            taskCount: 1,
+            calledTools: ["tenant_daily_logs"],
+            consideredTools: ["docdex_search", "tenant_daily_logs"],
+            warnings: [],
+            errors: [],
+            sourceCount: 1,
+            evidenceCount: 1
+          },
+          codali_gateway_id: "run-codali-gateway",
+          codali_gateway_status: "succeeded",
+          codali_gateway_mode: "balanced",
+          codali_gateway_task_count: 1,
+          codali_gateway_tool_call_count: 1,
+          codali_gateway_model_call_count: 4,
+          codali_gateway_source_count: 1,
+          codali_gateway_evidence_count: 1,
+          codali_gateway_warnings: [],
+          codali_gateway_errors: [],
+          codali_gateway_trace: {
+            runId: "run-codali-gateway",
+            mode: "balanced",
+            status: "succeeded",
+            iterations: 1,
+            toolCallCount: 1,
+            modelCallCount: 4,
+            consideredTools: ["docdex_search", "tenant_daily_logs"],
+            calledTools: ["tenant_daily_logs"],
+            warnings: [],
+            errors: [],
+            toolCalls: [{ tool: "tenant_daily_logs", status: "success" }],
+            modelCalls: [],
+            events: []
+          },
+          session_id: "tenant-chat-session"
+        };
+        return invocation;
+      })
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-codali-gateway",
+      request_id: "req-codali-gateway",
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      execution_runtime: "codali",
+      workspace: {
+        root: "/tmp/workspace",
+        read_only: true
+      },
+      session: {
+        id: "tenant-chat-session"
+      },
+      docdex: {
+        base_url: "https://docdex.tenant.test",
+        repo_root: "/tmp/workspace",
+        repo_id: "repo-tenant-a",
+        credential_source: "attached_mswarm_api_key",
+        required: true,
+        allowed_operations: ["search", "open"],
+        tool_manifest: {
+          actualTools: ["docdex_search"],
+          virtualTools: ["tenant_daily_logs"]
+        }
+      },
+      codali_gateway: {
+        query: "What changed in tenant logs?",
+        mode: "balanced",
+        tenant: { id: "tenant-a" },
+        requester: { id: "user-a" },
+        policy: {
+          max_model_calls: 6,
+          require_final_large_model: false
+        },
+        response: { format: "text" }
+      },
+      policy: {
+        allowed_tools: ["docdex_search", "tenant_daily_logs"],
+        denied_tools: ["github_search"],
+        okacam_tool_contracts: {
+          tenant_daily_logs: {
+            executionMode: "server_supplied_snapshot_plus_docdex",
+            callSchema: { type: "object" },
+            resultContract: "daily log search results",
+            backingTools: ["docdex_search"]
+          }
+        },
+        okacam_virtual_tools: ["tenant_daily_logs"],
+        allow_shell: false,
+        allow_writes: false,
+        max_tool_calls: 4
+      },
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: "What changed in tenant logs?" }]
+      }
+    }, { attachedMswarmApiKey: "attached-secret" });
+
+    expect(result.status).toBe("success");
+    const capturedInput = captured.value;
+    assert.ok(capturedInput);
+    expect(capturedInput.codaliGateway?.id).toBe("job-codali-gateway");
+    expect(capturedInput.codaliGateway?.query).toBe("What changed in tenant logs?");
+    expect(capturedInput.codaliGateway?.docdex?.baseUrl).toBe("https://docdex.tenant.test");
+    expect(capturedInput.codaliGateway?.docdex?.repoId).toBe("repo-tenant-a");
+    expect(capturedInput.codaliGateway?.tools).toEqual({
+      actualTools: ["docdex_search"],
+      virtualTools: ["tenant_daily_logs"]
+    });
+    expect(capturedInput.codaliGateway?.conversation?.id).toBe("tenant-chat-session");
+    expect(capturedInput.session?.id).toBe("tenant-chat-session");
+    expect(capturedInput.attachedMswarmApiKey).toBe("attached-secret");
+    expect(capturedInput.policy?.allowedTools).toEqual(["docdex_search", "tenant_daily_logs"]);
+    expect(capturedInput.policy?.okacamVirtualTools).toEqual(["tenant_daily_logs"]);
+    const metadata = (result.openai_response?.metadata as Record<string, unknown>) || {};
+    expect(metadata.codali_gateway_status).toBe("succeeded");
+    expect(metadata.codali_gateway_task_count).toBe(1);
+    expect(metadata.codali_gateway_source_count).toBe(1);
+    expect(metadata.codali_gateway_evidence_count).toBe(1);
+    expect(metadata.called_tools).toEqual(["tenant_daily_logs"]);
+    expect(metadata.session_id).toBe("tenant-chat-session");
+    expect(result.progress_events?.some((event) => event.type === "gateway_start")).toBe(true);
+    expect(result.progress_events?.some((event) => event.type === "gateway_result" && event.codali_gateway_id === "run-codali-gateway")).toBe(true);
+  });
+
   it("fails before start when the selected mcoda agent is missing instead of substituting by model", async () => {
     const statePath = tempStatePath();
     let invoked = false;

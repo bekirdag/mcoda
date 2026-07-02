@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MswarmCodaliExecutor,
+  type CodaliGatewayOptions,
+  type CodaliGatewayResult,
   type CodaliJobRuntimeInput,
   type CodaliJobRuntimeResult,
   type CodaliRuntimeInput,
   type CodaliRuntimeResult,
+  type MswarmCodaliGateway,
 } from "../codali-executor.js";
 
 process.env.MSWARM_CODALI_VENDOR_ONLY = "1";
@@ -399,6 +402,165 @@ test("MswarmCodaliExecutor invokes runCodaliJob for codaliJob payloads and retur
   assert.deepEqual(result.metadata.called_tools, ["tenant_daily_logs"]);
   assert.equal(result.metadata.telemetry?.mode, "job");
   assert.equal(jobEvents[0]?.type, "stage_start");
+});
+
+test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads and returns gateway telemetry", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const captured: {
+    request?: MswarmCodaliGateway;
+    options?: CodaliGatewayOptions;
+  } = {};
+  const chunks: Record<string, unknown>[] = [];
+  const gatewayEvents: Record<string, unknown>[] = [];
+
+  const result = await executor.invoke({
+    jobId: "job-gateway",
+    requestId: "req-gateway",
+    model: "mcoda-gateway",
+    messages: [{ role: "user", content: "What changed in tenant logs?" }],
+    agent: {
+      slug: "large-final-agent",
+      adapter: "openai-compatible-local",
+      model: "large-final-model",
+      supportsTools: true,
+      supportsJsonSchema: true,
+      contextWindow: 131_072,
+      capabilities: ["final_answer_synthesis"],
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "https://docdex.tenant.test",
+      repoRoot: "/tmp/workspace",
+      repoId: "repo-tenant-a",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search", "open"],
+      toolManifest: {
+        actualTools: ["docdex_search"],
+        virtualTools: ["tenant_daily_logs"],
+      },
+    },
+    attachedMswarmApiKey: "attached-secret",
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      allowedTools: ["docdex_search", "tenant_daily_logs"],
+      deniedTools: ["github_search"],
+      okacamToolContracts: {
+        tenant_daily_logs: {
+          executionMode: "server_supplied_snapshot_plus_docdex",
+          callSchema: { type: "object" },
+          resultContract: "daily log search results",
+          backingTools: ["docdex_search"],
+        },
+      },
+      okacamVirtualTools: ["tenant_daily_logs"],
+      maxToolCalls: 4,
+    },
+    session: { id: "chat-session-1" },
+    codaliGateway: {
+      query: "What changed in tenant logs?",
+      mode: "balanced",
+      tenant: { id: "tenant-a" },
+      requester: { id: "user-a" },
+      policy: {
+        maxModelCalls: 6,
+        requireFinalLargeModel: false,
+      },
+      response: { format: "text" },
+    },
+    stream: true,
+    onOpenAIChunk: async (chunk) => {
+      chunks.push(chunk);
+    },
+    onGatewayEvent: async (event) => {
+      gatewayEvents.push(event);
+    },
+    runCodali: async () => {
+      throw new Error("runCodaliTask should not be used for codaliGateway payloads");
+    },
+    runCodaliJob: async () => {
+      throw new Error("runCodaliJob should not be used for codaliGateway payloads");
+    },
+    runCodaliGateway: async (request, options) => {
+      captured.request = request;
+      captured.options = options;
+      return {
+        runId: "run-gateway",
+        status: "succeeded",
+        answer: "gateway answer",
+        sources: [{ evidenceId: "ev-1", sourceType: "docdex", title: "Daily logs" }],
+        confidence: "high",
+        evidence: [{ id: "ev-1", claim: "A tenant log changed." }],
+        trace: {
+          runId: "run-gateway",
+          mode: "balanced",
+          status: "succeeded",
+          iterations: 1,
+          toolCallCount: 1,
+          modelCallCount: 4,
+          consideredTools: ["docdex_search", "tenant_daily_logs"],
+          calledTools: ["tenant_daily_logs"],
+          warnings: ["gateway-warning"],
+          errors: [],
+          toolCalls: [{ tool: "tenant_daily_logs", status: "success", latencyMs: 9 }],
+          modelCalls: [
+            { role: "classifier", status: "success" },
+            { role: "planner", status: "success" },
+            { role: "worker", status: "success" },
+            { role: "final_synthesizer", status: "success" },
+          ],
+          events: [],
+        },
+        telemetry: { finalAttempts: 1 },
+      } satisfies CodaliGatewayResult;
+    },
+  });
+
+  const request = captured.request;
+  assert.ok(request);
+  assert.equal(request.id, "job-gateway");
+  assert.equal(request.docdex?.apiKey, "attached-secret");
+  assert.equal(request.docdex?.repoId, "repo-tenant-a");
+  assert.deepEqual(request.tools, {
+    actualTools: ["docdex_search"],
+    virtualTools: ["tenant_daily_logs"],
+  });
+  assert.deepEqual(request.policy?.allowedTools, ["docdex_search", "tenant_daily_logs"]);
+  assert.deepEqual(request.policy?.deniedTools, ["github_search"]);
+  assert.deepEqual(request.policy?.appVirtualTools, ["tenant_daily_logs"]);
+  assert.deepEqual(request.policy?.appToolContracts, {
+    tenant_daily_logs: {
+      executionMode: "server_supplied_snapshot_plus_docdex",
+      callSchema: { type: "object" },
+      resultContract: "daily log search results",
+      backingTools: ["docdex_search"],
+    },
+  });
+  assert.equal(request.policy?.maxToolCalls, 4);
+  assert.equal(request.policy?.maxModelCalls, 6);
+  assert.equal(request.policy?.allowWrites, false);
+  assert.equal(request.conversation?.id, "chat-session-1");
+  assert.equal(captured.options?.provider.name, "openai-compatible");
+  assert.equal(Array.isArray(captured.options?.agentInventory), true);
+  assert.equal(result.output, "gateway answer");
+  assert.equal(result.metadata.codali_gateway_status, "succeeded");
+  assert.equal(result.metadata.codali_gateway_task_count, 1);
+  assert.equal(result.metadata.codali_gateway_source_count, 1);
+  assert.equal(result.metadata.codali_gateway_evidence_count, 1);
+  assert.deepEqual(result.metadata.called_tools, ["tenant_daily_logs"]);
+  assert.equal(result.metadata.telemetry?.mode, "gateway");
+  assert.equal(result.metadata.session_id, "chat-session-1");
+  assert.equal(chunks.length, 2);
+  assert.equal(
+    (chunks[0]?.choices as Array<{ delta?: { content?: string } }> | undefined)?.[0]?.delta?.content,
+    "gateway answer",
+  );
+  assert.equal(
+    (chunks[1]?.choices as Array<{ finish_reason?: string }> | undefined)?.[0]?.finish_reason,
+    "stop",
+  );
+  assert.deepEqual(gatewayEvents.map((event) => event.type), ["gateway_start", "gateway_result"]);
 });
 
 test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider", async () => {

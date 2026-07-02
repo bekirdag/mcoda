@@ -46,6 +46,37 @@ test("parseEvalArgs parses supported eval flags", { concurrency: false }, () => 
   assert.equal(parsed.no_deep_investigation, true);
 });
 
+test("parseEvalArgs parses gateway live smoke flags", { concurrency: false }, () => {
+  const parsed = parseEvalArgs([
+    "--gateway-live-smoke",
+    "--output",
+    "json",
+    "--live-timeout-ms",
+    "90000",
+    "--live-mcoda-command",
+    "/usr/local/bin/mcoda",
+    "--allow-cloud-fallback",
+    "--no-image-worker",
+    "--agent-run-force",
+    "--strict",
+  ]);
+  assert.equal(parsed.gateway_live_smoke, true);
+  assert.equal(parsed.output, "json");
+  assert.equal(parsed.live_timeout_ms, 90_000);
+  assert.equal(parsed.live_mcoda_command, "/usr/local/bin/mcoda");
+  assert.equal(parsed.live_allow_cloud_fallback, true);
+  assert.equal(parsed.live_no_image_worker, true);
+  assert.equal(parsed.live_agent_run_force, true);
+  assert.equal(parsed.live_strict, true);
+});
+
+test("parseEvalArgs parses gateway eval smoke flag", { concurrency: false }, () => {
+  const parsed = parseEvalArgs(["--gateway-smoke", "--output", "json"]);
+
+  assert.equal(parsed.gateway_smoke, true);
+  assert.equal(parsed.output, "json");
+});
+
 test("parseEvalArgs rejects unknown flags deterministically", { concurrency: false }, () => {
   assert.throws(
     () => parseEvalArgs(["--suite", "suite.json", "--unknown"]),
@@ -55,6 +86,12 @@ test("parseEvalArgs rejects unknown flags deterministically", { concurrency: fal
       return true;
     },
   );
+});
+
+test("EvalCommand.run returns success on gateway eval smoke", { concurrency: false }, async () => {
+  await withCliEntry(async () => {
+    await EvalCommand.run(["--gateway-smoke", "--output", "json"]);
+  });
 });
 
 test("EvalCommand.run returns success on passing suite and thresholds", { concurrency: false }, async () => {
