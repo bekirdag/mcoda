@@ -3,7 +3,7 @@
 Guide: `docs/planning/codali-agentic-orchestration-gateway-build-guide.md`
 Source plan: `docs/planning/codali-agentic-orchestration-gateway.md`
 Date: 2026-07-02
-Status: Phase 0 through Phase 18 release gates complete; release publish pending CI/tag confirmation
+Status: Phase 0 through Phase 18 complete; `v0.1.89` published to npm
 
 ## Checklist
 
@@ -33,7 +33,7 @@ Status: Phase 0 through Phase 18 release gates complete; release publish pending
 - [x] Implement Phase 16 evaluation suites and quality gates.
 - [x] Implement Phase 17 security, rate-limit, and approval skeletons.
 - [x] Implement Phase 18 release, rollout, and product integration preparation.
-- [ ] Push release tag and confirm npm registry publish.
+- [x] Push release tag and confirm npm registry publish.
 
 ## Findings
 
@@ -934,6 +934,28 @@ Status: Phase 0 through Phase 18 release gates complete; release publish pending
   - `git diff --check`
   - `rg -n "[ \t]+$" docs/planning/codali-agentic-orchestration-gateway-build-progress.md docs/planning/codali-agentic-orchestration-gateway-build-guide.md docs/planning/codali-agentic-orchestration-gateway-product-integration-brief.md`
   - `docdexd hook pre-commit --repo /Users/bekirdag/Documents/apps/mcoda`
+- Release commit and tag were pushed:
+  - Commit: `7615175 feat: add codali orchestration gateway`
+  - Tag: `v0.1.89`
+  - Push: `git push origin main v0.1.89`
+- GitHub Actions release workflow succeeded:
+  - Release run: `https://github.com/bekirdag/mcoda/actions/runs/28588696513`
+  - Package matrix passed for linux arm64 gnu, darwin arm64, darwin x64, win32 x64, linux x64 musl, and linux x64 gnu.
+  - `publish-npm` passed build, packaging guardrails, tag-version verification, npm update, and OIDC package publication.
+  - GitHub runner annotations were limited to Node 20 action deprecation and macOS runner-image migration notices.
+- Push CI succeeded:
+  - CI run: `https://github.com/bekirdag/mcoda/actions/runs/28588696650`
+- npm registry confirmation passed for the published `0.1.89` packages:
+  - `@mcoda/shared@0.1.89`
+  - `@mcoda/db@0.1.89`
+  - `@mcoda/agents@0.1.89`
+  - `@mcoda/generators@0.1.89`
+  - `@mcoda/integrations@0.1.89`
+  - `@mcoda/core@0.1.89`
+  - `@mcoda/agent-setup@0.1.89`
+  - `mcoda@0.1.89`
+  - `@mcoda/codali@0.1.89`
+  - `@mcoda/mswarm@0.1.89`
 - `docdex_local_completion` was attempted for a lightweight Phase 18 progress-note draft but timed out at the Docdex tool boundary after roughly 300 seconds; progress notes were written directly from command evidence.
 
 ### Build Guide Creation
@@ -958,4 +980,4 @@ Status: Phase 0 through Phase 18 release gates complete; release publish pending
 
 ## Next Step
 
-Commit the Phase 18 release, create and push `v0.1.89`, monitor CI/CD publish, then confirm npm registry versions.
+Roll out `codali_gateway` behind feature flags, keep `codali_job`/single-task fallback active, and fix the live Suku self-hosted catalog dispatch plus image-worker inventory before treating live model validation as fully green.
