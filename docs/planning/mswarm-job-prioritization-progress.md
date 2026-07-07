@@ -8,7 +8,7 @@ Date: 2026-07-07
 - Repo/profile memory: recorded requested priority mapping.
 - Implementation: completed across mcoda, mswarm, Docdex, TNL, OKACAM, and BDYA source surfaces.
 - Validation: targeted contract/runtime/product tests are passing for completed surfaces.
-- Publish/deploy: BDYA gateway restarted on suku; mcoda release v0.1.90 prepared in a clean worktree.
+- Publish/deploy: completed where required. `mcoda`, `@mcoda/mswarm`, `@mcoda/codali`, and `docdex` are published at the priority-capable versions; mswarm production and the suku self-hosted node are running priority-capable code.
 
 ## Priority Mapping
 
@@ -78,6 +78,21 @@ Lower number dispatches earlier.
 - `sukunahikona:/home/wodo/apps/bdya`: `./node_modules/.bin/tsc --pretty false --noEmit -p tsconfig.base.json` passed.
 - `sukunahikona`: `systemctl --user restart svc-mcoda-gateway.service` completed, and `/healthz` returned `status: ok`.
 
+## Fresh Re-Audit
+
+Date: 2026-07-07
+
+- Completed: `origin/main` contains the numeric priority contract, `scheduling.priority` validation, default legacy priority `0`, lifecycle priority snapshots, and lower-number-first dispatch tests.
+- Completed: published npm versions are `mcoda@0.1.90`, `@mcoda/mswarm@0.1.90`, `@mcoda/codali@0.1.90`, and `docdex@0.2.80`.
+- Completed: standalone mswarm production is on `d766418`, `mswarm-gateway` is healthy, and `NODE_OPTIONS=--max-old-space-size=4096`.
+- Completed: `POST https://api.mswarm.org/v1/swarm/self-hosted/node/jobs/poll` with a dummy node id returns application `401` with `Missing self-hosted node runtime token`, confirming the relay route is live rather than Cloudflare 502ing.
+- Completed: public health checks returned healthy responses from `https://api.mswarm.org/healthz`, `https://api.docdex.org/healthz`, `https://okacam.org/healthz`, and `https://theneuralledger.com/healthz`.
+- Completed: suku self-hosted node is active, uses `@mcoda/mswarm@0.1.90`, has `MSWARM_SELF_HOSTED_REQUEST_TIMEOUT_MS=90000`, and its recent journal window has no abort/timeout/error lines.
+- Completed: BDYA on suku is active at `143abd0` with default priority `3`, scheduling payload construction, node-bound scheduling gating, and validation checks for the priority default.
+- Misaligned and aligned: this progress document previously said publish/deploy had not started. The statement is now corrected to match the released and deployed state.
+- Caveat: `/Users/bekirdag/Documents/apps/mcoda` still has unrelated dirty local changes and is behind `origin/main`; release verification used the clean `/private/tmp/mcoda-priority-release` worktree instead.
+- Caveat: `sukunahikona:/home/wodo/apps/bdya` still has an unrelated dirty docs/planning file. The priority source and deployed service are aligned.
+
 ## Blockers
 
-- Publish/deploy steps have not started. The mcoda worktree has pre-existing unrelated dirty changes, so release staging must avoid including unrelated Codali changes.
+- None for the priority rollout.
