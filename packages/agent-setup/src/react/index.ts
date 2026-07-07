@@ -426,7 +426,11 @@ export function GpuJobOpsPanel(props: GpuJobOpsPanelProps): React.ReactElement {
                         "td",
                         { className: "mcoda-agent-setup__gpu-job-cell" },
                         React.createElement("strong", null, job.job_id),
-                        React.createElement("small", null, `${job.job_type} · ${formatTimestamp(job.updated_at)}`)
+                        React.createElement(
+                          "small",
+                          null,
+                          `${job.job_type} · priority ${job.priority} · ${formatTimestamp(job.updated_at)}`
+                        )
                       ),
                       React.createElement(
                         "td",

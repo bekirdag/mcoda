@@ -647,6 +647,7 @@ interface GenericJobOpsJobSummary {
   state: string;
   job_type: string;
   schema_version: string;
+  priority: number;
   created_at: string;
   updated_at: string;
   queued_at?: string;
@@ -799,6 +800,11 @@ function lifecycleRetryPolicy(job: SelfHostedGenericNodeJob): MswarmGenericJobRe
   };
 }
 
+function genericJobPriority(job: SelfHostedGenericNodeJob): number {
+  const priority = job.job.scheduling?.priority;
+  return typeof priority === "number" && Number.isInteger(priority) ? priority : 0;
+}
+
 class OwnerLocalGenericJobLifecycleScheduler {
   private readonly jobs = new Map<string, LifecycleJobEntry>();
   private readonly idempotency = new Map<string, string>();
@@ -852,6 +858,8 @@ class OwnerLocalGenericJobLifecycleScheduler {
         state: "queued",
         job: job.job,
         idempotency_key: idempotencyKey,
+        priority: genericJobPriority(job),
+        ...(job.job.scheduling ? { scheduling: job.job.scheduling } : {}),
         created_at: now,
         updated_at: now,
         queued_at: now,
@@ -860,7 +868,7 @@ class OwnerLocalGenericJobLifecycleScheduler {
     };
     this.jobs.set(job.job_id, entry);
     this.idempotency.set(idempotencyKey, job.job_id);
-    this.audit(entry, "job_created", { idempotency_key: idempotencyKey });
+    this.audit(entry, "job_created", { idempotency_key: idempotencyKey, priority: entry.record.priority });
     this.audit(entry, "job_queued");
     this.syncRuntimeQueueTelemetry();
     queueMicrotask(() => {
@@ -1069,7 +1077,13 @@ class OwnerLocalGenericJobLifecycleScheduler {
   }
 
   private nextDispatchableEntry(): LifecycleJobEntry | null {
-    return this.queuedEntries().sort((a, b) => a.record.created_at.localeCompare(b.record.created_at))[0] || null;
+    return this.queuedEntries().sort((a, b) => {
+      const priorityDelta = a.record.priority - b.record.priority;
+      if (priorityDelta !== 0) return priorityDelta;
+      const queuedDelta = (a.record.queued_at || a.record.created_at).localeCompare(b.record.queued_at || b.record.created_at);
+      if (queuedDelta !== 0) return queuedDelta;
+      return a.record.created_at.localeCompare(b.record.created_at);
+    })[0] || null;
   }
 
   private activeTenantId(): string | null {
@@ -1136,7 +1150,7 @@ class OwnerLocalGenericJobLifecycleScheduler {
     });
     this.audit(entry, "reservation_created", { resources: reservation.resources });
     this.audit(entry, "envelope_issued", { expires_at: expiresAt });
-    this.audit(entry, "job_scheduled");
+    this.audit(entry, "job_scheduled", { priority: entry.record.priority });
   }
 
   private async runScheduled(entry: LifecycleJobEntry): Promise<void> {
@@ -1300,6 +1314,7 @@ class OwnerLocalGenericJobLifecycleScheduler {
       state: entry.record.state,
       job_type: entry.record.job.job_type,
       schema_version: entry.record.job.schema_version,
+      priority: entry.record.priority,
       created_at: entry.record.created_at,
       updated_at: entry.record.updated_at,
       queued_at: entry.record.queued_at,

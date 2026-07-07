@@ -4,6 +4,7 @@ import type {
   MswarmJobEvent,
   MswarmJobRequest,
   MswarmJobResult,
+  MswarmJobScheduling,
   MswarmJobType,
 } from "./GenericJobContract.js";
 
@@ -107,6 +108,8 @@ export interface MswarmGenericJobRecord {
   state: MswarmGenericJobLifecycleState;
   job: MswarmJobRequest;
   idempotency_key?: string;
+  priority: number;
+  scheduling?: MswarmJobScheduling;
   created_at: string;
   updated_at: string;
   queued_at?: string;

@@ -77,6 +77,46 @@ describe("MswarmGenericJobContract", () => {
     assert.equal(result.value?.inputs?.[0]?.artifact.uri, "artifact://scene.blend");
   });
 
+  it("accepts signed integer scheduling priority and keeps missing priority legacy-compatible", () => {
+    const prioritized = validateMswarmGenericJobRequest({
+      ...validRenderJob(),
+      scheduling: {
+        priority: -2,
+        deadline_at: "2026-07-07T12:00:00.000Z",
+        fairness_key: "docdex-local-delegation",
+        reason_code: "local_delegation",
+        preemptible: false,
+      },
+    });
+
+    assert.equal(prioritized.ok, true);
+    assert.equal(prioritized.value?.scheduling?.priority, -2);
+    assert.equal(prioritized.value?.scheduling?.fairness_key, "docdex-local-delegation");
+
+    const legacy = validateMswarmGenericJobRequest(validRenderJob());
+
+    assert.equal(legacy.ok, true);
+    assert.equal(legacy.value?.scheduling, undefined);
+  });
+
+  it("rejects malformed scheduling fields", () => {
+    const result = validateMswarmGenericJobRequest({
+      ...validRenderJob(),
+      scheduling: {
+        priority: -2.5,
+        deadline_at: "not-a-date",
+        preemptible: "sometimes",
+        queue: "override",
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.ok(result.issues.some((issue) => issue.code === "invalid_scheduling" && issue.path === "scheduling.priority"));
+    assert.ok(result.issues.some((issue) => issue.code === "invalid_scheduling" && issue.path === "scheduling.deadline_at"));
+    assert.ok(result.issues.some((issue) => issue.code === "invalid_scheduling" && issue.path === "scheduling.preemptible"));
+    assert.ok(result.issues.some((issue) => issue.code === "unknown_field" && issue.path === "scheduling.queue"));
+  });
+
   it("defaults policy.network to none but still requires serialized policy", () => {
     const job = validRenderJob();
     delete (job.policy as { network?: string }).network;

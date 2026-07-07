@@ -588,7 +588,7 @@
                 const terminal = ['succeeded', 'failed', 'cancelled', 'expired', 'blocked'].includes(job.state);
                 const retryable = terminal && job.state !== 'succeeded';
                 const values = [
-                    `${job.job_id} (${job.job_type})`,
+                    `${job.job_id} (${job.job_type}, priority ${job.priority ?? 0})`,
                     job.state,
                     typeof job.progress_percent === 'number' ? `${Math.round(job.progress_percent)}%` : '-',
                     `${job.artifact_count ?? 0} / ${formatBytes(job.artifact_bytes ?? 0)}`,

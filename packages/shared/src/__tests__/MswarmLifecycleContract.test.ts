@@ -46,6 +46,7 @@ describe("MswarmLifecycleContract", () => {
       state: "queued",
       job: genericJob,
       idempotency_key: "idem_1",
+      priority: 0,
       created_at: "2026-06-14T00:00:00.000Z",
       updated_at: "2026-06-14T00:00:00.000Z",
       queued_at: "2026-06-14T00:00:00.000Z",

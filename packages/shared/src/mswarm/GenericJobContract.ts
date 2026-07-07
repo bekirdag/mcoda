@@ -66,6 +66,7 @@ export type MswarmGenericJobErrorCode =
   | "invalid_registered_job_catalog"
   | "invalid_policy"
   | "invalid_limits"
+  | "invalid_scheduling"
   | "invalid_resources"
   | "invalid_artifact"
   | "invalid_output"
@@ -121,6 +122,14 @@ export interface MswarmJobLimits {
   max_output_bytes?: number;
 }
 
+export interface MswarmJobScheduling {
+  priority?: number;
+  deadline_at?: string;
+  fairness_key?: string;
+  reason_code?: string;
+  preemptible?: boolean;
+}
+
 export interface MswarmArtifactRef {
   id?: string;
   uri: string;
@@ -154,6 +163,7 @@ export interface MswarmJobRequest {
   args?: Record<string, unknown>;
   resources?: MswarmResourceRequest;
   limits?: MswarmJobLimits;
+  scheduling?: MswarmJobScheduling;
   outputs?: MswarmOutputSpec[];
   policy: MswarmJobPolicy;
   metadata?: Record<string, unknown>;
@@ -214,6 +224,7 @@ const COMMON_REQUEST_KEYS = new Set([
   "args",
   "resources",
   "limits",
+  "scheduling",
   "outputs",
   "policy",
   "metadata",
@@ -722,6 +733,99 @@ const validateLimits = (
     }
   }
   return Object.keys(limits).length > 0 ? limits : undefined;
+};
+
+const validateScheduling = (
+  value: unknown,
+  issues: MswarmGenericJobValidationIssue[],
+): MswarmJobScheduling | undefined => {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    pushIssue(issues, {
+      code: "invalid_scheduling",
+      path: "scheduling",
+      message: "Scheduling must be an object.",
+      value,
+    });
+    return undefined;
+  }
+  const allowed = new Set(["priority", "deadline_at", "fairness_key", "reason_code", "preemptible"]);
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (!allowed.has(key)) {
+      pushIssue(issues, {
+        code: "unknown_field",
+        path: `scheduling.${key}`,
+        message: "Unknown scheduling field.",
+        value: fieldValue,
+      });
+    }
+  }
+  const scheduling: MswarmJobScheduling = {};
+  const priority = value.priority;
+  if (priority !== undefined) {
+    if (typeof priority !== "number" || !Number.isInteger(priority) || priority < -100 || priority > 100) {
+      pushIssue(issues, {
+        code: "invalid_scheduling",
+        path: "scheduling.priority",
+        message: "Scheduling priority must be an integer from -100 to 100; lower numbers dispatch earlier.",
+        value: priority,
+      });
+    } else {
+      scheduling.priority = priority;
+    }
+  }
+  const deadlineAt = value.deadline_at === undefined ? undefined : asNonEmptyString(value.deadline_at);
+  if (value.deadline_at !== undefined) {
+    if (!deadlineAt || Number.isNaN(Date.parse(deadlineAt))) {
+      pushIssue(issues, {
+        code: "invalid_scheduling",
+        path: "scheduling.deadline_at",
+        message: "Scheduling deadline_at must be a valid timestamp string.",
+        value: value.deadline_at,
+      });
+    } else {
+      scheduling.deadline_at = deadlineAt;
+    }
+  }
+  const fairnessKey = value.fairness_key === undefined ? undefined : asNonEmptyString(value.fairness_key);
+  if (value.fairness_key !== undefined) {
+    if (!fairnessKey) {
+      pushIssue(issues, {
+        code: "invalid_scheduling",
+        path: "scheduling.fairness_key",
+        message: "Scheduling fairness_key must be a non-empty string.",
+        value: value.fairness_key,
+      });
+    } else {
+      scheduling.fairness_key = fairnessKey;
+    }
+  }
+  const reasonCode = value.reason_code === undefined ? undefined : asNonEmptyString(value.reason_code);
+  if (value.reason_code !== undefined) {
+    if (!reasonCode) {
+      pushIssue(issues, {
+        code: "invalid_scheduling",
+        path: "scheduling.reason_code",
+        message: "Scheduling reason_code must be a non-empty string.",
+        value: value.reason_code,
+      });
+    } else {
+      scheduling.reason_code = reasonCode;
+    }
+  }
+  if (value.preemptible !== undefined) {
+    if (typeof value.preemptible !== "boolean") {
+      pushIssue(issues, {
+        code: "invalid_scheduling",
+        path: "scheduling.preemptible",
+        message: "Scheduling preemptible must be a boolean.",
+        value: value.preemptible,
+      });
+    } else {
+      scheduling.preemptible = value.preemptible;
+    }
+  }
+  return Object.keys(scheduling).length > 0 ? scheduling : undefined;
 };
 
 const validateRelativeSandboxPath = (
@@ -1281,6 +1385,7 @@ export function validateMswarmGenericJobRequest(
   const inputs = validateInputs(input.inputs, options, issues);
   const outputs = validateOutputs(input.outputs, issues);
   const resources = validateResources(input.resources, issues);
+  const scheduling = validateScheduling(input.scheduling, issues);
   const args = validateArgs(input.args, jobType, issues);
   const idempotencyKey = input.idempotency_key === undefined ? undefined : asNonEmptyString(input.idempotency_key);
   if (input.idempotency_key !== undefined && !idempotencyKey) {
@@ -1316,6 +1421,7 @@ export function validateMswarmGenericJobRequest(
       ...(args ? { args } : {}),
       ...(resources ? { resources } : {}),
       ...(limits ? { limits } : {}),
+      ...(scheduling ? { scheduling } : {}),
       ...(outputs ? { outputs } : {}),
       policy,
       ...(metadata ? { metadata } : {}),

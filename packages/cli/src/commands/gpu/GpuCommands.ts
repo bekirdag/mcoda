@@ -265,7 +265,7 @@ const formatOpsSummary = (summary: MswarmGenericJobOpsSummary): string => {
   if (summary.queue.jobs.length) {
     lines.push("jobs:");
     for (const job of summary.queue.jobs.slice(0, 10)) {
-      lines.push(`  ${job.job_id} ${job.state} ${job.job_type} tenant=${job.tenant_id}`);
+      lines.push(`  ${job.job_id} ${job.state} ${job.job_type} priority=${job.priority} tenant=${job.tenant_id}`);
     }
   }
   if (summary.audit.events.length) {

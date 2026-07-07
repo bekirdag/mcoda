@@ -38,6 +38,7 @@ import {
   type MswarmJobPolicy,
   type MswarmJobRequest,
   type MswarmJobResult,
+  type MswarmJobScheduling,
   type MswarmNodeCapabilitySnapshot,
   type MswarmOutputSpec,
   type MswarmPublicCapabilityProjection,
@@ -368,6 +369,7 @@ export interface SelfHostedNodeInvocationJob {
     stop?: string | string[];
     response_format?: Record<string, unknown> | null;
   };
+  scheduling?: MswarmJobScheduling;
   policy?: {
     max_runtime_ms?: number;
     max_output_tokens?: number;

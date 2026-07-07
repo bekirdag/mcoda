@@ -4220,6 +4220,119 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("dispatches lower numeric lifecycle priority before older queued legacy jobs", async () => {
+    const statePath = tempStatePath();
+    const config = genericServiceConfigFor(statePath, {
+      genericJobMaxConcurrency: 1,
+      genericJobTimeoutMs: 2_000
+    });
+    const started: string[] = [];
+    const runner: MswarmGenericJobRunner = {
+      id: "test.echo",
+      async run(context: MswarmGenericJobRunnerContext) {
+        started.push(context.job.idempotency_key || "unknown");
+        const args = context.job.args || {};
+        const delayMs = typeof args.delay_ms === "number" ? args.delay_ms : 0;
+        if (delayMs > 0) {
+          await delay(delayMs, undefined, { signal: context.signal });
+        }
+        return {
+          job_id: context.job.idempotency_key || "unknown",
+          status: "succeeded",
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString()
+        };
+      }
+    };
+    const baseJob = genericEchoJob();
+    const running = genericEchoJob({
+      job_id: "job-priority-running",
+      request_id: "req-priority-running",
+      job: {
+        ...baseJob.job,
+        idempotency_key: "running",
+        args: { message: "running", delay_ms: 80 }
+      }
+    });
+    const legacy = genericEchoJob({
+      job_id: "job-priority-legacy",
+      request_id: "req-priority-legacy",
+      job: {
+        ...baseJob.job,
+        idempotency_key: "legacy",
+        args: { message: "legacy" }
+      }
+    });
+    const prioritized = genericEchoJob({
+      job_id: "job-priority-docdex",
+      request_id: "req-priority-docdex",
+      job: {
+        ...baseJob.job,
+        idempotency_key: "docdex",
+        args: { message: "docdex" },
+        scheduling: { priority: -2, reason_code: "docdex_local_delegation" }
+      }
+    });
+    const tokenFor = (job: SelfHostedGenericNodeJob): string =>
+      signGenericJobToken({
+        secret: config.invocationSigningSecret || "",
+        nodeId: job.node_id,
+        jobId: job.job_id,
+        requestId: job.request_id,
+        jobType: job.job.job_type
+      });
+    const runtime = new SelfHostedNodeRuntime(config, {
+      genericRunners: [runner],
+      capabilityRunner: capabilityProbeRunner({})
+    });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      for (const job of [running, legacy, prioritized]) {
+        const create = await app.inject({
+          method: "POST",
+          url: "/v1/swarm/self-hosted/node/generic-job-control/jobs",
+          headers: { authorization: `Bearer ${tokenFor(job)}`, "content-type": "application/json" },
+          payload: job
+        });
+        expect(create.statusCode).toBe(202);
+      }
+
+      let priorityBody: Record<string, unknown> | null = null;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await delay(20);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(prioritized.job_id)}`,
+          headers: { authorization: `Bearer ${tokenFor(prioritized)}` }
+        });
+        expect(status.statusCode).toBe(200);
+        priorityBody = JSON.parse(status.payload) as Record<string, unknown>;
+        if ((priorityBody.job as Record<string, unknown>).state === "succeeded") break;
+      }
+
+      let legacyBody: Record<string, unknown> | null = null;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await delay(20);
+        const status = await app.inject({
+          method: "GET",
+          url: `/v1/swarm/self-hosted/node/generic-job-control/jobs/${encodeURIComponent(legacy.job_id)}`,
+          headers: { authorization: `Bearer ${tokenFor(legacy)}` }
+        });
+        expect(status.statusCode).toBe(200);
+        legacyBody = JSON.parse(status.payload) as Record<string, unknown>;
+        if ((legacyBody.job as Record<string, unknown>).state === "succeeded") break;
+      }
+
+      expect(started).toEqual(["running", "docdex", "legacy"]);
+      const priorityJob = priorityBody?.job as Record<string, unknown>;
+      expect(priorityJob.priority).toBe(-2);
+      const legacyJob = legacyBody?.job as Record<string, unknown>;
+      expect(legacyJob.priority).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("cancels owner-local lifecycle jobs through the lifecycle cancel endpoint", async () => {
     const statePath = tempStatePath();
     const config = genericServiceConfigFor(statePath, { genericJobTimeoutMs: 2_000 });
@@ -4347,7 +4460,9 @@ describe("self-hosted node runtime", () => {
       expect(body.node.node_id).toBe(config.nodeId);
       expect(body.node.owner_local).toBe(true);
       expect(body.node.artifact_store_configured).toBe(true);
-      expect(body.queue.jobs.some((entry: Record<string, unknown>) => entry.job_id === job.job_id)).toBe(true);
+      const opsJob = body.queue.jobs.find((entry: Record<string, unknown>) => entry.job_id === job.job_id);
+      expect(Boolean(opsJob)).toBe(true);
+      expect(opsJob.priority).toBe(0);
       expect(body.queue.totals_by_state.succeeded).toBe(1);
       expect(body.usage.total_jobs).toBe(1);
       expect(body.usage.succeeded_jobs).toBe(1);

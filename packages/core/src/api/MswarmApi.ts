@@ -441,6 +441,7 @@ export interface MswarmGenericJobOpsJobSummary {
   state: string;
   job_type: string;
   schema_version: string;
+  priority: number;
   created_at: string;
   updated_at: string;
   queued_at?: string;
