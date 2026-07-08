@@ -2,14 +2,16 @@
   "schema_version": "codali.unified.phase0.baseline.v1",
   "phase": 0,
   "phase_title": "Baseline Audit And Repo Readiness",
-  "generated_at": "2026-07-02",
+  "generated_at": "2026-07-08",
   "repo": {
     "label": "codali-storage-service",
     "root": "/Users/bekirdag/Documents/apps/codali-storage-service",
     "git_status_at_audit": {
-      "command": "git status --short",
-      "state": "not_git_repository",
-      "observed_output": "fatal: not a git repository (or any of the parent directories): .git"
+      "command": "git status --short --branch",
+      "state": "clean",
+      "observed_output": "## main...origin/main",
+      "remote": "https://github.com/bekirdag/codali-storage-service.git",
+      "note": "Storage service was initialized as a Git worktree and pushed during the release audit."
     },
     "indexed_doc_count_at_audit": 15
   },
