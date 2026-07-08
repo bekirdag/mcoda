@@ -35,6 +35,7 @@ This audit follows the completed `scripts/automate_codali_unified_plan.py` run f
 - The automation queue did not publish npm packages, create release tags, push commits, or deploy production services. The script explicitly avoids those operations unless configured with `--git-sync`, and the run did not perform release operations.
 - The first `v0.1.91` GitHub Actions release run failed before npm publishing because the committed phase 0 storage-service baseline still described the service as a non-Git directory. The baseline and test are now aligned with the Git-backed storage-service repo; the release tag must be repointed and the release workflow rerun.
 - The second `v0.1.91` release run reached the package test stage but failed before npm publishing because final cross-phase and phase 1 tests assumed the sibling `codali-storage-service` checkout existed in CI. The tests now validate live storage-service files when the sibling checkout exists and committed baseline/release evidence when it does not.
+- The third `v0.1.91` release run passed all non-Windows package jobs but failed in the Windows package test because a phase 1 plan-parsing assertion did not normalize CRLF line endings before matching validation blocks. The test now normalizes `\r\n` to `\n` before parsing the markdown plan.
 - npm still reports `mcoda`, `@mcoda/codali`, and `@mcoda/mswarm` at `0.1.90` until the corrected `v0.1.91` release succeeds.
 - The suku/sukunahikona self-hosted mswarm node currently runs global packages `mcoda@0.1.90`, `@mcoda/mswarm@0.1.90`, and `@mcoda/codali@0.1.90`. It must be updated after `0.1.91` is published.
 
@@ -48,7 +49,7 @@ This audit follows the completed `scripts/automate_codali_unified_plan.py` run f
 ## Release Actions
 
 - Bump release-guarded mcoda package versions to `0.1.91`.
-- Commit and push the storage-service baseline and CI fallback test fixes, then repoint and rerun tag `v0.1.91`.
+- Commit and push the storage-service baseline, CI fallback, and Windows CRLF test fixes, then repoint and rerun tag `v0.1.91`.
 - Verify GitHub Actions publishes `mcoda`, `@mcoda/shared`, `@mcoda/db`, `@mcoda/agents`, `@mcoda/generators`, `@mcoda/integrations`, `@mcoda/core`, `@mcoda/agent-setup`, `@mcoda/codali`, and `@mcoda/mswarm`.
 - Update suku global packages to the published `0.1.91` versions, restart `mswarm-self-hosted-node.service`, and run a priority/Codali smoke check.
 - Commit, push, and deploy OKACAM tenant AI chat changes; verify production health after deployment.

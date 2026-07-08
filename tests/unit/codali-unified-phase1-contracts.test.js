@@ -78,7 +78,7 @@ test("Phase 1 storage-service package validates the same shared fixture contract
 });
 
 test("unified plan uses workspace-safe Codali validation commands", () => {
-  const planText = readFileSync(unifiedPlanPath, "utf8");
+  const planText = readFileSync(unifiedPlanPath, "utf8").replace(/\r\n/g, "\n");
   const commandBlocks = Array.from(
     planText.matchAll(/```text\n([\s\S]*?)\n```/g),
     (match) => match[1],
