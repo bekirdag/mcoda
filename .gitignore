@@ -14,9 +14,12 @@ pnpm-lock.yaml
 logs/
 tests/results/
 .mcoda/
+/.codali/
+/.codali_unified_plan_queue/
 /.docdex-state/
 docs/codali-sds
 docs/planning/*
 !docs/planning/.gitkeep
 packages/**/*.tgz
 .claude
+scripts/__pycache__/

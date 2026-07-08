@@ -348,9 +348,13 @@ export interface SelfHostedNodeInvocationJob {
     repo_root?: string;
     repo_id?: string;
     dag_session_id?: string;
+    apiKey?: string;
+    api_key?: string;
     required?: boolean;
     allowed_operations?: string[];
     credential_source?: "attached_mswarm_api_key" | string;
+    immutableRuntimeContext?: boolean;
+    immutable_runtime_context?: boolean;
     capabilities?: Record<string, boolean | undefined>;
     initialize?: boolean;
     allow_web?: boolean;
@@ -380,8 +384,6 @@ export interface SelfHostedNodeInvocationJob {
     app_tool_contracts?: Record<string, unknown> | Array<Record<string, unknown>>;
     app_virtual_tools?: string[];
     app_tool_gateway?: Record<string, unknown>;
-    okacam_tool_contracts?: Record<string, unknown> | Array<Record<string, unknown>>;
-    okacam_virtual_tools?: string[];
     allow_shell?: boolean;
     allow_writes?: boolean;
     allow_outside_workspace?: boolean;
@@ -3017,9 +3019,14 @@ function buildCodaliDocdex(job: SelfHostedNodeInvocationJob): MswarmCodaliDocdex
     repoRoot: optionalText(job.docdex.repo_root) || optionalText(job.workspace?.root) || undefined,
     repoId: optionalText(job.docdex.repo_id) || undefined,
     dagSessionId: optionalText(job.docdex.dag_session_id) || job.request_id,
+    apiKey: optionalText(job.docdex.apiKey) || optionalText(job.docdex.api_key) || undefined,
     required: job.docdex.required === true,
     allowedOperations: allowedOperations.length ? allowedOperations : undefined,
     credentialSource: optionalText(job.docdex.credential_source) || undefined,
+    immutableRuntimeContext:
+      job.docdex.immutableRuntimeContext === true ||
+      job.docdex.immutable_runtime_context === true ||
+      job.docdex.credential_source === ATTACHED_MSWARM_API_KEY_CREDENTIAL_SOURCE,
     capabilities: normalizeDocdexCapabilityMap(job.docdex.capabilities),
     initialize: job.docdex.initialize,
     allowWeb: job.docdex.allow_web === true,
@@ -3199,8 +3206,6 @@ function buildCodaliPolicy(job: SelfHostedNodeInvocationJob): MswarmCodaliPolicy
     appToolContracts: normalizeRuntimeToolContractPayload(job.policy?.app_tool_contracts),
     appVirtualTools: normalizeCapabilities(job.policy?.app_virtual_tools),
     appToolGateway: objectRecord(job.policy?.app_tool_gateway) || undefined,
-    okacamToolContracts: normalizeRuntimeToolContractPayload(job.policy?.okacam_tool_contracts),
-    okacamVirtualTools: normalizeCapabilities(job.policy?.okacam_virtual_tools),
     allowShell: job.policy?.allow_shell === true,
     allowWrites: job.policy?.allow_writes === true,
     allowDestructiveOperations: job.policy?.allow_destructive_operations === true,
@@ -3267,6 +3272,10 @@ function normalizeGatewayDocdex(
     return inherited;
   }
   const allowedOperations = normalizeCapabilities(record.allowedOperations ?? record.allowed_operations);
+  const credentialSource =
+    optionalText(record.credentialSource) ||
+    optionalText(record.credential_source) ||
+    inherited?.credentialSource;
   return {
     ...inherited,
     enabled: typeof record.enabled === "boolean" ? record.enabled : inherited?.enabled,
@@ -3280,12 +3289,19 @@ function normalizeGatewayDocdex(
       optionalText(record.dagSessionId) ||
       optionalText(record.dag_session_id) ||
       inherited?.dagSessionId,
+    apiKey:
+      optionalText(record.apiKey) ||
+      optionalText(record.api_key) ||
+      inherited?.apiKey,
     required: typeof record.required === "boolean" ? record.required : inherited?.required,
     allowedOperations: allowedOperations.length ? allowedOperations : inherited?.allowedOperations,
-    credentialSource:
-      optionalText(record.credentialSource) ||
-      optionalText(record.credential_source) ||
-      inherited?.credentialSource,
+    credentialSource,
+    immutableRuntimeContext:
+      typeof record.immutableRuntimeContext === "boolean"
+        ? record.immutableRuntimeContext
+        : typeof record.immutable_runtime_context === "boolean"
+          ? record.immutable_runtime_context
+          : inherited?.immutableRuntimeContext ?? credentialSource === ATTACHED_MSWARM_API_KEY_CREDENTIAL_SOURCE,
     capabilities: normalizeDocdexCapabilityMap(record.capabilities) ?? inherited?.capabilities,
     initialize: typeof record.initialize === "boolean" ? record.initialize : inherited?.initialize,
     allowWeb: typeof record.allowWeb === "boolean"
@@ -6358,6 +6374,8 @@ export class SelfHostedNodeRuntime {
             codali_gateway_warnings: response.metadata.codali_gateway_warnings,
             codali_gateway_errors: response.metadata.codali_gateway_errors,
             codali_gateway_trace: response.metadata.codali_gateway_trace,
+            feedback_submission: response.metadata.feedback_submission,
+            codali_product_metadata: response.metadata.codali_product_metadata,
             touched_files: response.metadata.touched_files,
             warnings: response.metadata.warnings,
             mode: response.metadata.mode,

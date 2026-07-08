@@ -15,6 +15,8 @@ import {
   normalizeMswarmCommand
 } from "../server.js";
 import {
+  MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+  MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION,
   MswarmCodaliExecutor,
   type MswarmCodaliInvocationInput,
   type MswarmCodaliInvocationResult
@@ -545,8 +547,9 @@ function successfulCodaliInvocation(
 ): MswarmCodaliInvocationResult {
   const mode: MswarmCodaliInvocationResult["metadata"]["mode"] =
     input.policy?.allowTools === false ? "freeform" : "tool_loop";
+  const runId = `run-${input.requestId}`;
   const telemetry = {
-    runId: `run-${input.requestId}`,
+    runId,
     runtime: "codali" as const,
     mode,
     toolCallCount: 0,
@@ -568,7 +571,7 @@ function successfulCodaliInvocation(
       touchedFiles: [],
       warnings: [],
       events: [],
-      runId: `run-${input.requestId}`,
+      runId,
       telemetry
     },
     openAIChunks: [],
@@ -578,7 +581,7 @@ function successfulCodaliInvocation(
       local_model: input.agent.model,
       agent_slug: input.agent.slug,
       runtime: "codali",
-      run_id: `run-${input.requestId}`,
+      run_id: runId,
       tool_calls_executed: 0,
       called_tools: [],
       dynamic_tools_considered: [],
@@ -586,6 +589,43 @@ function successfulCodaliInvocation(
       dynamic_tools_skipped: [],
       tool_call_details: [],
       telemetry,
+      feedback_submission: {
+        schema_version: MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+        run_id: runId,
+        deletion_group_id: `delete-group-${runId}`,
+        target: {
+          record_type: "gateway_record",
+          record_id: runId,
+          role: input.codaliGateway
+            ? "codali_gateway_answer"
+            : input.codaliJob
+              ? "codali_job_result"
+              : "codali_runtime_result"
+        },
+        candidate_records: [
+          {
+            record_type: "gateway_record",
+            record_id: runId,
+            role: input.codaliGateway
+              ? "codali_gateway_answer"
+              : input.codaliJob
+                ? "codali_job_result"
+                : "codali_runtime_result"
+          }
+        ],
+        requester_scope: {
+          visibility: "requester",
+          tenant_wide: false
+        },
+        source: {
+          runtime: "mswarm",
+          job_id: input.jobId,
+          request_id: input.requestId,
+          agent_slug: input.agent.slug,
+          ...(input.session?.id ? { session_id: input.session.id } : {})
+        },
+        raw_trace_included: false
+      },
       touched_files: [],
       warnings: [],
       mode
@@ -894,9 +934,9 @@ describe("self-hosted node runtime", () => {
   it("excludes managed mswarm self-hosted agents from self-hosted mcoda discovery", () => {
     const mapped = mapMcodaAgentToSelfHostedModel(
       {
-        slug: "mswarm-self-hosted-mcoda-sukunahikona-qwen3-6-llama-cpp",
+        slug: "mswarm-self-hosted-mcoda-example-model-qwen3-6-llama-cpp",
         adapter: "openai-api",
-        defaultModel: "mcoda-sukunahikona-qwen3-6-llama-cpp",
+        defaultModel: "mcoda-example-model-qwen3-6-llama-cpp",
         config: {
           mswarmSelfHosted: {
             managed: true
@@ -936,9 +976,9 @@ describe("self-hosted node runtime", () => {
   it("excludes legacy managed mswarm aliases by slug prefix", () => {
     const mapped = mapMcodaAgentToSelfHostedModel(
       {
-        slug: "mswarm-self-hosted-mcoda-cassandra-local-mswarm-self-hosted-mcoda-sukunahikona-qwen3-6-llama-cpp",
+        slug: "mswarm-self-hosted-mcoda-cassandra-local-mswarm-self-hosted-mcoda-example-model-qwen3-6-llama-cpp",
         adapter: "openai-api",
-        defaultModel: "mcoda-sukunahikona-qwen3-6-llama-cpp",
+        defaultModel: "mcoda-example-model-qwen3-6-llama-cpp",
         config: {}
       },
       {
@@ -2038,13 +2078,13 @@ describe("self-hosted node runtime", () => {
         invocation.metadata = {
           ...invocation.metadata,
           tool_calls_executed: 1,
-          called_tools: ["okacam_daily_logs"],
-          dynamic_tools_considered: ["docdex_search", "okacam_daily_logs"],
-          dynamic_tools_registered: ["okacam_daily_logs"],
+          called_tools: ["app_daily_logs"],
+          dynamic_tools_considered: ["docdex_search", "app_daily_logs"],
+          dynamic_tools_registered: ["app_daily_logs"],
           dynamic_tools_skipped: [],
           tool_call_details: [
             {
-              name: "okacam_daily_logs",
+              name: "app_daily_logs",
               backingTool: "docdex_search",
               status: "success",
               latencyMs: 5
@@ -2055,13 +2095,13 @@ describe("self-hosted node runtime", () => {
             runtime: "codali",
             mode: invocation.metadata.mode,
             toolCallCount: 1,
-            calledTools: ["okacam_daily_logs"],
-            consideredTools: ["docdex_search", "okacam_daily_logs"],
-            registeredDynamicTools: ["okacam_daily_logs"],
+            calledTools: ["app_daily_logs"],
+            consideredTools: ["docdex_search", "app_daily_logs"],
+            registeredDynamicTools: ["app_daily_logs"],
             skippedDynamicTools: [],
             dynamicToolCalls: [
               {
-                name: "okacam_daily_logs",
+                name: "app_daily_logs",
                 backingTool: "docdex_search",
                 status: "success",
                 latencyMs: 5
@@ -2092,7 +2132,7 @@ describe("self-hosted node runtime", () => {
         repo_root: "/tmp/workspace",
         tool_manifest: {
           actualTools: ["docdex_search"],
-          virtualTools: ["okacam_daily_logs"]
+          virtualTools: ["app_daily_logs"]
         },
         allow_web: false,
         allow_memory_write: false,
@@ -2100,24 +2140,22 @@ describe("self-hosted node runtime", () => {
         allow_index_rebuild: false
       },
       policy: {
-        allowed_tools: ["docdex_search", "okacam_daily_logs"],
+        allowed_tools: ["docdex_search", "app_daily_logs"],
         denied_tools: ["github_search"],
         app_tool_contracts: {
           generic_tenant_lookup: {
             executionMode: "server_supplied_snapshot_plus_docdex",
             callSchema: { type: "object" },
             backingTools: ["docdex_search"]
-          }
-        },
-        okacam_tool_contracts: {
-          okacam_daily_logs: {
+          },
+          app_daily_logs: {
             executionMode: "server_supplied_snapshot_plus_docdex",
             callSchema: { type: "object" },
             resultContract: "daily log search results",
             backingTools: ["docdex_search"]
           }
         },
-        okacam_virtual_tools: ["okacam_daily_logs"],
+        app_virtual_tools: ["app_daily_logs"],
         allow_shell: false,
         allow_writes: false,
         max_tool_calls: 5
@@ -2133,30 +2171,28 @@ describe("self-hosted node runtime", () => {
     assert.ok(capturedInput);
     expect(capturedInput.docdex?.toolManifest).toEqual({
       actualTools: ["docdex_search"],
-      virtualTools: ["okacam_daily_logs"]
+      virtualTools: ["app_daily_logs"]
     });
-    expect(capturedInput.policy?.allowedTools).toEqual(["docdex_search", "okacam_daily_logs"]);
+    expect(capturedInput.policy?.allowedTools).toEqual(["docdex_search", "app_daily_logs"]);
     expect(capturedInput.policy?.deniedTools).toEqual(["github_search"]);
     assert.deepEqual(capturedInput.policy?.appToolContracts, {
       generic_tenant_lookup: {
         executionMode: "server_supplied_snapshot_plus_docdex",
         callSchema: { type: "object" },
         backingTools: ["docdex_search"]
-      }
-    });
-    assert.deepEqual(capturedInput.policy?.okacamToolContracts, {
-      okacam_daily_logs: {
+      },
+      app_daily_logs: {
         executionMode: "server_supplied_snapshot_plus_docdex",
         callSchema: { type: "object" },
         resultContract: "daily log search results",
         backingTools: ["docdex_search"]
       }
     });
-    expect(capturedInput.policy?.okacamVirtualTools).toEqual(["okacam_daily_logs"]);
+    expect(capturedInput.policy?.appVirtualTools).toEqual(["app_daily_logs"]);
     const metadata = (result.openai_response?.metadata as Record<string, unknown>) || {};
     expect(metadata.runtime).toBe("codali");
-    expect(metadata.called_tools).toEqual(["okacam_daily_logs"]);
-    expect(metadata.dynamic_tools_registered).toEqual(["okacam_daily_logs"]);
+    expect(metadata.called_tools).toEqual(["app_daily_logs"]);
+    expect(metadata.dynamic_tools_registered).toEqual(["app_daily_logs"]);
     assert.equal((metadata.tool_call_details as Array<{ backingTool?: string }>)[0]?.backingTool, "docdex_search");
   });
 
@@ -2366,6 +2402,96 @@ describe("self-hosted node runtime", () => {
             modelCalls: [],
             events: []
           },
+          feedback_submission: {
+            schema_version: MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+            run_id: "run-codali-gateway",
+            deletion_group_id: "delete-group-run-codali-gateway",
+            target: {
+              record_type: "gateway_record",
+              record_id: "run-codali-gateway",
+              role: "codali_gateway_answer"
+            },
+            candidate_records: [
+              {
+                record_type: "gateway_record",
+                record_id: "run-codali-gateway",
+                role: "codali_gateway_answer"
+              }
+            ],
+            product_scope: {
+              product_id: "product-alpha",
+              tenant_scope_present: true
+            },
+            requester_scope: {
+              visibility: "requester",
+              tenant_wide: false,
+              requester_hash: "requester-scope-hash"
+            },
+            source: {
+              runtime: "mswarm",
+              job_id: "job-codali-gateway",
+              request_id: "req-codali-gateway",
+              agent_slug: "qwen-reviewer",
+              session_id: "tenant-chat-session"
+            },
+            raw_trace_included: false
+          },
+          codali_product_metadata: {
+            schema_version: MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION,
+            run_id: "run-codali-gateway",
+            trace_id: "trace-run-codali-gateway",
+            context_pack_id: "ctx-run-codali-gateway",
+            dataset_collection: {
+              accepted: true,
+              status: "queued",
+              record_count: 1,
+              object_count: 0
+            },
+            privacy_flags: {
+              local_only: true,
+              upload_allowed: false,
+              export_allowed: false,
+              training_allowed: false,
+              raw_trace_included: false,
+              contains_personal_data: true,
+              contains_tenant_private_data: true,
+              contains_customer_data: true
+            },
+            record_counts: {
+              dataset_records: 1,
+              sources: 1,
+              evidence: 1,
+              tool_calls: 1,
+              model_calls: 4,
+              context_packs: 1,
+              final_answers: 1,
+              warnings: 0,
+              errors: 0
+            },
+            feedback_ref: {
+              schema_version: MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+              run_id: "run-codali-gateway",
+              deletion_group_id: "delete-group-run-codali-gateway",
+              target: {
+                record_type: "gateway_record",
+                record_id: "run-codali-gateway",
+                role: "codali_gateway_answer"
+              },
+              candidate_record_count: 1,
+              requester_scope: {
+                visibility: "requester",
+                tenant_wide: false,
+                requester_hash: "requester-scope-hash"
+              },
+              raw_trace_included: false
+            },
+            called_tools: ["tenant_daily_logs"],
+            model_tiers: [{ role: "final_synthesizer", tier: "large" }],
+            warnings: [],
+            errors: [],
+            latency_ms: 25,
+            latency: { total_ms: 25, model_ms: 20, tool_ms: 5 }
+          },
           session_id: "tenant-chat-session"
         };
         return invocation;
@@ -2403,8 +2529,12 @@ describe("self-hosted node runtime", () => {
       codali_gateway: {
         query: "What changed in tenant logs?",
         mode: "balanced",
+        product: { id: "product-alpha" },
         tenant: { id: "tenant-a" },
-        requester: { id: "user-a" },
+        requester: {
+          requesterHash: "requester-scope-hash",
+          visibility: "tenant"
+        },
         policy: {
           max_model_calls: 6,
           require_final_large_model: false
@@ -2414,7 +2544,7 @@ describe("self-hosted node runtime", () => {
       policy: {
         allowed_tools: ["docdex_search", "tenant_daily_logs"],
         denied_tools: ["github_search"],
-        okacam_tool_contracts: {
+        app_tool_contracts: {
           tenant_daily_logs: {
             executionMode: "server_supplied_snapshot_plus_docdex",
             callSchema: { type: "object" },
@@ -2422,7 +2552,7 @@ describe("self-hosted node runtime", () => {
             backingTools: ["docdex_search"]
           }
         },
-        okacam_virtual_tools: ["tenant_daily_logs"],
+        app_virtual_tools: ["tenant_daily_logs"],
         allow_shell: false,
         allow_writes: false,
         max_tool_calls: 4
@@ -2448,7 +2578,7 @@ describe("self-hosted node runtime", () => {
     expect(capturedInput.session?.id).toBe("tenant-chat-session");
     expect(capturedInput.attachedMswarmApiKey).toBe("attached-secret");
     expect(capturedInput.policy?.allowedTools).toEqual(["docdex_search", "tenant_daily_logs"]);
-    expect(capturedInput.policy?.okacamVirtualTools).toEqual(["tenant_daily_logs"]);
+    expect(capturedInput.policy?.appVirtualTools).toEqual(["tenant_daily_logs"]);
     const metadata = (result.openai_response?.metadata as Record<string, unknown>) || {};
     expect(metadata.codali_gateway_status).toBe("succeeded");
     expect(metadata.codali_gateway_task_count).toBe(1);
@@ -2456,6 +2586,28 @@ describe("self-hosted node runtime", () => {
     expect(metadata.codali_gateway_evidence_count).toBe(1);
     expect(metadata.called_tools).toEqual(["tenant_daily_logs"]);
     expect(metadata.session_id).toBe("tenant-chat-session");
+    const feedbackSubmission = metadata.feedback_submission as Record<string, unknown>;
+    expect(feedbackSubmission.schema_version).toBe(MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION);
+    expect(feedbackSubmission.run_id).toBe("run-codali-gateway");
+    expect(feedbackSubmission.raw_trace_included).toBe(false);
+    expect(JSON.stringify(feedbackSubmission)).not.toContain("toolCalls");
+    expect(JSON.stringify(feedbackSubmission)).not.toContain("codali_gateway_trace");
+    expect((feedbackSubmission.requester_scope as Record<string, unknown>).visibility).toBe("requester");
+    expect((feedbackSubmission.requester_scope as Record<string, unknown>).tenant_wide).toBe(false);
+    const productMetadata = metadata.codali_product_metadata as Record<string, unknown>;
+    expect(productMetadata.schema_version).toBe(MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION);
+    expect(productMetadata.run_id).toBe("run-codali-gateway");
+    expect(productMetadata.trace_id).toBe("trace-run-codali-gateway");
+    expect(productMetadata.context_pack_id).toBe("ctx-run-codali-gateway");
+    expect((productMetadata.dataset_collection as Record<string, unknown>).status).toBe("queued");
+    expect((productMetadata.dataset_collection as Record<string, unknown>).record_count).toBe(1);
+    expect((productMetadata.privacy_flags as Record<string, unknown>).local_only).toBe(true);
+    expect((productMetadata.privacy_flags as Record<string, unknown>).upload_allowed).toBe(false);
+    expect((productMetadata.feedback_ref as Record<string, unknown>).deletion_group_id).toBe(
+      "delete-group-run-codali-gateway"
+    );
+    expect(JSON.stringify(productMetadata)).not.toContain("private-dataset-id");
+    expect(JSON.stringify(productMetadata)).not.toContain("private-batch-id");
     expect(result.progress_events?.some((event) => event.type === "gateway_start")).toBe(true);
     expect(result.progress_events?.some((event) => event.type === "gateway_result" && event.codali_gateway_id === "run-codali-gateway")).toBe(true);
   });

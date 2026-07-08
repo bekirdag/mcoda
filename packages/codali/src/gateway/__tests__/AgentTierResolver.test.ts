@@ -150,31 +150,31 @@ test("uses deterministic slug tie-breaks when candidates score equally", () => {
 
 test("de-prioritizes nested self-hosted relay aliases behind direct candidates", () => {
   const nestedRelay = agent({
-    slug: "mswarm-self-hosted-mcoda-cassandra-local-mswarm-self-hosted-mcoda-sukunahikona-json",
+    slug: "mswarm-self-hosted-mcoda-cassandra-local-mswarm-self-hosted-mcoda-example-model-json",
     tier: "medium",
     adapter: "openai-api",
-    defaultModel: "mcoda-cassandra-local-mswarm-self-hosted-mcoda-sukunahikona-json",
+    defaultModel: "mcoda-cassandra-local-mswarm-self-hosted-mcoda-example-model-json",
     contextWindow: 24_000,
     rating: 8,
     reasoningRating: 8,
     config: {
       mswarmSelfHosted: {
-        remoteSlug: "mcoda/cassandra-local/mswarm-self-hosted-mcoda-sukunahikona-json",
-        sourceAgentSlug: "mswarm-self-hosted-mcoda-sukunahikona-json",
+        remoteSlug: "mcoda/cassandra-local/mswarm-self-hosted-mcoda-example-model-json",
+        sourceAgentSlug: "mswarm-self-hosted-mcoda-example-model-json",
       },
     },
   });
   const directSelfHosted = agent({
-    slug: "mswarm-self-hosted-mcoda-sukunahikona-json",
+    slug: "mswarm-self-hosted-mcoda-example-model-json",
     tier: "medium",
     adapter: "openai-api",
-    defaultModel: "mcoda-sukunahikona-json",
+    defaultModel: "mcoda-example-model-json",
     contextWindow: 24_000,
     rating: 8,
     reasoningRating: 8,
     config: {
       mswarmSelfHosted: {
-        remoteSlug: "mcoda/sukunahikona/json",
+        remoteSlug: "mcoda/example-model/json",
         sourceAgentSlug: "json",
       },
     },
@@ -188,7 +188,7 @@ test("de-prioritizes nested self-hosted relay aliases behind direct candidates",
   assert.equal(result.ok, true);
   assert.equal(
     result.assignments.planner?.candidate.slug,
-    "mswarm-self-hosted-mcoda-sukunahikona-json",
+    "mswarm-self-hosted-mcoda-example-model-json",
   );
   assert.ok(
     result.diagnostics.some((diagnostic) =>

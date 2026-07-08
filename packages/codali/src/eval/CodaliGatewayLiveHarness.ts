@@ -5,6 +5,7 @@ import {
   type AgentTierResolution,
   type CodaliGatewayAgentAssignment,
   type CodaliGatewayAgentCandidate,
+  type CodaliGatewayAgentSource,
   type CodaliGatewayAgentTierError,
 } from "../gateway/AgentTierResolver.js";
 import type {
@@ -84,6 +85,104 @@ export interface CodaliGatewayLiveScenarioResult {
   warnings: string[];
   errors: string[];
   metadata?: Record<string, unknown>;
+}
+
+export type CodaliGatewayShadowComparisonStatus =
+  | "disabled"
+  | "skipped"
+  | "compared";
+
+export interface CodaliGatewayShadowComparisonPolicy {
+  enabled?: boolean;
+  maxCandidatesPerScenario?: number;
+  includePrimary?: boolean;
+  requireHealthy?: boolean;
+  roles?: CodaliGatewayLiveRoleKey[];
+}
+
+export interface CodaliGatewayLiveEnvironmentWarning {
+  code: string;
+  message: string;
+  reason: string;
+  role?: CodaliGatewayLiveRoleKey;
+  resolverRole?: string;
+  agentSlug?: string;
+  healthStatus?: CodaliGatewayAgentCandidate["healthStatus"];
+  details?: Record<string, unknown>;
+}
+
+export interface CodaliGatewayModelComparisonTokenUse {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
+
+export interface CodaliGatewayModelComparisonQueueMetrics {
+  waitMs?: number;
+  depth?: number;
+  status?: string;
+}
+
+export interface CodaliGatewayModelComparisonThroughputMetrics {
+  tokensPerSecond?: number;
+  requestsPerMinute?: number;
+}
+
+export interface CodaliGatewayModelComparisonMetrics {
+  quality: {
+    status: CodaliGatewayLiveScenarioStatus;
+    score: number;
+    jsonValid?: boolean;
+    toolCallCount?: number;
+    artifactPresent?: boolean;
+    finalAnswerSucceeded?: boolean;
+  };
+  latencyMs?: number;
+  costUsd?: number;
+  tokenUse?: CodaliGatewayModelComparisonTokenUse;
+  queue?: CodaliGatewayModelComparisonQueueMetrics;
+  throughput?: CodaliGatewayModelComparisonThroughputMetrics;
+  failure: {
+    status: "none" | "failed" | "degraded" | "skipped";
+    reasons: string[];
+  };
+  localInference?: Record<string, unknown>;
+}
+
+export interface CodaliGatewayModelComparisonRecord {
+  id: string;
+  scenarioId: CodaliGatewayLiveScenarioId;
+  role: CodaliGatewayLiveRoleKey;
+  resolverRole: string;
+  comparisonRole: "primary" | "shadow";
+  primary: boolean;
+  candidateRank?: number;
+  agentSlug?: string;
+  tier?: CodaliGatewayModelTier;
+  model?: string;
+  adapter?: string;
+  source?: CodaliGatewayAgentSource;
+  healthStatus?: CodaliGatewayAgentCandidate["healthStatus"];
+  capabilities?: string[];
+  resultStatus: CodaliGatewayLiveScenarioStatus;
+  selectedByPolicy: boolean;
+  metrics: CodaliGatewayModelComparisonMetrics;
+  warnings: string[];
+  errors: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface CodaliGatewayShadowComparisonResult {
+  policy: {
+    enabled: boolean;
+    maxCandidatesPerScenario: number;
+    includePrimary: boolean;
+    requireHealthy: boolean;
+    roles: CodaliGatewayLiveRoleKey[];
+  };
+  status: CodaliGatewayShadowComparisonStatus;
+  records: CodaliGatewayModelComparisonRecord[];
+  environmentWarnings: CodaliGatewayLiveEnvironmentWarning[];
 }
 
 export interface CodaliGatewayLiveScenarioDefinition {
@@ -175,6 +274,7 @@ export interface CodaliGatewayLiveHarnessOptions {
   allowCloudFallback?: boolean;
   allowImageWorker?: boolean;
   agentPolicy?: CodaliAgentTierPolicy;
+  shadowComparison?: CodaliGatewayShadowComparisonPolicy;
 }
 
 export interface CodaliGatewayLiveHarnessResult {
@@ -188,6 +288,8 @@ export interface CodaliGatewayLiveHarnessResult {
   discovery: CodaliGatewayLiveDiscoveryResult;
   classification: CodaliGatewayLiveClassification;
   scenarios: CodaliGatewayLiveScenarioResult[];
+  shadowComparison: CodaliGatewayShadowComparisonResult;
+  environmentWarnings: CodaliGatewayLiveEnvironmentWarning[];
   summary: {
     status: CodaliGatewayLiveHarnessStatus;
     passed: number;
@@ -404,7 +506,7 @@ export const parseCodaliGatewayLiveInventory = (payload: unknown): unknown[] => 
 
 const secretKeyPattern = /(api[_-]?key|authorization|bearer|password|secret|token|credential)/i;
 const safeTokenMetricKeyPattern =
-  /^(cachedInputTokens|completionTokens|contextWindow|inputTokens|maxContextPackTokens|maxOutputTokens|maxTokens|outputTokens|promptTokens|tokenEstimate|tokensUsed|totalTokens|usageTokensTotal|usage_tokens_total|cached_input_tokens|completion_tokens|context_window|input_tokens|max_context_pack_tokens|max_output_tokens|max_tokens|output_tokens|prompt_tokens|token_estimate|tokens_used|total_tokens)$/i;
+  /^(cachedInputTokens|completionTokens|contextWindow|inputTokens|maxContextPackTokens|maxOutputTokens|maxTokens|outputTokens|outputTokensPerSecond|promptTokens|tokenEstimate|tokenUse|tokensPerSecond|tokensUsed|totalTokens|usageTokensTotal|usage_tokens_total|cached_input_tokens|completion_tokens|context_window|input_tokens|max_context_pack_tokens|max_output_tokens|max_tokens|output_tokens|output_tokens_per_second|prompt_tokens|token_estimate|token_use|tokens_per_second|tokens_used|total_tokens)$/i;
 const bearerPattern = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const apiKeyPattern = /\b(?:sk|pk|mswarm|mcoda)_[A-Za-z0-9_-]{12,}\b/gi;
 
@@ -721,16 +823,33 @@ const summarizeAgentRunMetadata = (
 ): Record<string, unknown> => {
   const cli = asRecord(metadata?.cli);
   const usage = asRecord(metadata?.usage);
+  const localInference =
+    asRecord(metadata?.localInference) ??
+    asRecord(metadata?.local_inference);
+  const queue = asRecord(metadata?.queue);
+  const throughput = asRecord(metadata?.throughput);
   const output: Record<string, unknown> = {};
   const mode = readString(metadata, ["mode"]);
   const adapterType = readString(metadata, ["adapterType", "adapter_type"]);
   const authMode = readString(metadata, ["authMode", "auth_mode"]);
   const cliVersion = readString(cli, ["version"]);
+  const costUsd = readNumber(metadata, [
+    "costUsd",
+    "cost_usd",
+    "estimatedCostUsd",
+    "estimated_cost_usd",
+  ]);
   if (mode) output.mode = mode;
   if (adapterType) output.adapterType = adapterType;
   if (authMode) output.authMode = authMode;
   if (cliVersion) output.cli = { version: cliVersion };
+  if (costUsd !== undefined) output.costUsd = costUsd;
   if (usage) output.usage = redactCodaliGatewayLiveValue(usage);
+  if (queue) output.queue = redactCodaliGatewayLiveValue(queue);
+  if (throughput) output.throughput = redactCodaliGatewayLiveValue(throughput);
+  if (localInference) {
+    output.localInference = redactCodaliGatewayLiveValue(localInference);
+  }
   return output;
 };
 
@@ -749,13 +868,27 @@ const classifyAgentRunCommandFailure = (
     normalized.includes("invalid model id") ||
     normalized.includes("model_not_found") ||
     normalized.includes("model not found");
-  const status: CodaliGatewayLiveScenarioStatus = knownCatalogMismatch
+  const upstreamUnavailable =
+    normalized.includes("mswarm_error") ||
+    normalized.includes("upstream_error") ||
+    normalized.includes("self-hosted node is not currently reachable") ||
+    normalized.includes("self hosted node is not currently reachable") ||
+    normalized.includes("node is not currently reachable") ||
+    normalized.includes("connection_error") ||
+    normalized.includes("econnrefused") ||
+    normalized.includes("fetch failed");
+  const degradedFailureClass = knownCatalogMismatch
+    ? "agent_run_model_catalog_mismatch"
+    : upstreamUnavailable
+      ? "agent_run_upstream_unavailable"
+      : undefined;
+  const status: CodaliGatewayLiveScenarioStatus = degradedFailureClass
     ? "degraded"
     : "failed";
   return {
     status,
-    warnings: knownCatalogMismatch
-      ? ["agent_run_model_catalog_mismatch"]
+    warnings: degradedFailureClass
+      ? [degradedFailureClass]
       : [],
     errors: [
       `agent_run_exit_${result.exitCode}`,
@@ -764,9 +897,7 @@ const classifyAgentRunCommandFailure = (
     metadata: {
       runner: "mcoda_agent_run",
       exitCode: result.exitCode,
-      failureClass: knownCatalogMismatch
-        ? "agent_run_model_catalog_mismatch"
-        : "agent_run_command_failed",
+      failureClass: degradedFailureClass ?? "agent_run_command_failed",
     },
   };
 };
@@ -1005,6 +1136,420 @@ const redactScenario = (
 ): CodaliGatewayLiveScenarioResult =>
   redactCodaliGatewayLiveValue(scenario) as CodaliGatewayLiveScenarioResult;
 
+const normalizeShadowComparisonPolicy = (
+  policy?: CodaliGatewayShadowComparisonPolicy,
+): CodaliGatewayShadowComparisonResult["policy"] => ({
+  enabled: policy?.enabled === true,
+  maxCandidatesPerScenario: Math.max(
+    0,
+    Math.min(5, Math.trunc(policy?.maxCandidatesPerScenario ?? 1)),
+  ),
+  includePrimary: policy?.includePrimary !== false,
+  requireHealthy: policy?.requireHealthy !== false,
+  roles: policy?.roles?.length
+    ? unique(policy.roles) as CodaliGatewayLiveRoleKey[]
+    : [...new Set(CODALI_GATEWAY_LIVE_SCENARIOS.map((scenario) => scenario.role))],
+});
+
+const buildRuntimeAgentInput = (
+  candidate: CodaliGatewayAgentCandidate,
+): CodaliGatewayAgentAssignment["agent"] => ({
+  slug: candidate.slug,
+  adapter: candidate.adapter,
+  provider: candidate.provider,
+  model: candidate.model,
+  baseUrl: candidate.baseUrl,
+  runnerKind: candidate.runnerKind as CodaliGatewayAgentAssignment["agent"]["runnerKind"],
+  supportsTools: candidate.supportsTools,
+  capabilities: candidate.capabilities,
+  contextWindow: candidate.contextWindow,
+  maxOutputTokens: candidate.maxOutputTokens,
+});
+
+const createComparisonAssignment = (params: {
+  resolverRole: string;
+  primary?: CodaliGatewayAgentAssignment;
+  candidate: CodaliGatewayAgentCandidate;
+  score?: number;
+  reasons?: string[];
+}): CodaliGatewayAgentAssignment => ({
+  role: params.resolverRole,
+  policy: params.primary?.policy ?? { tier: params.candidate.tier },
+  candidate: params.candidate,
+  agent: buildRuntimeAgentInput(params.candidate),
+  score: params.score ?? 0,
+  reasons: params.reasons ?? [],
+});
+
+const resolveShadowAssignmentsForScenario = (params: {
+  classification: CodaliGatewayLiveClassification;
+  scenario: CodaliGatewayLiveScenarioDefinition;
+  primary?: CodaliGatewayAgentAssignment;
+  policy: CodaliGatewayShadowComparisonResult["policy"];
+}): CodaliGatewayAgentAssignment[] => {
+  if (!params.policy.enabled || params.policy.maxCandidatesPerScenario <= 0) {
+    return [];
+  }
+  if (!params.policy.roles.includes(params.scenario.role)) {
+    return [];
+  }
+  const resolverRole = ROLE_TO_RESOLVER_ROLE[params.scenario.role];
+  const primarySlug = params.primary?.candidate.slug;
+  return params.classification.resolution.diagnostics
+    .filter((diagnostic) =>
+      diagnostic.role === resolverRole &&
+      diagnostic.eligible &&
+      diagnostic.slug !== primarySlug &&
+      diagnostic.score !== undefined)
+    .map((diagnostic) => {
+      const candidate = params.classification.resolution.candidates.find(
+        (entry) => entry.slug === diagnostic.slug,
+      );
+      if (!candidate) return undefined;
+      if (params.policy.requireHealthy && candidate.healthStatus !== "healthy") {
+        return undefined;
+      }
+      return createComparisonAssignment({
+        resolverRole,
+        primary: params.primary,
+        candidate,
+        score: diagnostic.score,
+        reasons: diagnostic.reasons,
+      });
+    })
+    .filter((assignment): assignment is CodaliGatewayAgentAssignment => Boolean(assignment))
+    .sort((left, right) => {
+      const scoreDelta = right.score - left.score;
+      if (scoreDelta !== 0) return scoreDelta;
+      return left.candidate.slug.localeCompare(right.candidate.slug);
+    })
+    .slice(0, params.policy.maxCandidatesPerScenario);
+};
+
+const metricRecords = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown>[] => {
+  const responseMetadata = asRecord(metadata?.responseMetadata);
+  const localInference =
+    asRecord(metadata?.localInference) ??
+    asRecord(metadata?.local_inference) ??
+    asRecord(responseMetadata?.localInference) ??
+    asRecord(responseMetadata?.local_inference);
+  const usage =
+    asRecord(metadata?.usage) ??
+    asRecord(responseMetadata?.usage) ??
+    asRecord(localInference?.usage);
+  const queue =
+    asRecord(metadata?.queue) ??
+    asRecord(responseMetadata?.queue) ??
+    asRecord(localInference?.queue);
+  const throughput =
+    asRecord(metadata?.throughput) ??
+    asRecord(responseMetadata?.throughput) ??
+    asRecord(localInference?.throughput);
+  return [metadata, responseMetadata, localInference, usage, queue, throughput]
+    .filter((record): record is Record<string, unknown> => Boolean(record));
+};
+
+const firstMetricNumber = (
+  records: Record<string, unknown>[],
+  keys: readonly string[],
+): number | undefined => {
+  for (const record of records) {
+    const value = readNumber(record, keys);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+};
+
+const firstMetricString = (
+  records: Record<string, unknown>[],
+  keys: readonly string[],
+): string | undefined => {
+  for (const record of records) {
+    const value = readString(record, keys);
+    if (value) return value;
+  }
+  return undefined;
+};
+
+const extractTokenUse = (
+  records: Record<string, unknown>[],
+): CodaliGatewayModelComparisonTokenUse | undefined => {
+  const inputTokens = firstMetricNumber(records, [
+    "inputTokens",
+    "input_tokens",
+    "promptTokens",
+    "prompt_tokens",
+  ]);
+  const outputTokens = firstMetricNumber(records, [
+    "outputTokens",
+    "output_tokens",
+    "completionTokens",
+    "completion_tokens",
+  ]);
+  const totalTokens =
+    firstMetricNumber(records, ["totalTokens", "total_tokens", "tokensUsed", "tokens_used"]) ??
+    (inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined);
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, totalTokens };
+};
+
+const extractQueueMetrics = (
+  metadata: Record<string, unknown> | undefined,
+): CodaliGatewayModelComparisonQueueMetrics | undefined => {
+  const responseMetadata = asRecord(metadata?.responseMetadata);
+  const localInference =
+    asRecord(metadata?.localInference) ??
+    asRecord(metadata?.local_inference) ??
+    asRecord(responseMetadata?.localInference) ??
+    asRecord(responseMetadata?.local_inference);
+  const queue =
+    asRecord(metadata?.queue) ??
+    asRecord(responseMetadata?.queue) ??
+    asRecord(localInference?.queue);
+  const records = [queue, metadata, responseMetadata, localInference]
+    .filter((record): record is Record<string, unknown> => Boolean(record));
+  const waitMs = firstMetricNumber(records, [
+    "waitMs",
+    "wait_ms",
+    "queueWaitMs",
+    "queue_wait_ms",
+    "queuedMs",
+    "queued_ms",
+  ]);
+  const depth = firstMetricNumber(records, ["depth", "queueDepth", "queue_depth"]);
+  const status = firstMetricString(records, ["status", "queueStatus", "queue_status"]);
+  if (waitMs === undefined && depth === undefined && status === undefined) {
+    return undefined;
+  }
+  return { waitMs, depth, status };
+};
+
+const extractThroughputMetrics = (params: {
+  metadata?: Record<string, unknown>;
+  tokenUse?: CodaliGatewayModelComparisonTokenUse;
+  latencyMs?: number;
+}): CodaliGatewayModelComparisonThroughputMetrics | undefined => {
+  const responseMetadata = asRecord(params.metadata?.responseMetadata);
+  const localInference =
+    asRecord(params.metadata?.localInference) ??
+    asRecord(params.metadata?.local_inference) ??
+    asRecord(responseMetadata?.localInference) ??
+    asRecord(responseMetadata?.local_inference);
+  const throughput =
+    asRecord(params.metadata?.throughput) ??
+    asRecord(responseMetadata?.throughput) ??
+    asRecord(localInference?.throughput);
+  const records = [throughput, params.metadata, responseMetadata, localInference]
+    .filter((record): record is Record<string, unknown> => Boolean(record));
+  const explicitTokensPerSecond = firstMetricNumber(records, [
+    "tokensPerSecond",
+    "tokens_per_second",
+    "outputTokensPerSecond",
+    "output_tokens_per_second",
+  ]);
+  const tokensPerSecond =
+    explicitTokensPerSecond ??
+    (params.tokenUse?.outputTokens !== undefined && params.latencyMs && params.latencyMs > 0
+      ? params.tokenUse.outputTokens / (params.latencyMs / 1_000)
+      : undefined);
+  const requestsPerMinute = firstMetricNumber(records, [
+    "requestsPerMinute",
+    "requests_per_minute",
+    "requestPerMinute",
+    "request_per_minute",
+  ]);
+  if (tokensPerSecond === undefined && requestsPerMinute === undefined) {
+    return undefined;
+  }
+  return { tokensPerSecond, requestsPerMinute };
+};
+
+const extractLocalInferenceMetrics = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  const responseMetadata = asRecord(metadata?.responseMetadata);
+  const localInference =
+    asRecord(metadata?.localInference) ??
+    asRecord(metadata?.local_inference) ??
+    asRecord(responseMetadata?.localInference) ??
+    asRecord(responseMetadata?.local_inference);
+  return localInference
+    ? asRecord(redactCodaliGatewayLiveValue(localInference))
+    : undefined;
+};
+
+const qualityScore = (scenario: CodaliGatewayLiveScenarioResult): number => {
+  if (scenario.status === "passed") return 1;
+  if (scenario.status === "degraded") return 0.5;
+  return 0;
+};
+
+const comparisonMetrics = (
+  scenario: CodaliGatewayLiveScenarioResult,
+  assignment?: CodaliGatewayAgentAssignment,
+): CodaliGatewayModelComparisonMetrics => {
+  const records = metricRecords(scenario.metadata);
+  const tokenUse = extractTokenUse(records);
+  const costUsd =
+    firstMetricNumber(records, ["costUsd", "cost_usd", "estimatedCostUsd", "estimated_cost_usd"]) ??
+    (assignment?.candidate.costPerMillion !== undefined && tokenUse?.totalTokens !== undefined
+      ? (assignment.candidate.costPerMillion * tokenUse.totalTokens) / 1_000_000
+      : undefined);
+  const queue = extractQueueMetrics(scenario.metadata);
+  const throughput = extractThroughputMetrics({
+    metadata: scenario.metadata,
+    tokenUse,
+    latencyMs: scenario.latencyMs,
+  });
+  const failureStatus =
+    scenario.status === "passed"
+      ? "none"
+      : scenario.status;
+  return {
+    quality: {
+      status: scenario.status,
+      score: qualityScore(scenario),
+      jsonValid: scenario.jsonValid,
+      toolCallCount: scenario.toolCallCount,
+      artifactPresent: scenario.artifact !== undefined,
+      finalAnswerSucceeded: scenario.finalAnswerStatus === "succeeded",
+    },
+    latencyMs: scenario.latencyMs,
+    costUsd,
+    tokenUse,
+    queue,
+    throughput,
+    failure: {
+      status: failureStatus,
+      reasons: failureStatus === "none"
+        ? []
+        : unique([...scenario.errors, ...scenario.warnings]),
+    },
+    localInference: extractLocalInferenceMetrics(scenario.metadata),
+  };
+};
+
+const comparisonRecord = (params: {
+  scenario: CodaliGatewayLiveScenarioDefinition;
+  result: CodaliGatewayLiveScenarioResult;
+  assignment?: CodaliGatewayAgentAssignment;
+  primary: boolean;
+  candidateRank?: number;
+}): CodaliGatewayModelComparisonRecord => {
+  const candidate = params.assignment?.candidate;
+  const agentSlug = candidate?.slug ?? params.result.agentSlug;
+  const comparisonRole = params.primary ? "primary" : "shadow";
+  return {
+    id: `${params.scenario.id}:${comparisonRole}:${agentSlug ?? "unassigned"}`,
+    scenarioId: params.scenario.id,
+    role: params.scenario.role,
+    resolverRole: ROLE_TO_RESOLVER_ROLE[params.scenario.role],
+    comparisonRole,
+    primary: params.primary,
+    candidateRank: params.candidateRank,
+    agentSlug,
+    tier: candidate?.tier ?? params.result.tier,
+    model: params.result.model ?? candidate?.model,
+    adapter: params.result.adapter ?? candidate?.adapter,
+    source: candidate?.source,
+    healthStatus: candidate?.healthStatus,
+    capabilities: candidate?.capabilities,
+    resultStatus: params.result.status,
+    selectedByPolicy: true,
+    metrics: comparisonMetrics(params.result, params.assignment),
+    warnings: params.result.warnings,
+    errors: params.result.errors,
+    metadata: params.result.metadata,
+  };
+};
+
+const warningForRoleError = (
+  role: CodaliGatewayLiveRoleKey,
+  error: CodaliGatewayAgentTierError,
+): CodaliGatewayLiveEnvironmentWarning => ({
+  code: "GATEWAY_LIVE_ROLE_UNAVAILABLE",
+  message: `No eligible inventory candidate found for live role ${role} (${error.role ?? ROLE_TO_RESOLVER_ROLE[role]}).`,
+  reason: error.code,
+  role,
+  resolverRole: error.role,
+  details: error.details,
+});
+
+const buildEnvironmentWarnings = (params: {
+  discovery: CodaliGatewayLiveDiscoveryResult;
+  classification: CodaliGatewayLiveClassification;
+}): CodaliGatewayLiveEnvironmentWarning[] => {
+  const warnings: CodaliGatewayLiveEnvironmentWarning[] = [];
+  if (params.discovery.status === "failed") {
+    warnings.push({
+      code: "GATEWAY_LIVE_INVENTORY_DISCOVERY_FAILED",
+      message: "Agent inventory discovery failed before live model validation.",
+      reason: params.discovery.errors.join("; ") || "inventory_command_failed",
+      details: {
+        command: params.discovery.command,
+        args: params.discovery.args,
+      },
+    });
+  }
+  for (const [role, summary] of Object.entries(params.classification.roles) as Array<
+    [CodaliGatewayLiveRoleKey, CodaliGatewayLiveRoleSummary]
+  >) {
+    if (summary.status !== "assigned") {
+      const matchingError = params.classification.errors.find(
+        (error) => error.role === summary.resolverRole,
+      );
+      warnings.push(warningForRoleError(role, matchingError ?? {
+        code: summary.errorCodes[0] ?? "GATEWAY_AGENT_ROLE_UNRESOLVED",
+        message: `No eligible agent candidate found for role ${summary.resolverRole}.`,
+        role: summary.resolverRole,
+      }));
+      continue;
+    }
+    const assignment = params.classification.assignments[role];
+    const healthStatus = assignment?.candidate.healthStatus;
+    if (assignment && healthStatus !== "healthy") {
+      warnings.push({
+        code: "GATEWAY_LIVE_AGENT_HEALTH_DEGRADED",
+        message: `Assigned inventory candidate ${assignment.candidate.slug} for live role ${role} is ${healthStatus}.`,
+        reason: `health_${healthStatus}`,
+        role,
+        resolverRole: summary.resolverRole,
+        agentSlug: assignment.candidate.slug,
+        healthStatus,
+      });
+    }
+  }
+  return warnings;
+};
+
+const buildScenarioEnvironmentWarnings = (
+  scenarios: CodaliGatewayLiveScenarioResult[],
+): CodaliGatewayLiveEnvironmentWarning[] =>
+  scenarios.flatMap((scenario) =>
+    scenario.warnings
+      .filter((warning) =>
+        warning === "agent_run_model_catalog_mismatch" ||
+        warning === "agent_run_upstream_unavailable")
+      .map((warning) => ({
+        code: "GATEWAY_LIVE_AGENT_RUN_DEGRADED",
+        message: `Live agent-run for scenario ${scenario.id} degraded due to an environment/runtime condition.`,
+        reason: warning,
+        role: scenario.role,
+        resolverRole: ROLE_TO_RESOLVER_ROLE[scenario.role],
+        agentSlug: scenario.agentSlug,
+        details: {
+          scenarioId: scenario.id,
+          status: scenario.status,
+          errors: scenario.errors,
+        },
+      })));
+
 export const runCodaliGatewayLiveHarness = async (
   options: CodaliGatewayLiveHarnessOptions = {},
 ): Promise<CodaliGatewayLiveHarnessResult> => {
@@ -1019,29 +1564,100 @@ export const runCodaliGatewayLiveHarness = async (
     allowImageWorker: options.allowImageWorker ?? true,
     agentPolicy: options.agentPolicy,
   });
+  const environmentWarnings = buildEnvironmentWarnings({ discovery, classification });
+  const shadowPolicy = normalizeShadowComparisonPolicy(options.shadowComparison);
+  const shadowRecords: CodaliGatewayModelComparisonRecord[] = [];
+  const shadowEnvironmentWarnings: CodaliGatewayLiveEnvironmentWarning[] = [];
   const scenarioRunner = options.scenarioRunner ?? createMcodaAgentRunScenarioRunner();
   const scenarios = options.scenarios?.length
     ? options.scenarios.map(scenarioById)
     : CODALI_GATEWAY_LIVE_SCENARIOS;
   const scenarioResults: CodaliGatewayLiveScenarioResult[] = [];
   for (const scenario of scenarios) {
+    const primaryAssignment = assignmentForScenario(classification, scenario);
     const result = await scenarioRunner({
       runId,
       scenario,
-      assignment: assignmentForScenario(classification, scenario),
+      assignment: primaryAssignment,
       classification,
       commandRunner,
       command: options.command ?? DEFAULT_MCODA_COMMAND,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       forceAgentRun: options.forceAgentRun === true,
     });
-    scenarioResults.push(redactScenario(result));
+    const redactedResult = redactScenario(result);
+    scenarioResults.push(redactedResult);
+    if (!shadowPolicy.enabled) {
+      continue;
+    }
+    if (shadowPolicy.includePrimary) {
+      shadowRecords.push(comparisonRecord({
+        scenario,
+        result: redactedResult,
+        assignment: primaryAssignment,
+        primary: true,
+        candidateRank: 0,
+      }));
+    }
+    const shadowAssignments = resolveShadowAssignmentsForScenario({
+      classification,
+      scenario,
+      primary: primaryAssignment,
+      policy: shadowPolicy,
+    });
+    if (shadowAssignments.length === 0) {
+      shadowEnvironmentWarnings.push({
+        code: "GATEWAY_SHADOW_COMPARISON_CANDIDATE_UNAVAILABLE",
+        message: `No eligible shadow comparison candidate found for live role ${scenario.role}.`,
+        reason: shadowPolicy.requireHealthy
+          ? "no_healthy_alternate_candidate"
+          : "no_alternate_candidate",
+        role: scenario.role,
+        resolverRole: ROLE_TO_RESOLVER_ROLE[scenario.role],
+      });
+    }
+    for (const [candidateIndex, shadowAssignment] of shadowAssignments.entries()) {
+      const shadowResult = await scenarioRunner({
+        runId,
+        scenario,
+        assignment: shadowAssignment,
+        classification,
+        commandRunner,
+        command: options.command ?? DEFAULT_MCODA_COMMAND,
+        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        forceAgentRun: options.forceAgentRun === true,
+      });
+      shadowRecords.push(comparisonRecord({
+        scenario,
+        result: redactScenario(shadowResult),
+        assignment: shadowAssignment,
+        primary: false,
+        candidateRank: candidateIndex + 1,
+      }));
+    }
   }
   const endedAt = isoNow();
   const summary = summarizeHarness(classification, scenarioResults);
+  const scenarioEnvironmentWarnings = buildScenarioEnvironmentWarnings(scenarioResults);
+  const allEnvironmentWarnings = [
+    ...environmentWarnings,
+    ...scenarioEnvironmentWarnings,
+  ];
+  const shadowComparison: CodaliGatewayShadowComparisonResult = {
+    policy: shadowPolicy,
+    status: !shadowPolicy.enabled
+      ? "disabled"
+      : shadowRecords.length > 0
+        ? "compared"
+        : "skipped",
+    records: shadowRecords,
+    environmentWarnings: shadowEnvironmentWarnings,
+  };
   const warnings = unique([
     ...classification.warnings.map((warning) => warning.code),
     ...scenarioResults.flatMap((scenario) => scenario.warnings),
+    ...allEnvironmentWarnings.map((warning) => warning.code),
+    ...shadowEnvironmentWarnings.map((warning) => warning.code),
   ]);
   const errors = unique([
     ...discovery.errors,
@@ -1059,6 +1675,8 @@ export const runCodaliGatewayLiveHarness = async (
     discovery,
     classification: redactCodaliGatewayLiveValue(classification) as CodaliGatewayLiveClassification,
     scenarios: scenarioResults,
+    shadowComparison: redactCodaliGatewayLiveValue(shadowComparison) as CodaliGatewayShadowComparisonResult,
+    environmentWarnings: redactCodaliGatewayLiveValue(allEnvironmentWarnings) as CodaliGatewayLiveEnvironmentWarning[],
     summary,
     warnings,
     errors,
@@ -1093,6 +1711,10 @@ export const formatCodaliGatewayLiveHarnessTextReport = (
     `JSON-capable agents: ${result.summary.jsonValidAgents.length ? result.summary.jsonValidAgents.join(", ") : "none"}`,
     `Large final synthesizer: ${result.summary.largeFinalSynthesizerOk ? "ok" : "missing or not proven"}`,
     `Image artifact: ${result.summary.imageArtifactOk ? "ok" : "missing or not proven"}`,
+    `Shadow comparison: ${result.shadowComparison.status} (${result.shadowComparison.records.length} records)`,
+    result.environmentWarnings.length
+      ? `Environment warnings: ${result.environmentWarnings.map((warning) => `${warning.code}:${warning.reason}`).join(", ")}`
+      : "Environment warnings: none",
     result.warnings.length ? `Warnings: ${result.warnings.join(", ")}` : "Warnings: none",
     result.errors.length ? `Errors: ${result.errors.join(", ")}` : "Errors: none",
   ].join("\n");

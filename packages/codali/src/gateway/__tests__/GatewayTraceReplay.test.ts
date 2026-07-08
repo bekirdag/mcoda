@@ -38,7 +38,7 @@ const seedTraceStore = async () => {
       id: "run-trace-1",
       query: "Which tenant policy applies?",
       mode: "accurate",
-      product: { name: "OKACAM AI Chat", version: "1.0" },
+      product: { name: "Example AI Chat", version: "1.0" },
       tenant: { id: "tenant-1", slug: "tenant-one" },
       conversation: { id: "conversation-1" },
       policy: {
@@ -65,7 +65,7 @@ const seedTraceStore = async () => {
     status: "running",
     metadata: {
       mode: "accurate",
-      product: "OKACAM AI Chat",
+      product: "Example AI Chat",
     },
   });
 
@@ -199,7 +199,7 @@ test("gateway trace read API returns redacted diagnosis details", async () => {
   assert.ok(trace);
   assert.equal(trace.schemaVersion, CODALI_GATEWAY_TRACE_SCHEMA_VERSION);
   assert.equal(trace.finalAnswer, "Tenant policy A applies.");
-  assert.equal(trace.debugSummary.product, "OKACAM AI Chat");
+  assert.equal(trace.debugSummary.product, "Example AI Chat");
   assert.equal(trace.debugSummary.tenantId, "tenant-1");
   assert.equal(trace.debugSummary.conversationId, "conversation-1");
   assert.equal(trace.debugSummary.taskCount, 1);

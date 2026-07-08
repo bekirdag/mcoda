@@ -110,6 +110,7 @@ export interface CodaliRuntimeDocdexInput {
   dagSessionId?: string;
   apiKey?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
+  immutableRuntimeContext?: boolean;
   required?: boolean;
   allowedOperations?: string[];
   capabilities?: Record<string, boolean | undefined>;
@@ -156,8 +157,6 @@ export interface CodaliRuntimePolicy {
   appToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
   appVirtualTools?: string[];
   appToolGateway?: Record<string, unknown>;
-  okacamToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
-  okacamVirtualTools?: string[];
   maxSteps: number;
   maxToolCalls: number;
   maxTokens?: number;
@@ -440,8 +439,6 @@ export interface MswarmCodaliGatewayPolicy {
   appToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
   appVirtualTools?: string[];
   appToolGateway?: Record<string, unknown>;
-  okacamToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
-  okacamVirtualTools?: string[];
   maxIterations?: number;
   maxRuntimeMs?: number;
   maxToolCalls?: number;
@@ -472,6 +469,7 @@ export interface MswarmCodaliGateway {
   tools?: Record<string, unknown>;
   policy?: MswarmCodaliGatewayPolicy;
   agentPolicy?: Record<string, unknown>;
+  stageAgents?: Record<string, unknown>;
   response?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
@@ -608,7 +606,9 @@ export interface MswarmCodaliDocdex {
   repoRoot?: string;
   repoId?: string;
   dagSessionId?: string;
+  apiKey?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
+  immutableRuntimeContext?: boolean;
   required?: boolean;
   allowedOperations?: string[];
   capabilities?: Record<string, boolean | undefined>;
@@ -627,8 +627,6 @@ export interface MswarmCodaliPolicy {
   appToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
   appVirtualTools?: string[];
   appToolGateway?: Record<string, unknown>;
-  okacamToolContracts?: Record<string, unknown> | Array<Record<string, unknown>>;
-  okacamVirtualTools?: string[];
   allowShell?: boolean;
   allowWrites?: boolean;
   allowDestructiveOperations?: boolean;
@@ -671,6 +669,119 @@ export interface MswarmCodaliInvocationInput {
   ) => Promise<CodaliGatewayResult>;
 }
 
+export const MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION =
+  "codali.feedback_submission.v1" as const;
+
+export const MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION =
+  "codali.product_metadata.v1" as const;
+
+export type MswarmCodaliFeedbackSubmissionVisibility =
+  | "requester"
+  | "conversation"
+  | "product"
+  | "tenant";
+
+export interface MswarmCodaliFeedbackSubmissionMetadata {
+  schema_version: typeof MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION;
+  run_id: string;
+  deletion_group_id: string;
+  target: {
+    record_type: "gateway_record";
+    record_id: string;
+    role: "codali_gateway_answer" | "codali_job_result" | "codali_runtime_result";
+    metadata?: Record<string, unknown>;
+  };
+  candidate_records: Array<{
+    record_type: "gateway_record";
+    record_id: string;
+    role: "codali_gateway_answer" | "codali_job_result" | "codali_runtime_result";
+    metadata?: Record<string, unknown>;
+  }>;
+  product_scope?: Record<string, unknown>;
+  requester_scope: {
+    visibility: MswarmCodaliFeedbackSubmissionVisibility;
+    tenant_wide: boolean;
+    requester_hash?: string;
+    conversation_hash?: string;
+    requester_type?: string;
+    metadata?: Record<string, unknown>;
+  };
+  source: {
+    runtime: "mswarm";
+    job_id: string;
+    request_id: string;
+    agent_slug: string;
+    session_id?: string;
+  };
+  raw_trace_included: false;
+}
+
+export interface MswarmCodaliProductDatasetCollectionMetadata {
+  accepted?: boolean;
+  status: string;
+  record_count?: number;
+  object_count?: number;
+  replayed?: boolean;
+  fallback_used?: boolean;
+  errors?: string[];
+  record_counts?: Record<string, unknown>;
+}
+
+export interface MswarmCodaliProductMetadata {
+  schema_version: typeof MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION;
+  run_id: string;
+  trace_id: string;
+  context_pack_id?: string;
+  dataset_collection: MswarmCodaliProductDatasetCollectionMetadata;
+  privacy_flags: {
+    local_only: boolean;
+    upload_allowed: boolean;
+    export_allowed: boolean;
+    training_allowed: boolean;
+    raw_trace_included: false;
+    contains_personal_data?: boolean;
+    contains_tenant_private_data?: boolean;
+    contains_customer_data?: boolean;
+  };
+  record_counts: {
+    dataset_records?: number;
+    sources: number;
+    evidence: number;
+    tool_calls: number;
+    model_calls: number;
+    context_packs: number;
+    final_answers: number;
+    warnings: number;
+    errors: number;
+  };
+  feedback_ref: {
+    schema_version: typeof MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION;
+    run_id: string;
+    deletion_group_id: string;
+    target: MswarmCodaliFeedbackSubmissionMetadata["target"];
+    candidate_record_count: number;
+    product_scope?: Record<string, unknown>;
+    requester_scope: MswarmCodaliFeedbackSubmissionMetadata["requester_scope"];
+    raw_trace_included: false;
+  };
+  called_tools: string[];
+  model_tiers: Array<{
+    role?: string;
+    tier?: string;
+    model?: string;
+    provider?: string;
+    agent_slug?: string;
+  }>;
+  warnings: string[];
+  errors: string[];
+  latency_ms?: number;
+  latency: {
+    total_ms?: number;
+    model_ms?: number;
+    tool_ms?: number;
+  };
+}
+
 export interface MswarmCodaliInvocationResult {
   output: string;
   usage?: ProviderUsage;
@@ -709,6 +820,8 @@ export interface MswarmCodaliInvocationResult {
     codali_gateway_warnings?: string[];
     codali_gateway_errors?: string[];
     codali_gateway_trace?: CodaliGatewayTrace;
+    feedback_submission?: MswarmCodaliFeedbackSubmissionMetadata;
+    codali_product_metadata?: MswarmCodaliProductMetadata;
     touched_files: string[];
     warnings: string[];
     mode: CodaliRuntimeInput["policy"]["mode"];
@@ -748,6 +861,420 @@ async function loadCodaliModule(): Promise<CodaliModule> {
 
 function optionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function optionalScopeText(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = optionalText(record[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function optionalScopeBoolean(record: Record<string, unknown> | undefined, keys: string[]): boolean | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = optionalBoolean(record[key]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function compactRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const compacted = Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== undefined),
+  );
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+function normalizeFeedbackSubmissionVisibility(
+  visibility: unknown,
+  tenantWide: boolean,
+): MswarmCodaliFeedbackSubmissionVisibility {
+  const value = optionalText(visibility);
+  if (
+    value === "requester" ||
+    value === "conversation" ||
+    value === "product" ||
+    value === "tenant"
+  ) {
+    return value === "tenant" && !tenantWide ? "requester" : value;
+  }
+  return "requester";
+}
+
+function buildFeedbackSubmissionProductScope(
+  input: MswarmCodaliInvocationInput,
+): Record<string, unknown> | undefined {
+  const gatewayProduct = input.codaliGateway?.product;
+  const jobContext = recordOrUndefined(input.codaliJob?.context);
+  const jobProduct = recordOrUndefined(jobContext?.product);
+  const product = gatewayProduct ?? jobProduct;
+  const tenant = input.codaliGateway?.tenant ?? input.codaliJob?.tenant;
+  return compactRecord({
+    product_id: optionalScopeText(product, ["productId", "product_id", "id", "slug", "name"]),
+    tenant_hash:
+      optionalScopeText(product, ["tenantHash", "tenant_hash", "tenantScopeHash", "tenant_scope_hash"]) ??
+      optionalScopeText(tenant, ["tenantHash", "tenant_hash", "hash", "scopeHash", "scope_hash"]),
+    deployment_id: optionalScopeText(product, ["deploymentId", "deployment_id", "deployment"]),
+    environment: optionalScopeText(product, ["environment", "env"]),
+    product_scope_present: product ? true : undefined,
+    tenant_scope_present: tenant ? true : undefined,
+  });
+}
+
+function buildFeedbackSubmissionRequesterScope(
+  input: MswarmCodaliInvocationInput,
+): MswarmCodaliFeedbackSubmissionMetadata["requester_scope"] {
+  const requester = input.codaliGateway?.requester ?? input.codaliJob?.requester;
+  const conversation = recordOrUndefined(input.codaliGateway?.conversation);
+  const tenantWide = optionalScopeBoolean(requester, ["tenantWide", "tenant_wide"]) === true;
+  const metadata = compactRecord({
+    requester_scope_present: requester ? true : undefined,
+    conversation_scope_present: conversation ? true : undefined,
+  });
+  return {
+    visibility: normalizeFeedbackSubmissionVisibility(
+      optionalScopeText(requester, ["visibility", "scope"]),
+      tenantWide,
+    ),
+    tenant_wide: tenantWide,
+    ...(optionalScopeText(requester, [
+      "requesterHash",
+      "requester_hash",
+      "subjectHash",
+      "subject_hash",
+      "hash",
+    ])
+      ? {
+          requester_hash: optionalScopeText(requester, [
+            "requesterHash",
+            "requester_hash",
+            "subjectHash",
+            "subject_hash",
+            "hash",
+          ]),
+        }
+      : {}),
+    ...(optionalScopeText(conversation, ["conversationHash", "conversation_hash", "hash"])
+      ? { conversation_hash: optionalScopeText(conversation, ["conversationHash", "conversation_hash", "hash"]) }
+      : {}),
+    ...(optionalScopeText(requester, ["requesterType", "requester_type", "type", "role"])
+      ? { requester_type: optionalScopeText(requester, ["requesterType", "requester_type", "type", "role"]) }
+      : {}),
+    ...(metadata ? { metadata } : {}),
+  };
+}
+
+function feedbackSubmissionRole(
+  input: MswarmCodaliInvocationInput,
+): MswarmCodaliFeedbackSubmissionMetadata["target"]["role"] {
+  if (input.codaliGateway) return "codali_gateway_answer";
+  if (input.codaliJob) return "codali_job_result";
+  return "codali_runtime_result";
+}
+
+function buildMswarmCodaliFeedbackSubmissionMetadata(
+  input: MswarmCodaliInvocationInput,
+  runId: string,
+): MswarmCodaliFeedbackSubmissionMetadata {
+  const role = feedbackSubmissionRole(input);
+  const recordMetadata = compactRecord({
+    job_id: input.jobId,
+    request_id: input.requestId,
+    gateway_id: input.codaliGateway?.id,
+    codali_job_id: input.codaliJob?.id,
+    codali_job_type: input.codaliJob?.jobType,
+  });
+  const deletionGroupId =
+    optionalScopeText(input.codaliGateway?.metadata, ["deletionGroupId", "deletion_group_id"]) ??
+    optionalScopeText(input.codaliJob?.metadata, ["deletionGroupId", "deletion_group_id"]) ??
+    `delete-group-${runId}`;
+
+  return {
+    schema_version: MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+    run_id: runId,
+    deletion_group_id: deletionGroupId,
+    target: {
+      record_type: "gateway_record",
+      record_id: runId,
+      role,
+      ...(recordMetadata ? { metadata: recordMetadata } : {}),
+    },
+    candidate_records: [
+      {
+        record_type: "gateway_record",
+        record_id: runId,
+        role,
+        ...(recordMetadata ? { metadata: recordMetadata } : {}),
+      },
+    ],
+    ...(buildFeedbackSubmissionProductScope(input)
+      ? { product_scope: buildFeedbackSubmissionProductScope(input) }
+      : {}),
+    requester_scope: buildFeedbackSubmissionRequesterScope(input),
+    source: {
+      runtime: "mswarm",
+      job_id: input.jobId,
+      request_id: input.requestId,
+      agent_slug: input.agent.slug,
+      ...(input.session?.id ? { session_id: input.session.id } : {}),
+    },
+    raw_trace_included: false,
+  };
+}
+
+function buildProductDatasetCollectionMetadata(
+  metadata: Record<string, unknown>,
+): MswarmCodaliProductDatasetCollectionMetadata {
+  const collection = recordOrUndefined(
+    metadata.datasetCollection ?? metadata.dataset_collection,
+  );
+  const recordCounts = collection
+    ? recordOrUndefined(collection.recordCounts ?? collection.record_counts)
+    : undefined;
+  const errors = collection ? stringArray(collection.errors) : undefined;
+  const output: MswarmCodaliProductDatasetCollectionMetadata = {
+    status: optionalScopeText(collection, ["status"]) ?? "not_configured",
+  };
+  if (collection) {
+    const accepted = optionalScopeBoolean(collection, ["accepted"]);
+    const recordCount = optionalNumber(collection.recordCount, collection.record_count);
+    const objectCount = optionalNumber(collection.objectCount, collection.object_count);
+    const replayed = optionalScopeBoolean(collection, ["replayed"]);
+    const fallbackUsed = optionalScopeBoolean(collection, ["fallbackUsed", "fallback_used"]);
+    if (accepted !== undefined) output.accepted = accepted;
+    if (recordCount !== undefined) output.record_count = recordCount;
+    if (objectCount !== undefined) output.object_count = objectCount;
+    if (replayed !== undefined) output.replayed = replayed;
+    if (fallbackUsed !== undefined) output.fallback_used = fallbackUsed;
+  }
+  if (errors) output.errors = errors;
+  if (recordCounts) output.record_counts = recordCounts;
+  return output;
+}
+
+function buildProductPrivacyFlags(
+  metadata: Record<string, unknown>,
+): MswarmCodaliProductMetadata["privacy_flags"] {
+  const flags = recordOrUndefined(metadata.privacyFlags ?? metadata.privacy_flags);
+  const privacy = recordOrUndefined(metadata.privacy ?? metadata.privacy_metadata);
+  const uploadAllowed =
+    optionalScopeBoolean(flags, ["uploadAllowed", "upload_allowed", "allowUpload", "allow_upload"]) ??
+    optionalScopeBoolean(privacy, ["uploadAllowed", "upload_allowed", "allowUpload", "allow_upload"]) ??
+    false;
+  const exportAllowed =
+    optionalScopeBoolean(flags, ["exportAllowed", "export_allowed", "allowExport", "allow_export"]) ??
+    optionalScopeBoolean(privacy, ["exportAllowed", "export_allowed", "allowExport", "allow_export"]) ??
+    false;
+  const trainingAllowed =
+    optionalScopeBoolean(flags, [
+      "trainingAllowed",
+      "training_allowed",
+      "allowTraining",
+      "allow_training",
+    ]) ??
+    optionalScopeBoolean(privacy, [
+      "trainingAllowed",
+      "training_allowed",
+      "allowTraining",
+      "allow_training",
+    ]) ??
+    false;
+
+  return {
+    local_only: !(uploadAllowed || exportAllowed || trainingAllowed),
+    upload_allowed: uploadAllowed,
+    export_allowed: exportAllowed,
+    training_allowed: trainingAllowed,
+    raw_trace_included: false,
+    contains_personal_data:
+      optionalScopeBoolean(flags, [
+        "containsPersonalData",
+        "contains_personal_data",
+        "containsPii",
+        "contains_pii",
+      ]) ??
+      optionalScopeBoolean(privacy, [
+        "containsPersonalData",
+        "contains_personal_data",
+        "containsPii",
+        "contains_pii",
+      ]) ??
+      true,
+    contains_tenant_private_data:
+      optionalScopeBoolean(flags, [
+        "containsTenantPrivateData",
+        "contains_tenant_private_data",
+      ]) ??
+      optionalScopeBoolean(privacy, [
+        "containsTenantPrivateData",
+        "contains_tenant_private_data",
+      ]) ??
+      true,
+    contains_customer_data:
+      optionalScopeBoolean(flags, ["containsCustomerData", "contains_customer_data"]) ??
+      optionalScopeBoolean(privacy, ["containsCustomerData", "contains_customer_data"]) ??
+      true,
+  };
+}
+
+function latencyMsFromRecord(record: Record<string, unknown>): number | undefined {
+  const metadata = recordOrUndefined(record.metadata);
+  const latency = optionalNumber(
+    record.latencyMs,
+    record.latency_ms,
+    record.durationMs,
+    record.duration_ms,
+    metadata?.latencyMs,
+    metadata?.latency_ms,
+    metadata?.durationMs,
+    metadata?.duration_ms,
+  );
+  return latency !== undefined && latency >= 0 ? latency : undefined;
+}
+
+function sumLatencyMs(records: Array<Record<string, unknown>>): number | undefined {
+  let total = 0;
+  let found = false;
+  for (const record of records) {
+    const latency = latencyMsFromRecord(record);
+    if (latency === undefined) continue;
+    total += latency;
+    found = true;
+  }
+  return found ? Math.round(total) : undefined;
+}
+
+function buildProductModelTiers(
+  gatewayResult: CodaliGatewayResult,
+): MswarmCodaliProductMetadata["model_tiers"] {
+  const output: MswarmCodaliProductMetadata["model_tiers"] = [];
+  const seen = new Set<string>();
+  const push = (record: Record<string, unknown> | undefined, roleFallback?: string) => {
+    if (!record) return;
+    const metadata = recordOrUndefined(record.metadata);
+    const entry = compactRecord({
+      role: optionalScopeText(record, ["role"]) ?? roleFallback,
+      tier:
+        optionalScopeText(record, ["tier", "modelTier", "model_tier"]) ??
+        optionalScopeText(metadata, ["tier", "modelTier", "model_tier"]),
+      model:
+        optionalScopeText(record, ["model", "modelId", "model_id"]) ??
+        optionalScopeText(metadata, ["model", "modelId", "model_id"]),
+      provider:
+        optionalScopeText(record, ["provider", "providerName", "provider_name"]) ??
+        optionalScopeText(metadata, ["provider", "providerName", "provider_name"]),
+      agent_slug:
+        optionalScopeText(record, ["agentSlug", "agent_slug"]) ??
+        optionalScopeText(metadata, ["agentSlug", "agent_slug"]),
+    }) as MswarmCodaliProductMetadata["model_tiers"][number] | undefined;
+    if (!entry) return;
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) return;
+    seen.add(key);
+    output.push(entry);
+  };
+
+  push(recordOrUndefined(gatewayResult.finalModel), "final_synthesizer");
+  for (const call of gatewayResult.trace.modelCalls) {
+    push(recordOrUndefined(call));
+  }
+  return output;
+}
+
+function buildMswarmCodaliProductMetadata(
+  gatewayResult: CodaliGatewayResult,
+  feedbackSubmission: MswarmCodaliFeedbackSubmissionMetadata,
+): MswarmCodaliProductMetadata {
+  const gatewayTrace = gatewayResult.trace;
+  const gatewayMetadata = gatewayResult.metadata ?? {};
+  const traceMetadata = gatewayTrace.metadata ?? {};
+  const datasetCollection = buildProductDatasetCollectionMetadata(gatewayMetadata);
+  const warnings = uniqueStrings(
+    gatewayTrace.warnings,
+    stringArray(gatewayMetadata.warnings),
+  ) ?? [];
+  const errors = uniqueStrings(
+    gatewayTrace.errors,
+    stringArray(gatewayMetadata.errors),
+  ) ?? [];
+  const calledTools = uniqueStrings(
+    gatewayTrace.calledTools,
+    stringArray(gatewayMetadata.calledTools),
+    stringArray(gatewayMetadata.called_tools),
+  ) ?? [];
+  const contextPackId =
+    optionalScopeText(recordOrUndefined(gatewayResult.contextPack), ["id", "contextPackId", "context_pack_id"]) ??
+    optionalScopeText(traceMetadata, ["contextPackId", "context_pack_id"]) ??
+    optionalScopeText(gatewayMetadata, ["contextPackId", "context_pack_id"]);
+  const toolLatencyMs = sumLatencyMs(gatewayTrace.toolCalls);
+  const modelLatencyMs = sumLatencyMs(gatewayTrace.modelCalls);
+  const totalLatencyMs =
+    optionalNumber(
+      gatewayMetadata.latencyMs,
+      gatewayMetadata.latency_ms,
+      traceMetadata.latencyMs,
+      traceMetadata.latency_ms,
+    ) ??
+    (toolLatencyMs !== undefined || modelLatencyMs !== undefined
+      ? (toolLatencyMs ?? 0) + (modelLatencyMs ?? 0)
+      : undefined);
+
+  return {
+    schema_version: MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION,
+    run_id: gatewayResult.runId,
+    trace_id:
+      optionalScopeText(traceMetadata, ["traceId", "trace_id"]) ??
+      optionalScopeText(gatewayMetadata, ["traceId", "trace_id"]) ??
+      gatewayTrace.runId ??
+      gatewayResult.runId,
+    ...(contextPackId ? { context_pack_id: contextPackId } : {}),
+    dataset_collection: datasetCollection,
+    privacy_flags: buildProductPrivacyFlags(gatewayMetadata),
+    record_counts: {
+      ...(datasetCollection.record_count !== undefined
+        ? { dataset_records: datasetCollection.record_count }
+        : {}),
+      sources: gatewayResult.sources.length,
+      evidence: gatewayResult.evidence.length,
+      tool_calls: gatewayTrace.toolCallCount,
+      model_calls: gatewayTrace.modelCallCount,
+      context_packs: gatewayResult.contextPack ? 1 : 0,
+      final_answers: gatewayResult.answer ? 1 : 0,
+      warnings: warnings.length,
+      errors: errors.length,
+    },
+    feedback_ref: {
+      schema_version: feedbackSubmission.schema_version,
+      run_id: feedbackSubmission.run_id,
+      deletion_group_id: feedbackSubmission.deletion_group_id,
+      target: feedbackSubmission.target,
+      candidate_record_count: feedbackSubmission.candidate_records.length,
+      ...(feedbackSubmission.product_scope
+        ? { product_scope: feedbackSubmission.product_scope }
+        : {}),
+      requester_scope: feedbackSubmission.requester_scope,
+      raw_trace_included: false,
+    },
+    called_tools: calledTools,
+    model_tiers: buildProductModelTiers(gatewayResult),
+    warnings,
+    errors,
+    ...(totalLatencyMs !== undefined ? { latency_ms: Math.round(totalLatencyMs) } : {}),
+    latency: {
+      ...(totalLatencyMs !== undefined ? { total_ms: Math.round(totalLatencyMs) } : {}),
+      ...(modelLatencyMs !== undefined ? { model_ms: modelLatencyMs } : {}),
+      ...(toolLatencyMs !== undefined ? { tool_ms: toolLatencyMs } : {}),
+    },
+  };
 }
 
 function textFromMessageContent(content: MswarmCodaliChatMessage["content"]): string {
@@ -850,8 +1377,6 @@ function buildRuntimePolicy(
     appToolContracts: policy?.appToolContracts,
     appVirtualTools: policy?.appVirtualTools,
     appToolGateway: policy?.appToolGateway,
-    okacamToolContracts: policy?.okacamToolContracts,
-    okacamVirtualTools: policy?.okacamVirtualTools,
     maxSteps: allowRuntimeTools ? DEFAULT_MAX_STEPS : 2,
     maxToolCalls:
       allowRuntimeTools
@@ -877,16 +1402,19 @@ function buildRuntimeDocdex(
       dagSessionId: requestId,
     };
   }
+  const credentialSource = docdex?.credentialSource;
+  const apiKey = credentialSource === "attached_mswarm_api_key"
+    ? attachedMswarmApiKey
+    : docdex?.apiKey;
   return {
     enabled: docdex.enabled,
     baseUrl: docdex?.baseUrl ?? DEFAULT_DOCDEX_BASE_URL,
     repoRoot: docdex?.repoRoot ?? workspace.root,
     repoId: docdex?.repoId,
     dagSessionId: docdex?.dagSessionId ?? requestId,
-    apiKey: docdex?.credentialSource === "attached_mswarm_api_key"
-      ? attachedMswarmApiKey
-      : undefined,
-    credentialSource: docdex?.credentialSource,
+    apiKey,
+    credentialSource,
+    immutableRuntimeContext: docdex?.immutableRuntimeContext === true || credentialSource === "attached_mswarm_api_key",
     required: docdex?.required,
     allowedOperations: docdex?.allowedOperations,
     capabilities: docdex?.capabilities,
@@ -896,6 +1424,25 @@ function buildRuntimeDocdex(
     allowProfileWrite: docdex?.allowProfileWrite ?? false,
     allowIndexRebuild: docdex?.allowIndexRebuild ?? false,
     toolManifest: docdex?.toolManifest,
+  };
+}
+
+function mergeGatewayDocdexContext(
+  gatewayDocdex: MswarmCodaliGateway["docdex"] | undefined,
+  runtimeDocdex: CodaliRuntimeInput["docdex"],
+): CodaliRuntimeInput["docdex"] | undefined {
+  if (!gatewayDocdex) return runtimeDocdex;
+  if (!runtimeDocdex) return gatewayDocdex;
+  const credentialSource = gatewayDocdex.credentialSource ?? runtimeDocdex.credentialSource;
+  return {
+    ...runtimeDocdex,
+    ...gatewayDocdex,
+    credentialSource,
+    apiKey: gatewayDocdex.apiKey ?? runtimeDocdex.apiKey,
+    immutableRuntimeContext:
+      gatewayDocdex.immutableRuntimeContext ??
+      runtimeDocdex.immutableRuntimeContext ??
+      credentialSource === "attached_mswarm_api_key",
   };
 }
 
@@ -1057,15 +1604,11 @@ function buildGatewayPolicy(
 ): MswarmCodaliGatewayPolicy {
   const appToolContracts = mergeToolContracts(
     policyToolContracts(gatewayPolicy, "appToolContracts", "app_tool_contracts"),
-    policyToolContracts(gatewayPolicy, "okacamToolContracts", "okacam_tool_contracts"),
     runtimePolicy.appToolContracts,
-    runtimePolicy.okacamToolContracts,
   );
   const appVirtualTools = uniqueStrings(
     policyStringArray(gatewayPolicy, "appVirtualTools", "app_virtual_tools"),
-    policyStringArray(gatewayPolicy, "okacamVirtualTools", "okacam_virtual_tools"),
     runtimePolicy.appVirtualTools,
-    runtimePolicy.okacamVirtualTools,
   );
   const policy: MswarmCodaliGatewayPolicy = {
     ...(gatewayPolicy ?? {}),
@@ -1194,7 +1737,7 @@ function buildGatewayRequest(
     query: optionalText(gateway.query) ?? messagesToTask(input.messages),
     mode: gateway.mode ?? "balanced",
     conversation: gateway.conversation ?? buildGatewayConversation(input),
-    docdex: gateway.docdex ?? runtimeInput.docdex,
+    docdex: mergeGatewayDocdexContext(gateway.docdex, runtimeInput.docdex),
     tools: gateway.tools ?? input.docdex?.toolManifest,
     policy: buildGatewayPolicy(gateway.policy, runtimeInput.policy),
     agentPolicy: gateway.agentPolicy ?? {
@@ -1219,24 +1762,164 @@ function buildGatewayRequest(
   };
 }
 
-function buildGatewayAgentInventory(agent: MswarmCodaliAgent): Record<string, unknown>[] {
+function mergeDefinedGatewayAgentRecord(
+  current: Record<string, unknown> | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...(current ?? {}) };
+  for (const [key, value] of Object.entries(next)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function gatewayStageAgentContainers(gateway?: MswarmCodaliGateway): Array<Record<string, unknown> | undefined> {
+  const gatewayRecord = recordOrUndefined(gateway);
+  const agentPolicy = recordOrUndefined(gateway?.agentPolicy);
+  const metadata = recordOrUndefined(gateway?.metadata);
   return [
-    {
-      slug: agent.slug,
-      adapter: agent.adapter,
-      provider: providerNameForAgent(agent),
-      model: agent.model,
-      baseUrl: agent.baseUrl,
-      supportsTools: agent.supportsTools,
-      supportsJsonSchema: agent.supportsJsonSchema,
-      supportsStreaming: agent.supportsStreaming,
-      contextWindow: agent.contextWindow,
-      maxOutputTokens: agent.maxOutputTokens,
-      capabilities: agent.capabilities,
-      health_status: "healthy",
-      source: "self_hosted",
-    },
+    recordOrUndefined(gatewayRecord?.stageAgents),
+    recordOrUndefined(gatewayRecord?.stage_agents),
+    recordOrUndefined(agentPolicy?.stageAgents),
+    recordOrUndefined(agentPolicy?.stage_agents),
+    recordOrUndefined(metadata?.stageAgents),
+    recordOrUndefined(metadata?.stage_agents),
   ];
+}
+
+function gatewayStageAgentRecords(gateway?: MswarmCodaliGateway): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = [];
+  for (const container of gatewayStageAgentContainers(gateway)) {
+    if (!container) {
+      continue;
+    }
+    for (const candidate of Object.values(container)) {
+      const record = recordOrUndefined(candidate);
+      if (record) {
+        records.push(record);
+      }
+    }
+  }
+  return records;
+}
+
+function gatewayStageAgentTier(value: unknown): string | undefined {
+  const tier = optionalText(value)?.toLowerCase();
+  return tier === "small" || tier === "medium" || tier === "large" || tier === "image"
+    ? tier
+    : undefined;
+}
+
+function gatewayStageAgentTierMinContextWindow(tier: string | undefined): number | undefined {
+  if (tier === "large") return 16_000;
+  if (tier === "medium" || tier === "image") return 8_000;
+  if (tier === "small") return 4_000;
+  return undefined;
+}
+
+function gatewayStageAgentContextWindow(
+  tier: string | undefined,
+  ...values: unknown[]
+): number | undefined {
+  const explicit = values
+    .map((value) => optionalNumber(value))
+    .filter((value): value is number => typeof value === "number" && value > 0)
+    .sort((left, right) => right - left)[0];
+  const minimum = gatewayStageAgentTierMinContextWindow(tier);
+  if (explicit && minimum) return Math.max(explicit, minimum);
+  return explicit ?? minimum;
+}
+
+function normalizeGatewayStageAgentRecord(value: Record<string, unknown>): Record<string, unknown> | undefined {
+  const nestedAgent = recordOrUndefined(value.codaliAgent) ?? recordOrUndefined(value.codali_agent);
+  const nestedProvider = recordOrUndefined(value.codaliProvider) ?? recordOrUndefined(value.codali_provider);
+  const capabilities = stringArray(value.capabilities) ?? stringArray(nestedAgent?.capabilities) ?? [];
+  const tier = gatewayStageAgentTier(value.tier) ??
+    gatewayStageAgentTier(value.modelTier) ??
+    gatewayStageAgentTier(value.model_tier) ??
+    gatewayStageAgentTier(nestedAgent?.tier) ??
+    gatewayStageAgentTier(nestedAgent?.modelTier) ??
+    gatewayStageAgentTier(nestedAgent?.model_tier);
+  const contextWindow = gatewayStageAgentContextWindow(
+    tier,
+    value.contextWindow,
+    value.context_window,
+    nestedAgent?.contextWindow,
+    nestedAgent?.context_window,
+    nestedProvider?.contextWindow,
+    nestedProvider?.context_window,
+  );
+  const supportsTools = optionalBoolean(
+    value.supportsTools,
+    value.supports_tools,
+    nestedAgent?.supportsTools,
+    nestedAgent?.supports_tools,
+    nestedProvider?.supportsTools,
+    nestedProvider?.supports_tools,
+  );
+  const supportsJsonSchema = optionalBoolean(
+    value.supportsJsonSchema,
+    value.supports_json_schema,
+    nestedAgent?.supportsJsonSchema,
+    nestedAgent?.supports_json_schema,
+    nestedProvider?.supportsJsonSchema,
+    nestedProvider?.supports_json_schema,
+  );
+  return compactRecord({
+    ...(nestedAgent ?? {}),
+    ...value,
+    capabilities,
+    ...(tier ? { tier, modelTier: tier, model_tier: tier } : {}),
+    ...(contextWindow ? { contextWindow, context_window: contextWindow } : {}),
+    ...(typeof supportsTools === "boolean"
+      ? { supportsTools, supports_tools: supportsTools }
+      : {}),
+    ...(typeof supportsJsonSchema === "boolean"
+      ? { supportsJsonSchema, supports_json_schema: supportsJsonSchema }
+      : {}),
+    healthStatus: optionalText(value.healthStatus) ?? optionalText(value.health_status) ?? "healthy",
+    health_status: optionalText(value.health_status) ?? optionalText(value.healthStatus) ?? "healthy",
+    source: optionalText(value.source) ?? "self_hosted",
+  });
+}
+
+function buildGatewayAgentInventory(
+  agent: MswarmCodaliAgent,
+  gateway?: MswarmCodaliGateway,
+): Record<string, unknown>[] {
+  const bySlug = new Map<string, Record<string, unknown>>();
+  const addCandidate = (candidate: Record<string, unknown> | undefined) => {
+    if (!candidate) {
+      return;
+    }
+    const slug = optionalText(candidate.slug) ?? optionalText(candidate.id);
+    if (!slug) {
+      return;
+    }
+    bySlug.set(slug, mergeDefinedGatewayAgentRecord(bySlug.get(slug), candidate));
+  };
+  addCandidate({
+    slug: agent.slug,
+    adapter: agent.adapter,
+    provider: providerNameForAgent(agent),
+    model: agent.model,
+    baseUrl: agent.baseUrl,
+    supportsTools: agent.supportsTools,
+    supportsJsonSchema: agent.supportsJsonSchema,
+    supportsStreaming: agent.supportsStreaming,
+    contextWindow: agent.contextWindow,
+    maxOutputTokens: agent.maxOutputTokens,
+    capabilities: agent.capabilities,
+    healthStatus: "healthy",
+    health_status: "healthy",
+    source: "self_hosted",
+  });
+  for (const stageAgent of gatewayStageAgentRecords(gateway)) {
+    addCandidate(normalizeGatewayStageAgentRecord(stageAgent));
+  }
+  return [...bySlug.values()];
 }
 
 function createGatewayProvider(input: {
@@ -1473,7 +2156,7 @@ export class MswarmCodaliExecutor {
       gatewayResult = await runCodaliGateway(gatewayRequest, {
         provider: createGatewayProvider({ providerName, runtimeInput, runCodali }),
         taskRunner: createGatewayTaskRunner({ runtimeInput, runCodali }),
-        agentInventory: buildGatewayAgentInventory(input.agent),
+        agentInventory: buildGatewayAgentInventory(input.agent, gatewayRequest),
         workerOptions: {
           maxRuntimeMs: gatewayRequest.policy?.maxRuntimeMs,
           maxToolCalls: gatewayRequest.policy?.maxToolCalls,
@@ -1525,6 +2208,14 @@ export class MswarmCodaliExecutor {
       }).length;
       const gatewayWarnings = gatewayTrace.warnings ?? [];
       const gatewayErrors = gatewayTrace.errors ?? [];
+      const feedbackSubmission = buildMswarmCodaliFeedbackSubmissionMetadata(
+        input,
+        gatewayResult.runId,
+      );
+      const productMetadata = buildMswarmCodaliProductMetadata(
+        gatewayResult,
+        feedbackSubmission,
+      );
       return {
         output: gatewayResult.answer,
         runtimeResult: gatewayResult,
@@ -1570,6 +2261,8 @@ export class MswarmCodaliExecutor {
           codali_gateway_warnings: gatewayWarnings,
           codali_gateway_errors: gatewayErrors,
           codali_gateway_trace: gatewayTrace,
+          feedback_submission: feedbackSubmission,
+          codali_product_metadata: productMetadata,
           touched_files: [],
           warnings: gatewayWarnings,
           mode: runtimePolicy.mode,
@@ -1584,6 +2277,10 @@ export class MswarmCodaliExecutor {
     }
     const telemetry = invocationResult.telemetry;
     const runtimeTelemetry = runtimeResult?.telemetry;
+    const feedbackSubmission = buildMswarmCodaliFeedbackSubmissionMetadata(
+      input,
+      invocationResult.runId,
+    );
 
     return {
       output: jobResult?.output ?? runtimeResult?.finalMessage ?? "",
@@ -1611,6 +2308,7 @@ export class MswarmCodaliExecutor {
         codali_job_stage_count: jobResult?.stages.length,
         codali_job_stages: jobResult?.telemetry.stages,
         codali_job_errors: jobResult?.errors,
+        feedback_submission: feedbackSubmission,
         touched_files: invocationResult.touchedFiles,
         warnings: invocationResult.warnings,
         mode: runtimePolicy.mode,

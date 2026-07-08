@@ -183,6 +183,7 @@ const SENSITIVE_KEY_PATTERNS = [
   /credential/i,
   /password/i,
   /secret/i,
+  /signature/i,
   /token/i,
   /^x[-_]?api[-_]?key$/i,
 ] as const;

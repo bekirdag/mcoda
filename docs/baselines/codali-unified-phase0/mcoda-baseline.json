@@ -1,0 +1,218 @@
+{
+  "schema_version": "codali.unified.phase0.baseline.v1",
+  "phase": 0,
+  "phase_title": "Baseline Audit And Repo Readiness",
+  "generated_at": "2026-07-02",
+  "repo": {
+    "label": "mcoda",
+    "root": "/Users/bekirdag/Documents/apps/mcoda",
+    "package_manager": "pnpm",
+    "package_manager_evidence": [
+      "package.json",
+      "pnpm-workspace.yaml",
+      "pnpm-lock.yaml"
+    ],
+    "git_status_at_audit": {
+      "command": "git status --short",
+      "state": "dirty",
+      "observed_entries": [
+        "?? .codali_unified_plan_queue/",
+        "?? scripts/automate_codali_unified_plan.py"
+      ],
+      "note": "Pre-existing untracked automation artifacts were preserved and not reverted."
+    }
+  },
+  "implemented_surfaces": [
+    {
+      "id": "codali-gateway-store",
+      "status": "implemented",
+      "summary": "Gateway run, task, evidence, tool call, model call, context pack, and artifact trace contract exists with secret redaction helpers.",
+      "evidence": {
+        "files": [
+          "packages/codali/src/gateway/CodaliGatewayStore.ts",
+          "packages/codali/src/gateway/CodaliGatewayTypes.ts",
+          "packages/codali/src/gateway/CodaliGateway.ts"
+        ]
+      }
+    },
+    {
+      "id": "codali-gateway-trace-replay",
+      "status": "implemented",
+      "summary": "Trace reader and replay fixture export contracts exist for gateway runs.",
+      "evidence": {
+        "files": [
+          "packages/codali/src/gateway/GatewayTraceReplay.ts",
+          "packages/codali/src/gateway/__tests__/GatewayTraceReplay.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "codali-eval-suite",
+      "status": "implemented",
+      "summary": "Gateway eval suite, regression comparison, gate failures, and CLI eval command are present.",
+      "evidence": {
+        "files": [
+          "packages/codali/src/eval/GatewayEvalSuite.ts",
+          "packages/codali/src/eval/__tests__/GatewayEvalSuite.test.ts",
+          "packages/codali/src/cli/EvalCommand.ts",
+          "packages/codali/src/cli/__tests__/EvalCommand.test.ts"
+        ],
+        "commands": [
+          "codali eval --suite <path>",
+          "codali eval --gateway-smoke"
+        ]
+      }
+    },
+    {
+      "id": "codali-live-harness",
+      "status": "implemented",
+      "summary": "Live model smoke harness is implemented behind explicit eval CLI flags.",
+      "evidence": {
+        "files": [
+          "packages/codali/src/eval/CodaliGatewayLiveHarness.ts",
+          "packages/codali/src/eval/__tests__/CodaliGatewayLiveHarness.test.ts",
+          "packages/codali/src/cli/EvalCommand.ts"
+        ],
+        "commands": [
+          "codali eval --gateway-live-smoke"
+        ]
+      }
+    },
+    {
+      "id": "mswarm-codali-gateway-transport",
+      "status": "implemented",
+      "summary": "mswarm Codali executor contains codali_gateway request, policy, agent inventory, provider, task runner, telemetry, and OpenAI chunk bridging.",
+      "evidence": {
+        "files": [
+          "packages/mswarm/src/codali-executor.ts",
+          "packages/mswarm/src/runtime.ts",
+          "packages/mswarm/src/__tests__/codali-executor.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "codali-product-neutral-policy-contracts",
+      "status": "implemented",
+      "summary": "Codali and mswarm policy/tool contract surfaces use product-neutral app tool contract fields and reject product-specific policy aliases.",
+      "evidence": {
+        "files": [
+          "packages/codali/src/runtime/CodaliRuntime.ts",
+          "packages/codali/src/gateway/CodaliGatewaySchemas.ts",
+          "packages/mswarm/src/codali-executor.ts",
+          "packages/mswarm/src/runtime.ts",
+          "tests/unit/codali-unified-phase0-baseline.test.js"
+        ]
+      }
+    },
+    {
+      "id": "codali-config",
+      "status": "implemented",
+      "summary": "Codali has typed config for tools, limits, context, deep investigation, security, routing, eval gates, and local context defaults.",
+      "evidence": {
+        "files": [
+          "packages/codali/src/config/Config.ts",
+          "packages/codali/src/config/ConfigLoader.ts",
+          "packages/codali/src/config/__tests__/ConfigLoader.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "release-workflow",
+      "status": "implemented",
+      "summary": "Release workflow is tag-triggered, builds and tests the workspace, verifies tag/package version matching, then publishes via npm release script with provenance enabled.",
+      "evidence": {
+        "files": [
+          ".github/workflows/release.yml",
+          "scripts/pack-npm-tarballs.js",
+          "scripts/publish-npm-packages.js"
+        ]
+      }
+    }
+  ],
+  "missing_or_planned_surfaces": [
+    {
+      "id": "storage-service-client",
+      "status": "planned",
+      "summary": "Codali does not yet have a production storage-service client or uploader. Current gateway storage remains local/in-process for gateway traces.",
+      "planned_followup": "Later phases add local-only storage adapters first and keep upload disabled unless policy allows redacted eligible records."
+    },
+    {
+      "id": "storage-service-upload-command",
+      "status": "missing",
+      "summary": "No Codali command currently uploads dataset records to codali-storage-service.",
+      "required_default": "Upload must remain disabled by default."
+    },
+    {
+      "id": "storage-service-export-command",
+      "status": "planned",
+      "summary": "No product-neutral Codali command currently exports dataset-ready records through the storage-service contract."
+    }
+  ],
+  "missing_endpoints": [
+    {
+      "service": "codali-storage-service",
+      "status": "missing",
+      "summary": "Storage-service HTTP endpoints are not implemented in the mcoda repo and are tracked in codali-storage-service-baseline.json."
+    }
+  ],
+  "missing_commands": [
+    {
+      "command": "codali storage upload",
+      "status": "missing",
+      "default_policy": "disabled"
+    },
+    {
+      "command": "codali storage export-jsonl",
+      "status": "planned"
+    },
+    {
+      "command": "codali storage replay",
+      "status": "planned"
+    }
+  ],
+  "release_path": {
+    "workflow_file": ".github/workflows/release.yml",
+    "trigger": {
+      "event": "push",
+      "tag_pattern": "v*"
+    },
+    "manual_trigger": "workflow_dispatch",
+    "package_job": {
+      "runs": [
+        "pnpm install",
+        "pnpm -r run build",
+        "node tests/all.js",
+        "node scripts/pack-npm-tarballs.js"
+      ]
+    },
+    "publish_job": {
+      "requires": "package",
+      "environment": "release",
+      "version_guard_step": "Verify tag matches package versions",
+      "publish_command": "pnpm run release:publish:npm",
+      "provenance": true,
+      "enabled_public_packages": [
+        "@mcoda/agent-setup",
+        "@mcoda/codali"
+      ]
+    },
+    "version_match_packages": [
+      "packages/shared",
+      "packages/db",
+      "packages/agents",
+      "packages/generators",
+      "packages/integrations",
+      "packages/core",
+      "packages/agent-setup",
+      "packages/cli",
+      "packages/codali",
+      "packages/mswarm"
+    ]
+  },
+  "phase_validation_targets": [
+    "git status --short",
+    "pnpm --filter @mcoda/codali run build",
+    "pnpm --filter @mcoda/codali test",
+    "node tests/all.js"
+  ]
+}

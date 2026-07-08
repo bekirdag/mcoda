@@ -1,0 +1,654 @@
+{
+  "schema_version": "codali.storage.fixtures.v1",
+  "contract_schema_version": "codali.storage.v1",
+  "distribution": {
+    "mode": "published_package",
+    "package_name": "@mcoda/codali",
+    "module_path": "@mcoda/codali",
+    "source_path": "packages/codali/src/storage/CodaliStorageContracts.ts",
+    "fixture_path": "docs/contracts/codali-storage/v1/contract-fixtures.json"
+  },
+  "fixtures": {
+    "privacy_metadata": {
+      "schema_version": "codali.storage.v1",
+      "classification": "internal",
+      "contains_personal_data": false,
+      "redaction_status": "not_required",
+      "upload_allowed": false,
+      "export_allowed": true,
+      "training_allowed": false,
+      "policy_tags": ["local_only_default", "redacted_export_required"],
+      "retention_until": "2027-07-02T00:00:00.000Z",
+      "metadata": {
+        "policy_source": "codali-unified-phase1-fixture"
+      }
+    },
+    "object_ref": {
+      "schema_version": "codali.storage.v1",
+      "ref_id": "obj-gateway-answer-001",
+      "kind": "payload",
+      "uri": "local://codali-storage/objects/obj-gateway-answer-001.json",
+      "content_hash": "sha256:6f6b7c0a2fb8e6e43ab64a04b8930c88f8aadcdb71e9f3c3a7fd6a7fb9f5d001",
+      "byte_size": 512,
+      "mime_type": "application/json",
+      "media_type": "application/json",
+      "size_bytes": 512,
+      "sha256": "6f6b7c0a2fb8e6e43ab64a04b8930c88f8aadcdb71e9f3c3a7fd6a7fb9f5d001",
+      "privacy_flags": {
+        "contains_personal_data": false,
+        "contains_secrets": false,
+        "contains_tenant_private_data": true,
+        "contains_source_code": false,
+        "contains_customer_data": false,
+        "training_allowed": false,
+        "eval_allowed": true,
+        "replay_allowed": true,
+        "export_allowed": false
+      },
+      "owner_scope": {
+        "tenant_hash": "scope_hash_fixture",
+        "product_id": "product-alpha",
+        "deployment_id": "deployment-alpha",
+        "run_id": "run-001",
+        "owner_type": "gateway_record",
+        "owner_id": "gwrec-001"
+      },
+      "owner_scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "deletion_group_id": "delete-group-run-001",
+      "retention_class": "standard",
+      "created_at": "2026-07-02T10:00:00.000Z"
+    },
+    "gateway_record": {
+      "schema_version": "codali.storage.v1",
+      "record_type": "gateway_record",
+      "record_id": "gwrec-001",
+      "run_id": "run-001",
+      "created_at": "2026-07-02T10:01:00.000Z",
+      "status": "succeeded",
+      "query": "Summarize the current support policy.",
+      "answer_summary": "The requested policy was found in indexed support documentation.",
+      "request_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-gateway-request-001",
+        "kind": "payload",
+        "uri": "local://codali-storage/objects/obj-gateway-request-001.json",
+        "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "byte_size": 256,
+        "mime_type": "application/json",
+        "media_type": "application/json",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "gateway_record",
+          "owner_id": "gwrec-001"
+        },
+        "owner_scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deletion_group_id": "delete-group-run-001",
+        "retention_class": "standard"
+      },
+      "response_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-gateway-response-001",
+        "kind": "payload",
+        "uri": "local://codali-storage/objects/obj-gateway-response-001.json",
+        "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "byte_size": 768,
+        "mime_type": "application/json",
+        "media_type": "application/json",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "gateway_record",
+          "owner_id": "gwrec-001"
+        },
+        "owner_scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deletion_group_id": "delete-group-run-001",
+        "retention_class": "standard"
+      },
+      "trace_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-gateway-trace-001",
+        "kind": "trace",
+        "uri": "local://codali-storage/traces/run-001.jsonl",
+        "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "byte_size": 2048,
+        "mime_type": "application/x-ndjson",
+        "media_type": "application/x-ndjson",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "gateway_record",
+          "owner_id": "gwrec-001"
+        },
+        "owner_scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deletion_group_id": "delete-group-run-001",
+        "retention_class": "standard"
+      },
+      "answer_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-gateway-answer-001",
+        "kind": "payload",
+        "uri": "local://codali-storage/objects/obj-gateway-answer-001.json",
+        "content_hash": "sha256:6f6b7c0a2fb8e6e43ab64a04b8930c88f8aadcdb71e9f3c3a7fd6a7fb9f5d001",
+        "byte_size": 512,
+        "mime_type": "application/json",
+        "media_type": "application/json",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "gateway_record",
+          "owner_id": "gwrec-001"
+        },
+        "owner_scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "deletion_group_id": "delete-group-run-001",
+        "retention_class": "standard"
+      },
+      "model": {
+        "provider": "local",
+        "model": "inventory-selected-model",
+        "agent_id": "inventory-selected-agent",
+        "role": "final_synthesizer"
+      },
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 180,
+        "total_tokens": 1380
+      },
+      "privacy": {
+        "schema_version": "codali.storage.v1",
+        "classification": "internal",
+        "contains_personal_data": false,
+        "redaction_status": "not_required",
+        "upload_allowed": false,
+        "export_allowed": true,
+        "training_allowed": false
+      },
+      "metadata": {
+        "collection_mode": "non_blocking"
+      }
+    },
+    "dataset_record": {
+      "schema_version": "codali.storage.v1",
+      "record_type": "dataset_record",
+      "record_id": "dataset-001",
+      "dataset_kind": "gateway_answer",
+      "created_at": "2026-07-02T10:02:00.000Z",
+      "source_gateway_record_id": "gwrec-001",
+      "input_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-dataset-input-001",
+        "kind": "dataset",
+        "uri": "local://codali-storage/datasets/dataset-001/input.json",
+        "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "byte_size": 384,
+        "mime_type": "application/json",
+        "media_type": "application/json",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "dataset_record",
+          "owner_id": "dataset-001"
+        },
+        "owner_scope_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "deletion_group_id": "delete-group-dataset-001",
+        "retention_class": "dataset"
+      },
+      "output_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-dataset-output-001",
+        "kind": "dataset",
+        "uri": "local://codali-storage/datasets/dataset-001/output.json",
+        "content_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "byte_size": 640,
+        "mime_type": "application/json",
+        "media_type": "application/json",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "dataset_record",
+          "owner_id": "dataset-001"
+        },
+        "owner_scope_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "deletion_group_id": "delete-group-dataset-001",
+        "retention_class": "dataset"
+      },
+      "evidence_refs": [
+        {
+          "schema_version": "codali.storage.v1",
+          "ref_id": "obj-evidence-001",
+          "kind": "evidence",
+          "uri": "local://codali-storage/evidence/evidence-001.json",
+          "content_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "byte_size": 320,
+          "mime_type": "application/json",
+          "media_type": "application/json",
+          "privacy_flags": {
+            "contains_personal_data": false,
+            "contains_secrets": false,
+            "contains_tenant_private_data": true,
+            "contains_source_code": false,
+            "contains_customer_data": false,
+            "training_allowed": false,
+            "eval_allowed": true,
+            "replay_allowed": true,
+            "export_allowed": false
+          },
+          "owner_scope": {
+            "tenant_hash": "scope_hash_fixture",
+            "product_id": "product-alpha",
+            "deployment_id": "deployment-alpha",
+            "run_id": "run-001",
+            "owner_type": "dataset_record",
+            "owner_id": "dataset-001"
+          },
+          "owner_scope_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "deletion_group_id": "delete-group-dataset-001",
+          "retention_class": "dataset"
+        }
+      ],
+      "quality": {
+        "score": 0.92,
+        "labels": ["grounded", "export_candidate"],
+        "reviewed": true
+      },
+      "privacy": {
+        "schema_version": "codali.storage.v1",
+        "classification": "internal",
+        "contains_personal_data": false,
+        "redaction_status": "not_required",
+        "upload_allowed": false,
+        "export_allowed": true,
+        "training_allowed": false
+      }
+    },
+    "export_manifest": {
+      "schema_version": "codali.storage.v1",
+      "record_type": "export_manifest",
+      "manifest_id": "export-001",
+      "created_at": "2026-07-02T10:03:00.000Z",
+      "export_kind": "prompt-regression",
+      "export_format": "jsonl",
+      "record_count": 2,
+      "records": [
+        {
+          "record_type": "gateway_record",
+          "record_id": "gwrec-001",
+          "schema_version": "codali.storage.v1",
+          "object_ref": {
+            "schema_version": "codali.storage.v1",
+            "ref_id": "obj-export-gateway-001",
+            "kind": "export",
+            "uri": "local://codali-storage/exports/export-001/gateway.jsonl",
+            "content_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "byte_size": 1536,
+            "mime_type": "application/x-ndjson",
+            "media_type": "application/x-ndjson",
+            "privacy_flags": {
+              "contains_personal_data": false,
+              "contains_secrets": false,
+              "contains_tenant_private_data": true,
+              "contains_source_code": false,
+              "contains_customer_data": false,
+              "training_allowed": false,
+              "eval_allowed": true,
+              "replay_allowed": true,
+              "export_allowed": false
+            },
+            "owner_scope": {
+              "tenant_hash": "scope_hash_fixture",
+              "product_id": "product-alpha",
+              "deployment_id": "deployment-alpha",
+              "run_id": "run-001",
+              "owner_type": "export_manifest",
+              "owner_id": "export-001"
+            },
+            "owner_scope_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "deletion_group_id": "delete-group-export-001",
+            "retention_class": "standard"
+          }
+        },
+        {
+          "record_type": "dataset_record",
+          "record_id": "dataset-001",
+          "schema_version": "codali.storage.v1",
+          "object_ref": {
+            "schema_version": "codali.storage.v1",
+            "ref_id": "obj-export-dataset-001",
+            "kind": "export",
+            "uri": "local://codali-storage/exports/export-001/dataset.jsonl",
+            "content_hash": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "byte_size": 1792,
+            "mime_type": "application/x-ndjson",
+            "media_type": "application/x-ndjson",
+            "privacy_flags": {
+              "contains_personal_data": false,
+              "contains_secrets": false,
+              "contains_tenant_private_data": true,
+              "contains_source_code": false,
+              "contains_customer_data": false,
+              "training_allowed": false,
+              "eval_allowed": true,
+              "replay_allowed": true,
+              "export_allowed": false
+            },
+            "owner_scope": {
+              "tenant_hash": "scope_hash_fixture",
+              "product_id": "product-alpha",
+              "deployment_id": "deployment-alpha",
+              "run_id": "run-001",
+              "owner_type": "export_manifest",
+              "owner_id": "export-001"
+            },
+            "owner_scope_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "deletion_group_id": "delete-group-export-001",
+            "retention_class": "standard"
+          }
+        }
+      ],
+      "artifact_refs": [
+        {
+          "schema_version": "codali.storage.v1",
+          "ref_id": "obj-export-dataset-001",
+          "kind": "export",
+          "uri": "local://codali-storage/exports/export-001/dataset.jsonl",
+          "content_hash": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "byte_size": 1792,
+          "mime_type": "application/x-ndjson",
+          "media_type": "application/x-ndjson",
+          "privacy_flags": {
+            "contains_personal_data": false,
+            "contains_secrets": false,
+            "contains_tenant_private_data": true,
+            "contains_source_code": false,
+            "contains_customer_data": false,
+            "training_allowed": false,
+            "eval_allowed": true,
+            "replay_allowed": true,
+            "export_allowed": false
+          },
+          "owner_scope": {
+            "tenant_hash": "scope_hash_fixture",
+            "product_id": "product-alpha",
+            "deployment_id": "deployment-alpha",
+            "run_id": "run-001",
+            "owner_type": "export_manifest",
+            "owner_id": "export-001"
+          },
+          "owner_scope_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "deletion_group_id": "delete-group-export-001",
+          "retention_class": "standard"
+        }
+      ],
+      "checksum": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "privacy_summary": {
+        "record_count": 2,
+        "contains_personal_data": false,
+        "contains_secrets": false,
+        "contains_tenant_private_data": true,
+        "contains_source_code": false,
+        "contains_customer_data": false,
+        "export_allowed_count": 2,
+        "training_allowed_count": 0,
+        "eval_allowed_count": 2,
+        "replay_allowed_count": 2,
+        "classifications": {
+          "internal": 2
+        },
+        "redaction_statuses": {
+          "not_required": 2
+        },
+        "policy_tags": ["local_only"]
+      },
+      "lineage": {
+        "export_kind": "prompt-regression",
+        "source_record_ids": ["gwrec-001", "dataset-001"],
+        "source_gateway_record_ids": ["gwrec-001"],
+        "source_object_hashes": [
+          "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+          "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+        ],
+        "generated_by": "codali-storage-contract-fixture"
+      },
+      "deletion_group_snapshot": {
+        "captured_at": "2026-07-02T10:03:00.000Z",
+        "deletion_group_ids": ["delete-group-export-001"],
+        "by_record_id": {
+          "gwrec-001": ["delete-group-export-001"],
+          "dataset-001": ["delete-group-export-001"]
+        }
+      },
+      "generated_by": "codali-storage-contract-fixture",
+      "privacy": {
+        "schema_version": "codali.storage.v1",
+        "classification": "internal",
+        "contains_personal_data": false,
+        "redaction_status": "not_required",
+        "upload_allowed": false,
+        "export_allowed": true,
+        "training_allowed": false
+      }
+    },
+    "feedback_record": {
+      "schema_version": "codali.storage.v1",
+      "record_type": "feedback_record",
+      "feedback_id": "feedback-001",
+      "created_at": "2026-07-02T10:04:00.000Z",
+      "source": "operator",
+      "run_id": "run-001",
+      "deletion_group_id": "delete-group-run-001",
+      "product_scope": {
+        "product_id": "product-alpha",
+        "tenant_hash": "scope_hash_fixture",
+        "deployment_id": "deployment-alpha",
+        "environment": "test"
+      },
+      "requester_scope": {
+        "requester_hash": "requester_hash_fixture",
+        "conversation_hash": "conversation_hash_fixture",
+        "requester_type": "employee",
+        "visibility": "requester",
+        "tenant_wide": false
+      },
+      "candidate_records": [
+        {
+          "record_type": "dataset_record",
+          "record_id": "dataset-001",
+          "dataset_kind": "gateway_answer",
+          "labels": ["answer_candidate"]
+        }
+      ],
+      "target_type": "dataset_record",
+      "target_id": "dataset-001",
+      "rating": 0.8,
+      "comment": "Useful for an export candidate after review.",
+      "labels": ["helpful", "needs_review"],
+      "privacy": {
+        "schema_version": "codali.storage.v1",
+        "classification": "internal",
+        "contains_personal_data": false,
+        "redaction_status": "not_required",
+        "upload_allowed": false,
+        "export_allowed": true,
+        "training_allowed": false
+      }
+    },
+    "review_record": {
+      "schema_version": "codali.storage.v1",
+      "record_type": "review_record",
+      "review_id": "review-001",
+      "created_at": "2026-07-02T10:05:00.000Z",
+      "reviewer_type": "human",
+      "reviewer_id": "operator-001",
+      "run_id": "run-001",
+      "deletion_group_id": "delete-group-run-001",
+      "product_scope": {
+        "product_id": "product-alpha",
+        "tenant_hash": "scope_hash_fixture",
+        "deployment_id": "deployment-alpha",
+        "environment": "test"
+      },
+      "requester_scope": {
+        "requester_hash": "requester_hash_fixture",
+        "conversation_hash": "conversation_hash_fixture",
+        "requester_type": "employee",
+        "visibility": "requester",
+        "tenant_wide": false
+      },
+      "candidate_records": [
+        {
+          "record_type": "dataset_record",
+          "record_id": "dataset-001",
+          "dataset_kind": "gateway_answer",
+          "labels": ["answer_candidate"]
+        }
+      ],
+      "target_type": "dataset_record",
+      "target_id": "dataset-001",
+      "decision": "approved",
+      "reasons": ["grounded", "privacy_checked"],
+      "labels": ["grounded_answer", "safe_for_eval"],
+      "promotion_target": "gold",
+      "promoted_record_ids": ["dataset-001"],
+      "privacy": {
+        "schema_version": "codali.storage.v1",
+        "classification": "internal",
+        "contains_personal_data": false,
+        "redaction_status": "not_required",
+        "upload_allowed": false,
+        "export_allowed": true,
+        "training_allowed": false
+      }
+    },
+    "improvement_record": {
+      "schema_version": "codali.storage.v1",
+      "record_type": "improvement_record",
+      "improvement_id": "improvement-001",
+      "created_at": "2026-07-02T10:06:00.000Z",
+      "improvement_kind": "prompt",
+      "status": "proposed",
+      "summary": "Use reviewed dataset examples to evaluate a prompt candidate without training the final synthesizer first.",
+      "source_record_ids": ["dataset-001", "review-001"],
+      "training_eligible": false,
+      "export_manifest_id": "export-001",
+      "candidate_ref": {
+        "schema_version": "codali.storage.v1",
+        "ref_id": "obj-improvement-candidate-001",
+        "kind": "artifact",
+        "uri": "local://codali-storage/improvements/improvement-001/candidate.json",
+        "content_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "byte_size": 896,
+        "mime_type": "application/json",
+        "media_type": "application/json",
+        "privacy_flags": {
+          "contains_personal_data": false,
+          "contains_secrets": false,
+          "contains_tenant_private_data": true,
+          "contains_source_code": false,
+          "contains_customer_data": false,
+          "training_allowed": false,
+          "eval_allowed": true,
+          "replay_allowed": true,
+          "export_allowed": false
+        },
+        "owner_scope": {
+          "tenant_hash": "scope_hash_fixture",
+          "product_id": "product-alpha",
+          "deployment_id": "deployment-alpha",
+          "run_id": "run-001",
+          "owner_type": "improvement_record",
+          "owner_id": "improvement-001"
+        },
+        "owner_scope_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "deletion_group_id": "delete-group-improvement-001",
+        "retention_class": "standard"
+      },
+      "privacy": {
+        "schema_version": "codali.storage.v1",
+        "classification": "internal",
+        "contains_personal_data": false,
+        "redaction_status": "not_required",
+        "upload_allowed": false,
+        "export_allowed": true,
+        "training_allowed": false
+      }
+    }
+  }
+}

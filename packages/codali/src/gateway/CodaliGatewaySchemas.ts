@@ -196,8 +196,6 @@ export const validateCodaliGatewayPolicy = (
     [
       "appVirtualTools",
       "app_virtual_tools",
-      "okacamVirtualTools",
-      "okacam_virtual_tools",
     ],
     "$.appVirtualTools",
     bag,
@@ -1119,8 +1117,6 @@ const readAppToolContracts = (
   const value = readAlias(record, [
     "appToolContracts",
     "app_tool_contracts",
-    "okacamToolContracts",
-    "okacam_tool_contracts",
   ]);
   if (typeof value === "undefined") {
     return undefined;

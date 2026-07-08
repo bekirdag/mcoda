@@ -1,0 +1,265 @@
+{
+  "schema_version": "codali.unified.phase0.baseline.v1",
+  "phase": 0,
+  "phase_title": "Baseline Audit And Repo Readiness",
+  "generated_at": "2026-07-02",
+  "repo": {
+    "label": "codali-storage-service",
+    "root": "/Users/bekirdag/Documents/apps/codali-storage-service",
+    "git_status_at_audit": {
+      "command": "git status --short",
+      "state": "not_git_repository",
+      "observed_output": "fatal: not a git repository (or any of the parent directories): .git"
+    },
+    "indexed_doc_count_at_audit": 15
+  },
+  "implemented_surfaces": [
+    {
+      "id": "storage-service-build-guide",
+      "status": "implemented",
+      "summary": "Planning guide exists for a product-neutral TypeScript/Fastify/Postgres/MinIO storage service with local-only default and policy-gated redacted upload.",
+      "evidence": {
+        "files": [
+          "docs/planning/codali-storage-service-build-guide.md"
+        ]
+      }
+    },
+    {
+      "id": "storage-service-progress-tracker",
+      "status": "implemented",
+      "summary": "Progress tracker records the storage-service build path and validation evidence.",
+      "evidence": {
+        "files": [
+          "docs/planning/codali-storage-service-build-progress.md"
+        ]
+      }
+    },
+    {
+      "id": "storage-service-package-scaffold",
+      "status": "implemented",
+      "summary": "Node >=20 TypeScript package scaffold exists with pnpm build and test scripts.",
+      "evidence": {
+        "files": [
+          "package.json",
+          "pnpm-lock.yaml",
+          "tsconfig.json"
+        ]
+      }
+    },
+    {
+      "id": "storage-service-fastify-runtime",
+      "status": "implemented",
+      "summary": "Fastify runtime exposes non-blocking health, readiness, and version endpoints.",
+      "evidence": {
+        "files": [
+          "src/server/App.ts",
+          "src/server/Runtime.ts",
+          "src/main.ts",
+          "src/index.ts"
+        ]
+      }
+    },
+    {
+      "id": "storage-service-config-loader",
+      "status": "implemented",
+      "summary": "Config loader covers storage mode, Postgres, object storage, auth, upload, retention, improvement, and readiness settings with local_only and upload-disabled defaults.",
+      "evidence": {
+        "files": [
+          "src/config/ServiceConfig.ts",
+          "src/__tests__/ServiceConfig.test.ts"
+        ]
+      }
+    },
+    {
+      "id": "storage-service-docker-scaffold",
+      "status": "implemented",
+      "summary": "Dockerfile and docker-compose scaffold run the service with local Postgres and MinIO while keeping upload disabled.",
+      "evidence": {
+        "files": [
+          "Dockerfile",
+          "docker-compose.yml",
+          ".dockerignore"
+        ]
+      }
+    },
+    {
+      "id": "storage-service-endpoint-tests",
+      "status": "implemented",
+      "summary": "Endpoint tests verify /healthz, /readyz, and /version behavior.",
+      "evidence": {
+        "files": [
+          "src/__tests__/ServiceEndpoints.test.ts"
+        ]
+      }
+    }
+  ],
+  "repo_readiness": {
+    "package_manager": {
+      "status": "implemented",
+      "expected": "pnpm",
+      "implemented_files": [
+        "package.json",
+        "pnpm-lock.yaml"
+      ],
+      "missing_files": []
+    },
+    "docker": {
+      "status": "implemented",
+      "implemented_files": [
+        "Dockerfile",
+        "docker-compose.yml",
+        ".dockerignore"
+      ],
+      "missing_files": []
+    },
+    "application_scaffold": {
+      "status": "partial",
+      "implemented_paths": [
+        "src/",
+        "src/__tests__/"
+      ],
+      "missing_future_paths": [
+        "migrations/",
+        "openapi/"
+      ]
+    },
+    "docs": {
+      "status": "partial",
+      "implemented_files": [
+        "docs/planning/codali-storage-service-build-guide.md",
+        "docs/planning/codali-storage-service-build-progress.md"
+      ],
+      "missing_files": [
+        "README.md",
+        "docs/api.md",
+        "docs/ops.md"
+      ]
+    }
+  },
+  "implemented_endpoints": [
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "purpose": "service health and container healthcheck"
+    },
+    {
+      "method": "GET",
+      "path": "/readyz",
+      "purpose": "readiness summary without blocking on external services by default"
+    },
+    {
+      "method": "GET",
+      "path": "/version",
+      "purpose": "service, API, config, contract, and Node version reporting"
+    }
+  ],
+  "missing_endpoints": [
+    {
+      "method": "POST",
+      "path": "/v1/gateway/runs",
+      "purpose": "create or upsert a gateway run trace"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/gateway/runs/:runId",
+      "purpose": "read stored run truth for inspection and replay"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/gateway/runs/:runId/events",
+      "purpose": "append non-blocking gateway events"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/replay-fixtures",
+      "purpose": "persist replay fixtures derived from traces"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/eval-runs",
+      "purpose": "record eval suite and live harness results"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/dataset/examples",
+      "purpose": "store dataset-ready examples after privacy and policy checks"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/dataset/feedback",
+      "purpose": "store user or operator feedback"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/dataset/reviews",
+      "purpose": "store human review labels and eligibility decisions"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/dataset/exports",
+      "purpose": "create explicit JSONL exports"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/improvement/candidates",
+      "purpose": "record product-neutral improvement candidates"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/upload/outbox",
+      "purpose": "queue policy-approved redacted uploads with upload disabled by default"
+    }
+  ],
+  "implemented_commands": [
+    {
+      "command": "pnpm install",
+      "status": "implemented",
+      "reason": "package.json and pnpm-lock.yaml are present"
+    },
+    {
+      "command": "pnpm run build",
+      "status": "implemented",
+      "reason": "TypeScript package scaffold builds with tsc"
+    },
+    {
+      "command": "pnpm test",
+      "status": "implemented",
+      "reason": "Node test scaffold covers config, endpoints, and shared contracts"
+    },
+    {
+      "command": "docker compose up",
+      "status": "implemented",
+      "reason": "Docker Compose starts storage-service, Postgres, and MinIO"
+    },
+    {
+      "command": "docker build .",
+      "status": "implemented",
+      "reason": "Dockerfile builds the Node 20 service image"
+    }
+  ],
+  "missing_commands": [
+    {
+      "command": "pnpm run migrate:up",
+      "status": "missing",
+      "reason": "database migration runner is missing"
+    }
+  ],
+  "planned_surfaces": [
+    "TypeScript/Fastify service scaffold",
+    "Postgres schemas codali_gateway and codali_dataset",
+    "MinIO or S3-compatible object refs for large payloads",
+    "local_only default storage mode",
+    "upload disabled by default",
+    "policy-gated redacted upload outbox",
+    "trace, replay, eval, feedback, review, export, and improvement APIs",
+    "Docker Compose for local Postgres and object storage",
+    "OpenAPI contract and deterministic tests"
+  ],
+  "non_negotiable_invariants": [
+    "Core storage logic remains product-neutral.",
+    "Default storage is local-only.",
+    "Upload is disabled by default.",
+    "Gateway collection must remain non-blocking.",
+    "Customer data is not exported or trained unless privacy metadata and policy allow it."
+  ]
+}

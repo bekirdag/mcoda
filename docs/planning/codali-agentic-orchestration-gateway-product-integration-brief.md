@@ -90,6 +90,25 @@ Store the Codali/mswarm response metadata on the assistant message:
 - warnings and errors;
 - per-tool latency/status;
 - trace or replay reference when returned.
+- `feedback_submission`, which is the product-neutral submission contract for
+  later human feedback or review ingestion;
+- `codali_product_metadata`, which contains product-facing run id, trace id,
+  context pack id, dataset collection status, local-only privacy flags, record
+  counts, feedback ref, called tools, model tiers, warnings/errors, and latency.
+
+`codali_product_metadata.dataset_collection` intentionally exposes status and
+counts only. Products must not persist or depend on internal dataset routing ids
+such as idempotency or batch ids from storage backends.
+
+## Feedback Adapter Note
+
+OKACAM should keep chat and feedback scoped by employee/user through hashed
+requester and conversation fields on `codali_gateway.requester` and
+`codali_gateway.conversation`. Store the assistant message metadata, keep
+`feedback_submission.requester_scope.tenant_wide` false by default, and submit
+later feedback with `feedback_submission` or
+`codali_product_metadata.feedback_ref`. Core Codali/mswarm logic stays
+product-neutral; OKACAM-specific naming belongs in the adapter layer only.
 
 ## Rollout Recommendation
 

@@ -31,9 +31,11 @@ test("runCodaliGatewayEvalSuite passes the deterministic gateway smoke suite", a
   });
 
   assert.equal(report.summary.status, "passed");
-  assert.equal(report.summary.total, 7);
-  assert.equal(report.summary.passed, 7);
-  assert.equal(report.metrics.taskCount, 7);
+  assert.equal(report.summary.total, 17);
+  assert.equal(report.summary.passed, 17);
+  assert.equal(report.metrics.taskCount, 17);
+  assert.equal(report.metrics.datasetCaseCount, 10);
+  assert.equal(report.metrics.datasetStageCoverageRate.value, 1);
   assert.equal(report.metrics.plannerSchemaValidityRate.value, 1);
   assert.equal(report.metrics.disabledToolLeakageRate.value, 0);
   assert.equal(report.metrics.finalLargeModelRate.value, 1);

@@ -143,6 +143,203 @@ const createMachine = async (
   });
 };
 
+test("state machine dispatches assigned app-gateway tools before worker synthesis", async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls: Array<{ url: string; body: unknown }> = [];
+  globalThis.fetch = (async (url, init) => {
+    fetchCalls.push({
+      url: String(url),
+      body: JSON.parse(String(init?.body ?? "{}")),
+    });
+    return new Response(JSON.stringify({
+      evidence: [
+        {
+          claim: "Emre Dag is assigned to Eazy Wallet issue EZY-1083.",
+          sourceType: "jira",
+          sourceId: "EZY-1083",
+          sourceTitle: "EZY-1083",
+          rawExcerpt: "EZY-1083 is assigned to Emre Dag.",
+          confidence: 0.94,
+          relevance: 0.91,
+          tenantScoped: true,
+          usedTool: "app_project_search",
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const runner = new StubTaskRunner(() => ({
+      status: "succeeded",
+      output: { worker: "ignored tools" },
+    }));
+    const request = baseRequest({
+      id: "app-gateway-prefetch-run",
+      query: "Who is working on Eazy Wallet?",
+      tenant: { id: "tenant-a", slug: "tenant-a" },
+      docdex: { enabled: true, repoId: "repo-tenant-a", allowedOperations: ["search"] },
+      policy: basePolicy({
+        allowedTools: ["app_project_search"],
+        appVirtualTools: ["app_project_search"],
+        appToolGateway: {
+          endpoint: "https://product.example.test/api/internal/tool-gateway",
+          readOnly: true,
+          signatureRequired: true,
+          signatureSecret: "test-secret",
+        },
+        appToolContracts: {
+          app_project_search: {
+            readOnly: true,
+            executionMode: "app_tool_gateway",
+            callSchema: {
+              type: "object",
+              properties: {
+                mode: { type: "string" },
+                query: { type: "string" },
+                limit: { type: "number" },
+                filters: { type: "object" },
+                include: { type: "array" },
+              },
+            },
+            resultContract: "project evidence",
+          },
+        },
+      }),
+    });
+    const machine = await createMachine(request, runner);
+    const result = await machine.execute({
+      runId: "app-gateway-prefetch-run",
+      request,
+      planner: plannerOutput([
+        workerTask("app-tool-task", {
+          workerRole: "tool_worker",
+          objective: "Collect project staffing evidence.",
+          query: "Eazy Wallet staffing",
+          toolsAllowed: ["app_project_search"],
+          outputFormat: "evidence_items",
+        }),
+      ]),
+    });
+    const trace = await machine.store.readRunTrace("app-gateway-prefetch-run");
+
+    assert.equal(result.status, "succeeded");
+    assert.deepEqual(result.calledTools, ["app_project_search"]);
+    assert.equal(result.taskResults[0]?.toolCallCount, 1);
+    assert.equal(runner.inputs[0]?.remainingToolCalls, 7);
+    assert.equal(fetchCalls.length, 1);
+    const capturedBody = fetchCalls[0]?.body as Record<string, unknown> | undefined;
+    const capturedArgs = capturedBody?.validated_args as Record<string, unknown> | undefined;
+    assert.equal(capturedBody?.tool_name, "app_project_search");
+    assert.equal(capturedArgs?.query, "Eazy Wallet staffing");
+    assert.equal(trace?.toolCalls[0]?.tool, "app_project_search");
+    assert.equal(trace?.evidence.some((item) => item.claim.includes("Emre Dag")), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("state machine falls back to policy app-gateway tools when planner omits task tools", async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  globalThis.fetch = (async (url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    fetchCalls.push({ url: String(url), body });
+    return new Response(JSON.stringify({
+      evidence: [
+        {
+          claim: `${body.tool_name} returned tenant-scoped evidence.`,
+          sourceType: "app_tool",
+          sourceId: String(body.tool_name),
+          sourceTitle: String(body.tool_name),
+          rawExcerpt: "Tenant-scoped app tool evidence.",
+          confidence: 0.9,
+          relevance: 0.9,
+          tenantScoped: true,
+          usedTool: String(body.tool_name),
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const runner = new StubTaskRunner(() => ({
+      status: "succeeded",
+      output: { worker: "planner omitted task tools" },
+    }));
+    const request = baseRequest({
+      id: "app-gateway-policy-fallback-run",
+      query: "Search CRM evidence for the account renewal",
+      tenant: { id: "tenant-a", slug: "tenant-a" },
+      metadata: {
+        scoped_request_id: "tenant-ai-chat-request-123",
+        request_id: "relay-job-request-456",
+      },
+      policy: basePolicy({
+        allowedTools: ["app_project_search", "app_crm_search"],
+        appVirtualTools: ["app_project_search", "app_crm_search"],
+        appToolGateway: {
+          endpoint: "https://product.example.test/api/internal/tool-gateway",
+          readOnly: true,
+          signatureRequired: true,
+          signatureSecret: "test-secret",
+        },
+        appToolContracts: {
+          app_project_search: {
+            readOnly: true,
+            executionMode: "app_tool_gateway",
+            callSchema: { type: "object" },
+            resultContract: "project evidence",
+          },
+          app_crm_search: {
+            readOnly: true,
+            executionMode: "app_tool_gateway",
+            callSchema: { type: "object" },
+            resultContract: "CRM account and renewal evidence",
+          },
+        },
+      }),
+    });
+    const machine = await createMachine(request, runner);
+    const result = await machine.execute({
+      runId: "app-gateway-policy-fallback-run",
+      request,
+      planner: plannerOutput([
+        workerTask("app-tool-task", {
+          workerRole: "tool_worker",
+          objective: "Collect account renewal evidence.",
+          query: "CRM renewal",
+          toolsAllowed: [],
+          outputFormat: "evidence_items",
+        }),
+      ]),
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.taskResults[0]?.toolCallCount, 2);
+    assert.deepEqual(result.calledTools, ["app_crm_search", "app_project_search"]);
+    assert.equal(runner.inputs[0]?.remainingToolCalls, 6);
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0]?.body.tool_name, "app_crm_search");
+    assert.equal(fetchCalls[0]?.body.request_id, "tenant-ai-chat-request-123");
+    assert.equal(
+      (fetchCalls[0]?.body.requester_scope as Record<string, unknown> | undefined)?.request_id,
+      "tenant-ai-chat-request-123",
+    );
+    const appToolPrefetchMetadata = result.taskResults[0]?.metadata?.appToolPrefetch as
+      | Record<string, unknown>
+      | undefined;
+    assert.equal(appToolPrefetchMetadata?.dispatchSource, "policy_app_tools_fallback");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("state machine runs parallel worker waves deterministically", async () => {
   const events: string[] = [];
   let active = 0;

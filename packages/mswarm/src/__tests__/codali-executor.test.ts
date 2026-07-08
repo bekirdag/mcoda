@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+  MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION,
   MswarmCodaliExecutor,
   type CodaliGatewayOptions,
   type CodaliGatewayResult,
@@ -208,22 +210,22 @@ test("MswarmCodaliExecutor forwards runtime app tool contracts and telemetry", a
       allowIndexRebuild: false,
       toolManifest: {
         actualTools: ["docdex_search"],
-        virtualTools: ["okacam_daily_logs"],
+        virtualTools: ["app_daily_logs"],
       },
     },
     policy: {
       allowShell: false,
       allowWrites: false,
-      allowedTools: ["docdex_search", "okacam_daily_logs"],
+      allowedTools: ["docdex_search", "app_daily_logs"],
       appToolContracts: {
-        okacam_daily_logs: {
+        app_daily_logs: {
           executionMode: "server_supplied_snapshot_plus_docdex",
           callSchema: { type: "object" },
           resultContract: "daily log results",
           backingTools: ["docdex_search"],
         },
       },
-      okacamVirtualTools: ["okacam_daily_logs"],
+      appVirtualTools: ["app_daily_logs"],
     },
     runCodali: async (input) => {
       runtimeInput.value = input;
@@ -240,13 +242,13 @@ test("MswarmCodaliExecutor forwards runtime app tool contracts and telemetry", a
           runtime: "codali",
           mode: input.policy.mode,
           toolCallCount: 1,
-          calledTools: ["okacam_daily_logs"],
-          consideredTools: ["docdex_search", "okacam_daily_logs"],
-          registeredDynamicTools: ["okacam_daily_logs"],
+          calledTools: ["app_daily_logs"],
+          consideredTools: ["docdex_search", "app_daily_logs"],
+          registeredDynamicTools: ["app_daily_logs"],
           skippedDynamicTools: [],
           dynamicToolCalls: [
             {
-              name: "okacam_daily_logs",
+              name: "app_daily_logs",
               backingTool: "docdex_search",
               status: "success",
               latencyMs: 12,
@@ -262,20 +264,20 @@ test("MswarmCodaliExecutor forwards runtime app tool contracts and telemetry", a
   assert.ok(capturedInput);
   assert.deepEqual(capturedInput.docdex?.toolManifest, {
     actualTools: ["docdex_search"],
-    virtualTools: ["okacam_daily_logs"],
+    virtualTools: ["app_daily_logs"],
   });
   assert.deepEqual(capturedInput.policy.appToolContracts, {
-    okacam_daily_logs: {
+    app_daily_logs: {
       executionMode: "server_supplied_snapshot_plus_docdex",
       callSchema: { type: "object" },
       resultContract: "daily log results",
       backingTools: ["docdex_search"],
     },
   });
-  assert.deepEqual(capturedInput.policy.okacamVirtualTools, ["okacam_daily_logs"]);
+  assert.deepEqual(capturedInput.policy.appVirtualTools, ["app_daily_logs"]);
   assert.equal(result.metadata.runtime, "codali");
-  assert.deepEqual(result.metadata.called_tools, ["okacam_daily_logs"]);
-  assert.deepEqual(result.metadata.dynamic_tools_registered, ["okacam_daily_logs"]);
+  assert.deepEqual(result.metadata.called_tools, ["app_daily_logs"]);
+  assert.deepEqual(result.metadata.dynamic_tools_registered, ["app_daily_logs"]);
   assert.equal(result.metadata.tool_call_details[0]?.backingTool, "docdex_search");
   assert.equal(result.metadata.telemetry?.runId, "run-runtime-tools");
 });
@@ -446,7 +448,7 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
       allowWrites: false,
       allowedTools: ["docdex_search", "tenant_daily_logs"],
       deniedTools: ["github_search"],
-      okacamToolContracts: {
+      appToolContracts: {
         tenant_daily_logs: {
           executionMode: "server_supplied_snapshot_plus_docdex",
           callSchema: { type: "object" },
@@ -454,18 +456,44 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
           backingTools: ["docdex_search"],
         },
       },
-      okacamVirtualTools: ["tenant_daily_logs"],
+      appVirtualTools: ["tenant_daily_logs"],
       maxToolCalls: 4,
     },
     session: { id: "chat-session-1" },
     codaliGateway: {
       query: "What changed in tenant logs?",
       mode: "balanced",
+      product: { id: "product-alpha", deploymentId: "deployment-local" },
       tenant: { id: "tenant-a" },
-      requester: { id: "user-a" },
+      docdex: {
+        baseUrl: "https://docdex.tenant.test",
+        repoId: "repo-tenant-a",
+        credentialSource: "attached_mswarm_api_key",
+        required: true,
+        allowedOperations: ["search", "open"],
+        capabilities: { search: true, open: true },
+      },
+      requester: {
+        requesterHash: "requester-scope-hash",
+        visibility: "tenant",
+      },
       policy: {
         maxModelCalls: 6,
         requireFinalLargeModel: false,
+      },
+      agentPolicy: {
+        stageAgents: {
+          synthesizer: {
+            slug: "tenant-large-final-agent",
+            adapter: "openai-compatible-local",
+            provider: "openai-compatible",
+            model: "tenant-large-model",
+            tier: "large",
+            supportsTools: false,
+            supportsJsonSchema: true,
+            capabilities: ["final_answer_synthesis"],
+          },
+        },
       },
       response: { format: "text" },
     },
@@ -492,6 +520,13 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
         sources: [{ evidenceId: "ev-1", sourceType: "docdex", title: "Daily logs" }],
         confidence: "high",
         evidence: [{ id: "ev-1", claim: "A tenant log changed." }],
+        contextPack: { id: "ctx-run-gateway" },
+        finalModel: {
+          tier: "large",
+          model: "large-final-model",
+          provider: "openai-compatible",
+          agentSlug: "large-final-agent",
+        },
         trace: {
           runId: "run-gateway",
           mode: "balanced",
@@ -505,14 +540,42 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
           errors: [],
           toolCalls: [{ tool: "tenant_daily_logs", status: "success", latencyMs: 9 }],
           modelCalls: [
-            { role: "classifier", status: "success" },
-            { role: "planner", status: "success" },
-            { role: "worker", status: "success" },
-            { role: "final_synthesizer", status: "success" },
+            { role: "classifier", status: "success", model: "small-classifier", latencyMs: 10 },
+            { role: "planner", status: "success", model: "small-planner", latencyMs: 11 },
+            { role: "worker", status: "success", model: "worker-model", latencyMs: 12 },
+            {
+              role: "final_synthesizer",
+              status: "success",
+              tier: "large",
+              model: "large-final-model",
+              provider: "openai-compatible",
+              agentSlug: "large-final-agent",
+              latencyMs: 13,
+            },
           ],
           events: [],
+          metadata: { traceId: "trace-run-gateway" },
         },
         telemetry: { finalAttempts: 1 },
+        metadata: {
+          datasetCollection: {
+            accepted: true,
+            status: "queued",
+            recordCount: 1,
+            objectCount: 0,
+            idempotencyKey: "private-dataset-id",
+            batchId: "private-batch-id",
+            errors: ["dataset-warning"],
+          },
+          privacyFlags: {
+            uploadAllowed: false,
+            exportAllowed: false,
+            trainingAllowed: false,
+            containsPersonalData: true,
+            containsTenantPrivateData: true,
+            containsCustomerData: true,
+          },
+        },
       } satisfies CodaliGatewayResult;
     },
   });
@@ -521,6 +584,7 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
   assert.ok(request);
   assert.equal(request.id, "job-gateway");
   assert.equal(request.docdex?.apiKey, "attached-secret");
+  assert.equal(request.docdex?.immutableRuntimeContext, true);
   assert.equal(request.docdex?.repoId, "repo-tenant-a");
   assert.deepEqual(request.tools, {
     actualTools: ["docdex_search"],
@@ -543,6 +607,17 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
   assert.equal(request.conversation?.id, "chat-session-1");
   assert.equal(captured.options?.provider.name, "openai-compatible");
   assert.equal(Array.isArray(captured.options?.agentInventory), true);
+  const gatewayAgentInventory = captured.options?.agentInventory as Array<Record<string, unknown>> | undefined;
+  assert.equal(
+    gatewayAgentInventory?.some(
+      (candidate) =>
+        candidate.slug === "tenant-large-final-agent" &&
+        candidate.tier === "large" &&
+        candidate.contextWindow === 16_000 &&
+        candidate.context_window === 16_000,
+    ),
+    true,
+  );
   assert.equal(result.output, "gateway answer");
   assert.equal(result.metadata.codali_gateway_status, "succeeded");
   assert.equal(result.metadata.codali_gateway_task_count, 1);
@@ -551,6 +626,59 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
   assert.deepEqual(result.metadata.called_tools, ["tenant_daily_logs"]);
   assert.equal(result.metadata.telemetry?.mode, "gateway");
   assert.equal(result.metadata.session_id, "chat-session-1");
+  const feedbackSubmission = result.metadata.feedback_submission;
+  assert.ok(feedbackSubmission);
+  assert.equal(
+    feedbackSubmission.schema_version,
+    MSWARM_CODALI_FEEDBACK_SUBMISSION_SCHEMA_VERSION,
+  );
+  assert.equal(feedbackSubmission.run_id, "run-gateway");
+  assert.equal(feedbackSubmission.deletion_group_id, "delete-group-run-gateway");
+  assert.equal(feedbackSubmission.target.record_id, "run-gateway");
+  assert.equal(feedbackSubmission.target.role, "codali_gateway_answer");
+  assert.equal(feedbackSubmission.candidate_records[0]?.record_id, "run-gateway");
+  assert.equal(feedbackSubmission.product_scope?.product_id, "product-alpha");
+  assert.equal(feedbackSubmission.requester_scope.visibility, "requester");
+  assert.equal(feedbackSubmission.requester_scope.tenant_wide, false);
+  assert.equal(feedbackSubmission.requester_scope.requester_hash, "requester-scope-hash");
+  assert.equal(feedbackSubmission.raw_trace_included, false);
+  assert.equal(JSON.stringify(feedbackSubmission).includes("toolCalls"), false);
+  const productMetadata = result.metadata.codali_product_metadata;
+  assert.ok(productMetadata);
+  assert.equal(
+    productMetadata.schema_version,
+    MSWARM_CODALI_PRODUCT_METADATA_SCHEMA_VERSION,
+  );
+  assert.equal(productMetadata.run_id, "run-gateway");
+  assert.equal(productMetadata.trace_id, "trace-run-gateway");
+  assert.equal(productMetadata.context_pack_id, "ctx-run-gateway");
+  assert.equal(productMetadata.dataset_collection.status, "queued");
+  assert.equal(productMetadata.dataset_collection.record_count, 1);
+  assert.equal(productMetadata.dataset_collection.object_count, 0);
+  assert.deepEqual(productMetadata.dataset_collection.errors, ["dataset-warning"]);
+  assert.equal(productMetadata.privacy_flags.local_only, true);
+  assert.equal(productMetadata.privacy_flags.upload_allowed, false);
+  assert.equal(productMetadata.privacy_flags.export_allowed, false);
+  assert.equal(productMetadata.privacy_flags.training_allowed, false);
+  assert.equal(productMetadata.privacy_flags.raw_trace_included, false);
+  assert.equal(productMetadata.record_counts.dataset_records, 1);
+  assert.equal(productMetadata.record_counts.sources, 1);
+  assert.equal(productMetadata.record_counts.evidence, 1);
+  assert.equal(productMetadata.record_counts.tool_calls, 1);
+  assert.equal(productMetadata.record_counts.model_calls, 4);
+  assert.equal(productMetadata.record_counts.context_packs, 1);
+  assert.equal(productMetadata.record_counts.final_answers, 1);
+  assert.equal(productMetadata.feedback_ref.target.role, "codali_gateway_answer");
+  assert.equal(productMetadata.feedback_ref.deletion_group_id, "delete-group-run-gateway");
+  assert.deepEqual(productMetadata.called_tools, ["tenant_daily_logs"]);
+  assert.equal(productMetadata.model_tiers.some((entry) => entry.tier === "large"), true);
+  assert.equal(productMetadata.warnings.includes("gateway-warning"), true);
+  assert.equal(productMetadata.errors.length, 0);
+  assert.equal(productMetadata.latency_ms, 55);
+  assert.equal(productMetadata.latency.model_ms, 46);
+  assert.equal(productMetadata.latency.tool_ms, 9);
+  assert.equal(JSON.stringify(productMetadata).includes("private-dataset-id"), false);
+  assert.equal(JSON.stringify(productMetadata).includes("private-batch-id"), false);
   assert.equal(chunks.length, 2);
   assert.equal(
     (chunks[0]?.choices as Array<{ delta?: { content?: string } }> | undefined)?.[0]?.delta?.content,

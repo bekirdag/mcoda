@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { loadConfig } from "../config/ConfigLoader.js";
@@ -16,9 +17,12 @@ import {
   runCodaliGatewayLiveHarness,
 } from "../eval/CodaliGatewayLiveHarness.js";
 import {
+  type CodaliGatewayEvalMetrics,
+  type CodaliGatewayEvalReport,
   formatCodaliGatewayEvalTextReport,
   runCodaliGatewayEvalSuite,
 } from "../eval/GatewayEvalSuite.js";
+import { importCodaliGatewayDatasetReplayFixture } from "../eval/GatewayDatasetEval.js";
 import { resolveWorkspaceRoot } from "./RunCommand.js";
 
 export const EVAL_EXIT_CODES = {
@@ -58,12 +62,15 @@ export interface ParsedEvalArgs {
   smart?: boolean;
   no_deep_investigation?: boolean;
   gateway_smoke?: boolean;
+  dataset_replay_fixture_path?: string;
   gateway_live_smoke?: boolean;
   live_timeout_ms?: number;
   live_mcoda_command?: string;
   live_allow_cloud_fallback?: boolean;
   live_no_image_worker?: boolean;
   live_agent_run_force?: boolean;
+  live_shadow_comparison?: boolean;
+  live_shadow_max_candidates?: number;
   live_strict?: boolean;
   help?: boolean;
 }
@@ -76,6 +83,7 @@ const HELP_TEXT =
   + "  --suite <path>               Path to eval suite JSON (required)\n"
   + "  --gateway-smoke              Run deterministic Codali gateway eval smoke suite\n"
   + "  --gateway-live-smoke         Run Codali gateway live model smoke harness\n"
+  + "  --dataset-replay-fixture <path>  Import dataset replay fixture for gateway smoke\n"
   + "  --output <text|json>         Output mode (default: text)\n"
   + "  --baseline <path>            Optional baseline report for regression diff\n"
   + "  --report-dir <path>          Override eval report output directory\n"
@@ -95,6 +103,8 @@ const HELP_TEXT =
   + "  --allow-cloud-fallback       Allow cloud candidates in live tier resolution\n"
   + "  --no-image-worker            Disable image-worker requirement in live smoke\n"
   + "  --agent-run-force            Pass --force to mcoda agent-run live checks\n"
+  + "  --shadow-comparison          Enable policy-gated live shadow comparison records\n"
+  + "  --shadow-max-candidates <n>  Max shadow candidates per live scenario (default: 1)\n"
   + "  --strict                     Fail live smoke on degraded status\n"
   + "  --config <path>              Config file path\n"
   + "  --help                       Show help\n";
@@ -139,6 +149,11 @@ export const parseEvalArgs = (argv: string[]): ParsedEvalArgs => {
     }
     if (arg === "--gateway-smoke") {
       parsed.gateway_smoke = true;
+      continue;
+    }
+    if (arg === "--dataset-replay-fixture") {
+      parsed.dataset_replay_fixture_path = expectValue(argv, index, "--dataset-replay-fixture");
+      index += 1;
       continue;
     }
     if (arg === "--output") {
@@ -246,6 +261,18 @@ export const parseEvalArgs = (argv: string[]): ParsedEvalArgs => {
       parsed.live_agent_run_force = true;
       continue;
     }
+    if (arg === "--shadow-comparison") {
+      parsed.live_shadow_comparison = true;
+      continue;
+    }
+    if (arg === "--shadow-max-candidates") {
+      parsed.live_shadow_max_candidates = parsePositiveIntegerFlag(
+        expectValue(argv, index, "--shadow-max-candidates"),
+        "--shadow-max-candidates",
+      );
+      index += 1;
+      continue;
+    }
     if (arg === "--strict") {
       parsed.live_strict = true;
       continue;
@@ -260,6 +287,34 @@ const formatRate = (value: number | null): string =>
 
 const formatNullable = (value: number | null, unit = ""): string =>
   value === null ? "n/a" : `${value.toFixed(2)}${unit}`;
+
+type CodaliGatewayEvalBaseline = CodaliGatewayEvalReport | CodaliGatewayEvalMetrics;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const hasGatewayEvalMetricShape = (value: unknown): boolean =>
+  isRecord(value)
+  && isRecord(value.latencyMs)
+  && isRecord(value.costUsd)
+  && isRecord(value.tokensUsed);
+
+const loadCodaliGatewayEvalBaseline = async (
+  baselinePath: string,
+): Promise<CodaliGatewayEvalBaseline> => {
+  const resolvedPath = path.resolve(process.cwd(), baselinePath);
+  const parsed = JSON.parse(await readFile(resolvedPath, "utf8")) as unknown;
+  if (isRecord(parsed) && hasGatewayEvalMetricShape(parsed.metrics)) {
+    return parsed as unknown as CodaliGatewayEvalReport;
+  }
+  if (hasGatewayEvalMetricShape(parsed)) {
+    return parsed as unknown as CodaliGatewayEvalMetrics;
+  }
+  throw new EvalCommandError(
+    "Gateway smoke --baseline must be a Codali gateway eval report or metrics object.",
+    EVAL_EXIT_CODES.usage_error,
+  );
+};
 
 const printTextReport = (report: EvalReport, reportPath: string): void => {
   const metrics = report.metrics;
@@ -325,7 +380,22 @@ export class EvalCommand {
       return;
     }
     if (parsed.gateway_smoke) {
-      const result = await runCodaliGatewayEvalSuite();
+      const datasetImport = parsed.dataset_replay_fixture_path
+        ? await importCodaliGatewayDatasetReplayFixture({
+            fixture: JSON.parse(
+              await readFile(path.resolve(process.cwd(), parsed.dataset_replay_fixture_path), "utf8"),
+            ),
+            fixtureId: path.resolve(process.cwd(), parsed.dataset_replay_fixture_path),
+          })
+        : undefined;
+      const baseline = parsed.baseline_path
+        ? await loadCodaliGatewayEvalBaseline(parsed.baseline_path)
+        : undefined;
+      const result = await runCodaliGatewayEvalSuite({
+        datasetCases: datasetImport?.cases,
+        datasetLineage: datasetImport?.lineage,
+        baseline,
+      });
       if (parsed.output === "json") {
         // eslint-disable-next-line no-console
         console.log(`${JSON.stringify(result, null, 2)}\n`);
@@ -348,6 +418,12 @@ export class EvalCommand {
         allowCloudFallback: parsed.live_allow_cloud_fallback,
         allowImageWorker: parsed.live_no_image_worker ? false : true,
         forceAgentRun: parsed.live_agent_run_force,
+        shadowComparison: parsed.live_shadow_comparison
+          ? {
+              enabled: true,
+              maxCandidatesPerScenario: parsed.live_shadow_max_candidates,
+            }
+          : undefined,
       });
       if (parsed.output === "json") {
         // eslint-disable-next-line no-console

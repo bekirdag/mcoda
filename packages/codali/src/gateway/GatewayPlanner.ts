@@ -10,6 +10,7 @@ import type {
   CodaliGatewayClassifierOutput,
   CodaliGatewayPlannerOutput,
   CodaliGatewayRequest,
+  CodaliGatewaySubquestion,
   CodaliGatewayValidationIssue,
   CodaliGatewayWorkerTask,
 } from "./CodaliGatewayTypes.js";
@@ -152,8 +153,172 @@ const readString = (record: Record<string, unknown>, key: string): string | unde
     ? (record[key] as string).trim()
     : undefined;
 
-const readBoolean = (record: Record<string, unknown>, key: string): boolean | undefined =>
-  typeof record[key] === "boolean" ? record[key] as boolean : undefined;
+const readFlexibleBoolean = (
+  record: Record<string, unknown>,
+  key: string,
+): boolean | undefined => {
+  const snakeKey = key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
+  for (const candidateKey of [key, snakeKey]) {
+    const value = record[candidateKey];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      if (value === 1) return true;
+      if (value === 0) return false;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "yes", "y", "1", "needed", "required"].includes(normalized)) {
+        return true;
+      }
+      if (["false", "no", "n", "0", "none", "not_needed", "not required"].includes(normalized)) {
+        return false;
+      }
+    }
+  }
+  return undefined;
+};
+
+const readClassifierQueryType = (record: Record<string, unknown>): string | undefined =>
+  readString(record, "queryType") ??
+  readString(record, "query_type") ??
+  readString(record, "intent") ??
+  readString(record, "type") ??
+  readString(record, "category") ??
+  readString(record, "route");
+
+const CLASSIFIER_WRAPPER_KEYS = [
+  "classifier",
+  "classification",
+  "routing",
+  "route",
+  "output",
+  "result",
+] as const;
+
+const hasClassifierSignals = (record: Record<string, unknown>): boolean =>
+  Boolean(
+    readClassifierQueryType(record) ||
+    "needsPrivateData" in record ||
+    "needs_private_data" in record ||
+    "needsFreshData" in record ||
+    "needs_fresh_data" in record ||
+    "needsDocdex" in record ||
+    "needs_docdex" in record ||
+    "needsAppTools" in record ||
+    "needs_app_tools" in record ||
+    "needsImageWorker" in record ||
+    "needs_image_worker" in record,
+  );
+
+const unwrapClassifierRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (!isRecord(value)) return undefined;
+  if (hasClassifierSignals(value)) return value;
+  for (const key of CLASSIFIER_WRAPPER_KEYS) {
+    const nested = value[key];
+    if (isRecord(nested) && hasClassifierSignals(nested)) {
+      return nested;
+    }
+  }
+  return value;
+};
+
+const readAliasValue = (
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): unknown => {
+  for (const key of keys) {
+    if (key in record) return record[key];
+  }
+  return undefined;
+};
+
+const readStringFromKeys = (
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): string | undefined => {
+  for (const key of keys) {
+    const value = readString(record, key);
+    if (value) return value;
+  }
+  return undefined;
+};
+
+const stringListFromValue = (value: unknown): string[] | undefined => {
+  if (Array.isArray(value)) {
+    const items = value
+      .flatMap((item) => {
+        if (typeof item === "string") return [item.trim()];
+        if (isRecord(item)) {
+          const name = readStringFromKeys(item, ["name", "tool", "id", "source"]);
+          return name ? [name] : [];
+        }
+        return [];
+      })
+      .filter(Boolean);
+    return items.length > 0 ? items : undefined;
+  }
+  if (typeof value === "string") {
+    const items = value
+      .split(/[\n,;]+/g)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return items.length > 0 ? items : undefined;
+  }
+  return undefined;
+};
+
+const hasAppToolContract = (value: unknown): boolean => {
+  if (!isRecord(value)) return false;
+  return Object.keys(value).length > 0;
+};
+
+const inferClassifierDefaults = (
+  input?: GatewayPlannerInput,
+  policyCompilation?: GatewayPolicyCompilation,
+): Pick<
+  CodaliGatewayClassifierOutput,
+  "queryType" | "needsPrivateData" | "needsFreshData" | "needsDocdex" | "needsAppTools" | "needsImageWorker"
+> => {
+  const request = input?.request;
+  const allowedTools =
+    policyCompilation
+      ? allowedToolNames(policyCompilation)
+      : request?.policy.allowedTools ?? [];
+  const hasDocdexTool = allowedTools.some((tool) => tool === "docdex_search" || tool.startsWith("docdex_"));
+  const docdex = request?.docdex;
+  const needsDocdex = Boolean(
+    docdex?.required === true ||
+    docdex?.enabled === true ||
+    docdex?.repoId ||
+    docdex?.repoRoot ||
+    hasDocdexTool,
+  );
+  const appToolNames = new Set<string>();
+  for (const tool of request?.policy.appVirtualTools ?? []) {
+    appToolNames.add(tool);
+  }
+  if (hasAppToolContract(request?.policy.appToolContracts)) {
+    for (const tool of Object.keys(request?.policy.appToolContracts ?? {})) {
+      appToolNames.add(tool);
+    }
+  }
+  for (const tool of allowedTools) {
+    if (tool !== "docdex_search" && !tool.startsWith("docdex_")) {
+      appToolNames.add(tool);
+    }
+  }
+  const needsAppTools = Boolean(appToolNames.size > 0 || request?.policy.appToolGateway);
+  const tenantScoped = Boolean(request?.tenant?.id || request?.tenant?.slug || request?.tenant?.realm);
+  const usesRuntimeData = needsDocdex || needsAppTools;
+  return {
+    queryType: request?.mode === "image" ? "image" : "general",
+    needsPrivateData: Boolean((tenantScoped && usesRuntimeData) || docdex?.required === true),
+    needsFreshData: needsAppTools,
+    needsDocdex,
+    needsAppTools,
+    needsImageWorker: request?.mode === "image" && request?.policy.allowImageWorker === true,
+  };
+};
 
 const parseJsonObject = (content: string): unknown => {
   const trimmed = content.trim();
@@ -176,9 +341,12 @@ const parseJsonObject = (content: string): unknown => {
 
 const validateClassifierOutput = (
   value: unknown,
+  input?: GatewayPlannerInput,
+  policyCompilation?: GatewayPolicyCompilation,
 ): { output?: CodaliGatewayClassifierOutput; issues: CodaliGatewayValidationIssue[] } => {
   const issues: CodaliGatewayValidationIssue[] = [];
-  if (!isRecord(value)) {
+  const record = unwrapClassifierRecord(value);
+  if (!record) {
     return {
       issues: [
         {
@@ -189,14 +357,8 @@ const validateClassifierOutput = (
       ],
     };
   }
-  const queryType = readString(value, "queryType") ?? readString(value, "query_type");
-  if (!queryType) {
-    issues.push({
-      path: "$.queryType",
-      code: "expected_non_empty_string",
-      message: "queryType is required.",
-    });
-  }
+  const defaults = inferClassifierDefaults(input, policyCompilation);
+  const queryType = readClassifierQueryType(record) ?? defaults.queryType;
   const requiredBooleans = [
     "needsPrivateData",
     "needsFreshData",
@@ -206,33 +368,14 @@ const validateClassifierOutput = (
   ] as const;
   const booleans: Partial<Record<typeof requiredBooleans[number], boolean>> = {};
   for (const key of requiredBooleans) {
-    const snakeKey = key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
-    const valueForKey = readBoolean(value, key) ?? readBoolean(value, snakeKey);
-    if (valueForKey === undefined) {
-      issues.push({
-        path: `$.${key}`,
-        code: "expected_boolean",
-        message: `${key} is required and must be a boolean.`,
-      });
-    } else {
-      booleans[key] = valueForKey;
-    }
+    booleans[key] = readFlexibleBoolean(record, key) ?? defaults[key];
   }
+  const confidenceValue = readString(record, "confidence")?.toLowerCase();
   const confidence =
-    readString(value, "confidence") as CodaliGatewayClassifierOutput["confidence"];
-  if (
-    confidence !== undefined &&
-    confidence !== "high" &&
-    confidence !== "medium" &&
-    confidence !== "low"
-  ) {
-    issues.push({
-      path: "$.confidence",
-      code: "expected_enum",
-      message: "confidence must be high, medium, or low.",
-    });
-  }
-  if (issues.length > 0 || !queryType) {
+    confidenceValue === "high" || confidenceValue === "medium" || confidenceValue === "low"
+      ? confidenceValue
+      : undefined;
+  if (issues.length > 0) {
     return { issues };
   }
   return {
@@ -245,11 +388,11 @@ const validateClassifierOutput = (
       needsAppTools: booleans.needsAppTools ?? false,
       needsImageWorker: booleans.needsImageWorker ?? false,
       directAnswerCandidate:
-        readString(value, "directAnswerCandidate") ??
-        readString(value, "direct_answer_candidate"),
-      rationale: readString(value, "rationale"),
+        readString(record, "directAnswerCandidate") ??
+        readString(record, "direct_answer_candidate"),
+      rationale: readString(record, "rationale"),
       confidence,
-      metadata: isRecord(value.metadata) ? value.metadata : undefined,
+      metadata: isRecord(record.metadata) ? record.metadata : undefined,
     },
   };
 };
@@ -361,6 +504,252 @@ const buildRepairMessages = (
   },
 ];
 
+const PLANNER_WRAPPER_KEYS = [
+  "planner",
+  "planning",
+  "plan",
+  "routing",
+  "output",
+  "result",
+] as const;
+
+const hasPlannerSignals = (record: Record<string, unknown>): boolean =>
+  Boolean(
+    readStringFromKeys(record, ["queryType", "query_type", "intent", "type", "category"]) ||
+    readAliasValue(record, ["subquestions", "sub_questions", "questions"]) ||
+    readAliasValue(record, ["workerTasks", "worker_tasks", "tasks", "steps", "workers"]),
+  );
+
+const unwrapPlannerRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (Array.isArray(value)) {
+    return { workerTasks: value };
+  }
+  if (!isRecord(value)) return undefined;
+  if (hasPlannerSignals(value)) return value;
+  for (const key of PLANNER_WRAPPER_KEYS) {
+    const nested = value[key];
+    if (Array.isArray(nested)) {
+      return { workerTasks: nested };
+    }
+    if (isRecord(nested) && hasPlannerSignals(nested)) {
+      return nested;
+    }
+  }
+  return value;
+};
+
+const normalizePlannerSubquestions = (
+  record: Record<string, unknown>,
+  request: CodaliGatewayRequest,
+): CodaliGatewaySubquestion[] => {
+  const input = readAliasValue(record, [
+    "subquestions",
+    "sub_questions",
+    "questions",
+    "researchQuestions",
+    "research_questions",
+  ]);
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const output: CodaliGatewaySubquestion[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const item = input[index];
+    if (typeof item === "string" && item.trim()) {
+      output.push({ id: `sq-${index + 1}`, question: item.trim() });
+      continue;
+    }
+    if (!isRecord(item)) continue;
+    const question =
+      readStringFromKeys(item, ["question", "query", "objective", "task", "description"]) ??
+      request.query;
+    output.push({
+      id: readStringFromKeys(item, ["id", "name", "key"]) ?? `sq-${index + 1}`,
+      question,
+      rationale: readStringFromKeys(item, ["rationale", "reason"]),
+    });
+  }
+  return output;
+};
+
+const defaultPlannerTools = (
+  classifier: CodaliGatewayClassifierOutput,
+  policyCompilation: GatewayPolicyCompilation,
+): string[] => {
+  if (
+    !classifier.needsDocdex &&
+    !classifier.needsAppTools &&
+    !classifier.needsFreshData &&
+    !classifier.needsPrivateData
+  ) {
+    return [];
+  }
+  return allowedToolNames(policyCompilation);
+};
+
+const defaultWorkerRole = (
+  toolsAllowed: string[],
+  classifier: CodaliGatewayClassifierOutput,
+): string => {
+  if (classifier.needsImageWorker) return "image_worker";
+  if (toolsAllowed.some((tool) => tool !== "docdex_search" && !tool.startsWith("docdex_"))) {
+    return "tool_worker";
+  }
+  if (toolsAllowed.length > 0 || classifier.needsDocdex) {
+    return "rag_worker";
+  }
+  return "direct_answer";
+};
+
+const normalizePlannerWorkerTask = (
+  item: unknown,
+  index: number,
+  request: CodaliGatewayRequest,
+  classifier: CodaliGatewayClassifierOutput,
+  policyCompilation: GatewayPolicyCompilation,
+): CodaliGatewayWorkerTask | undefined => {
+  const fallbackTools = defaultPlannerTools(classifier, policyCompilation);
+  if (typeof item === "string" && item.trim()) {
+    return {
+      id: `task-${index + 1}`,
+      workerRole: defaultWorkerRole(fallbackTools, classifier),
+      objective: item.trim(),
+      query: request.query,
+      toolsAllowed: fallbackTools,
+      outputFormat: fallbackTools.length > 0 ? "evidence_items" : "answer_outline",
+    };
+  }
+  if (!isRecord(item)) return undefined;
+  const toolsAllowed =
+    stringListFromValue(readAliasValue(item, [
+      "toolsAllowed",
+      "tools_allowed",
+      "allowedTools",
+      "allowed_tools",
+      "tools",
+      "toolNames",
+      "tool_names",
+      "tool",
+    ])) ?? fallbackTools;
+  const query = readStringFromKeys(item, [
+    "query",
+    "searchQuery",
+    "search_query",
+    "question",
+  ]);
+  const objective =
+    readStringFromKeys(item, [
+      "objective",
+      "task",
+      "description",
+      "instruction",
+      "question",
+      "query",
+    ]) ?? request.query;
+  const task: CodaliGatewayWorkerTask = {
+    id: readStringFromKeys(item, ["id", "name", "key"]) ?? `task-${index + 1}`,
+    workerRole:
+      readStringFromKeys(item, ["workerRole", "worker_role", "worker", "role"]) ??
+      defaultWorkerRole(toolsAllowed, classifier),
+    objective,
+    toolsAllowed,
+    outputFormat:
+      readStringFromKeys(item, ["outputFormat", "output_format", "format", "expectedOutput"]) ??
+      (toolsAllowed.length > 0 ? "evidence_items" : "answer_outline"),
+  };
+  if (query) {
+    task.query = query;
+  }
+  const expectedSources = stringListFromValue(
+    readAliasValue(item, ["expectedSources", "expected_sources", "sources", "sourceTypes"]),
+  );
+  if (expectedSources) {
+    task.expectedSources = expectedSources;
+  }
+  const constraints = stringListFromValue(readAliasValue(item, ["constraints"]));
+  if (constraints) {
+    task.constraints = constraints;
+  }
+  const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+  if (metadata) {
+    task.metadata = metadata;
+  }
+  return task;
+};
+
+const normalizePlannerWorkerTasks = (
+  record: Record<string, unknown>,
+  request: CodaliGatewayRequest,
+  classifier: CodaliGatewayClassifierOutput,
+  policyCompilation: GatewayPolicyCompilation,
+): CodaliGatewayWorkerTask[] => {
+  const input = readAliasValue(record, [
+    "workerTasks",
+    "worker_tasks",
+    "tasks",
+    "steps",
+    "workers",
+    "toolTasks",
+    "tool_tasks",
+  ]);
+  const rawTasks = Array.isArray(input) ? input : [];
+  const tasks = rawTasks
+    .map((item, index) => normalizePlannerWorkerTask(
+      item,
+      index,
+      request,
+      classifier,
+      policyCompilation,
+    ))
+    .filter((task): task is CodaliGatewayWorkerTask => Boolean(task));
+  if (tasks.length > 0) {
+    return tasks;
+  }
+  const toolsAllowed = defaultPlannerTools(classifier, policyCompilation);
+  if (toolsAllowed.length === 0) {
+    return [];
+  }
+  return [
+    {
+      id: "task-1",
+      workerRole: defaultWorkerRole(toolsAllowed, classifier),
+      objective: "Gather relevant evidence for the user request.",
+      query: request.query,
+      toolsAllowed,
+      outputFormat: "evidence_items",
+    },
+  ];
+};
+
+const normalizePlannerOutput = (
+  value: unknown,
+  input: GatewayPlannerInput,
+  classifier: CodaliGatewayClassifierOutput,
+  policyCompilation: GatewayPolicyCompilation,
+): unknown => {
+  const record = unwrapPlannerRecord(value);
+  if (!record) return value;
+  const workerTasks = normalizePlannerWorkerTasks(
+    record,
+    input.request,
+    classifier,
+    policyCompilation,
+  );
+  const normalized: CodaliGatewayPlannerOutput = {
+    queryType:
+      readStringFromKeys(record, ["queryType", "query_type", "intent", "type", "category"]) ??
+      classifier.queryType,
+    summary: readStringFromKeys(record, ["summary", "rationale", "reasoning"]),
+    subquestions: normalizePlannerSubquestions(record, input.request),
+    workerTasks,
+    expectedEvidenceCount: workerTasks.length > 0 ? Math.max(workerTasks.length, 1) : undefined,
+    maxIterations: Math.max(1, Math.min(input.request.policy.maxIterations, Math.max(workerTasks.length, 1))),
+    requiresFinalLargeModel: input.request.policy.requireFinalLargeModel,
+    metadata: isRecord(record.metadata) ? record.metadata : undefined,
+  };
+  return normalized;
+};
+
 const sanitizePlannerOutput = (
   planner: CodaliGatewayPlannerOutput,
   input: GatewayPlannerInput,
@@ -417,7 +806,7 @@ export class CodaliGatewayPlanner {
       "classifier",
       messages,
       CLASSIFIER_RESPONSE_FORMAT,
-      validateClassifierOutput,
+      (value) => validateClassifierOutput(value, input, input.policyCompilation),
     );
     const warnings: string[] = [];
     const classifier = { ...response.value };
@@ -448,7 +837,14 @@ export class CodaliGatewayPlanner {
       plannerMessages,
       PLANNER_RESPONSE_FORMAT,
       (value) => {
-        const validation = validateCodaliGatewayPlannerOutput(value);
+        const validation = validateCodaliGatewayPlannerOutput(
+          normalizePlannerOutput(
+            value,
+            { ...input, policyCompilation },
+            classifierResult.classifier,
+            policyCompilation,
+          ),
+        );
         return validation.ok
           ? { output: validation.value, issues: [] }
           : { issues: validation.issues };

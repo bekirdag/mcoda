@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { RunCommand } from "./cli/RunCommand.js";
 import { FeedbackCommand } from "./cli/FeedbackCommand.js";
 import { EvalCommand } from "./cli/EvalCommand.js";
+import { DatasetCommand } from "./cli/DatasetCommand.js";
+import { ImprovementCommand } from "./cli/ImprovementCommand.js";
 
 const HELP_TEXT =
   "Usage: codali run [--workspace-root <path>] --agent <slug> [--task <file>]\n" +
@@ -12,6 +14,8 @@ const HELP_TEXT =
   "   or: codali <fix|review|explain|test> [run options] [--task <file>]\n" +
   "   or: codali eval --suite <path> [eval options]\n" +
   "   or: codali eval --gateway-live-smoke [eval options]\n" +
+  "   or: codali dataset <inspect|review-queue|label|promote-target|export> [options]\n" +
+  "   or: codali improvement|improve <policy|levels|inspect|propose|build-release|eval|publish|monitor> [options]\n" +
   "   or: codali learn --file <path/to/file> [--confirm <dedupe_key> ...]\n" +
   "   or: codali learn --confirm <dedupe_key> [--confirm <dedupe_key> ...]\n" +
   "\n" +
@@ -22,6 +26,9 @@ const HELP_TEXT =
   "  explain  Apply explain workflow profile (explanation-first output).\n" +
   "  test     Apply test workflow profile (verification-first output).\n" +
   "  eval     Run deterministic local evaluation suites and regression gates.\n" +
+  "  dataset  Inspect, review, label, promote, and export local-only dataset collections.\n" +
+  "  improvement  Build improvement policy contracts, inspect exports, propose fixtures, and prepare candidate releases.\n" +
+  "  improve  Alias for improvement.\n" +
   "  learn    Analyze user edits/reverts and govern candidate->enforced learning.\n" +
   "  doctor   Print environment and install paths.\n" +
   "\n" +
@@ -92,6 +99,16 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
 
   if (command === "eval") {
     await EvalCommand.run(rest);
+    return;
+  }
+
+  if (command === "dataset") {
+    await DatasetCommand.run(rest);
+    return;
+  }
+
+  if (command === "improvement" || command === "improve") {
+    await ImprovementCommand.run(rest);
     return;
   }
 

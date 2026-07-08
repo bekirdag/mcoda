@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { PercentileMetric, RateMetric } from "./MetricTypes.js";
 import type { CodaliGatewayModelTier } from "../gateway/CodaliGatewayTypes.js";
+import {
+  CODALI_GATEWAY_DATASET_EVAL_PROMPT_VERSIONS,
+  CODALI_GATEWAY_DATASET_EVAL_SCHEMA_VERSION,
+  CODALI_GATEWAY_DATASET_EVAL_STAGES,
+  createDefaultCodaliGatewayDatasetEvalImport,
+  type CodaliGatewayDatasetEvalImportLineage,
+  type CodaliGatewayDatasetEvalStage,
+} from "./GatewayDatasetEval.js";
 
 export type CodaliGatewayEvalTaskType =
   | "generic_question"
@@ -12,6 +20,28 @@ export type CodaliGatewayEvalTaskType =
   | "missing_evidence_question";
 
 export type CodaliGatewayEvalRunStatus = "passed" | "failed";
+
+export interface CodaliGatewayEvalDatasetSchemaVersions {
+  gatewayEval: 1;
+  datasetEval: typeof CODALI_GATEWAY_DATASET_EVAL_SCHEMA_VERSION;
+  storageContract: string;
+  datasetReplayFixture: string;
+  datasetRecord: string;
+}
+
+export interface CodaliGatewayEvalDatasetMetadata {
+  source: "dataset_replay_fixture";
+  stage: CodaliGatewayDatasetEvalStage;
+  sourceRecordId: string;
+  sourceGatewayRecordId?: string;
+  datasetKind: string;
+  promptVersion: string;
+  schemaVersions: CodaliGatewayEvalDatasetSchemaVersions;
+  sourceObjectHashes: string[];
+  replayFixtureId?: string;
+  exportKind?: string;
+  generatedAt?: string;
+}
 
 export interface CodaliGatewayEvalCaseExpectations {
   allowedTools?: string[];
@@ -35,6 +65,7 @@ export interface CodaliGatewayEvalCase {
   type: CodaliGatewayEvalTaskType;
   prompt: string;
   expectations: CodaliGatewayEvalCaseExpectations;
+  dataset?: CodaliGatewayEvalDatasetMetadata;
 }
 
 export interface CodaliGatewayEvalEvidenceRecord {
@@ -106,6 +137,7 @@ export interface CodaliGatewayEvalCaseResult {
   costUsd?: number;
   toolCallCount?: number;
   modelCallCount?: number;
+  dataset?: CodaliGatewayEvalDatasetMetadata;
 }
 
 export interface CodaliGatewayEvalMetrics {
@@ -124,6 +156,10 @@ export interface CodaliGatewayEvalMetrics {
   costUsd: PercentileMetric;
   toolCallCount: PercentileMetric;
   modelCallCount: PercentileMetric;
+  datasetCaseCount: number;
+  datasetStageCoverageRate: RateMetric;
+  datasetLineageCoverageRate: RateMetric;
+  promptSchemaVersionCoverageRate: RateMetric;
 }
 
 export interface CodaliGatewayEvalThresholds {
@@ -138,6 +174,9 @@ export interface CodaliGatewayEvalThresholds {
   costP95UsdMax?: number;
   latencyRegressionRatioMax: number;
   costRegressionRatioMax: number;
+  datasetStageCoverageMin: number;
+  datasetLineageCoverageMin: number;
+  promptSchemaVersionCoverageMin: number;
 }
 
 export interface CodaliGatewayEvalMetricDelta {
@@ -176,6 +215,25 @@ export interface CodaliGatewayEvalGateResult {
   failures: CodaliGatewayEvalGateFailure[];
 }
 
+export interface CodaliGatewayEvalReportLineage {
+  schemaVersion: 1;
+  source: "static_cases" | "dataset_replay_fixture" | "mixed";
+  staticCaseIds: string[];
+  dataset?: CodaliGatewayDatasetEvalImportLineage;
+  datasetSourceRecordIds: string[];
+  datasetSourceGatewayRecordIds: string[];
+  datasetSourceObjectHashes: string[];
+  datasetStageCounts: Record<CodaliGatewayDatasetEvalStage, number>;
+}
+
+export interface CodaliGatewayEvalReportVersions {
+  schemaVersion: 1;
+  gatewayEval: 1;
+  datasetEval: typeof CODALI_GATEWAY_DATASET_EVAL_SCHEMA_VERSION;
+  promptVersions: Record<string, string>;
+  schemaVersions: Record<string, string | number>;
+}
+
 export interface CodaliGatewayEvalReport {
   schemaVersion: 1;
   reportId: string;
@@ -189,6 +247,8 @@ export interface CodaliGatewayEvalReport {
   metrics: CodaliGatewayEvalMetrics;
   regression: CodaliGatewayEvalRegressionComparison;
   gates: CodaliGatewayEvalGateResult;
+  lineage: CodaliGatewayEvalReportLineage;
+  versions: CodaliGatewayEvalReportVersions;
   summary: {
     status: CodaliGatewayEvalRunStatus;
     total: number;
@@ -210,6 +270,9 @@ export interface CodaliGatewayEvalSuiteOptions {
   runner?: CodaliGatewayEvalRunner;
   thresholds?: Partial<CodaliGatewayEvalThresholds>;
   baseline?: CodaliGatewayEvalReport | CodaliGatewayEvalMetrics;
+  datasetCases?: CodaliGatewayEvalCase[];
+  datasetLineage?: CodaliGatewayDatasetEvalImportLineage;
+  includeDatasetCases?: boolean;
 }
 
 export const DEFAULT_CODALI_GATEWAY_EVAL_THRESHOLDS: CodaliGatewayEvalThresholds = {
@@ -224,6 +287,9 @@ export const DEFAULT_CODALI_GATEWAY_EVAL_THRESHOLDS: CodaliGatewayEvalThresholds
   costP95UsdMax: 10,
   latencyRegressionRatioMax: 0.25,
   costRegressionRatioMax: 0.25,
+  datasetStageCoverageMin: 1,
+  datasetLineageCoverageMin: 1,
+  promptSchemaVersionCoverageMin: 1,
 };
 
 export const CODALI_GATEWAY_EVAL_CASES: CodaliGatewayEvalCase[] = [
@@ -538,13 +604,42 @@ export const evaluateCodaliGatewayEvalCase = (
     costUsd: record.costUsd,
     toolCallCount: record.toolCallCount ?? record.calledTools.length,
     modelCallCount: record.modelCallCount,
+    dataset: evalCase.dataset,
   };
 };
+
+const zeroDatasetStageCounts = (): Record<CodaliGatewayDatasetEvalStage, number> =>
+  CODALI_GATEWAY_DATASET_EVAL_STAGES.reduce<Record<CodaliGatewayDatasetEvalStage, number>>(
+    (output, stage) => {
+      output[stage] = 0;
+      return output;
+    },
+    {} as Record<CodaliGatewayDatasetEvalStage, number>,
+  );
+
+const hasDatasetLineage = (result: CodaliGatewayEvalCaseResult): boolean =>
+  Boolean(
+    result.dataset?.sourceRecordId
+    && result.dataset.sourceObjectHashes.length > 0
+    && result.dataset.stage,
+  );
+
+const hasPromptAndSchemaVersions = (result: CodaliGatewayEvalCaseResult): boolean =>
+  Boolean(
+    result.dataset?.promptVersion
+    && result.dataset.schemaVersions.gatewayEval
+    && result.dataset.schemaVersions.datasetEval
+    && result.dataset.schemaVersions.storageContract
+    && result.dataset.schemaVersions.datasetReplayFixture
+    && result.dataset.schemaVersions.datasetRecord,
+  );
 
 export const aggregateCodaliGatewayEvalMetrics = (
   cases: CodaliGatewayEvalCaseResult[],
 ): CodaliGatewayEvalMetrics => {
   const taskCount = cases.length;
+  const datasetCases = cases.filter((result) => result.dataset);
+  const coveredDatasetStages = new Set(datasetCases.map((result) => result.dataset?.stage));
   const evidenceCases = cases.filter((result) => result.evidencePrecision !== null);
   const citationCases = cases.filter((result) => result.evidencePrecision !== null);
   const finalLargeCases = cases.filter((result) => (
@@ -590,6 +685,22 @@ export const aggregateCodaliGatewayEvalMetrics = (
     costUsd: percentileMetric(cases.map((result) => result.costUsd)),
     toolCallCount: percentileMetric(cases.map((result) => result.toolCallCount)),
     modelCallCount: percentileMetric(cases.map((result) => result.modelCallCount)),
+    datasetCaseCount: datasetCases.length,
+    datasetStageCoverageRate: rateMetric(
+      CODALI_GATEWAY_DATASET_EVAL_STAGES.filter((stage) => coveredDatasetStages.has(stage)).length,
+      CODALI_GATEWAY_DATASET_EVAL_STAGES.length,
+      0,
+    ),
+    datasetLineageCoverageRate: rateMetric(
+      datasetCases.filter(hasDatasetLineage).length,
+      datasetCases.length,
+      taskCount - datasetCases.length,
+    ),
+    promptSchemaVersionCoverageRate: rateMetric(
+      datasetCases.filter(hasPromptAndSchemaVersions).length,
+      datasetCases.length,
+      taskCount - datasetCases.length,
+    ),
   };
 };
 
@@ -783,6 +894,27 @@ export const evaluateCodaliGatewayEvalGates = (params: {
     threshold: thresholds.budgetComplianceMin,
     actual: metrics.budgetComplianceRate.value,
   });
+  addRateMinimumFailure(failures, {
+    code: "gateway_dataset_stage_coverage_below_min",
+    metric: "datasetStageCoverageRate",
+    message: "Dataset-backed eval stage coverage is below threshold.",
+    threshold: thresholds.datasetStageCoverageMin,
+    actual: metrics.datasetStageCoverageRate.value,
+  });
+  addRateMinimumFailure(failures, {
+    code: "gateway_dataset_lineage_coverage_below_min",
+    metric: "datasetLineageCoverageRate",
+    message: "Dataset-backed eval lineage coverage is below threshold.",
+    threshold: thresholds.datasetLineageCoverageMin,
+    actual: metrics.datasetLineageCoverageRate.value,
+  });
+  addRateMinimumFailure(failures, {
+    code: "gateway_prompt_schema_version_coverage_below_min",
+    metric: "promptSchemaVersionCoverageRate",
+    message: "Prompt and schema version coverage is below threshold.",
+    threshold: thresholds.promptSchemaVersionCoverageMin,
+    actual: metrics.promptSchemaVersionCoverageRate.value,
+  });
   if (thresholds.latencyP95MsMax !== undefined) {
     addRateMaximumFailure(failures, {
       code: "gateway_latency_p95_exceeded",
@@ -899,12 +1031,112 @@ export const createDefaultCodaliGatewayEvalRunner = (): CodaliGatewayEvalRunner 
   }
 );
 
+const uniqueInOrder = (values: Array<string | undefined>): string[] => {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    output.push(value);
+  }
+  return output;
+};
+
+const resolveCodaliGatewayEvalCases = async (
+  options: CodaliGatewayEvalSuiteOptions,
+): Promise<{
+  evalCases: CodaliGatewayEvalCase[];
+  datasetLineage?: CodaliGatewayDatasetEvalImportLineage;
+}> => {
+  if (options.cases) {
+    return { evalCases: options.cases, datasetLineage: options.datasetLineage };
+  }
+  if (options.includeDatasetCases === false) {
+    return { evalCases: CODALI_GATEWAY_EVAL_CASES, datasetLineage: options.datasetLineage };
+  }
+  if (options.datasetCases) {
+    return {
+      evalCases: [...CODALI_GATEWAY_EVAL_CASES, ...options.datasetCases],
+      datasetLineage: options.datasetLineage,
+    };
+  }
+  const datasetImport = await createDefaultCodaliGatewayDatasetEvalImport();
+  return {
+    evalCases: [...CODALI_GATEWAY_EVAL_CASES, ...datasetImport.cases],
+    datasetLineage: datasetImport.lineage,
+  };
+};
+
+const buildCodaliGatewayEvalLineage = (
+  evalCases: CodaliGatewayEvalCase[],
+  datasetLineage?: CodaliGatewayDatasetEvalImportLineage,
+): CodaliGatewayEvalReportLineage => {
+  const staticCaseIds = evalCases
+    .filter((evalCase) => !evalCase.dataset)
+    .map((evalCase) => evalCase.id);
+  const datasetCases = evalCases.filter((evalCase) => evalCase.dataset);
+  const stageCounts = zeroDatasetStageCounts();
+  for (const evalCase of datasetCases) {
+    const stage = evalCase.dataset?.stage;
+    if (stage) stageCounts[stage] += 1;
+  }
+  const datasetSourceRecordIds = uniqueInOrder(
+    datasetCases.map((evalCase) => evalCase.dataset?.sourceRecordId),
+  );
+  const datasetSourceGatewayRecordIds = uniqueInOrder(
+    datasetCases.map((evalCase) => evalCase.dataset?.sourceGatewayRecordId),
+  );
+  const datasetSourceObjectHashes = uniqueInOrder(
+    datasetCases.flatMap((evalCase) => evalCase.dataset?.sourceObjectHashes ?? []),
+  );
+  return {
+    schemaVersion: 1,
+    source: datasetCases.length > 0 && staticCaseIds.length > 0
+      ? "mixed"
+      : (datasetCases.length > 0 ? "dataset_replay_fixture" : "static_cases"),
+    staticCaseIds,
+    dataset: datasetLineage,
+    datasetSourceRecordIds,
+    datasetSourceGatewayRecordIds,
+    datasetSourceObjectHashes,
+    datasetStageCounts: datasetLineage?.stageCounts ?? stageCounts,
+  };
+};
+
+const buildCodaliGatewayEvalVersions = (
+  evalCases: CodaliGatewayEvalCase[],
+): CodaliGatewayEvalReportVersions => {
+  const promptVersions: Record<string, string> = {
+    static_gateway_smoke: "codali.gateway.eval.static-smoke.prompt.v1",
+    ...CODALI_GATEWAY_DATASET_EVAL_PROMPT_VERSIONS,
+  };
+  for (const evalCase of evalCases) {
+    if (evalCase.dataset) {
+      promptVersions[evalCase.dataset.stage] = evalCase.dataset.promptVersion;
+    }
+  }
+  return {
+    schemaVersion: 1,
+    gatewayEval: 1,
+    datasetEval: CODALI_GATEWAY_DATASET_EVAL_SCHEMA_VERSION,
+    promptVersions,
+    schemaVersions: {
+      gatewayEval: 1,
+      datasetEval: CODALI_GATEWAY_DATASET_EVAL_SCHEMA_VERSION,
+      datasetReplayFixture: "codali.dataset.replay.fixture.v1",
+      storageContract: "codali.storage.v1",
+    },
+  };
+};
+
 export const runCodaliGatewayEvalSuite = async (
   options: CodaliGatewayEvalSuiteOptions = {},
 ): Promise<CodaliGatewayEvalReport> => {
   const runId = options.runId ?? randomUUID();
   const reportId = options.reportId ?? randomUUID();
-  const evalCases = options.cases ?? CODALI_GATEWAY_EVAL_CASES;
+  const { evalCases, datasetLineage } = await resolveCodaliGatewayEvalCases(options);
+  const lineage = buildCodaliGatewayEvalLineage(evalCases, datasetLineage);
+  const versions = buildCodaliGatewayEvalVersions(evalCases);
   const runner = options.runner ?? createDefaultCodaliGatewayEvalRunner();
   const thresholds = {
     ...DEFAULT_CODALI_GATEWAY_EVAL_THRESHOLDS,
@@ -945,6 +1177,7 @@ export const runCodaliGatewayEvalSuite = async (
         failures: ["gateway_eval_runner_threw"],
         warnings: [],
         errors: [message],
+        dataset: evalCase.dataset,
       });
     }
   }
@@ -975,6 +1208,8 @@ export const runCodaliGatewayEvalSuite = async (
     metrics,
     regression,
     gates,
+    lineage,
+    versions,
     summary: {
       status: failed === 0 && gates.passed ? "passed" : "failed",
       total: results.length,
@@ -1011,9 +1246,13 @@ export const formatCodaliGatewayEvalTextReport = (
     `Final-answer directness: ${formatRate(report.metrics.finalAnswerDirectnessRate)}`,
     `Final large-model usage: ${formatRate(report.metrics.finalLargeModelRate)}`,
     `Budget compliance: ${formatRate(report.metrics.budgetComplianceRate)}`,
+    `Dataset stage coverage: ${formatRate(report.metrics.datasetStageCoverageRate)}`,
+    `Dataset lineage coverage: ${formatRate(report.metrics.datasetLineageCoverageRate)}`,
+    `Prompt/schema version coverage: ${formatRate(report.metrics.promptSchemaVersionCoverageRate)}`,
     `Latency median/p95: ${formatValue(report.metrics.latencyMs.median, "ms")}/${formatValue(report.metrics.latencyMs.p95, "ms")}`,
     `Tokens median/p95: ${formatValue(report.metrics.tokensUsed.median)}/${formatValue(report.metrics.tokensUsed.p95)}`,
     `Cost median/p95: ${formatValue(report.metrics.costUsd.median, " USD")}/${formatValue(report.metrics.costUsd.p95, " USD")}`,
+    `Lineage: ${report.lineage.source}`,
     `Regression: ${report.regression.status}`,
     `Gates: ${gateSummary}`,
   ];

@@ -181,14 +181,127 @@ const rootWorkspacePackage = workspacePackageEntries.find((entry) => entry.prefi
 const rawCliOverride = process.argv
   .slice(2)
   .map((file) => file.trim())
-  .filter(Boolean);
+  .filter((file) => file.length > 0 && file !== "--");
 
 const rawEnvOverride = (process.env.MCODA_REPO_TEST_FILES ?? "")
   .split(",")
   .map((file) => file.trim())
-  .filter(Boolean);
+  .filter((file) => file.length > 0 && file !== "--");
 
-const rawRepoOverride = rawCliOverride.length ? rawCliOverride : rawEnvOverride;
+const repoTestTargetAliases = new Map([
+  ["gatewaydatasetcollector", ["packages/codali/src/storage/__tests__/GatewayDatasetCollector.test.ts"]],
+  ["gatewaydatasetrag", ["packages/codali/src/storage/__tests__/GatewayDatasetCollector.test.ts"]],
+  ["gatewaydatasettool", ["packages/codali/src/storage/__tests__/GatewayDatasetCollector.test.ts"]],
+  ["gatewaydatasetevidence", ["packages/codali/src/storage/__tests__/GatewayDatasetCollector.test.ts"]],
+  ["gatewaydatasetanswer", ["packages/codali/src/storage/__tests__/GatewayDatasetCollector.test.ts"]],
+  ["gatewaydatasetstore", ["packages/codali/src/storage/__tests__/GatewayDatasetStore.test.ts"]],
+  ["datasetstore", ["packages/codali/src/storage/__tests__/GatewayDatasetStore.test.ts"]],
+  ["datasetexport", ["packages/codali/src/storage/__tests__/DatasetExportJob.test.ts"]],
+  ["dataset-export", ["packages/codali/src/storage/__tests__/DatasetExportJob.test.ts"]],
+  ["datasetexportmanifestreader", ["packages/codali/src/improvement/__tests__/DatasetExportManifestReader.test.ts"]],
+  ["dataset-export-manifest-reader", ["packages/codali/src/improvement/__tests__/DatasetExportManifestReader.test.ts"]],
+  ["dataseteligibilitygate", ["packages/codali/src/improvement/__tests__/DatasetEligibilityGate.test.ts"]],
+  ["dataset-eligibility-gate", ["packages/codali/src/improvement/__tests__/DatasetEligibilityGate.test.ts"]],
+  ["storageserviceimprovementclient", ["packages/codali/src/improvement/__tests__/StorageServiceImprovementClient.test.ts"]],
+  ["storage-service-improvement-client", ["packages/codali/src/improvement/__tests__/StorageServiceImprovementClient.test.ts"]],
+  ["evalreplaycandidatebuilder", ["packages/codali/src/improvement/__tests__/EvalReplayCandidateBuilder.test.ts"]],
+  ["eval-replay-candidate-builder", ["packages/codali/src/improvement/__tests__/EvalReplayCandidateBuilder.test.ts"]],
+  ["promptschematoolmetadatacandidatebuilder", ["packages/codali/src/improvement/__tests__/PromptSchemaToolMetadataCandidateBuilder.test.ts"]],
+  ["prompt-schema-tool-metadata-candidate-builder", ["packages/codali/src/improvement/__tests__/PromptSchemaToolMetadataCandidateBuilder.test.ts"]],
+  ["phase25", ["packages/codali/src/improvement/__tests__/PromptSchemaToolMetadataCandidateBuilder.test.ts"]],
+  ["phase-25", ["packages/codali/src/improvement/__tests__/PromptSchemaToolMetadataCandidateBuilder.test.ts"]],
+  ["docdexretrievalcandidatebuilder", ["packages/codali/src/improvement/__tests__/DocdexRetrievalCandidateBuilder.test.ts"]],
+  ["docdex-retrieval-candidate-builder", ["packages/codali/src/improvement/__tests__/DocdexRetrievalCandidateBuilder.test.ts"]],
+  ["phase26", ["packages/codali/src/improvement/__tests__/DocdexRetrievalCandidateBuilder.test.ts"]],
+  ["phase-26", ["packages/codali/src/improvement/__tests__/DocdexRetrievalCandidateBuilder.test.ts"]],
+  ["finetunejobplanner", ["packages/codali/src/improvement/__tests__/FineTuneJobPlanner.test.ts"]],
+  ["fine-tune-job-planner", ["packages/codali/src/improvement/__tests__/FineTuneJobPlanner.test.ts"]],
+  ["fine-tune", ["packages/codali/src/improvement/__tests__/FineTuneJobPlanner.test.ts"]],
+  ["phase27", ["packages/codali/src/improvement/__tests__/FineTuneJobPlanner.test.ts"]],
+  ["phase-27", ["packages/codali/src/improvement/__tests__/FineTuneJobPlanner.test.ts"]],
+  ["modelroutercandidatebuilder", ["packages/codali/src/improvement/__tests__/ModelRouterCandidateBuilder.test.ts"]],
+  ["model-router-candidate-builder", ["packages/codali/src/improvement/__tests__/ModelRouterCandidateBuilder.test.ts"]],
+  ["model-router", ["packages/codali/src/improvement/__tests__/ModelRouterCandidateBuilder.test.ts"]],
+  ["phase28", ["packages/codali/src/improvement/__tests__/ModelRouterCandidateBuilder.test.ts"]],
+  ["phase-28", ["packages/codali/src/improvement/__tests__/ModelRouterCandidateBuilder.test.ts"]],
+  ["candidatereleasebuilder", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["candidate-release-builder", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["build-release", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["phase29", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["phase-29", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["release-candidate-planner", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["phase31", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["phase-31", ["packages/codali/src/improvement/__tests__/CandidateReleaseBuilder.test.ts"]],
+  ["improvementevalrunner", ["packages/codali/src/improvement/__tests__/ImprovementEvalRunner.test.ts"]],
+  ["improvement-eval-runner", ["packages/codali/src/improvement/__tests__/ImprovementEvalRunner.test.ts"]],
+  ["scorecards-security-gates", ["packages/codali/src/improvement/__tests__/ImprovementEvalRunner.test.ts"]],
+  ["phase30", ["packages/codali/src/improvement/__tests__/ImprovementEvalRunner.test.ts"]],
+  ["phase-30", ["packages/codali/src/improvement/__tests__/ImprovementEvalRunner.test.ts"]],
+  ["publishorchestrator", ["packages/codali/src/improvement/__tests__/PublishOrchestrator.test.ts"]],
+  ["publish-orchestrator", ["packages/codali/src/improvement/__tests__/PublishOrchestrator.test.ts"]],
+  ["ci-cd-publish", ["packages/codali/src/improvement/__tests__/PublishOrchestrator.test.ts"]],
+  ["phase32", ["packages/codali/src/improvement/__tests__/PublishOrchestrator.test.ts"]],
+  ["phase-32", ["packages/codali/src/improvement/__tests__/PublishOrchestrator.test.ts"]],
+  ["releaseoutcomereporter", ["packages/codali/src/improvement/__tests__/ReleaseOutcomeReporter.test.ts"]],
+  ["release-outcome-reporter", ["packages/codali/src/improvement/__tests__/ReleaseOutcomeReporter.test.ts"]],
+  ["canary-shadow-rollout", ["packages/codali/src/improvement/__tests__/ReleaseOutcomeReporter.test.ts"]],
+  ["phase33", ["packages/codali/src/improvement/__tests__/ReleaseOutcomeReporter.test.ts"]],
+  ["phase-33", ["packages/codali/src/improvement/__tests__/ReleaseOutcomeReporter.test.ts"]],
+  ["operatorinspector", ["packages/codali/src/improvement/__tests__/OperatorInspector.test.ts"]],
+  ["operator-inspector", ["packages/codali/src/improvement/__tests__/OperatorInspector.test.ts"]],
+  ["inspectors-dashboards", [
+    "packages/codali/src/improvement/__tests__/OperatorInspector.test.ts",
+    "packages/codali/src/improvement/__tests__/StorageServiceImprovementClient.test.ts",
+  ]],
+  ["phase34", [
+    "packages/codali/src/improvement/__tests__/OperatorInspector.test.ts",
+    "packages/codali/src/improvement/__tests__/StorageServiceImprovementClient.test.ts",
+  ]],
+  ["phase-34", [
+    "packages/codali/src/improvement/__tests__/OperatorInspector.test.ts",
+    "packages/codali/src/improvement/__tests__/StorageServiceImprovementClient.test.ts",
+  ]],
+  ["productionrolloutgovernance", ["packages/codali/src/improvement/__tests__/ProductionGovernance.test.ts"]],
+  ["production-rollout-governance", ["packages/codali/src/improvement/__tests__/ProductionGovernance.test.ts"]],
+  ["phase35", ["packages/codali/src/improvement/__tests__/ProductionGovernance.test.ts"]],
+  ["phase-35", ["packages/codali/src/improvement/__tests__/ProductionGovernance.test.ts"]],
+  ["privacy", ["packages/codali/src/storage/__tests__/GatewayDatasetPrivacy.test.ts"]],
+  ["redaction", ["packages/codali/src/storage/__tests__/GatewayDatasetPrivacy.test.ts"]],
+  ["eligibility", ["packages/codali/src/storage/__tests__/GatewayDatasetPrivacy.test.ts"]],
+  ["retention", ["packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts"]],
+  ["deletion", ["packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts"]],
+  ["data-governance", ["packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts"]],
+  ["governance", ["packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts"]],
+  [
+    "delete run/tenant integration test",
+    ["packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts"],
+  ],
+  [
+    "feedback",
+    [
+      "packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts",
+      "packages/codali/src/storage/__tests__/CodaliFeedbackReviewIngestion.test.ts",
+    ],
+  ],
+  [
+    "review",
+    [
+      "packages/codali/src/storage/__tests__/CodaliStorageContracts.test.ts",
+      "packages/codali/src/storage/__tests__/CodaliFeedbackReviewIngestion.test.ts",
+    ],
+  ],
+]);
+
+const expandRepoTestTargetAliases = (targets) =>
+  Array.from(
+    new Set(
+      targets.flatMap((target) => repoTestTargetAliases.get(target.toLowerCase()) ?? [target]),
+    ),
+  );
+
+const rawCliRepoOverride = expandRepoTestTargetAliases(rawCliOverride);
+const rawEnvRepoOverride = expandRepoTestTargetAliases(rawEnvOverride);
+const rawRepoOverride = rawCliRepoOverride.length ? rawCliRepoOverride : rawEnvRepoOverride;
 
 const resolveWorkspacePackageFilters = (targets) => {
   const filters = new Set();
@@ -316,9 +429,9 @@ const expandRepoTestTarget = (file) => {
   return collectTests(absolute).map((testFile) => normalizeRepoRelativePath(path.relative(root, testFile)));
 };
 
-const cliOverride = rawCliOverride.flatMap(expandRepoTestTarget);
+const cliOverride = rawCliRepoOverride.flatMap(expandRepoTestTarget);
 
-const envOverride = rawEnvOverride.flatMap(expandRepoTestTarget);
+const envOverride = rawEnvRepoOverride.flatMap(expandRepoTestTarget);
 
 const repoOverride = cliOverride.length ? cliOverride : envOverride;
 const testFiles = repoOverride.length

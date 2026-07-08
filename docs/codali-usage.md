@@ -148,6 +148,45 @@ Eval env overrides:
 - `CODALI_EVAL_GATE_HALLUCINATION_RATE_MAX`
 - `CODALI_EVAL_GATE_SCOPE_VIOLATION_RATE_MAX`
 
+## Production rollout governance
+Codali production rollout starts in local-only mode. Dataset exports are explicit, storage-service writes require an explicit upload enable flag, and improvement automation stays dry-run/shadow-safe unless the deployment enables the required gates.
+
+Rollout levels:
+- Level 0: local analysis only.
+- Level 1: eval and replay improvements.
+- Level 2: candidate metadata branches after privacy gates are stable.
+- Level 3: prerelease/canary automation only for internal deployments.
+- Level 4: stable auto-publish only when policy, CI, npm provenance, storage audit, rollback monitor, and hard gates are active.
+
+Emergency disable flags:
+- `CODALI_DATASET_ENABLED=false`: disable dataset collection and export.
+- `CODALI_STORAGE_MODE=off`: disable storage-backed dataset/export/write paths.
+- `CODALI_STORAGE_UPLOAD_ENABLED=false`: disable storage-service writes and release writebacks. This is the default.
+- `CODALI_IMPROVEMENT_ENABLED=false`: disable auto-improvement commands.
+- `CODALI_IMPROVEMENT_AUTO_TAG=false`: disable automatic tag creation. This is the default.
+- `CODALI_IMPROVEMENT_AUTO_PUBLISH=false`: disable stable auto-publish. This is the default.
+- `CODALI_IMPROVEMENT_TRAINING_ENABLED=false`: disable training and fine-tune actions. This is the default.
+- `CODALI_IMPROVEMENT_SHADOW_ONLY=true`: force improvement workflows into dry-run shadow mode.
+
+Stable publish gate flags:
+- `CODALI_PRIVACY_GATES_STABLE=true`
+- `CODALI_IMPROVEMENT_INTERNAL_DEPLOYMENT=true`
+- `CODALI_IMPROVEMENT_POLICY_ACTIVE=true`
+- `CODALI_IMPROVEMENT_CI_ACTIVE=true`
+- `CODALI_IMPROVEMENT_NPM_PROVENANCE_ACTIVE=true`
+- `CODALI_IMPROVEMENT_STORAGE_AUDIT_ACTIVE=true`
+- `CODALI_IMPROVEMENT_ROLLBACK_MONITOR_ACTIVE=true`
+- `CODALI_IMPROVEMENT_HARD_GATES_ACTIVE=true`
+
+Operational checks:
+
+```sh
+codali dataset export --kind planner-sft --dry-run
+codali improve eval --candidate <candidate-id> --output json
+codali improve publish --candidate <candidate-id> --mode auto_tag --dry-run --output json
+codali improve monitor --release <release-id> --output json
+```
+
 ## Verification policy behavior (Epic-6)
 Verification is always classified explicitly in smart pipeline runs:
 

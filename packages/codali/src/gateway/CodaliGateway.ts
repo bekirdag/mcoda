@@ -59,6 +59,12 @@ import {
   type CodaliGatewayWorkerTaskRunner,
 } from "./GatewayStateMachine.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
+import {
+  collectGatewayDatasetResultNonBlocking,
+  type GatewayDatasetGatewayCollectionOptions,
+  type GatewayDatasetStore,
+  type GatewayDatasetStoreWriteResult,
+} from "../storage/GatewayDatasetStore.js";
 
 export interface CodaliGatewayFinalSynthesizerOptions {
   maxTokens?: number;
@@ -77,6 +83,8 @@ export interface CodaliGatewayOptions {
   agentInventory?: unknown[];
   agentResolution?: AgentTierResolution;
   finalSynthesizerOptions?: CodaliGatewayFinalSynthesizerOptions;
+  datasetStore?: GatewayDatasetStore;
+  datasetCollection?: GatewayDatasetGatewayCollectionOptions;
 }
 
 export interface CodaliGatewayPlanResult {
@@ -144,6 +152,24 @@ const errorCodeFor = (error: unknown, fallback: string): string => {
 
 const errorMessageFor = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const sanitizeGatewayDatasetCollectionResult = (
+  result: GatewayDatasetStoreWriteResult,
+): Record<string, unknown> => {
+  const recordCounts = isRecord(result.metadata?.recordCounts)
+    ? result.metadata.recordCounts
+    : undefined;
+  return {
+    accepted: result.accepted,
+    status: result.status,
+    recordCount: result.recordCount,
+    ...(result.objectCount !== undefined ? { objectCount: result.objectCount } : {}),
+    ...(result.replayed !== undefined ? { replayed: result.replayed } : {}),
+    ...(result.fallbackUsed !== undefined ? { fallbackUsed: result.fallbackUsed } : {}),
+    ...(result.errors?.length ? { errors: result.errors } : {}),
+    ...(recordCounts ? { recordCounts } : {}),
+  };
+};
 
 const isRetryableFinalError = (error: unknown): boolean => {
   if (isRecord(error) && typeof error.retryable === "boolean") {
@@ -603,12 +629,20 @@ export class CodaliGateway {
   async run(request: CodaliGatewayRequest): Promise<CodaliGatewayResult> {
     const planning = await this.plan(request);
     const workers = await this.executePlannedWorkerTasks(request, planning);
-    return this.synthesizeFinalAnswer({
+    const result = await this.synthesizeFinalAnswer({
       runId: planning.runId,
       request,
       planning,
       workers: workers.workers,
     });
+    const datasetCollection = this.collectDatasetResult(request, result);
+    if (datasetCollection) {
+      result.metadata = {
+        ...(result.metadata ?? {}),
+        datasetCollection,
+      };
+    }
+    return result;
   }
 
   async synthesizeFinalAnswer(
@@ -857,6 +891,21 @@ export class CodaliGateway {
       workers,
       trace: workers.trace,
     };
+  }
+
+  private collectDatasetResult(
+    request: CodaliGatewayRequest,
+    result: CodaliGatewayResult,
+  ): Record<string, unknown> | undefined {
+    if (!this.options.datasetStore) return undefined;
+    const collection = collectGatewayDatasetResultNonBlocking({
+      ...(this.options.datasetCollection ?? {}),
+      store: this.options.datasetStore,
+      request,
+      result,
+      traceLoader: () => this.store.readRunTrace(result.runId),
+    });
+    return sanitizeGatewayDatasetCollectionResult(collection);
   }
 
   private resolveFinalAgent(

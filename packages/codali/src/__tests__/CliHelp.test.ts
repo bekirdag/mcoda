@@ -20,6 +20,7 @@ test("codali --help prints usage", { concurrency: false }, () => {
   assert.match(output, /Usage: codali/);
   assert.match(output, /fix\|review\|explain\|test/);
   assert.match(output, /codali eval --suite <path>/);
+  assert.match(output, /codali improvement\|improve <policy\|levels\|inspect\|propose\|build-release\|eval\|publish\|monitor>/);
   assert.match(output, /codali learn --file <path\/to\/file>/);
   assert.match(output, /--confirm <dedupe_key>/);
   assert.match(output, /\n  eval\s+/);

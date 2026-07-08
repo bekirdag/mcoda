@@ -215,8 +215,6 @@ export interface CodaliRuntimePolicy {
   appToolContracts?: CodaliRuntimeAppToolContracts;
   appVirtualTools?: string[];
   appToolGateway?: CodaliRuntimeAppToolGatewayContract;
-  okacamToolContracts?: CodaliRuntimeAppToolContracts;
-  okacamVirtualTools?: string[];
   maxSteps: number;
   maxToolCalls: number;
   maxTokens?: number;
@@ -1551,16 +1549,12 @@ const registerRuntimeTool = (
 
 const collectRuntimeToolContractCandidates = (input: CodaliRuntimeInput): RuntimeToolContractCandidate[] => {
   const contracts = new Map<string, CodaliRuntimeAppToolContract>();
-  for (const [name, contract] of normalizeRuntimeToolContractEntries(input.policy.okacamToolContracts)) {
-    contracts.set(name, contract);
-  }
   for (const [name, contract] of normalizeRuntimeToolContractEntries(input.policy.appToolContracts)) {
     contracts.set(name, contract);
   }
 
   const names = new Set<string>();
   for (const name of toolNamesFromManifest(input.docdex?.toolManifest)) names.add(name);
-  for (const name of stringArrayFromUnknown(input.policy.okacamVirtualTools)) names.add(name);
   for (const name of stringArrayFromUnknown(input.policy.appVirtualTools)) names.add(name);
   for (const name of contracts.keys()) names.add(name);
 

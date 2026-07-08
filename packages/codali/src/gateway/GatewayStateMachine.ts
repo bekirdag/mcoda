@@ -22,6 +22,10 @@ import {
 import { normalizeCodaliEvidence } from "./EvidenceNormalizer.js";
 import { validateCodaliGatewayVerifierOutput } from "./CodaliGatewaySchemas.js";
 import { CODALI_GATEWAY_SECURITY_PROMPT_HARDENING } from "./GatewaySecurityPolicy.js";
+import {
+  dispatchAppToolGateway,
+  AppToolGatewayDispatchError,
+} from "./AppToolGatewayDispatcher.js";
 
 export type CodaliGatewayWorkerTaskStatus = "succeeded" | "failed" | "skipped";
 
@@ -213,6 +217,21 @@ const readBoolean = (metadata: Record<string, unknown> | undefined, key: string)
     ? metadata[key] as boolean
     : undefined;
 
+const readString = (metadata: Record<string, unknown> | undefined, key: string): string | undefined => {
+  if (!isRecord(metadata)) return undefined;
+  const value = metadata[key];
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+};
+
+const readStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+};
+
 const isRequiredWorkerTask = (task: CodaliGatewayWorkerTask): boolean => {
   if (readBoolean(task.metadata, "required") === false) return false;
   if (readBoolean(task.metadata, "optional") === true) return false;
@@ -229,6 +248,68 @@ const uniqueInOrder = (values: string[]): string[] => {
   }
   return output;
 };
+
+const searchableTokens = (...values: unknown[]): Set<string> => {
+  const text = values
+    .map((value) => {
+      if (typeof value === "string") return value;
+      if (Array.isArray(value)) return value.join(" ");
+      if (isRecord(value)) return JSON.stringify(value);
+      return "";
+    })
+    .join(" ")
+    .toLowerCase();
+  return new Set(
+    text
+      .split(/[^a-z0-9]+/g)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2),
+  );
+};
+
+const appGatewayToolRelevance = (
+  toolName: string,
+  contract: unknown,
+  task: CodaliGatewayWorkerTask,
+  request: CodaliGatewayRequest,
+): number => {
+  const intentTokens = searchableTokens(
+    request.query,
+    task.query,
+    task.objective,
+    task.workerRole,
+    task.outputFormat,
+    task.expectedSources,
+  );
+  if (intentTokens.size === 0) return 0;
+  const toolTokens = searchableTokens(toolName, contract);
+  let score = 0;
+  for (const token of intentTokens) {
+    if (toolTokens.has(token)) score += 2;
+    for (const toolToken of toolTokens) {
+      if (toolToken.includes(token) || token.includes(toolToken)) {
+        score += 1;
+        break;
+      }
+    }
+  }
+  return score;
+};
+
+const sortAppGatewayToolsByRelevance = (
+  tools: string[],
+  contracts: Record<string, unknown>,
+  task: CodaliGatewayWorkerTask,
+  request: CodaliGatewayRequest,
+): string[] =>
+  tools
+    .map((tool, index) => ({
+      tool,
+      index,
+      score: appGatewayToolRelevance(tool, contracts[tool], task, request),
+    }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((item) => item.tool);
 
 const requestHasTenantScope = (request: CodaliGatewayRequest): boolean =>
   Boolean(request.tenant?.id || request.tenant?.slug || request.tenant?.realm);
@@ -890,6 +971,137 @@ export class CodaliGatewayStateMachine {
     return prepared;
   }
 
+  private async dispatchAssignedAppGatewayTools(args: {
+    input: CodaliGatewayStateMachineInput;
+    policyCompilation: GatewayPolicyCompilation;
+    task: PreparedWorkerTask;
+    remainingToolCalls: number;
+  }): Promise<{
+    evidence: unknown[];
+    toolCalls: CodaliGatewayWorkerToolCallRecord[];
+    metadata: Record<string, unknown>;
+  }> {
+    const gateway = args.policyCompilation.toolCompilation.appToolGateway;
+    if (!gateway || args.remainingToolCalls <= 0) {
+      return { evidence: [], toolCalls: [], metadata: { skipped: "no_gateway_or_budget" } };
+    }
+    const contracts = args.policyCompilation.toolCompilation.appToolContracts;
+    const assignedAppTools = args.task.allowedTools
+      .filter((tool) => Boolean(contracts[tool]));
+    const policyAppTools = args.policyCompilation.effectiveAllowedTools
+      .filter((tool) => Boolean(contracts[tool]));
+    const dispatchSource = assignedAppTools.length > 0
+      ? "assigned_task_tools"
+      : "policy_app_tools_fallback";
+    const appTools = (assignedAppTools.length > 0
+      ? assignedAppTools
+      : sortAppGatewayToolsByRelevance(
+          uniqueInOrder(policyAppTools),
+          contracts,
+          args.task.task,
+          args.input.request,
+        ))
+      .slice(0, args.remainingToolCalls);
+    if (appTools.length === 0) {
+      return { evidence: [], toolCalls: [], metadata: { skipped: "no_assigned_app_tools" } };
+    }
+
+    const request = args.input.request;
+    const requester = isRecord(request.requester) ? request.requester : undefined;
+    const requestMetadata = isRecord(request.metadata) ? request.metadata : undefined;
+    const scopedRequestId =
+      readString(requestMetadata, "scoped_request_id") ??
+      readString(requestMetadata, "scopedRequestId") ??
+      readString(requestMetadata, "feedback_request_id") ??
+      readString(requestMetadata, "feedbackRequestId") ??
+      readString(requestMetadata, "conversation_message_id") ??
+      readString(requestMetadata, "conversationMessageId") ??
+      readString(requestMetadata, "ai_chat_request_id") ??
+      readString(requestMetadata, "aiChatRequestId") ??
+      readString(requestMetadata, "request_id") ??
+      readString(requestMetadata, "requestId") ??
+      request.id;
+    const tenantScope = {
+      tenant_id: request.tenant?.id,
+      tenant_slug: request.tenant?.slug,
+      tenant_realm: request.tenant?.realm,
+      docdex_repo_id: request.docdex?.repoId,
+    };
+    const requesterScope = {
+      request_id: scopedRequestId,
+      owner_user_id: readString(requester, "owner_user_id") ?? readString(requester, "ownerUserId"),
+      requester_id: request.requester?.id,
+      requester_role: request.requester?.role,
+      api_key_id: readString(requester, "api_key_id") ?? readString(requester, "apiKeyId"),
+      agent_slug: readString(requestMetadata, "agentSlug") ?? readString(requestMetadata, "agent_slug"),
+    };
+    const output: {
+      evidence: unknown[];
+      toolCalls: CodaliGatewayWorkerToolCallRecord[];
+      metadata: Record<string, unknown>;
+    } = { evidence: [], toolCalls: [], metadata: { dispatchSource, dispatchedTools: appTools } };
+
+    for (const toolName of appTools) {
+      const startedAtMs = this.now();
+      const contract = contracts[toolName];
+      try {
+        const result = await dispatchAppToolGateway({
+          runId: args.input.runId,
+          sessionId: request.conversation?.id,
+          requestId: scopedRequestId,
+          tenantScope,
+          requesterScope,
+          toolName,
+          args: {
+            mode: "search",
+            query: args.task.task.query ?? request.query,
+            limit: 20,
+            filters: {
+              taskId: args.task.task.id,
+              workerRole: args.task.task.workerRole,
+              objective: args.task.task.objective,
+              expectedSources: args.task.task.expectedSources ?? [],
+            },
+            include: args.task.task.expectedSources ?? [],
+          },
+          contract,
+          gateway,
+          allowedTools: args.policyCompilation.effectiveAllowedTools,
+          deniedTools: args.policyCompilation.effectiveDeniedTools,
+          now: () => new Date(this.now()),
+        });
+        output.evidence.push(result.evidencePayload);
+        output.toolCalls.push({
+          tool: toolName,
+          status: "success",
+          latencyMs: Math.max(0, this.now() - startedAtMs),
+          args: result.redactedRequest,
+          result: result.redactedResponse,
+          metadata: {
+            dispatch: "app_tool_gateway",
+            responseStatus: result.responseStatus,
+          },
+        });
+      } catch (error) {
+        const dispatchError = error instanceof AppToolGatewayDispatchError ? error : undefined;
+        output.toolCalls.push({
+          tool: toolName,
+          status: "failed",
+          latencyMs: Math.max(0, this.now() - startedAtMs),
+          errorCode: dispatchError?.code ?? "GATEWAY_APP_TOOL_DISPATCH_FAILED",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          metadata: {
+            dispatch: "app_tool_gateway",
+            retryable: dispatchError?.retryable ?? false,
+            details: dispatchError?.details,
+          },
+        });
+      }
+    }
+
+    return output;
+  }
+
   private async runTask(args: {
     input: CodaliGatewayStateMachineInput;
     policyCompilation: GatewayPolicyCompilation;
@@ -917,6 +1129,12 @@ export class CodaliGatewayStateMachine {
       },
     });
 
+    const appToolPrefetch = await this.dispatchAssignedAppGatewayTools(args);
+    const remainingToolCallsAfterPrefetch = Math.max(
+      0,
+      args.remainingToolCalls - appToolPrefetch.toolCalls.length,
+    );
+
     try {
       const workerResult = await withTimeout(
         this.options.taskRunner.run({
@@ -924,7 +1142,7 @@ export class CodaliGatewayStateMachine {
           task: args.task.task,
           prompt,
           allowedTools: args.task.allowedTools,
-          remainingToolCalls: args.remainingToolCalls,
+          remainingToolCalls: remainingToolCallsAfterPrefetch,
           remainingModelCalls: args.remainingModelCalls,
           timeoutMs: args.perTaskTimeoutMs,
           request: args.input.request,
@@ -933,8 +1151,39 @@ export class CodaliGatewayStateMachine {
         args.perTaskTimeoutMs,
         args.task.task.id,
       );
-      return await this.persistWorkerResult(args, workerResult, startedAtMs);
+      return await this.persistWorkerResult(args, {
+        ...workerResult,
+        evidence: [
+          ...(appToolPrefetch.evidence as CodaliEvidenceItem[]),
+          ...(workerResult.evidence ?? []),
+        ],
+        toolCalls: [
+          ...appToolPrefetch.toolCalls,
+          ...(workerResult.toolCalls ?? []),
+        ],
+        metadata: {
+          ...(workerResult.metadata ?? {}),
+          appToolPrefetch: appToolPrefetch.metadata,
+        },
+      }, startedAtMs);
     } catch (error) {
+      if (appToolPrefetch.evidence.length > 0 || appToolPrefetch.toolCalls.length > 0) {
+        return await this.persistWorkerResult(args, {
+          status: "succeeded",
+          output: {
+            summary: "Worker model failed after assigned app-tool gateway dispatch; using collected app-tool evidence.",
+          },
+          evidence: appToolPrefetch.evidence as CodaliEvidenceItem[],
+          toolCalls: appToolPrefetch.toolCalls,
+          metadata: {
+            appToolPrefetch: appToolPrefetch.metadata,
+            workerError: {
+              name: error instanceof Error ? error.name : "Error",
+              message: error instanceof Error ? error.message : String(error),
+            },
+          },
+        }, startedAtMs);
+      }
       const errorCode =
         error instanceof Error && error.name === "CodaliGatewayWorkerTimeoutError"
           ? "GATEWAY_WORKER_TIMEOUT"
@@ -981,7 +1230,19 @@ export class CodaliGatewayStateMachine {
     workerResult: CodaliGatewayWorkerTaskRunResult,
     startedAtMs: number,
   ): Promise<CodaliGatewayWorkerTaskExecutionResult> {
-    const allowed = new Set(args.task.allowedTools);
+    const workerMetadata = isRecord(workerResult.metadata) ? workerResult.metadata : undefined;
+    const appToolPrefetchMetadata = isRecord(workerMetadata?.appToolPrefetch)
+      ? workerMetadata.appToolPrefetch
+      : undefined;
+    const policyAllowed = new Set(args.policyCompilation.effectiveAllowedTools);
+    const appToolContracts = args.policyCompilation.toolCompilation.appToolContracts;
+    const prefetchAllowedTools = readStringArray(appToolPrefetchMetadata?.dispatchedTools)
+      .filter((tool) => policyAllowed.has(tool) && Boolean(appToolContracts[tool]));
+    const effectiveTaskAllowedTools = uniqueInOrder([
+      ...args.task.allowedTools,
+      ...prefetchAllowedTools,
+    ]);
+    const allowed = new Set(effectiveTaskAllowedTools);
     const disallowedToolCalls = (workerResult.toolCalls ?? [])
       .filter((call) => !allowed.has(call.tool));
     const toolCalls = (workerResult.toolCalls ?? []).map((call) => {
@@ -1110,7 +1371,7 @@ export class CodaliGatewayStateMachine {
       metadata: {
         ...(args.task.task.metadata ?? {}),
         required: args.task.required,
-        allowedTools: args.task.allowedTools,
+        allowedTools: effectiveTaskAllowedTools,
         removedTools: args.task.removedTools,
         errorCode,
         output: workerResult.output,
@@ -1139,7 +1400,7 @@ export class CodaliGatewayStateMachine {
       workerRole: args.task.task.workerRole,
       status,
       required: args.task.required,
-      allowedTools: args.task.allowedTools,
+      allowedTools: effectiveTaskAllowedTools,
       removedTools: args.task.removedTools,
       durationMs: Math.max(0, this.now() - startedAtMs),
       evidenceCount: evidence.length,

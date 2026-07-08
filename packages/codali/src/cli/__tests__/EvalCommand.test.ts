@@ -58,6 +58,9 @@ test("parseEvalArgs parses gateway live smoke flags", { concurrency: false }, ()
     "--allow-cloud-fallback",
     "--no-image-worker",
     "--agent-run-force",
+    "--shadow-comparison",
+    "--shadow-max-candidates",
+    "2",
     "--strict",
   ]);
   assert.equal(parsed.gateway_live_smoke, true);
@@ -67,13 +70,22 @@ test("parseEvalArgs parses gateway live smoke flags", { concurrency: false }, ()
   assert.equal(parsed.live_allow_cloud_fallback, true);
   assert.equal(parsed.live_no_image_worker, true);
   assert.equal(parsed.live_agent_run_force, true);
+  assert.equal(parsed.live_shadow_comparison, true);
+  assert.equal(parsed.live_shadow_max_candidates, 2);
   assert.equal(parsed.live_strict, true);
 });
 
 test("parseEvalArgs parses gateway eval smoke flag", { concurrency: false }, () => {
-  const parsed = parseEvalArgs(["--gateway-smoke", "--output", "json"]);
+  const parsed = parseEvalArgs([
+    "--gateway-smoke",
+    "--dataset-replay-fixture",
+    "fixture.json",
+    "--output",
+    "json",
+  ]);
 
   assert.equal(parsed.gateway_smoke, true);
+  assert.equal(parsed.dataset_replay_fixture_path, "fixture.json");
   assert.equal(parsed.output, "json");
 });
 
@@ -91,6 +103,39 @@ test("parseEvalArgs rejects unknown flags deterministically", { concurrency: fal
 test("EvalCommand.run returns success on gateway eval smoke", { concurrency: false }, async () => {
   await withCliEntry(async () => {
     await EvalCommand.run(["--gateway-smoke", "--output", "json"]);
+  });
+});
+
+test("EvalCommand.run applies gateway smoke baseline regression gates", { concurrency: false }, async () => {
+  const workspaceRoot = mkdtempSync(path.join(os.tmpdir(), "codali-gateway-baseline-"));
+  const baselinePath = path.join(workspaceRoot, "gateway-baseline.json");
+  writeFileSync(
+    baselinePath,
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "2026-07-07T00:00:00.000Z",
+      latencyMs: { median: 1, p95: 1 },
+      costUsd: { median: 0.001, p95: 0.001 },
+      tokensUsed: { median: 1, p95: 1 },
+    }),
+    "utf8",
+  );
+
+  await withCliEntry(async () => {
+    await assert.rejects(
+      () => EvalCommand.run([
+        "--gateway-smoke",
+        "--baseline",
+        baselinePath,
+        "--output",
+        "json",
+      ]),
+      (error) => {
+        assert.ok(error instanceof EvalCommandError);
+        assert.equal(error.exitCode, EVAL_EXIT_CODES.gate_failure);
+        return true;
+      },
+    );
   });
 });
 

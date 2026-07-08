@@ -301,6 +301,112 @@ test("planner performs one JSON repair attempt", async () => {
   assert.match(provider.requests[1]?.messages.at(-1)?.content ?? "", /Repair the classifier/);
 });
 
+test("planner normalizes schema-adjacent classifier output from local models", async () => {
+  const provider = new StubProvider([
+    jsonResponse({
+      classification: {
+        intent: "tenant_project_lookup",
+        needs_private_data: "yes",
+        needs_fresh_data: "true",
+        needs_docdex: "1",
+        needs_app_tools: 1,
+      },
+    }),
+    jsonResponse({
+      queryType: "tenant_project_lookup",
+      subquestions: [{ id: "sq-1", question: "Which records are relevant?" }],
+      workerTasks: [
+        {
+          id: "task-1",
+          workerRole: "tool_worker",
+          objective: "Gather tenant project records.",
+          toolsAllowed: ["docdex_search", "tenant_project_search"],
+          outputFormat: "evidence_items",
+        },
+      ],
+    }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider).plan({
+    request: baseRequest({
+      docdex: {
+        enabled: true,
+        required: true,
+        repoId: "repo-tenant",
+        allowedOperations: ["search"],
+      },
+      policy: basePolicy({
+        allowedTools: ["docdex_search", "tenant_project_search"],
+        appVirtualTools: ["tenant_project_search"],
+      }),
+    }),
+  });
+
+  assert.equal(result.classifierRepairAttempts, 0);
+  assert.equal(result.classifier.queryType, "tenant_project_lookup");
+  assert.equal(result.classifier.needsPrivateData, true);
+  assert.equal(result.classifier.needsFreshData, true);
+  assert.equal(result.classifier.needsDocdex, true);
+  assert.equal(result.classifier.needsAppTools, true);
+  assert.equal(result.classifier.needsImageWorker, false);
+  assert.equal(result.planner.workerTasks.length, 1);
+});
+
+test("planner normalizes schema-adjacent planner task output from local models", async () => {
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "tenant_project_lookup",
+      needsPrivateData: true,
+      needsFreshData: true,
+      needsDocdex: true,
+      needsAppTools: true,
+      needsImageWorker: false,
+    }),
+    jsonResponse({
+      plan: {
+        questions: ["Who is assigned to the project?"],
+        tasks: [
+          {
+            task: "Search tenant records and integrations for project assignments.",
+            tools: "docdex_search, tenant_project_search",
+          },
+        ],
+      },
+    }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider).plan({
+    request: baseRequest({
+      docdex: {
+        enabled: true,
+        required: true,
+        repoId: "repo-tenant",
+        allowedOperations: ["search"],
+      },
+      policy: basePolicy({
+        allowedTools: ["docdex_search", "tenant_project_search"],
+        appVirtualTools: ["tenant_project_search"],
+      }),
+    }),
+  });
+
+  assert.equal(result.plannerRepairAttempts, 0);
+  assert.equal(result.planner.queryType, "tenant_project_lookup");
+  assert.equal(result.planner.subquestions[0]?.id, "sq-1");
+  assert.equal(result.planner.subquestions[0]?.question, "Who is assigned to the project?");
+  assert.equal(result.planner.workerTasks[0]?.id, "task-1");
+  assert.equal(result.planner.workerTasks[0]?.workerRole, "tool_worker");
+  assert.equal(
+    result.planner.workerTasks[0]?.objective,
+    "Search tenant records and integrations for project assignments.",
+  );
+  assert.deepEqual(result.planner.workerTasks[0]?.toolsAllowed, [
+    "docdex_search",
+    "tenant_project_search",
+  ]);
+  assert.equal(result.planner.workerTasks[0]?.outputFormat, "evidence_items");
+});
+
 test("planning-only gateway persists planner trace in the store", async () => {
   const provider = new StubProvider([
     jsonResponse({
