@@ -775,6 +775,168 @@ test("MswarmCodaliExecutor rejects failed gateway results before streaming outpu
   assert.equal(gatewayEvents[1]?.status, "failed");
 });
 
+test("MswarmCodaliExecutor deterministically executes required Docdex gateway tools", async () => {
+  const executor = new MswarmCodaliExecutor();
+  let workerResult: Record<string, unknown> | undefined;
+
+  const result = await executor.invoke({
+    jobId: "job-gateway-required-docdex",
+    requestId: "req-gateway-required-docdex",
+    model: "mcoda-gateway",
+    messages: [{ role: "user", content: "What changed in the last seven days?" }],
+    agent: {
+      slug: "local-evidence-agent",
+      adapter: "ollama-remote",
+      model: "qwen-evidence",
+      baseUrl: "http://ollama.test",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    docdex: {
+      baseUrl: "https://docdex.tenant.test",
+      repoId: "repo-tenant-a",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search"],
+      toolManifest: { actualTools: ["docdex_search"] },
+    },
+    attachedMswarmApiKey: "attached-secret",
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+      allowedTools: ["docdex_search"],
+      maxToolCalls: 2,
+    },
+    codaliGateway: {
+      query: "What changed in the last seven days?",
+      docdex: {
+        baseUrl: "https://docdex.tenant.test",
+        repoId: "repo-tenant-a",
+        credentialSource: "attached_mswarm_api_key",
+        required: true,
+        allowedOperations: ["search"],
+      },
+      policy: { requireFinalLargeModel: false },
+    },
+    runCodali: async (runtime) => {
+      const provider = runtime.providerInstance as CodaliGatewayOptions["provider"] | undefined;
+      assert.ok(provider);
+      assert.equal(runtime.policy.mode, "protocol_loop");
+      const first = await provider.generate({ messages: runtime.messages ?? [] });
+      const protocolRequest = JSON.parse(first.message.content) as {
+        needs?: Array<{ type?: string; query?: string }>;
+      };
+      assert.deepEqual(protocolRequest.needs, [{
+        type: "docdex.search",
+        query: "What changed in the last seven days?",
+        limit: 12,
+      }]);
+      const hit = {
+        doc_id: "news/stories/story-1.md",
+        path: "news/stories/story-1.md",
+        title: "Indexed story",
+        snippet: "Indexed evidence from the requested time window.",
+        score: 0.95,
+      };
+      const toolOutput = JSON.stringify({ results: [hit] });
+      const protocolResponse = `CODALI_RESPONSE v1\n${JSON.stringify({
+        version: "v1",
+        request_id: "required-docdex-search:required-tools",
+        results: [{
+          type: "docdex.search",
+          query: "What changed in the last seven days?",
+          hits: [hit],
+        }],
+        meta: { repo_root: "/tmp/workspace" },
+      })}`;
+      const second = await provider.generate({
+        messages: [
+          ...(runtime.messages ?? []),
+          first.message,
+          { role: "user", content: protocolResponse },
+        ],
+      });
+      return {
+        finalMessage: second.message.content,
+        messages: [first.message, second.message],
+        toolCallsExecuted: 1,
+        touchedFiles: [],
+        warnings: [],
+        events: [{
+          type: "tool_result",
+          id: "required-docdex-search:1",
+          name: "docdex_search",
+          ok: true,
+          output: toolOutput,
+          at: "2026-07-17T00:00:00.000Z",
+        }],
+        runId: "runtime-required-docdex",
+        telemetry: {
+          runId: "runtime-required-docdex",
+          runtime: "codali",
+          mode: "protocol_loop",
+          toolCallCount: 1,
+          calledTools: ["docdex_search"],
+          consideredTools: ["docdex_search"],
+          registeredDynamicTools: [],
+          skippedDynamicTools: [],
+          dynamicToolCalls: [],
+          warnings: [],
+        },
+      } satisfies CodaliRuntimeResult;
+    },
+    runCodaliGateway: async (request, options) => {
+      assert.ok(options.taskRunner);
+      workerResult = await options.taskRunner.run({
+        prompt: "Search Docdex for authoritative evidence.",
+        allowedTools: ["docdex_search"],
+        remainingToolCalls: 2,
+        timeoutMs: 30_000,
+        request,
+        task: {
+          id: "required-docdex-search",
+          query: request.query,
+          metadata: {
+            required: true,
+            requiredToolCalls: ["docdex_search"],
+          },
+        },
+      });
+      return {
+        runId: "run-gateway-required-docdex",
+        status: "succeeded",
+        answer: "Answer from indexed evidence.",
+        sources: [],
+        confidence: "high",
+        evidence: [],
+        trace: {
+          runId: "run-gateway-required-docdex",
+          mode: "balanced",
+          status: "succeeded",
+          iterations: 1,
+          toolCallCount: 1,
+          modelCallCount: 3,
+          consideredTools: ["docdex_search"],
+          calledTools: ["docdex_search"],
+          warnings: [],
+          errors: [],
+          toolCalls: [],
+          modelCalls: [],
+          events: [],
+        },
+        telemetry: {},
+      } satisfies CodaliGatewayResult;
+    },
+  });
+
+  assert.equal(result.output, "Answer from indexed evidence.");
+  assert.equal(workerResult?.status, "succeeded");
+  const toolCalls = workerResult?.toolCalls as Array<Record<string, unknown>> | undefined;
+  assert.equal(toolCalls?.[0]?.tool, "docdex_search");
+  assert.equal(toolCalls?.[0]?.status, "success");
+  assert.match(String(toolCalls?.[0]?.result), /news\/stories\/story-1\.md/);
+});
+
 test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};

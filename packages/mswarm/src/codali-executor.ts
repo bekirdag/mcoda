@@ -1964,9 +1964,23 @@ function createGatewayProvider(input: {
 
 function runtimeToolCallsToGatewayToolCalls(
   telemetry: CodaliRuntimeTelemetry | undefined,
+  events: CodaliRuntimeEvent[] = [],
 ): Array<Record<string, unknown>> {
   const output = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    if (event.type !== "tool_result") continue;
+    output.set(event.name, {
+      tool: event.name,
+      status: event.ok ? "success" : "failed",
+      result: event.output,
+      errorCode: event.errorCode,
+      metadata: {
+        retryable: event.retryable,
+      },
+    });
+  }
   for (const call of telemetry?.dynamicToolCalls ?? []) {
+    if (output.has(call.name)) continue;
     output.set(call.name, {
       tool: call.name,
       status: call.status,
@@ -1989,6 +2003,76 @@ function runtimeToolCallsToGatewayToolCalls(
   return [...output.values()];
 }
 
+type GatewayRequiredProtocolNeed =
+  | { type: "docdex.search"; query: string; limit: number }
+  | { type: "docdex.web"; query: string; force_web: true };
+
+function requiredGatewayProtocolNeeds(
+  taskInput: Record<string, unknown>,
+  allowedTools: string[],
+  prompt: string,
+): GatewayRequiredProtocolNeed[] | undefined {
+  const task = isRecord(taskInput.task) ? taskInput.task : {};
+  const metadata = isRecord(task.metadata) ? task.metadata : {};
+  const requiredTools = stringArray(metadata.requiredToolCalls) ??
+    stringArray(metadata.required_tool_calls) ??
+    [];
+  if (requiredTools.length === 0) return undefined;
+  const allowed = new Set(allowedTools);
+  const query = optionalText(task.query) ??
+    optionalText(isRecord(taskInput.request) ? taskInput.request.query : undefined) ??
+    prompt;
+  const needs = requiredTools.flatMap<GatewayRequiredProtocolNeed>((tool) => {
+    if (!allowed.has(tool)) return [];
+    if (tool === "docdex_search") {
+      return [{ type: "docdex.search", query, limit: 12 }];
+    }
+    if (tool === "docdex_web_research") {
+      return [{ type: "docdex.web", query, force_web: true }];
+    }
+    return [];
+  });
+  return needs.length === requiredTools.length ? needs : undefined;
+}
+
+function createRequiredGatewayProtocolProvider(input: {
+  requestId: string;
+  needs: GatewayRequiredProtocolNeed[];
+}): CodaliGatewayProvider {
+  let requested = false;
+  return {
+    name: "gateway-required-tool-protocol",
+    async generate(request) {
+      if (!requested) {
+        requested = true;
+        return {
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              version: "v1",
+              role: "rag_worker",
+              request_id: input.requestId,
+              needs: input.needs,
+            }),
+          },
+        };
+      }
+      const protocolResponse = [...request.messages]
+        .reverse()
+        .find((message) => message.role === "user" && message.content.startsWith("CODALI_RESPONSE v1"));
+      if (!protocolResponse) {
+        throw new Error("GATEWAY_REQUIRED_TOOL_PROTOCOL_RESPONSE_MISSING");
+      }
+      return {
+        message: {
+          role: "assistant",
+          content: protocolResponse.content.replace(/^CODALI_RESPONSE v1\s*/, ""),
+        },
+      };
+    },
+  };
+}
+
 function createGatewayTaskRunner(input: {
   runtimeInput: CodaliRuntimeInput;
   runCodali: (runtimeInput: CodaliRuntimeInput) => Promise<CodaliRuntimeResult>;
@@ -2000,6 +2084,13 @@ function createGatewayTaskRunner(input: {
       const remainingToolCalls = optionalNumber(taskInput.remainingToolCalls) ??
         input.runtimeInput.policy.maxToolCalls;
       const timeoutMs = optionalNumber(taskInput.timeoutMs) ?? input.runtimeInput.policy.timeoutMs;
+      const requiredProtocolNeeds = requiredGatewayProtocolNeeds(taskInput, allowedTools, prompt);
+      const requiredProtocolProvider = requiredProtocolNeeds
+        ? createRequiredGatewayProtocolProvider({
+            requestId: `${optionalText(isRecord(taskInput.task) ? taskInput.task.id : undefined) ?? "worker"}:required-tools`,
+            needs: requiredProtocolNeeds,
+          })
+        : undefined;
       const result = await input.runCodali({
         ...input.runtimeInput,
         task: prompt,
@@ -2008,15 +2099,22 @@ function createGatewayTaskRunner(input: {
           ...input.runtimeInput.policy,
           allowedTools,
           maxToolCalls: Math.max(0, remainingToolCalls),
+          maxSteps: requiredProtocolProvider
+            ? Math.max(2, input.runtimeInput.policy.maxSteps)
+            : input.runtimeInput.policy.maxSteps,
+          mode: requiredProtocolProvider
+            ? "protocol_loop"
+            : input.runtimeInput.policy.mode,
           timeoutMs,
         },
+        providerInstance: requiredProtocolProvider ?? input.runtimeInput.providerInstance,
         streaming: { enabled: false },
         onEvent: undefined,
       });
       return {
         status: "succeeded",
         output: result.finalMessage,
-        toolCalls: runtimeToolCallsToGatewayToolCalls(result.telemetry),
+        toolCalls: runtimeToolCallsToGatewayToolCalls(result.telemetry, result.events),
         modelCalls: [
           {
             role: "worker",
