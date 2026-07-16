@@ -188,6 +188,69 @@ test("runCodaliGateway uses the final synthesizer instead of classifier direct a
   assert.equal(result.trace.modelCalls.at(-1)?.role, "final_synthesizer");
 });
 
+test("run stops before final synthesis when a required Docdex worker fails", async () => {
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "repo_research",
+      needsPrivateData: true,
+      needsFreshData: true,
+      needsDocdex: true,
+      needsAppTools: false,
+      needsImageWorker: false,
+      confidence: "high",
+    }),
+    jsonResponse({
+      queryType: "repo_research",
+      subquestions: [],
+      workerTasks: [],
+      requiresFinalLargeModel: true,
+    }),
+    textResponse("must not be used"),
+  ]);
+  const request = baseRequest({
+    id: "required-docdex-worker-failure-run",
+    docdex: {
+      enabled: true,
+      required: true,
+      repoId: "news-repo",
+      allowedOperations: ["search"],
+    },
+  });
+
+  const result = await createCodaliGateway({
+    provider,
+    taskRunner: {
+      async run() {
+        return {
+          status: "succeeded" as const,
+          output: {
+            evidence: [
+              {
+                claim: "Model-only output cannot satisfy required Docdex retrieval.",
+                sourceType: "model_observation",
+              },
+            ],
+          },
+        };
+      },
+    },
+    agentInventory: [largeAgent()],
+  }).run(request);
+
+  assert.equal(result.status, "failed");
+  assert.equal(provider.requests.length, 2);
+  assert.equal(result.telemetry.failureCode, "GATEWAY_REQUIRED_TOOL_NOT_CALLED");
+  assert.match(result.answer, /required tool calls/i);
+  assert.ok(
+    result.trace.errors.some((error) =>
+      error.includes("GATEWAY_REQUIRED_TOOL_NOT_CALLED")),
+  );
+  assert.equal(
+    result.trace.modelCalls.some((call) => call.role === "final_synthesizer"),
+    false,
+  );
+});
+
 test("final synthesizer prompt and sources use only allowed context-pack evidence", async () => {
   const request = baseRequest({
     id: "filtered-final-run",

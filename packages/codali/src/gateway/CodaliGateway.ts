@@ -636,12 +636,27 @@ export class CodaliGateway {
   async run(request: CodaliGatewayRequest): Promise<CodaliGatewayResult> {
     const planning = await this.plan(request);
     const workers = await this.executePlannedWorkerTasks(request, planning);
-    const result = await this.synthesizeFinalAnswer({
-      runId: planning.runId,
-      request,
-      planning,
-      workers: workers.workers,
-    });
+    const failedRequiredWorker = workers.workers.taskResults.find(
+      (task) => task.required && task.status === "failed",
+    );
+    const result = failedRequiredWorker
+      ? await this.buildFinalPolicyBlockedResult(
+          {
+            runId: planning.runId,
+            request,
+            planning,
+            workers: workers.workers,
+          },
+          failedRequiredWorker.errorCode ?? "GATEWAY_REQUIRED_WORKER_FAILED",
+          failedRequiredWorker.errorMessage ??
+            `Required worker ${failedRequiredWorker.taskId} failed before final synthesis.`,
+        )
+      : await this.synthesizeFinalAnswer({
+          runId: planning.runId,
+          request,
+          planning,
+          workers: workers.workers,
+        });
     const datasetCollection = this.collectDatasetResult(request, result);
     if (datasetCollection) {
       result.metadata = {

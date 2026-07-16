@@ -691,6 +691,90 @@ test("MswarmCodaliExecutor invokes runCodaliGateway for codaliGateway payloads a
   assert.deepEqual(gatewayEvents.map((event) => event.type), ["gateway_start", "gateway_result"]);
 });
 
+test("MswarmCodaliExecutor rejects failed gateway results before streaming output", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const chunks: Record<string, unknown>[] = [];
+  const gatewayEvents: Record<string, unknown>[] = [];
+
+  await assert.rejects(
+    executor.invoke({
+      jobId: "job-gateway-failed",
+      requestId: "req-gateway-failed",
+      model: "mcoda-gateway",
+      messages: [{ role: "user", content: "Search Docdex before answering." }],
+      agent: {
+        slug: "large-final-agent",
+        adapter: "openai-compatible-local",
+        model: "large-final-model",
+        supportsTools: true,
+      },
+      workspace: { root: "/tmp/workspace", readOnly: true },
+      policy: {
+        allowShell: false,
+        allowWrites: false,
+        allowedTools: ["docdex_search"],
+      },
+      codaliGateway: {
+        query: "Search Docdex before answering.",
+        policy: { requireFinalLargeModel: false },
+      },
+      stream: true,
+      onOpenAIChunk: async (chunk) => {
+        chunks.push(chunk);
+      },
+      onGatewayEvent: async (event) => {
+        gatewayEvents.push(event);
+      },
+      runCodali: async () => {
+        throw new Error("runCodaliTask should not be used for codaliGateway payloads");
+      },
+      runCodaliGateway: async () => ({
+        runId: "run-gateway-failed",
+        status: "failed",
+        answer: "Codali final synthesis failed: required Docdex tool was not called.",
+        sources: [],
+        confidence: "low",
+        evidence: [],
+        trace: {
+          runId: "run-gateway-failed",
+          mode: "balanced",
+          status: "failed",
+          iterations: 1,
+          toolCallCount: 0,
+          modelCallCount: 2,
+          consideredTools: ["docdex_search"],
+          calledTools: [],
+          warnings: [],
+          errors: ["GATEWAY_REQUIRED_TOOL_NOT_CALLED:docdex_search"],
+          toolCalls: [],
+          modelCalls: [],
+          events: [],
+        },
+        telemetry: { failureCode: "GATEWAY_REQUIRED_TOOL_NOT_CALLED" },
+      } satisfies CodaliGatewayResult),
+    }),
+    (error: unknown) => {
+      const failure = error as Error & {
+        code?: string;
+        gatewayFailureCode?: string;
+        retryable?: boolean;
+      };
+      assert.equal(failure.code, "CODALI_GATEWAY_FAILED");
+      assert.equal(failure.gatewayFailureCode, "GATEWAY_REQUIRED_TOOL_NOT_CALLED");
+      assert.equal(failure.retryable, false);
+      assert.match(failure.message, /GATEWAY_REQUIRED_TOOL_NOT_CALLED/);
+      return true;
+    },
+  );
+
+  assert.equal(chunks.length, 0);
+  assert.deepEqual(gatewayEvents.map((event) => event.type), [
+    "gateway_start",
+    "gateway_result",
+  ]);
+  assert.equal(gatewayEvents[1]?.status, "failed");
+});
+
 test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};

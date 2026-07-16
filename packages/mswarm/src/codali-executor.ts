@@ -2176,6 +2176,22 @@ export class MswarmCodaliExecutor {
         source_count: gatewayResult.sources.length,
         evidence_count: gatewayResult.evidence.length,
       });
+      if (gatewayResult.status === "failed") {
+        const gatewayFailureCode = optionalText(gatewayResult.telemetry.failureCode) ??
+          "GATEWAY_FAILED";
+        const gatewayFailureMessage = gatewayResult.trace.errors[0] ??
+          gatewayResult.answer ??
+          "Codali gateway failed without an error message.";
+        throw Object.assign(
+          new Error(`CODALI_GATEWAY_FAILED:${gatewayFailureCode}:${gatewayFailureMessage}`),
+          {
+            code: "CODALI_GATEWAY_FAILED",
+            gatewayFailureCode,
+            gatewayRunId: gatewayResult.runId,
+            retryable: false,
+          },
+        );
+      }
       if (input.stream) {
         if (gatewayResult.answer) {
           await emitChunk(openAITextChunk(input, gatewayResult.answer));
