@@ -189,6 +189,13 @@ const evidenceAllowedForFinal = (
   evidence: CodaliEvidenceItem,
   request: CodaliGatewayRequest,
 ): boolean => {
+  if (
+    request.docdex?.required === true &&
+    evidence.sourceType !== "docdex" &&
+    !evidence.usedTool?.startsWith("docdex_")
+  ) {
+    return false;
+  }
   if (!evidence.usedTool) {
     return true;
   }

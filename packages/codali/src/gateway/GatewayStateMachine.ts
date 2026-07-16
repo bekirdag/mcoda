@@ -314,6 +314,13 @@ const sortAppGatewayToolsByRelevance = (
 const requestHasTenantScope = (request: CodaliGatewayRequest): boolean =>
   Boolean(request.tenant?.id || request.tenant?.slug || request.tenant?.realm);
 
+const requiredToolCallsForTask = (task: CodaliGatewayWorkerTask): string[] => {
+  const metadata = isRecord(task.metadata) ? task.metadata : undefined;
+  return uniqueInOrder(readStringArray(
+    metadata?.requiredToolCalls ?? metadata?.required_tool_calls,
+  ));
+};
+
 const isImageArtifact = (
   artifact: Pick<CodaliGatewayStoredArtifact, "type" | "uri" | "path" | "metadata">,
 ): boolean => {
@@ -352,6 +359,9 @@ export const buildCodaliGatewayWorkerPrompt = (input: {
   `Task query: ${input.task.query ?? input.request.query}`,
   `Output format: ${input.task.outputFormat}`,
   `Allowed tools: ${input.allowedTools.length > 0 ? input.allowedTools.join(", ") : "none"}`,
+  requiredToolCallsForTask(input.task).length > 0
+    ? `Required successful tool calls: ${requiredToolCallsForTask(input.task).join(", ")}. Call them before emitting evidence; never invent substitute evidence.`
+    : "Required successful tool calls: none",
   `Remaining tool calls: ${input.remainingToolCalls}`,
   `Remaining model calls: ${input.remainingModelCalls}`,
   input.task.expectedSources?.length
@@ -1256,6 +1266,15 @@ export class CodaliGatewayStateMachine {
         errorMessage: call.errorMessage ?? "Worker attempted a tool outside its approved set.",
       };
     });
+    const requiredToolCalls = requiredToolCallsForTask(args.task.task);
+    const successfulToolCalls = new Set(
+      toolCalls
+        .filter((call) => call.status === "success")
+        .map((call) => call.tool),
+    );
+    const missingRequiredToolCalls = requiredToolCalls.filter((tool) =>
+      !successfulToolCalls.has(tool));
+    const requiredToolCallMissing = missingRequiredToolCalls.length > 0;
     const toolBudgetExceeded = toolCalls.length > args.remainingToolCalls;
     const modelCallCount = Math.max(1, workerResult.modelCalls?.length ?? 0);
     const modelBudgetExceeded = modelCallCount > args.remainingModelCalls;
@@ -1277,9 +1296,9 @@ export class CodaliGatewayStateMachine {
       runId: args.input.runId,
       taskId: args.task.task.id,
       originalQuery: args.input.request.query,
-      evidence: workerResult.evidence,
-      workerOutput: workerResult.output,
-      toolCalls,
+      evidence: requiredToolCallMissing ? undefined : workerResult.evidence,
+      workerOutput: requiredToolCallMissing ? undefined : workerResult.output,
+      toolCalls: requiredToolCallMissing ? [] : toolCalls,
       requireTenantScope: tenantScoped,
       defaultTenantScoped: tenantScoped,
       maxEvidenceItems: remainingEvidenceItems,
@@ -1338,6 +1357,7 @@ export class CodaliGatewayStateMachine {
     const status =
       workerResult.status === "failed" ||
       disallowedToolCalls.length > 0 ||
+      requiredToolCallMissing ||
       toolBudgetExceeded ||
       modelBudgetExceeded ||
       imageArtifactBudgetExceeded
@@ -1346,6 +1366,8 @@ export class CodaliGatewayStateMachine {
     const errorCode =
       disallowedToolCalls.length > 0
         ? "GATEWAY_TOOL_NOT_APPROVED"
+        : requiredToolCallMissing
+          ? "GATEWAY_REQUIRED_TOOL_NOT_CALLED"
         : toolBudgetExceeded
           ? "GATEWAY_TOOL_BUDGET_EXCEEDED"
           : modelBudgetExceeded
@@ -1358,6 +1380,8 @@ export class CodaliGatewayStateMachine {
         ? `Worker attempted disallowed tools: ${disallowedToolCalls
           .map((call) => call.tool)
           .join(", ")}`
+        : requiredToolCallMissing
+          ? `Worker did not complete required tool calls: ${missingRequiredToolCalls.join(", ")}`
         : toolBudgetExceeded
           ? "Worker reported more tool calls than the remaining gateway budget."
           : modelBudgetExceeded
@@ -1388,6 +1412,8 @@ export class CodaliGatewayStateMachine {
           modelCallCount,
           toolBudgetExceeded,
           modelBudgetExceeded,
+          requiredToolCalls,
+          missingRequiredToolCalls,
           maxImageArtifacts: args.policyCompilation.security.limits.maxImageArtifacts,
           remainingImageArtifacts: remainingImageArtifactsInitial,
           blockedImageArtifactCount,

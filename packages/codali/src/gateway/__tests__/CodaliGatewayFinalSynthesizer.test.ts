@@ -228,6 +228,49 @@ test("final synthesizer prompt and sources use only allowed context-pack evidenc
   assert.doesNotMatch(prompt, /github_search/);
 });
 
+test("required Docdex synthesis excludes unprovenanced model observations", async () => {
+  const request = baseRequest({
+    id: "docdex-provenance-final-run",
+    docdex: {
+      enabled: true,
+      required: true,
+      repoId: "news-repo",
+      allowedOperations: ["search"],
+    },
+  });
+  const store = await seedRun(request, [
+    evidence("ev-docdex", {
+      runId: "docdex-provenance-final-run",
+      claim: "Indexed TNL evidence.",
+    }),
+    evidence("ev-model", {
+      runId: "docdex-provenance-final-run",
+      claim: "Unprovenanced model observation.",
+      sourceType: "model_observation",
+      sourceId: undefined,
+      sourceTitle: undefined,
+      rawExcerpt: undefined,
+      usedTool: undefined,
+      confidence: 0.2,
+    }),
+  ]);
+  const provider = new StubProvider([textResponse("Answer from indexed evidence [ev-docdex].")]);
+
+  const result = await createCodaliGateway({
+    provider,
+    store,
+    agentInventory: [largeAgent()],
+  }).synthesizeFinalAnswer({
+    runId: "docdex-provenance-final-run",
+    request,
+  });
+  const prompt = provider.requests[0]?.messages.map((message) => message.content).join("\n") ?? "";
+
+  assert.deepEqual(result.sources.map((source) => source.evidenceId), ["ev-docdex"]);
+  assert.match(prompt, /Indexed TNL evidence/);
+  assert.doesNotMatch(prompt, /Unprovenanced model observation/);
+});
+
 test("final telemetry includes Docdex request ids from evidence and tool calls", async () => {
   const request = baseRequest({ id: "docdex-telemetry-final-run" });
   const store = await seedRun(request, [

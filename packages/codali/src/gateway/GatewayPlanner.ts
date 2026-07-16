@@ -772,6 +772,51 @@ const sanitizePlannerOutput = (
     workerTasks.push({ ...task, toolsAllowed: filteredTools });
   }
 
+  if (input.request.docdex?.required === true) {
+    const requiredDocdexTool = [
+      "docdex_search",
+      "docdex_batch_search",
+      ...allowed,
+    ].find((tool) => allowed.has(tool) && tool.startsWith("docdex_"));
+    if (requiredDocdexTool) {
+      const existingIndex = workerTasks.findIndex((task) =>
+        task.toolsAllowed.includes(requiredDocdexTool));
+      if (existingIndex >= 0) {
+        const existing = workerTasks[existingIndex];
+        workerTasks[existingIndex] = {
+          ...existing,
+          metadata: {
+            ...(existing.metadata ?? {}),
+            required: true,
+            requiredToolCalls: [requiredDocdexTool],
+          },
+        };
+      } else {
+        const taskIds = new Set(workerTasks.map((task) => task.id));
+        let taskId = "required-docdex-search";
+        let suffix = 2;
+        while (taskIds.has(taskId)) {
+          taskId = `required-docdex-search-${suffix}`;
+          suffix += 1;
+        }
+        workerTasks.unshift({
+          id: taskId,
+          workerRole: "rag_worker",
+          objective: "Search Docdex for authoritative evidence before synthesis.",
+          query: input.request.query,
+          toolsAllowed: [requiredDocdexTool],
+          outputFormat: "evidence_items",
+          expectedSources: ["docdex"],
+          metadata: {
+            required: true,
+            requiredToolCalls: [requiredDocdexTool],
+          },
+        });
+        warnings.push(`planner_required_docdex_task_added:${requiredDocdexTool}`);
+      }
+    }
+  }
+
   return {
     warnings,
     planner: {

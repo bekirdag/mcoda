@@ -154,6 +154,49 @@ test("planner can produce Docdex and app-tool worker tasks from effective policy
   assert.match(plannerPrompt, /tenant_policy_search/);
 });
 
+test("planner requires Docdex on a model task that omits tools", async () => {
+  const provider = new StubProvider([
+    jsonResponse({
+      queryType: "current_news",
+      needsPrivateData: false,
+      needsFreshData: true,
+      needsDocdex: true,
+      needsAppTools: false,
+      needsImageWorker: false,
+    }),
+    jsonResponse({
+      queryType: "current_news",
+      subquestions: [],
+      workerTasks: [{
+        id: "model-only-task",
+        workerRole: "direct_answer",
+        objective: "Summarize current news.",
+        toolsAllowed: [],
+        outputFormat: "evidence_items",
+      }],
+    }),
+  ]);
+  const request = baseRequest({
+    query: "What was the most important news this week?",
+    docdex: {
+      enabled: true,
+      required: true,
+      repoId: "news-repo",
+      allowedOperations: ["search"],
+    },
+    tools: { actualTools: [{ name: "docdex_search" }] },
+    policy: basePolicy({ allowedTools: ["docdex_search"] }),
+  });
+
+  const result = await createCodaliGatewayPlanner(provider).plan({ request });
+  const requiredTask = result.planner.workerTasks[0];
+
+  assert.equal(requiredTask?.id, "model-only-task");
+  assert.deepEqual(requiredTask?.toolsAllowed, ["docdex_search"]);
+  assert.deepEqual(requiredTask?.metadata?.requiredToolCalls, ["docdex_search"]);
+  assert.ok(!result.warnings.includes("planner_required_docdex_task_added:docdex_search"));
+});
+
 test("planner removes disabled tools returned by the model", async () => {
   const provider = new StubProvider([
     jsonResponse({

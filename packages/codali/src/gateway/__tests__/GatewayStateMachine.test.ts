@@ -496,6 +496,42 @@ test("workers receive only approved tools and evidence-only JSON prompts", async
   assert.match(result.warnings.join("\n"), /worker_task_tools_removed:tool-filter:github_search/);
 });
 
+test("required Docdex workers reject model evidence without a successful tool call", async () => {
+  const runner = new StubTaskRunner(() => ({
+    status: "succeeded",
+    output: {
+      evidence: [{
+        claim: "Model-authored evidence must not satisfy required Docdex retrieval.",
+        sourceType: "model_observation",
+        confidence: 0.9,
+        relevance: 0.9,
+      }],
+    },
+  }));
+  const request = toolRequest({ id: "required-docdex-call-run" });
+  const machine = await createMachine(request, runner);
+  const result = await machine.execute({
+    runId: "required-docdex-call-run",
+    request,
+    planner: plannerOutput([
+      workerTask("required-docdex-task", {
+        toolsAllowed: ["docdex_search"],
+        metadata: {
+          required: true,
+          requiredToolCalls: ["docdex_search"],
+        },
+      }),
+    ]),
+  });
+  const trace = await machine.store.readRunTrace("required-docdex-call-run");
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.taskResults[0]?.errorCode, "GATEWAY_REQUIRED_TOOL_NOT_CALLED");
+  assert.equal(result.taskResults[0]?.evidenceCount, 0);
+  assert.equal(trace?.evidence.length, 0);
+  assert.match(runner.inputs[0]?.prompt ?? "", /Required successful tool calls: docdex_search/);
+});
+
 test("CodaliGateway executeWorkerTasks wires planner output into the state machine", async () => {
   const provider = new StubProvider([
     jsonResponse({
