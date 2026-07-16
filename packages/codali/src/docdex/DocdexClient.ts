@@ -445,6 +445,65 @@ export class DocdexClient {
     return base.endsWith("/") ? base.slice(0, -1) : base;
   }
 
+  private isEncryptedSearchGateway(): boolean {
+    return /\/v1\/docdex\/encrypted$/.test(this.resolveBaseUrl());
+  }
+
+  private encryptedEnvelopeMeta(
+    payload: Record<string, unknown>,
+    existing: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      ...existing,
+      source: "docdex_encrypted_search",
+      ...(payload.feature_key !== undefined ? { feature_key: payload.feature_key } : {}),
+      ...(payload.runtime_context !== undefined
+        ? { runtime_context: payload.runtime_context }
+        : {}),
+    };
+  }
+
+  private normalizeEncryptedSearchPayload(payload: unknown, query?: string): unknown {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+    const record = payload as Record<string, unknown>;
+    const batchResults = Array.isArray(record.results) ? record.results : [];
+    if (query === undefined) {
+      return {
+        results: batchResults,
+        meta: this.encryptedEnvelopeMeta(record),
+      };
+    }
+    const first = batchResults.find(
+      (entry): entry is Record<string, unknown> =>
+        Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
+    );
+    const hits = Array.isArray(first?.hits) ? first.hits : [];
+    return {
+      query: typeof first?.query === "string" ? first.query : query,
+      hits,
+      results: hits,
+      meta: this.encryptedEnvelopeMeta(record),
+    };
+  }
+
+  private normalizeEncryptedWebPayload(payload: unknown): unknown {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+    const record = payload as Record<string, unknown>;
+    const result = record.result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      return result ?? payload;
+    }
+    const resultRecord = result as Record<string, unknown>;
+    const existingMeta =
+      resultRecord.meta && typeof resultRecord.meta === "object" && !Array.isArray(resultRecord.meta)
+        ? resultRecord.meta as Record<string, unknown>
+        : {};
+    return {
+      ...resultRecord,
+      meta: this.encryptedEnvelopeMeta(record, existingMeta),
+    };
+  }
+
   private buildHeaders(dagSessionId?: string): Record<string, string> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.options.apiKey) {
@@ -667,6 +726,17 @@ export class DocdexClient {
     await this.ensureRepoInitialized();
     const dagSessionId = options.dagSessionId ?? this.dagSessionId;
     const executeSearch = (searchQuery: string): Promise<Response> => {
+      if (this.isEncryptedSearchGateway()) {
+        return fetch(`${this.resolveBaseUrl()}/search`, {
+          method: "POST",
+          headers: this.buildHeaders(dagSessionId),
+          body: JSON.stringify({
+            repo_key: this.repoId,
+            queries: [searchQuery],
+            ...(options.limit !== undefined ? { limit: options.limit } : {}),
+          }),
+        });
+      }
       const params = new URLSearchParams({ q: searchQuery });
       if (options.limit !== undefined) params.set("limit", String(options.limit));
       if (dagSessionId) params.set("dag_session_id", dagSessionId);
@@ -684,8 +754,11 @@ export class DocdexClient {
       if (retryQuery) {
         const retryResponse = await executeSearch(retryQuery);
         if (retryResponse.ok) {
+          const rawRetryPayload = await retryResponse.json();
           const retryPayload = this.attachResponseMetadata(
-            await retryResponse.json(),
+            this.isEncryptedSearchGateway()
+              ? this.normalizeEncryptedSearchPayload(rawRetryPayload, retryQuery)
+              : rawRetryPayload,
             retryResponse,
             "search",
           );
@@ -719,7 +792,14 @@ export class DocdexClient {
       }
       this.throwResponseBodyError(response.status, body, "search", this.responseRequestId(response));
     }
-    return this.attachResponseMetadata(await response.json(), response, "search");
+    const rawPayload = await response.json();
+    return this.attachResponseMetadata(
+      this.isEncryptedSearchGateway()
+        ? this.normalizeEncryptedSearchPayload(rawPayload, query)
+        : rawPayload,
+      response,
+      "search",
+    );
   }
 
   async openSnippet(docId: string, options: DocdexSnippetOptions = {}): Promise<unknown> {
@@ -1134,6 +1214,9 @@ export class DocdexClient {
   }
 
   webResearch(query: string, options: DocdexWebResearchOptions = {}): Promise<unknown> {
+    if (this.isEncryptedSearchGateway()) {
+      return this.webResearchHttp(query, options);
+    }
     return this.callMcp(
       "docdex_web_research",
       this.buildProjectParams({
@@ -1150,6 +1233,25 @@ export class DocdexClient {
     this.assertOperationAllowed("web_research");
     await this.ensureHealth();
     await this.ensureRepoInitialized();
+    if (this.isEncryptedSearchGateway()) {
+      const response = await fetch(`${this.resolveBaseUrl()}/web/search`, {
+        method: "POST",
+        headers: this.buildHeaders(this.dagSessionId),
+        body: JSON.stringify({
+          repo_key: this.repoId,
+          query,
+          ...(options.webLimit !== undefined ? { web_limit: options.webLimit } : {}),
+        }),
+      });
+      if (!response.ok) {
+        await this.throwResponseError(response, "web research");
+      }
+      return this.attachResponseMetadata(
+        this.normalizeEncryptedWebPayload(await response.json()),
+        response,
+        "web_research",
+      );
+    }
     const params = new URLSearchParams({ q: query });
     params.set("force_web", String(options.forceWeb ?? true));
     if (options.skipLocalSearch !== undefined) {
@@ -1182,10 +1284,31 @@ export class DocdexClient {
     );
   }
 
-  batchSearch(
+  async batchSearch(
     queries: string[],
     options: { limit?: number; includeLibs?: boolean } = {},
   ): Promise<unknown> {
+    if (this.isEncryptedSearchGateway()) {
+      this.assertOperationAllowed("batch_search");
+      await this.ensureHealth();
+      const response = await fetch(`${this.resolveBaseUrl()}/search`, {
+        method: "POST",
+        headers: this.buildHeaders(this.dagSessionId),
+        body: JSON.stringify({
+          repo_key: this.repoId,
+          queries,
+          ...(options.limit !== undefined ? { limit: options.limit } : {}),
+        }),
+      });
+      if (!response.ok) {
+        await this.throwResponseError(response, "batch search");
+      }
+      return this.attachResponseMetadata(
+        this.normalizeEncryptedSearchPayload(await response.json()),
+        response,
+        "batch_search",
+      );
+    }
     return this.callMcp(
       "docdex_batch_search",
       this.buildProjectParams({

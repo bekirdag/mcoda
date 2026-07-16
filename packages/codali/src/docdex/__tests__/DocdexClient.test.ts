@@ -146,6 +146,116 @@ test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo
   });
 });
 
+test("DocdexClient uses tenant-scoped encrypted search, web, and batch endpoints", {
+  concurrency: false,
+}, async () => {
+  const requestBodies: Record<string, unknown>[] = [];
+  await withStubbedFetch((url, init) => {
+    if (url === "https://api.mswarm.org/v1/docdex/encrypted/healthz") {
+      return makeTextResponse("ok");
+    }
+    const headers = init?.headers as Record<string, string> | undefined;
+    assert.equal(headers?.["x-api-key"], "msw_docdex_secret");
+    assert.equal(headers?.["x-mswarm-client-identity"], "theneuralledger");
+    assert.equal(init?.method, "POST");
+    const body = typeof init?.body === "string"
+      ? JSON.parse(init.body) as Record<string, unknown>
+      : {};
+    requestBodies.push(body);
+    assert.equal(body.repo_key, "theneuralledger");
+
+    if (url.endsWith("/web/search")) {
+      assert.equal(body.query, "current external developments");
+      assert.equal(body.web_limit, 4);
+      return makeJsonResponse({
+        feature_key: "docdex-encrypted-search",
+        runtime_context: { docdex_repo_key: "theneuralledger", docdex_repo_id: "repo-tnl" },
+        result: {
+          hits: [{ title: "External development", url: "https://example.test/news" }],
+          meta: { provider: "mswarm" },
+        },
+      }, { "x-docdex-request-id": "docdex-web-1" });
+    }
+
+    assert.equal(url, "https://api.mswarm.org/v1/docdex/encrypted/search");
+    const queries = body.queries as string[];
+    if (queries.length === 1) {
+      assert.deepEqual(queries, ["most important news last 7 days"]);
+      assert.equal(body.limit, 5);
+      return makeJsonResponse({
+        feature_key: "docdex-encrypted-search",
+        runtime_context: { docdex_repo_key: "theneuralledger", docdex_repo_id: "repo-tnl" },
+        results: [{
+          query: queries[0],
+          hits: [{ doc_id: "story-1", title: "Current TNL story" }],
+        }],
+      }, { "x-docdex-request-id": "docdex-search-1" });
+    }
+    assert.deepEqual(queries, ["markets", "technology"]);
+    assert.equal(body.limit, 3);
+    return makeJsonResponse({
+      feature_key: "docdex-encrypted-search",
+      runtime_context: { docdex_repo_key: "theneuralledger", docdex_repo_id: "repo-tnl" },
+      results: queries.map((query) => ({ query, hits: [{ doc_id: `story-${query}` }] })),
+    }, { "x-docdex-request-id": "docdex-batch-1" });
+  }, async () => {
+    const client = new DocdexClient({
+      baseUrl: "https://api.mswarm.org/v1/docdex/encrypted/",
+      repoId: "theneuralledger",
+      apiKey: "msw_docdex_secret",
+      clientIdentity: "theneuralledger",
+      credentialSource: "attached_mswarm_api_key",
+      required: true,
+      allowedOperations: ["search", "batch_search", "web_research"],
+      capabilities: { search: true, batch_search: true, web_research: true },
+    });
+
+    const search = await client.search("most important news last 7 days", { limit: 5 });
+    assert.deepEqual(search, {
+      query: "most important news last 7 days",
+      hits: [{ doc_id: "story-1", title: "Current TNL story" }],
+      results: [{ doc_id: "story-1", title: "Current TNL story" }],
+      meta: {
+        source: "docdex_encrypted_search",
+        feature_key: "docdex-encrypted-search",
+        runtime_context: { docdex_repo_key: "theneuralledger", docdex_repo_id: "repo-tnl" },
+        docdex_request_id: "docdex-search-1",
+        docdex_operation: "search",
+      },
+    });
+
+    const web = await client.webResearch("current external developments", { webLimit: 4 });
+    assert.deepEqual(web, {
+      hits: [{ title: "External development", url: "https://example.test/news" }],
+      meta: {
+        provider: "mswarm",
+        source: "docdex_encrypted_search",
+        feature_key: "docdex-encrypted-search",
+        runtime_context: { docdex_repo_key: "theneuralledger", docdex_repo_id: "repo-tnl" },
+        docdex_request_id: "docdex-web-1",
+        docdex_operation: "web_research",
+      },
+    });
+
+    const batch = await client.batchSearch(["markets", "technology"], { limit: 3 });
+    assert.deepEqual(batch, {
+      results: [
+        { query: "markets", hits: [{ doc_id: "story-markets" }] },
+        { query: "technology", hits: [{ doc_id: "story-technology" }] },
+      ],
+      meta: {
+        source: "docdex_encrypted_search",
+        feature_key: "docdex-encrypted-search",
+        runtime_context: { docdex_repo_key: "theneuralledger", docdex_repo_id: "repo-tnl" },
+        docdex_request_id: "docdex-batch-1",
+        docdex_operation: "batch_search",
+      },
+    });
+  });
+
+  assert.equal(requestBodies.length, 3);
+});
+
 test("DocdexClient treats attached-key repo context as immutable and records request ids", {
   concurrency: false,
 }, async () => {
