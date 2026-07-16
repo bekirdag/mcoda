@@ -31,18 +31,25 @@ export function getPnpmCandidates(platform = process.platform) {
 
 export function resolvePnpmCommand({
   platform = process.platform,
+  env = process.env,
   execFile = execFileSync,
 } = {}) {
   let lastError;
   for (const candidate of getPnpmCandidates(platform)) {
+    const command =
+      platform === 'win32' && candidate.toLowerCase().endsWith('.cmd')
+        ? {
+            bin: env.ComSpec ?? env.COMSPEC ?? 'cmd.exe',
+            prefixArgs: ['/d', '/s', '/c', candidate],
+          }
+        : { bin: candidate, prefixArgs: [] };
     try {
-      execFile(candidate, ['--version'], { stdio: 'ignore' });
-      return candidate;
+      execFile(command.bin, command.prefixArgs.concat('--version'), {
+        stdio: 'ignore',
+      });
+      return command;
     } catch (error) {
       lastError = error;
-      if (error?.code !== 'ENOENT') {
-        throw error;
-      }
     }
   }
 
@@ -191,16 +198,24 @@ export function packTarballs({
     return { packageDir, manifest };
   });
   const results = [];
+  const command =
+    typeof pnpmCommand === 'string'
+      ? { bin: pnpmCommand, prefixArgs: [] }
+      : pnpmCommand;
 
   for (const { packageDir, manifest } of packages) {
-    execFile(pnpmCommand, ['pack', '--pack-destination', dest, '--json'], {
-      cwd: path.join(root, packageDir),
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        npm_config_ignore_scripts: 'true',
-      },
-    });
+    execFile(
+      command.bin,
+      command.prefixArgs.concat('pack', '--pack-destination', dest, '--json'),
+      {
+        cwd: path.join(root, packageDir),
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          npm_config_ignore_scripts: 'true',
+        },
+      }
+    );
 
     const tarballPath = path.join(dest, packageTarballFilename(manifest));
     if (!existsSync(tarballPath)) {

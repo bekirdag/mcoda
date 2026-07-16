@@ -2,9 +2,9 @@
 
 ## Current Status
 
-Status: local release gates passed; publication pending.
+Status: replacement local release gates passed; publication pending.
 
-Target release: `v0.1.92`.
+Target release: `v0.1.93`, replacing failed and unpublished `v0.1.92`.
 
 ## Baseline Evidence
 
@@ -57,16 +57,18 @@ Target release: `v0.1.92`.
   protocols, identity mismatches, and incorrect internal dependency rewrites.
 - Added focused unit coverage plus pnpm-based CLI packaging guardrails and wired
   portable packing into the release dry-run workflow.
-- Bumped the root and all ten release package manifests to `0.1.92`; the pnpm
+- Bumped the root and all ten release package manifests to `0.1.93`; the pnpm
   lockfile does not encode workspace package versions, so no lockfile content
   change is required.
 - Updated root/CLI/Agent Setup changelogs and the Agent Setup install guide for
-  the `0.1.92` release.
+  the `0.1.93` release.
 - pnpm `9.15.9`, matching the release workflow major, packs Agent Setup with
-  `@mcoda/core` rewritten to `0.1.92` and no workspace protocols.
-- All ten local `0.1.92` tarballs install together in a clean canonical-path npm
+  its exact package version and no workspace protocols.
+- All ten local release tarballs install together in a clean canonical-path npm
   consumer under CI's Node 20 line. Agent Setup's root, headless, server, and
-  React entrypoints import; core/shared/codali import; the CLI reports `0.1.92`.
+  React entrypoints import; core/shared/codali import; the CLI reports `0.1.93`.
+- The Windows resolver regression test confirms `pnpm.cmd` is invoked through
+  `ComSpec`; targeted packer tests and the CLI packaging guard pass.
 - `docdexd run-tests --target packages/agent-setup` passed all 30 SDK tests.
 - `pnpm --filter mcoda run pack:verify` passed the CLI package-content guard.
 - `MCODA_PUBLISH_AGENT_SETUP=1 MCODA_PUBLISH_CODALI=1 pnpm run
@@ -74,13 +76,21 @@ Target release: `v0.1.92`.
 - Laravel `composer run ci:release` passed 14 PHPUnit tests (118 assertions),
   consumer-install smoke, and release-archive smoke.
 - `pnpm install --frozen-lockfile` completed without lockfile changes.
-- Full `docdexd run-tests` passed all 11 tested workspace packages in 88.8
+- Full `docdexd run-tests` passed all 11 tested workspace packages in 66.9
   seconds with no failures.
 - Post-change Docdex indexing, symbols, AST, impact, and import diagnostics are
-  healthy; the new packer test is the only inbound code edge.
+  healthy; the focused unit test and CLI packaging guard are the two inbound
+  validation edges.
 - `git diff --check` and focused Prettier validation pass.
 
 ## Blockers
 
-None. The initial npm cache permission message was a sandbox-access artifact;
-the same pack commands succeed with normal user access.
+None.
+
+## Failed Release Attempt
+
+The `v0.1.92` workflow stopped before npm publication because Node cannot
+directly execute the Windows `pnpm.cmd` shim with `execFileSync` (`EINVAL`). The
+other five platform jobs passed through portable packing and artifact upload.
+The immutable replacement `v0.1.93` routes `.cmd` through Windows `ComSpec` and
+has passed the complete local release gate.

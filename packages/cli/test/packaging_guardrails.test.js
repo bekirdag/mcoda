@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolvePnpmCommand } from '../../../scripts/pack-npm-tarballs.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,12 +36,12 @@ const getPackList = () => {
   const dest = mkdtempSync(path.join(os.tmpdir(), 'mcoda-cli-pack-'));
   let stdout;
   try {
-    const pnpm =
-      process.env.PNPM_BIN ??
-      (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
+    const pnpm = process.env.PNPM_BIN
+      ? { bin: process.env.PNPM_BIN, prefixArgs: [] }
+      : resolvePnpmCommand();
     stdout = execFileSync(
-      pnpm,
-      ['pack', '--pack-destination', dest, '--json'],
+      pnpm.bin,
+      pnpm.prefixArgs.concat('pack', '--pack-destination', dest, '--json'),
       {
         cwd,
         encoding: 'utf8',

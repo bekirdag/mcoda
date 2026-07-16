@@ -12,6 +12,7 @@ import {
   getPnpmCandidates,
   packTarballs,
   packageTarballFilename,
+  resolvePnpmCommand,
 } from '../../scripts/pack-npm-tarballs.js';
 
 const root = path.resolve(
@@ -42,6 +43,27 @@ test('pnpm command candidates are platform-aware', () => {
     'pnpm.cmd',
     'pnpm.exe',
     'pnpm',
+  ]);
+});
+
+test('Windows pnpm command shims run through ComSpec', () => {
+  const calls = [];
+  const command = resolvePnpmCommand({
+    platform: 'win32',
+    env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    execFile: (bin, args, options) => calls.push({ bin, args, options }),
+  });
+
+  assert.deepEqual(command, {
+    bin: 'C:\\Windows\\System32\\cmd.exe',
+    prefixArgs: ['/d', '/s', '/c', 'pnpm.cmd'],
+  });
+  assert.deepEqual(calls, [
+    {
+      bin: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/d', '/s', '/c', 'pnpm.cmd', '--version'],
+      options: { stdio: 'ignore' },
+    },
   ]);
 });
 

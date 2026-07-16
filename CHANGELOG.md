@@ -2,10 +2,12 @@
 
 ## Unreleased
 
-## 0.1.92 - 2026-07-16
+## 0.1.93 - 2026-07-16
 
 - Generate GitHub release npm tarballs with pnpm so workspace dependencies are
   rewritten to portable package versions.
+- Run Windows pnpm command shims through `ComSpec` so portable packaging works
+  across every release matrix platform.
 - Validate packed manifests and clean consumer installation before publishing.
 - Refresh the Agent Setup SDK installation guide for the current release.
 
