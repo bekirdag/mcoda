@@ -1,67 +1,240 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import path from "node:path";
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
-const root = process.cwd();
-const dest = path.join(root, "artifacts");
-const packages = [
-  "packages/shared",
-  "packages/db",
-  "packages/agents",
-  "packages/generators",
-  "packages/integrations",
-  "packages/core",
-  "packages/agent-setup",
-  "packages/cli",
-  "packages/codali",
-  "packages/mswarm",
+export const PACKAGE_DIRS = [
+  'packages/shared',
+  'packages/db',
+  'packages/agents',
+  'packages/generators',
+  'packages/integrations',
+  'packages/core',
+  'packages/agent-setup',
+  'packages/cli',
+  'packages/codali',
+  'packages/mswarm',
 ];
 
-mkdirSync(dest, { recursive: true });
+const DEPENDENCY_FIELDS = [
+  'dependencies',
+  'optionalDependencies',
+  'peerDependencies',
+  'devDependencies',
+];
 
-const npmCommand = resolveNpmCommand();
-const npmArgs = ["pack", "--pack-destination", dest, "--ignore-scripts"];
-
-for (const pkg of packages) {
-  execFileSync(npmCommand.bin, npmCommand.prefixArgs.concat(npmArgs), {
-    cwd: path.join(root, pkg),
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      npm_config_ignore_scripts: "true",
-    },
-  });
+export function getPnpmCandidates(platform = process.platform) {
+  return platform === 'win32' ? ['pnpm.cmd', 'pnpm.exe', 'pnpm'] : ['pnpm'];
 }
 
-function resolveNpmCommand() {
-  const candidates =
-    process.platform === "win32" ? ["npm.cmd", "npm.exe", "npm"] : ["npm"];
-
-  for (const candidate of candidates) {
+export function resolvePnpmCommand({
+  platform = process.platform,
+  execFile = execFileSync,
+} = {}) {
+  let lastError;
+  for (const candidate of getPnpmCandidates(platform)) {
     try {
-      execFileSync(candidate, ["--version"], { stdio: "ignore" });
-      return { bin: candidate, prefixArgs: [] };
+      execFile(candidate, ['--version'], { stdio: 'ignore' });
+      return candidate;
     } catch (error) {
-      if (error?.code !== "ENOENT") {
-        continue;
+      lastError = error;
+      if (error?.code !== 'ENOENT') {
+        throw error;
       }
     }
   }
 
-  const npmCliPath = path.join(
-    path.dirname(process.execPath),
-    "node_modules",
-    "npm",
-    "bin",
-    "npm-cli.js"
+  throw new Error(
+    'pnpm not found on PATH; install pnpm before packaging npm tarballs.',
+    {
+      cause: lastError,
+    }
   );
+}
 
-  if (existsSync(npmCliPath)) {
-    return { bin: process.execPath, prefixArgs: [npmCliPath] };
+export function packageTarballFilename(manifest) {
+  const normalizedName = manifest.name.replace(/^@/, '').replaceAll('/', '-');
+  return `${normalizedName}-${manifest.version}.tgz`;
+}
+
+export function findWorkspaceProtocolPaths(value, currentPath = []) {
+  if (typeof value === 'string') {
+    return value.startsWith('workspace:') ? [currentPath.join('.')] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) =>
+      findWorkspaceProtocolPaths(entry, currentPath.concat(String(index)))
+    );
+  }
+  if (value == null || typeof value !== 'object') {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, entry]) =>
+    findWorkspaceProtocolPaths(entry, currentPath.concat(key))
+  );
+}
+
+export function expectedPackedWorkspaceRange(workspaceRange, version) {
+  if (workspaceRange === 'workspace:*') return version;
+  if (workspaceRange === 'workspace:^') return `^${version}`;
+  if (workspaceRange === 'workspace:~') return `~${version}`;
+  return workspaceRange.slice('workspace:'.length);
+}
+
+export function assertPackedManifestPortable({
+  sourceManifest,
+  packedManifest,
+  internalVersions,
+  tarballPath,
+}) {
+  const workspacePaths = findWorkspaceProtocolPaths(packedManifest);
+  if (workspacePaths.length > 0) {
+    throw new Error(
+      `${tarballPath} contains non-portable workspace protocols at: ${workspacePaths.join(', ')}`
+    );
   }
 
-  throw new Error(
-    "npm not found on PATH and npm-cli.js is missing from the Node installation."
+  if (
+    packedManifest.name !== sourceManifest.name ||
+    packedManifest.version !== sourceManifest.version
+  ) {
+    throw new Error(
+      `${tarballPath} manifest identity mismatch: expected ${sourceManifest.name}@${sourceManifest.version}, ` +
+        `received ${packedManifest.name}@${packedManifest.version}`
+    );
+  }
+
+  for (const field of DEPENDENCY_FIELDS) {
+    for (const [dependencyName, sourceRange] of Object.entries(
+      sourceManifest[field] ?? {}
+    )) {
+      if (!sourceRange.startsWith('workspace:')) continue;
+      const dependencyVersion = internalVersions.get(dependencyName);
+      if (!dependencyVersion) {
+        throw new Error(
+          `${sourceManifest.name} references unknown workspace dependency ${dependencyName} in ${field}`
+        );
+      }
+      const expectedRange = expectedPackedWorkspaceRange(
+        sourceRange,
+        dependencyVersion
+      );
+      const packedRange = packedManifest[field]?.[dependencyName];
+      if (packedRange !== expectedRange) {
+        throw new Error(
+          `${tarballPath} did not rewrite ${field}.${dependencyName}: expected ${expectedRange}, ` +
+            `received ${String(packedRange)}`
+        );
+      }
+    }
+  }
+}
+
+export function readPackedPackageJson(tarballPath) {
+  const archive = gunzipSync(readFileSync(tarballPath));
+  let offset = 0;
+
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+
+    const name = readTarString(header, 0, 100);
+    const prefix = readTarString(header, 345, 155);
+    const entryPath = prefix ? `${prefix}/${name}` : name;
+    const sizeText = readTarString(header, 124, 12).trim();
+    const size = sizeText ? Number.parseInt(sizeText, 8) : 0;
+    if (!Number.isFinite(size) || size < 0) {
+      throw new Error(
+        `${tarballPath} contains an invalid tar entry size for ${entryPath}`
+      );
+    }
+
+    const contentStart = offset + 512;
+    const contentEnd = contentStart + size;
+    if (entryPath === 'package/package.json' || entryPath === 'package.json') {
+      return JSON.parse(
+        archive.subarray(contentStart, contentEnd).toString('utf8')
+      );
+    }
+
+    offset = contentStart + Math.ceil(size / 512) * 512;
+  }
+
+  throw new Error(`${tarballPath} does not contain package/package.json`);
+}
+
+export function packTarballs({
+  root = process.cwd(),
+  dest = path.join(root, 'artifacts'),
+  packageDirs = PACKAGE_DIRS,
+  workspacePackageDirs = PACKAGE_DIRS,
+  pnpmCommand = resolvePnpmCommand(),
+  execFile = execFileSync,
+} = {}) {
+  mkdirSync(dest, { recursive: true });
+
+  const workspacePackages = workspacePackageDirs.map((packageDir) => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(root, packageDir, 'package.json'), 'utf8')
+    );
+    return { packageDir, manifest };
+  });
+  const internalVersions = new Map(
+    workspacePackages.map(({ manifest }) => [manifest.name, manifest.version])
   );
+  const packages = packageDirs.map((packageDir) => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(root, packageDir, 'package.json'), 'utf8')
+    );
+    return { packageDir, manifest };
+  });
+  const results = [];
+
+  for (const { packageDir, manifest } of packages) {
+    execFile(pnpmCommand, ['pack', '--pack-destination', dest, '--json'], {
+      cwd: path.join(root, packageDir),
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        npm_config_ignore_scripts: 'true',
+      },
+    });
+
+    const tarballPath = path.join(dest, packageTarballFilename(manifest));
+    if (!existsSync(tarballPath)) {
+      throw new Error(
+        `pnpm pack did not create the expected tarball: ${tarballPath}`
+      );
+    }
+    const packedManifest = readPackedPackageJson(tarballPath);
+    assertPackedManifestPortable({
+      sourceManifest: manifest,
+      packedManifest,
+      internalVersions,
+      tarballPath,
+    });
+    results.push({ packageDir, tarballPath, manifest: packedManifest });
+  }
+
+  return results;
+}
+
+function readTarString(buffer, start, length) {
+  const end = buffer.indexOf(0, start);
+  const boundedEnd = end === -1 || end > start + length ? start + length : end;
+  return buffer.subarray(start, boundedEnd).toString('utf8').trim();
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  return (
+    path.resolve(process.argv[1]) ===
+    path.resolve(fileURLToPath(import.meta.url))
+  );
+}
+
+if (isMainModule()) {
+  packTarballs();
 }

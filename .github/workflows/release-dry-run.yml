@@ -36,9 +36,12 @@ jobs:
       - name: Packaging guardrails
         run: pnpm --filter mcoda run pack:verify
 
+      - name: Pack portable npm tarballs
+        run: node scripts/pack-npm-tarballs.js
+
       - name: npm publish dry run
         env:
-          MCODA_PUBLISH_AGENT_SETUP: "1"
-          MCODA_PUBLISH_CODALI: "1"
+          MCODA_PUBLISH_AGENT_SETUP: '1'
+          MCODA_PUBLISH_CODALI: '1'
         run: |
           pnpm run release:publish:npm:dry-run

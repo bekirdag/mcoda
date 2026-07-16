@@ -1,6 +1,6 @@
 # mcoda Agent Setup SDK Install And Usage
 
-Last verified: 2026-06-30
+Last verified: 2026-07-16
 
 This document explains how an application can install and use the public
 `@mcoda/agent-setup` SDK to configure mcoda/mswarm agents from an app UI.
@@ -11,17 +11,17 @@ This release targets:
 
 ```bash
 npm view @mcoda/agent-setup version --registry https://registry.npmjs.org/
-# 0.1.87
+# 0.1.92
 ```
 
-Published `@mcoda/agent-setup@0.1.87` exports:
+Published `@mcoda/agent-setup@0.1.92` exports:
 
 - `@mcoda/agent-setup`
 - `@mcoda/agent-setup/headless`
 - `@mcoda/agent-setup/server`
 - `@mcoda/agent-setup/react`
 
-It depends on public `@mcoda/core@0.1.87`.
+It depends on public `@mcoda/core@0.1.92`.
 
 ## What The SDK Does
 

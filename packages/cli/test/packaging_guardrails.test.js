@@ -1,56 +1,81 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const cwd = path.resolve(__dirname, "..");
+const cwd = path.resolve(__dirname, '..');
 
-const normalizePath = (value) => value.replace(/\\/g, "/");
+const normalizePath = (value) => value.replace(/\\/g, '/');
 
 const bannedMatchers = [
-  { pattern: /(^|\/)node_modules\//, reason: "node_modules" },
-  { pattern: /(^|\/)\.mcoda(\/|$)/, reason: "mcoda workspace state" },
-  { pattern: /(^|\/)\.docdex(\/|$)/, reason: "docdex state" },
-  { pattern: /(^|\/)dist\/__tests__\//, reason: "compiled tests" },
-  { pattern: /\.test\.[cm]?js$/i, reason: "test artifacts" },
+  { pattern: /(^|\/)node_modules\//, reason: 'node_modules' },
+  { pattern: /(^|\/)\.mcoda(\/|$)/, reason: 'mcoda workspace state' },
+  { pattern: /(^|\/)\.docdex(\/|$)/, reason: 'docdex state' },
+  { pattern: /(^|\/)dist\/__tests__\//, reason: 'compiled tests' },
+  { pattern: /\.test\.[cm]?js$/i, reason: 'test artifacts' },
 ];
 
 const requiredPaths = [
-  "package.json",
-  "README.md",
-  "CHANGELOG.md",
-  "LICENSE",
-  "MSWARM_DATA_COLLECTION_TERMS.md",
-  "scripts/postinstall.js",
-  "dist/bin/McodaEntrypoint.js",
-  "dist/install/MswarmConsentBootstrap.js",
+  'package.json',
+  'README.md',
+  'CHANGELOG.md',
+  'LICENSE',
+  'MSWARM_DATA_COLLECTION_TERMS.md',
+  'scripts/postinstall.js',
+  'dist/bin/McodaEntrypoint.js',
+  'dist/install/MswarmConsentBootstrap.js',
 ];
 
 const getPackList = () => {
-  const stdout = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const dest = mkdtempSync(path.join(os.tmpdir(), 'mcoda-cli-pack-'));
+  let stdout;
+  try {
+    const pnpm =
+      process.env.PNPM_BIN ??
+      (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
+    stdout = execFileSync(
+      pnpm,
+      ['pack', '--pack-destination', dest, '--json'],
+      {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          npm_config_ignore_scripts: 'true',
+        },
+      }
+    );
+  } finally {
+    rmSync(dest, { recursive: true, force: true });
+  }
 
   let parsed;
   try {
     parsed = JSON.parse(stdout);
   } catch (err) {
-    throw new Error(`npm pack --dry-run --json did not return JSON: ${err.message}\n${stdout}`);
+    throw new Error(
+      `pnpm pack --json did not return JSON: ${err.message}\n${stdout}`
+    );
   }
 
   const entries = Array.isArray(parsed) ? parsed : [parsed];
   return entries
-    .flatMap((entry) => (entry.files || []).map((file) => (typeof file === "string" ? file : file.path)))
+    .flatMap((entry) =>
+      (entry.files || []).map((file) =>
+        typeof file === 'string' ? file : file.path
+      )
+    )
     .filter(Boolean)
     .map(normalizePath);
 };
 
-test("npm tarball has expected files and excludes unwanted artifacts", () => {
+test('npm tarball has expected files and excludes unwanted artifacts', () => {
   const files = getPackList();
   const offenders = [];
 
@@ -68,11 +93,11 @@ test("npm tarball has expected files and excludes unwanted artifacts", () => {
   assert.equal(
     offenders.length,
     0,
-    `Packaging guardrails violated. Remove unexpected files:\n${offenders.join("\n")}`,
+    `Packaging guardrails violated. Remove unexpected files:\n${offenders.join('\n')}`
   );
   assert.equal(
     missing.length,
     0,
-    `Packaging guardrails violated. Required files missing:\n${missing.join("\n")}`,
+    `Packaging guardrails violated. Required files missing:\n${missing.join('\n')}`
   );
 });

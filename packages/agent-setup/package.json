@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/agent-setup",
-  "version": "0.1.91",
+  "version": "0.1.92",
   "description": "Turnkey mcoda/mswarm agent setup SDK for applications.",
   "type": "module",
   "main": "dist/index.js",

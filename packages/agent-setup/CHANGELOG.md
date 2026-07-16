@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.92 - 2026-07-16
+
+- Ensure release-archive tarballs contain installable `@mcoda/core` versions
+  instead of pnpm workspace protocols.
+- Refresh SDK installation and public-entrypoint documentation for `0.1.92`.
+
 - Surface self-hosted mswarm client identity and allowlist metadata in catalog
   entries, server groups, runtime adapters, and SDK docs.
 
