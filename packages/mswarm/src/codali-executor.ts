@@ -109,6 +109,7 @@ export interface CodaliRuntimeDocdexInput {
   repoId?: string;
   dagSessionId?: string;
   apiKey?: string;
+  clientIdentity?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
   immutableRuntimeContext?: boolean;
   required?: boolean;
@@ -607,6 +608,7 @@ export interface MswarmCodaliDocdex {
   repoId?: string;
   dagSessionId?: string;
   apiKey?: string;
+  clientIdentity?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
   immutableRuntimeContext?: boolean;
   required?: boolean;
@@ -1413,6 +1415,7 @@ function buildRuntimeDocdex(
     repoId: docdex?.repoId,
     dagSessionId: docdex?.dagSessionId ?? requestId,
     apiKey,
+    clientIdentity: docdex.clientIdentity,
     credentialSource,
     immutableRuntimeContext: docdex?.immutableRuntimeContext === true || credentialSource === "attached_mswarm_api_key",
     required: docdex?.required,

@@ -2924,6 +2924,7 @@ describe("self-hosted node runtime", () => {
         source_agent_slug: "qwen-reviewer",
         provider: "mcoda",
         model: "mcoda-qwen-reviewer",
+        scheduling: { fairness_key: "theneuralledger" },
         workspace: { root: "/tmp/secure-workspace", read_only: true },
         docdex: {
           base_url: "http://docdex.secure.test",
@@ -2957,6 +2958,7 @@ describe("self-hosted node runtime", () => {
     assert.ok(capturedInput);
     expect(capturedInput.docdex?.baseUrl).toBe("http://docdex.secure.test");
     expect(capturedInput.docdex?.repoId).toBe("repo-secure");
+    expect(capturedInput.docdex?.clientIdentity).toBe("theneuralledger");
     expect(capturedInput.docdex?.credentialSource).toBe("attached_mswarm_api_key");
     expect(capturedInput.docdex?.required).toBe(true);
     expect(capturedInput.docdex?.allowedOperations).toEqual(["search", "snippet"]);

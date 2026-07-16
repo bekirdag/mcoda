@@ -13,6 +13,7 @@ export interface DocdexClientOptions {
   repoId?: string;
   authToken?: string;
   apiKey?: string;
+  clientIdentity?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
   required?: boolean;
   allowedOperations?: readonly string[];
@@ -452,6 +453,11 @@ export class DocdexClient {
       headers.authorization = `Bearer ${this.options.authToken}`;
     }
     if (this.repoId) headers["x-docdex-repo-id"] = this.repoId;
+    const clientIdentity = this.options.clientIdentity?.trim();
+    if (clientIdentity && /^[A-Za-z0-9._:-]{1,128}$/.test(clientIdentity)) {
+      headers["x-mswarm-client-identity"] = clientIdentity;
+      headers["x-mswarm-client"] = clientIdentity;
+    }
     if (this.options.repoRoot && !this.isImmutableRuntimeContext()) {
       headers["x-docdex-repo-root"] = path.resolve(this.options.repoRoot);
     }

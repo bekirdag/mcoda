@@ -96,6 +96,7 @@ export interface CodaliRuntimeDocdexInput {
   repoId?: string;
   dagSessionId?: string;
   apiKey?: string;
+  clientIdentity?: string;
   credentialSource?: "attached_mswarm_api_key" | string;
   required?: boolean;
   allowedOperations?: string[];
@@ -1726,6 +1727,7 @@ const buildRuntimeToolRegistry = (
       : input.docdex?.repoRoot ?? input.workspace.root,
     dagSessionId: input.docdex?.dagSessionId ?? input.metadata?.requestId,
     apiKey: input.docdex?.apiKey,
+    clientIdentity: input.docdex?.clientIdentity,
     credentialSource: input.docdex?.credentialSource,
     required: input.docdex?.required,
     allowedOperations: input.docdex?.allowedOperations,

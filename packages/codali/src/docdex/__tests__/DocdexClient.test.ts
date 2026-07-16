@@ -124,6 +124,8 @@ test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo
       const headers = init?.headers as Record<string, string> | undefined;
       assert.equal(headers?.["x-api-key"], "msw_docdex_secret");
       assert.equal(headers?.["x-docdex-repo-id"], "secure-repo");
+      assert.equal(headers?.["x-mswarm-client-identity"], "theneuralledger");
+      assert.equal(headers?.["x-mswarm-client"], "theneuralledger");
       assert.equal(headers?.authorization, undefined);
       return makeJsonResponse({ results: [] });
     }
@@ -134,6 +136,7 @@ test("DocdexClient sends attached mswarm API key as x-api-key for encrypted repo
       repoId: "secure-repo",
       authToken: "legacy-bearer-token",
       apiKey: "msw_docdex_secret",
+      clientIdentity: "theneuralledger",
       credentialSource: "attached_mswarm_api_key",
       required: true,
       allowedOperations: ["search"],

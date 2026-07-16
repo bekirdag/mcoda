@@ -350,6 +350,7 @@ export interface SelfHostedNodeInvocationJob {
     dag_session_id?: string;
     apiKey?: string;
     api_key?: string;
+    client_identity?: string;
     required?: boolean;
     allowed_operations?: string[];
     credential_source?: "attached_mswarm_api_key" | string;
@@ -3020,6 +3021,9 @@ function buildCodaliDocdex(job: SelfHostedNodeInvocationJob): MswarmCodaliDocdex
     repoId: optionalText(job.docdex.repo_id) || undefined,
     dagSessionId: optionalText(job.docdex.dag_session_id) || job.request_id,
     apiKey: optionalText(job.docdex.apiKey) || optionalText(job.docdex.api_key) || undefined,
+    clientIdentity: optionalText(job.docdex.client_identity) ||
+      optionalText(job.scheduling?.fairness_key) ||
+      undefined,
     required: job.docdex.required === true,
     allowedOperations: allowedOperations.length ? allowedOperations : undefined,
     credentialSource: optionalText(job.docdex.credential_source) || undefined,

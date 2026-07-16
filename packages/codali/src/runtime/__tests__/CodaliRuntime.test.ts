@@ -556,6 +556,8 @@ test("runCodaliTask sends encrypted Docdex context to built-in search without pr
       seenSearch.push({ url, headers });
       assert.equal(headers?.["x-api-key"], secret);
       assert.equal(headers?.["x-docdex-repo-id"], repoId);
+      assert.equal(headers?.["x-mswarm-client-identity"], "theneuralledger");
+      assert.equal(headers?.["x-mswarm-client"], "theneuralledger");
       assert.equal(parsed.searchParams.get("repo_id"), repoId);
       assert.equal(parsed.searchParams.get("q"), "repo_id=prompt-controlled search term");
       return runtimeJsonResponse({ results: [{ rel_path: "src/secure.ts" }] });
@@ -577,6 +579,7 @@ test("runCodaliTask sends encrypted Docdex context to built-in search without pr
         baseUrl: "http://docdex.secure.test",
         repoId,
         apiKey: secret,
+        clientIdentity: "theneuralledger",
         credentialSource: "attached_mswarm_api_key",
         required: true,
         allowedOperations: ["search"],
