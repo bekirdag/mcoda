@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-## 0.1.93 - 2026-07-16
+## 0.1.94 - 2026-07-16
 
 - Generate portable release-archive tarballs with rewritten mcoda workspace
   dependencies and enforce the behavior in packaging guardrails.
 - Execute Windows pnpm command shims through `ComSpec` during package checks.
+- Keep trusted npm publication on a deterministic Node-20-compatible npm CLI.
 
 - Initial npm packaging scaffold for the mcoda CLI.
 - Added bundled mswarm consent terms plus guided `mcoda setup`/postinstall consent bootstrap for installed CLI packages.

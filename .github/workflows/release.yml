@@ -141,8 +141,8 @@ jobs:
           console.log(`Tag matches all package versions: ${tag}`);
           NODE
 
-      - name: Update npm to latest
-        run: npm install -g npm@latest
+      - name: Install OIDC-compatible npm
+        run: npm install -g npm@11.18.0
 
       - name: Publish packages (OIDC)
         env:
