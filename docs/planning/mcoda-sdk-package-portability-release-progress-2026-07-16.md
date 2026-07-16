@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Status: replacement local release gates passed; publication pending.
+Status: complete. `v0.1.94` is published and independently verified.
 
 Target release: `v0.1.94`, replacing failed and unpublished `v0.1.92` and
 `v0.1.93`.
@@ -42,7 +42,7 @@ Target release: `v0.1.94`, replacing failed and unpublished `v0.1.92` and
 - [x] Implement pnpm-aware packing and portability validation.
 - [x] Update documentation, changelogs, manifests, and lockfile assessment.
 - [x] Run targeted and full validation.
-- [ ] Commit, tag, push, and verify npm publication.
+- [x] Commit, tag, push, and verify npm publication.
 
 ## Validation Evidence
 
@@ -88,6 +88,19 @@ Target release: `v0.1.94`, replacing failed and unpublished `v0.1.92` and
   healthy; the focused unit test and CLI packaging guard are the two inbound
   validation edges.
 - `git diff --check` and focused Prettier validation pass.
+- Release workflow run
+  [29517540884](https://github.com/bekirdag/mcoda/actions/runs/29517540884)
+  passed all six Linux, macOS, and Windows package jobs and the centralized npm
+  OIDC publisher.
+- The tag-triggered CI run
+  [29517541146](https://github.com/bekirdag/mcoda/actions/runs/29517541146)
+  also completed successfully.
+- npm reports `0.1.94` as `latest` for all ten release packages. Published
+  manifests contain exact `0.1.94` internal dependency ranges and no
+  `workspace:` protocols.
+- A fresh Node `20.20.2` consumer installed all ten registry packages together,
+  imported all SDK packages plus Agent Setup's root, headless, server, and React
+  entrypoints, and reported `mcoda 0.1.94` from the installed CLI.
 
 ## Blockers
 
