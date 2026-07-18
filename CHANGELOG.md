@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.95 - 2026-07-18
+
+- Keep persistent mSwarm node services running across Homebrew Node upgrades by
+  storing the stable formula `opt` link instead of a versioned Cellar binary.
+
 ## 0.1.94 - 2026-07-16
 
 - Generate GitHub release npm tarballs with pnpm so workspace dependencies are

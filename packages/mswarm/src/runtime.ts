@@ -767,6 +767,16 @@ const WINDOWS_TASK_NAME = "MswarmSelfHostedNode";
 const DAEMON_PROCESS_NAME = "mswarm-node";
 const POSIX_WRAPPER_SCRIPT_NAME = DAEMON_PROCESS_NAME;
 const WINDOWS_WRAPPER_SCRIPT_NAME = "mswarm-self-hosted-node.ps1";
+
+function resolvePersistentNodePath(nodePath: string): string {
+  const homebrewCellarMatch = /^(.*)\/Cellar\/(node(?:@[^/]+)?)\/[^/]+\/bin\/node$/.exec(nodePath);
+  if (!homebrewCellarMatch) {
+    return nodePath;
+  }
+  const [, prefix, formula] = homebrewCellarMatch;
+  return join(prefix, "opt", formula, "bin", "node");
+}
+
 const DEFAULT_EXPOSE_ALL_MODELS = true;
 const LOCAL_OPENAI_COMPATIBLE_ADAPTERS = new Set([
   "openai-compatible-local",
@@ -1970,7 +1980,7 @@ export async function installSelfHostedNodeService(
   const layout = resolveSelfHostedNodeServiceLayout({ platform: options.platform, homeDir });
   const logDir = serviceLogDir(homeDir);
   const env = serviceEnvironment(config, options.env || process.env, homeDir);
-  const nodePath = options.nodePath || process.execPath;
+  const nodePath = resolvePersistentNodePath(options.nodePath || process.execPath);
   const runner = options.runner || defaultCommandRunner;
   const serviceTimeoutMs = serviceCommandTimeoutMs(config.requestTimeoutMs);
   await mkdir(logDir, { recursive: true });

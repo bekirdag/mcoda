@@ -4764,6 +4764,25 @@ describe("self-hosted node runtime", () => {
     expect(commands.every((entry) => entry.timeoutMs >= 60_000)).toBe(true);
   });
 
+  it("uses the stable Homebrew opt link in persistent daemon wrappers", async () => {
+    const statePath = tempStatePath();
+    const homeDir = dirname(statePath);
+    const runner: CommandRunner = async () => ({ stdout: "", stderr: "" });
+
+    const result = await installSelfHostedNodeService(serviceConfigFor(statePath), {
+      commandPath: "/opt/mcoda/mswarm/dist/server.js",
+      nodePath: "/opt/homebrew/Cellar/node/26.3.0/bin/node",
+      platform: "darwin",
+      homeDir,
+      env: { HOME: homeDir, PATH: "/opt/homebrew/bin:/usr/bin" } as NodeJS.ProcessEnv,
+      runner
+    });
+
+    const wrapper = await readFile(result.wrapperPath, "utf8");
+    expect(wrapper).toContain("'/opt/homebrew/opt/node/bin/node'");
+    expect(wrapper).not.toContain("/opt/homebrew/Cellar/node/26.3.0/bin/node");
+  });
+
   it("treats launchd install bootstrap error 5 as success when the service is already loaded", async () => {
     const statePath = tempStatePath();
     const homeDir = dirname(statePath);
