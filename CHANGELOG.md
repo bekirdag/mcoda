@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.96 - 2026-07-18
+
+- Preserve POSIX Homebrew paths while generating persistent daemon wrappers on
+  cross-platform build and deployment hosts.
+
 ## 0.1.95 - 2026-07-18
 
 - Keep persistent mSwarm node services running across Homebrew Node upgrades by

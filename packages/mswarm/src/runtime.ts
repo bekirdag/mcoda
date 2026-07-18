@@ -774,7 +774,7 @@ function resolvePersistentNodePath(nodePath: string): string {
     return nodePath;
   }
   const [, prefix, formula] = homebrewCellarMatch;
-  return join(prefix, "opt", formula, "bin", "node");
+  return `${prefix}/opt/${formula}/bin/node`;
 }
 
 const DEFAULT_EXPOSE_ALL_MODELS = true;
