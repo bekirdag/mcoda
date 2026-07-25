@@ -373,6 +373,11 @@ export interface SelfHostedNodeInvocationJob {
     max_tokens?: number;
     stop?: string | string[];
     response_format?: Record<string, unknown> | null;
+    // OpenAI-standard function calling forwarded by the relay. When present the
+    // node performs a direct pass-through to the local runner instead of running
+    // the Codali agentic loop, so the caller owns the tool loop.
+    tools?: Record<string, unknown>[];
+    tool_choice?: unknown;
   };
   scheduling?: MswarmJobScheduling;
   policy?: {
@@ -5905,6 +5910,70 @@ export class SelfHostedNodeRuntime {
     return { runtimeToken, state: nextState, enrolled: true };
   }
 
+  /**
+   * Forwards an OpenAI-standard tool-calling request straight to the agent's
+   * local runner and returns its raw response, tool_calls included.
+   *
+   * The Codali runtime deliberately owns tool execution and never surfaces raw
+   * tool_calls to the caller, which is correct when Codali is orchestrating. A
+   * client that supplies its own `tools` is orchestrating instead, so it needs
+   * the model's unexecuted tool calls back.
+   */
+  private async executeOpenAiToolPassthrough(
+    job: SelfHostedNodeInvocationJob,
+    agent: MswarmCodaliAgent
+  ): Promise<Record<string, unknown>> {
+    const baseUrl = optionalText(agent.baseUrl);
+    if (!baseUrl) {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unavailable",
+        "agent has no local runner base URL for OpenAI tool pass-through"
+      );
+    }
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const bearer =
+      agent.authMode === "bearer"
+        ? optionalText(agent.apiKey)
+        : agent.authMode === "dummy-bearer"
+          ? optionalText(agent.dummyBearerToken) || "local"
+          : undefined;
+    if (bearer) {
+      headers.authorization = `Bearer ${bearer}`;
+    }
+    for (const [key, value] of Object.entries(agent.headers ?? {})) {
+      if (typeof value === "string") {
+        headers[key.toLowerCase()] = value;
+      }
+    }
+    const body: Record<string, unknown> = {
+      model: optionalText(agent.model) || job.openai_request.model,
+      messages: job.openai_request.messages,
+      tools: job.openai_request.tools,
+      stream: false
+    };
+    if (job.openai_request.tool_choice !== undefined) body.tool_choice = job.openai_request.tool_choice;
+    if (job.openai_request.temperature !== undefined) body.temperature = job.openai_request.temperature;
+    if (job.openai_request.top_p !== undefined) body.top_p = job.openai_request.top_p;
+    if (job.openai_request.max_tokens !== undefined) body.max_tokens = job.openai_request.max_tokens;
+    if (job.openai_request.stop !== undefined) body.stop = job.openai_request.stop;
+
+    const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const text = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    if (!response.ok || !payload || typeof payload !== "object") {
+      throw new Error(
+        `local runner OpenAI tool pass-through failed with HTTP ${response.status}: ${text.slice(0, 300)}`
+      );
+    }
+    return payload as Record<string, unknown>;
+  }
+
   private async resolveMcodaAgentForJob(job: SelfHostedNodeInvocationJob): Promise<MswarmCodaliAgent> {
     const selectedSourceAgentSlug = optionalText(job.source_agent_slug);
     const selectedAgentSlug = optionalText(job.agent_slug);
@@ -6274,6 +6343,23 @@ export class SelfHostedNodeRuntime {
         adapter: agent.adapter,
         supports_tools: agent.supportsTools === true
       });
+      // OpenAI-standard tool pass-through. When the caller supplies `tools` it is
+      // driving its own tool loop, so the node must return the model's raw
+      // tool_calls instead of running the Codali agentic loop, which owns tools
+      // itself and would never surface them to the caller.
+      if (Array.isArray(job.openai_request.tools) && job.openai_request.tools.length > 0) {
+        const passthrough = await this.executeOpenAiToolPassthrough(job, agent);
+        this.finishExecutionTelemetry({ executionClass: "llm", startedAt, ok: true });
+        const passthroughResult: SelfHostedNodeInvocationResult = {
+          job_id: job.job_id,
+          request_id: job.request_id,
+          status: "success",
+          openai_response: passthrough,
+          ...(progressEvents.length ? { progress_events: progressEvents } : {}),
+          timing: { local_latency_ms: Date.now() - startedAt }
+        };
+        return passthroughResult;
+      }
       const codaliGateway = buildCodaliGateway(job);
       const codaliJob = buildCodaliJob(job);
       const codaliSession = buildCodaliSession(job);

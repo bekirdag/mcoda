@@ -5891,4 +5891,82 @@ describe("self-hosted node runtime", () => {
     expect(heartbeatBodies[0].status).toBe("degraded");
     expect((heartbeatBodies[0].models as unknown[])).toHaveLength(0);
   });
+
+  it("passes OpenAI tool declarations straight through to the local runner", async () => {
+    const statePath = tempStatePath();
+    const captured: { url?: string; body?: Record<string, unknown> } = {};
+    const codaliCalls: MswarmCodaliInvocationInput[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured.url = input.toString();
+      captured.body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: "tool_calls",
+              message: {
+                content: null,
+                tool_calls: [
+                  { id: "call-1", type: "function", function: { name: "okacam_jira_search", arguments: "{}" } }
+                ]
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof globalThis.fetch;
+
+    try {
+      const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+        mcoda: mcodaAgentListClient([
+          healthyMcodaAgent({
+            adapter: "openai-api",
+            config: { baseUrl: "http://runner.test/v1", runnerKind: "llama-cpp", authMode: "none" }
+          })
+        ]),
+        codaliExecutor: new StubCodaliExecutor(async (input) => {
+          codaliCalls.push(input);
+          return successfulCodaliInvocation(input);
+        })
+      });
+
+      const result = await runtime.executeJob({
+        job_id: "job-tools",
+        request_id: "req-tools",
+        node_id: "shn_service",
+        agent_slug: "qwen-reviewer",
+        source_agent_slug: "qwen-reviewer",
+        provider: "mcoda",
+        model: "mcoda-qwen-reviewer",
+        openai_request: {
+          model: "mcoda-qwen-reviewer",
+          messages: [{ role: "user", content: "How many Jira issues are open?" }],
+          tools: [
+            {
+              type: "function",
+              function: { name: "okacam_jira_search", description: "Search Jira", parameters: { type: "object" } }
+            }
+          ],
+          tool_choice: "auto"
+        }
+      });
+
+      assert.equal(result.status, "success", `job failed: ${JSON.stringify(result.error)}`);
+      // A caller supplying its own tools drives its own loop, so the Codali
+      // agentic executor must be bypassed and raw tool_calls returned.
+      expect(codaliCalls).toHaveLength(0);
+      expect(captured.url).toBe("http://runner.test/v1/chat/completions");
+      expect((captured.body?.tools as unknown[])).toHaveLength(1);
+      expect(captured.body?.tool_choice).toBe("auto");
+      const choices = result.openai_response?.choices as Array<{
+        message?: { tool_calls?: Array<{ function?: { name?: string } }> };
+      }>;
+      expect(choices[0]?.message?.tool_calls?.[0]?.function?.name).toBe("okacam_jira_search");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
 });

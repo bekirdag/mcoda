@@ -979,6 +979,47 @@ test("MswarmCodaliExecutor maps Ollama CLI agents to the Ollama runtime provider
   assert.equal(capturedInput.policy.mode, "protocol_loop");
 });
 
+test("MswarmCodaliExecutor preserves Claude CLI agents for the Codali Claude provider", async () => {
+  const executor = new MswarmCodaliExecutor();
+  const runtimeInput: { value?: CodaliRuntimeInput } = {};
+
+  await executor.invoke({
+    jobId: "job-claude-cli",
+    requestId: "req-claude-cli",
+    model: "mcoda-local-claude",
+    messages: [{ role: "user", content: "Return OK." }],
+    agent: {
+      slug: "claude-sonnet",
+      adapter: "claude-cli",
+      provider: "claude-cli",
+      model: "sonnet",
+      supportsTools: false,
+    },
+    workspace: { root: "/tmp/workspace", readOnly: true },
+    policy: {
+      allowShell: false,
+      allowWrites: false,
+    },
+    runCodali: async (input) => {
+      runtimeInput.value = input;
+      return {
+        finalMessage: "OK",
+        messages: [{ role: "assistant", content: "OK" }],
+        toolCallsExecuted: 0,
+        touchedFiles: [],
+        warnings: [],
+        events: [],
+        runId: "run-claude-cli",
+      } satisfies CodaliRuntimeResult;
+    },
+  });
+
+  const capturedInput = runtimeInput.value;
+  assert.ok(capturedInput);
+  assert.equal(capturedInput.provider.name, "claude-cli");
+  assert.equal(capturedInput.agent?.provider, "claude-cli");
+});
+
 test("MswarmCodaliExecutor maps OpenAI API agents to the OpenAI-compatible runtime provider", async () => {
   const executor = new MswarmCodaliExecutor();
   const runtimeInput: { value?: CodaliRuntimeInput } = {};

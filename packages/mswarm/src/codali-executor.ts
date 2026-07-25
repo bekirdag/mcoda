@@ -58,7 +58,7 @@ function normalizeCodaliProviderName(providerOrAdapter: unknown): string | undef
   if (value === "openai" || value === "openai-api" || value === "openai-compatible" || value === "openai-cli") {
     return "openai-compatible";
   }
-  if (value === "codex-cli") return "codex-cli";
+  if (value === "codex-cli" || value === "claude-cli") return value;
   return value;
 }
 
@@ -81,7 +81,7 @@ export interface CodaliRuntimeWorkspace {
 }
 
 export interface CodaliRuntimeProviderInput {
-  name: "openai-compatible" | "ollama-remote" | "codex-cli" | string;
+  name: "openai-compatible" | "ollama-remote" | "codex-cli" | "claude-cli" | string;
   model: string;
   baseUrl?: string;
   apiKey?: string;
