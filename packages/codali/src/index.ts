@@ -604,6 +604,7 @@ export type {
   ProviderMessage,
   ProviderUsage,
 } from "./providers/ProviderTypes.js";
+export { ClaudeCliProvider } from "./providers/ClaudeCliProvider.js";
 export type {
   CodaliRuntime,
   CodaliRuntimeAppToolContract,

@@ -16,6 +16,7 @@ import { createProvider } from "../providers/ProviderRegistry.js";
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
 import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
 import { CodexCliProvider } from "../providers/CodexCliProvider.js";
+import { ClaudeCliProvider } from "../providers/ClaudeCliProvider.js";
 import { MswarmWorkerProvider } from "../providers/MswarmWorkerProvider.js";
 import type {
   AgentEvent,
@@ -68,7 +69,7 @@ export interface CodaliRuntimeWorkspace {
 }
 
 export interface CodaliRuntimeProviderInput {
-  name: "openai-compatible" | "ollama-remote" | "codex-cli" | string;
+  name: "openai-compatible" | "ollama-remote" | "codex-cli" | "claude-cli" | string;
   model: string;
   baseUrl?: string;
   apiKey?: string;
@@ -1442,6 +1443,9 @@ const createRuntimeProvider = (input: CodaliRuntimeProviderInput): Provider => {
   }
   if (input.name === "codex-cli") {
     return new CodexCliProvider(config);
+  }
+  if (input.name === "claude-cli") {
+    return new ClaudeCliProvider(config);
   }
   if (input.name === "mswarm-worker") {
     return new MswarmWorkerProvider(config);

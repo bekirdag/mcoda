@@ -21,6 +21,7 @@ import type {
 import { OpenAiCompatibleProvider } from "../providers/OpenAiCompatibleProvider.js";
 import { OllamaRemoteProvider } from "../providers/OllamaRemoteProvider.js";
 import { CodexCliProvider } from "../providers/CodexCliProvider.js";
+import { ClaudeCliProvider } from "../providers/ClaudeCliProvider.js";
 import { MswarmWorkerProvider } from "../providers/MswarmWorkerProvider.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import { createFileTools } from "../tools/filesystem/FileTools.js";
@@ -1323,6 +1324,11 @@ const registerBuiltins = () => {
   }
   try {
     registerProvider("codex-cli", (config: ProviderConfig) => new CodexCliProvider(config));
+  } catch {
+    // ignore duplicate registrations
+  }
+  try {
+    registerProvider("claude-cli", (config: ProviderConfig) => new ClaudeCliProvider(config));
   } catch {
     // ignore duplicate registrations
   }
