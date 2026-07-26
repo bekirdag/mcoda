@@ -320,6 +320,54 @@ const inferClassifierDefaults = (
   };
 };
 
+/**
+ * Returns every complete, brace-balanced span in the text, in order, ignoring
+ * braces inside string literals. Prose can contain braces of its own, so the
+ * caller tries each span and keeps the first that is actually valid JSON.
+ */
+const extractBalancedJsonObjects = (text: string): string[] => {
+  const found: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+    } else if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        found.push(text.slice(start, index + 1));
+      }
+    }
+  }
+  return found;
+};
+
+const summarizeRawStageContent = (content: string) => {
+  const collapsed = content.replace(/\s+/g, " ").trim();
+  if (!collapsed) {
+    return "<empty response>";
+  }
+  return collapsed.length > 400 ? `${collapsed.slice(0, 400)}… (${collapsed.length} chars)` : collapsed;
+};
+
 const parseJsonObject = (content: string): unknown => {
   const trimmed = content.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1]?.trim();
@@ -327,14 +375,24 @@ const parseJsonObject = (content: string): unknown => {
   try {
     return JSON.parse(candidate);
   } catch {
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(candidate.slice(start, end + 1));
+    // Models wrap the object in prose, emit the fence mid-message, or add
+    // trailing commentary. Taking everything between the first '{' and the last
+    // '}' is not valid JSON whenever that surrounding text has braces of its
+    // own, and the resulting SyntaxError escaped unwrapped: it is not a
+    // CodaliGatewayPlannerError, so generateValidated fell through to its
+    // generic "could not be parsed or validated" and the model's actual output
+    // was discarded. In okacam that silently disabled the whole tool layer for
+    // the turn with nothing in the logs to diagnose it.
+    for (const balanced of extractBalancedJsonObjects(candidate)) {
+      try {
+        return JSON.parse(balanced);
+      } catch {
+        // Not this span - prose braces look balanced too. Try the next one.
+      }
     }
     throw new CodaliGatewayPlannerError(
       "GATEWAY_JSON_PARSE_FAILED",
-      "Planner stage returned non-JSON content.",
+      `Planner stage returned non-JSON content: ${summarizeRawStageContent(candidate)}`,
     );
   }
 };
@@ -950,7 +1008,9 @@ export class CodaliGatewayPlanner {
           }
           throw new CodaliGatewayPlannerError(
             "GATEWAY_STAGE_SCHEMA_INVALID",
-            `${stage} output could not be parsed or validated.`,
+            `${stage} output could not be parsed or validated (${
+              lastError instanceof Error ? lastError.message : String(lastError)
+            }): ${summarizeRawStageContent(lastRaw)}`,
           );
         }
         repairAttempts += 1;

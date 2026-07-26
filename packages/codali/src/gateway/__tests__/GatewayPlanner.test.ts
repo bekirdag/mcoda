@@ -510,3 +510,52 @@ test("planner prompt helper includes only effective allowed tools", () => {
   assert.match(messages[1]?.content ?? "", /docdex_search/);
   assert.doesNotMatch(messages[1]?.content ?? "", /github_search/);
 });
+
+test("planner recovers a JSON object wrapped in prose that also contains braces", async () => {
+  // Production regression: okacam saw "classifier output could not be parsed or
+  // validated" and degraded the turn to a no-tools retry. The cause was the
+  // first-'{'-to-last-'}' fallback: when the surrounding prose has braces of its
+  // own that span is not valid JSON, and the raw SyntaxError escaped unwrapped,
+  // so the real model output never reached the logs.
+  const provider = new StubProvider([
+    {
+      message: {
+        role: "assistant",
+        content:
+          'I first considered the {tenant_scope} option.\n' +
+          '```json\n' +
+          '{"queryType":"tenant_project_lookup","needsPrivateData":true,"needsFreshData":false,' +
+          '"needsDocdex":true,"needsAppTools":true,"needsImageWorker":false}\n' +
+          '```\n' +
+          'Use {this} for follow-ups.',
+      },
+    },
+    jsonResponse({
+      queryType: "tenant_project_lookup",
+      subquestions: [],
+      workerTasks: [],
+    }),
+  ]);
+
+  const result = await createCodaliGatewayPlanner(provider, { maxRepairAttempts: 0 }).plan({
+    request: baseRequest(),
+  });
+
+  assert.equal(result.classifier.queryType, "tenant_project_lookup");
+  assert.equal(result.classifier.needsAppTools, true);
+  assert.equal(result.classifierRepairAttempts, 0);
+});
+
+test("unparseable stage output reports what the model actually returned", async () => {
+  const provider = new StubProvider([
+    { message: { role: "assistant", content: "I cannot help with that request." } },
+  ]);
+
+  await assert.rejects(
+    createCodaliGatewayPlanner(provider, { maxRepairAttempts: 0 }).plan({ request: baseRequest() }),
+    (error: Error) => {
+      assert.match(error.message, /I cannot help with that request\./);
+      return true;
+    },
+  );
+});
