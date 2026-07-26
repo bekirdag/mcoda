@@ -512,8 +512,8 @@ test("planner prompt helper includes only effective allowed tools", () => {
 });
 
 test("planner recovers a JSON object wrapped in prose that also contains braces", async () => {
-  // Production regression: okacam saw "classifier output could not be parsed or
-  // validated" and degraded the turn to a no-tools retry. The cause was the
+  // Production regression: a caller saw "classifier output could not be parsed
+  // or validated" and degraded the turn to a no-tools retry. The cause was the
   // first-'{'-to-last-'}' fallback: when the surrounding prose has braces of its
   // own that span is not valid JSON, and the raw SyntaxError escaped unwrapped,
   // so the real model output never reached the logs.

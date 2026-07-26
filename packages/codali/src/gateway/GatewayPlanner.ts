@@ -381,8 +381,9 @@ const parseJsonObject = (content: string): unknown => {
     // own, and the resulting SyntaxError escaped unwrapped: it is not a
     // CodaliGatewayPlannerError, so generateValidated fell through to its
     // generic "could not be parsed or validated" and the model's actual output
-    // was discarded. In okacam that silently disabled the whole tool layer for
-    // the turn with nothing in the logs to diagnose it.
+    // was discarded. A caller that degrades on a gateway stage failure then
+    // silently loses its whole tool layer for the turn, with nothing in the
+    // logs to diagnose it.
     for (const balanced of extractBalancedJsonObjects(candidate)) {
       try {
         return JSON.parse(balanced);
