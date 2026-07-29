@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/core",
-  "version": "0.1.98",
+  "version": "0.1.99",
   "description": "Core services and APIs for the mcoda CLI.",
   "type": "module",
   "main": "dist/index.js",
@@ -36,11 +36,11 @@
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^10.1.0",
-    "@mcoda/shared": "workspace:*",
-    "@mcoda/db": "workspace:*",
     "@mcoda/agents": "workspace:*",
+    "@mcoda/db": "workspace:*",
     "@mcoda/generators": "workspace:*",
     "@mcoda/integrations": "workspace:*",
+    "@mcoda/shared": "workspace:*",
     "yaml": "^2.4.2"
   }
 }
