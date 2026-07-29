@@ -121,7 +121,11 @@ Environment:
   MSWARM_SELF_HOSTED_EXPOSURE_POLICY       all or none, defaults to all
 
 Setup options:
-  node install <CLIENTS>   Preferred setup flow; comma-separated client domains/IPs/UUIDs
+  node install <HANDLE>     Preferred setup flow; registers against an mswarm handle
+                            and waits for its owner to approve this machine
+  --handle <HANDLE>         Same, stated explicitly; fallback MSWARM_HANDLE
+  node install <CLIENTS>   Legacy setup flow when an API key is supplied;
+                            comma-separated client domains/IPs/UUIDs
   --api-key <KEY>           Owner mswarm API key; fallback MSWARM_API_KEY
   --api-key-stdin           Read owner API key from stdin for automation
   --clients <CLIENTS>       Comma-separated client domains, IPs, or UUIDs
@@ -213,6 +217,28 @@ async function readApiKeyFromStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
+/**
+ * `mswarm node install <handle>` registers against a handle and waits for its owner
+ * to approve; no API key is involved. The positional keeps its old meaning as a client
+ * allowlist whenever a key is supplied, so existing install scripts are unaffected.
+ */
+export function buildNodeHandleSetupArgs(argv: string[]): string[] | null {
+  const explicit = argv.indexOf("--handle");
+  if (explicit >= 0 && typeof argv[explicit + 1] === "string") {
+    const rest = [...argv];
+    const [handle] = rest.splice(explicit, 2).slice(1);
+    return ["--handle", handle, ...rest];
+  }
+  if (hasApiKeyArg(argv) || argv.includes("--api-key-stdin")) {
+    return null;
+  }
+  const [first, ...rest] = argv;
+  if (!first || first.startsWith("--") || /^msw[_-]/i.test(first)) {
+    return null;
+  }
+  return ["--handle", first, ...rest];
+}
+
 export async function buildNodeInstallSetupArgs(argv: string[]): Promise<string[]> {
   const args = [...argv];
   const stdinIndex = args.indexOf("--api-key-stdin");
@@ -226,6 +252,10 @@ export async function buildNodeInstallSetupArgs(argv: string[]): Promise<string[
       throw new Error("No API key received on stdin");
     }
     return ["--api-key", apiKey, ...buildNodeClientSetupArgs(args)];
+  }
+  const handleArgs = buildNodeHandleSetupArgs(args);
+  if (handleArgs) {
+    return handleArgs;
   }
   return buildNodeClientSetupArgs(args);
 }

@@ -2,7 +2,7 @@ import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/p
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cpus, freemem, hostname, homedir, loadavg, platform, totalmem, userInfo } from "node:os";
 import { spawn } from "node:child_process";
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { GlobalRepository } from "@mcoda/db";
 import {
@@ -196,6 +196,8 @@ export interface SelfHostedNodeState {
 }
 
 export interface SelfHostedOwnerSetupConfig {
+  /** Set for handle-based install; apiKey is unused in that case. */
+  handle?: string;
   apiKey: string;
   gatewayBaseUrl: string;
   serverName: string;
@@ -227,6 +229,74 @@ export interface SelfHostedOwnerSetupConfig {
   modelBlocklist: string[];
   clientAllowlist: SelfHostedNodeClientIdentity[];
   start: boolean;
+}
+
+const REGISTRATION_POLL_INTERVAL_MS = 5_000;
+const REGISTRATION_POLL_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Handle-based install: register this machine, print the code the owner must match,
+ * then wait for them to approve before collecting the runtime token. No API key is
+ * ever handled here, which is the point - the approval is the authorisation.
+ */
+async function registerAndAwaitApproval(
+  gateway: MswarmSelfHostedNodeClient,
+  setupConfig: SelfHostedOwnerSetupConfig,
+  machineFingerprint: string
+): Promise<GatewayBootstrapResponse> {
+  const registrationSecret = randomBytes(32).toString("hex");
+  const registered = await gateway.registerByHandle({
+    handle: setupConfig.handle,
+    server_name: setupConfig.serverName,
+    machine_fingerprint: machineFingerprint,
+    registration_secret: registrationSecret,
+    relay_mode: setupConfig.relayMode,
+    node_version: setupConfig.nodeVersion,
+    hostname: setupConfig.serverName,
+    client_allowlist: setupConfig.clientAllowlist
+  });
+  const nodeId = optionalText(registered.node_id);
+  if (!nodeId) {
+    throw new Error("Registration response did not include a node_id");
+  }
+  if (registered.approval_code) {
+    console.log("");
+    console.log(`  Approval code:  ${registered.approval_code}`);
+    console.log(`  Approve at:     ${setupConfig.gatewayBaseUrl.replace("api.", "app.")}`);
+    console.log(`  Waiting for ${setupConfig.handle} to approve this machine...`);
+    console.log("");
+  }
+
+  const deadline = Date.now() + REGISTRATION_POLL_TIMEOUT_MS;
+  for (;;) {
+    const claim = await gateway.claimRegistration(nodeId, registrationSecret);
+    if (claim.status === "approved") {
+      return claim;
+    }
+    if (claim.status === "rejected") {
+      throw new Error(`${setupConfig.handle} rejected this machine.`);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for approval. Re-run the installer once ${setupConfig.handle} has approved this machine.`
+      );
+    }
+    await sleep(REGISTRATION_POLL_INTERVAL_MS);
+  }
+}
+
+export interface GatewayRegisterResponse {
+  created?: boolean;
+  node_id?: string;
+  status?: string;
+  approval_code?: string | null;
+  handle?: string;
+  message?: string;
+}
+
+/** Same shape as a bootstrap response once approved, so setup can share the tail. */
+export interface GatewayClaimResponse extends GatewayBootstrapResponse {
+  status?: string;
 }
 
 export interface GatewayBootstrapResponse {
@@ -2336,8 +2406,11 @@ export async function readOwnerSetupConfig(
     optionalText(env.MSWARM_GATEWAY_BASE_URL) ||
     DEFAULT_SETUP_GATEWAY_BASE_URL;
   const apiKey = optionalText(options["api-key"]) || optionalText(env.MSWARM_API_KEY) || "";
-  if (!apiKey) {
-    throw new Error("--api-key or MSWARM_API_KEY is required");
+  const handle = optionalText(options.handle) || optionalText(env.MSWARM_HANDLE) || "";
+  // Either identifies the owner: a handle registers and waits for their approval, an
+  // API key bootstraps directly. One of them is required.
+  if (!apiKey && !handle) {
+    throw new Error("A handle (mswarm node install <handle>), --api-key, or MSWARM_API_KEY is required");
   }
   const relayMode = parseRelayMode(options.mode || env.MSWARM_SELF_HOSTED_RELAY_MODE);
   const directBaseUrl = optionalText(options["direct-url"]) || optionalText(env.MSWARM_SELF_HOSTED_DIRECT_BASE_URL);
@@ -2370,6 +2443,7 @@ export async function readOwnerSetupConfig(
   );
   return {
     apiKey,
+    handle: handle || undefined,
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
     serverName: normalizeLocalName(
       optionalText(options["server-name"]) ||
@@ -5174,6 +5248,43 @@ export class MswarmSelfHostedNodeClient {
     );
   }
 
+  /**
+   * Registers this machine against an mswarm handle. Carries no credential: the
+   * handle owner approving in the console is what authorises the node.
+   */
+  async registerByHandle(payload: Record<string, unknown>): Promise<GatewayRegisterResponse> {
+    return fetchJson<GatewayRegisterResponse>(
+      this.fetchImpl,
+      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/register`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      },
+      this.timeoutMs
+    );
+  }
+
+  /**
+   * Collects the runtime token once the owner has approved. The registration secret
+   * proves this is the machine that registered.
+   */
+  async claimRegistration(
+    nodeId: string,
+    registrationSecret: string
+  ): Promise<GatewayClaimResponse> {
+    return fetchJson<GatewayClaimResponse>(
+      this.fetchImpl,
+      `${this.gatewayBaseUrl}/v1/swarm/self-hosted/node/register/claim`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ node_id: nodeId, registration_secret: registrationSecret })
+      },
+      this.timeoutMs
+    );
+  }
+
   async bootstrap(apiKey: string, payload: Record<string, unknown>): Promise<GatewayBootstrapResponse> {
     return fetchJson<GatewayBootstrapResponse>(
       this.fetchImpl,
@@ -5609,7 +5720,9 @@ export class SelfHostedNodeRuntime {
       });
     const machineId = await readOrCreateSelfHostedMachineId(setupConfig.machineIdPath);
     const machineFingerprint = machineFingerprintFromId(machineId);
-    const bootstrap = await gateway.bootstrap(setupConfig.apiKey, {
+    const bootstrap = setupConfig.handle
+      ? await registerAndAwaitApproval(gateway, setupConfig, machineFingerprint)
+      : await gateway.bootstrap(setupConfig.apiKey, {
       machine_fingerprint: machineFingerprint,
       server_name: setupConfig.serverName,
       label: setupConfig.serverName,
@@ -5628,7 +5741,7 @@ export class SelfHostedNodeRuntime {
       load_reporting_enabled: setupConfig.loadReportingEnabled,
       hardware_telemetry_enabled: setupConfig.hardwareTelemetryEnabled,
       generic_job_max_concurrency: setupConfig.genericJobMaxConcurrency
-    });
+        });
     const nodeId = optionalText(bootstrap.node?.node_id);
     const runtimeToken = optionalText(bootstrap.runtime_token);
     if (!nodeId || !runtimeToken) {
