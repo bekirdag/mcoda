@@ -40,7 +40,9 @@ import {
   readSelfHostedNodeConfig,
   resolveSelfHostedNodeServiceLayout,
   uninstallSelfHostedNodeService,
-  SelfHostedNodeRuntime
+  SelfHostedNodeRuntime,
+  MswarmSelfHostedNodeClient,
+  pollRetryDelayMs
 } from "../runtime.js";
 
 function expect<T>(actual: T) {
@@ -5966,6 +5968,60 @@ describe("self-hosted node runtime", () => {
       expect(choices[0]?.message?.tool_calls?.[0]?.function?.name).toBe("okacam_jira_search");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("backs off a failing relay poll instead of retrying immediately", () => {
+    // A successful poll blocks at the gateway, so re-entering at once is right.
+    expect(pollRetryDelayMs(0)).toBe(0);
+    // A failing one returns straight away and must not spin.
+    expect(pollRetryDelayMs(1)).toBe(1_000);
+    expect(pollRetryDelayMs(2)).toBe(2_000);
+    expect(pollRetryDelayMs(3)).toBe(4_000);
+    // The delay is capped so a long outage still reconnects promptly once it ends.
+    expect(pollRetryDelayMs(30)).toBe(60_000);
+  });
+
+  it("stops the daemon when the gateway reports the node was removed", async () => {
+    const statePath = tempStatePath();
+    let heartbeats = 0;
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/v1/swarm/self-hosted/node/heartbeat")) {
+        heartbeats += 1;
+        // What the gateway returns for a tombstoned node.
+        return jsonResponse(
+          { error: { code: "unauthorized", message: "Self-hosted node credential is no longer usable" } },
+          410
+        );
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    const config = {
+      ...serviceConfigFor(statePath),
+      // Keep the loop off the network for job polling; the heartbeat is the path
+      // under test here.
+      relayMode: "direct" as const,
+      heartbeatIntervalSeconds: 1
+    };
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl,
+      gateway: new MswarmSelfHostedNodeClient({
+        gatewayBaseUrl: config.gatewayBaseUrl,
+        fetchImpl,
+        timeoutMs: config.requestTimeoutMs
+      })
+    });
+
+    const handle = runtime.startDaemon();
+    try {
+      // Well past two heartbeat intervals. A daemon that treated 410 as a transient
+      // error would have retried by now.
+      await delay(2_500);
+      expect(heartbeats).toBe(1);
+    } finally {
+      handle.stop();
     }
   });
 

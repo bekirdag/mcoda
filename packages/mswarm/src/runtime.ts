@@ -753,6 +753,21 @@ const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_LOCAL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_JOB_POLL_WAIT_MS = 2_000;
+const JOB_POLL_RETRY_BASE_MS = 1_000;
+const JOB_POLL_RETRY_MAX_MS = 60_000;
+
+/**
+ * Backoff for a failing relay poll. A successful poll blocks at the gateway for
+ * `wait_ms`, so on success the loop re-enters immediately; a failing one returns
+ * straight away and needs a delay of its own or it becomes a busy loop.
+ */
+export function pollRetryDelayMs(failureStreak: number): number {
+  if (failureStreak <= 0) {
+    return 0;
+  }
+  const backoff = JOB_POLL_RETRY_BASE_MS * 2 ** (failureStreak - 1);
+  return Math.min(backoff, JOB_POLL_RETRY_MAX_MS);
+}
 const DEFAULT_SELF_HOSTED_JOBS_POLL_PATH = "/v1/swarm/self-hosted/node/jobs/poll";
 const DEFAULT_SELF_HOSTED_JOBS_START_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/start";
 const DEFAULT_SELF_HOSTED_JOBS_EVENTS_PATH_TEMPLATE = "/v1/swarm/self-hosted/node/jobs/:jobId/events";
@@ -6999,42 +7014,86 @@ export class SelfHostedNodeRuntime {
   startDaemon(): SelfHostedNodeDaemonHandle {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let polling = false;
+    let pollFailureStreak = 0;
+
+    const halt = () => {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    // 410 is the gateway retiring this node's credentials for good: it was removed or
+    // rejected there, and no amount of retrying brings it back. Stop both loops rather
+    // than hammering the gateway and filling the journal forever. The daemon stays
+    // installed and the machine keeps running - taking it out of service belongs to
+    // whoever owns the box, which may not be whoever removed the node.
+    const haltIfRevoked = (error: unknown): boolean => {
+      if (!isHttpStatusError(error, 410)) {
+        return false;
+      }
+      halt();
+      console.error(
+        `[mswarm] this node was removed at the gateway (node ${this.config.nodeId}). ` +
+          `Heartbeat and relay polling have stopped. Run \`mswarm node uninstall\` to remove ` +
+          `the daemon, or re-register the machine to use it again.`
+      );
+      return true;
+    };
+
     const poll = () => {
       if (stopped || polling || this.lifecyclePollingDisabled || this.config.relayMode === "direct") return;
       polling = true;
       void this.pollAndExecuteJob()
+        .then(() => {
+          pollFailureStreak = 0;
+        })
         .catch((error) => {
+          if (haltIfRevoked(error)) {
+            return;
+          }
+          pollFailureStreak += 1;
           console.error(`[mswarm] self-hosted relay poll failed: ${runtimeErrorMessage(error)}`);
         })
         .finally(() => {
           polling = false;
-          if (!stopped) {
-            setTimeout(poll, 0);
+          if (stopped) {
+            return;
           }
+          // A healthy poll long-polls at the gateway, so re-entering immediately is
+          // correct. A failing one returns at once, so without this the loop spins as
+          // fast as the network allows.
+          pollTimer = setTimeout(poll, pollRetryDelayMs(pollFailureStreak));
         });
     };
+
     const schedule = () => {
       if (stopped) return;
       timer = setTimeout(() => {
         void this.runOnce()
-          .catch(() => undefined)
+          .catch((error) => {
+            haltIfRevoked(error);
+          })
           .finally(schedule);
       }, this.config.heartbeatIntervalSeconds * 1000);
     };
+
     void this.runOnce()
-      .catch(() => undefined)
+      .catch((error) => {
+        haltIfRevoked(error);
+      })
       .finally(() => {
         schedule();
         poll();
       });
-    return {
-      stop: () => {
-        stopped = true;
-        if (timer) {
-          clearTimeout(timer);
-        }
-      }
-    };
+
+    return { stop: halt };
   }
 }
