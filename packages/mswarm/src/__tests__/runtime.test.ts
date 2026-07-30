@@ -11,6 +11,7 @@ import {
   buildInstallSetupArgs,
   buildNodeInstallSetupArgs,
   buildSelfHostedNodeApp,
+  formatNodeUninstallSummary,
   isSelfHostedNodeDirectRun,
   normalizeMswarmCommand
 } from "../server.js";
@@ -5970,6 +5971,36 @@ describe("self-hosted node runtime", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("reports an uninstall in prose rather than a JSON dump", () => {
+    const layout = {
+      manager: "systemd" as const,
+      serviceName: "mswarm-node.service",
+      servicePath: "/home/u/.config/systemd/user/mswarm-node.service",
+      logPath: "/tmp/out.log",
+      errorLogPath: "/tmp/err.log",
+      action: "uninstall" as const,
+      stdout: "",
+      stderr: ""
+    };
+
+    const clean = formatNodeUninstallSummary({ ...layout, ok: true }, { notified: true });
+    expect(clean).toContain("Removed the mswarm node service (systemd: mswarm-node.service).");
+    expect(clean).toContain("Told mswarm this machine is going away");
+    // Uninstalling only marks the node unreachable, so the record still needs removing.
+    expect(clean).toContain("still registered");
+    // The whole point: no JSON.
+    expect(clean.includes("{")).toBe(false);
+
+    const failed = formatNodeUninstallSummary(
+      { ...layout, ok: false, stderr: "Failed to disable unit." },
+      { notified: false, error: "missing runtime token" }
+    );
+    expect(failed).toContain("Could not fully remove");
+    expect(failed).toContain("Failed to disable unit.");
+    expect(failed).toContain("Could not tell mswarm this machine is going away: missing runtime token");
+    expect(failed.includes("{")).toBe(false);
   });
 
   it("backs off a failing relay poll instead of retrying immediately", () => {

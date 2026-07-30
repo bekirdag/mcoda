@@ -51,7 +51,8 @@ import {
   genericJobCapabilityMismatch,
   type SelfHostedGenericNodeJob,
   type SelfHostedNodeConfig,
-  type SelfHostedNodeInvocationJob
+  type SelfHostedNodeInvocationJob,
+  type SelfHostedNodeServiceControlResult
 } from "./runtime.js";
 
 const SELF_HOSTED_NODE_PROCESS_TITLE = "mswarm-node";
@@ -2252,7 +2253,50 @@ async function runNodeUninstall(): Promise<void> {
       serviceManager: layout.manager
     });
   }
-  console.log(JSON.stringify({ ...result, gateway_notification: gatewayNotification }, null, 2));
+  console.log(formatNodeUninstallSummary(result, gatewayNotification));
+}
+
+/**
+ * `mswarm node uninstall` is run by a person at a terminal, so it reports in prose.
+ * It used to dump the raw service-control record, which buried the only two things
+ * that matter: whether the daemon is gone, and whether the gateway was told.
+ */
+export function formatNodeUninstallSummary(
+  result: SelfHostedNodeServiceControlResult,
+  gateway: { notified: boolean; error?: string }
+): string {
+  const lines: string[] = [];
+
+  if (result.ok) {
+    lines.push(`Removed the mswarm node service (${result.manager}: ${result.serviceName}).`);
+  } else {
+    lines.push(
+      `Could not fully remove the mswarm node service (${result.manager}: ${result.serviceName}).`
+    );
+    const detail = result.message || result.stderr.trim() || result.stdout.trim();
+    if (detail) {
+      lines.push(`  ${detail}`);
+    }
+    lines.push(`  Service file: ${result.servicePath}`);
+  }
+
+  if (gateway.notified) {
+    lines.push("Told mswarm this machine is going away; it now shows as unreachable.");
+  } else {
+    lines.push(
+      gateway.error
+        ? `Could not tell mswarm this machine is going away: ${gateway.error}`
+        : "Could not tell mswarm this machine is going away."
+    );
+  }
+
+  // Uninstalling only marks the node unreachable - the record stays until its owner
+  // removes it, and saying so here saves a round trip to work out why it is still listed.
+  lines.push(
+    "The server is still registered. Remove it from the mswarm console when you no longer want it listed."
+  );
+
+  return lines.join("\n");
 }
 
 async function runNodeForeground(label = "run"): Promise<void> {
