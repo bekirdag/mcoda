@@ -42,7 +42,8 @@ import {
   uninstallSelfHostedNodeService,
   SelfHostedNodeRuntime,
   MswarmSelfHostedNodeClient,
-  pollRetryDelayMs
+  pollRetryDelayMs,
+  REVOKED_RECHECK_INTERVAL_MS
 } from "../runtime.js";
 
 function expect<T>(actual: T) {
@@ -5982,7 +5983,7 @@ describe("self-hosted node runtime", () => {
     expect(pollRetryDelayMs(30)).toBe(60_000);
   });
 
-  it("stops the daemon when the gateway reports the node was removed", async () => {
+  it("stops hammering the gateway when it reports the node was removed", async () => {
     const statePath = tempStatePath();
     let heartbeats = 0;
     const fetchImpl = (async (url: string | URL | Request) => {
@@ -6017,12 +6018,16 @@ describe("self-hosted node runtime", () => {
     const handle = runtime.startDaemon();
     try {
       // Well past two heartbeat intervals. A daemon that treated 410 as a transient
-      // error would have retried by now.
+      // error would have retried at full rate by now.
       await delay(2_500);
       expect(heartbeats).toBe(1);
     } finally {
       handle.stop();
     }
+
+    // It slows down rather than giving up: a removal can be undone at the gateway, and
+    // the machine has to notice that by itself.
+    expect(REVOKED_RECHECK_INTERVAL_MS).toBe(15 * 60 * 1000);
   });
 
 });

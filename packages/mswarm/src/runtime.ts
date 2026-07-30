@@ -755,6 +755,12 @@ const DEFAULT_LOCAL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_JOB_POLL_WAIT_MS = 2_000;
 const JOB_POLL_RETRY_BASE_MS = 1_000;
 const JOB_POLL_RETRY_MAX_MS = 60_000;
+/**
+ * How often a node the gateway has removed re-checks whether that was undone. Rare
+ * enough to be invisible next to a normal heartbeat, frequent enough that restoring a
+ * node in the console brings the machine back without anyone logging into it.
+ */
+export const REVOKED_RECHECK_INTERVAL_MS = 15 * 60 * 1000;
 
 /**
  * Backoff for a failing relay poll. A successful poll blocks at the gateway for
@@ -7017,6 +7023,7 @@ export class SelfHostedNodeRuntime {
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let polling = false;
     let pollFailureStreak = 0;
+    let revoked = false;
 
     const halt = () => {
       stopped = true;
@@ -7030,33 +7037,62 @@ export class SelfHostedNodeRuntime {
       }
     };
 
-    // 410 is the gateway retiring this node's credentials for good: it was removed or
-    // rejected there, and no amount of retrying brings it back. Stop both loops rather
-    // than hammering the gateway and filling the journal forever. The daemon stays
-    // installed and the machine keeps running - taking it out of service belongs to
-    // whoever owns the box, which may not be whoever removed the node.
-    const haltIfRevoked = (error: unknown): boolean => {
+    // 410 means the gateway has retired this node's credentials: it was removed there.
+    // Retrying at full rate achieves nothing but a hot loop and a flooded journal, so
+    // stop relay polling and drop the heartbeat to a slow revalidation. It is not a
+    // full stop, because a removal can be undone at the gateway within its restore
+    // window and the machine has to notice that on its own - nobody may have shell
+    // access to it. The daemon deliberately does not uninstall itself either: a box can
+    // be registered to someone else's handle, and whoever removed the node may not own
+    // the hardware.
+    const noteRevoked = (error: unknown): boolean => {
       if (!isHttpStatusError(error, 410)) {
         return false;
       }
-      halt();
-      console.error(
-        `[mswarm] this node was removed at the gateway (node ${this.config.nodeId}). ` +
-          `Heartbeat and relay polling have stopped. Run \`mswarm node uninstall\` to remove ` +
-          `the daemon, or re-register the machine to use it again.`
-      );
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      if (!revoked) {
+        revoked = true;
+        console.error(
+          `[mswarm] this node was removed at the gateway (node ${this.config.nodeId}). ` +
+            `Relay polling has stopped and the heartbeat has slowed to every ` +
+            `${Math.round(REVOKED_RECHECK_INTERVAL_MS / 60_000)} minutes in case the removal is ` +
+            `undone. Run \`mswarm node uninstall\` to remove the daemon for good.`
+        );
+      }
       return true;
     };
 
+    const noteAlive = () => {
+      if (!revoked) {
+        return;
+      }
+      revoked = false;
+      console.error(
+        `[mswarm] node ${this.config.nodeId} is accepted at the gateway again; resuming normal operation.`
+      );
+      poll();
+    };
+
     const poll = () => {
-      if (stopped || polling || this.lifecyclePollingDisabled || this.config.relayMode === "direct") return;
+      if (
+        stopped ||
+        polling ||
+        revoked ||
+        this.lifecyclePollingDisabled ||
+        this.config.relayMode === "direct"
+      ) {
+        return;
+      }
       polling = true;
       void this.pollAndExecuteJob()
         .then(() => {
           pollFailureStreak = 0;
         })
         .catch((error) => {
-          if (haltIfRevoked(error)) {
+          if (noteRevoked(error)) {
             return;
           }
           pollFailureStreak += 1;
@@ -7064,7 +7100,7 @@ export class SelfHostedNodeRuntime {
         })
         .finally(() => {
           polling = false;
-          if (stopped) {
+          if (stopped || revoked) {
             return;
           }
           // A healthy poll long-polls at the gateway, so re-entering immediately is
@@ -7076,18 +7112,23 @@ export class SelfHostedNodeRuntime {
 
     const schedule = () => {
       if (stopped) return;
-      timer = setTimeout(() => {
-        void this.runOnce()
-          .catch((error) => {
-            haltIfRevoked(error);
-          })
-          .finally(schedule);
-      }, this.config.heartbeatIntervalSeconds * 1000);
+      timer = setTimeout(
+        () => {
+          void this.runOnce()
+            .then(noteAlive)
+            .catch((error) => {
+              noteRevoked(error);
+            })
+            .finally(schedule);
+        },
+        revoked ? REVOKED_RECHECK_INTERVAL_MS : this.config.heartbeatIntervalSeconds * 1000
+      );
     };
 
     void this.runOnce()
+      .then(noteAlive)
       .catch((error) => {
-        haltIfRevoked(error);
+        noteRevoked(error);
       })
       .finally(() => {
         schedule();
