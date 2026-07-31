@@ -1,6 +1,8 @@
 import type {
+  GenerativeModality,
   MswarmGenericJobOpsJobSummary,
   MswarmGenericJobOpsSummary,
+  SelfHostedGenerativeOperation,
 } from "@mcoda/core";
 
 export type McodaRuntimeMode = "programmatic" | "cli_fallback" | "custom";
@@ -49,6 +51,7 @@ export type McodaLocalRunnerKind =
   | "vllm"
   | "llama-cpp"
   | "llama-cpp-python"
+  | "stable-diffusion-cpp"
   | "lm-studio"
   | "localai"
   | "sglang"
@@ -67,6 +70,10 @@ export type McodaLocalRunnerResponseFormatStrategy =
 
 export interface McodaLocalRunnerCatalogMetadata {
   baseUrl: string | null;
+  publicModelId?: string | null;
+  inputModalities?: GenerativeModality[];
+  outputModalities?: GenerativeModality[];
+  operations?: SelfHostedGenerativeOperation[];
   runnerKind: McodaLocalRunnerKind | string | null;
   authMode: McodaLocalRunnerAuthMode | string | null;
   responseFormatStrategy: McodaLocalRunnerResponseFormatStrategy | string | null;
@@ -161,6 +168,10 @@ export interface McodaAgentCatalogEntry {
   adapter: string | null;
   model: string | null;
   defaultModel: string | null;
+  publicModelId?: string | null;
+  inputModalities?: GenerativeModality[];
+  outputModalities?: GenerativeModality[];
+  operations?: SelfHostedGenerativeOperation[];
   healthStatus: string | null;
   healthReason?: string | null;
   clientIdentity?: string | null;

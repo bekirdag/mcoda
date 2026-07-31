@@ -1,3 +1,9 @@
+import {
+  normalizeGenerativeModalities,
+  normalizeSelfHostedGenerativeOperation,
+  type GenerativeModality,
+  type SelfHostedGenerativeOperation,
+} from "@mcoda/core";
 import type {
   McodaAgentCatalogEntry,
   McodaAgentManagedKind,
@@ -79,6 +85,101 @@ const numberFromRecords = (
     }
   }
   return null;
+};
+
+const generativeModalitiesFromRecords = (
+  records: Array<Record<string, unknown> | undefined>,
+  keys: string[],
+  fallback: GenerativeModality[]
+): GenerativeModality[] => {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const modalities = normalizeGenerativeModalities(record[key]);
+      if (modalities) return modalities;
+    }
+  }
+  return [...fallback];
+};
+
+const canonicalizeOperationLimits = (
+  value: unknown
+): Record<string, unknown> | undefined => {
+  if (!isRecord(value)) return undefined;
+  return {
+    maxRequestBytes: value.maxRequestBytes ?? value.max_request_bytes,
+    maxOutputBytes: value.maxOutputBytes ?? value.max_output_bytes,
+    maxPromptChars: value.maxPromptChars ?? value.max_prompt_chars,
+    maxNegativePromptChars:
+      value.maxNegativePromptChars ?? value.max_negative_prompt_chars,
+    maxN: value.maxN ?? value.max_n,
+    maxWidth: value.maxWidth ?? value.max_width,
+    maxHeight: value.maxHeight ?? value.max_height,
+    maxPixels: value.maxPixels ?? value.max_pixels,
+    minDurationSeconds:
+      value.minDurationSeconds ?? value.min_duration_seconds,
+    maxDurationSeconds:
+      value.maxDurationSeconds ?? value.max_duration_seconds,
+    maxSampleRate: value.maxSampleRate ?? value.max_sample_rate,
+    maxSteps: value.maxSteps ?? value.max_steps,
+  };
+};
+
+const canonicalizeOperationDescriptor = (value: unknown): unknown => {
+  if (!isRecord(value)) return value;
+  return {
+    operation: value.operation ?? value.type,
+    path: value.path,
+    method: value.method,
+    requestParameterAllowlist:
+      value.requestParameterAllowlist ??
+      value.request_parameter_allowlist ??
+      value.supportedParameters ??
+      value.supported_parameters,
+    responseFormats: value.responseFormats ?? value.response_formats,
+    outputMimeTypes: value.outputMimeTypes ?? value.output_mime_types,
+    limits: canonicalizeOperationLimits(value.limits),
+  };
+};
+
+const normalizeOperationDescriptors = (
+  value: unknown
+): SelfHostedGenerativeOperation[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const operations: SelfHostedGenerativeOperation[] = [];
+  for (const candidate of value) {
+    const operation = normalizeSelfHostedGenerativeOperation(
+      canonicalizeOperationDescriptor(candidate)
+    );
+    if (
+      operation &&
+      !operations.some((entry) => entry.operation === operation.operation)
+    ) {
+      operations.push(operation);
+    }
+  }
+  return operations;
+};
+
+const defaultChatOperationDescriptors = (): SelfHostedGenerativeOperation[] => {
+  const operation = normalizeSelfHostedGenerativeOperation({
+    operation: "chat.completions",
+  });
+  if (!operation) {
+    throw new Error("Invalid built-in chat.completions operation");
+  }
+  return [operation];
+};
+
+const generativeOperationsFromRecords = (
+  records: Array<Record<string, unknown> | undefined>
+): SelfHostedGenerativeOperation[] => {
+  for (const record of records) {
+    if (!record) continue;
+    if (!Object.prototype.hasOwnProperty.call(record, "operations")) continue;
+    return normalizeOperationDescriptors(record.operations) ?? [];
+  }
+  return defaultChatOperationDescriptors();
 };
 
 const normalizeSelfHostedClientIdentity = (
@@ -198,23 +299,44 @@ export function normalizeAgentCatalogEntry(
     stringValue(mswarmWorker?.workerId) ??
     remoteSlug ??
     "agent";
+  const upstreamModel =
+    stringValue(record.upstreamModel) ??
+    stringValue(record.upstream_model);
   const defaultModel =
     stringValue(record.defaultModel) ??
+    upstreamModel ??
     stringValue(record.default_model) ??
     stringValue(record.defaultModelId) ??
-    stringValue(record.model_id) ??
     stringValue(mswarmCloud?.modelId) ??
     stringValue(mswarmSelfHosted?.modelId) ??
-    stringValue(mswarmWorker?.modelId);
+    stringValue(mswarmWorker?.modelId) ??
+    stringValue(record.model_id);
   const model =
     stringValue(record.model) ??
+    upstreamModel ??
     stringValue(record.modelId) ??
-    stringValue(record.model_id) ??
+    stringValue(mswarmSelfHosted?.modelId) ??
     defaultModel;
   const adapter =
     stringValue(record.adapter) ??
     stringValue(mswarmSelfHosted?.adapter) ??
     (mswarmWorker ? "mswarm-worker" : null);
+  const generativeRecords = [record, mswarmSelfHosted, localRunner, config];
+  const publicModelId = stringFromRecords(generativeRecords, [
+    "publicModelId",
+    "public_model_id",
+  ]) ?? (upstreamModel ? stringValue(record.model_id) : null);
+  const inputModalities = generativeModalitiesFromRecords(
+    generativeRecords,
+    ["inputModalities", "input_modalities"],
+    ["text"]
+  );
+  const outputModalities = generativeModalitiesFromRecords(
+    generativeRecords,
+    ["outputModalities", "output_modalities"],
+    ["text"]
+  );
+  const operations = generativeOperationsFromRecords(generativeRecords);
   const localRunnerMetadata = normalizeLocalRunnerMetadata(
     record,
     config,
@@ -303,6 +425,10 @@ export function normalizeAgentCatalogEntry(
     adapter,
     model,
     defaultModel,
+    publicModelId,
+    inputModalities,
+    outputModalities,
+    operations,
     healthStatus,
     healthReason: healthReason ?? selfHostedLifecycle?.reason ?? null,
     clientIdentity,
@@ -454,6 +580,25 @@ function normalizeLocalRunnerMetadata(
     : false;
   const records = [localRunner, config, adapterIsLocal ? record : undefined];
   const baseUrl = stringFromRecords(records, ["baseUrl", "endpoint", "apiBaseUrl"]);
+  const upstreamModel = stringFromRecords(records, [
+    "upstreamModel",
+    "upstream_model",
+  ]);
+  const publicModelId = stringFromRecords(records, [
+    "publicModelId",
+    "public_model_id",
+  ]) ?? (upstreamModel ? stringFromRecords(records, ["model_id"]) : null);
+  const inputModalities = generativeModalitiesFromRecords(
+    records,
+    ["inputModalities", "input_modalities"],
+    ["text"]
+  );
+  const outputModalities = generativeModalitiesFromRecords(
+    records,
+    ["outputModalities", "output_modalities"],
+    ["text"]
+  );
+  const operations = generativeOperationsFromRecords(records);
   const runnerKind =
     stringFromRecords(records, ["runnerKind"]) ?? defaultRunnerKindForAdapter(adapter);
   const authMode = stringFromRecords(records, ["authMode"]);
@@ -484,6 +629,10 @@ function normalizeLocalRunnerMetadata(
 
   return {
     baseUrl,
+    publicModelId,
+    inputModalities,
+    outputModalities,
+    operations,
     runnerKind,
     authMode,
     responseFormatStrategy,

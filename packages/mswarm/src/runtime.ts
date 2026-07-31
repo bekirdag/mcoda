@@ -17,6 +17,8 @@ import {
   type MswarmCodaliWorkspace
 } from "./codali-executor.js";
 import {
+  GENERATIVE_OPERATION_DEFAULT_PATHS,
+  GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS,
   MSWARM_CAPABILITY_SCHEMA_VERSION,
   CryptoHelper,
   assertMswarmSafeRelativePath,
@@ -27,8 +29,13 @@ import {
   buildMswarmSandboxProfile,
   defaultMswarmArtifactAccessPolicy,
   defaultMswarmArtifactRetentionPolicy,
+  normalizeGenerativeModalities,
+  normalizeSelfHostedGenerativeOperation,
   projectMswarmPublicCapabilities,
   validateMswarmGenericJobRequest,
+  type GenerativeModality,
+  type GenerativeOperation,
+  type GenerativeOperationLimits,
   type MswarmArtifactStoreDescriptor,
   type MswarmGpuCapabilityProbe,
   type MswarmGpuDeviceCapability,
@@ -48,7 +55,8 @@ import {
   type MswarmSandboxProfile,
   type MswarmSignedCapabilityPayload,
   type MswarmSoftwareProbeName,
-  type MswarmSoftwareProbeResult
+  type MswarmSoftwareProbeResult,
+  type SelfHostedGenerativeOperation
 } from "@mcoda/shared";
 
 export type FetchLike = typeof fetch;
@@ -62,6 +70,58 @@ export type CommandRunner = (
   options: { timeoutMs: number; maxBuffer: number; input?: string; signal?: AbortSignal }
 ) => Promise<{ stdout: string; stderr: string }>;
 export type SelfHostedModelHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown" | "blocked";
+export type SelfHostedGenerativeOperationName = GenerativeOperation;
+export type SelfHostedGenerativeModality = GenerativeModality;
+
+type SelfHostedGenerativeOperationConfig = Omit<
+  SelfHostedGenerativeOperation,
+  "method" | "requestParameterAllowlist" | "responseFormats" | "outputMimeTypes"
+> & {
+  path: string;
+  method: "POST";
+  requestParameterAllowlist: string[];
+  responseFormats?: readonly string[];
+  outputMimeTypes?: readonly string[];
+};
+
+export interface SelfHostedGenerativeOperationCatalogInput {
+  type: SelfHostedGenerativeOperationName;
+  path: string;
+  method: "POST";
+  supported_parameters: string[];
+  response_formats?: string[];
+  output_mime_types?: string[];
+  limits?: {
+    max_request_bytes?: number;
+    max_output_bytes?: number;
+    max_prompt_chars?: number;
+    max_negative_prompt_chars?: number;
+    max_n?: number;
+    max_width?: number;
+    max_height?: number;
+    max_pixels?: number;
+    min_duration_seconds?: number;
+    max_duration_seconds?: number;
+    max_sample_rate?: number;
+    max_steps?: number;
+  };
+}
+
+type McodaLocalRunnerConfig = LocalOpenAiCompatibleRunnerConfig & {
+  inputModalities?: SelfHostedGenerativeModality[];
+  outputModalities?: SelfHostedGenerativeModality[];
+  operations?: SelfHostedGenerativeOperationConfig[];
+  publicModelId?: string;
+  generativeRunnerKind?: "stable-diffusion-cpp";
+};
+
+type MswarmGenerativeAgent = MswarmCodaliAgent & {
+  generativeOperations: SelfHostedGenerativeOperationConfig[];
+  inputModalities: SelfHostedGenerativeModality[];
+  outputModalities: SelfHostedGenerativeModality[];
+  publicModelId?: string;
+  generativeRunnerKind?: "stable-diffusion-cpp";
+};
 
 export interface SelfHostedNodeClientIdentity {
   kind: SelfHostedNodeClientKind;
@@ -77,6 +137,8 @@ export interface SelfHostedModelInput {
   source_agent_id?: string | null;
   source_agent_slug?: string | null;
   model_id?: string | null;
+  public_model_id?: string | null;
+  upstream_model?: string | null;
   base_url?: string | null;
   runner_kind?: string | null;
   auth_mode?: string | null;
@@ -106,6 +168,9 @@ export interface SelfHostedModelInput {
   max_complexity?: number | null;
   health_status?: SelfHostedModelHealthStatus;
   metadata_quality?: string | null;
+  input_modalities?: SelfHostedGenerativeModality[];
+  output_modalities?: SelfHostedGenerativeModality[];
+  operations?: SelfHostedGenerativeOperationCatalogInput[];
 }
 
 export interface SelfHostedNodeConfig {
@@ -400,6 +465,7 @@ export interface SelfHostedNodeInvocationJob {
   request_id: string;
   node_id: string;
   agent_slug: string;
+  operation?: SelfHostedGenerativeOperationName;
   remote_slug?: string;
   provider?: "mcoda" | "ollama";
   execution_runtime?: "codali" | "raw" | string;
@@ -436,18 +502,27 @@ export interface SelfHostedNodeInvocationJob {
   };
   openai_request: {
     model: string;
-    messages: SelfHostedOpenAIChatMessage[];
+    messages?: SelfHostedOpenAIChatMessage[];
+    prompt?: string;
+    n?: number;
+    size?: string;
+    seed?: number;
+    steps?: number;
+    negative_prompt?: string;
+    duration_seconds?: number;
+    sample_rate?: number;
     stream?: boolean;
     temperature?: number;
     top_p?: number;
     max_tokens?: number;
     stop?: string | string[];
-    response_format?: Record<string, unknown> | null;
+    response_format?: Record<string, unknown> | string | null;
     // OpenAI-standard function calling forwarded by the relay. When present the
     // node performs a direct pass-through to the local runner instead of running
     // the Codali agentic loop, so the caller owns the tool loop.
     tools?: Record<string, unknown>[];
     tool_choice?: unknown;
+    [key: string]: unknown;
   };
   scheduling?: MswarmJobScheduling;
   policy?: {
@@ -478,6 +553,7 @@ export interface SelfHostedGenericNodeJob {
 export interface SelfHostedNodeInvocationResult {
   job_id: string;
   request_id: string;
+  operation?: SelfHostedGenerativeOperationName;
   status: "success" | "failed";
   pre_start_failure?: boolean;
   openai_response?: Record<string, unknown>;
@@ -884,6 +960,14 @@ const SECRET_LOCAL_RUNNER_HEADER_KEYS = new Set(["authorization", "proxy-authori
 const RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS = new Set([
   "model",
   "messages",
+  "prompt",
+  "n",
+  "size",
+  "seed",
+  "steps",
+  "negative_prompt",
+  "duration_seconds",
+  "sample_rate",
   "stream",
   "tools",
   "tool_choice",
@@ -891,6 +975,22 @@ const RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS = new Set([
   "max_tokens",
   "temperature"
 ]);
+const REQUIRED_GENERATIVE_OPERATION_REQUEST_PARAMETERS: Record<
+  SelfHostedGenerativeOperationName,
+  readonly string[]
+> = {
+  "chat.completions": ["model", "messages"],
+  "images.generations": ["model", "prompt", "response_format"],
+  "audio.generations": ["model", "prompt", "response_format"]
+};
+const AUDIO_GENERATION_RESPONSE_FORMATS = new Set(["wav", "flac", "mp3", "ogg"]);
+const STABLE_DIFFUSION_CPP_EXTRA_ARGS_TAG_PATTERN =
+  /<sd_cpp_extra_args\b[^>]*>[\s\S]*?<\/sd_cpp_extra_args\s*>/gi;
+const STABLE_DIFFUSION_CPP_EXTRA_ARGS_TAG_FRAGMENT_PATTERN =
+  /<\/?sd_cpp_extra_args\b[^>]*>/gi;
+const DEFAULT_IMAGE_GENERATIVE_OUTPUT_BYTES = 64 * 1024 * 1024;
+const DEFAULT_AUDIO_GENERATIVE_OUTPUT_BYTES = 64 * 1024 * 1024;
+const GENERATIVE_RESPONSE_JSON_OVERHEAD_BYTES = 64 * 1024;
 const LOCAL_RUNNER_KIND_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibleRunnerConfig["runnerKind"]>> = {
   vllm: "vllm",
   "llama-cpp": "llama-cpp",
@@ -912,6 +1012,13 @@ const LOCAL_RUNNER_KIND_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibl
   "text-generation-inference": "tgi",
   text_generation_inference: "tgi",
   custom: "custom"
+};
+const GENERATIVE_RUNNER_KIND_ALIASES: Record<string, "stable-diffusion-cpp"> = {
+  "stable-diffusion-cpp": "stable-diffusion-cpp",
+  "stable-diffusion.cpp": "stable-diffusion-cpp",
+  stable_diffusion_cpp: "stable-diffusion-cpp",
+  "sd-cpp": "stable-diffusion-cpp",
+  "sd.cpp": "stable-diffusion-cpp"
 };
 const LOCAL_RUNNER_AUTH_MODE_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibleRunnerConfig["authMode"]>> = {
   none: "none",
@@ -945,6 +1052,178 @@ function optionalText(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function normalizeSelfHostedGenerativeOperationName(
+  value: unknown
+): SelfHostedGenerativeOperationName | null {
+  const normalized = optionalText(value);
+  return normalized === "chat.completions" ||
+    normalized === "images.generations" ||
+    normalized === "audio.generations"
+    ? normalized
+    : null;
+}
+
+export function resolveSelfHostedInvocationOperation(value: unknown): SelfHostedGenerativeOperationName {
+  const raw = optionalText(value);
+  if (!raw) {
+    return "chat.completions";
+  }
+  const operation = normalizeSelfHostedGenerativeOperationName(raw);
+  if (!operation) {
+    throw new Error(`unsupported self-hosted operation ${raw}`);
+  }
+  return operation;
+}
+
+function normalizeGenerativeOperationDescriptor(value: unknown): SelfHostedGenerativeOperationConfig | null {
+  const record = isRecord(value)
+    ? {
+        ...value,
+        operation: value.operation ?? value.type,
+        requestParameterAllowlist:
+          value.requestParameterAllowlist ??
+          value.request_parameter_allowlist ??
+          value.supported_parameters,
+        responseFormats: value.responseFormats ?? value.response_formats,
+        outputMimeTypes: value.outputMimeTypes ?? value.output_mime_types
+      }
+    : value;
+  const normalized = normalizeSelfHostedGenerativeOperation(record);
+  if (!normalized) return null;
+  const operation = normalized.operation;
+  const requestParameterAllowlist = Array.from(
+    new Set([
+      ...REQUIRED_GENERATIVE_OPERATION_REQUEST_PARAMETERS[operation],
+      ...((normalized.requestParameterAllowlist ??
+        GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS[operation]) as readonly string[])
+    ])
+  );
+  const responseFormats =
+    normalized.responseFormats?.length
+      ? normalized.responseFormats
+      : operation === "chat.completions"
+        ? undefined
+        : operation === "images.generations"
+          ? ["b64_json"]
+          : ["wav", "flac", "mp3", "ogg"];
+  return {
+    operation,
+    path: normalized.path,
+    method: "POST",
+    requestParameterAllowlist,
+    ...(responseFormats?.length ? { responseFormats } : {}),
+    ...(normalized.outputMimeTypes?.length ? { outputMimeTypes: normalized.outputMimeTypes } : {}),
+    ...(normalized.limits ? { limits: normalized.limits } : {})
+  };
+}
+
+function defaultGenerativeOperationDescriptor(
+  operation: SelfHostedGenerativeOperationName,
+  path = GENERATIVE_OPERATION_DEFAULT_PATHS[operation]
+): SelfHostedGenerativeOperationConfig {
+  return {
+    operation,
+    path,
+    method: "POST",
+    requestParameterAllowlist: [...GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS[operation]],
+    ...(operation === "images.generations"
+      ? { responseFormats: ["b64_json"] }
+      : operation === "audio.generations"
+        ? { responseFormats: ["wav", "flac", "mp3", "ogg"] }
+        : {})
+  };
+}
+
+function normalizeGenerativeOperations(value: unknown): SelfHostedGenerativeOperationConfig[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return [];
+  const operations = value
+    .map((entry) => normalizeGenerativeOperationDescriptor(entry))
+    .filter((entry): entry is SelfHostedGenerativeOperationConfig => Boolean(entry));
+  const deduplicated = new Map<SelfHostedGenerativeOperationName, SelfHostedGenerativeOperationConfig>();
+  for (const operation of operations) {
+    if (!deduplicated.has(operation.operation)) {
+      deduplicated.set(operation.operation, operation);
+    }
+  }
+  return Array.from(deduplicated.values());
+}
+
+function inferGenerativeModalities(
+  operations: SelfHostedGenerativeOperationConfig[],
+  direction: "input" | "output"
+): SelfHostedGenerativeModality[] {
+  const modalities = new Set<SelfHostedGenerativeModality>();
+  for (const descriptor of operations) {
+    if (direction === "input" || descriptor.operation === "chat.completions") {
+      modalities.add("text");
+    }
+    if (direction === "output" && descriptor.operation === "images.generations") {
+      modalities.add("image");
+    }
+    if (direction === "output" && descriptor.operation === "audio.generations") {
+      modalities.add("audio");
+    }
+  }
+  return Array.from(modalities);
+}
+
+function generativeOperationCatalogInput(
+  descriptor: SelfHostedGenerativeOperationConfig
+): SelfHostedGenerativeOperationCatalogInput {
+  const limits = descriptor.limits
+    ? {
+        ...(descriptor.limits.maxRequestBytes !== undefined
+          ? { max_request_bytes: descriptor.limits.maxRequestBytes }
+          : {}),
+        ...(descriptor.limits.maxOutputBytes !== undefined
+          ? { max_output_bytes: descriptor.limits.maxOutputBytes }
+          : {}),
+        ...(descriptor.limits.maxPromptChars !== undefined
+          ? { max_prompt_chars: descriptor.limits.maxPromptChars }
+          : {}),
+        ...(descriptor.limits.maxNegativePromptChars !== undefined
+          ? { max_negative_prompt_chars: descriptor.limits.maxNegativePromptChars }
+          : {}),
+        ...(descriptor.limits.maxN !== undefined ? { max_n: descriptor.limits.maxN } : {}),
+        ...(descriptor.limits.maxWidth !== undefined
+          ? { max_width: descriptor.limits.maxWidth }
+          : {}),
+        ...(descriptor.limits.maxHeight !== undefined
+          ? { max_height: descriptor.limits.maxHeight }
+          : {}),
+        ...(descriptor.limits.maxPixels !== undefined
+          ? { max_pixels: descriptor.limits.maxPixels }
+          : {}),
+        ...(descriptor.limits.minDurationSeconds !== undefined
+          ? { min_duration_seconds: descriptor.limits.minDurationSeconds }
+          : {}),
+        ...(descriptor.limits.maxDurationSeconds !== undefined
+          ? { max_duration_seconds: descriptor.limits.maxDurationSeconds }
+          : {}),
+        ...(descriptor.limits.maxSampleRate !== undefined
+          ? { max_sample_rate: descriptor.limits.maxSampleRate }
+          : {}),
+        ...(descriptor.limits.maxSteps !== undefined
+          ? { max_steps: descriptor.limits.maxSteps }
+          : {})
+      }
+    : undefined;
+  return {
+    type: descriptor.operation,
+    path: descriptor.path,
+    method: descriptor.method,
+    supported_parameters: [...descriptor.requestParameterAllowlist],
+    ...(descriptor.responseFormats?.length
+      ? { response_formats: [...descriptor.responseFormats] }
+      : {}),
+    ...(descriptor.outputMimeTypes?.length
+      ? { output_mime_types: [...descriptor.outputMimeTypes] }
+      : {}),
+    ...(limits ? { limits } : {})
+  };
 }
 
 function normalizeLookupKey(value: string): string {
@@ -1010,6 +1289,11 @@ function normalizeLocalRunnerKind(value: unknown): LocalOpenAiCompatibleRunnerCo
   return normalized ? LOCAL_RUNNER_KIND_ALIASES[normalizeLookupKey(normalized)] : undefined;
 }
 
+function normalizeGenerativeRunnerKind(value: unknown): "stable-diffusion-cpp" | undefined {
+  const normalized = optionalText(value);
+  return normalized ? GENERATIVE_RUNNER_KIND_ALIASES[normalizeLookupKey(normalized)] : undefined;
+}
+
 function normalizeLocalRunnerAuthMode(value: unknown): LocalOpenAiCompatibleRunnerConfig["authMode"] {
   const normalized = optionalText(value);
   return normalized ? LOCAL_RUNNER_AUTH_MODE_ALIASES[normalizeLookupKey(normalized)] : undefined;
@@ -1025,18 +1309,24 @@ function normalizeLocalRunnerResponseFormatStrategy(
 function normalizeMcodaLocalRunnerConfig(
   adapter: string,
   config: Record<string, unknown> | null | undefined
-): LocalOpenAiCompatibleRunnerConfig | undefined {
+): McodaLocalRunnerConfig | undefined {
   if (!isLocalOpenAiCompatibleAdapter(adapter)) return undefined;
   const configRecord = config ?? {};
   const localRunnerRecord = isRecord(configRecord.localRunner) ? configRecord.localRunner : {};
   const merged = { ...localRunnerRecord, ...configRecord };
   const authMode = normalizeLocalRunnerAuthMode(merged.authMode) ?? "none";
   const dummyBearerToken = readConfigString(merged, ["dummyBearerToken", "dummyApiKey"]);
+  const generativeRunnerKind = normalizeGenerativeRunnerKind(
+    merged.runnerKind ?? merged.runner_kind
+  );
   return {
     baseUrl: readConfigString(merged, ["baseUrl", "base_url", "endpoint", "apiBaseUrl", "api_base_url"]),
     endpoint: readConfigString(merged, ["endpoint"]),
     apiBaseUrl: readConfigString(merged, ["apiBaseUrl", "api_base_url"]),
-    runnerKind: normalizeLocalRunnerKind(merged.runnerKind) ?? defaultLocalRunnerKindForAdapter(adapter),
+    runnerKind:
+      normalizeLocalRunnerKind(merged.runnerKind ?? merged.runner_kind) ??
+      (generativeRunnerKind ? "custom" : defaultLocalRunnerKindForAdapter(adapter)),
+    generativeRunnerKind,
     authMode,
     dummyBearerToken: authMode === "dummy-bearer" ? dummyBearerToken ?? "local" : dummyBearerToken,
     headers: normalizeStringMap(merged.headers),
@@ -1048,7 +1338,11 @@ function normalizeMcodaLocalRunnerConfig(
     supportsStreaming: readConfigBoolean(merged, ["supportsStreaming", "supports_streaming"]),
     supportsTools: readConfigBoolean(merged, ["supportsTools", "supports_tools"]),
     supportsJsonSchema: readConfigBoolean(merged, ["supportsJsonSchema", "supports_json_schema"]),
-    supportsGbnf: readConfigBoolean(merged, ["supportsGbnf", "supports_gbnf"])
+    supportsGbnf: readConfigBoolean(merged, ["supportsGbnf", "supports_gbnf"]),
+    inputModalities: normalizeGenerativeModalities(merged.inputModalities ?? merged.input_modalities),
+    outputModalities: normalizeGenerativeModalities(merged.outputModalities ?? merged.output_modalities),
+    operations: normalizeGenerativeOperations(merged.operations),
+    publicModelId: readConfigString(merged, ["publicModelId", "public_model_id"])
   };
 }
 
@@ -1441,8 +1735,23 @@ function buildCatalogFingerprint(models: SelfHostedModelInput[]): string {
       adapter: optionalText(model.adapter) || null,
       source_agent_slug: optionalText(model.source_agent_slug) || null,
       model_id: optionalText(model.model_id) || optionalText(model.model) || null,
+      public_model_id: optionalText(model.public_model_id) || null,
+      upstream_model: optionalText(model.upstream_model) || optionalText(model.model) || null,
       exposed: model.exposed !== false,
       capabilities: normalizeCapabilities(model.capabilities).sort(),
+      input_modalities: [...(model.input_modalities ?? [])].sort(),
+      output_modalities: [...(model.output_modalities ?? [])].sort(),
+      operations: (model.operations ?? [])
+        .map((operation) => ({
+          type: operation.type,
+          path: operation.path,
+          method: operation.method,
+          supported_parameters: [...operation.supported_parameters].sort(),
+          response_formats: [...(operation.response_formats ?? [])].sort(),
+          output_mime_types: [...(operation.output_mime_types ?? [])].sort(),
+          limits: operation.limits ?? null
+        }))
+        .sort((left, right) => left.type.localeCompare(right.type)),
       health_status: normalizeHealthStatus(model.health_status)
     }))
     .sort((left, right) => `${left.provider || ""}:${left.name}`.localeCompare(`${right.provider || ""}:${right.name}`));
@@ -1660,6 +1969,86 @@ async function fetchJson<T>(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function generativeOutputByteLimit(
+  operation: "images.generations" | "audio.generations",
+  configuredLimit: number | undefined
+): number {
+  if (
+    typeof configuredLimit === "number" &&
+    Number.isSafeInteger(configuredLimit) &&
+    configuredLimit > 0
+  ) {
+    return configuredLimit;
+  }
+  return operation === "images.generations"
+    ? DEFAULT_IMAGE_GENERATIVE_OUTPUT_BYTES
+    : DEFAULT_AUDIO_GENERATIVE_OUTPUT_BYTES;
+}
+
+function generativeJsonResponseByteLimit(outputByteLimit: number): number {
+  const encodedLimit = Math.ceil(outputByteLimit / 3) * 4;
+  return Math.min(
+    Number.MAX_SAFE_INTEGER,
+    encodedLimit + GENERATIVE_RESPONSE_JSON_OVERHEAD_BYTES
+  );
+}
+
+async function readBoundedResponseText(
+  response: Response,
+  maxBytes: number,
+  overflowMessage: string
+): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength >= 0 &&
+    declaredLength > maxBytes
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(overflowMessage);
+  }
+  if (!response.body) {
+    return "";
+  }
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(overflowMessage);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, totalBytes).toString("utf8");
+}
+
+function base64DecodedByteLength(value: string): number | null {
+  if (
+    value.length === 0 ||
+    value.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value)
+  ) {
+    return null;
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
+}
+
+function sanitizeStableDiffusionCppExtraArgsTags(value: string): string {
+  return value
+    .replace(STABLE_DIFFUSION_CPP_EXTRA_ARGS_TAG_PATTERN, "")
+    .replace(STABLE_DIFFUSION_CPP_EXTRA_ARGS_TAG_FRAGMENT_PATTERN, "")
+    .trim();
 }
 
 export async function readSelfHostedNodeState(statePath: string): Promise<SelfHostedNodeState> {
@@ -2546,17 +2935,20 @@ export function mapOllamaModelToSelfHostedModel(
   const parameterSize = optionalText(model.details?.parameter_size);
   const quantizationLevel = optionalText(model.details?.quantization_level);
   const embeddingOnly = isEmbeddingModel(name, family);
+  const operations = [defaultGenerativeOperationDescriptor("chat.completions", "/api/chat")];
+  const supportsVision = isVisionModel(name, family);
   return {
     name,
     provider: "ollama",
     adapter: "ollama",
     model_id: name,
+    upstream_model: name,
     digest: optionalText(model.digest),
     family,
     parameter_size: parameterSize,
     quantization_level: quantizationLevel,
     supports_tools: false,
-    supports_vision: isVisionModel(name, family),
+    supports_vision: supportsVision,
     openai_compatible: false,
     exposed: isModelExposed(name, family, config),
     best_usage: embeddingOnly
@@ -2568,7 +2960,10 @@ export function mapOllamaModelToSelfHostedModel(
     reasoning_rating: 4,
     max_complexity: 3,
     health_status: "healthy",
-    metadata_quality: model.details ? "discovered" : "unknown"
+    metadata_quality: model.details ? "discovered" : "unknown",
+    input_modalities: supportsVision ? ["text", "image"] : ["text"],
+    output_modalities: ["text"],
+    operations: operations.map(generativeOperationCatalogInput)
   };
 }
 
@@ -2598,6 +2993,20 @@ export function mapMcodaAgentToSelfHostedModel(
   const openaiCompatible =
     localRunner !== undefined || optionalBoolean(agent.openaiCompatible, agent.openai_compatible) === true;
   const model = defaultModel || slug;
+  const operations =
+    localRunner?.operations ??
+    [defaultGenerativeOperationDescriptor("chat.completions", localRunner ? "/chat/completions" : undefined)];
+  const inferredInputModalities = inferGenerativeModalities(operations, "input");
+  const supportsVision =
+    capabilities.some((capability) => capability.toLowerCase().includes("vision")) ||
+    capabilities.some((capability) => capability.toLowerCase().includes("visual"));
+  const inputModalities =
+    localRunner?.inputModalities ??
+    (supportsVision && operations.some((entry) => entry.operation === "chat.completions")
+      ? Array.from(new Set<SelfHostedGenerativeModality>([...inferredInputModalities, "image"]))
+      : inferredInputModalities);
+  const outputModalities = localRunner?.outputModalities ?? inferGenerativeModalities(operations, "output");
+  const publicModelId = localRunner?.publicModelId;
   return {
     name: slug,
     provider: "mcoda",
@@ -2605,9 +3014,11 @@ export function mapMcodaAgentToSelfHostedModel(
     source_agent_id: optionalText(agent.id),
     source_agent_slug: slug,
     model,
-    model_id: model,
+    model_id: publicModelId || model,
+    public_model_id: publicModelId,
+    upstream_model: model,
     base_url: localRunner?.baseUrl,
-    runner_kind: localRunner?.runnerKind,
+    runner_kind: localRunner?.generativeRunnerKind ?? localRunner?.runnerKind,
     auth_mode: localRunner?.authMode,
     response_format_strategy: localRunner?.responseFormatStrategy,
     health_path: localRunner?.healthPath,
@@ -2617,9 +3028,7 @@ export function mapMcodaAgentToSelfHostedModel(
     max_output_tokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens),
     supports_tools: supportsTools,
     supports_streaming: localRunner?.supportsStreaming,
-    supports_vision:
-      capabilities.some((capability) => capability.toLowerCase().includes("vision")) ||
-      capabilities.some((capability) => capability.toLowerCase().includes("visual")),
+    supports_vision: supportsVision,
     supports_json_schema: localRunner?.supportsJsonSchema,
     supports_gbnf: localRunner?.supportsGbnf,
     openai_compatible: openaiCompatible,
@@ -2633,7 +3042,10 @@ export function mapMcodaAgentToSelfHostedModel(
     reasoning_rating: optionalNumber(agent.reasoningRating, agent.reasoning_rating),
     max_complexity: optionalNumber(agent.maxComplexity, agent.max_complexity),
     health_status: healthStatus,
-    metadata_quality: "discovered"
+    metadata_quality: "discovered",
+    input_modalities: inputModalities,
+    output_modalities: outputModalities,
+    operations: operations.map(generativeOperationCatalogInput)
   };
 }
 
@@ -3000,13 +3412,16 @@ function mcodaAgentRequiresApiKey(agent: McodaAgentListEntry, mapped: MswarmCoda
   return mapped.authMode === "bearer";
 }
 
-function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: string): MswarmCodaliAgent {
+function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: string): MswarmGenerativeAgent {
   const adapter = optionalText(agent.adapter) || "unknown";
   const model = mcodaAgentDefaultModel(agent) || fallbackSlug;
   const config = agent.config ?? null;
   const localRunner = normalizeMcodaLocalRunnerConfig(adapter, config);
   const configAuthMode = normalizeLocalRunnerAuthMode(config?.authMode);
   const supportsTools = optionalBoolean(agent.supportsTools, agent.supports_tools, localRunner?.supportsTools) === true;
+  const generativeOperations =
+    localRunner?.operations ??
+    [defaultGenerativeOperationDescriptor("chat.completions", localRunner ? "/chat/completions" : undefined)];
   return {
     slug: optionalText(agent.slug) || fallbackSlug,
     adapter,
@@ -3020,6 +3435,7 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
       : configText(config, "apiKey", "api_key"),
     localRunner,
     runnerKind: localRunner?.runnerKind,
+    generativeRunnerKind: localRunner?.generativeRunnerKind,
     authMode: localRunner?.authMode ?? configAuthMode,
     dummyBearerToken: localRunner?.dummyBearerToken,
     headers: localRunner?.headers,
@@ -3035,6 +3451,12 @@ function mapMcodaAgentToCodaliAgent(agent: McodaAgentListEntry, fallbackSlug: st
     capabilities: normalizeCapabilities(agent.capabilities),
     contextWindow: optionalNumber(agent.contextWindow, agent.context_window) ?? undefined,
     maxOutputTokens: optionalNumber(agent.maxOutputTokens, agent.max_output_tokens) ?? undefined,
+    generativeOperations,
+    inputModalities:
+      localRunner?.inputModalities ?? inferGenerativeModalities(generativeOperations, "input"),
+    outputModalities:
+      localRunner?.outputModalities ?? inferGenerativeModalities(generativeOperations, "output"),
+    publicModelId: localRunner?.publicModelId
   };
 }
 
@@ -3063,6 +3485,7 @@ const PRE_START_JOB_ERROR_CODES = new Set([
   "selected_agent_unavailable",
   "selected_agent_auth_unavailable",
   "selected_agent_unhealthy",
+  "unsupported_operation",
   "validation_failed",
   "docdex_context_missing",
   "docdex_api_key_missing",
@@ -3292,7 +3715,7 @@ function buildCodaliJob(job: SelfHostedNodeInvocationJob): MswarmCodaliJob | und
   return {
     id: optionalText(payload.id) || job.job_id,
     jobType,
-    input: payload.input ?? messagesToPrompt(job.openai_request.messages),
+    input: payload.input ?? messagesToPrompt(job.openai_request.messages ?? []),
     context: objectRecord(payload.context) || undefined,
     tenant: objectRecord(payload.tenant) || undefined,
     requester: objectRecord(payload.requester) || undefined,
@@ -3338,7 +3761,7 @@ function normalizeGatewayConversation(
   value: unknown,
 ): MswarmCodaliGateway["conversation"] | undefined {
   const record = objectRecord(value);
-  const rawMessages = Array.isArray(record?.messages) ? record.messages : job.openai_request.messages;
+  const rawMessages = Array.isArray(record?.messages) ? record.messages : (job.openai_request.messages ?? []);
   const messages = rawMessages
     .map((entry): MswarmCodaliGatewayConversationMessage | null => {
       const message = objectRecord(entry);
@@ -3448,7 +3871,7 @@ function normalizeGatewayDocdex(
 function buildCodaliGateway(job: SelfHostedNodeInvocationJob): MswarmCodaliGateway | undefined {
   const payload = job.codali_gateway;
   if (!payload) return undefined;
-  const query = optionalText(payload.query) || messagesToPrompt(job.openai_request.messages);
+  const query = optionalText(payload.query) || messagesToPrompt(job.openai_request.messages ?? []);
   return {
     id: optionalText(payload.id) || job.job_id,
     query,
@@ -5473,6 +5896,7 @@ export class SelfHostedNodeRuntime {
   private readonly codaliExecutor: MswarmCodaliExecutor;
   private readonly ollama: OllamaClient;
   private readonly jobOllama: OllamaClient;
+  private readonly fetchImpl: FetchLike;
   private readonly genericRunners: Map<string, MswarmGenericJobRunner>;
   private readonly artifactStore: MswarmGenericJobArtifactStore;
   private readonly capabilityRunner: CommandRunner;
@@ -5500,6 +5924,7 @@ export class SelfHostedNodeRuntime {
     }
   ) {
     this.config = config;
+    this.fetchImpl = deps?.fetchImpl || fetch;
     this.gateway =
       deps?.gateway ||
       new MswarmSelfHostedNodeClient({
@@ -5508,7 +5933,7 @@ export class SelfHostedNodeRuntime {
         jobsStartPathTemplate: config.jobsStartPathTemplate,
         jobsEventsPathTemplate: config.jobsEventsPathTemplate,
         jobsResultPathTemplate: config.jobsResultPathTemplate,
-        fetchImpl: deps?.fetchImpl,
+        fetchImpl: this.fetchImpl,
         timeoutMs: config.requestTimeoutMs
       });
     this.mcoda =
@@ -5530,14 +5955,14 @@ export class SelfHostedNodeRuntime {
       deps?.ollama ||
       new OllamaClient({
         baseUrl: config.ollamaBaseUrl,
-        fetchImpl: deps?.fetchImpl,
+        fetchImpl: this.fetchImpl,
         timeoutMs: config.requestTimeoutMs
       });
     this.jobOllama =
       deps?.ollama ||
       new OllamaClient({
         baseUrl: config.ollamaBaseUrl,
-        fetchImpl: deps?.fetchImpl,
+        fetchImpl: this.fetchImpl,
         timeoutMs: config.jobTimeoutMs
       });
     this.capabilityRunner = deps?.capabilityRunner || defaultCommandRunner;
@@ -5638,11 +6063,16 @@ export class SelfHostedNodeRuntime {
   }
 
   private jobResultPayload(result: SelfHostedNodeInvocationResult): SelfHostedNodeInvocationResult & { node_id: string } {
+    const operation = normalizeSelfHostedGenerativeOperationName(result.operation) ?? "chat.completions";
     return {
       ...result,
       node_id: this.config.nodeId,
       ...(result.status === "success"
-        ? { usage: result.usage || openAiUsage(result.openai_response) }
+        ? result.usage
+          ? { usage: result.usage }
+          : operation === "chat.completions"
+            ? { usage: openAiUsage(result.openai_response) }
+            : {}
         : {})
     };
   }
@@ -6081,7 +6511,7 @@ export class SelfHostedNodeRuntime {
     }
     const body: Record<string, unknown> = {
       model: optionalText(agent.model) || job.openai_request.model,
-      messages: job.openai_request.messages,
+      messages: job.openai_request.messages ?? [],
       tools: job.openai_request.tools,
       stream: false
     };
@@ -6092,7 +6522,7 @@ export class SelfHostedNodeRuntime {
     if (job.openai_request.stop !== undefined) body.stop = job.openai_request.stop;
 
     const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
-    const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const response = await this.fetchImpl(url, { method: "POST", headers, body: JSON.stringify(body) });
     const text = await response.text();
     let payload: unknown = null;
     try {
@@ -6108,7 +6538,387 @@ export class SelfHostedNodeRuntime {
     return payload as Record<string, unknown>;
   }
 
-  private async resolveMcodaAgentForJob(job: SelfHostedNodeInvocationJob): Promise<MswarmCodaliAgent> {
+  private generativeOperationForAgent(
+    agent: MswarmGenerativeAgent,
+    operation: SelfHostedGenerativeOperationName
+  ): SelfHostedGenerativeOperationConfig {
+    const descriptor = agent.generativeOperations.find((entry) => entry.operation === operation);
+    if (!descriptor) {
+      throw new SelfHostedPreStartJobError(
+        "unsupported_operation",
+        `selected local mcoda agent ${agent.slug} does not expose ${operation}`
+      );
+    }
+    return descriptor;
+  }
+
+  private prepareOpenAiGenerativePassthrough(
+    job: SelfHostedNodeInvocationJob,
+    agent: MswarmGenerativeAgent,
+    operation: "images.generations" | "audio.generations"
+  ): {
+    descriptor: SelfHostedGenerativeOperationConfig;
+    url: string;
+    headers: Record<string, string>;
+    body: Record<string, unknown>;
+  } {
+    const descriptor = this.generativeOperationForAgent(agent, operation);
+    if (job.openai_request.stream === true) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} does not support streaming through the self-hosted relay`
+      );
+    }
+    const baseUrl = optionalText(agent.baseUrl);
+    if (!baseUrl) {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unavailable",
+        `agent has no local runner base URL for ${operation}`
+      );
+    }
+    let parsedBaseUrl: URL;
+    try {
+      parsedBaseUrl = new URL(baseUrl);
+    } catch {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unavailable",
+        `agent has an invalid local runner base URL for ${operation}`
+      );
+    }
+    if (
+      (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") ||
+      parsedBaseUrl.username ||
+      parsedBaseUrl.password ||
+      parsedBaseUrl.search ||
+      parsedBaseUrl.hash
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "selected_agent_unavailable",
+        `agent local runner base URL is not valid for ${operation}`
+      );
+    }
+
+    const prompt = optionalText(job.openai_request.prompt);
+    if (!prompt) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} requires a non-empty prompt`);
+    }
+    const rawResponseFormat = job.openai_request.response_format;
+    if (rawResponseFormat !== undefined && rawResponseFormat !== null && typeof rawResponseFormat !== "string") {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} response_format must be a string`
+      );
+    }
+    const responseFormats =
+      descriptor.responseFormats?.map((entry) => entry.toLowerCase()) ??
+      (operation === "images.generations" ? ["b64_json"] : ["wav", "flac", "mp3", "ogg"]);
+    const requestedResponseFormat = (
+      optionalText(rawResponseFormat) ||
+      (operation === "images.generations" ? "b64_json" : responseFormats[0] || "wav")
+    ).toLowerCase();
+    if (
+      !responseFormats.includes(requestedResponseFormat) ||
+      (operation === "images.generations"
+        ? requestedResponseFormat !== "b64_json"
+        : !AUDIO_GENERATION_RESPONSE_FORMATS.has(requestedResponseFormat))
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        operation === "images.generations"
+          ? `${operation} requires response_format b64_json through the self-hosted relay`
+          : `${operation} response_format must be one of wav, flac, mp3, or ogg`
+      );
+    }
+
+    const body: Record<string, unknown> = {};
+    for (const parameter of descriptor.requestParameterAllowlist) {
+      if (parameter === "model") {
+        body.model = optionalText(agent.model) || job.openai_request.model;
+      } else if (parameter === "response_format") {
+        body.response_format = requestedResponseFormat;
+      } else if (job.openai_request[parameter] !== undefined) {
+        body[parameter] = job.openai_request[parameter];
+      }
+    }
+    body.model = optionalText(agent.model) || job.openai_request.model;
+    body.prompt = prompt;
+    body.response_format = requestedResponseFormat;
+
+    const n = body.n;
+    if (n !== undefined && (!Number.isSafeInteger(n) || (n as number) <= 0)) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} n must be a positive integer`);
+    }
+    const durationSeconds = body.duration_seconds;
+    if (
+      durationSeconds !== undefined &&
+      (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} duration_seconds must be a positive number`
+      );
+    }
+    const sampleRate = body.sample_rate;
+    if (
+      sampleRate !== undefined &&
+      (!Number.isSafeInteger(sampleRate) || (sampleRate as number) <= 0)
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} sample_rate must be a positive integer`
+      );
+    }
+    const steps = body.steps;
+    if (steps !== undefined && (!Number.isSafeInteger(steps) || (steps as number) <= 0)) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} steps must be a positive integer`);
+    }
+    const seed = body.seed;
+    if (seed !== undefined && !Number.isSafeInteger(seed)) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} seed must be an integer`);
+    }
+    if (body.size !== undefined && typeof body.size !== "string") {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} size must be a string`);
+    }
+    if (body.negative_prompt !== undefined && typeof body.negative_prompt !== "string") {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} negative_prompt must be a string`
+      );
+    }
+
+    const limits = descriptor.limits;
+    if (limits?.maxPromptChars && prompt.length > limits.maxPromptChars) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} prompt exceeds the configured limit`);
+    }
+    if (
+      limits?.maxNegativePromptChars &&
+      typeof body.negative_prompt === "string" &&
+      body.negative_prompt.length > limits.maxNegativePromptChars
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} negative_prompt exceeds the configured limit`
+      );
+    }
+    if (limits?.maxN && typeof n === "number" && n > limits.maxN) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} n exceeds the configured limit`);
+    }
+    if (
+      limits?.minDurationSeconds &&
+      typeof durationSeconds === "number" &&
+      durationSeconds < limits.minDurationSeconds
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} duration_seconds is below the configured minimum`
+      );
+    }
+    if (
+      limits?.maxDurationSeconds &&
+      typeof durationSeconds === "number" &&
+      durationSeconds > limits.maxDurationSeconds
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} duration_seconds exceeds the configured limit`
+      );
+    }
+    if (
+      limits?.maxSampleRate &&
+      typeof sampleRate === "number" &&
+      sampleRate > limits.maxSampleRate
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} sample_rate exceeds the configured limit`
+      );
+    }
+    if (limits?.maxSteps && typeof steps === "number" && steps > limits.maxSteps) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} steps exceeds the configured limit`);
+    }
+    if (typeof body.size === "string") {
+      const sizeMatch = /^([1-9][0-9]*)x([1-9][0-9]*)$/.exec(body.size);
+      if (sizeMatch) {
+        const width = Number(sizeMatch[1]);
+        const height = Number(sizeMatch[2]);
+        if (
+          (limits?.maxWidth && width > limits.maxWidth) ||
+          (limits?.maxHeight && height > limits.maxHeight) ||
+          (limits?.maxPixels && width * height > limits.maxPixels)
+        ) {
+          throw new SelfHostedPreStartJobError(
+            "validation_failed",
+            `${operation} size exceeds the configured limit`
+          );
+        }
+      }
+    }
+    if (
+      operation === "images.generations" &&
+      agent.generativeRunnerKind === "stable-diffusion-cpp"
+    ) {
+      const sanitizedPrompt = sanitizeStableDiffusionCppExtraArgsTags(prompt);
+      if (!sanitizedPrompt) {
+        throw new SelfHostedPreStartJobError(
+          "validation_failed",
+          `${operation} prompt is empty after removing reserved stable-diffusion.cpp tags`
+        );
+      }
+      const controlledArgs: Record<string, unknown> = {};
+      if (typeof body.negative_prompt === "string") {
+        controlledArgs.negative_prompt =
+          sanitizeStableDiffusionCppExtraArgsTags(body.negative_prompt);
+      }
+      if (typeof seed === "number") {
+        controlledArgs.seed = seed;
+      }
+      if (typeof steps === "number") {
+        controlledArgs.sample_params = { sample_steps: steps };
+      }
+      body.prompt =
+        Object.keys(controlledArgs).length > 0
+          ? `${sanitizedPrompt}\n<sd_cpp_extra_args>${JSON.stringify(controlledArgs)}</sd_cpp_extra_args>`
+          : sanitizedPrompt;
+      delete body.negative_prompt;
+      delete body.seed;
+      delete body.steps;
+    }
+
+    const serializedBody = JSON.stringify(body);
+    if (limits?.maxRequestBytes && Buffer.byteLength(serializedBody, "utf8") > limits.maxRequestBytes) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} request exceeds the configured byte limit`
+      );
+    }
+
+    const headers: Record<string, string> = {};
+    const bearer =
+      agent.authMode === "bearer"
+        ? optionalText(agent.apiKey)
+        : agent.authMode === "dummy-bearer"
+          ? optionalText(agent.dummyBearerToken) || "local"
+          : undefined;
+    if (bearer) {
+      headers.authorization = `Bearer ${bearer}`;
+    }
+    for (const [key, value] of Object.entries(agent.headers ?? {})) {
+      if (typeof value === "string") {
+        headers[key.toLowerCase()] = value;
+      }
+    }
+    headers["content-type"] = "application/json";
+
+    return {
+      descriptor,
+      url: `${baseUrl.replace(/\/+$/, "")}${descriptor.path}`,
+      headers,
+      body
+    };
+  }
+
+  private async executeOpenAiGenerativePassthrough(
+    prepared: {
+      descriptor: SelfHostedGenerativeOperationConfig;
+      url: string;
+      headers: Record<string, string>;
+      body: Record<string, unknown>;
+    },
+    operation: "images.generations" | "audio.generations"
+  ): Promise<Record<string, unknown>> {
+    const outputByteLimit = generativeOutputByteLimit(
+      operation,
+      prepared.descriptor.limits?.maxOutputBytes
+    );
+    const jsonResponseByteLimit = generativeJsonResponseByteLimit(outputByteLimit);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.jobTimeoutMs);
+    let payload: unknown;
+    try {
+      const response = await this.fetchImpl(prepared.url, {
+        method: "POST",
+        headers: prepared.headers,
+        body: JSON.stringify(prepared.body),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`local ${operation} runner request failed with status ${response.status}`);
+      }
+      const responseText = await readBoundedResponseText(
+        response,
+        jsonResponseByteLimit,
+        `local ${operation} runner response exceeds the configured byte limit`
+      );
+      try {
+        payload = JSON.parse(responseText) as unknown;
+      } catch {
+        throw new Error(`local ${operation} runner returned invalid JSON`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`local ${operation} runner timeout`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!isRecord(payload) || !Array.isArray(payload.data) || payload.data.length === 0) {
+      throw new Error(`local ${operation} runner returned an invalid base64 response`);
+    }
+    const limits = prepared.descriptor.limits;
+    if (limits?.maxN && payload.data.length > limits.maxN) {
+      throw new Error(`local ${operation} runner returned too many outputs`);
+    }
+    let decodedOutputBytes = 0;
+    const normalizedData: Record<string, unknown>[] = [];
+    for (const item of payload.data) {
+      const encodedPayload =
+        isRecord(item) && operation === "audio.generations"
+          ? optionalText(item.b64_audio) || optionalText(item.b64_json)
+          : isRecord(item)
+            ? optionalText(item.b64_json)
+            : null;
+      if (!isRecord(item) || !encodedPayload) {
+        throw new Error(`local ${operation} runner returned an invalid base64 response`);
+      }
+      const decodedBytes = base64DecodedByteLength(encodedPayload);
+      if (decodedBytes === null) {
+        throw new Error(`local ${operation} runner returned an invalid base64 response`);
+      }
+      decodedOutputBytes += decodedBytes;
+      if (decodedOutputBytes > outputByteLimit) {
+        throw new Error(`local ${operation} runner response exceeds the configured byte limit`);
+      }
+      const mimeType = optionalText(item.mime_type);
+      if (
+        mimeType &&
+        prepared.descriptor.outputMimeTypes?.length &&
+        !prepared.descriptor.outputMimeTypes.includes(mimeType.toLowerCase())
+      ) {
+        throw new Error(`local ${operation} runner returned unsupported mime_type ${mimeType}`);
+      }
+      if (
+        operation === "audio.generations" &&
+        !optionalText(item.b64_audio) &&
+        optionalText(item.b64_json)
+      ) {
+        const normalizedItem: Record<string, unknown> = {
+          ...item,
+          b64_audio: encodedPayload
+        };
+        delete normalizedItem.b64_json;
+        normalizedData.push(normalizedItem);
+      } else {
+        normalizedData.push(item);
+      }
+    }
+    return operation === "audio.generations"
+      ? { ...payload, data: normalizedData }
+      : payload;
+  }
+
+  private async resolveMcodaAgentForJob(job: SelfHostedNodeInvocationJob): Promise<MswarmGenerativeAgent> {
     const selectedSourceAgentSlug = optionalText(job.source_agent_slug);
     const selectedAgentSlug = optionalText(job.agent_slug);
     const selectedModel = optionalText(job.model) || optionalText(job.openai_request.model);
@@ -6358,7 +7168,8 @@ export class SelfHostedNodeRuntime {
   ): Promise<SelfHostedNodeInvocationResult> {
     const startedAt = Date.now();
     this.beginExecutionTelemetry("llm");
-    let selectedAgent: MswarmCodaliAgent | undefined;
+    let selectedAgent: MswarmGenerativeAgent | undefined;
+    let operation: SelfHostedGenerativeOperationName = "chat.completions";
     let jobStarted = false;
     const progressEvents: Record<string, unknown>[] = [];
     const streamEvents: Record<string, unknown>[] = [];
@@ -6388,6 +7199,9 @@ export class SelfHostedNodeRuntime {
       const result: SelfHostedNodeInvocationResult = {
         job_id: job.job_id,
         request_id: job.request_id,
+        ...(normalizeSelfHostedGenerativeOperationName(job.operation)
+          ? { operation: normalizeSelfHostedGenerativeOperationName(job.operation) as SelfHostedGenerativeOperationName }
+          : {}),
         status: "failed",
         pre_start_failure: true,
         error: { code: "validation_failed", message: "job node_id does not match this node" }
@@ -6401,7 +7215,28 @@ export class SelfHostedNodeRuntime {
       return result;
     }
     try {
+      try {
+        operation = resolveSelfHostedInvocationOperation(job.operation);
+      } catch {
+        throw new SelfHostedPreStartJobError(
+          "unsupported_operation",
+          `unsupported self-hosted operation ${optionalText(job.operation) || String(job.operation)}`
+        );
+      }
       if (job.provider === "ollama") {
+        if (operation !== "chat.completions") {
+          throw new SelfHostedPreStartJobError(
+            "unsupported_operation",
+            `Ollama relay jobs do not support ${operation}`
+          );
+        }
+        const chatMessages = job.openai_request.messages;
+        if (!Array.isArray(chatMessages)) {
+          throw new SelfHostedPreStartJobError(
+            "validation_failed",
+            "chat.completions requires messages"
+          );
+        }
         const options: Record<string, unknown> = {};
         if (job.openai_request.temperature !== undefined) options.temperature = job.openai_request.temperature;
         if (job.openai_request.top_p !== undefined) options.top_p = job.openai_request.top_p;
@@ -6410,7 +7245,7 @@ export class SelfHostedNodeRuntime {
         await acknowledgeStarted();
         const ollamaResult = await this.jobOllama.chat({
           model: job.model || job.openai_request.model,
-          messages: job.openai_request.messages,
+          messages: chatMessages,
           options,
           format: resolveOllamaResponseFormat(job.openai_request.response_format)
         });
@@ -6439,6 +7274,7 @@ export class SelfHostedNodeRuntime {
         const invocationResult: SelfHostedNodeInvocationResult = {
           job_id: job.job_id,
           request_id: job.request_id,
+          operation,
           status: "success",
           openai_response: buildOpenAIChatCompletion({
             requestId: job.request_id,
@@ -6460,12 +7296,44 @@ export class SelfHostedNodeRuntime {
         });
         return invocationResult;
       }
-      const taskPreview = messagesToPrompt(job.openai_request.messages);
-      if (!taskPreview) {
-        throw new Error("mcoda invocation prompt is empty");
-      }
       const agent = await this.resolveMcodaAgentForJob(job);
       selectedAgent = agent;
+      this.generativeOperationForAgent(agent, operation);
+      if (operation === "images.generations" || operation === "audio.generations") {
+        const prepared = this.prepareOpenAiGenerativePassthrough(job, agent, operation);
+        await acknowledgeStarted(agent);
+        await recordProgress({
+          type: "agent_selected",
+          operation,
+          job_id: job.job_id,
+          request_id: job.request_id,
+          agent_slug: agent.slug,
+          adapter: agent.adapter,
+          local_model: optionalText(agent.model) || job.openai_request.model
+        });
+        const passthrough = await this.executeOpenAiGenerativePassthrough(prepared, operation);
+        this.finishExecutionTelemetry({ executionClass: "llm", startedAt, ok: true });
+        return {
+          job_id: job.job_id,
+          request_id: job.request_id,
+          operation,
+          status: "success",
+          openai_response: passthrough,
+          ...(progressEvents.length ? { progress_events: progressEvents } : {}),
+          timing: { local_latency_ms: Date.now() - startedAt }
+        };
+      }
+      const chatMessages = job.openai_request.messages;
+      if (!Array.isArray(chatMessages)) {
+        throw new SelfHostedPreStartJobError(
+          "validation_failed",
+          "chat.completions requires messages"
+        );
+      }
+      const taskPreview = messagesToPrompt(chatMessages);
+      if (!taskPreview) {
+        throw new SelfHostedPreStartJobError("validation_failed", "mcoda invocation prompt is empty");
+      }
       validateRequiredDocdexContext(job, options.attachedMswarmApiKey);
       const attachedMswarmApiKey = attachedMswarmApiKeyForDocdex(job, options.attachedMswarmApiKey);
       await acknowledgeStarted(agent);
@@ -6487,6 +7355,7 @@ export class SelfHostedNodeRuntime {
         const passthroughResult: SelfHostedNodeInvocationResult = {
           job_id: job.job_id,
           request_id: job.request_id,
+          operation,
           status: "success",
           openai_response: passthrough,
           ...(progressEvents.length ? { progress_events: progressEvents } : {}),
@@ -6501,14 +7370,16 @@ export class SelfHostedNodeRuntime {
         jobId: job.job_id,
         requestId: job.request_id,
         model: job.openai_request.model,
-        messages: job.openai_request.messages,
+        messages: chatMessages,
         agent,
         workspace: buildCodaliWorkspace(job),
         docdex: buildCodaliDocdex(job),
         attachedMswarmApiKey,
         policy: buildCodaliPolicy(job),
         temperature: job.openai_request.temperature,
-        responseFormat: job.openai_request.response_format ?? null,
+        responseFormat: isRecord(job.openai_request.response_format)
+          ? job.openai_request.response_format
+          : null,
         stream: job.openai_request.stream === true,
         codaliGateway,
         codaliJob,
@@ -6570,6 +7441,7 @@ export class SelfHostedNodeRuntime {
       const result: SelfHostedNodeInvocationResult = {
         job_id: job.job_id,
         request_id: job.request_id,
+        operation,
         status: "success",
         openai_response: buildOpenAIChatCompletion({
           requestId: job.request_id,
@@ -6645,6 +7517,7 @@ export class SelfHostedNodeRuntime {
       const result: SelfHostedNodeInvocationResult = {
         job_id: job.job_id,
         request_id: job.request_id,
+        operation,
         status: "failed",
         ...(!jobStarted ? { pre_start_failure: true } : {}),
         error: {
@@ -6870,6 +7743,10 @@ export class SelfHostedNodeRuntime {
     if (!job) {
       return { executed: false };
     }
+    const chatStreaming =
+      (normalizeSelfHostedGenerativeOperationName(job.operation) ?? "chat.completions") ===
+        "chat.completions" &&
+      job.openai_request.stream === true;
     const pendingStreamEvents: Record<string, unknown>[] = [];
     let streamEventForwardingFailed = false;
     let forwardedStreamEventCount = 0;
@@ -6914,7 +7791,7 @@ export class SelfHostedNodeRuntime {
         }
       },
       onOpenAIChunk: async (chunk) => {
-        if (job.openai_request.stream !== true || streamEventForwardingFailed) {
+        if (!chatStreaming || streamEventForwardingFailed) {
           return;
         }
         pendingStreamEvents.push(chunk);
@@ -6932,6 +7809,7 @@ export class SelfHostedNodeRuntime {
       result = {
         job_id: job.job_id,
         request_id: job.request_id,
+        operation: result.operation,
         status: "failed",
         error: { code: SELF_HOSTED_PROTOCOL_MISMATCH_CODE, message: error.message },
         ...(result.stream_events?.length ? { stream_events: result.stream_events } : {}),
@@ -6939,7 +7817,7 @@ export class SelfHostedNodeRuntime {
         timing: result.timing
       };
     }
-    const postedResult = job.openai_request.stream === true
+    const postedResult = chatStreaming
       ? streamEventForwardingFailed
         ? {
             ...result,

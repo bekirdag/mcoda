@@ -186,7 +186,135 @@ test("normalization exposes local runner metadata and search terms", () => {
   assert.equal(agent.localRunner?.responseFormatStrategy, "json-object");
   assert.equal(agent.localRunner?.supportsJsonSchema, false);
   assert.equal(agent.localRunner?.supportsGbnf, true);
+  assert.deepEqual(agent.inputModalities, ["text"]);
+  assert.deepEqual(agent.outputModalities, ["text"]);
+  assert.equal(agent.operations?.[0]?.operation, "chat.completions");
+  assert.deepEqual(agent.localRunner?.inputModalities, ["text"]);
+  assert.deepEqual(agent.localRunner?.outputModalities, ["text"]);
+  assert.equal(agent.localRunner?.operations?.[0]?.operation, "chat.completions");
   assert.deepEqual(filterAgentOptions([agent], "vllm 8000 json-object"), [agent]);
+});
+
+test("normalization exposes non-text operations and a separate public model id", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "sd3-5-large-q4",
+      adapter: "openai-compatible-local",
+      defaultModel: "sd-cpp-local",
+      config: {
+        baseUrl: "http://127.0.0.1:11445",
+        publicModelId: "mcoda-sukunahikona-sd3-5-large-q4",
+        inputModalities: ["text"],
+        outputModalities: ["image"],
+        operations: [
+          {
+            operation: "images.generations",
+            responseFormats: ["b64_json"],
+            outputMimeTypes: ["image/png"],
+          },
+        ],
+      },
+    },
+    { source: "local_registry", synced: true }
+  );
+
+  assert.equal(agent.defaultModel, "sd-cpp-local");
+  assert.equal(agent.publicModelId, "mcoda-sukunahikona-sd3-5-large-q4");
+  assert.deepEqual(agent.inputModalities, ["text"]);
+  assert.deepEqual(agent.outputModalities, ["image"]);
+  assert.equal(agent.operations?.[0]?.operation, "images.generations");
+  assert.equal(agent.operations?.[0]?.path, "/v1/images/generations");
+  assert.deepEqual(agent.operations?.[0]?.responseFormats, ["b64_json"]);
+  assert.deepEqual(agent.operations?.[0]?.outputMimeTypes, ["image/png"]);
+  assert.equal(agent.localRunner?.publicModelId, "mcoda-sukunahikona-sd3-5-large-q4");
+  assert.deepEqual(agent.localRunner?.outputModalities, ["image"]);
+  assert.equal(agent.localRunner?.operations?.[0]?.operation, "images.generations");
+});
+
+test("normalization consumes the self-hosted platform generative wire shape", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "mcoda-sukunahikona-media-wire-stable-audio-3",
+      agent_slug: "mcoda-sukunahikona-media-wire-stable-audio-3",
+      remote_slug: "mcoda/sukunahikona/stable-audio-3",
+      provider: "mcoda",
+      adapter: "openai-compatible-local",
+      default_model: "mcoda-sukunahikona-media-wire-stable-audio-3",
+      model_id: "mcoda-sukunahikona-stable-audio-3",
+      upstream_model: "stable-audio-3",
+      input_modalities: ["text"],
+      output_modalities: ["audio"],
+      operations: [
+        {
+          type: "audio.generations",
+          method: "POST",
+          path: "/v1/audio/generations",
+          request_content_type: "application/json",
+          response_content_type: "application/json",
+          supported_parameters: [
+            "model",
+            "prompt",
+            "duration_seconds",
+            "response_format",
+            "sample_rate",
+          ],
+          response_formats: ["b64_audio"],
+          output_mime_types: ["audio/wav"],
+          limits: {
+            min_duration_seconds: 3,
+            max_duration_seconds: 90,
+            max_sample_rate: 48_000,
+          },
+        },
+      ],
+    },
+    {
+      source: "self_hosted_catalog",
+      synced: false,
+      managedKind: "self_hosted",
+    }
+  );
+
+  assert.equal(agent.defaultModel, "stable-audio-3");
+  assert.equal(agent.model, "stable-audio-3");
+  assert.equal(agent.publicModelId, "mcoda-sukunahikona-stable-audio-3");
+  assert.deepEqual(agent.inputModalities, ["text"]);
+  assert.deepEqual(agent.outputModalities, ["audio"]);
+  assert.equal(agent.operations?.[0]?.operation, "audio.generations");
+  assert.deepEqual(agent.operations?.[0]?.requestParameterAllowlist, [
+    "model",
+    "prompt",
+    "duration_seconds",
+    "response_format",
+    "sample_rate",
+  ]);
+  assert.deepEqual(agent.operations?.[0]?.responseFormats, ["b64_audio"]);
+  assert.deepEqual(agent.operations?.[0]?.outputMimeTypes, ["audio/wav"]);
+  assert.deepEqual(agent.operations?.[0]?.limits, {
+    minDurationSeconds: 3,
+    maxDurationSeconds: 90,
+    maxSampleRate: 48_000,
+  });
+  assert.equal(
+    agent.localRunner?.publicModelId,
+    "mcoda-sukunahikona-stable-audio-3"
+  );
+  assert.equal(agent.localRunner?.operations?.[0]?.operation, "audio.generations");
+});
+
+test("normalization preserves explicit invalid operations as an empty set", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "invalid-generative-agent",
+      adapter: "openai-compatible-local",
+      default_model: "invalid-generative-agent",
+      operations: [{ type: "video.generations" }],
+    },
+    { source: "self_hosted_catalog", synced: false, managedKind: "self_hosted" }
+  );
+
+  assert.deepEqual(agent.operations, []);
+  assert.deepEqual(agent.localRunner?.operations, []);
 });
 
 test("normalization marks load-balanced self-hosted config as auto-routed", () => {

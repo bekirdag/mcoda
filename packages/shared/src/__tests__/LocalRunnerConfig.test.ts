@@ -37,6 +37,8 @@ describe("LocalRunnerConfig", () => {
     assert.equal(defaultLocalRunnerKindForAdapter("llamacpp-local"), "llama-cpp");
     assert.equal(normalizeLocalRunnerKind("llama.cpp"), "llama-cpp");
     assert.equal(normalizeLocalRunnerKind("llamacpp"), "llama-cpp");
+    assert.equal(normalizeLocalRunnerKind("stable-diffusion.cpp"), "stable-diffusion-cpp");
+    assert.equal(normalizeLocalRunnerKind("sd-cpp"), "stable-diffusion-cpp");
     assert.equal(normalizeLocalRunnerKind("text-generation-inference"), "tgi");
     assert.equal(normalizeLocalRunnerAuthMode("dummy"), "dummy-bearer");
     assert.equal(normalizeLocalRunnerAuthMode("dummy_bearer"), "dummy-bearer");
@@ -76,6 +78,78 @@ describe("LocalRunnerConfig", () => {
 
     assert.equal(result.config.runnerKind, "llama-cpp");
     assert.equal(result.config.authMode, "none");
+  });
+
+  it("materializes legacy chat modality and operation defaults", () => {
+    const result = normalizeLocalOpenAiCompatibleRunnerConfig({
+      adapter: "vllm-local",
+      config: {
+        baseUrl: "http://127.0.0.1:8000/v1",
+      },
+    });
+
+    assert.deepEqual(result.config.inputModalities, ["text"]);
+    assert.deepEqual(result.config.outputModalities, ["text"]);
+    assert.deepEqual(result.config.operations, [
+      {
+        operation: "chat.completions",
+        path: "/v1/chat/completions",
+        method: "POST",
+        requestParameterAllowlist: [
+          "model",
+          "messages",
+          "stream",
+          "temperature",
+          "top_p",
+          "max_tokens",
+          "stop",
+          "response_format",
+          "tools",
+          "tool_choice",
+        ],
+      },
+    ]);
+  });
+
+  it("normalizes an image runner declaration separately from its upstream model", () => {
+    const result = normalizeLocalOpenAiCompatibleRunnerConfig({
+      adapter: "openai-compatible-local",
+      config: {
+        baseUrl: "http://127.0.0.1:11445",
+        runnerKind: "stable-diffusion-cpp",
+        publicModelId: "mcoda-sukunahikona-sd3-5-large-q4",
+        inputModalities: ["text"],
+        outputModalities: ["image"],
+        operations: [
+          {
+            operation: "images.generations",
+          },
+        ],
+      },
+    });
+
+    assert.equal(result.config.publicModelId, "mcoda-sukunahikona-sd3-5-large-q4");
+    assert.equal(result.config.runnerKind, "stable-diffusion-cpp");
+    assert.deepEqual(result.config.inputModalities, ["text"]);
+    assert.deepEqual(result.config.outputModalities, ["image"]);
+    assert.deepEqual(result.config.operations, [
+      {
+        operation: "images.generations",
+        path: "/v1/images/generations",
+        method: "POST",
+        requestParameterAllowlist: [
+          "model",
+          "prompt",
+          "n",
+          "size",
+          "response_format",
+          "seed",
+          "steps",
+          "negative_prompt",
+        ],
+      },
+    ]);
+    assert.deepEqual(result.issues, []);
   });
 
   it("preserves non-local adapter detection without local auth defaults", () => {

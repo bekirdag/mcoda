@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Refresh transitive security overrides for archive parsing, URI validation,
+  request routing, YAML parsing, multipart handling, and brace expansion.
+- Add image and audio operation metadata for self-hosted mswarm agents, including
+  public/upstream model separation, bounded media relay, and operation-bound
+  invocation tokens.
+- Add a hardened `stable-diffusion-cpp` runner dialect so validated
+  `seed`, `steps`, and `negative_prompt` controls work with `sd-server`.
+- Add CLI registration flags, a production-oriented Stable Audio 3 TensorRT
+  OpenAI-compatible wrapper, and an operations runbook for SD 3.5 and audio.
+
 ## 0.1.96 - 2026-07-18
 
 - Preserve POSIX Homebrew paths while generating persistent daemon wrappers on

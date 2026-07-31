@@ -4,6 +4,7 @@ export type LocalRunnerKind =
   | "vllm"
   | "llama-cpp"
   | "llama-cpp-python"
+  | "stable-diffusion-cpp"
   | "lm-studio"
   | "localai"
   | "sglang"

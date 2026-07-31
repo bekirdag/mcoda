@@ -1070,6 +1070,10 @@ test(
             assert.equal(agents[0]?.client_allowlist?.[0]?.kind, 'domain');
             assert.equal(agents[0]?.client_allowlist?.[0]?.value, 'heka');
             assert.equal(agents[0]?.client_allowlist_count, 1);
+            assert.deepEqual(agents[0]?.input_modalities, ['text']);
+            assert.deepEqual(agents[0]?.output_modalities, ['text']);
+            assert.equal(agents[0]?.operations?.[0]?.operation, 'chat.completions');
+            assert.equal(agents[0]?.operations?.[0]?.path, '/v1/chat/completions');
           } finally {
             await api.close();
           }
@@ -1515,6 +1519,14 @@ test(
                 'claude-sonnet'
               );
               assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.modelId,
+                'sonnet'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.publicModelId,
+                'mcoda-lab-claude-sonnet'
+              );
+              assert.equal(
                 (agent.config as any)?.mswarmSelfHosted?.nodeId,
                 'shn_lab'
               );
@@ -1545,6 +1557,230 @@ test(
             } finally {
               await repo.close();
             }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi preserves image operations while separating upstream and public model ids',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/self-hosted/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'mcoda-sukunahikona-media-wire-sd3-5-large-q4',
+                  agent_slug: 'mcoda-sukunahikona-media-wire-sd3-5-large-q4',
+                  remote_slug: 'mcoda/sukunahikona/sd3-5-large-q4',
+                  provider: 'mcoda',
+                  adapter: 'openai-compatible-local',
+                  source_agent_slug: 'sd3-5-large-q4',
+                  default_model:
+                    'mcoda-sukunahikona-media-wire-sd3-5-large-q4',
+                  model_id: 'mcoda-sukunahikona-sd3-5-large-q4',
+                  upstream_model: 'sd-cpp-local',
+                  capabilities: ['image_generation'],
+                  health_status: 'healthy',
+                  supports_tools: false,
+                  input_modalities: ['text'],
+                  output_modalities: ['image'],
+                  operations: [
+                    {
+                      type: 'images.generations',
+                      path: '/v1/images/generations',
+                      method: 'POST',
+                      request_content_type: 'application/json',
+                      response_content_type: 'application/json',
+                      supported_parameters: [
+                        'model',
+                        'prompt',
+                        'n',
+                        'size',
+                        'response_format',
+                        'seed',
+                        'steps',
+                        'negative_prompt',
+                      ],
+                      response_formats: ['b64_json'],
+                      output_mime_types: ['image/png'],
+                      limits: {
+                        min_duration_seconds: 3,
+                        max_prompt_chars: 4096,
+                        max_sample_rate: 48_000,
+                        max_steps: 50,
+                      },
+                    },
+                  ],
+                  relay: {
+                    gateway_base_url: 'https://gateway.example',
+                    jobs_poll_path: '/v1/swarm/self-hosted/node/jobs/poll',
+                    jobs_start_path_template:
+                      '/v1/swarm/self-hosted/node/jobs/:jobId/start',
+                    jobs_events_path_template:
+                      '/v1/swarm/self-hosted/node/jobs/:jobId/events',
+                    jobs_result_path_template:
+                      '/v1/swarm/self-hosted/node/jobs/:jobId/result',
+                  },
+                  sync: {
+                    source: 'self_hosted',
+                    node_id: 'shn_sukunahikona',
+                    server_name: 'sukunahikona',
+                  },
+                },
+              ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const listed = await api.listSelfHostedAgents();
+            assert.equal(
+              listed[0]?.default_model,
+              'mcoda-sukunahikona-media-wire-sd3-5-large-q4'
+            );
+            assert.equal(
+              listed[0]?.public_model_id,
+              'mcoda-sukunahikona-sd3-5-large-q4'
+            );
+            assert.equal(
+              listed[0]?.model_id,
+              'mcoda-sukunahikona-sd3-5-large-q4'
+            );
+            assert.equal(listed[0]?.upstream_model, 'sd-cpp-local');
+            assert.deepEqual(listed[0]?.input_modalities, ['text']);
+            assert.deepEqual(listed[0]?.output_modalities, ['image']);
+            assert.deepEqual(listed[0]?.operations?.[0]?.limits, {
+              minDurationSeconds: 3,
+              maxPromptChars: 4096,
+              maxSampleRate: 48_000,
+              maxSteps: 50,
+            });
+            assert.deepEqual(
+              listed[0]?.operations?.[0]?.requestParameterAllowlist,
+              [
+                'model',
+                'prompt',
+                'n',
+                'size',
+                'response_format',
+                'seed',
+                'steps',
+                'negative_prompt',
+              ]
+            );
+
+            const summary = await api.syncSelfHostedAgents();
+            assert.equal(
+              summary.agents[0]?.defaultModel,
+              'mcoda-sukunahikona-sd3-5-large-q4'
+            );
+
+            const repo = await GlobalRepository.create();
+            try {
+              const agent = await repo.getAgentBySlug(
+                'mswarm-self-hosted-mcoda-sukunahikona-sd3-5-large-q4'
+              );
+              assert.ok(agent);
+              assert.equal(
+                agent.defaultModel,
+                'mcoda-sukunahikona-sd3-5-large-q4'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.publicModelId,
+                'mcoda-sukunahikona-sd3-5-large-q4'
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.modelId,
+                'sd-cpp-local'
+              );
+              assert.deepEqual(
+                (agent.config as any)?.mswarmSelfHosted?.inputModalities,
+                ['text']
+              );
+              assert.deepEqual(
+                (agent.config as any)?.mswarmSelfHosted?.outputModalities,
+                ['image']
+              );
+              assert.equal(
+                (agent.config as any)?.mswarmSelfHosted?.operations?.[0]
+                  ?.operation,
+                'images.generations'
+              );
+              const models = await repo.getAgentModels(agent.id);
+              assert.equal(
+                models[0]?.modelName,
+                'mcoda-sukunahikona-sd3-5-large-q4'
+              );
+            } finally {
+              await repo.close();
+            }
+          } finally {
+            await api.close();
+          }
+        }
+      );
+    });
+  }
+);
+
+test(
+  'MswarmApi does not reinterpret explicitly invalid operations as chat',
+  { concurrency: false },
+  async () => {
+    await withTempHome(async () => {
+      await withStubServer(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname !== '/v1/swarm/self-hosted/agents') {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              agents: [
+                {
+                  slug: 'mcoda-invalid-operation',
+                  provider: 'mcoda',
+                  default_model: 'mcoda-invalid-operation',
+                  model_id: 'mcoda-invalid-operation',
+                  upstream_model: 'local-invalid-operation',
+                  capabilities: ['self-hosted'],
+                  supports_tools: false,
+                  operations: [{ type: 'video.generations' }],
+                },
+              ],
+            })
+          );
+        },
+        async (baseUrl) => {
+          const api = await MswarmApi.create({
+            baseUrl,
+            apiKey: 'self-hosted-key',
+          });
+          try {
+            const listed = await api.listSelfHostedAgents();
+            assert.deepEqual(listed[0]?.operations, []);
           } finally {
             await api.close();
           }

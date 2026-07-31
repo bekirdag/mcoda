@@ -44,6 +44,7 @@ import {
   readSelfHostedNodeState,
   readSelfHostedNodeConfig,
   removeSelfHostedNodeClients,
+  resolveSelfHostedInvocationOperation,
   resolveSelfHostedNodeServiceLayout,
   SelfHostedNodeRuntime,
   uninstallSelfHostedNodeService,
@@ -291,6 +292,11 @@ function assertJobMatchesClaims(job: SelfHostedNodeInvocationJob, claims: SelfHo
   }
   if (job.openai_request?.model !== claims.model) {
     throw new Error("model does not match invocation token");
+  }
+  const jobOperation = resolveSelfHostedInvocationOperation(job.operation);
+  const claimOperation = resolveSelfHostedInvocationOperation(claims.operation);
+  if (jobOperation !== claimOperation) {
+    throw new Error("operation does not match invocation token");
   }
 }
 
@@ -1478,7 +1484,10 @@ export function buildSelfHostedNodeApp(runtime: SelfHostedNodeRuntime, config: S
     const attachedMswarmApiKey = extractAttachedMswarmApiKey(
       request.headers as Record<string, string | string[] | undefined>,
     );
-    if (job.openai_request?.stream === true) {
+    if (
+      resolveSelfHostedInvocationOperation(job.operation) === "chat.completions" &&
+      job.openai_request?.stream === true
+    ) {
       reply.hijack();
       reply.raw.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",

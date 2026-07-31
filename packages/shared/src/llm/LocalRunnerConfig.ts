@@ -1,3 +1,10 @@
+import {
+  normalizeGenerativeModality,
+  normalizeSelfHostedGenerativeOperation,
+  type GenerativeModality,
+  type SelfHostedGenerativeOperation,
+} from "./GenerativeOperation.js";
+
 export const LOCAL_OPENAI_COMPATIBLE_ADAPTER = "openai-compatible-local" as const;
 export const VLLM_LOCAL_ADAPTER = "vllm-local" as const;
 export const LLAMA_CPP_LOCAL_ADAPTER = "llama-cpp-local" as const;
@@ -16,6 +23,7 @@ export type LocalRunnerKind =
   | "vllm"
   | "llama-cpp"
   | "llama-cpp-python"
+  | "stable-diffusion-cpp"
   | "lm-studio"
   | "localai"
   | "sglang"
@@ -38,6 +46,10 @@ export interface LocalOpenAiCompatibleRunnerConfig {
   baseUrl?: string;
   endpoint?: string;
   apiBaseUrl?: string;
+  publicModelId?: string;
+  inputModalities?: GenerativeModality[];
+  outputModalities?: GenerativeModality[];
+  operations?: SelfHostedGenerativeOperation[];
   runnerKind?: LocalRunnerKind;
   authMode?: LocalRunnerAuthMode;
   dummyBearerToken?: string;
@@ -57,6 +69,9 @@ export type LocalRunnerConfigIssueCode =
   | "invalid_auth_mode"
   | "invalid_runner_kind"
   | "invalid_response_format_strategy"
+  | "invalid_input_modalities"
+  | "invalid_output_modalities"
+  | "invalid_operations"
   | "invalid_headers"
   | "invalid_header_value"
   | "secret_header"
@@ -117,6 +132,11 @@ const RUNNER_KIND_ALIASES: Record<string, LocalRunnerKind> = {
   "llama.cpp-python": "llama-cpp-python",
   llamacpppython: "llama-cpp-python",
   "llama_cpp_python": "llama-cpp-python",
+  "stable-diffusion-cpp": "stable-diffusion-cpp",
+  "stable-diffusion.cpp": "stable-diffusion-cpp",
+  stable_diffusion_cpp: "stable-diffusion-cpp",
+  "sd-cpp": "stable-diffusion-cpp",
+  "sd.cpp": "stable-diffusion-cpp",
   "lm-studio": "lm-studio",
   lmstudio: "lm-studio",
   "lm_studio": "lm-studio",
@@ -303,6 +323,96 @@ const normalizeExtraBody = (
   return Object.keys(extraBody).length > 0 ? extraBody : undefined;
 };
 
+const normalizeModalityDeclaration = (
+  value: unknown,
+  fallback: GenerativeModality[],
+  path: "inputModalities" | "outputModalities",
+  issueCode: "invalid_input_modalities" | "invalid_output_modalities",
+  issues: LocalRunnerConfigIssue[],
+): GenerativeModality[] => {
+  if (value === undefined) return [...fallback];
+  if (!Array.isArray(value)) {
+    pushIssue(issues, {
+      code: issueCode,
+      path,
+      message: `${path} must be an array of supported generative modalities.`,
+      value,
+    });
+    return [...fallback];
+  }
+
+  const modalities: GenerativeModality[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const modality = normalizeGenerativeModality(value[index]);
+    if (!modality) {
+      pushIssue(issues, {
+        code: issueCode,
+        path: `${path}.${index}`,
+        message: "Unknown generative modality.",
+        value: value[index],
+      });
+      continue;
+    }
+    if (!modalities.includes(modality)) modalities.push(modality);
+  }
+
+  return modalities.length > 0 ? modalities : [...fallback];
+};
+
+const defaultChatOperation = (): SelfHostedGenerativeOperation => {
+  const operation = normalizeSelfHostedGenerativeOperation({
+    operation: "chat.completions",
+  });
+  if (!operation) {
+    throw new Error("Invalid built-in chat.completions operation");
+  }
+  return operation;
+};
+
+const normalizeOperationDeclarations = (
+  value: unknown,
+  issues: LocalRunnerConfigIssue[],
+): SelfHostedGenerativeOperation[] => {
+  if (value === undefined) return [defaultChatOperation()];
+  if (!Array.isArray(value)) {
+    pushIssue(issues, {
+      code: "invalid_operations",
+      path: "operations",
+      message: "operations must be an array of supported generative operation descriptors.",
+      value,
+    });
+    return [defaultChatOperation()];
+  }
+
+  const operations: SelfHostedGenerativeOperation[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const operation = normalizeSelfHostedGenerativeOperation(value[index]);
+    if (!operation) {
+      pushIssue(issues, {
+        code: "invalid_operations",
+        path: `operations.${index}`,
+        message: "Invalid generative operation descriptor.",
+        value: value[index],
+      });
+      continue;
+    }
+    if (!operations.some((entry) => entry.operation === operation.operation)) {
+      operations.push(operation);
+    }
+  }
+
+  if (operations.length > 0) return operations;
+  if (value.length === 0) {
+    pushIssue(issues, {
+      code: "invalid_operations",
+      path: "operations",
+      message: "operations must declare at least one supported generative operation.",
+      value,
+    });
+  }
+  return [defaultChatOperation()];
+};
+
 const mergeConfigRecords = (input: LocalRunnerNormalizationInput): Record<string, unknown> => {
   const topLevelConfig = isRecord(input.config) ? input.config : {};
   const nestedAgent = isRecord(topLevelConfig.agent) ? topLevelConfig.agent : {};
@@ -373,6 +483,22 @@ export function normalizeLocalOpenAiCompatibleRunnerConfig(
     baseUrl: readString(merged, ["baseUrl", "endpoint", "apiBaseUrl"]),
     endpoint: readString(merged, ["endpoint"]),
     apiBaseUrl: readString(merged, ["apiBaseUrl"]),
+    publicModelId: readString(merged, ["publicModelId", "public_model_id"]),
+    inputModalities: normalizeModalityDeclaration(
+      merged.inputModalities ?? merged.input_modalities,
+      ["text"],
+      "inputModalities",
+      "invalid_input_modalities",
+      issues,
+    ),
+    outputModalities: normalizeModalityDeclaration(
+      merged.outputModalities ?? merged.output_modalities,
+      ["text"],
+      "outputModalities",
+      "invalid_output_modalities",
+      issues,
+    ),
+    operations: normalizeOperationDeclarations(merged.operations, issues),
     runnerKind,
     authMode,
     dummyBearerToken:

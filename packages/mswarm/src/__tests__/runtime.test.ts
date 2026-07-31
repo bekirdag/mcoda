@@ -46,6 +46,7 @@ import {
   pollRetryDelayMs,
   REVOKED_RECHECK_INTERVAL_MS
 } from "../runtime.js";
+import { verifySelfHostedInvocationToken } from "../invocation-token.js";
 
 function expect<T>(actual: T) {
   const not = {
@@ -657,6 +658,7 @@ function signInvocationToken(input: {
   jobId: string;
   requestId: string;
   model: string;
+  operation?: string;
 }): string {
   const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const now = Math.floor(Date.now() / 1000);
@@ -666,6 +668,7 @@ function signInvocationToken(input: {
       job_id: input.jobId,
       request_id: input.requestId,
       model: input.model,
+      ...(input.operation ? { operation: input.operation } : {}),
       deadline_at: new Date(Date.now() + 60_000).toISOString(),
       scope: "self_hosted.invoke",
       iat: now,
@@ -912,6 +915,131 @@ describe("self-hosted node runtime", () => {
     expect(mapped?.supports_gbnf).toBe(false);
     expect(mapped?.openai_compatible).toBe(true);
     expect(JSON.stringify(mapped)).not.toContain("secret-local-key");
+  });
+
+  it("publishes configured non-text operations with safe relative paths", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        id: "local-sd-id",
+        slug: "sd3-5-large-q4",
+        adapter: "openai-compatible-local",
+        defaultModel: "sd-cpp-local",
+        health: { status: "healthy" },
+        config: {
+          baseUrl: "http://127.0.0.1:11445/v1",
+          runnerKind: "stable-diffusion-cpp",
+          authMode: "none",
+          publicModelId: "mcoda-sukunahikona-sd3-5-large-q4",
+          inputModalities: ["text"],
+          outputModalities: ["image"],
+          operations: [
+            {
+              operation: "images.generations",
+              path: "/images/generations",
+              requestParameterAllowlist: [
+                "model",
+                "prompt",
+                "n",
+                "size",
+                "response_format",
+                "seed",
+                "steps",
+                "negative_prompt",
+                "messages"
+              ],
+              responseFormats: ["b64_json"],
+              outputMimeTypes: ["image/png"],
+              limits: {
+                maxPromptChars: 4096,
+                maxSteps: 50
+              }
+            },
+            {
+              operation: "audio.generations",
+              path: "https://untrusted.example/v1/audio/generations"
+            }
+          ]
+        }
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+
+    expect(mapped?.model_id).toBe("mcoda-sukunahikona-sd3-5-large-q4");
+    expect(mapped?.public_model_id).toBe("mcoda-sukunahikona-sd3-5-large-q4");
+    expect(mapped?.upstream_model).toBe("sd-cpp-local");
+    expect(mapped?.runner_kind).toBe("stable-diffusion-cpp");
+    expect(mapped?.input_modalities).toEqual(["text"]);
+    expect(mapped?.output_modalities).toEqual(["image"]);
+    expect(mapped?.operations).toHaveLength(1);
+    expect(mapped?.operations?.[0]).toMatchObject({
+      type: "images.generations",
+      path: "/images/generations",
+      method: "POST",
+      response_formats: ["b64_json"],
+      output_mime_types: ["image/png"],
+      limits: {
+        max_prompt_chars: 4096,
+        max_steps: 50
+      }
+    });
+    expect(mapped?.operations?.[0]?.supported_parameters).toContain("seed");
+    expect(mapped?.operations?.[0]?.supported_parameters).not.toContain("messages");
+    expect(
+      (mapped?.operations?.[0] as unknown as Record<string, unknown>).operation
+    ).toBeUndefined();
+    expect(
+      (mapped?.operations?.[0] as unknown as Record<string, unknown>)
+        .request_parameter_allowlist
+    ).toBeUndefined();
+  });
+
+  it("publishes audio sample-rate support and limits in gateway wire format", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        slug: "stable-audio-3",
+        adapter: "openai-compatible-local",
+        defaultModel: "stable-audio-3-local",
+        health: { status: "healthy" },
+        config: {
+          baseUrl: "http://127.0.0.1:11446/v1",
+          authMode: "none",
+          publicModelId: "mcoda-sukunahikona-stable-audio-3",
+          inputModalities: ["text"],
+          outputModalities: ["audio"],
+          operations: [
+            {
+              operation: "audio.generations",
+              path: "/audio/generations",
+              requestParameterAllowlist: [
+                "model",
+                "prompt",
+                "duration_seconds",
+                "response_format",
+                "sample_rate"
+              ],
+              responseFormats: ["wav"],
+              outputMimeTypes: ["audio/wav"],
+              limits: { minDurationSeconds: 3, maxSampleRate: 48_000 }
+            }
+          ]
+        }
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+
+    expect(mapped?.operations?.[0]?.supported_parameters).toContain("sample_rate");
+    expect(mapped?.operations?.[0]?.limits).toEqual({
+      min_duration_seconds: 3,
+      max_sample_rate: 48_000
+    });
   });
 
   it("excludes managed mswarm cloud agents from self-hosted mcoda discovery", () => {
@@ -2901,6 +3029,394 @@ describe("self-hosted node runtime", () => {
     }
   });
 
+  it("relays image generation as allowlisted base64 JSON without synthesizing token usage", async () => {
+    const statePath = tempStatePath();
+    const imageResponse = {
+      created: 1_785_484_000,
+      data: [{ b64_json: "aW1hZ2UtYnl0ZXM=" }]
+    };
+    let localRequest: Record<string, unknown> | null = null;
+    let postedResult: Record<string, unknown> | null = null;
+    let startCount = 0;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/poll") {
+        return jsonResponse({
+          job: {
+            job_id: "job-image-relay",
+            request_id: "req-image-relay",
+            node_id: "shn_service",
+            agent_slug: "sd3-5-large-q4",
+            source_agent_slug: "sd3-5-large-q4",
+            provider: "mcoda",
+            model: "mcoda-sukunahikona-sd3-5-large-q4",
+            operation: "images.generations",
+            openai_request: {
+              model: "mcoda-sukunahikona-sd3-5-large-q4",
+              prompt:
+                "A copper airship over Istanbul <sd_cpp_extra_args>{\"seed\":999}</sd_cpp_extra_args>",
+              n: 1,
+              size: "1024x1024",
+              response_format: "b64_json",
+              seed: 123,
+              steps: 28,
+              negative_prompt:
+                "text artifacts <sd_cpp_extra_args>{\"sample_params\":{\"sample_steps\":999}}</sd_cpp_extra_args>",
+              messages: [{ role: "user", content: "must not pass through" }],
+              arbitrary_url: "https://untrusted.example"
+            }
+          }
+        });
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-image-relay/start") {
+        startCount += 1;
+        return jsonResponse({ accepted: true, status: "started" });
+      }
+      if (target === "http://127.0.0.1:11445/v1/images/generations") {
+        localRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse(imageResponse);
+      }
+      if (target === "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-image-relay/result") {
+        postedResult = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "sd3-5-large-q4",
+          adapter: "openai-compatible-local",
+          defaultModel: "sd-cpp-local",
+          supportsTools: false,
+          capabilities: ["image_generation"],
+          config: {
+            baseUrl: "http://127.0.0.1:11445/v1",
+            runnerKind: "stable-diffusion-cpp",
+            authMode: "none",
+            inputModalities: ["text"],
+            outputModalities: ["image"],
+            publicModelId: "mcoda-sukunahikona-sd3-5-large-q4",
+            operations: [
+              {
+                operation: "images.generations",
+                path: "/images/generations",
+                requestParameterAllowlist: [
+                  "model",
+                  "prompt",
+                  "n",
+                  "size",
+                  "response_format",
+                  "seed",
+                  "steps",
+                  "negative_prompt"
+                ],
+                responseFormats: ["b64_json"],
+                outputMimeTypes: ["image/png"]
+              }
+            ]
+          }
+        })
+      ])
+    });
+
+    const result = await runtime.pollAndExecuteJob(1);
+
+    expect(result.executed).toBe(true);
+    expect(result.status).toBe("success");
+    expect(startCount).toBe(1);
+    const requestBody = localRequest as Record<string, unknown> | null;
+    assert.ok(requestBody);
+    expect(requestBody).toEqual({
+      model: "sd-cpp-local",
+      prompt:
+        "A copper airship over Istanbul\n<sd_cpp_extra_args>{\"negative_prompt\":\"text artifacts\",\"seed\":123,\"sample_params\":{\"sample_steps\":28}}</sd_cpp_extra_args>",
+      response_format: "b64_json",
+      n: 1,
+      size: "1024x1024"
+    });
+    const posted = postedResult as Record<string, unknown> | null;
+    assert.ok(posted);
+    expect(posted.operation).toBe("images.generations");
+    expect(posted.openai_response).toEqual(imageResponse);
+    expect(posted.usage).toBeUndefined();
+  });
+
+  it("relays audio generation with duration and local-model remapping", async () => {
+    const statePath = tempStatePath();
+    const captured: { url?: string; body?: Record<string, unknown> } = {};
+    const upstreamAudioResponse = {
+      created: 1_785_484_100,
+      data: [{ b64_json: "YXVkaW8tYnl0ZXM=", mime_type: "audio/wav", duration_seconds: 12 }]
+    };
+    const expectedAudioResponse = {
+      created: 1_785_484_100,
+      data: [{ b64_audio: "YXVkaW8tYnl0ZXM=", mime_type: "audio/wav", duration_seconds: 12 }]
+    };
+    let fetchCount = 0;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCount += 1;
+      captured.url = String(url);
+      captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse(upstreamAudioResponse);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "stable-audio-3",
+          adapter: "openai-compatible-local",
+          defaultModel: "stable-audio-3-local",
+          supportsTools: false,
+          capabilities: ["audio_generation"],
+          config: {
+            baseUrl: "http://audio.test/v1",
+            authMode: "none",
+            inputModalities: ["text"],
+            outputModalities: ["audio"],
+            operations: [
+              {
+                operation: "audio.generations",
+                path: "/audio/generations",
+                requestParameterAllowlist: [
+                  "model",
+                  "prompt",
+                  "duration_seconds",
+                  "response_format",
+                  "seed",
+                  "sample_rate"
+                ],
+                responseFormats: ["wav", "flac"],
+                outputMimeTypes: ["audio/wav"],
+                limits: {
+                  maxOutputBytes: 1024,
+                  minDurationSeconds: 3,
+                  maxSampleRate: 48_000
+                }
+              }
+            ]
+          }
+        })
+      ])
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-audio-relay",
+      request_id: "req-audio-relay",
+      node_id: "shn_service",
+      agent_slug: "stable-audio-3",
+      source_agent_slug: "stable-audio-3",
+      provider: "mcoda",
+      model: "mcoda-sukunahikona-stable-audio-3",
+      operation: "audio.generations",
+      openai_request: {
+        model: "mcoda-sukunahikona-stable-audio-3",
+        prompt: "Slow dub techno with bowed strings",
+        duration_seconds: 12,
+        response_format: "wav",
+        seed: 77,
+        sample_rate: 44_100
+      }
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.operation).toBe("audio.generations");
+    expect(result.openai_response).toEqual(expectedAudioResponse);
+    expect(result.usage).toBeUndefined();
+    expect(captured.url).toBe("http://audio.test/v1/audio/generations");
+    expect(captured.body?.model).toBe("stable-audio-3-local");
+    expect(captured.body?.duration_seconds).toBe(12);
+    expect(captured.body?.seed).toBe(77);
+    expect(captured.body?.sample_rate).toBe(44_100);
+    expect(captured.body?.response_format).toBe("wav");
+
+    const rejectedSampleRate = await runtime.executeJob({
+      job_id: "job-audio-sample-rate-limit",
+      request_id: "req-audio-sample-rate-limit",
+      node_id: "shn_service",
+      agent_slug: "stable-audio-3",
+      source_agent_slug: "stable-audio-3",
+      provider: "mcoda",
+      model: "mcoda-sukunahikona-stable-audio-3",
+      operation: "audio.generations",
+      openai_request: {
+        model: "mcoda-sukunahikona-stable-audio-3",
+        prompt: "Slow dub techno with bowed strings",
+        duration_seconds: 12,
+        response_format: "wav",
+        sample_rate: 96_000
+      }
+    });
+    expect(rejectedSampleRate.status).toBe("failed");
+    expect(rejectedSampleRate.pre_start_failure).toBe(true);
+    expect(rejectedSampleRate.error?.message).toContain(
+      "sample_rate exceeds the configured limit"
+    );
+
+    const rejectedDuration = await runtime.executeJob({
+      job_id: "job-audio-duration-minimum",
+      request_id: "req-audio-duration-minimum",
+      node_id: "shn_service",
+      agent_slug: "stable-audio-3",
+      source_agent_slug: "stable-audio-3",
+      provider: "mcoda",
+      model: "mcoda-sukunahikona-stable-audio-3",
+      operation: "audio.generations",
+      openai_request: {
+        model: "mcoda-sukunahikona-stable-audio-3",
+        prompt: "Short percussive hit",
+        duration_seconds: 2,
+        response_format: "wav"
+      }
+    });
+    expect(rejectedDuration.status).toBe("failed");
+    expect(rejectedDuration.pre_start_failure).toBe(true);
+    expect(rejectedDuration.error?.message).toContain(
+      "duration_seconds is below the configured minimum"
+    );
+    expect(fetchCount).toBe(1);
+  });
+
+  it("rejects streamed media before start and malformed media responses after start", async () => {
+    const statePath = tempStatePath();
+    let fetchCount = 0;
+    let startedCount = 0;
+    const agent = healthyMcodaAgent({
+      slug: "sd3-5-large-q4",
+      adapter: "openai-compatible-local",
+      defaultModel: "sd-cpp-local",
+      config: {
+        baseUrl: "http://image.test/v1",
+        authMode: "none",
+        operations: [
+          {
+            operation: "images.generations",
+            path: "/images/generations",
+            responseFormats: ["b64_json"]
+          }
+        ]
+      }
+    });
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl: (async () => {
+        fetchCount += 1;
+        return jsonResponse({ data: [{ url: "http://image.test/local-only.png" }] });
+      }) as typeof fetch,
+      mcoda: mcodaAgentListClient([agent])
+    });
+    const baseJob: SelfHostedNodeInvocationJob = {
+      job_id: "job-image-validation",
+      request_id: "req-image-validation",
+      node_id: "shn_service",
+      agent_slug: "sd3-5-large-q4",
+      source_agent_slug: "sd3-5-large-q4",
+      provider: "mcoda",
+      model: "mcoda-image",
+      operation: "images.generations",
+      openai_request: {
+        model: "mcoda-image",
+        prompt: "A glass forest",
+        response_format: "b64_json"
+      }
+    };
+
+    const streamed = await runtime.executeJob({
+      ...baseJob,
+      openai_request: { ...baseJob.openai_request, stream: true }
+    });
+    expect(streamed.status).toBe("failed");
+    expect(streamed.pre_start_failure).toBe(true);
+    expect(streamed.error?.code).toBe("validation_failed");
+    expect(fetchCount).toBe(0);
+
+    const malformed = await runtime.executeJob(baseJob, {
+      onStarted: async () => {
+        startedCount += 1;
+      }
+    });
+    expect(malformed.status).toBe("failed");
+    expect(malformed.pre_start_failure).toBeUndefined();
+    expect(malformed.error?.code).toBe("upstream_error");
+    expect(malformed.error?.message).toContain("invalid base64 response");
+    expect(startedCount).toBe(1);
+    expect(fetchCount).toBe(1);
+  });
+
+  it("bounds media responses before JSON parsing with headers and streamed reads", async () => {
+    const statePath = tempStatePath();
+    let fetchCount = 0;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl: (async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) {
+          return new Response("{\"data\":[]}", {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "content-length": "70000"
+            }
+          });
+        }
+        return new Response("x".repeat(70_000), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }) as typeof fetch,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "bounded-image",
+          adapter: "openai-compatible-local",
+          defaultModel: "bounded-image-local",
+          config: {
+            baseUrl: "http://bounded-image.test/v1",
+            authMode: "none",
+            operations: [
+              {
+                operation: "images.generations",
+                path: "/images/generations",
+                responseFormats: ["b64_json"],
+                limits: { maxOutputBytes: 3 }
+              }
+            ]
+          }
+        })
+      ])
+    });
+    const baseJob: SelfHostedNodeInvocationJob = {
+      job_id: "job-bounded-image-header",
+      request_id: "req-bounded-image-header",
+      node_id: "shn_service",
+      agent_slug: "bounded-image",
+      source_agent_slug: "bounded-image",
+      provider: "mcoda",
+      model: "mcoda-bounded-image",
+      operation: "images.generations",
+      openai_request: {
+        model: "mcoda-bounded-image",
+        prompt: "A bounded response",
+        response_format: "b64_json"
+      }
+    };
+
+    const declaredOversize = await runtime.executeJob(baseJob);
+    expect(declaredOversize.status).toBe("failed");
+    expect(declaredOversize.error?.message).toContain(
+      "response exceeds the configured byte limit"
+    );
+
+    const streamedOversize = await runtime.executeJob({
+      ...baseJob,
+      job_id: "job-bounded-image-stream",
+      request_id: "req-bounded-image-stream"
+    });
+    expect(streamedOversize.status).toBe("failed");
+    expect(streamedOversize.error?.message).toContain(
+      "response exceeds the configured byte limit"
+    );
+    expect(fetchCount).toBe(2);
+  });
+
   it("passes encrypted Docdex job context and attached mswarm API key to Codali without response leakage", async () => {
     const statePath = tempStatePath();
     const secret = "msw_docdex_secret";
@@ -3500,6 +4016,193 @@ describe("self-hosted node runtime", () => {
     expect(
       (emitted[0]?.choices as Array<{ delta?: { content?: string } }> | undefined)?.[0]?.delta?.content
     ).toBe("<canvas>");
+  });
+
+  it("rejects invocation tokens with unknown generative operations", () => {
+    const token = signInvocationToken({
+      secret: "operation-secret",
+      nodeId: "shn_operation",
+      jobId: "job-operation",
+      requestId: "req-operation",
+      model: "mcoda-operation-model",
+      operation: "image"
+    });
+    assert.throws(
+      () =>
+        verifySelfHostedInvocationToken({
+          token,
+          secret: "operation-secret"
+        }),
+      /self_hosted_invocation_token_invalid_operation/
+    );
+  });
+
+  it("binds direct invocation tokens to the requested generative operation", async () => {
+    const statePath = tempStatePath();
+    const config = serviceConfigFor(statePath);
+    const job: SelfHostedNodeInvocationJob = {
+      job_id: "job-operation-claim",
+      request_id: "req-operation-claim",
+      node_id: config.nodeId,
+      agent_slug: "stable-audio-3",
+      provider: "mcoda",
+      model: "mcoda-stable-audio-3",
+      operation: "audio.generations",
+      openai_request: {
+        model: "mcoda-stable-audio-3",
+        prompt: "A short orchestral swell",
+        duration_seconds: 5,
+        response_format: "wav"
+      }
+    };
+    const token = signInvocationToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      model: job.openai_request.model,
+      operation: "images.generations"
+    });
+    expect(
+      verifySelfHostedInvocationToken({
+        token,
+        secret: config.invocationSigningSecret || ""
+      }).operation
+    ).toBe("images.generations");
+    let executeCount = 0;
+    const runtime = {
+      executeJob: async () => {
+        executeCount += 1;
+        return {
+          job_id: job.job_id,
+          request_id: job.request_id,
+          operation: job.operation,
+          status: "success" as const,
+          openai_response: { data: [{ b64_json: "dW5yZWFjaGFibGU=" }] }
+        };
+      }
+    } as unknown as SelfHostedNodeRuntime;
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.payload).code).toBe("validation_failed");
+      expect(JSON.parse(response.payload).message).toContain(
+        "operation does not match invocation token"
+      );
+      expect(executeCount).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts a public-model direct image token and remaps the local runner model", async () => {
+    const statePath = tempStatePath();
+    const config = permissiveServiceConfigFor(statePath);
+    const publicModel = "mcoda-sukunahikona-sd3-5-large-q4";
+    let localRequest: Record<string, unknown> | null = null;
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe("http://image.test/v1/images/generations");
+        localRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          created: 1_785_484_200,
+          data: [{ b64_json: "ZGlyZWN0LWltYWdl" }]
+        });
+      }) as typeof fetch,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "sd3-5-large-q4",
+          adapter: "openai-compatible-local",
+          defaultModel: "sd-cpp-local",
+          supportsTools: false,
+          capabilities: ["image_generation"],
+          config: {
+            baseUrl: "http://image.test/v1",
+            runnerKind: "stable-diffusion-cpp",
+            authMode: "none",
+            publicModelId: publicModel,
+            inputModalities: ["text"],
+            outputModalities: ["image"],
+            operations: [
+              {
+                operation: "images.generations",
+                path: "/images/generations",
+                requestParameterAllowlist: [
+                  "model",
+                  "prompt",
+                  "n",
+                  "size",
+                  "response_format"
+                ],
+                responseFormats: ["b64_json"],
+                outputMimeTypes: ["image/png"]
+              }
+            ]
+          }
+        })
+      ])
+    });
+    const job: SelfHostedNodeInvocationJob = {
+      job_id: "job-direct-image",
+      request_id: "req-direct-image",
+      node_id: config.nodeId,
+      agent_slug: "sd3-5-large-q4",
+      source_agent_slug: "sd3-5-large-q4",
+      provider: "mcoda",
+      model: publicModel,
+      operation: "images.generations",
+      openai_request: {
+        model: publicModel,
+        prompt: "A brass telescope under moonlight",
+        n: 1,
+        size: "1024x1024",
+        response_format: "b64_json"
+      }
+    };
+    const token = signInvocationToken({
+      secret: config.invocationSigningSecret || "",
+      nodeId: job.node_id,
+      jobId: job.job_id,
+      requestId: job.request_id,
+      model: publicModel,
+      operation: "images.generations"
+    });
+    const app = buildSelfHostedNodeApp(runtime, config);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/swarm/self-hosted/node/jobs",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json"
+        },
+        payload: job
+      });
+
+      expect(response.statusCode).toBe(200);
+      const payload = JSON.parse(response.payload) as Record<string, unknown>;
+      expect(payload.operation).toBe("images.generations");
+      expect(payload.status).toBe("success");
+      expect((payload.openai_response as Record<string, unknown>).data).toEqual([
+        { b64_json: "ZGlyZWN0LWltYWdl" }
+      ]);
+      const requestBody = localRequest as Record<string, unknown> | null;
+      assert.ok(requestBody);
+      expect(requestBody.model).toBe("sd-cpp-local");
+      expect(requestBody.prompt).toBe("A brass telescope under moonlight");
+    } finally {
+      await app.close();
+    }
   });
 
   it("serves direct stream jobs as OpenAI-compatible SSE", async () => {
@@ -5442,6 +6145,46 @@ describe("self-hosted node runtime", () => {
             defaultModel: "nomic-embed-text:latest",
             bestUsage: "embedding",
             health: { status: "healthy" }
+          },
+          {
+            id: "agent-sd",
+            slug: "sd3-5-large-q4",
+            adapter: "openai-compatible-local",
+            defaultModel: "sd-cpp-local",
+            supportsTools: false,
+            bestUsage: "image_generation",
+            capabilities: ["image_generation"],
+            health: { status: "healthy" },
+            config: {
+              baseUrl: "http://127.0.0.1:11445/v1",
+              runnerKind: "stable-diffusion-cpp",
+              authMode: "none",
+              publicModelId: "mcoda-sukunahikona-sd3-5-large-q4",
+              inputModalities: ["text"],
+              outputModalities: ["image"],
+              operations: [
+                {
+                  operation: "images.generations",
+                  path: "/images/generations",
+                  requestParameterAllowlist: [
+                    "model",
+                    "prompt",
+                    "n",
+                    "size",
+                    "response_format",
+                    "seed",
+                    "steps",
+                    "negative_prompt"
+                  ],
+                  responseFormats: ["b64_json"],
+                  outputMimeTypes: ["image/png"],
+                  limits: {
+                    maxPromptChars: 4096,
+                    maxSteps: 50
+                  }
+                }
+              ]
+            }
           }
         ]),
         stderr: ""
@@ -5481,11 +6224,11 @@ describe("self-hosted node runtime", () => {
     const result = await runtime.runOnce();
     expect(result.status).toBe("online");
     expect(result.discovery_source).toBe("mcoda");
-    expect(result.model_count).toBe(1);
-    expect(result.mcoda_agent_count).toBe(1);
+    expect(result.model_count).toBe(2);
+    expect(result.mcoda_agent_count).toBe(2);
     expect(heartbeatBodies[0].discovery).toMatchObject({ source: "mcoda", mcoda_status: "ok" });
     const models = heartbeatBodies[0].models as Array<Record<string, unknown>>;
-    expect(models).toHaveLength(2);
+    expect(models).toHaveLength(3);
     expect(models[0]).toMatchObject({
       name: "phi3-reviewer",
       provider: "mcoda",
@@ -5499,6 +6242,38 @@ describe("self-hosted node runtime", () => {
       exposed: false,
       best_usage: "embedding"
     });
+    expect(models[2]).toMatchObject({
+      name: "sd3-5-large-q4",
+      provider: "mcoda",
+      model_id: "mcoda-sukunahikona-sd3-5-large-q4",
+      upstream_model: "sd-cpp-local",
+      runner_kind: "stable-diffusion-cpp",
+      input_modalities: ["text"],
+      output_modalities: ["image"]
+    });
+    expect(models[2].operations).toEqual([
+      {
+        type: "images.generations",
+        path: "/images/generations",
+        method: "POST",
+        supported_parameters: [
+          "model",
+          "prompt",
+          "response_format",
+          "n",
+          "size",
+          "seed",
+          "steps",
+          "negative_prompt"
+        ],
+        response_formats: ["b64_json"],
+        output_mime_types: ["image/png"],
+        limits: {
+          max_prompt_chars: 4096,
+          max_steps: 50
+        }
+      }
+    ]);
   });
 
   it("reports scheduler-grade runtime load telemetry in heartbeats", async () => {

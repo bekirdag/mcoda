@@ -1,15 +1,23 @@
 import crypto from "node:crypto";
+import type { GenerativeOperation } from "@mcoda/shared";
 
 export interface SelfHostedInvocationTokenClaims {
   node_id: string;
   job_id: string;
   request_id: string;
   model: string;
+  operation?: GenerativeOperation;
   deadline_at: string;
   scope: "self_hosted.invoke";
   iat: number;
   exp: number;
 }
+
+const SELF_HOSTED_INVOCATION_OPERATIONS = new Set<GenerativeOperation>([
+  "chat.completions",
+  "images.generations",
+  "audio.generations"
+]);
 
 export interface SelfHostedGenericJobTokenClaims {
   node_id: string;
@@ -108,6 +116,12 @@ export function verifySelfHostedInvocationToken(input: {
   requireText(payload.job_id, "job_id");
   requireText(payload.request_id, "request_id");
   requireText(payload.model, "model");
+  if (
+    payload.operation !== undefined &&
+    !SELF_HOSTED_INVOCATION_OPERATIONS.has(payload.operation)
+  ) {
+    throw new Error("self_hosted_invocation_token_invalid_operation");
+  }
   return payload;
 }
 

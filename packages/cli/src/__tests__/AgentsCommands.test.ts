@@ -69,6 +69,10 @@ test("agent --help prints usage", { concurrency: false }, async () => {
   assert.match(output, /llama-cpp-local/);
   assert.match(output, /--config-header <K=V>/);
   assert.match(output, /--config-extra-body-json <JSON>/);
+  assert.match(output, /--config-public-model-id <ID>/);
+  assert.match(output, /--config-input-modality <M>/);
+  assert.match(output, /--config-output-modality <M>/);
+  assert.match(output, /--config-operation <NAME\|JSON>/);
   assert.match(output, /update <NAME>[\s\S]*--adapter <TYPE>/);
   assert.match(output, /update <NAME>[\s\S]*--config-runner-kind <K>/);
   assert.match(output, /update <NAME>[\s\S]*--config-extra-body-json <JSON>/);
@@ -414,6 +418,75 @@ test("agent add stores local OpenAI-compatible runner config flags", { concurren
   });
 });
 
+test("agent add declares the existing sd-server image model for mswarm publication", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "sd3-5-large-q4",
+      "--adapter",
+      "openai-compatible-local",
+      "--model",
+      "sd-cpp-local",
+      "--config-base-url",
+      "http://127.0.0.1:11445",
+      "--config-runner-kind",
+      "stable-diffusion-cpp",
+      "--config-public-model-id",
+      "mcoda-sukunahikona-sd3-5-large-q4",
+      "--config-input-modality",
+      "text",
+      "--config-output-modality",
+      "image",
+      "--config-operation",
+      JSON.stringify({
+        operation: "images.generations",
+        path: "/v1/images/generations",
+        requestParameterAllowlist: [
+          "model",
+          "prompt",
+          "n",
+          "size",
+          "response_format",
+          "seed",
+          "steps",
+          "negative_prompt",
+        ],
+        responseFormats: ["b64_json"],
+        outputMimeTypes: ["image/png"],
+      }),
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("sd3-5-large-q4");
+    assert.ok(agent);
+    assert.equal(agent.defaultModel, "sd-cpp-local");
+    assert.equal((agent.config as any)?.runnerKind, "stable-diffusion-cpp");
+    assert.equal((agent.config as any)?.publicModelId, "mcoda-sukunahikona-sd3-5-large-q4");
+    assert.deepEqual((agent.config as any)?.inputModalities, ["text"]);
+    assert.deepEqual((agent.config as any)?.outputModalities, ["image"]);
+    assert.deepEqual((agent.config as any)?.operations, [
+      {
+        operation: "images.generations",
+        path: "/v1/images/generations",
+        method: "POST",
+        requestParameterAllowlist: [
+          "model",
+          "prompt",
+          "n",
+          "size",
+          "response_format",
+          "seed",
+          "steps",
+          "negative_prompt",
+        ],
+        responseFormats: ["b64_json"],
+        outputMimeTypes: ["image/png"],
+      },
+    ]);
+    await repo.close();
+  });
+});
+
 test("agent add defaults llama.cpp local runner kinds", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await AgentsCommands.run([
@@ -465,6 +538,14 @@ test("agent update merges local runner config patches", { concurrency: false }, 
       "phase4-update-local",
       "--config-header",
       "X-Trace=updated",
+      "--config-public-model-id",
+      "public-updated-model",
+      "--config-input-modality",
+      "text",
+      "--config-output-modality",
+      "audio",
+      "--config-operation",
+      "audio.generations",
     ]);
 
     const repo = await GlobalRepository.create();
@@ -475,6 +556,11 @@ test("agent update merges local runner config patches", { concurrency: false }, 
     assert.equal((agent.config as any)?.authMode, "none");
     assert.equal((agent.config as any)?.responseFormatStrategy, "none");
     assert.deepEqual((agent.config as any)?.headers, { "X-Trace": "updated" });
+    assert.equal((agent.config as any)?.publicModelId, "public-updated-model");
+    assert.deepEqual((agent.config as any)?.inputModalities, ["text"]);
+    assert.deepEqual((agent.config as any)?.outputModalities, ["audio"]);
+    assert.equal((agent.config as any)?.operations?.[0]?.operation, "audio.generations");
+    assert.equal((agent.config as any)?.operations?.[0]?.path, "/v1/audio/generations");
     await repo.close();
   });
 });

@@ -2,11 +2,14 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { GlobalRepository } from '@mcoda/db';
 import {
   CryptoHelper,
+  normalizeGenerativeModalities,
+  normalizeSelfHostedGenerativeOperation,
   type Agent,
   type AgentHealth,
   type AgentHealthStatus,
   type AgentModel,
   type CreateAgentInput,
+  type GenerativeModality,
   type MswarmArtifactRef,
   type MswarmGenericJobAuditEvent,
   type MswarmGenericJobLifecycleSnapshot,
@@ -14,11 +17,20 @@ import {
   type MswarmJobEvent,
   type MswarmJobRequest,
   type MswarmJobType,
+  type SelfHostedGenerativeOperation,
   type UpdateAgentInput,
 } from '@mcoda/shared';
 import { MswarmConfigStore } from './MswarmConfigStore.js';
 
 export type { MswarmGenericJobLifecycleSnapshot } from '@mcoda/shared';
+export {
+  normalizeGenerativeModalities,
+  normalizeSelfHostedGenerativeOperation,
+};
+export type {
+  GenerativeModality,
+  SelfHostedGenerativeOperation,
+} from '@mcoda/shared';
 
 export type MswarmSelfHostedNodeClientIdentityKind =
   | 'domain'
@@ -37,6 +49,10 @@ export interface MswarmCloudAgent {
   slug: string;
   provider: string;
   default_model: string;
+  public_model_id?: string;
+  input_modalities?: GenerativeModality[];
+  output_modalities?: GenerativeModality[];
+  operations?: SelfHostedGenerativeOperation[];
   cost_per_million?: number;
   rating?: number;
   reasoning_rating?: number;
@@ -49,6 +65,7 @@ export interface MswarmCloudAgent {
   supports_tools: boolean;
   best_usage?: string;
   model_id?: string;
+  upstream_model?: string;
   display_name?: string;
   description?: string;
   supports_reasoning?: boolean;
@@ -262,6 +279,10 @@ export interface ManagedMswarmSelfHostedConfig {
   nodeId?: string;
   serverName?: string;
   modelId?: string;
+  publicModelId?: string;
+  inputModalities?: GenerativeModality[];
+  outputModalities?: GenerativeModality[];
+  operations?: SelfHostedGenerativeOperation[];
   displayName?: string;
   description?: string;
   supportsReasoning?: boolean;
@@ -900,6 +921,100 @@ const resolveStringArrayFromRecordOrShape = (
   return uniqueStrings(values);
 };
 
+const canonicalizeGenerativeOperationLimits = (
+  value: unknown
+): Record<string, unknown> | undefined => {
+  if (!isRecord(value)) return undefined;
+  return {
+    maxRequestBytes: value.maxRequestBytes ?? value.max_request_bytes,
+    maxOutputBytes: value.maxOutputBytes ?? value.max_output_bytes,
+    maxPromptChars: value.maxPromptChars ?? value.max_prompt_chars,
+    maxNegativePromptChars:
+      value.maxNegativePromptChars ?? value.max_negative_prompt_chars,
+    maxN: value.maxN ?? value.max_n,
+    maxWidth: value.maxWidth ?? value.max_width,
+    maxHeight: value.maxHeight ?? value.max_height,
+    maxPixels: value.maxPixels ?? value.max_pixels,
+    minDurationSeconds:
+      value.minDurationSeconds ?? value.min_duration_seconds,
+    maxDurationSeconds:
+      value.maxDurationSeconds ?? value.max_duration_seconds,
+    maxSampleRate: value.maxSampleRate ?? value.max_sample_rate,
+    maxSteps: value.maxSteps ?? value.max_steps,
+  };
+};
+
+const canonicalizeGenerativeOperation = (value: unknown): unknown => {
+  if (!isRecord(value)) return value;
+  return {
+    operation: value.operation ?? value.type,
+    path: value.path,
+    method: value.method,
+    requestParameterAllowlist:
+      value.requestParameterAllowlist ??
+      value.request_parameter_allowlist ??
+      value.supportedParameters ??
+      value.supported_parameters,
+    responseFormats: value.responseFormats ?? value.response_formats,
+    outputMimeTypes: value.outputMimeTypes ?? value.output_mime_types,
+    limits: canonicalizeGenerativeOperationLimits(value.limits),
+  };
+};
+
+const normalizeGenerativeOperations = (
+  value: unknown
+): SelfHostedGenerativeOperation[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const operations: SelfHostedGenerativeOperation[] = [];
+  for (const candidate of value) {
+    const operation = normalizeSelfHostedGenerativeOperation(
+      canonicalizeGenerativeOperation(candidate)
+    );
+    if (
+      operation &&
+      !operations.some((entry) => entry.operation === operation.operation)
+    ) {
+      operations.push(operation);
+    }
+  }
+  return operations;
+};
+
+const defaultChatGenerativeOperations = (): SelfHostedGenerativeOperation[] => {
+  const operation = normalizeSelfHostedGenerativeOperation({
+    operation: 'chat.completions',
+  });
+  if (!operation) {
+    throw new Error('Invalid built-in chat.completions operation');
+  }
+  return [operation];
+};
+
+const resolveGenerativeModalitiesFromRecordOrShape = (
+  record: Record<string, unknown>,
+  keys: string[],
+  fallback: GenerativeModality[]
+): GenerativeModality[] =>
+  resolveFromRecordOrShape(
+    record,
+    keys,
+    normalizeGenerativeModalities
+  ) ?? [...fallback];
+
+const resolveGenerativeOperationsFromRecordOrShape = (
+  record: Record<string, unknown>
+): SelfHostedGenerativeOperation[] => {
+  const sources = [
+    record,
+    isRecord(record.mcoda_shape) ? record.mcoda_shape : undefined,
+  ].filter(isRecord);
+  for (const source of sources) {
+    if (!Object.prototype.hasOwnProperty.call(source, 'operations')) continue;
+    return normalizeGenerativeOperations(source.operations) ?? [];
+  }
+  return defaultChatGenerativeOperations();
+};
+
 const toRuntimeUsageBudget = (value: unknown): MswarmRuntimeUsageBudget => {
   const record = isRecord(value) ? value : {};
   const budget: MswarmRuntimeUsageBudget = {
@@ -973,6 +1088,14 @@ const DEFAULT_CONTEXT_WINDOW = 8_192;
 const DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 const DEFAULT_MAX_COMPLEXITY = 5;
 
+const publicModelIdForAgent = (agent: MswarmCloudAgent): string =>
+  agent.public_model_id ??
+  (agent.upstream_model ? agent.model_id : undefined) ??
+  agent.default_model;
+
+const upstreamModelIdForAgent = (agent: MswarmCloudAgent): string =>
+  agent.upstream_model ?? agent.model_id ?? agent.default_model;
+
 const toSyncedAgentInput = (
   existing: Agent | undefined,
   agent: MswarmCloudAgent,
@@ -998,7 +1121,7 @@ const toSyncedAgentInput = (
   return {
     slug: localSlug,
     adapter: 'openai-api',
-    defaultModel: agent.default_model,
+    defaultModel: publicModelIdForAgent(agent),
     openaiCompatible: true,
     contextWindow:
       agent.context_window ?? existing?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -1394,7 +1517,11 @@ const toManagedSelfHostedConfig = (
       sourceAgentSlug: agent.source_agent_slug,
       nodeId: loadBalanced ? undefined : resolveString(sync.node_id),
       serverName: loadBalanced ? undefined : resolveString(sync.server_name),
-      modelId: agent.model_id,
+      modelId: upstreamModelIdForAgent(agent),
+      publicModelId: publicModelIdForAgent(agent),
+      inputModalities: agent.input_modalities ?? ['text'],
+      outputModalities: agent.output_modalities ?? ['text'],
+      operations: agent.operations ?? defaultChatGenerativeOperations(),
       displayName: agent.display_name,
       description: agent.description,
       supportsReasoning: agent.supports_reasoning,
@@ -1515,6 +1642,21 @@ const toCloudAgent = (value: unknown): MswarmCloudAgent => {
     ['supports_tools', 'supportsTools'],
     resolveBoolean
   );
+  const modelId = resolveFromRecordOrShape(
+    value,
+    ['model_id', 'modelId'],
+    resolveString
+  );
+  const upstreamModel = resolveFromRecordOrShape(
+    value,
+    ['upstream_model', 'upstreamModel'],
+    resolveString
+  );
+  const publicModelId = resolveFromRecordOrShape(
+    value,
+    ['public_model_id', 'publicModelId'],
+    resolveString
+  ) ?? (upstreamModel ? modelId : undefined);
   if (!slug || !provider || !defaultModel || supportsTools === undefined) {
     throw new Error('mswarm cloud-agent payload is missing required fields');
   }
@@ -1522,6 +1664,18 @@ const toCloudAgent = (value: unknown): MswarmCloudAgent => {
     slug,
     provider,
     default_model: defaultModel,
+    public_model_id: publicModelId,
+    input_modalities: resolveGenerativeModalitiesFromRecordOrShape(
+      value,
+      ['input_modalities', 'inputModalities'],
+      ['text']
+    ),
+    output_modalities: resolveGenerativeModalitiesFromRecordOrShape(
+      value,
+      ['output_modalities', 'outputModalities'],
+      ['text']
+    ),
+    operations: resolveGenerativeOperationsFromRecordOrShape(value),
     cost_per_million: resolveFromRecordOrShape(
       value,
       ['cost_per_million', 'costPerMillion'],
@@ -1565,11 +1719,8 @@ const toCloudAgent = (value: unknown): MswarmCloudAgent => {
       ['best_usage', 'bestUsage'],
       resolveString
     ),
-    model_id: resolveFromRecordOrShape(
-      value,
-      ['model_id', 'modelId'],
-      resolveString
-    ),
+    model_id: modelId,
+    upstream_model: upstreamModel,
     display_name: resolveFromRecordOrShape(
       value,
       ['display_name', 'displayName'],
@@ -1869,7 +2020,7 @@ const toAgentModels = (
 ): AgentModel[] => [
   {
     agentId,
-    modelName: entry.default_model,
+    modelName: publicModelIdForAgent(entry),
     isDefault: true,
     config: {
       provider: entry.provider,
@@ -2574,7 +2725,7 @@ export class MswarmApi {
         toManagedSyncRecord(
           nextConfig,
           localSlug,
-          agent.default_model,
+          publicModelIdForAgent(agent),
           existing ? 'updated' : 'created'
         )
       );
@@ -2732,7 +2883,7 @@ export class MswarmApi {
         toManagedSelfHostedSyncRecord(
           nextConfig,
           localSlug,
-          agent.default_model,
+          publicModelIdForAgent(agent),
           existing ? 'updated' : 'created'
         )
       );
@@ -2872,7 +3023,7 @@ export class MswarmApi {
         toManagedWorkerSyncRecord(
           nextConfig,
           localSlug,
-          agent.default_model,
+          publicModelIdForAgent(agent),
           existing ? 'updated' : 'created'
         )
       );

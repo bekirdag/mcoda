@@ -4,9 +4,12 @@ import {
   isLocalOpenAiCompatibleAdapter,
   isReservedLocalRunnerExtraBodyKey,
   isSecretLocalRunnerHeaderKey,
+  normalizeGenerativeModality,
   normalizeLocalRunnerAuthMode,
   normalizeLocalRunnerKind,
   normalizeLocalRunnerResponseFormatStrategy,
+  normalizeSelfHostedGenerativeOperation,
+  type SelfHostedGenerativeOperation,
 } from "@mcoda/shared";
 import readline from "node:readline";
 
@@ -79,7 +82,7 @@ Subcommands:
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
     --config-base-url <URL>  Base URL for remote adapters (e.g., http://host:11434 for ollama-remote)
-    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|lm-studio|localai|sglang|tgi|custom)
+    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|stable-diffusion-cpp|lm-studio|localai|sglang|tgi|custom)
     --config-auth-mode <M>   Local auth mode (none|bearer|dummy-bearer)
     --config-dummy-bearer-token <T> Non-secret dummy bearer token for local runners
     --config-header <K=V>    Repeatable non-secret local runner header
@@ -87,6 +90,10 @@ Subcommands:
     --config-response-format-strategy <S> Local response format strategy
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
+    --config-public-model-id <ID> Public model id exposed through mswarm
+    --config-input-modality <M> Repeatable input modality (text|image|audio)
+    --config-output-modality <M> Repeatable output modality (text|image|audio)
+    --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
   update <NAME>              Update adapter/model/capabilities/prompts for an agent
@@ -105,7 +112,7 @@ Subcommands:
     --job-path <PATH>        Optional job prompt path
     --character-path <PATH>  Optional character prompt path
     --config-base-url <URL>  Base URL for remote/local runner adapters
-    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|lm-studio|localai|sglang|tgi|custom)
+    --config-runner-kind <K> Local runner kind (vllm|llama-cpp|llama-cpp-python|stable-diffusion-cpp|lm-studio|localai|sglang|tgi|custom)
     --config-auth-mode <M>   Local auth mode (none|bearer|dummy-bearer)
     --config-dummy-bearer-token <T> Non-secret dummy bearer token for local runners
     --config-header <K=V>    Repeatable non-secret local runner header
@@ -113,6 +120,10 @@ Subcommands:
     --config-response-format-strategy <S> Local response format strategy
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
+    --config-public-model-id <ID> Public model id exposed through mswarm
+    --config-input-modality <M> Repeatable input modality (text|image|audio)
+    --config-output-modality <M> Repeatable output modality (text|image|audio)
+    --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
   delete|remove <NAME>       Remove an agent (use --force to ignore routing/default references)
@@ -211,6 +222,10 @@ const CONFIG_FLAG_NAMES = [
   "config-response-format-strategy",
   "config-health-path",
   "config-models-path",
+  "config-public-model-id",
+  "config-input-modality",
+  "config-output-modality",
+  "config-operation",
   "config-temperature",
   "config-thinking",
 ] as const;
@@ -338,6 +353,46 @@ const parseConfigHeaders = (value: string | string[] | boolean | undefined): Rec
   return Object.keys(headers).length ? headers : undefined;
 };
 
+const parseConfigModalities = (
+  value: string | string[] | boolean | undefined,
+  label: string,
+): string[] | undefined => {
+  if (value === undefined) return undefined;
+  const modalities = getStringFlagValues(value, label).map((raw) => {
+    const modality = normalizeGenerativeModality(raw);
+    if (!modality) {
+      throw new Error(`Invalid ${label}; unknown generative modality "${raw}"`);
+    }
+    return modality;
+  });
+  return Array.from(new Set(modalities));
+};
+
+const parseConfigOperations = (
+  value: string | string[] | boolean | undefined,
+): SelfHostedGenerativeOperation[] | undefined => {
+  if (value === undefined) return undefined;
+  const operations: SelfHostedGenerativeOperation[] = [];
+  for (const raw of getStringFlagValues(value, "--config-operation")) {
+    let candidate: unknown = { operation: raw };
+    if (raw.startsWith("{")) {
+      try {
+        candidate = JSON.parse(raw);
+      } catch {
+        throw new Error("Invalid --config-operation; expected a supported operation name or JSON descriptor");
+      }
+    }
+    const operation = normalizeSelfHostedGenerativeOperation(candidate);
+    if (!operation) {
+      throw new Error(`Invalid --config-operation; unsupported operation descriptor "${raw}"`);
+    }
+    if (!operations.some((entry) => entry.operation === operation.operation)) {
+      operations.push(operation);
+    }
+  }
+  return operations;
+};
+
 const parseConfig = (
   flags: Record<string, any>,
   options: {
@@ -400,6 +455,24 @@ const parseConfig = (
 
   const modelsPath = getLastStringFlag(flags["config-models-path"], "--config-models-path");
   if (modelsPath) config.modelsPath = modelsPath;
+
+  const publicModelId = getLastStringFlag(flags["config-public-model-id"], "--config-public-model-id");
+  if (publicModelId) config.publicModelId = publicModelId;
+
+  const inputModalities = parseConfigModalities(
+    flags["config-input-modality"],
+    "--config-input-modality",
+  );
+  if (inputModalities) config.inputModalities = inputModalities;
+
+  const outputModalities = parseConfigModalities(
+    flags["config-output-modality"],
+    "--config-output-modality",
+  );
+  if (outputModalities) config.outputModalities = outputModalities;
+
+  const operations = parseConfigOperations(flags["config-operation"]);
+  if (operations) config.operations = operations;
 
   if (flags["config-temperature"] !== undefined) {
     const raw = flags["config-temperature"];
