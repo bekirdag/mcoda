@@ -22,6 +22,7 @@ import wave
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Any, Protocol
 
 
@@ -245,6 +246,15 @@ class ServerState:
 class AudioHttpServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 8
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind performs a reverse-DNS lookup via getfqdn().
+        # That lookup is unnecessary for this loopback-only service and can
+        # stall startup on hosts whose resolver does not map loopback quickly.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def _is_int(value: Any) -> bool:

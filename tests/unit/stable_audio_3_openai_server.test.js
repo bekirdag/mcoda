@@ -57,6 +57,33 @@ function waitForListening(child, stderr) {
   });
 }
 
+test("Stable Audio wrapper bind does not depend on reverse DNS", () => {
+  const python = resolvePython();
+  if (!python) return;
+  const probe = spawnSync(
+    python,
+    [
+      "-c",
+      `import importlib.util, socket, sys
+spec = importlib.util.spec_from_file_location("stable_audio_server", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+def fail_getfqdn(host):
+    raise RuntimeError(f"unexpected reverse DNS lookup for {host}")
+socket.getfqdn = fail_getfqdn
+server = module.AudioHttpServer(("127.0.0.1", 0), module.BaseHTTPRequestHandler)
+assert server.server_name == "127.0.0.1"
+assert server.server_port > 0
+server.server_close()
+`,
+      serverScript,
+    ],
+    { cwd: repoRoot, encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+});
+
 async function stopChild(child) {
   if (child.exitCode != null) return;
   child.kill("SIGTERM");
