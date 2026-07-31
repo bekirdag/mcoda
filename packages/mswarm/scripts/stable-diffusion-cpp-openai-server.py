@@ -33,6 +33,9 @@ DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:11445"
 DEFAULT_MODEL_ID = "sd-cpp-local"
 DEFAULT_CLIENT_READ_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_HANDLER_THREADS = 8
+DEFAULT_MAX_REQUEST_BYTES = 131_072
+OVERLOAD_HEADER_ALLOWANCE_BYTES = 65_536
+OVERLOAD_DRAIN_TIMEOUT_SECONDS = 0.1
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 ALLOWED_FIELDS = {
     "model",
@@ -151,10 +154,12 @@ class ImageHttpServer(ThreadingHTTPServer):
         *,
         client_read_timeout_seconds: float = DEFAULT_CLIENT_READ_TIMEOUT_SECONDS,
         max_handler_threads: int = DEFAULT_MAX_HANDLER_THREADS,
+        max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
         bind_and_activate: bool = True,
     ) -> None:
         self.client_read_timeout_seconds = client_read_timeout_seconds
         self.max_handler_threads = max_handler_threads
+        self.max_request_bytes = max_request_bytes
         self._handler_slots = threading.BoundedSemaphore(max_handler_threads)
         super().__init__(server_address, request_handler_class, bind_and_activate)
 
@@ -172,19 +177,43 @@ class ImageHttpServer(ThreadingHTTPServer):
 
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         if not self._handler_slots.acquire(blocking=False):
-            try:
-                request.settimeout(min(self.client_read_timeout_seconds, 0.1))
-                request.sendall(OVERLOAD_RESPONSE)
-            except OSError:
-                pass
-            finally:
-                self.shutdown_request(request)
+            self._reject_overloaded_request(request)
             return
         try:
             super().process_request(request, client_address)
         except BaseException:
             self._handler_slots.release()
             raise
+
+    def _reject_overloaded_request(self, request: socket.socket) -> None:
+        drain_deadline = time.monotonic() + min(
+            self.client_read_timeout_seconds,
+            OVERLOAD_DRAIN_TIMEOUT_SECONDS,
+        )
+        drain_remaining = self.max_request_bytes + OVERLOAD_HEADER_ALLOWANCE_BYTES
+        try:
+            request.settimeout(max(0.001, drain_deadline - time.monotonic()))
+            request.sendall(OVERLOAD_RESPONSE)
+            try:
+                request.shutdown(socket.SHUT_WR)
+            except OSError:
+                return
+            while drain_remaining > 0:
+                timeout_remaining = drain_deadline - time.monotonic()
+                if timeout_remaining <= 0:
+                    break
+                request.settimeout(timeout_remaining)
+                try:
+                    chunk = request.recv(min(65_536, drain_remaining))
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                drain_remaining -= len(chunk)
+        except OSError:
+            pass
+        finally:
+            self.close_request(request)
 
     def process_request_thread(
         self, request: socket.socket, client_address: Any
@@ -958,7 +987,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--upstream-base-url", default=DEFAULT_UPSTREAM_BASE_URL)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
     parser.add_argument("--upstream-model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--max-request-bytes", type=int, default=131_072)
+    parser.add_argument(
+        "--max-request-bytes", type=int, default=DEFAULT_MAX_REQUEST_BYTES
+    )
     parser.add_argument("--max-output-bytes", type=int, default=67_108_864)
     parser.add_argument("--max-prompt-chars", type=int, default=8_192)
     parser.add_argument("--max-negative-prompt-chars", type=int, default=8_192)
@@ -1087,6 +1118,7 @@ def main() -> int:
         _handler_for(state),
         client_read_timeout_seconds=args.client_read_timeout_seconds,
         max_handler_threads=args.max_handler_threads,
+        max_request_bytes=args.max_request_bytes,
     )
 
     def request_shutdown(signum: int, frame: Any) -> None:

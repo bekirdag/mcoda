@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.106 - 2026-07-31
+
+- Make the image bridge's handler-overload response portable across Windows and
+  POSIX by half-closing the response and bounded-draining an already-sent request
+  body before closing the socket.
+
 ## 0.1.105 - 2026-07-31
 
 - Add a packaged loopback stable-diffusion.cpp image bridge that safely makes
