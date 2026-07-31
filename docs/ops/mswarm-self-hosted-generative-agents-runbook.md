@@ -375,8 +375,11 @@ rollback does not disturb the image service:
 ```
 
 Use physical GPU 1 for Wan and retain CPU parameter backing with a 14 GiB
-device ceiling. The native listener is private implementation detail on 11447;
-the OpenAI-shaped bridge listens on 11448:
+device ceiling. Keep text encoding and VAE compute on CPU while diffusion runs
+on GPU. A live shared-RTX3090 smoke test reached about 24.1 GiB during GPU VAE
+decode despite the diffusion VRAM ceiling; CPU VAE avoids that decode-time OOM.
+The native listener is private implementation detail on 11447; the OpenAI-shaped
+bridge listens on 11448:
 
 ```ini
 # ~/.config/systemd/user/mcoda-wan2.2-video-native.service
@@ -392,7 +395,7 @@ Environment=CUDA_VISIBLE_DEVICES=1
 Environment=WAIT_NVIDIA_EXPECTED_GPUS=1
 WorkingDirectory=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp
 ExecStartPre=/home/wodo/.local/bin/wait-nvidia-ready
-ExecStart=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm/bin/sd-server --listen-ip 127.0.0.1 --listen-port 11447 --diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf --high-noise-diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf --vae /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/VAE/Wan2.1_VAE.safetensors --t5xxl /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/text_encoders/umt5-xxl-encoder-Q4_K_M.gguf --backend te=cpu,vae=cuda0,diffusion=cuda0 --params-backend te=cpu,vae=cpu,diffusion=cpu --max-vram cuda0=14 --stream-layers --diffusion-fa --vae-conv-direct
+ExecStart=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm/bin/sd-server --listen-ip 127.0.0.1 --listen-port 11447 --diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf --high-noise-diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf --vae /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/VAE/Wan2.1_VAE.safetensors --t5xxl /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/text_encoders/umt5-xxl-encoder-Q4_K_M.gguf --backend te=cpu,vae=cpu,diffusion=cuda0 --params-backend te=cpu,vae=cpu,diffusion=cpu --max-vram cuda0=14 --stream-layers --diffusion-fa --vae-conv-direct
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=300
@@ -456,7 +459,7 @@ mcoda agent add wan2.2-t2v-a14b-q4-k-m \
   --config-public-model-id mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m \
   --config-input-modality text \
   --config-output-modality video \
-  --config-operation '{"operation":"videos.generations","path":"/v1/videos/generations","requestParameterAllowlist":["model","prompt","negative_prompt","duration_seconds","fps","video_frames","response_format","n","size","seed","steps","high_noise_steps"],"responseFormats":["webm"],"outputMimeTypes":["video/webm"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":1,"minWidth":832,"maxWidth":832,"minHeight":480,"maxHeight":480,"maxPixels":399360,"maxDurationSeconds":5,"minFps":8,"maxFps":24,"minVideoFrames":9,"maxVideoFrames":81,"maxSteps":30,"maxHighNoiseSteps":30}}'
+  --config-operation '{"operation":"videos.generations","path":"/v1/videos/generations","requestParameterAllowlist":["model","prompt","negative_prompt","duration_seconds","fps","video_frames","response_format","n","size","seed","steps","high_noise_steps"],"responseFormats":["webm"],"outputMimeTypes":["video/webm"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":1,"minWidth":832,"maxWidth":832,"minHeight":480,"maxHeight":480,"maxPixels":399360,"maxDurationSeconds":5,"defaultFps":16,"minFps":8,"maxFps":24,"minVideoFrames":9,"maxVideoFrames":81,"maxSteps":30,"maxHighNoiseSteps":30}}'
 ```
 
 The public model is

@@ -100,6 +100,7 @@ export const GENERATIVE_OPERATION_LIMIT_KEYS = [
   "minDurationSeconds",
   "maxDurationSeconds",
   "maxSampleRate",
+  "defaultFps",
   "minFps",
   "maxFps",
   "minVideoFrames",
@@ -124,6 +125,7 @@ export interface GenerativeOperationLimits {
   minDurationSeconds?: number;
   maxDurationSeconds?: number;
   maxSampleRate?: number;
+  defaultFps?: number;
   minFps?: number;
   maxFps?: number;
   minVideoFrames?: number;

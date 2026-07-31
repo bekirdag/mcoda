@@ -105,6 +105,7 @@ export interface SelfHostedGenerativeOperationCatalogInput {
     min_duration_seconds?: number;
     max_duration_seconds?: number;
     max_sample_rate?: number;
+    default_fps?: number;
     min_fps?: number;
     max_fps?: number;
     min_video_frames?: number;
@@ -1235,6 +1236,9 @@ function generativeOperationCatalogInput(
           : {}),
         ...(descriptor.limits.maxSampleRate !== undefined
           ? { max_sample_rate: descriptor.limits.maxSampleRate }
+          : {}),
+        ...(descriptor.limits.defaultFps !== undefined
+          ? { default_fps: descriptor.limits.defaultFps }
           : {}),
         ...(descriptor.limits.minFps !== undefined
           ? { min_fps: descriptor.limits.minFps }

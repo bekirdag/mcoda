@@ -156,6 +156,7 @@ describe("GenerativeOperation", () => {
           maxWidth: 832,
           minHeight: 480,
           maxHeight: 480,
+          defaultFps: 16,
           minFps: 8,
           maxFps: 30,
           minVideoFrames: 9,
@@ -184,6 +185,7 @@ describe("GenerativeOperation", () => {
           maxWidth: 832,
           minHeight: 480,
           maxHeight: 480,
+          defaultFps: 16,
           minFps: 8,
           maxFps: 30,
           minVideoFrames: 9,
@@ -218,6 +220,7 @@ describe("GenerativeOperation", () => {
       outputMimeTypes: ["not-a-mime"],
       limits: {
         maxRequestBytes: -1,
+        defaultFps: 0,
       },
     });
     assert.deepEqual(normalized, {

@@ -942,6 +942,7 @@ const canonicalizeGenerativeOperationLimits = (
     maxDurationSeconds:
       value.maxDurationSeconds ?? value.max_duration_seconds,
     maxSampleRate: value.maxSampleRate ?? value.max_sample_rate,
+    defaultFps: value.defaultFps ?? value.default_fps,
     minFps: value.minFps ?? value.min_fps,
     maxFps: value.maxFps ?? value.max_fps,
     minVideoFrames: value.minVideoFrames ?? value.min_video_frames,

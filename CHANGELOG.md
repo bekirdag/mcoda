@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.104 - 2026-07-31
+
+- Serialize video-operation `defaultFps` as catalog `default_fps` across mcoda,
+  agent setup, and mswarm so off-box duration validation matches the local Wan
+  bridge's 16 FPS default.
+- Keep Wan diffusion on GPU while moving VAE compute to CPU in the production
+  service configuration to avoid decode-time GPU OOM on the shared RTX 3090.
+
 ## 0.1.103 - 2026-07-31
 
 - Add first-class self-hosted video modality and `videos.generations` relay
