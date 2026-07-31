@@ -8,6 +8,22 @@ Owner-run mswarm node for exposing local `mcoda` agents through the mswarm self-
 npm install -g @mcoda/mswarm
 ```
 
+The package also ships hardened, standard-library Python bridges for
+owner-local generative runtimes under its `scripts/` directory:
+
+- `stable-diffusion-cpp-openai-server.py` adds effective, validated
+  `negative_prompt`, `seed`, and `steps` controls to the OpenAI image surface,
+  refuses redirects and proxy routing, and bounds accepted-client threads and
+  read time;
+- `stable-audio-3-openai-server.py` wraps the approved Stable Audio 3 TensorRT
+  CLI profile;
+- `wan22-openai-server.py` maps OpenAI-shaped video requests to native
+  stable-diffusion.cpp async jobs.
+
+All three are loopback-only deployment components, not public listeners. See
+`docs/ops/mswarm-self-hosted-generative-agents-runbook.md` in the mcoda
+repository for pinned service, registration, readiness, and rollback guidance.
+
 ## Quick Setup
 
 ```sh

@@ -201,6 +201,10 @@ const REQUEST_PARAMETER_SETS: Readonly<Record<GenerativeOperation, ReadonlySet<s
 };
 
 const LIMIT_KEY_SET = new Set<string>(GENERATIVE_OPERATION_LIMIT_KEYS);
+const DURATION_LIMIT_KEY_SET = new Set<GenerativeOperationLimitKey>([
+  "minDurationSeconds",
+  "maxDurationSeconds",
+]);
 const STRICT_ORIGIN_RELATIVE_PATH =
   /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/;
 const MAX_OPERATION_PATH_LENGTH = 2048;
@@ -320,13 +324,19 @@ const normalizeGenerativeOperationLimits = (
   if (!isRecord(value)) return undefined;
   const normalized: Partial<Record<GenerativeOperationLimitKey, number>> = {};
   for (const [key, candidate] of Object.entries(value)) {
+    const limitKey = key as GenerativeOperationLimitKey;
     if (
       LIMIT_KEY_SET.has(key)
       && typeof candidate === "number"
-      && Number.isSafeInteger(candidate)
+      && Number.isFinite(candidate)
       && candidate > 0
+      && candidate <= Number.MAX_SAFE_INTEGER
+      && (
+        DURATION_LIMIT_KEY_SET.has(limitKey)
+        || Number.isSafeInteger(candidate)
+      )
     ) {
-      normalized[key as GenerativeOperationLimitKey] = candidate;
+      normalized[limitKey] = candidate;
     }
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined;

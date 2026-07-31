@@ -24,16 +24,18 @@ the public model id in `--model`; `sd-server` reports and expects
 
 Self-hosted discovery is heartbeat/catalog based. Use both
 `mcoda self-hosted agent list` for managed-agent materialization and
-authenticated `GET /v1/swarm/openai/models` for the OpenAI-shaped published
-inventory.
+authenticated `GET /v1/swarm/self-hosted/openai/models` for the OpenAI-shaped
+published inventory.
 
 ## Register the Existing SD 3.5 Server
 
 Preconditions:
 
-- `sd-server` listens only on `http://127.0.0.1:11445`.
-- `GET /v1/models` reports `sd-cpp-local`.
-- `POST /v1/images/generations` returns
+- Native `sd-server` listens only on `http://127.0.0.1:11445`.
+- The packaged image bridge listens only on `http://127.0.0.1:11449` and uses
+  11445 as its fixed upstream origin.
+- Both `GET /v1/models` endpoints report `sd-cpp-local`.
+- The bridge's `POST /v1/images/generations` returns
   `{"data":[{"b64_json":"..."}]}` for `response_format: "b64_json"`.
 - The mswarm node uses discovery mode `mcoda` and server name
   `sukunahikona`.
@@ -49,26 +51,98 @@ mcoda agent add sd3.5-large-q4 \
   --best-usage image_generation \
   --cost-per-million 0 \
   --capability image_generation \
-  --config-base-url http://127.0.0.1:11445 \
-  --config-runner-kind stable-diffusion-cpp \
+  --config-base-url http://127.0.0.1:11449 \
+  --config-runner-kind custom \
   --config-auth-mode none \
-  --config-health-path /v1/models \
+  --config-health-path /healthz \
   --config-models-path /v1/models \
   --config-public-model-id mcoda-sukunahikona-sd3-5-large-q4 \
   --config-input-modality text \
   --config-output-modality image \
-  --config-operation '{"operation":"images.generations","path":"/v1/images/generations","requestParameterAllowlist":["model","prompt","n","size","response_format","seed","steps","negative_prompt"],"responseFormats":["b64_json"],"outputMimeTypes":["image/png"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":4,"maxWidth":2048,"maxHeight":2048,"maxPixels":4194304,"maxSteps":100}}'
+  --config-operation '{"operation":"images.generations","path":"/v1/images/generations","requestParameterAllowlist":["model","prompt","n","size","response_format","seed","steps","negative_prompt"],"responseFormats":["b64_json"],"outputMimeTypes":["image/png"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":1,"minWidth":64,"maxWidth":2048,"minHeight":64,"maxHeight":2048,"maxPixels":4194304,"maxSteps":100}}'
 ```
 
 If the slug already exists, use `mcoda agent update sd3.5-large-q4` with the
 same declaration flags instead of `add`.
 
-The `stable-diffusion-cpp` runner dialect makes `seed`, `steps`, and
-`negative_prompt` effective even though this `sd-server` build ignores those
-fields at the top level. The node removes any user-supplied
-`<sd_cpp_extra_args>` tags and appends a controlled extension containing only
-the validated values. Other runner kinds must not advertise parameters their
-upstream silently ignores.
+The dedicated bridge makes `seed`, `steps`, and `negative_prompt` effective
+even though this `sd-server` build ignores those fields at the top level. It
+rejects a reserved `<sd_cpp_extra_args>` tag in either text field, serializes
+only those three validated controls into a new native extension, and maps
+`response_format: b64_json` to upstream `output_format: png`. It also verifies
+the native model catalog and PNG structure before returning data.
+
+Use runner kind `custom` for this registration. The legacy node-side
+`stable-diffusion-cpp` dialect would append the reserved tag before the request
+reaches the bridge, and the bridge correctly rejects preconstructed tags. Keep
+the legacy dialect only as a rollback path for a direct 11445 registration.
+
+Install the wrapper from the installed `@mcoda/mswarm` package and record its
+package version and SHA-256 in the deployment evidence:
+
+```bash
+MSWARM_PACKAGE_ROOT="$(npm root -g)/@mcoda/mswarm"
+install -d -m 0755 /home/wodo/.local/libexec/mcoda
+install -m 0755 \
+  "$MSWARM_PACKAGE_ROOT/scripts/stable-diffusion-cpp-openai-server.py" \
+  /home/wodo/.local/libexec/mcoda/stable-diffusion-cpp-openai-server.py
+npm list -g @mcoda/mswarm --depth=0
+sha256sum /home/wodo/.local/libexec/mcoda/stable-diffusion-cpp-openai-server.py
+```
+
+Persist it separately from the native GPU service:
+
+```ini
+# ~/.config/systemd/user/mcoda-sd3.5-image.service
+[Unit]
+Description=mcoda SD 3.5 OpenAI-compatible image bridge
+After=sd35-q4-server.service
+Wants=sd35-q4-server.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/wodo/.local/libexec/mcoda/stable-diffusion-cpp-openai-server.py --host 127.0.0.1 --port 11449 --upstream-base-url http://127.0.0.1:11445 --model-id sd-cpp-local --upstream-model-id sd-cpp-local --max-request-bytes 131072 --max-output-bytes 67108864 --max-prompt-chars 8192 --max-negative-prompt-chars 8192 --min-width 64 --max-width 2048 --min-height 64 --max-height 2048 --max-pixels 4194304 --default-size 768x768 --default-steps 20 --max-steps 100 --client-read-timeout-seconds 10 --max-handler-threads 8 --request-timeout-seconds 5 --inference-timeout-seconds 900
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=default.target
+```
+
+`Wants`, rather than `Requires`, keeps the bridge eligible for its own restart
+policy if the native service is restarted. The startup preflight fails closed
+until native `/v1/models` reports exactly the configured upstream model. The
+upstream HTTP client ignores all proxy environment variables and refuses every
+3xx response; it can only call the configured loopback origin and fixed model
+and generation paths.
+
+The bridge accepts at most eight concurrent handler threads and uses an
+eight-connection kernel listen backlog. Every accepted socket receives a
+ten-second I/O timeout before HTTP headers or a body are read. A partial JSON
+body that reaches that timeout gets canonical 408 `request_timeout` when the
+client can still receive it. Once all eight handler slots are occupied, the
+accept loop sends canonical 503 `server_busy` and closes the connection without
+creating another thread or parsing its request. These controls are independent
+of the single inference semaphore: a second valid generation still gets 429
+`local_concurrency_saturated` while one GPU generation is active.
+
+`--inference-timeout-seconds` is the client-facing response deadline, not a
+claim that closing an HTTP socket cancels CUDA work. If that deadline expires,
+the bridge returns 504 but a single background transport continues waiting for
+the native response and retains the inference slot. Later generations receive
+429 until native completion is known; the slot is released only then. If the
+native server never replies, the bridge stays fail-closed until an operator
+restarts the native service and bridge.
 
 ## Image Readiness Checks
 
@@ -76,10 +150,22 @@ Run these on `sukunahikona`:
 
 ```bash
 curl -fsS http://127.0.0.1:11445/v1/models
+curl -fsS http://127.0.0.1:11449/healthz
+curl -fsS http://127.0.0.1:11449/v1/models
 
-curl -fsS http://127.0.0.1:11445/v1/images/generations \
+IMAGE_SMOKE_JSON="$(mktemp)"
+curl -fsS http://127.0.0.1:11449/v1/images/generations \
   -H 'content-type: application/json' \
-  -d '{"model":"sd-cpp-local","prompt":"readiness check: a blue circle","n":1,"size":"1024x1024","response_format":"b64_json"}'
+  -d '{"model":"sd-cpp-local","prompt":"readiness check: a blue circle","negative_prompt":"text, watermark","n":1,"size":"768x768","response_format":"b64_json","seed":43,"steps":20}' \
+  > "$IMAGE_SMOKE_JSON"
+python3 - "$IMAGE_SMOKE_JSON" <<'PY'
+import base64, json, pathlib, sys
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+image = base64.b64decode(payload["data"][0]["b64_json"], validate=True)
+assert image.startswith(b"\x89PNG\r\n\x1a\n")
+print({"png_bytes": len(image), "created": payload["created"]})
+PY
+rm -f "$IMAGE_SMOKE_JSON"
 
 mcoda agent details sd3.5-large-q4 --json
 mswarm node restart
@@ -87,6 +173,26 @@ mswarm node health
 mswarm node doctor
 mcoda self-hosted agent list --provider mcoda --include-unreachable --json
 mcoda self-hosted agent sync --provider mcoda --json
+```
+
+From a different machine with an authorized owner key, exercise the actual
+outbound relay rather than an SSH tunnel:
+
+```bash
+OFFBOX_IMAGE_JSON="$(mktemp)"
+curl -fsS https://api.mswarm.org/v1/swarm/self-hosted/openai/images/generations \
+  -H "Authorization: Bearer $MSWARM_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"model":"mcoda-sukunahikona-sd3-5-large-q4","prompt":"off-box readiness: a blue circle","negative_prompt":"text, watermark","n":1,"size":"768x768","response_format":"b64_json","seed":44,"steps":20}' \
+  > "$OFFBOX_IMAGE_JSON"
+python3 - "$OFFBOX_IMAGE_JSON" <<'PY'
+import base64, json, pathlib, sys
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+image = base64.b64decode(payload["data"][0]["b64_json"], validate=True)
+assert image.startswith(b"\x89PNG\r\n\x1a\n")
+print({"offbox_png_bytes": len(image), "created": payload["created"]})
+PY
+rm -f "$OFFBOX_IMAGE_JSON"
 ```
 
 Confirm that the catalog entry advertises:
@@ -99,6 +205,14 @@ Confirm that the catalog entry advertises:
 
 After sync, confirm the managed slug is
 `mswarm-self-hosted-mcoda-sukunahikona-sd3-5-large-q4`.
+
+Rollback does not touch the native model service. While the bridge is still
+available, first restore the source-agent base URL to 11445, health path to
+`/v1/models`, and runner kind to `stable-diffusion-cpp`; restart the mswarm node,
+sync the managed catalog, and verify one off-box fallback generation. Only then
+stop and disable `mcoda-sd3.5-image.service`. To roll forward, start the bridge,
+verify its local smoke, restore the 11449/custom declaration, restart and sync
+the node, verify the off-box route, and only then retire the fallback state.
 
 ## Stable Audio 3 HTTP Wrapper Contract
 
@@ -299,7 +413,7 @@ Content-Type: application/json
   "prompt": "A red fox crossing a snowy clearing, cinematic tracking shot",
   "negative_prompt": "text, watermark, distorted anatomy",
   "size": "832x480",
-  "duration_seconds": 2.1,
+  "duration_seconds": 2.0625,
   "fps": 16,
   "response_format": "webm",
   "n": 1,
@@ -309,7 +423,7 @@ Content-Type: application/json
 }
 ```
 
-The initial production profile permits one `832x480` output, 9–81 effective
+The initial production profile permits one `832x480` output, 9–33 effective
 frames, 8–24 FPS, WebM only, and at most 30 steps in each noise stage. A caller
 may send either `duration_seconds` or `video_frames`, not both. Wan normalizes
 the actual frame count down to `4n+1`, so the bridge returns the effective
@@ -332,6 +446,13 @@ duration and frame count:
   ]
 }
 ```
+
+The 33-frame ceiling is a conservative measured production limit, not an
+unverified model maximum. A live bridge smoke produced VP8 WebM at 832x480 and
+16 FPS with 33 frames, reported 2.0625 seconds (2.0 seconds by `ffprobe`), took
+1,945 seconds, and reached a bridge-cgroup peak of 30,748,246,016 bytes. Keep
+33 as both the default and maximum until a larger profile has equivalent
+capacity evidence.
 
 The bridge rejects unknown fields, client-selected paths or URLs, concurrent
 generation, invalid base64/container signatures, oversized responses, and
@@ -378,6 +499,8 @@ Use physical GPU 1 for Wan and retain CPU parameter backing with a 14 GiB
 device ceiling. Keep text encoding and VAE compute on CPU while diffusion runs
 on GPU. A live shared-RTX3090 smoke test reached about 24.1 GiB during GPU VAE
 decode despite the diffusion VRAM ceiling; CPU VAE avoids that decode-time OOM.
+With CPU VAE, native `--vae-tiling` reduced the verified nine-frame process peak
+from 49.3 GB to 43.9 GB, so keep tiling enabled.
 The native listener is private implementation detail on 11447; the OpenAI-shaped
 bridge listens on 11448:
 
@@ -395,7 +518,7 @@ Environment=CUDA_VISIBLE_DEVICES=1
 Environment=WAIT_NVIDIA_EXPECTED_GPUS=1
 WorkingDirectory=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp
 ExecStartPre=/home/wodo/.local/bin/wait-nvidia-ready
-ExecStart=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm/bin/sd-server --listen-ip 127.0.0.1 --listen-port 11447 --diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf --high-noise-diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf --vae /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/VAE/Wan2.1_VAE.safetensors --t5xxl /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/text_encoders/umt5-xxl-encoder-Q4_K_M.gguf --backend te=cpu,vae=cpu,diffusion=cuda0 --params-backend te=cpu,vae=cpu,diffusion=cpu --max-vram cuda0=14 --stream-layers --diffusion-fa --vae-conv-direct
+ExecStart=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm/bin/sd-server --listen-ip 127.0.0.1 --listen-port 11447 --diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf --high-noise-diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf --vae /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/VAE/Wan2.1_VAE.safetensors --t5xxl /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/text_encoders/umt5-xxl-encoder-Q4_K_M.gguf --backend te=cpu,vae=cpu,diffusion=cuda0 --params-backend te=cpu,vae=cpu,diffusion=cpu --max-vram cuda0=14 --stream-layers --diffusion-fa --vae-tiling --vae-conv-direct
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=300
@@ -418,11 +541,11 @@ WantedBy=default.target
 [Unit]
 Description=mcoda Wan 2.2 OpenAI-compatible video bridge
 After=mcoda-wan2.2-video-native.service
-Requires=mcoda-wan2.2-video-native.service
+Wants=mcoda-wan2.2-video-native.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/wodo/.local/libexec/mcoda/wan22-openai-server.py --host 127.0.0.1 --port 11448 --upstream-base-url http://127.0.0.1:11447 --model-id wan2.2-t2v-a14b-q4-k-m-local --allowed-size 832x480 --min-video-frames 9 --max-video-frames 81 --default-video-frames 33 --min-fps 8 --max-fps 24 --default-fps 16 --default-steps 10 --max-steps 30 --default-high-noise-steps 8 --max-high-noise-steps 30 --response-format webm --max-request-bytes 131072 --max-output-bytes 67108864 --inference-timeout-seconds 3600
+ExecStart=/usr/bin/python3 /home/wodo/.local/libexec/mcoda/wan22-openai-server.py --host 127.0.0.1 --port 11448 --upstream-base-url http://127.0.0.1:11447 --model-id wan2.2-t2v-a14b-q4-k-m-local --allowed-size 832x480 --min-video-frames 9 --max-video-frames 33 --default-video-frames 33 --min-fps 8 --max-fps 24 --default-fps 16 --default-steps 10 --max-steps 30 --default-high-noise-steps 8 --max-high-noise-steps 30 --response-format webm --max-request-bytes 131072 --max-output-bytes 67108864 --inference-timeout-seconds 3600
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30
@@ -459,7 +582,7 @@ mcoda agent add wan2.2-t2v-a14b-q4-k-m \
   --config-public-model-id mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m \
   --config-input-modality text \
   --config-output-modality video \
-  --config-operation '{"operation":"videos.generations","path":"/v1/videos/generations","requestParameterAllowlist":["model","prompt","negative_prompt","duration_seconds","fps","video_frames","response_format","n","size","seed","steps","high_noise_steps"],"responseFormats":["webm"],"outputMimeTypes":["video/webm"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":1,"minWidth":832,"maxWidth":832,"minHeight":480,"maxHeight":480,"maxPixels":399360,"maxDurationSeconds":5,"defaultFps":16,"minFps":8,"maxFps":24,"minVideoFrames":9,"maxVideoFrames":81,"maxSteps":30,"maxHighNoiseSteps":30}}'
+  --config-operation '{"operation":"videos.generations","path":"/v1/videos/generations","requestParameterAllowlist":["model","prompt","negative_prompt","duration_seconds","fps","video_frames","response_format","n","size","seed","steps","high_noise_steps"],"responseFormats":["webm"],"outputMimeTypes":["video/webm"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":1,"minWidth":832,"maxWidth":832,"minHeight":480,"maxHeight":480,"maxPixels":399360,"maxDurationSeconds":2.0625,"defaultFps":16,"minFps":8,"maxFps":24,"minVideoFrames":9,"maxVideoFrames":33,"maxSteps":30,"maxHighNoiseSteps":30}}'
 ```
 
 The public model is
@@ -493,8 +616,11 @@ route.
   and never accept a client-selected upstream URL or output path.
 - Enforce the declared prompt, duration, dimensions, count, step, request-byte,
   and response-byte limits before allocating large GPU or base64 buffers.
-- Bound inference concurrency, queue depth, and request time. Return 429 when
-  saturated rather than allowing unbounded GPU work.
+- Bound client handlers, listen backlog, accepted-socket reads, inference
+  concurrency, and client-visible generation time. The image bridge uses eight
+  handler slots, backlog eight, a ten-second client timeout, and one inference
+  slot; handler overload returns 503 and GPU saturation returns 429. A timed-out
+  native request retains that inference slot until its response arrives.
 - Validate base64 output size after encoding. Base64 and its JSON envelope are
   larger than the raw media.
 - Do not put API keys in agent config or systemd command lines. If a wrapper
@@ -503,41 +629,43 @@ route.
 
 ## systemd Persistence and Hardening
 
-The 2026-07-31 host check found that both earlier persistence notes were stale:
-`mcoda-llama-qwen3.6.service` and `sd35-q4-server.service` are active and
-enabled user units, and user lingering is enabled. The SD listener therefore
-survives reboot. Its current unit still needs the llama-pattern security
-hardening and `wait-nvidia-ready` preflight shown below; update the existing
-unit rather than starting a duplicate service. Its `ExecStart` must use
-`/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda/bin/sd-server`,
-bind `127.0.0.1:11445`, and preserve the current model/encoder/VAE paths,
-CPU/CUDA backend mapping, 8 GiB VRAM cap, streaming layers, diffusion flash
-attention, VAE tiling, Euler sampling, CFG scale `4.5`, 20 steps, and
-`768x768` defaults. Give Stable Audio 3 its own wrapper user unit when
-deployed. Do not fold inference processes into the mswarm node unit.
+The 2026-07-31 read-only host check found `mcoda-llama-qwen3.6.service` and
+`sd35-q4-server.service` active and enabled as user units, with user lingering
+enabled. Native SD3.5 already uses the NVIDIA readiness preflight and the
+loopback-only hardening below. Its command is intentionally kept in the
+launcher at `/mnt/githubActions/piriatlas/services/sd35-q4/run-sd35-q4-server.sh`
+rather than duplicated in the unit.
 
-An exact unit matching the process inspected on 2026-07-31 is:
+The inspected unit now has `TimeoutStopSec=330`; that production correction was
+applied without restarting the active native model process so a long CUDA
+shutdown is not killed early. The lines below match the unit currently loaded
+on Suku:
 
 ```ini
 # ~/.config/systemd/user/sd35-q4-server.service
 [Unit]
-Description=mcoda stable-diffusion.cpp SD 3.5 Large Q4 server
+Description=SD 3.5 Large Q4 stable-diffusion.cpp server
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor=/mnt/githubActions
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-Environment=CUDA_VISIBLE_DEVICES=0
+WorkingDirectory=/mnt/githubActions/piriatlas/services/sd35-q4
+Environment=SD35_HOST=127.0.0.1
+Environment=SD35_PORT=11445
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=WAIT_NVIDIA_TIMEOUT_SECONDS=300
 Environment=WAIT_NVIDIA_EXPECTED_GPUS=1
-Environment=WAIT_NVIDIA_TIMEOUT_SECONDS=180
-Environment=WAIT_NVIDIA_INTERVAL_SECONDS=2
-WorkingDirectory=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp
+TimeoutStartSec=330
 ExecStartPre=/home/wodo/.local/bin/wait-nvidia-ready
-ExecStart=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda/bin/sd-server --listen-ip 127.0.0.1 --listen-port 11445 --diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/sd3.5-large-q4/sd3.5_large-Q4_0.gguf --clip_l /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/sd3.5-large-q4/text_encoders/clip_l.safetensors --clip_g /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/sd3.5-large-q4/text_encoders/clip_g.safetensors --t5xxl /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/sd3.5-large-q4/text_encoders/t5-v1_1-xxl-encoder-Q4_K_M.gguf --vae /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/sd3.5-large-q4/vae/diffusion_pytorch_model.safetensors --vae-format sd3 --backend te=cpu,vae=cpu,diffusion=cuda0 --params-backend te=cpu,vae=cpu,diffusion=cpu --max-vram cuda0=8 --stream-layers --diffusion-fa --vae-tiling --sampling-method euler --cfg-scale 4.5 --steps 20 -H 768 -W 768 -v
+ExecStart=/mnt/githubActions/piriatlas/services/sd35-q4/run-sd35-q4-server.sh
 Restart=on-failure
 RestartSec=5
-TimeoutStartSec=240
-TimeoutStopSec=30
+TimeoutStopSec=330
+UMask=0077
 LimitNOFILE=65536
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -550,6 +678,16 @@ IPAddressAllow=localhost
 [Install]
 WantedBy=default.target
 ```
+
+The inspected launcher exports `CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}`
+and execs `build-cuda/bin/sd-server` with loopback port 11445, the SD3.5 Large
+Q4 diffusion model, CLIP-L, CLIP-G, quantized T5XXL, and SD3 VAE under
+`/mnt/githubActions/piriatlas/models/stable-diffusion.cpp/sd3.5-large-q4`.
+It preserves CPU text/VAE compute, CUDA diffusion, CPU parameter backing, the
+8 GiB VRAM ceiling, streaming layers, diffusion flash attention, VAE tiling,
+Euler sampling, CFG 4.5, 20 steps, and 768x768 defaults. Give Stable Audio 3
+its own wrapper user unit when deployed; do not fold inference processes into
+the mswarm node unit.
 
 Install `scripts/stable-audio-3-openai-server.py` from the installed
 `@mcoda/mswarm` package (its canonical source is

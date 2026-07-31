@@ -152,6 +152,8 @@ describe("GenerativeOperation", () => {
         responseFormats: [" WEBM ", "webp", "avi"],
         outputMimeTypes: ["video/webm"],
         limits: {
+          minDurationSeconds: 0.5,
+          maxDurationSeconds: 2.0625,
           minWidth: 832,
           maxWidth: 832,
           minHeight: 480,
@@ -181,6 +183,8 @@ describe("GenerativeOperation", () => {
         responseFormats: ["webm", "webp", "avi"],
         outputMimeTypes: ["video/webm"],
         limits: {
+          minDurationSeconds: 0.5,
+          maxDurationSeconds: 2.0625,
           minWidth: 832,
           maxWidth: 832,
           minHeight: 480,
@@ -194,6 +198,33 @@ describe("GenerativeOperation", () => {
           maxHighNoiseSteps: 30,
         },
       },
+    );
+  });
+
+  it("accepts fractional duration limits but keeps count and size limits integral", () => {
+    assert.deepEqual(
+      normalizeSelfHostedGenerativeOperation({
+        operation: "videos.generations",
+        limits: {
+          minDurationSeconds: 0.125,
+          maxDurationSeconds: 2.0625,
+          maxFps: 23.5,
+          maxN: 1.5,
+          maxSteps: Number.POSITIVE_INFINITY,
+          maxWidth: Number.MAX_SAFE_INTEGER + 1,
+        },
+      })?.limits,
+      {
+        minDurationSeconds: 0.125,
+        maxDurationSeconds: 2.0625,
+      },
+    );
+    assert.equal(
+      normalizeSelfHostedGenerativeOperation({
+        operation: "videos.generations",
+        limits: { maxDurationSeconds: Number.MAX_VALUE },
+      })?.limits,
+      undefined,
     );
   });
 

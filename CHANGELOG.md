@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.1.105 - 2026-07-31
+
+- Add a packaged loopback stable-diffusion.cpp image bridge that safely makes
+  `negative_prompt`, `seed`, and `steps` effective, validates upstream model and
+  PNG output consistency, rejects redirects, bounds slow-client concurrency,
+  preserves the native inference lock after client timeouts, and documents a
+  hardened service/registration rollout.
+- Preserve finite positive fractional duration limits in generative-operation
+  catalogs so verified frame rates can advertise exact video durations.
+
 ## 0.1.104 - 2026-07-31
 
 - Serialize video-operation `defaultFps` as catalog `default_fps` across mcoda,

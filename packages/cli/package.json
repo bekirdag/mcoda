@@ -1,6 +1,6 @@
 {
   "name": "mcoda",
-  "version": "0.1.104",
+  "version": "0.1.105",
   "description": "Local-first CLI for planning, documentation, and execution workflows with agent assistance.",
   "type": "module",
   "main": "dist/index.js",
