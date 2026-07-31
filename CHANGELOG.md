@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.103 - 2026-07-31
+
+- Add first-class self-hosted video modality and `videos.generations` relay
+  support, including operation-bound tokens, catalog limits, and canonical
+  `b64_video` responses.
+- Add a hardened Wan 2.2 stable-diffusion.cpp async-to-synchronous bridge,
+  contract tests, and a pinned dual-RTX-3090 production runbook.
+
 ## 0.1.102 - 2026-07-31
 
 - Refresh transitive security overrides for archive parsing, URI validation,

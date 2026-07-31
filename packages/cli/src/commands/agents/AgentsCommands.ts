@@ -91,8 +91,8 @@ Subcommands:
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
-    --config-input-modality <M> Repeatable input modality (text|image|audio)
-    --config-output-modality <M> Repeatable output modality (text|image|audio)
+    --config-input-modality <M> Repeatable input modality (text|image|audio|video)
+    --config-output-modality <M> Repeatable output modality (text|image|audio|video)
     --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters
@@ -121,8 +121,8 @@ Subcommands:
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
-    --config-input-modality <M> Repeatable input modality (text|image|audio)
-    --config-output-modality <M> Repeatable output modality (text|image|audio)
+    --config-input-modality <M> Repeatable input modality (text|image|audio|video)
+    --config-output-modality <M> Repeatable output modality (text|image|audio|video)
     --config-operation <NAME|JSON> Repeatable generative operation declaration
     --config-temperature <N> Temperature override for supported adapters
     --config-thinking <BOOL> Enable thinking mode for supported adapters

@@ -487,6 +487,67 @@ test("agent add declares the existing sd-server image model for mswarm publicati
   });
 });
 
+test("agent add declares a video generator for mswarm publication", { concurrency: false }, async () => {
+  await withTempHome(async () => {
+    await AgentsCommands.run([
+      "add",
+      "wan2.2-t2v-a14b-q4-k-m",
+      "--adapter",
+      "openai-compatible-local",
+      "--model",
+      "wan2.2-t2v-a14b-q4-k-m-local",
+      "--config-base-url",
+      "http://127.0.0.1:11448",
+      "--config-runner-kind",
+      "stable-diffusion-cpp",
+      "--config-public-model-id",
+      "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+      "--config-input-modality",
+      "text",
+      "--config-output-modality",
+      "video",
+      "--config-operation",
+      JSON.stringify({
+        operation: "videos.generations",
+        responseFormats: ["webm"],
+        outputMimeTypes: ["video/webm"],
+        limits: {
+          minWidth: 832,
+          maxWidth: 832,
+          minHeight: 480,
+          maxHeight: 480,
+          minFps: 8,
+          maxFps: 24,
+          minVideoFrames: 9,
+          maxVideoFrames: 81,
+          maxSteps: 30,
+          maxHighNoiseSteps: 30,
+        },
+      }),
+    ]);
+
+    const repo = await GlobalRepository.create();
+    const agent = await repo.getAgentBySlug("wan2.2-t2v-a14b-q4-k-m");
+    assert.ok(agent);
+    assert.deepEqual((agent.config as any)?.outputModalities, ["video"]);
+    assert.equal((agent.config as any)?.operations?.[0]?.operation, "videos.generations");
+    assert.equal((agent.config as any)?.operations?.[0]?.path, "/v1/videos/generations");
+    assert.deepEqual((agent.config as any)?.operations?.[0]?.limits, {
+      minWidth: 832,
+      maxWidth: 832,
+      minHeight: 480,
+      maxHeight: 480,
+      minFps: 8,
+      maxFps: 24,
+      minVideoFrames: 9,
+      maxVideoFrames: 81,
+      maxSteps: 30,
+      maxHighNoiseSteps: 30,
+    });
+    await repo.close();
+  });
+});
+
 test("agent add defaults llama.cpp local runner kinds", { concurrency: false }, async () => {
   await withTempHome(async () => {
     await AgentsCommands.run([

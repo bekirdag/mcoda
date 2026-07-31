@@ -1,4 +1,4 @@
-# mswarm Self-Hosted Image and Audio Agent Runbook
+# mswarm Self-Hosted Image, Audio, and Video Agent Runbook
 
 Date: 2026-07-31
 
@@ -278,6 +278,203 @@ enabling hosted production use, the operator must document compliance with the
 Stability AI Community License, Gemma terms, acceptable-use policy, applicable
 registration or enterprise-license requirement, attribution, and notices.
 Public download availability is not a substitute for that approval.
+
+## Wan 2.2 A14B Video Contract and Deployment
+
+Wan 2.2 T2V A14B is a two-expert model set, not one 14B GGUF. A working
+deployment requires matching LowNoise and HighNoise expert files, the Wan 2.1
+VAE, and UMT5 XXL. The local stable-diffusion.cpp server exposes an asynchronous
+native API, so it is not itself the mcoda runner endpoint. Install
+`scripts/wan22-openai-server.py` as a loopback bridge that submits and polls the
+native job while presenting this synchronous contract:
+
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+```
+
+```json
+{
+  "model": "wan2.2-t2v-a14b-q4-k-m-local",
+  "prompt": "A red fox crossing a snowy clearing, cinematic tracking shot",
+  "negative_prompt": "text, watermark, distorted anatomy",
+  "size": "832x480",
+  "duration_seconds": 2.1,
+  "fps": 16,
+  "response_format": "webm",
+  "n": 1,
+  "seed": 43,
+  "steps": 10,
+  "high_noise_steps": 8
+}
+```
+
+The initial production profile permits one `832x480` output, 9–81 effective
+frames, 8–24 FPS, WebM only, and at most 30 steps in each noise stage. A caller
+may send either `duration_seconds` or `video_frames`, not both. Wan normalizes
+the actual frame count down to `4n+1`, so the bridge returns the effective
+duration and frame count:
+
+```json
+{
+  "created": 1785500000,
+  "model": "wan2.2-t2v-a14b-q4-k-m-local",
+  "data": [
+    {
+      "b64_video": "<base64 WebM bytes>",
+      "mime_type": "video/webm",
+      "response_format": "webm",
+      "fps": 16,
+      "frame_count": 33,
+      "duration_seconds": 2.0625,
+      "seed": 43
+    }
+  ]
+}
+```
+
+The bridge rejects unknown fields, client-selected paths or URLs, concurrent
+generation, invalid base64/container signatures, oversized responses, and
+upstream capability drift. On timeout or service shutdown it cancels the
+native sd.cpp job.
+
+### Pinned model set
+
+Use these immutable revisions and verify every SHA-256 before enabling the
+service:
+
+| Artifact | Revision | SHA-256 |
+| --- | --- | --- |
+| `HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf` | `QuantStack/Wan2.2-T2V-A14B-GGUF@73eafba53a1a8f29254e4c77f92e74ea27d7cd6f` | `e0c490c6e316fd91ff52034e4ca66b825717e33ff11624585c0ccfcb5d410c59` |
+| `LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf` | same | `091a5bae02e14aa016bc9b10a7892efda4c629346b81c5dcebbe30ea2ac8923a` |
+| `VAE/Wan2.1_VAE.safetensors` | same | `2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b` |
+| `umt5-xxl-encoder-Q4_K_M.gguf` | `city96/umt5-xxl-encoder-gguf@b535255bee98c2b0a59ea7c0ae2dcd0c6657b3b7` | `17cf97a5bbbc60a646d6105b832b6f657ce904a8a1ad970e4b59df0c67584a40` |
+
+The complete Q4_K_M set is about 23.2 GB. Both repositories identify the
+weights as Apache-2.0. Keep a copy of the licenses and model cards beside the
+deployment manifest.
+
+The existing SD3.5 build was compiled without WebM. Build a parallel tree so
+rollback does not disturb the image service:
+
+```bash
+/home/wodo/.local/bin/cmake \
+  -S /mnt/githubActions/piriatlas/tools/stable-diffusion.cpp \
+  -B /mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm \
+  -G Ninja \
+  -DCMAKE_MAKE_PROGRAM=/home/wodo/.local/bin/ninja \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_ARCHITECTURES=86 \
+  -DSD_CUDA=ON \
+  -DSD_WEBP=ON \
+  -DSD_WEBM=ON
+/home/wodo/.local/bin/cmake \
+  --build /mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm \
+  --target sd-server sd-cli --parallel 8
+```
+
+Use physical GPU 1 for Wan and retain CPU parameter backing with a 14 GiB
+device ceiling. The native listener is private implementation detail on 11447;
+the OpenAI-shaped bridge listens on 11448:
+
+```ini
+# ~/.config/systemd/user/mcoda-wan2.2-video-native.service
+[Unit]
+Description=mcoda Wan 2.2 A14B stable-diffusion.cpp video server
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/githubActions/piriatlas
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=WAIT_NVIDIA_EXPECTED_GPUS=1
+WorkingDirectory=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp
+ExecStartPre=/home/wodo/.local/bin/wait-nvidia-ready
+ExecStart=/mnt/githubActions/piriatlas/tools/stable-diffusion.cpp/build-cuda-webm/bin/sd-server --listen-ip 127.0.0.1 --listen-port 11447 --diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf --high-noise-diffusion-model /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf --vae /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/VAE/Wan2.1_VAE.safetensors --t5xxl /mnt/githubActions/piriatlas/models/stable-diffusion.cpp/wan2.2-t2v-a14b-q4-k-m/text_encoders/umt5-xxl-encoder-Q4_K_M.gguf --backend te=cpu,vae=cuda0,diffusion=cuda0 --params-backend te=cpu,vae=cpu,diffusion=cpu --max-vram cuda0=14 --stream-layers --diffusion-fa --vae-conv-direct
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+TimeoutStopSec=60
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=default.target
+```
+
+```ini
+# ~/.config/systemd/user/mcoda-wan2.2-video.service
+[Unit]
+Description=mcoda Wan 2.2 OpenAI-compatible video bridge
+After=mcoda-wan2.2-video-native.service
+Requires=mcoda-wan2.2-video-native.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/wodo/.local/libexec/mcoda/wan22-openai-server.py --host 127.0.0.1 --port 11448 --upstream-base-url http://127.0.0.1:11447 --model-id wan2.2-t2v-a14b-q4-k-m-local --allowed-size 832x480 --min-video-frames 9 --max-video-frames 81 --default-video-frames 33 --min-fps 8 --max-fps 24 --default-fps 16 --default-steps 10 --max-steps 30 --default-high-noise-steps 8 --max-high-noise-steps 30 --response-format webm --max-request-bytes 131072 --max-output-bytes 67108864 --inference-timeout-seconds 3600
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=default.target
+```
+
+Register the source agent only after `/healthz` and a real WebM smoke pass:
+
+```bash
+mcoda agent add wan2.2-t2v-a14b-q4-k-m \
+  --adapter openai-compatible-local \
+  --model wan2.2-t2v-a14b-q4-k-m-local \
+  --openai-compatible true \
+  --supports-tools false \
+  --best-usage video_generation \
+  --cost-per-million 0 \
+  --capability video_generation \
+  --config-base-url http://127.0.0.1:11448 \
+  --config-runner-kind stable-diffusion-cpp \
+  --config-auth-mode none \
+  --config-health-path /healthz \
+  --config-models-path /v1/models \
+  --config-public-model-id mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m \
+  --config-input-modality text \
+  --config-output-modality video \
+  --config-operation '{"operation":"videos.generations","path":"/v1/videos/generations","requestParameterAllowlist":["model","prompt","negative_prompt","duration_seconds","fps","video_frames","response_format","n","size","seed","steps","high_noise_steps"],"responseFormats":["webm"],"outputMimeTypes":["video/webm"],"limits":{"maxRequestBytes":131072,"maxOutputBytes":67108864,"maxPromptChars":8192,"maxNegativePromptChars":8192,"maxN":1,"minWidth":832,"maxWidth":832,"minHeight":480,"maxHeight":480,"maxPixels":399360,"maxDurationSeconds":5,"minFps":8,"maxFps":24,"minVideoFrames":9,"maxVideoFrames":81,"maxSteps":30,"maxHighNoiseSteps":30}}'
+```
+
+The public model is
+`mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m`; the synced off-box agent is
+`mswarm-self-hosted-mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m`.
+
+Before changing qwen3.6, snapshot its unit/drop-ins and the mcoda database.
+Drain the mswarm node for at least one heartbeat, then apply a reversible
+drop-in that keeps the same Q4_K_M model and alias while changing context from
+262,144 to 131,072, enabling `--cpu-moe`, setting
+`CUDA_VISIBLE_DEVICES=0`, and using `--split-mode none --main-gpu 0`.
+Benchmark qwen health and latency before removing drain mode. Removing that
+single drop-in restores the original dual-GPU configuration.
+
+Readiness is not complete until the generated base64 decodes to a valid WebM
+whose frame count, dimensions, FPS, and duration are independently verified
+with `ffprobe`, and the same public model succeeds through the off-box mswarm
+route.
 
 ## Security and Resource Limits
 

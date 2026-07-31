@@ -308,13 +308,72 @@ test("normalization preserves explicit invalid operations as an empty set", () =
       slug: "invalid-generative-agent",
       adapter: "openai-compatible-local",
       default_model: "invalid-generative-agent",
-      operations: [{ type: "video.generations" }],
+      operations: [{ type: "video.edits" }],
     },
     { source: "self_hosted_catalog", synced: false, managedKind: "self_hosted" }
   );
 
   assert.deepEqual(agent.operations, []);
   assert.deepEqual(agent.localRunner?.operations, []);
+});
+
+test("normalization consumes the self-hosted video wire shape", () => {
+  const agent = normalizeAgentCatalogEntry(
+    {
+      slug: "mcoda-sukunahikona-media-wire-wan2-2-t2v-a14b-q4-k-m",
+      provider: "mcoda",
+      adapter: "openai-compatible-local",
+      model_id: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+      upstream_model: "wan2.2-t2v-a14b-q4-k-m-local",
+      input_modalities: ["text"],
+      output_modalities: ["video"],
+      operations: [
+        {
+          type: "videos.generations",
+          method: "POST",
+          path: "/v1/videos/generations",
+          supported_parameters: [
+            "model",
+            "prompt",
+            "video_frames",
+            "fps",
+            "response_format",
+            "high_noise_steps",
+          ],
+          response_formats: ["webm"],
+          output_mime_types: ["video/webm"],
+          limits: {
+            min_width: 832,
+            max_width: 832,
+            min_height: 480,
+            max_height: 480,
+            min_fps: 8,
+            max_fps: 24,
+            min_video_frames: 9,
+            max_video_frames: 81,
+            max_high_noise_steps: 30,
+          },
+        },
+      ],
+    },
+    { source: "self_hosted_catalog", synced: false, managedKind: "self_hosted" }
+  );
+
+  assert.deepEqual(agent.outputModalities, ["video"]);
+  assert.equal(agent.operations?.[0]?.operation, "videos.generations");
+  assert.deepEqual(agent.operations?.[0]?.responseFormats, ["webm"]);
+  assert.deepEqual(agent.operations?.[0]?.outputMimeTypes, ["video/webm"]);
+  assert.deepEqual(agent.operations?.[0]?.limits, {
+    minWidth: 832,
+    maxWidth: 832,
+    minHeight: 480,
+    maxHeight: 480,
+    minFps: 8,
+    maxFps: 24,
+    minVideoFrames: 9,
+    maxVideoFrames: 81,
+    maxHighNoiseSteps: 30,
+  });
 });
 
 test("normalization marks load-balanced self-hosted config as auto-routed", () => {

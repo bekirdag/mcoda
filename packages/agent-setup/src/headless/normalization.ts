@@ -113,7 +113,9 @@ const canonicalizeOperationLimits = (
     maxNegativePromptChars:
       value.maxNegativePromptChars ?? value.max_negative_prompt_chars,
     maxN: value.maxN ?? value.max_n,
+    minWidth: value.minWidth ?? value.min_width,
     maxWidth: value.maxWidth ?? value.max_width,
+    minHeight: value.minHeight ?? value.min_height,
     maxHeight: value.maxHeight ?? value.max_height,
     maxPixels: value.maxPixels ?? value.max_pixels,
     minDurationSeconds:
@@ -121,7 +123,12 @@ const canonicalizeOperationLimits = (
     maxDurationSeconds:
       value.maxDurationSeconds ?? value.max_duration_seconds,
     maxSampleRate: value.maxSampleRate ?? value.max_sample_rate,
+    minFps: value.minFps ?? value.min_fps,
+    maxFps: value.maxFps ?? value.max_fps,
+    minVideoFrames: value.minVideoFrames ?? value.min_video_frames,
+    maxVideoFrames: value.maxVideoFrames ?? value.max_video_frames,
     maxSteps: value.maxSteps ?? value.max_steps,
+    maxHighNoiseSteps: value.maxHighNoiseSteps ?? value.max_high_noise_steps,
   };
 };
 

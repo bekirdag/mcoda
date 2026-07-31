@@ -1042,6 +1042,81 @@ describe("self-hosted node runtime", () => {
     });
   });
 
+  it("publishes video generation modality, parameters, and limits", () => {
+    const mapped = mapMcodaAgentToSelfHostedModel(
+      {
+        slug: "wan2.2-t2v-a14b-q4-k-m",
+        adapter: "openai-compatible-local",
+        defaultModel: "wan2.2-t2v-a14b-q4-k-m-local",
+        health: { status: "healthy" },
+        config: {
+          baseUrl: "http://127.0.0.1:11448",
+          authMode: "none",
+          publicModelId: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+          inputModalities: ["text"],
+          outputModalities: ["video"],
+          operations: [
+            {
+              operation: "videos.generations",
+              path: "/v1/videos/generations",
+              requestParameterAllowlist: [
+                "model",
+                "prompt",
+                "duration_seconds",
+                "fps",
+                "video_frames",
+                "response_format",
+                "seed",
+                "steps",
+                "high_noise_steps"
+              ],
+              responseFormats: ["webm"],
+              outputMimeTypes: ["video/webm"],
+              limits: {
+                minWidth: 832,
+                maxWidth: 832,
+                minHeight: 480,
+                maxHeight: 480,
+                minFps: 8,
+                maxFps: 24,
+                minVideoFrames: 9,
+                maxVideoFrames: 81,
+                maxSteps: 30,
+                maxHighNoiseSteps: 30
+              }
+            }
+          ]
+        }
+      },
+      {
+        exposeAllModels: true,
+        modelAllowlist: [],
+        modelBlocklist: []
+      }
+    );
+
+    expect(mapped?.output_modalities).toEqual(["video"]);
+    expect(mapped?.operations?.[0]).toMatchObject({
+      type: "videos.generations",
+      path: "/v1/videos/generations",
+      response_formats: ["webm"],
+      output_mime_types: ["video/webm"],
+      limits: {
+        min_width: 832,
+        max_width: 832,
+        min_height: 480,
+        max_height: 480,
+        min_fps: 8,
+        max_fps: 24,
+        min_video_frames: 9,
+        max_video_frames: 81,
+        max_steps: 30,
+        max_high_noise_steps: 30
+      }
+    });
+    expect(mapped?.operations?.[0]?.supported_parameters).toContain("high_noise_steps");
+  });
+
   it("excludes managed mswarm cloud agents from self-hosted mcoda discovery", () => {
     const mapped = mapMcodaAgentToSelfHostedModel(
       {
@@ -3278,6 +3353,199 @@ describe("self-hosted node runtime", () => {
     expect(fetchCount).toBe(1);
   });
 
+  it("relays video generation as canonical b64_video and enforces video limits", async () => {
+    const statePath = tempStatePath();
+    const captured: { url?: string; body?: Record<string, unknown> } = {};
+    const upstreamVideoResponse = {
+      created: 1_785_484_200,
+      data: [
+        {
+          b64_json: "GkXfo21vY2std2VibQ==",
+          mime_type: "video/webm",
+          response_format: "webm",
+          fps: 16,
+          frame_count: 33,
+          duration_seconds: 2.0625,
+          seed: 77
+        }
+      ]
+    };
+    const expectedVideoResponse = {
+      created: 1_785_484_200,
+      data: [
+        {
+          b64_video: "GkXfo21vY2std2VibQ==",
+          mime_type: "video/webm",
+          response_format: "webm",
+          fps: 16,
+          frame_count: 33,
+          duration_seconds: 2.0625,
+          seed: 77
+        }
+      ]
+    };
+    let fetchCount = 0;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCount += 1;
+      captured.url = String(url);
+      captured.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse(upstreamVideoResponse);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "wan2.2-t2v-a14b-q4-k-m",
+          adapter: "openai-compatible-local",
+          defaultModel: "wan2.2-t2v-a14b-q4-k-m-local",
+          supportsTools: false,
+          capabilities: ["video_generation"],
+          config: {
+            baseUrl: "http://video.test",
+            authMode: "none",
+            inputModalities: ["text"],
+            outputModalities: ["video"],
+            operations: [
+              {
+                operation: "videos.generations",
+                path: "/v1/videos/generations",
+                requestParameterAllowlist: [
+                  "model",
+                  "prompt",
+                  "negative_prompt",
+                  "duration_seconds",
+                  "fps",
+                  "video_frames",
+                  "size",
+                  "response_format",
+                  "seed",
+                  "steps",
+                  "high_noise_steps"
+                ],
+                responseFormats: ["webm"],
+                outputMimeTypes: ["video/webm"],
+                limits: {
+                  maxOutputBytes: 1024,
+                  minWidth: 832,
+                  maxWidth: 832,
+                  minHeight: 480,
+                  maxHeight: 480,
+                  minFps: 8,
+                  maxFps: 24,
+                  minVideoFrames: 9,
+                  maxVideoFrames: 81,
+                  maxSteps: 30,
+                  maxHighNoiseSteps: 30
+                }
+              }
+            ]
+          }
+        })
+      ])
+    });
+
+    const baseJob: SelfHostedNodeInvocationJob = {
+      job_id: "job-video-relay",
+      request_id: "req-video-relay",
+      node_id: "shn_service",
+      agent_slug: "wan2.2-t2v-a14b-q4-k-m",
+      source_agent_slug: "wan2.2-t2v-a14b-q4-k-m",
+      provider: "mcoda",
+      model: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+      operation: "videos.generations",
+      openai_request: {
+        model: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+        prompt: "A fox crossing a snowy clearing",
+        negative_prompt: "text, watermark",
+        duration_seconds: 2.1,
+        fps: 16,
+        size: "832x480",
+        response_format: "webm",
+        seed: 77,
+        steps: 10,
+        high_noise_steps: 8
+      }
+    };
+    const result = await runtime.executeJob(baseJob);
+
+    expect(result.status).toBe("success");
+    expect(result.operation).toBe("videos.generations");
+    expect(result.openai_response).toEqual(expectedVideoResponse);
+    expect(result.usage).toBeUndefined();
+    expect(captured.url).toBe("http://video.test/v1/videos/generations");
+    expect(captured.body).toMatchObject({
+      model: "wan2.2-t2v-a14b-q4-k-m-local",
+      duration_seconds: 2.1,
+      fps: 16,
+      size: "832x480",
+      response_format: "webm",
+      seed: 77,
+      steps: 10,
+      high_noise_steps: 8
+    });
+
+    const rejected = await runtime.executeJob({
+      ...baseJob,
+      job_id: "job-video-fps-limit",
+      request_id: "req-video-fps-limit",
+      openai_request: { ...baseJob.openai_request, fps: 30 }
+    });
+    expect(rejected.status).toBe("failed");
+    expect(rejected.pre_start_failure).toBe(true);
+    expect(rejected.error?.message).toContain("fps exceeds the configured limit");
+    expect(fetchCount).toBe(1);
+
+    const ambiguousDuration = await runtime.executeJob({
+      ...baseJob,
+      job_id: "job-video-ambiguous-duration",
+      request_id: "req-video-ambiguous-duration",
+      openai_request: { ...baseJob.openai_request, video_frames: 33 }
+    });
+    expect(ambiguousDuration.status).toBe("failed");
+    expect(ambiguousDuration.pre_start_failure).toBe(true);
+    expect(ambiguousDuration.error?.message).toContain(
+      "accepts duration_seconds or video_frames, not both"
+    );
+    expect(fetchCount).toBe(1);
+
+    const lowFps = await runtime.executeJob({
+      ...baseJob,
+      job_id: "job-video-low-fps",
+      request_id: "req-video-low-fps",
+      openai_request: { ...baseJob.openai_request, fps: 7 }
+    });
+    expect(lowFps.status).toBe("failed");
+    expect(lowFps.pre_start_failure).toBe(true);
+    expect(lowFps.error?.message).toContain("fps is below the configured minimum");
+
+    const tooFewFrames = await runtime.executeJob({
+      ...baseJob,
+      job_id: "job-video-too-few-frames",
+      request_id: "req-video-too-few-frames",
+      openai_request: {
+        ...baseJob.openai_request,
+        duration_seconds: undefined,
+        video_frames: 5
+      }
+    });
+    expect(tooFewFrames.status).toBe("failed");
+    expect(tooFewFrames.pre_start_failure).toBe(true);
+    expect(tooFewFrames.error?.message).toContain(
+      "video_frames is below the configured minimum"
+    );
+
+    const undersized = await runtime.executeJob({
+      ...baseJob,
+      job_id: "job-video-undersized",
+      request_id: "req-video-undersized",
+      openai_request: { ...baseJob.openai_request, size: "640x360" }
+    });
+    expect(undersized.status).toBe("failed");
+    expect(undersized.pre_start_failure).toBe(true);
+    expect(undersized.error?.message).toContain("size is below the configured minimum");
+    expect(fetchCount).toBe(1);
+  });
+
   it("rejects streamed media before start and malformed media responses after start", async () => {
     const statePath = tempStatePath();
     let fetchCount = 0;
@@ -4035,6 +4303,23 @@ describe("self-hosted node runtime", () => {
         }),
       /self_hosted_invocation_token_invalid_operation/
     );
+  });
+
+  it("accepts signed video generation invocation tokens", () => {
+    const token = signInvocationToken({
+      secret: "video-operation-secret",
+      nodeId: "shn_video_operation",
+      jobId: "job-video-operation",
+      requestId: "req-video-operation",
+      model: "mcoda-video-model",
+      operation: "videos.generations"
+    });
+    expect(
+      verifySelfHostedInvocationToken({
+        token,
+        secret: "video-operation-secret"
+      }).operation
+    ).toBe("videos.generations");
   });
 
   it("binds direct invocation tokens to the requested generative operation", async () => {

@@ -152,6 +152,52 @@ describe("LocalRunnerConfig", () => {
     assert.deepEqual(result.issues, []);
   });
 
+  it("normalizes a video runner declaration", () => {
+    const result = normalizeLocalOpenAiCompatibleRunnerConfig({
+      adapter: "openai-compatible-local",
+      config: {
+        baseUrl: "http://127.0.0.1:11448",
+        runnerKind: "stable-diffusion-cpp",
+        publicModelId: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+        inputModalities: ["text"],
+        outputModalities: ["video"],
+        operations: [
+          {
+            operation: "videos.generations",
+            responseFormats: ["webm"],
+            outputMimeTypes: ["video/webm"],
+            limits: {
+              minWidth: 832,
+              maxWidth: 832,
+              minHeight: 480,
+              maxHeight: 480,
+              minFps: 8,
+              maxFps: 24,
+              minVideoFrames: 9,
+              maxVideoFrames: 81,
+            },
+          },
+        ],
+      },
+    });
+
+    assert.deepEqual(result.config.outputModalities, ["video"]);
+    assert.equal(result.config.operations?.[0]?.operation, "videos.generations");
+    assert.equal(result.config.operations?.[0]?.path, "/v1/videos/generations");
+    assert.deepEqual(result.config.operations?.[0]?.responseFormats, ["webm"]);
+    assert.deepEqual(result.config.operations?.[0]?.limits, {
+      minWidth: 832,
+      maxWidth: 832,
+      minHeight: 480,
+      maxHeight: 480,
+      minFps: 8,
+      maxFps: 24,
+      minVideoFrames: 9,
+      maxVideoFrames: 81,
+    });
+    assert.deepEqual(result.issues, []);
+  });
+
   it("preserves non-local adapter detection without local auth defaults", () => {
     const result = normalizeLocalOpenAiCompatibleRunnerConfig({
       adapter: "openai-api",

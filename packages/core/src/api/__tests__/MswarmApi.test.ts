@@ -1619,10 +1619,17 @@ test(
                       response_formats: ['b64_json'],
                       output_mime_types: ['image/png'],
                       limits: {
+                        min_width: 832,
+                        min_height: 480,
                         min_duration_seconds: 3,
                         max_prompt_chars: 4096,
                         max_sample_rate: 48_000,
+                        min_fps: 8,
+                        max_fps: 24,
+                        min_video_frames: 9,
+                        max_video_frames: 81,
                         max_steps: 50,
+                        max_high_noise_steps: 30,
                       },
                     },
                   ],
@@ -1669,10 +1676,17 @@ test(
             assert.deepEqual(listed[0]?.input_modalities, ['text']);
             assert.deepEqual(listed[0]?.output_modalities, ['image']);
             assert.deepEqual(listed[0]?.operations?.[0]?.limits, {
+              minWidth: 832,
+              minHeight: 480,
               minDurationSeconds: 3,
               maxPromptChars: 4096,
               maxSampleRate: 48_000,
+              minFps: 8,
+              maxFps: 24,
+              minVideoFrames: 9,
+              maxVideoFrames: 81,
               maxSteps: 50,
+              maxHighNoiseSteps: 30,
             });
             assert.deepEqual(
               listed[0]?.operations?.[0]?.requestParameterAllowlist,

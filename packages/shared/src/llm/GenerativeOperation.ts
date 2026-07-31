@@ -2,11 +2,12 @@ export const GENERATIVE_OPERATIONS = [
   "chat.completions",
   "images.generations",
   "audio.generations",
+  "videos.generations",
 ] as const;
 
 export type GenerativeOperation = (typeof GENERATIVE_OPERATIONS)[number];
 
-export const GENERATIVE_MODALITIES = ["text", "image", "audio"] as const;
+export const GENERATIVE_MODALITIES = ["text", "image", "audio", "video"] as const;
 
 export type GenerativeModality = (typeof GENERATIVE_MODALITIES)[number];
 
@@ -19,6 +20,7 @@ export const GENERATIVE_OPERATION_DEFAULT_PATHS: Readonly<
   "chat.completions": "/v1/chat/completions",
   "images.generations": "/v1/images/generations",
   "audio.generations": "/v1/audio/generations",
+  "videos.generations": "/v1/videos/generations",
 };
 
 export const GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS = {
@@ -55,6 +57,20 @@ export const GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS = {
     "negative_prompt",
     "sample_rate",
   ],
+  "videos.generations": [
+    "model",
+    "prompt",
+    "duration_seconds",
+    "fps",
+    "video_frames",
+    "response_format",
+    "n",
+    "size",
+    "seed",
+    "steps",
+    "high_noise_steps",
+    "negative_prompt",
+  ],
 } as const satisfies Record<GenerativeOperation, readonly string[]>;
 
 export type GenerativeRequestParameterByOperation = {
@@ -76,13 +92,20 @@ export const GENERATIVE_OPERATION_LIMIT_KEYS = [
   "maxPromptChars",
   "maxNegativePromptChars",
   "maxN",
+  "minWidth",
   "maxWidth",
+  "minHeight",
   "maxHeight",
   "maxPixels",
   "minDurationSeconds",
   "maxDurationSeconds",
   "maxSampleRate",
+  "minFps",
+  "maxFps",
+  "minVideoFrames",
+  "maxVideoFrames",
   "maxSteps",
+  "maxHighNoiseSteps",
 ] as const;
 
 export type GenerativeOperationLimitKey = (typeof GENERATIVE_OPERATION_LIMIT_KEYS)[number];
@@ -93,13 +116,20 @@ export interface GenerativeOperationLimits {
   maxPromptChars?: number;
   maxNegativePromptChars?: number;
   maxN?: number;
+  minWidth?: number;
   maxWidth?: number;
+  minHeight?: number;
   maxHeight?: number;
   maxPixels?: number;
   minDurationSeconds?: number;
   maxDurationSeconds?: number;
   maxSampleRate?: number;
+  minFps?: number;
+  maxFps?: number;
+  minVideoFrames?: number;
+  maxVideoFrames?: number;
   maxSteps?: number;
+  maxHighNoiseSteps?: number;
 }
 
 export interface SelfHostedGenerativeOperation<
@@ -140,6 +170,15 @@ const OPERATION_ALIASES: Readonly<Record<string, GenerativeOperation>> = {
   "audio-generation": "audio.generations",
   "audio-generations": "audio.generations",
   "/v1/audio/generations": "audio.generations",
+  video: "videos.generations",
+  videos: "videos.generations",
+  "video.generation": "videos.generations",
+  "videos.generation": "videos.generations",
+  "videos.generations": "videos.generations",
+  "video-generation": "videos.generations",
+  "video-generations": "videos.generations",
+  "/v1/video/generations": "videos.generations",
+  "/v1/videos/generations": "videos.generations",
 };
 
 const MODALITY_ALIASES: Readonly<Record<string, GenerativeModality>> = {
@@ -148,12 +187,15 @@ const MODALITY_ALIASES: Readonly<Record<string, GenerativeModality>> = {
   image: "image",
   images: "image",
   audio: "audio",
+  video: "video",
+  videos: "video",
 };
 
 const REQUEST_PARAMETER_SETS: Readonly<Record<GenerativeOperation, ReadonlySet<string>>> = {
   "chat.completions": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["chat.completions"]),
   "images.generations": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["images.generations"]),
   "audio.generations": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["audio.generations"]),
+  "videos.generations": new Set(GENERATIVE_REQUEST_PARAMETER_ALLOWLISTS["videos.generations"]),
 };
 
 const LIMIT_KEY_SET = new Set<string>(GENERATIVE_OPERATION_LIMIT_KEYS);

@@ -22,4 +22,4 @@ docs/planning/*
 !docs/planning/.gitkeep
 packages/**/*.tgz
 .claude
-scripts/__pycache__/
+__pycache__/

@@ -24,6 +24,9 @@ describe("GenerativeOperation", () => {
     assert.equal(normalizeGenerativeOperation("audio-generation"), "audio.generations");
     assert.equal(normalizeGenerativeOperation("/v1/audio/generations"), "audio.generations");
     assert.equal(normalizeGenerativeOperation("video.generations"), undefined);
+    assert.equal(normalizeGenerativeOperation("videos"), "videos.generations");
+    assert.equal(normalizeGenerativeOperation("/v1/video/generations"), "videos.generations");
+    assert.equal(normalizeGenerativeOperation("/v1/videos/generations"), "videos.generations");
     assert.equal(normalizeGenerativeOperation(undefined), undefined);
   });
 
@@ -31,12 +34,12 @@ describe("GenerativeOperation", () => {
     assert.equal(normalizeGenerativeModality("CHAT"), "text");
     assert.equal(normalizeGenerativeModality("images"), "image");
     assert.equal(normalizeGenerativeModality("audio"), "audio");
-    assert.equal(normalizeGenerativeModality("video"), undefined);
+    assert.equal(normalizeGenerativeModality("video"), "video");
     assert.deepEqual(
       normalizeGenerativeModalities([" text ", "images", "image", "audio", "video"]),
-      ["text", "image", "audio"],
+      ["text", "image", "audio", "video"],
     );
-    assert.equal(normalizeGenerativeModalities(["video", 42]), undefined);
+    assert.deepEqual(normalizeGenerativeModalities(["video", 42]), ["video"]);
     assert.equal(normalizeGenerativeModalities("text"), undefined);
   });
 
@@ -46,6 +49,7 @@ describe("GenerativeOperation", () => {
       "/v1/images/generations",
       "/custom/v1.0/generate_image",
       "/audio/generate-track",
+      "/v1/videos/generations",
     ];
     for (const path of accepted) {
       assert.equal(isGenerativeOperationPath(path), true, path);
@@ -131,14 +135,67 @@ describe("GenerativeOperation", () => {
     );
   });
 
-  it("fails closed for invalid operation routing and malformed optional allowlists", () => {
-    assert.equal(
+  it("normalizes a safe video generation descriptor", () => {
+    assert.deepEqual(
       normalizeSelfHostedGenerativeOperation({
-        operation: "video.generations",
-        path: "/v1/video/generations",
+        operation: "videos.generations",
+        requestParameterAllowlist: [
+          "model",
+          "prompt",
+          "duration_seconds",
+          "fps",
+          "video_frames",
+          "steps",
+          "high_noise_steps",
+          "messages",
+        ],
+        responseFormats: [" WEBM ", "webp", "avi"],
+        outputMimeTypes: ["video/webm"],
+        limits: {
+          minWidth: 832,
+          maxWidth: 832,
+          minHeight: 480,
+          maxHeight: 480,
+          minFps: 8,
+          maxFps: 30,
+          minVideoFrames: 9,
+          maxVideoFrames: 81,
+          maxSteps: 30,
+          maxHighNoiseSteps: 30,
+        },
       }),
-      undefined,
+      {
+        operation: "videos.generations",
+        path: "/v1/videos/generations",
+        method: "POST",
+        requestParameterAllowlist: [
+          "model",
+          "prompt",
+          "duration_seconds",
+          "fps",
+          "video_frames",
+          "steps",
+          "high_noise_steps",
+        ],
+        responseFormats: ["webm", "webp", "avi"],
+        outputMimeTypes: ["video/webm"],
+        limits: {
+          minWidth: 832,
+          maxWidth: 832,
+          minHeight: 480,
+          maxHeight: 480,
+          minFps: 8,
+          maxFps: 30,
+          minVideoFrames: 9,
+          maxVideoFrames: 81,
+          maxSteps: 30,
+          maxHighNoiseSteps: 30,
+        },
+      },
     );
+  });
+
+  it("fails closed for invalid operation routing and malformed optional allowlists", () => {
     assert.equal(
       normalizeSelfHostedGenerativeOperation({
         operation: "images.generations",

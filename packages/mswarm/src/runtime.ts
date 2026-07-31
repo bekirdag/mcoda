@@ -97,13 +97,20 @@ export interface SelfHostedGenerativeOperationCatalogInput {
     max_prompt_chars?: number;
     max_negative_prompt_chars?: number;
     max_n?: number;
+    min_width?: number;
     max_width?: number;
+    min_height?: number;
     max_height?: number;
     max_pixels?: number;
     min_duration_seconds?: number;
     max_duration_seconds?: number;
     max_sample_rate?: number;
+    min_fps?: number;
+    max_fps?: number;
+    min_video_frames?: number;
+    max_video_frames?: number;
     max_steps?: number;
+    max_high_noise_steps?: number;
   };
 }
 
@@ -511,6 +518,9 @@ export interface SelfHostedNodeInvocationJob {
     negative_prompt?: string;
     duration_seconds?: number;
     sample_rate?: number;
+    fps?: number;
+    video_frames?: number;
+    high_noise_steps?: number;
     stream?: boolean;
     temperature?: number;
     top_p?: number;
@@ -968,6 +978,9 @@ const RESERVED_LOCAL_RUNNER_EXTRA_BODY_KEYS = new Set([
   "negative_prompt",
   "duration_seconds",
   "sample_rate",
+  "fps",
+  "video_frames",
+  "high_noise_steps",
   "stream",
   "tools",
   "tool_choice",
@@ -981,15 +994,18 @@ const REQUIRED_GENERATIVE_OPERATION_REQUEST_PARAMETERS: Record<
 > = {
   "chat.completions": ["model", "messages"],
   "images.generations": ["model", "prompt", "response_format"],
-  "audio.generations": ["model", "prompt", "response_format"]
+  "audio.generations": ["model", "prompt", "response_format"],
+  "videos.generations": ["model", "prompt", "response_format"]
 };
 const AUDIO_GENERATION_RESPONSE_FORMATS = new Set(["wav", "flac", "mp3", "ogg"]);
+const VIDEO_GENERATION_RESPONSE_FORMATS = new Set(["webm", "webp", "avi"]);
 const STABLE_DIFFUSION_CPP_EXTRA_ARGS_TAG_PATTERN =
   /<sd_cpp_extra_args\b[^>]*>[\s\S]*?<\/sd_cpp_extra_args\s*>/gi;
 const STABLE_DIFFUSION_CPP_EXTRA_ARGS_TAG_FRAGMENT_PATTERN =
   /<\/?sd_cpp_extra_args\b[^>]*>/gi;
 const DEFAULT_IMAGE_GENERATIVE_OUTPUT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_AUDIO_GENERATIVE_OUTPUT_BYTES = 64 * 1024 * 1024;
+const DEFAULT_VIDEO_GENERATIVE_OUTPUT_BYTES = 256 * 1024 * 1024;
 const GENERATIVE_RESPONSE_JSON_OVERHEAD_BYTES = 64 * 1024;
 const LOCAL_RUNNER_KIND_ALIASES: Record<string, NonNullable<LocalOpenAiCompatibleRunnerConfig["runnerKind"]>> = {
   vllm: "vllm",
@@ -1060,7 +1076,8 @@ export function normalizeSelfHostedGenerativeOperationName(
   const normalized = optionalText(value);
   return normalized === "chat.completions" ||
     normalized === "images.generations" ||
-    normalized === "audio.generations"
+    normalized === "audio.generations" ||
+    normalized === "videos.generations"
     ? normalized
     : null;
 }
@@ -1107,7 +1124,9 @@ function normalizeGenerativeOperationDescriptor(value: unknown): SelfHostedGener
         ? undefined
         : operation === "images.generations"
           ? ["b64_json"]
-          : ["wav", "flac", "mp3", "ogg"];
+          : operation === "audio.generations"
+            ? ["wav", "flac", "mp3", "ogg"]
+            : ["webm", "webp", "avi"];
   return {
     operation,
     path: normalized.path,
@@ -1132,6 +1151,8 @@ function defaultGenerativeOperationDescriptor(
       ? { responseFormats: ["b64_json"] }
       : operation === "audio.generations"
         ? { responseFormats: ["wav", "flac", "mp3", "ogg"] }
+        : operation === "videos.generations"
+          ? { responseFormats: ["webm", "webp", "avi"] }
         : {})
   };
 }
@@ -1166,6 +1187,9 @@ function inferGenerativeModalities(
     if (direction === "output" && descriptor.operation === "audio.generations") {
       modalities.add("audio");
     }
+    if (direction === "output" && descriptor.operation === "videos.generations") {
+      modalities.add("video");
+    }
   }
   return Array.from(modalities);
 }
@@ -1188,8 +1212,14 @@ function generativeOperationCatalogInput(
           ? { max_negative_prompt_chars: descriptor.limits.maxNegativePromptChars }
           : {}),
         ...(descriptor.limits.maxN !== undefined ? { max_n: descriptor.limits.maxN } : {}),
+        ...(descriptor.limits.minWidth !== undefined
+          ? { min_width: descriptor.limits.minWidth }
+          : {}),
         ...(descriptor.limits.maxWidth !== undefined
           ? { max_width: descriptor.limits.maxWidth }
+          : {}),
+        ...(descriptor.limits.minHeight !== undefined
+          ? { min_height: descriptor.limits.minHeight }
           : {}),
         ...(descriptor.limits.maxHeight !== undefined
           ? { max_height: descriptor.limits.maxHeight }
@@ -1206,8 +1236,23 @@ function generativeOperationCatalogInput(
         ...(descriptor.limits.maxSampleRate !== undefined
           ? { max_sample_rate: descriptor.limits.maxSampleRate }
           : {}),
+        ...(descriptor.limits.minFps !== undefined
+          ? { min_fps: descriptor.limits.minFps }
+          : {}),
+        ...(descriptor.limits.maxFps !== undefined
+          ? { max_fps: descriptor.limits.maxFps }
+          : {}),
+        ...(descriptor.limits.minVideoFrames !== undefined
+          ? { min_video_frames: descriptor.limits.minVideoFrames }
+          : {}),
+        ...(descriptor.limits.maxVideoFrames !== undefined
+          ? { max_video_frames: descriptor.limits.maxVideoFrames }
+          : {}),
         ...(descriptor.limits.maxSteps !== undefined
           ? { max_steps: descriptor.limits.maxSteps }
+          : {}),
+        ...(descriptor.limits.maxHighNoiseSteps !== undefined
+          ? { max_high_noise_steps: descriptor.limits.maxHighNoiseSteps }
           : {})
       }
     : undefined;
@@ -1972,7 +2017,7 @@ async function fetchJson<T>(
 }
 
 function generativeOutputByteLimit(
-  operation: "images.generations" | "audio.generations",
+  operation: "images.generations" | "audio.generations" | "videos.generations",
   configuredLimit: number | undefined
 ): number {
   if (
@@ -1984,7 +2029,9 @@ function generativeOutputByteLimit(
   }
   return operation === "images.generations"
     ? DEFAULT_IMAGE_GENERATIVE_OUTPUT_BYTES
-    : DEFAULT_AUDIO_GENERATIVE_OUTPUT_BYTES;
+    : operation === "audio.generations"
+      ? DEFAULT_AUDIO_GENERATIVE_OUTPUT_BYTES
+      : DEFAULT_VIDEO_GENERATIVE_OUTPUT_BYTES;
 }
 
 function generativeJsonResponseByteLimit(outputByteLimit: number): number {
@@ -6555,7 +6602,7 @@ export class SelfHostedNodeRuntime {
   private prepareOpenAiGenerativePassthrough(
     job: SelfHostedNodeInvocationJob,
     agent: MswarmGenerativeAgent,
-    operation: "images.generations" | "audio.generations"
+    operation: "images.generations" | "audio.generations" | "videos.generations"
   ): {
     descriptor: SelfHostedGenerativeOperationConfig;
     url: string;
@@ -6611,22 +6658,34 @@ export class SelfHostedNodeRuntime {
     }
     const responseFormats =
       descriptor.responseFormats?.map((entry) => entry.toLowerCase()) ??
-      (operation === "images.generations" ? ["b64_json"] : ["wav", "flac", "mp3", "ogg"]);
+      (operation === "images.generations"
+        ? ["b64_json"]
+        : operation === "audio.generations"
+          ? ["wav", "flac", "mp3", "ogg"]
+          : ["webm", "webp", "avi"]);
     const requestedResponseFormat = (
       optionalText(rawResponseFormat) ||
-      (operation === "images.generations" ? "b64_json" : responseFormats[0] || "wav")
+      (operation === "images.generations"
+        ? "b64_json"
+        : operation === "audio.generations"
+          ? responseFormats[0] || "wav"
+          : responseFormats[0] || "webm")
     ).toLowerCase();
     if (
       !responseFormats.includes(requestedResponseFormat) ||
       (operation === "images.generations"
         ? requestedResponseFormat !== "b64_json"
-        : !AUDIO_GENERATION_RESPONSE_FORMATS.has(requestedResponseFormat))
+        : operation === "audio.generations"
+          ? !AUDIO_GENERATION_RESPONSE_FORMATS.has(requestedResponseFormat)
+          : !VIDEO_GENERATION_RESPONSE_FORMATS.has(requestedResponseFormat))
     ) {
       throw new SelfHostedPreStartJobError(
         "validation_failed",
         operation === "images.generations"
           ? `${operation} requires response_format b64_json through the self-hosted relay`
-          : `${operation} response_format must be one of wav, flac, mp3, or ogg`
+          : operation === "audio.generations"
+            ? `${operation} response_format must be one of wav, flac, mp3, or ogg`
+            : `${operation} response_format must be one of webm, webp, or avi`
       );
     }
 
@@ -6668,9 +6727,43 @@ export class SelfHostedNodeRuntime {
         `${operation} sample_rate must be a positive integer`
       );
     }
+    const fps = body.fps;
+    if (fps !== undefined && (!Number.isSafeInteger(fps) || (fps as number) <= 0)) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} fps must be a positive integer`);
+    }
+    const videoFrames = body.video_frames;
+    if (
+      videoFrames !== undefined &&
+      (!Number.isSafeInteger(videoFrames) || (videoFrames as number) <= 0)
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} video_frames must be a positive integer`
+      );
+    }
+    if (
+      operation === "videos.generations" &&
+      durationSeconds !== undefined &&
+      videoFrames !== undefined
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} accepts duration_seconds or video_frames, not both`
+      );
+    }
     const steps = body.steps;
     if (steps !== undefined && (!Number.isSafeInteger(steps) || (steps as number) <= 0)) {
       throw new SelfHostedPreStartJobError("validation_failed", `${operation} steps must be a positive integer`);
+    }
+    const highNoiseSteps = body.high_noise_steps;
+    if (
+      highNoiseSteps !== undefined &&
+      (!Number.isSafeInteger(highNoiseSteps) || (highNoiseSteps as number) <= 0)
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} high_noise_steps must be a positive integer`
+      );
     }
     const seed = body.seed;
     if (seed !== undefined && !Number.isSafeInteger(seed)) {
@@ -6733,24 +6826,76 @@ export class SelfHostedNodeRuntime {
         `${operation} sample_rate exceeds the configured limit`
       );
     }
+    if (limits?.minFps && typeof fps === "number" && fps < limits.minFps) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} fps is below the configured minimum`
+      );
+    }
+    if (limits?.maxFps && typeof fps === "number" && fps > limits.maxFps) {
+      throw new SelfHostedPreStartJobError("validation_failed", `${operation} fps exceeds the configured limit`);
+    }
+    if (
+      limits?.minVideoFrames &&
+      typeof videoFrames === "number" &&
+      videoFrames < limits.minVideoFrames
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} video_frames is below the configured minimum`
+      );
+    }
+    if (
+      limits?.maxVideoFrames &&
+      typeof videoFrames === "number" &&
+      videoFrames > limits.maxVideoFrames
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} video_frames exceeds the configured limit`
+      );
+    }
     if (limits?.maxSteps && typeof steps === "number" && steps > limits.maxSteps) {
       throw new SelfHostedPreStartJobError("validation_failed", `${operation} steps exceeds the configured limit`);
     }
+    if (
+      limits?.maxHighNoiseSteps &&
+      typeof highNoiseSteps === "number" &&
+      highNoiseSteps > limits.maxHighNoiseSteps
+    ) {
+      throw new SelfHostedPreStartJobError(
+        "validation_failed",
+        `${operation} high_noise_steps exceeds the configured limit`
+      );
+    }
     if (typeof body.size === "string") {
       const sizeMatch = /^([1-9][0-9]*)x([1-9][0-9]*)$/.exec(body.size);
-      if (sizeMatch) {
-        const width = Number(sizeMatch[1]);
-        const height = Number(sizeMatch[2]);
-        if (
-          (limits?.maxWidth && width > limits.maxWidth) ||
-          (limits?.maxHeight && height > limits.maxHeight) ||
-          (limits?.maxPixels && width * height > limits.maxPixels)
-        ) {
-          throw new SelfHostedPreStartJobError(
-            "validation_failed",
-            `${operation} size exceeds the configured limit`
-          );
-        }
+      if (!sizeMatch) {
+        throw new SelfHostedPreStartJobError(
+          "validation_failed",
+          `${operation} size must use WIDTHxHEIGHT`
+        );
+      }
+      const width = Number(sizeMatch[1]);
+      const height = Number(sizeMatch[2]);
+      if (
+        (limits?.minWidth && width < limits.minWidth) ||
+        (limits?.minHeight && height < limits.minHeight)
+      ) {
+        throw new SelfHostedPreStartJobError(
+          "validation_failed",
+          `${operation} size is below the configured minimum`
+        );
+      }
+      if (
+        (limits?.maxWidth && width > limits.maxWidth) ||
+        (limits?.maxHeight && height > limits.maxHeight) ||
+        (limits?.maxPixels && width * height > limits.maxPixels)
+      ) {
+        throw new SelfHostedPreStartJobError(
+          "validation_failed",
+          `${operation} size exceeds the configured limit`
+        );
       }
     }
     if (
@@ -6824,7 +6969,7 @@ export class SelfHostedNodeRuntime {
       headers: Record<string, string>;
       body: Record<string, unknown>;
     },
-    operation: "images.generations" | "audio.generations"
+    operation: "images.generations" | "audio.generations" | "videos.generations"
   ): Promise<Record<string, unknown>> {
     const outputByteLimit = generativeOutputByteLimit(
       operation,
@@ -6876,6 +7021,8 @@ export class SelfHostedNodeRuntime {
       const encodedPayload =
         isRecord(item) && operation === "audio.generations"
           ? optionalText(item.b64_audio) || optionalText(item.b64_json)
+          : isRecord(item) && operation === "videos.generations"
+            ? optionalText(item.b64_video) || optionalText(item.b64_json)
           : isRecord(item)
             ? optionalText(item.b64_json)
             : null;
@@ -6899,13 +7046,13 @@ export class SelfHostedNodeRuntime {
         throw new Error(`local ${operation} runner returned unsupported mime_type ${mimeType}`);
       }
       if (
-        operation === "audio.generations" &&
-        !optionalText(item.b64_audio) &&
+        (operation === "audio.generations" || operation === "videos.generations") &&
+        !optionalText(operation === "audio.generations" ? item.b64_audio : item.b64_video) &&
         optionalText(item.b64_json)
       ) {
         const normalizedItem: Record<string, unknown> = {
           ...item,
-          b64_audio: encodedPayload
+          [operation === "audio.generations" ? "b64_audio" : "b64_video"]: encodedPayload
         };
         delete normalizedItem.b64_json;
         normalizedData.push(normalizedItem);
@@ -6913,7 +7060,7 @@ export class SelfHostedNodeRuntime {
         normalizedData.push(item);
       }
     }
-    return operation === "audio.generations"
+    return operation === "audio.generations" || operation === "videos.generations"
       ? { ...payload, data: normalizedData }
       : payload;
   }
@@ -7299,7 +7446,11 @@ export class SelfHostedNodeRuntime {
       const agent = await this.resolveMcodaAgentForJob(job);
       selectedAgent = agent;
       this.generativeOperationForAgent(agent, operation);
-      if (operation === "images.generations" || operation === "audio.generations") {
+      if (
+        operation === "images.generations" ||
+        operation === "audio.generations" ||
+        operation === "videos.generations"
+      ) {
         const prepared = this.prepareOpenAiGenerativePassthrough(job, agent, operation);
         await acknowledgeStarted(agent);
         await recordProgress({
