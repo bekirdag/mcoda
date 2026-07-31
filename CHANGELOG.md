@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.102 - 2026-07-31
+
 - Refresh transitive security overrides for archive parsing, URI validation,
   request routing, YAML parsing, multipart handling, and brace expansion.
 - Add image and audio operation metadata for self-hosted mswarm agents, including
