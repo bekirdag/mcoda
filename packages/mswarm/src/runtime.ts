@@ -4,6 +4,7 @@ import { cpus, freemem, hostname, homedir, loadavg, platform, totalmem, userInfo
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
+import { Agent, fetch as undiciFetch } from "undici";
 import { GlobalRepository } from "@mcoda/db";
 import {
   MswarmCodaliExecutor,
@@ -1993,7 +1994,14 @@ function isHttpStatusError(error: unknown, status?: number): error is HttpStatus
 const RELAY_RESULT_POST_RETRY_DELAYS_MS = [250, 1_000, 2_500] as const;
 
 function runtimeErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error
+    ? (error as Error & { cause?: unknown }).cause
+    : undefined;
+  const causeCode = isRecord(cause) ? optionalText(cause.code) : null;
+  return causeCode && !message.includes(causeCode)
+    ? `${message} (${causeCode})`
+    : message;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -5948,6 +5956,7 @@ export class SelfHostedNodeRuntime {
   private readonly ollama: OllamaClient;
   private readonly jobOllama: OllamaClient;
   private readonly fetchImpl: FetchLike;
+  private readonly useDedicatedGenerativeDispatcher: boolean;
   private readonly genericRunners: Map<string, MswarmGenericJobRunner>;
   private readonly artifactStore: MswarmGenericJobArtifactStore;
   private readonly capabilityRunner: CommandRunner;
@@ -5976,6 +5985,7 @@ export class SelfHostedNodeRuntime {
   ) {
     this.config = config;
     this.fetchImpl = deps?.fetchImpl || fetch;
+    this.useDedicatedGenerativeDispatcher = deps?.fetchImpl === undefined;
     this.gateway =
       deps?.gateway ||
       new MswarmSelfHostedNodeClient({
@@ -6982,14 +6992,20 @@ export class SelfHostedNodeRuntime {
     const jsonResponseByteLimit = generativeJsonResponseByteLimit(outputByteLimit);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.jobTimeoutMs);
+    const dispatcher = this.useDedicatedGenerativeDispatcher
+      ? new Agent({ headersTimeout: 0, bodyTimeout: 0 })
+      : null;
     let payload: unknown;
     try {
-      const response = await this.fetchImpl(prepared.url, {
+      const request = {
         method: "POST",
         headers: prepared.headers,
         body: JSON.stringify(prepared.body),
         signal: controller.signal
-      });
+      };
+      const response = dispatcher
+        ? (await undiciFetch(prepared.url, { ...request, dispatcher })) as unknown as Response
+        : await this.fetchImpl(prepared.url, request);
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         throw new Error(`local ${operation} runner request failed with status ${response.status}`);
@@ -7011,6 +7027,7 @@ export class SelfHostedNodeRuntime {
       throw error;
     } finally {
       clearTimeout(timeout);
+      await dispatcher?.close().catch(() => undefined);
     }
     if (!isRecord(payload) || !Array.isArray(payload.data) || payload.data.length === 0) {
       throw new Error(`local ${operation} runner returned an invalid base64 response`);
@@ -7656,7 +7673,7 @@ export class SelfHostedNodeRuntime {
       return result;
     } catch (error) {
       const message = redactRuntimeSecretValues(
-        error instanceof Error ? error.message : String(error),
+        runtimeErrorMessage(error),
         [selectedAgent?.apiKey, options.attachedMswarmApiKey],
       );
       const explicitCode = selfHostedErrorCode(error);

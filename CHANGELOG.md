@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.107 - 2026-08-02
+
+- Keep long-running self-hosted image, audio, and video runner requests alive
+  beyond Undici's five-minute response timeout while retaining the configured
+  mSwarm job deadline as the authoritative cancellation boundary.
+- Preserve nested transport error codes in self-hosted job failures so relay
+  timeout causes remain diagnosable.
+
 ## 0.1.106 - 2026-07-31
 
 - Make the image bridge's handler-overload response portable across Windows and

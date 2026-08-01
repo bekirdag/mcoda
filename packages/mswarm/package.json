@@ -1,6 +1,6 @@
 {
   "name": "@mcoda/mswarm",
-  "version": "0.1.106",
+  "version": "0.1.107",
   "description": "Owner-run mswarm node for exposing local mcoda agents through the mswarm self-hosted gateway.",
   "type": "module",
   "main": "dist/server.js",
@@ -53,6 +53,7 @@
   "dependencies": {
     "@mcoda/db": "workspace:*",
     "@mcoda/shared": "workspace:*",
-    "fastify": "^5.7.4"
+    "fastify": "^5.7.4",
+    "undici": "^6.28.0"
   }
 }

@@ -4,6 +4,8 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHmac } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -3353,6 +3355,223 @@ describe("self-hosted node runtime", () => {
       "duration_seconds is below the configured minimum"
     );
     expect(fetchCount).toBe(1);
+  });
+
+  it("keeps local generative requests alive beyond the default dispatcher deadline", async () => {
+    const statePath = tempStatePath();
+    const server = createServer(async (_request, response) => {
+      await delay(80);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          data: [
+            {
+              b64_video: "GkXfo21vY2std2VibQ==",
+              mime_type: "video/webm",
+              response_format: "webm"
+            }
+          ]
+        })
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address() as AddressInfo;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const error = new TypeError("fetch failed") as TypeError & { cause?: unknown };
+      error.cause = { code: "UND_ERR_HEADERS_TIMEOUT" };
+      throw error;
+    }) as typeof fetch;
+    try {
+      const config = {
+        ...permissiveServiceConfigFor(statePath),
+        jobTimeoutMs: 1_000
+      };
+      const runtime = new SelfHostedNodeRuntime(config, {
+        mcoda: mcodaAgentListClient([
+          healthyMcodaAgent({
+            slug: "wan2.2-t2v-a14b-q4-k-m",
+            adapter: "openai-compatible-local",
+            defaultModel: "wan2.2-t2v-a14b-q4-k-m-local",
+            supportsTools: false,
+            capabilities: ["video_generation"],
+            config: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              authMode: "none",
+              inputModalities: ["text"],
+              outputModalities: ["video"],
+              operations: [
+                {
+                  operation: "videos.generations",
+                  path: "/v1/videos/generations",
+                  requestParameterAllowlist: [
+                    "model",
+                    "prompt",
+                    "video_frames",
+                    "fps",
+                    "size",
+                    "response_format"
+                  ],
+                  responseFormats: ["webm"],
+                  outputMimeTypes: ["video/webm"],
+                  limits: {
+                    maxOutputBytes: 1024,
+                    minWidth: 832,
+                    maxWidth: 832,
+                    minHeight: 480,
+                    maxHeight: 480,
+                    defaultFps: 16,
+                    minFps: 8,
+                    maxFps: 24,
+                    minVideoFrames: 9,
+                    maxVideoFrames: 33
+                  }
+                }
+              ]
+            }
+          })
+        ])
+      });
+      const job: SelfHostedNodeInvocationJob = {
+        job_id: "job-video-long-running-transport",
+        request_id: "req-video-long-running-transport",
+        node_id: "shn_service",
+        agent_slug: "wan2.2-t2v-a14b-q4-k-m",
+        source_agent_slug: "wan2.2-t2v-a14b-q4-k-m",
+        provider: "mcoda",
+        model: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+        operation: "videos.generations",
+        openai_request: {
+          model: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+          prompt: "A banner waving above a medieval castle",
+          video_frames: 9,
+          fps: 16,
+          size: "832x480",
+          response_format: "webm"
+        }
+      };
+
+      const result = await runtime.executeJob(job);
+
+      expect(result.status).toBe("success");
+      expect((result.openai_response as { data?: unknown }).data).toEqual([
+        {
+          b64_video: "GkXfo21vY2std2VibQ==",
+          mime_type: "video/webm",
+          response_format: "webm"
+        }
+      ]);
+
+      const timeoutRuntime = new SelfHostedNodeRuntime(
+        { ...config, jobTimeoutMs: 20 },
+        {
+          mcoda: mcodaAgentListClient([
+            healthyMcodaAgent({
+              slug: "wan2.2-t2v-a14b-q4-k-m",
+              adapter: "openai-compatible-local",
+              defaultModel: "wan2.2-t2v-a14b-q4-k-m-local",
+              supportsTools: false,
+              capabilities: ["video_generation"],
+              config: {
+                baseUrl: `http://127.0.0.1:${address.port}`,
+                authMode: "none",
+                inputModalities: ["text"],
+                outputModalities: ["video"],
+                operations: [
+                  {
+                    operation: "videos.generations",
+                    path: "/v1/videos/generations",
+                    requestParameterAllowlist: [
+                      "model",
+                      "prompt",
+                      "video_frames",
+                      "fps",
+                      "size",
+                      "response_format"
+                    ],
+                    responseFormats: ["webm"],
+                    outputMimeTypes: ["video/webm"],
+                    limits: { maxOutputBytes: 1024, minVideoFrames: 9, maxVideoFrames: 33 }
+                  }
+                ]
+              }
+            })
+          ])
+        }
+      );
+      const timedOut = await timeoutRuntime.executeJob({
+        ...job,
+        job_id: "job-video-explicit-timeout",
+        request_id: "req-video-explicit-timeout"
+      });
+      expect(timedOut.status).toBe("failed");
+      expect(timedOut.error?.code).toBe("timeout");
+      expect(timedOut.error?.message).toContain("local videos.generations runner timeout");
+    } finally {
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("preserves local generative transport cause codes", async () => {
+    const statePath = tempStatePath();
+    const transportError = new TypeError("fetch failed") as TypeError & { cause?: unknown };
+    transportError.cause = { code: "UND_ERR_HEADERS_TIMEOUT" };
+    const runtime = new SelfHostedNodeRuntime(permissiveServiceConfigFor(statePath), {
+      fetchImpl: (async () => {
+        throw transportError;
+      }) as typeof fetch,
+      mcoda: mcodaAgentListClient([
+        healthyMcodaAgent({
+          slug: "wan2.2-t2v-a14b-q4-k-m",
+          adapter: "openai-compatible-local",
+          defaultModel: "wan2.2-t2v-a14b-q4-k-m-local",
+          supportsTools: false,
+          capabilities: ["video_generation"],
+          config: {
+            baseUrl: "http://video.test",
+            authMode: "none",
+            inputModalities: ["text"],
+            outputModalities: ["video"],
+            operations: [
+              {
+                operation: "videos.generations",
+                path: "/v1/videos/generations",
+                requestParameterAllowlist: ["model", "prompt", "video_frames"],
+                responseFormats: ["webm"],
+                outputMimeTypes: ["video/webm"],
+                limits: { minVideoFrames: 9, maxVideoFrames: 33 }
+              }
+            ]
+          }
+        })
+      ])
+    });
+
+    const result = await runtime.executeJob({
+      job_id: "job-video-transport-cause",
+      request_id: "req-video-transport-cause",
+      node_id: "shn_service",
+      agent_slug: "wan2.2-t2v-a14b-q4-k-m",
+      source_agent_slug: "wan2.2-t2v-a14b-q4-k-m",
+      provider: "mcoda",
+      model: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+      operation: "videos.generations",
+      openai_request: {
+        model: "mcoda-sukunahikona-wan2-2-t2v-a14b-q4-k-m",
+        prompt: "A banner waving above a medieval castle",
+        video_frames: 9
+      }
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("timeout");
+    expect(result.error?.message).toBe("fetch failed (UND_ERR_HEADERS_TIMEOUT)");
   });
 
   it("relays video generation as canonical b64_video and enforces video limits", async () => {
