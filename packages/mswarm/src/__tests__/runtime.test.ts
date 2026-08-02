@@ -7285,7 +7285,7 @@ describe("self-hosted node runtime", () => {
     expect(failed.includes("{")).toBe(false);
   });
 
-  it("keeps polling another relay slot while a result post is pending", async () => {
+  it("serializes relay claims while running results concurrently within the LLM cap", async () => {
     const statePath = tempStatePath();
     const config = {
       ...permissiveServiceConfigFor(statePath),
@@ -7296,18 +7296,37 @@ describe("self-hosted node runtime", () => {
       genericJobMaxConcurrency: 3
     };
     let pollCount = 0;
+    let activePollRequests = 0;
+    let maxActivePollRequests = 0;
     let firstResultPostSettled = false;
+    let secondResultPostSettled = false;
+    let resolveFirstPollStarted!: () => void;
+    let resolveFirstPollResponse!: () => void;
     let resolveFirstResultPostStarted!: () => void;
     let resolveFirstResultPost!: (response: Response) => void;
-    let resolveSecondResultPosted!: () => void;
+    let resolveSecondResultPostStarted!: () => void;
+    let resolveSecondResultPost!: (response: Response) => void;
+    let resolveSecondResultPostSettled!: () => void;
+    const firstPollStarted = new Promise<void>((resolve) => {
+      resolveFirstPollStarted = resolve;
+    });
+    const firstPollResponse = new Promise<void>((resolve) => {
+      resolveFirstPollResponse = resolve;
+    });
     const firstResultPostStarted = new Promise<void>((resolve) => {
       resolveFirstResultPostStarted = resolve;
     });
     const firstResultPost = new Promise<Response>((resolve) => {
       resolveFirstResultPost = resolve;
     });
-    const secondResultPosted = new Promise<void>((resolve) => {
-      resolveSecondResultPosted = resolve;
+    const secondResultPostStarted = new Promise<void>((resolve) => {
+      resolveSecondResultPostStarted = resolve;
+    });
+    const secondResultPost = new Promise<Response>((resolve) => {
+      resolveSecondResultPost = resolve;
+    });
+    const secondResultSettled = new Promise<void>((resolve) => {
+      resolveSecondResultPostSettled = resolve;
     });
     let daemonHandle: { stop: () => void } | undefined;
     const relayJob = (suffix: string) => ({
@@ -7327,14 +7346,22 @@ describe("self-hosted node runtime", () => {
       const target = String(url);
       if (target.endsWith("/v1/swarm/self-hosted/node/jobs/poll")) {
         pollCount += 1;
-        if (pollCount === 1) {
-          return jsonResponse({ job: relayJob("first") });
+        activePollRequests += 1;
+        maxActivePollRequests = Math.max(maxActivePollRequests, activePollRequests);
+        const currentPoll = pollCount;
+        try {
+          if (currentPoll === 1) {
+            resolveFirstPollStarted();
+            await firstPollResponse;
+            return jsonResponse({ job: relayJob("first") });
+          }
+          if (currentPoll === 2) {
+            return jsonResponse({ job: relayJob("second") });
+          }
+          return await new Promise<Response>(() => undefined);
+        } finally {
+          activePollRequests -= 1;
         }
-        if (pollCount === 2) {
-          await firstResultPostStarted;
-          return jsonResponse({ job: relayJob("second") });
-        }
-        return new Promise<Response>(() => undefined);
       }
       if (target.endsWith("/start")) {
         return jsonResponse({ accepted: true, status: "started" });
@@ -7346,10 +7373,11 @@ describe("self-hosted node runtime", () => {
         return response;
       }
       if (target.endsWith("/job-concurrent-second/result")) {
-        expect(firstResultPostSettled).toBe(false);
-        daemonHandle?.stop();
-        resolveSecondResultPosted();
-        return jsonResponse({ accepted: true });
+        resolveSecondResultPostStarted();
+        const response = await secondResultPost;
+        secondResultPostSettled = true;
+        resolveSecondResultPostSettled();
+        return response;
       }
       throw new Error(`unexpected fetch ${target}`);
     }) as typeof fetch;
@@ -7369,20 +7397,167 @@ describe("self-hosted node runtime", () => {
 
     daemonHandle = runtime.startDaemon();
     try {
-      const secondFinishedBeforeTimeout = await Promise.race([
-        secondResultPosted.then(() => true),
+      const firstPollBeganBeforeTimeout = await Promise.race([
+        firstPollStarted.then(() => true),
         delay(1_000).then(() => false)
       ]);
-      expect(secondFinishedBeforeTimeout).toBe(true);
-      expect(firstResultPostSettled).toBe(false);
+      expect(firstPollBeganBeforeTimeout).toBe(true);
+      await delay(25);
+      expect(pollCount).toBe(1);
+      expect(maxActivePollRequests).toBe(1);
+
+      resolveFirstPollResponse();
+      const bothResultsPendingBeforeTimeout = await Promise.race([
+        Promise.all([firstResultPostStarted, secondResultPostStarted]).then(() => true),
+        delay(1_000).then(() => false)
+      ]);
+      expect(bothResultsPendingBeforeTimeout).toBe(true);
+      await delay(25);
+
+      // Both LLM lifecycle slots are occupied by pending result uploads. The
+      // dispatcher must not use the larger overall or generic-job limits to
+      // claim a third job, and it must never have two claim requests in flight.
       expect(pollCount).toBe(2);
+      expect(maxActivePollRequests).toBe(1);
+      expect(firstResultPostSettled).toBe(false);
+      expect(secondResultPostSettled).toBe(false);
+
+      daemonHandle.stop();
+      resolveSecondResultPost(jsonResponse({ accepted: true }));
+      await secondResultSettled;
+      expect(secondResultPostSettled).toBe(true);
+      expect(firstResultPostSettled).toBe(false);
     } finally {
       daemonHandle.stop();
+      resolveFirstPollResponse();
+      resolveSecondResultPost(jsonResponse({ accepted: true }));
       resolveFirstResultPost(jsonResponse({ accepted: true }));
     }
     await delay(25);
     expect(firstResultPostSettled).toBe(true);
     expect(pollCount).toBe(2);
+  });
+
+  it("preserves execution failure backoff when an outstanding claim poll succeeds", async () => {
+    const statePath = tempStatePath();
+    const config = {
+      ...permissiveServiceConfigFor(statePath),
+      heartbeatIntervalSeconds: 60,
+      maxConcurrentJobs: 2,
+      maxConcurrentLlmJobs: 2
+    };
+    let pollCount = 0;
+    let rejectFirstExecution!: (reason?: unknown) => void;
+    let resolveSecondPollStarted!: () => void;
+    let resolveSecondPoll!: () => void;
+    let resolveSecondExecutionStarted!: () => void;
+    let resolveSecondExecution!: () => void;
+    let resolveThirdPollStarted!: () => void;
+    const firstExecution = new Promise<never>((_resolve, reject) => {
+      rejectFirstExecution = reject;
+    });
+    const secondPollStarted = new Promise<void>((resolve) => {
+      resolveSecondPollStarted = resolve;
+    });
+    const secondPoll = new Promise<void>((resolve) => {
+      resolveSecondPoll = resolve;
+    });
+    const secondExecutionStarted = new Promise<void>((resolve) => {
+      resolveSecondExecutionStarted = resolve;
+    });
+    const secondExecution = new Promise<void>((resolve) => {
+      resolveSecondExecution = resolve;
+    });
+    const thirdPollStarted = new Promise<void>((resolve) => {
+      resolveThirdPollStarted = resolve;
+    });
+    const relayJob = (suffix: string) => ({
+      job_id: `job-backoff-race-${suffix}`,
+      request_id: `req-backoff-race-${suffix}`,
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: `Run relay job ${suffix}.` }]
+      }
+    });
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const target = String(url);
+      if (!target.endsWith("/v1/swarm/self-hosted/node/jobs/poll")) {
+        throw new Error(`unexpected fetch ${target}`);
+      }
+      pollCount += 1;
+      if (pollCount === 1) {
+        return jsonResponse({ job: relayJob("first") });
+      }
+      if (pollCount === 2) {
+        resolveSecondPollStarted();
+        await secondPoll;
+        return jsonResponse({ job: relayJob("second") });
+      }
+      resolveThirdPollStarted();
+      return await new Promise<Response>(() => undefined);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input))
+    });
+    runtime.runOnce = async () => ({
+      enrolled: false,
+      status: "online",
+      model_count: 1,
+      discovery_source: "mcoda",
+      mcoda_agent_count: 1,
+      heartbeat_response: { accepted: true }
+    });
+    const runtimeInternals = runtime as unknown as {
+      executeRelayJobClaim: (claim: { job: { job_id: string } }) => Promise<{
+        executed: boolean;
+        job_id: string;
+        status: "success" | "failed";
+      }>;
+    };
+    runtimeInternals.executeRelayJobClaim = async (claim) => {
+      if (claim.job.job_id.endsWith("-first")) {
+        return firstExecution;
+      }
+      resolveSecondExecutionStarted();
+      await secondExecution;
+      return { executed: true, job_id: claim.job.job_id, status: "success" };
+    };
+
+    const daemonHandle = runtime.startDaemon();
+    try {
+      const secondPollBeganBeforeTimeout = await Promise.race([
+        secondPollStarted.then(() => true),
+        delay(1_000).then(() => false)
+      ]);
+      expect(secondPollBeganBeforeTimeout).toBe(true);
+
+      rejectFirstExecution(new Error("result delivery failed"));
+      await delay(25);
+      resolveSecondPoll();
+      const secondExecutionBeganBeforeTimeout = await Promise.race([
+        secondExecutionStarted.then(() => true),
+        delay(1_000).then(() => false)
+      ]);
+      expect(secondExecutionBeganBeforeTimeout).toBe(true);
+
+      const thirdPollBeganBeforeCooldown = await Promise.race([
+        thirdPollStarted.then(() => true),
+        delay(250).then(() => false)
+      ]);
+      expect(thirdPollBeganBeforeCooldown).toBe(false);
+      expect(pollCount).toBe(2);
+    } finally {
+      daemonHandle.stop();
+      resolveSecondPoll();
+      resolveSecondExecution();
+    }
   });
 
   it("backs off a failing relay poll instead of retrying immediately", () => {

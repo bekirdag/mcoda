@@ -585,6 +585,23 @@ export interface SelfHostedNodeInvocationResult {
   };
 }
 
+type SelfHostedRelayExecutionResult = {
+  executed: boolean;
+  job_id?: string;
+  status?: "success" | "failed";
+};
+
+type SelfHostedRelayJobClaim = {
+  runtimeToken: string;
+  job: SelfHostedNodeInvocationJob;
+  attachedMswarmApiKey?: string;
+};
+
+type SelfHostedRelayPollResult = {
+  claim: SelfHostedRelayJobClaim | null;
+  status?: "failed";
+};
+
 export interface SelfHostedJobExecutionOptions {
   onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
   onProgress?: (event: Record<string, unknown>) => void | Promise<void>;
@@ -7877,15 +7894,11 @@ export class SelfHostedNodeRuntime {
     return { count: models.filter((model) => model.exposed !== false).length, response };
   }
 
-  async pollAndExecuteJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<{
-    executed: boolean;
-    job_id?: string;
-    status?: "success" | "failed";
-  }> {
+  private async pollRelayJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<SelfHostedRelayPollResult> {
     const lifecycleState = await this.readLifecycleState();
     if (this.lifecyclePollingDisabled || this.isLifecycleProtocolDegradedState(lifecycleState)) {
       this.lifecyclePollingDisabled = true;
-      return { executed: false, status: "failed" };
+      return { claim: null, status: "failed" };
     }
     const enrollment = await this.ensureEnrolled();
     const pollCapacity = this.buildLoadTelemetry({ models: [] });
@@ -7907,14 +7920,25 @@ export class SelfHostedNodeRuntime {
       const mismatch = this.lifecycleProtocolMismatch("poll", error);
       if (mismatch) {
         await this.markLifecycleProtocolDegraded(mismatch);
-        return { executed: false, status: "failed" };
+        return { claim: null, status: "failed" };
       }
       throw error;
     }
     const job = response.job || null;
     if (!job) {
-      return { executed: false };
+      return { claim: null };
     }
+    return {
+      claim: {
+        runtimeToken: enrollment.runtimeToken,
+        job,
+        attachedMswarmApiKey: optionalText(response.attached_mswarm_api_key) || undefined
+      }
+    };
+  }
+
+  private async executeRelayJobClaim(claim: SelfHostedRelayJobClaim): Promise<SelfHostedRelayExecutionResult> {
+    const { job, runtimeToken } = claim;
     const chatStreaming =
       (normalizeSelfHostedGenerativeOperationName(job.operation) ?? "chat.completions") ===
         "chat.completions" &&
@@ -7928,7 +7952,7 @@ export class SelfHostedNodeRuntime {
       }
       const stream_events = pendingStreamEvents.splice(0, pendingStreamEvents.length);
       try {
-        await this.gateway.postJobEvents(enrollment.runtimeToken, job.job_id, {
+        await this.gateway.postJobEvents(runtimeToken, job.job_id, {
           node_id: this.config.nodeId,
           stream_events
         });
@@ -7944,10 +7968,10 @@ export class SelfHostedNodeRuntime {
       }
     };
     let result = await this.executeJob(job, {
-      attachedMswarmApiKey: optionalText(response.attached_mswarm_api_key) || undefined,
+      attachedMswarmApiKey: claim.attachedMswarmApiKey,
       onStarted: async (event) => {
         try {
-          await this.gateway.postJobStart(enrollment.runtimeToken, job.job_id, {
+          await this.gateway.postJobStart(runtimeToken, job.job_id, {
             node_id: this.config.nodeId,
             agent_slug: event.agent_slug || job.agent_slug,
             source_agent_slug: event.source_agent_slug || job.source_agent_slug || null,
@@ -8001,7 +8025,7 @@ export class SelfHostedNodeRuntime {
     for (let attempt = 0; attempt <= RELAY_RESULT_POST_RETRY_DELAYS_MS.length; attempt += 1) {
       try {
         await this.gateway.postJobResult(
-          enrollment.runtimeToken,
+          runtimeToken,
           job.job_id,
           this.jobResultPayload(postedResult)
         );
@@ -8032,6 +8056,14 @@ export class SelfHostedNodeRuntime {
       throw error;
     }
     return { executed: true, job_id: job.job_id, status: result.status };
+  }
+
+  async pollAndExecuteJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<SelfHostedRelayExecutionResult> {
+    const polled = await this.pollRelayJob(waitMs);
+    if (!polled.claim) {
+      return { executed: false, ...(polled.status ? { status: polled.status } : {}) };
+    }
+    return this.executeRelayJobClaim(polled.claim);
   }
 
   async doctor(): Promise<SelfHostedNodeDoctorResult> {
@@ -8070,16 +8102,25 @@ export class SelfHostedNodeRuntime {
   startDaemon(): SelfHostedNodeDaemonHandle {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimerDueAt = 0;
+    let polling = false;
+    let relayPollFailureStreak = 0;
+    let relayExecutionFailureStreak = 0;
+    let activeRelayExecutions = 0;
     let revoked = false;
-    const relayWorkerCount = Math.max(
+    const relayExecutionLimit = Math.max(
       1,
       Math.floor(this.config.maxConcurrentLlmJobs || this.config.maxConcurrentJobs || 1)
     );
-    const relayWorkers = Array.from({ length: relayWorkerCount }, () => ({
-      timer: null as ReturnType<typeof setTimeout> | null,
-      polling: false,
-      failureStreak: 0
-    }));
+
+    const clearPollTimer = () => {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      pollTimerDueAt = 0;
+    };
 
     const halt = () => {
       stopped = true;
@@ -8087,12 +8128,7 @@ export class SelfHostedNodeRuntime {
         clearTimeout(timer);
         timer = null;
       }
-      for (const worker of relayWorkers) {
-        if (worker.timer) {
-          clearTimeout(worker.timer);
-          worker.timer = null;
-        }
-      }
+      clearPollTimer();
     };
 
     // 410 means the gateway has retired this node's credentials: it was removed there.
@@ -8107,12 +8143,7 @@ export class SelfHostedNodeRuntime {
       if (!isHttpStatusError(error, 410)) {
         return false;
       }
-      for (const worker of relayWorkers) {
-        if (worker.timer) {
-          clearTimeout(worker.timer);
-          worker.timer = null;
-        }
-      }
+      clearPollTimer();
       if (!revoked) {
         revoked = true;
         console.error(
@@ -8127,10 +8158,9 @@ export class SelfHostedNodeRuntime {
 
     const noteAlive = () => {
       const recoveredFromRevocation = revoked;
-      const sleepingWorkers = relayWorkers.filter(
-        (worker) => worker.failureStreak > 0 && worker.timer !== null && !worker.polling
-      );
-      if (!recoveredFromRevocation && sleepingWorkers.length === 0) {
+      const relayPollingIsBackedOff =
+        (relayPollFailureStreak > 0 || relayExecutionFailureStreak > 0) && !polling;
+      if (!recoveredFromRevocation && !relayPollingIsBackedOff) {
         return;
       }
       if (recoveredFromRevocation) {
@@ -8139,51 +8169,101 @@ export class SelfHostedNodeRuntime {
           `[mswarm] node ${this.config.nodeId} is accepted at the gateway again; resuming normal operation.`
         );
       }
-      const workersToWake = recoveredFromRevocation ? relayWorkers : sleepingWorkers;
-      for (const worker of workersToWake) {
-        if (worker.timer) {
-          clearTimeout(worker.timer);
-          worker.timer = null;
-        }
-        worker.failureStreak = 0;
-        poll(worker);
-      }
+      clearPollTimer();
+      relayPollFailureStreak = 0;
+      relayExecutionFailureStreak = 0;
+      schedulePoll(0);
     };
 
-    const poll = (worker: (typeof relayWorkers)[number]) => {
+    const currentRelayRetryDelayMs = () =>
+      Math.max(
+        pollRetryDelayMs(relayPollFailureStreak),
+        pollRetryDelayMs(relayExecutionFailureStreak)
+      );
+
+    const schedulePoll = (delayMs: number) => {
       if (
         stopped ||
-        worker.polling ||
+        polling ||
         revoked ||
         this.lifecyclePollingDisabled ||
-        this.config.relayMode === "direct"
+        this.config.relayMode === "direct" ||
+        activeRelayExecutions >= relayExecutionLimit
       ) {
         return;
       }
-      worker.polling = true;
-      void this.pollAndExecuteJob()
-        .then(() => {
-          worker.failureStreak = 0;
+      const dueAt = Date.now() + Math.max(0, delayMs);
+      if (pollTimer && pollTimerDueAt >= dueAt) {
+        return;
+      }
+      clearPollTimer();
+      pollTimerDueAt = dueAt;
+      pollTimer = setTimeout(() => {
+        pollTimer = null;
+        pollTimerDueAt = 0;
+        poll();
+      }, Math.max(0, dueAt - Date.now()));
+    };
+
+    const poll = () => {
+      if (
+        stopped ||
+        polling ||
+        revoked ||
+        this.lifecyclePollingDisabled ||
+        this.config.relayMode === "direct" ||
+        activeRelayExecutions >= relayExecutionLimit
+      ) {
+        return;
+      }
+      polling = true;
+      void this.pollRelayJob()
+        .then((polled) => {
+          relayPollFailureStreak = 0;
+          const claim = polled.claim;
+          if (!claim) {
+            return;
+          }
+          activeRelayExecutions += 1;
+          void this.executeRelayJobClaim(claim)
+            .then(() => {
+              relayExecutionFailureStreak = 0;
+            })
+            .catch((error) => {
+              if (noteRevoked(error)) {
+                return;
+              }
+              relayExecutionFailureStreak += 1;
+              console.error(
+                `[mswarm] self-hosted relay job ${claim.job.job_id} failed: ${runtimeErrorMessage(error)}`
+              );
+            })
+            .finally(() => {
+              activeRelayExecutions = Math.max(0, activeRelayExecutions - 1);
+              schedulePoll(currentRelayRetryDelayMs());
+            });
         })
         .catch((error) => {
           if (noteRevoked(error)) {
             return;
           }
-          worker.failureStreak += 1;
+          relayPollFailureStreak += 1;
           console.error(`[mswarm] self-hosted relay poll failed: ${runtimeErrorMessage(error)}`);
         })
         .finally(() => {
-          worker.polling = false;
-          if (stopped || revoked) {
+          polling = false;
+          if (
+            stopped ||
+            revoked ||
+            this.lifecyclePollingDisabled ||
+            activeRelayExecutions >= relayExecutionLimit
+          ) {
             return;
           }
           // A healthy poll long-polls at the gateway, so re-entering immediately is
           // correct. A failing one returns at once, so without this the loop spins as
           // fast as the network allows.
-          worker.timer = setTimeout(() => {
-            worker.timer = null;
-            poll(worker);
-          }, pollRetryDelayMs(worker.failureStreak));
+          schedulePoll(currentRelayRetryDelayMs());
         });
     };
 
@@ -8209,9 +8289,7 @@ export class SelfHostedNodeRuntime {
       })
       .finally(() => {
         schedule();
-        for (const worker of relayWorkers) {
-          poll(worker);
-        }
+        schedulePoll(0);
       });
 
     return { stop: halt };
