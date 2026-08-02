@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.108 - 2026-08-02
+
+- Add an optional, additive high-priority relay reservation with raw-priority
+  gateway filtering and active-agent exclusion, while preserving the legacy
+  poll contract when reservations are disabled.
+- Execute self-hosted relay claims concurrently behind one serialized poll,
+  with independent failure backoff and durable result delivery for long media
+  jobs.
+- Recover relay polling after heartbeat failures and advertise local runner
+  response-format capabilities consistently.
+
 ## 0.1.107 - 2026-08-02
 
 - Keep long-running self-hosted image, audio, and video runner requests alive

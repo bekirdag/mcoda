@@ -118,6 +118,21 @@ Set local scheduling capacity during install:
 mswarm node install <MSWARM_API_KEY> --max-concurrent-jobs 4 --max-concurrent-llm-jobs 2
 ```
 
+Reserve additional relay capacity for urgent work without changing the ordinary
+LLM concurrency limit:
+
+```sh
+mswarm node install <MSWARM_API_KEY> \
+  --max-concurrent-jobs 3 \
+  --max-concurrent-llm-jobs 2 \
+  --reserved-llm-jobs 1 \
+  --reserved-priority-max -1
+```
+
+The overall capacity must be at least the ordinary LLM capacity plus the
+reserved capacity. Reserved polls only claim jobs whose raw numeric priority is
+at or below the configured maximum; lower numbers are more urgent.
+
 The node reports additive load telemetry in each heartbeat: runtime protocol
 version, active and queued work, LLM/generic job concurrency, free slots, drain
 state, recent failures, moving average latency, and a fingerprinted local agent
@@ -252,6 +267,8 @@ Load-balancer telemetry controls:
 
 - `MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS`: overall advertised job capacity, default `1`
 - `MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS`: LLM/Codali capacity, default matches overall capacity
+- `MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS`: additional relay slots reserved for urgent jobs, default `0`
+- `MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX`: highest raw numeric priority accepted by reserved slots, default `-1` (valid range `-100` to `100`)
 - `MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY`: generic job capacity, default `1`
 - `MSWARM_SELF_HOSTED_DRAIN_MODE=1`: report zero free slots for maintenance
 - `MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED=0`: fall back to legacy heartbeat capacity shape

@@ -211,6 +211,8 @@ export interface SelfHostedNodeConfig {
   jobTimeoutMs: number;
   maxConcurrentJobs?: number;
   maxConcurrentLlmJobs?: number;
+  reservedLlmJobs?: number;
+  reservedPriorityMax?: number;
   genericJobsEnabled: boolean;
   genericJobTimeoutMs: number;
   genericJobMaxConcurrency: number;
@@ -255,6 +257,8 @@ export interface SelfHostedNodeState {
   job_timeout_ms?: number;
   max_concurrent_jobs?: number;
   max_concurrent_llm_jobs?: number;
+  reserved_llm_jobs?: number;
+  reserved_priority_max?: number;
   generic_jobs_enabled?: boolean;
   generic_job_timeout_ms?: number;
   generic_job_max_concurrency?: number;
@@ -291,6 +295,8 @@ export interface SelfHostedOwnerSetupConfig {
   jobTimeoutMs: number;
   maxConcurrentJobs: number;
   maxConcurrentLlmJobs: number;
+  reservedLlmJobs: number;
+  reservedPriorityMax: number;
   genericJobsEnabled: boolean;
   genericJobTimeoutMs: number;
   genericJobMaxConcurrency: number;
@@ -602,6 +608,11 @@ type SelfHostedRelayPollResult = {
   status?: "failed";
 };
 
+type SelfHostedRelayPollOptions = {
+  maxRequestedPriority?: number;
+  excludedAgentSlugs?: string[];
+};
+
 export interface SelfHostedJobExecutionOptions {
   onOpenAIChunk?: (chunk: Record<string, unknown>) => void | Promise<void>;
   onProgress?: (event: Record<string, unknown>) => void | Promise<void>;
@@ -859,6 +870,12 @@ const DEFAULT_MCODA_LIST_ARGS = ["agent", "list", "--json", "--refresh-health"];
 const DEFAULT_COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_LOCAL_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_JOB_POLL_WAIT_MS = 2_000;
+const RESERVED_JOB_POLL_WAIT_MS = 250;
+const MAX_POLL_EXCLUDED_AGENT_SLUGS = 64;
+const MAX_RELAY_AGENT_SLUG_LENGTH = 255;
+const DEFAULT_RESERVED_PRIORITY_MAX = -1;
+const MIN_RELAY_PRIORITY = -100;
+const MAX_RELAY_PRIORITY = 100;
 const JOB_POLL_RETRY_BASE_MS = 1_000;
 const JOB_POLL_RETRY_MAX_MS = 60_000;
 /**
@@ -1084,6 +1101,39 @@ const LOCAL_RUNNER_RESPONSE_FORMAT_ALIASES: Record<
 
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function relayJobAgentAliases(job: SelfHostedNodeInvocationJob): string[] {
+  const aliases = [job.agent_slug, job.source_agent_slug, job.remote_slug]
+    .map(optionalText)
+    .map((value) =>
+      value
+        ?.toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "") || null
+    )
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.length > 0 && value.length <= MAX_RELAY_AGENT_SLUG_LENGTH
+    );
+  return [...new Set(aliases)];
+}
+
+function boundedRelayAgentAliases(activeAliases: Iterable<string[]>): string[] {
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+  for (const group of activeAliases) {
+    for (const alias of group) {
+      if (seen.has(alias)) continue;
+      seen.add(alias);
+      aliases.push(alias);
+      if (aliases.length >= MAX_POLL_EXCLUDED_AGENT_SLUGS) {
+        return aliases;
+      }
+    }
+  }
+  return aliases;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1420,6 +1470,52 @@ function parsePositiveInteger(value: unknown, fallback: number): number {
     return fallback;
   }
   return Math.floor(parsed);
+}
+
+function parseNonNegativeInteger(value: unknown, fallback: number): number {
+  const parsed =
+    value === undefined || value === null || value === ""
+      ? fallback
+      : typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number(value)
+          : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error("MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS must be a non-negative integer");
+  }
+  return parsed;
+}
+
+function parseRelayPriority(value: unknown, fallback: number): number {
+  const parsed =
+    value === undefined || value === null || value === ""
+      ? fallback
+      : typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number(value)
+          : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < MIN_RELAY_PRIORITY || parsed > MAX_RELAY_PRIORITY) {
+    throw new Error(
+      `MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX must be an integer from ${MIN_RELAY_PRIORITY} to ${MAX_RELAY_PRIORITY}`
+    );
+  }
+  return parsed;
+}
+
+function assertReservedLlmCapacity(input: {
+  maxConcurrentJobs: number;
+  maxConcurrentLlmJobs: number;
+  reservedLlmJobs: number;
+}): void {
+  const totalLlmJobs = input.maxConcurrentLlmJobs + input.reservedLlmJobs;
+  if (totalLlmJobs > input.maxConcurrentJobs) {
+    throw new Error(
+      "MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS must be greater than or equal to " +
+        "MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS plus MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS"
+    );
+  }
 }
 
 function parseBoolean(value: unknown, fallback: boolean): boolean {
@@ -2245,6 +2341,10 @@ function serviceEnvironment(config: SelfHostedNodeConfig, env: NodeJS.ProcessEnv
     MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: String(config.jobTimeoutMs),
     MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS: String(config.maxConcurrentJobs || 1),
     MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS: String(config.maxConcurrentLlmJobs || config.maxConcurrentJobs || 1),
+    MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS: String(config.reservedLlmJobs ?? 0),
+    MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX: String(
+      config.reservedPriorityMax ?? DEFAULT_RESERVED_PRIORITY_MAX
+    ),
     MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED: config.genericJobsEnabled ? "true" : "false",
     MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS: String(config.genericJobTimeoutMs),
     MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: String(config.genericJobMaxConcurrency),
@@ -2784,6 +2884,15 @@ export async function readSelfHostedNodeConfig(
     env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS,
     state.max_concurrent_llm_jobs || maxConcurrentJobs
   );
+  const reservedLlmJobs = parseNonNegativeInteger(
+    env.MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS,
+    state.reserved_llm_jobs ?? 0
+  );
+  const reservedPriorityMax = parseRelayPriority(
+    env.MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX,
+    state.reserved_priority_max ?? DEFAULT_RESERVED_PRIORITY_MAX
+  );
+  assertReservedLlmCapacity({ maxConcurrentJobs, maxConcurrentLlmJobs, reservedLlmJobs });
   return {
     gatewayBaseUrl: trimTrailingSlash(gatewayBaseUrl),
     jobsPollPath:
@@ -2845,6 +2954,8 @@ export async function readSelfHostedNodeConfig(
     ),
     maxConcurrentJobs,
     maxConcurrentLlmJobs,
+    reservedLlmJobs,
+    reservedPriorityMax,
     genericJobsEnabled: parseBoolean(
       env.MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED ?? env.MSWARM_SELF_HOSTED_GENERIC_JOBS,
       state.generic_jobs_enabled === true
@@ -2928,6 +3039,15 @@ export async function readOwnerSetupConfig(
     options["max-concurrent-llm-jobs"] || env.MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS,
     maxConcurrentJobs
   );
+  const reservedLlmJobs = parseNonNegativeInteger(
+    options["reserved-llm-jobs"] ?? env.MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS,
+    0
+  );
+  const reservedPriorityMax = parseRelayPriority(
+    options["reserved-priority-max"] ?? env.MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX,
+    DEFAULT_RESERVED_PRIORITY_MAX
+  );
+  assertReservedLlmCapacity({ maxConcurrentJobs, maxConcurrentLlmJobs, reservedLlmJobs });
   return {
     apiKey,
     handle: handle || undefined,
@@ -2965,6 +3085,8 @@ export async function readOwnerSetupConfig(
     ),
     maxConcurrentJobs,
     maxConcurrentLlmJobs,
+    reservedLlmJobs,
+    reservedPriorityMax,
     genericJobsEnabled: parseBoolean(
       options["enable-generic-jobs"] || env.MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED || env.MSWARM_SELF_HOSTED_GENERIC_JOBS,
       false
@@ -6007,6 +6129,15 @@ export class SelfHostedNodeRuntime {
       capabilityRunner?: CommandRunner;
     }
   ) {
+    assertReservedLlmCapacity({
+      maxConcurrentJobs: Math.max(1, Math.floor(config.maxConcurrentJobs || 1)),
+      maxConcurrentLlmJobs: Math.max(
+        1,
+        Math.floor(config.maxConcurrentLlmJobs || config.maxConcurrentJobs || 1)
+      ),
+      reservedLlmJobs: parseNonNegativeInteger(config.reservedLlmJobs, 0)
+    });
+    parseRelayPriority(config.reservedPriorityMax, DEFAULT_RESERVED_PRIORITY_MAX);
     this.config = config;
     this.fetchImpl = deps?.fetchImpl || fetch;
     this.useDedicatedGenerativeDispatcher = deps?.fetchImpl === undefined;
@@ -6333,6 +6464,8 @@ export class SelfHostedNodeRuntime {
       job_timeout_ms: setupConfig.jobTimeoutMs,
       max_concurrent_jobs: setupConfig.maxConcurrentJobs,
       max_concurrent_llm_jobs: setupConfig.maxConcurrentLlmJobs,
+      reserved_llm_jobs: setupConfig.reservedLlmJobs,
+      reserved_priority_max: setupConfig.reservedPriorityMax,
       generic_jobs_enabled: setupConfig.genericJobsEnabled,
       generic_job_timeout_ms: setupConfig.genericJobTimeoutMs,
       generic_job_max_concurrency: setupConfig.genericJobMaxConcurrency,
@@ -6391,6 +6524,8 @@ export class SelfHostedNodeRuntime {
         jobTimeoutMs: setupConfig.jobTimeoutMs,
         maxConcurrentJobs: setupConfig.maxConcurrentJobs,
         maxConcurrentLlmJobs: setupConfig.maxConcurrentLlmJobs,
+        reservedLlmJobs: setupConfig.reservedLlmJobs,
+        reservedPriorityMax: setupConfig.reservedPriorityMax,
         genericJobsEnabled: setupConfig.genericJobsEnabled,
         genericJobTimeoutMs: setupConfig.genericJobTimeoutMs,
         genericJobMaxConcurrency: setupConfig.genericJobMaxConcurrency,
@@ -6545,6 +6680,8 @@ export class SelfHostedNodeRuntime {
       job_timeout_ms: this.config.jobTimeoutMs,
       max_concurrent_jobs: this.config.maxConcurrentJobs,
       max_concurrent_llm_jobs: this.config.maxConcurrentLlmJobs,
+      reserved_llm_jobs: this.config.reservedLlmJobs ?? 0,
+      reserved_priority_max: this.config.reservedPriorityMax ?? DEFAULT_RESERVED_PRIORITY_MAX,
       generic_jobs_enabled: this.config.genericJobsEnabled,
       generic_job_timeout_ms: this.config.genericJobTimeoutMs,
       generic_job_max_concurrency: this.config.genericJobMaxConcurrency,
@@ -7904,7 +8041,10 @@ export class SelfHostedNodeRuntime {
     return { count: models.filter((model) => model.exposed !== false).length, response };
   }
 
-  private async pollRelayJob(waitMs = DEFAULT_JOB_POLL_WAIT_MS): Promise<SelfHostedRelayPollResult> {
+  private async pollRelayJob(
+    waitMs = DEFAULT_JOB_POLL_WAIT_MS,
+    options: SelfHostedRelayPollOptions = {}
+  ): Promise<SelfHostedRelayPollResult> {
     const lifecycleState = await this.readLifecycleState();
     if (this.lifecyclePollingDisabled || this.isLifecycleProtocolDegradedState(lifecycleState)) {
       this.lifecyclePollingDisabled = true;
@@ -7922,7 +8062,17 @@ export class SelfHostedNodeRuntime {
           max_jobs: pollCapacity.max_concurrency,
           max_concurrency: pollCapacity.max_concurrency,
           free_slots: pollCapacity.free_slots,
-          drain_mode: pollCapacity.drain_mode
+          drain_mode: pollCapacity.drain_mode,
+          ...(options.excludedAgentSlugs !== undefined
+            ? {
+                excluded_agent_slugs: boundedRelayAgentAliases([
+                  options.excludedAgentSlugs
+                ])
+              }
+            : {}),
+          ...(options.maxRequestedPriority !== undefined
+            ? { max_requested_priority: options.maxRequestedPriority }
+            : {})
         },
         wait_ms: waitMs
       });
@@ -8118,11 +8268,20 @@ export class SelfHostedNodeRuntime {
     let relayPollFailureStreak = 0;
     let relayExecutionFailureStreak = 0;
     let activeRelayExecutions = 0;
+    let activeRegularRelayExecutions = 0;
+    let relayExecutionSequence = 0;
+    const activeRelayAgentAliases = new Map<number, string[]>();
     let revoked = false;
-    const relayExecutionLimit = Math.max(
+    const regularRelayExecutionLimit = Math.max(
       1,
       Math.floor(this.config.maxConcurrentLlmJobs || this.config.maxConcurrentJobs || 1)
     );
+    const reservedRelayExecutionLimit = parseNonNegativeInteger(this.config.reservedLlmJobs, 0);
+    const reservedPriorityMax = parseRelayPriority(
+      this.config.reservedPriorityMax,
+      DEFAULT_RESERVED_PRIORITY_MAX
+    );
+    const relayExecutionLimit = regularRelayExecutionLimit + reservedRelayExecutionLimit;
 
     const clearPollTimer = () => {
       if (pollTimer) {
@@ -8227,14 +8386,28 @@ export class SelfHostedNodeRuntime {
         return;
       }
       polling = true;
-      void this.pollRelayJob()
+      const reservedOnly =
+        reservedRelayExecutionLimit > 0 &&
+        activeRegularRelayExecutions >= regularRelayExecutionLimit &&
+        activeRelayExecutions < relayExecutionLimit;
+      const excludedAgentSlugs = boundedRelayAgentAliases(activeRelayAgentAliases.values());
+      void this.pollRelayJob(reservedOnly ? RESERVED_JOB_POLL_WAIT_MS : DEFAULT_JOB_POLL_WAIT_MS, {
+        ...(reservedRelayExecutionLimit > 0 ? { excludedAgentSlugs } : {}),
+        ...(reservedOnly ? { maxRequestedPriority: reservedPriorityMax } : {})
+      })
         .then((polled) => {
           relayPollFailureStreak = 0;
           const claim = polled.claim;
           if (!claim) {
             return;
           }
+          const regularLane = !reservedOnly;
+          const executionId = ++relayExecutionSequence;
           activeRelayExecutions += 1;
+          if (regularLane) {
+            activeRegularRelayExecutions += 1;
+          }
+          activeRelayAgentAliases.set(executionId, relayJobAgentAliases(claim.job));
           void this.executeRelayJobClaim(claim)
             .then(() => {
               relayExecutionFailureStreak = 0;
@@ -8250,6 +8423,10 @@ export class SelfHostedNodeRuntime {
             })
             .finally(() => {
               activeRelayExecutions = Math.max(0, activeRelayExecutions - 1);
+              if (regularLane) {
+                activeRegularRelayExecutions = Math.max(0, activeRegularRelayExecutions - 1);
+              }
+              activeRelayAgentAliases.delete(executionId);
               schedulePoll(currentRelayRetryDelayMs());
             });
         })

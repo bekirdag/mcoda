@@ -176,6 +176,8 @@ function serviceConfigFor(statePath: string): SelfHostedNodeConfig {
     jobTimeoutMs: 3_600_000,
     maxConcurrentJobs: 1,
     maxConcurrentLlmJobs: 1,
+    reservedLlmJobs: 0,
+    reservedPriorityMax: -1,
     genericJobsEnabled: false,
     genericJobTimeoutMs: 3_600_000,
     genericJobMaxConcurrency: 1,
@@ -1218,6 +1220,8 @@ describe("self-hosted node runtime", () => {
     expect(firstConfig.artifactStorePath).toBe(tempArtifactStorePath(statePath));
     expect(firstConfig.maxConcurrentJobs).toBe(1);
     expect(firstConfig.maxConcurrentLlmJobs).toBe(1);
+    expect(firstConfig.reservedLlmJobs).toBe(0);
+    expect(firstConfig.reservedPriorityMax).toBe(-1);
     expect(firstConfig.genericJobsEnabled).toBe(false);
     expect(firstConfig.genericJobTimeoutMs).toBe(3_600_000);
     expect(firstConfig.genericJobMaxConcurrency).toBe(1);
@@ -1257,6 +1261,8 @@ describe("self-hosted node runtime", () => {
       MSWARM_SELF_HOSTED_JOB_TIMEOUT_MS: "7200000",
       MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS: "4",
       MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS: "2",
+      MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS: "1",
+      MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX: "-5",
       MSWARM_SELF_HOSTED_GENERIC_JOBS_ENABLED: "true",
       MSWARM_SELF_HOSTED_GENERIC_JOB_TIMEOUT_MS: "5000",
       MSWARM_SELF_HOSTED_GENERIC_JOB_MAX_CONCURRENCY: "3",
@@ -1268,6 +1274,8 @@ describe("self-hosted node runtime", () => {
     expect(config.jobTimeoutMs).toBe(7_200_000);
     expect(config.maxConcurrentJobs).toBe(4);
     expect(config.maxConcurrentLlmJobs).toBe(2);
+    expect(config.reservedLlmJobs).toBe(1);
+    expect(config.reservedPriorityMax).toBe(-5);
     expect(config.genericJobsEnabled).toBe(true);
     expect(config.genericJobTimeoutMs).toBe(5_000);
     expect(config.genericJobMaxConcurrency).toBe(3);
@@ -1335,6 +1343,10 @@ describe("self-hosted node runtime", () => {
         "4",
         "--max-concurrent-llm-jobs",
         "2",
+        "--reserved-llm-jobs",
+        "1",
+        "--reserved-priority-max",
+        "-5",
         "--generic-job-max-concurrency",
         "2",
         "--enable-hardware-telemetry",
@@ -1355,6 +1367,8 @@ describe("self-hosted node runtime", () => {
     expect(setupConfig.jobTimeoutMs).toBe(3_600_000);
     expect(setupConfig.maxConcurrentJobs).toBe(4);
     expect(setupConfig.maxConcurrentLlmJobs).toBe(2);
+    expect(setupConfig.reservedLlmJobs).toBe(1);
+    expect(setupConfig.reservedPriorityMax).toBe(-5);
     expect(setupConfig.genericJobMaxConcurrency).toBe(2);
     expect(setupConfig.drainMode).toBe(false);
     expect(setupConfig.loadReportingEnabled).toBe(true);
@@ -1373,6 +1387,60 @@ describe("self-hosted node runtime", () => {
     const secondMachineId = await readOrCreateSelfHostedMachineId(machinePath);
     expect(secondMachineId).toBe(firstMachineId);
     expect(machineFingerprintFromId(firstMachineId)).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("validates additive reserved relay capacity and its priority range", async () => {
+    const statePath = tempStatePath();
+    const env = {
+      MSWARM_SELF_HOSTED_NODE_STATE_PATH: statePath,
+      MSWARM_SELF_HOSTED_NODE_KEY_PATH: tempRuntimeTokenPath(statePath),
+      MSWARM_SELF_HOSTED_MACHINE_ID_PATH: join(dirname(statePath), "machine.id")
+    } as NodeJS.ProcessEnv;
+
+    const accepted = await readOwnerSetupConfig(
+      [
+        "--api-key",
+        "msw_owner",
+        "--max-concurrent-jobs",
+        "3",
+        "--max-concurrent-llm-jobs",
+        "2",
+        "--reserved-llm-jobs",
+        "1",
+        "--reserved-priority-max",
+        "-1"
+      ],
+      env
+    );
+    expect(accepted.maxConcurrentJobs).toBe(3);
+    expect(accepted.maxConcurrentLlmJobs).toBe(2);
+    expect(accepted.reservedLlmJobs).toBe(1);
+    expect(accepted.reservedPriorityMax).toBe(-1);
+
+    await assert.rejects(
+      readOwnerSetupConfig(
+        [
+          "--api-key",
+          "msw_owner",
+          "--max-concurrent-jobs",
+          "2",
+          "--max-concurrent-llm-jobs",
+          "2",
+          "--reserved-llm-jobs",
+          "1"
+        ],
+        env
+      ),
+      /MAX_CONCURRENT_JOBS.*MAX_CONCURRENT_LLM_JOBS.*RESERVED_LLM_JOBS/
+    );
+
+    await assert.rejects(
+      readOwnerSetupConfig(
+        ["--api-key", "msw_owner", "--reserved-priority-max", "-101"],
+        env
+      ),
+      /RESERVED_PRIORITY_MAX.*-100.*100/
+    );
   });
 
   it("parses owner setup exposure opt-out", async () => {
@@ -6003,6 +6071,8 @@ describe("self-hosted node runtime", () => {
     expect(wrapper).toContain(`'USERNAME=${userInfo().username}'`);
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_PROCESS_TITLE=mswarm-node'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_EXPOSURE_POLICY=all'");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS=0'");
+    expect(wrapper).toContain("'MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX=-1'");
     expect(wrapper).toContain("'MSWARM_SELF_HOSTED_NODE_KEY_PATH=");
     expect(wrapper).toContain("'MSWARM_GATEWAY_BASE_URL=https://gateway.test'");
     expect(wrapper).toContain("'/usr/local/bin/node'");
@@ -6352,8 +6422,8 @@ describe("self-hosted node runtime", () => {
         expect(body.machine_fingerprint).toMatch(/^sha256:/);
         expect(body.server_name).toBe("setup-box");
         expect(body.relay_mode).toBe("outbound");
-        expect(body.max_concurrent_jobs).toBe(1);
-        expect(body.max_concurrent_llm_jobs).toBe(1);
+        expect(body.max_concurrent_jobs).toBe(3);
+        expect(body.max_concurrent_llm_jobs).toBe(2);
         expect(body.generic_job_max_concurrency).toBe(1);
         expect(body.drain_mode).toBe(false);
         expect(body.load_reporting_enabled).toBe(true);
@@ -6409,6 +6479,14 @@ describe("self-hosted node runtime", () => {
         "https://gateway.test",
         "--server-name",
         "setup-box",
+        "--max-concurrent-jobs",
+        "3",
+        "--max-concurrent-llm-jobs",
+        "2",
+        "--reserved-llm-jobs",
+        "1",
+        "--reserved-priority-max",
+        "-5",
         "--clients",
         "heka,wodo",
         "--allow",
@@ -6431,8 +6509,10 @@ describe("self-hosted node runtime", () => {
     expect(savedState.machine_fingerprint).toMatch(/^sha256:/);
     expect(savedState.exposure_policy).toBe("all");
     expect(savedState.job_timeout_ms).toBe(3_600_000);
-    expect(savedState.max_concurrent_jobs).toBe(1);
-    expect(savedState.max_concurrent_llm_jobs).toBe(1);
+    expect(savedState.max_concurrent_jobs).toBe(3);
+    expect(savedState.max_concurrent_llm_jobs).toBe(2);
+    expect(savedState.reserved_llm_jobs).toBe(1);
+    expect(savedState.reserved_priority_max).toBe(-5);
     expect(savedState.generic_job_max_concurrency).toBe(1);
     expect(savedState.drain_mode).toBe(false);
     expect(savedState.load_reporting_enabled).toBe(true);
@@ -6448,8 +6528,10 @@ describe("self-hosted node runtime", () => {
     } as NodeJS.ProcessEnv);
     expect(daemonConfig.exposeAllModels).toBe(true);
     expect(daemonConfig.jobTimeoutMs).toBe(3_600_000);
-    expect(daemonConfig.maxConcurrentJobs).toBe(1);
-    expect(daemonConfig.maxConcurrentLlmJobs).toBe(1);
+    expect(daemonConfig.maxConcurrentJobs).toBe(3);
+    expect(daemonConfig.maxConcurrentLlmJobs).toBe(2);
+    expect(daemonConfig.reservedLlmJobs).toBe(1);
+    expect(daemonConfig.reservedPriorityMax).toBe(-5);
     expect(daemonConfig.genericJobMaxConcurrency).toBe(1);
     expect(daemonConfig.drainMode).toBe(false);
     expect(daemonConfig.loadReportingEnabled).toBe(true);
@@ -7334,6 +7416,7 @@ describe("self-hosted node runtime", () => {
       genericJobMaxConcurrency: 3
     };
     let pollCount = 0;
+    const pollCapacities: Array<Record<string, unknown>> = [];
     let activePollRequests = 0;
     let maxActivePollRequests = 0;
     let firstResultPostSettled = false;
@@ -7380,9 +7463,13 @@ describe("self-hosted node runtime", () => {
         messages: [{ role: "user", content: `Run relay job ${suffix}.` }]
       }
     });
-    const fetchImpl = (async (url: string | URL | Request) => {
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       if (target.endsWith("/v1/swarm/self-hosted/node/jobs/poll")) {
+        const body = JSON.parse(String(init?.body || "{}")) as {
+          capacity?: Record<string, unknown>;
+        };
+        pollCapacities.push(body.capacity || {});
         pollCount += 1;
         activePollRequests += 1;
         maxActivePollRequests = Math.max(maxActivePollRequests, activePollRequests);
@@ -7474,6 +7561,174 @@ describe("self-hosted node runtime", () => {
     await delay(25);
     expect(firstResultPostSettled).toBe(true);
     expect(pollCount).toBe(2);
+    expect(
+      pollCapacities.every(
+        (capacity) =>
+          !Object.prototype.hasOwnProperty.call(capacity, "excluded_agent_slugs") &&
+          !Object.prototype.hasOwnProperty.call(capacity, "max_requested_priority")
+      )
+    ).toBe(true);
+  });
+
+  it("reserves additive relay capacity for urgent jobs and excludes active agent aliases", async () => {
+    const statePath = tempStatePath();
+    const config = {
+      ...permissiveServiceConfigFor(statePath),
+      heartbeatIntervalSeconds: 60,
+      maxConcurrentJobs: 3,
+      maxConcurrentLlmJobs: 2,
+      reservedLlmJobs: 1,
+      reservedPriorityMax: -1
+    };
+    const relayJob = (
+      suffix: string,
+      priority: number,
+      agentSlug: string,
+      sourceAgentSlug: string
+    ) => ({
+      job_id: `job-reserved-${suffix}`,
+      request_id: `req-reserved-${suffix}`,
+      node_id: "shn_service",
+      agent_slug: agentSlug,
+      source_agent_slug: sourceAgentSlug,
+      provider: "mcoda" as const,
+      model: `mcoda-${sourceAgentSlug}`,
+      scheduling: { priority },
+      openai_request: {
+        model: `mcoda-${sourceAgentSlug}`,
+        messages: [{ role: "user" as const, content: `Run relay job ${suffix}.` }]
+      }
+    });
+    const queuedJobs = [
+      // This urgent job is claimed by the first, unrestricted poll and must
+      // therefore consume an ordinary slot rather than the reserve.
+      relayJob("urgent-first", -5, "Public.First", "Shared.Source/ONE"),
+      relayJob("duplicate-active-agent", -5, "public-duplicate", "shared-source-one"),
+      relayJob("ordinary-second", 0, "Public.Second", "Second.Source"),
+      relayJob("ordinary-reserve-candidate", 0, "public-priority-zero", "priority-zero-source"),
+      relayJob("urgent-reserved", -5, "public-reserved", "reserved-source")
+    ];
+    const pollBodies: Array<{
+      wait_ms?: number;
+      capacity?: {
+        max_requested_priority?: number;
+        excluded_agent_slugs?: string[];
+      };
+    }> = [];
+    let activePollRequests = 0;
+    let maxActivePollRequests = 0;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (!target.endsWith("/v1/swarm/self-hosted/node/jobs/poll")) {
+        throw new Error(`unexpected fetch ${target}`);
+      }
+      activePollRequests += 1;
+      maxActivePollRequests = Math.max(maxActivePollRequests, activePollRequests);
+      try {
+        const body = JSON.parse(String(init?.body || "{}")) as (typeof pollBodies)[number];
+        pollBodies.push(body);
+        const excluded = new Set(body.capacity?.excluded_agent_slugs || []);
+        const maxRequestedPriority = body.capacity?.max_requested_priority;
+        const canonicalSlug = (value: string) =>
+          value
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/-+/g, "-")
+            .replace(/^-|-$/g, "");
+        const selectedIndex = queuedJobs.findIndex((job) => {
+          if (
+            excluded.has(canonicalSlug(job.agent_slug)) ||
+            excluded.has(canonicalSlug(job.source_agent_slug))
+          ) {
+            return false;
+          }
+          return maxRequestedPriority === undefined || job.scheduling.priority <= maxRequestedPriority;
+        });
+        return jsonResponse({
+          job: selectedIndex >= 0 ? queuedJobs.splice(selectedIndex, 1)[0] : null
+        });
+      } finally {
+        activePollRequests -= 1;
+      }
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input))
+    });
+    runtime.runOnce = async () => ({
+      enrolled: false,
+      status: "online",
+      model_count: 1,
+      discovery_source: "mcoda",
+      mcoda_agent_count: 1,
+      heartbeat_response: { accepted: true }
+    });
+    const executionReleases = new Map<string, () => void>();
+    const startedJobs: string[] = [];
+    let resolveThreeExecutionsStarted!: () => void;
+    const threeExecutionsStarted = new Promise<void>((resolve) => {
+      resolveThreeExecutionsStarted = resolve;
+    });
+    const runtimeInternals = runtime as unknown as {
+      executeRelayJobClaim: (claim: { job: { job_id: string } }) => Promise<{
+        executed: boolean;
+        job_id: string;
+        status: "success";
+      }>;
+    };
+    runtimeInternals.executeRelayJobClaim = async (claim) => {
+      startedJobs.push(claim.job.job_id);
+      if (startedJobs.length === 3) {
+        resolveThreeExecutionsStarted();
+      }
+      await new Promise<void>((resolve) => {
+        executionReleases.set(claim.job.job_id, resolve);
+      });
+      return { executed: true, job_id: claim.job.job_id, status: "success" };
+    };
+
+    const daemonHandle = runtime.startDaemon();
+    try {
+      const threeStartedBeforeTimeout = await Promise.race([
+        threeExecutionsStarted.then(() => true),
+        delay(1_000).then(() => false)
+      ]);
+      expect(threeStartedBeforeTimeout).toBe(true);
+      await delay(25);
+
+      expect(startedJobs).toEqual([
+        "job-reserved-urgent-first",
+        "job-reserved-ordinary-second",
+        "job-reserved-urgent-reserved"
+      ]);
+      expect(startedJobs).not.toContain("job-reserved-ordinary-reserve-candidate");
+      expect(startedJobs).not.toContain("job-reserved-duplicate-active-agent");
+      expect(pollBodies).toHaveLength(3);
+      expect(pollBodies[0]?.capacity?.max_requested_priority).toBeUndefined();
+      expect(pollBodies[0]?.capacity?.excluded_agent_slugs).toEqual([]);
+      expect(pollBodies[1]?.capacity?.max_requested_priority).toBeUndefined();
+      expect(pollBodies[1]?.capacity?.excluded_agent_slugs).toEqual([
+        "public-first",
+        "shared-source-one"
+      ]);
+      expect(pollBodies[2]?.wait_ms).toBe(250);
+      expect(pollBodies[2]?.capacity?.max_requested_priority).toBe(-1);
+      expect(pollBodies[2]?.capacity?.excluded_agent_slugs).toEqual([
+        "public-first",
+        "shared-source-one",
+        "public-second",
+        "second-source"
+      ]);
+      expect(maxActivePollRequests).toBe(1);
+    } finally {
+      daemonHandle.stop();
+      for (const release of executionReleases.values()) {
+        release();
+      }
+    }
+    await delay(25);
+    expect(pollBodies).toHaveLength(3);
   });
 
   it("preserves execution failure backoff when an outstanding claim poll succeeds", async () => {

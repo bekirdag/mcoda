@@ -109,6 +109,8 @@ Environment:
   MSWARM_SELF_HOSTED_INVOCATION_SIGNING_SECRET  Shared direct-job signing secret
   MSWARM_SELF_HOSTED_MAX_CONCURRENT_JOBS        Overall advertised job capacity, defaults to 1
   MSWARM_SELF_HOSTED_MAX_CONCURRENT_LLM_JOBS    LLM/Codali capacity, defaults to overall capacity
+  MSWARM_SELF_HOSTED_RESERVED_LLM_JOBS          Extra relay slots reserved for urgent jobs, defaults to 0
+  MSWARM_SELF_HOSTED_RESERVED_PRIORITY_MAX      Highest numeric priority allowed in reserved slots, defaults to -1
   MSWARM_SELF_HOSTED_DRAIN_MODE                 Report zero free slots for maintenance
   MSWARM_SELF_HOSTED_LOAD_REPORTING_ENABLED     Add load-balancer telemetry, defaults to true
   MSWARM_SELF_HOSTED_HARDWARE_TELEMETRY_ENABLED Opt in to coarse host pressure telemetry
@@ -141,6 +143,8 @@ Setup options:
   --no-expose-all           Expose only allowlisted local agents
   --max-concurrent-jobs <N> Overall advertised job capacity
   --max-concurrent-llm-jobs <N> LLM/Codali capacity
+  --reserved-llm-jobs <N> Extra relay slots reserved for urgent jobs
+  --reserved-priority-max <N> Highest numeric priority allowed in reserved slots (-100 to 100)
   --drain                   Register the node in drain mode
   --disable-load-reporting  Keep legacy heartbeat capacity shape only
   --enable-hardware-telemetry  Include coarse host pressure telemetry in heartbeats

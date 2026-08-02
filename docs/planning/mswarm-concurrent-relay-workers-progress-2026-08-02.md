@@ -2,7 +2,8 @@
 
 ## Status
 
-Safe dispatcher revision implemented, independently approved, and fully validated; ready to commit and deploy.
+Safe dispatcher and reserved-priority follow-up implemented, independently
+approved, fully validated, and prepared for the 0.1.108 release.
 
 ## Investigation evidence
 
@@ -47,3 +48,17 @@ Safe dispatcher revision implemented, independently approved, and fully validate
 ## Final handoff
 
 - Reviewed patch is staged for the integration owner to commit and package.
+
+## Reserved-priority follow-up
+
+- Ordinary LLM concurrency remains the existing configured cap; optional
+  reserved slots are additive and bounded by overall node capacity.
+- When ordinary slots are full, a short serialized poll requests only raw
+  priorities at or below the configured cutoff. Active agent, source-agent, and
+  remote aliases are canonically excluded so single-flight local backends do
+  not receive colliding jobs.
+- Reservation disabled is fully backward compatible: the node emits the legacy
+  poll capacity body and keeps legacy same-agent behavior.
+- Configuration, persisted state, generated service environment, CLI help, and
+  README are aligned. Independent review approved with no remaining blockers.
+- Full `@mcoda/mswarm` build/test passed 143/143 and `git diff --check` passed.
