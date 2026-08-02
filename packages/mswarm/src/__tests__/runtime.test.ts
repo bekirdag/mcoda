@@ -7296,6 +7296,72 @@ describe("self-hosted node runtime", () => {
     expect(pollRetryDelayMs(30)).toBe(60_000);
   });
 
+  it("wakes a relay poll backoff after a successful heartbeat", async () => {
+    const statePath = tempStatePath();
+    let heartbeatCount = 0;
+    let pollCount = 0;
+    let gatewayRecovered = false;
+    let resolveFirstPoll!: () => void;
+    let resolveRecoveredPoll!: () => void;
+    const firstPoll = new Promise<void>((resolve) => {
+      resolveFirstPoll = resolve;
+    });
+    const recoveredPoll = new Promise<void>((resolve) => {
+      resolveRecoveredPoll = resolve;
+    });
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/v1/swarm/self-hosted/node/heartbeat")) {
+        heartbeatCount += 1;
+        return heartbeatCount === 1 || gatewayRecovered
+          ? jsonResponse({ accepted: true })
+          : jsonResponse({ error: "gateway unavailable" }, 502);
+      }
+      if (target.endsWith("/v1/swarm/self-hosted/node/jobs/poll")) {
+        pollCount += 1;
+        if (pollCount === 1) {
+          resolveFirstPoll();
+          return jsonResponse({ error: "gateway unavailable" }, 502);
+        }
+        resolveRecoveredPoll();
+        return jsonResponse({ job: null });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const config = {
+      ...serviceConfigFor(statePath),
+      heartbeatIntervalSeconds: 0.025
+    };
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl,
+      gateway: new MswarmSelfHostedNodeClient({
+        gatewayBaseUrl: config.gatewayBaseUrl,
+        fetchImpl,
+        timeoutMs: config.requestTimeoutMs
+      }),
+      mcoda: mcodaAgentListClient([]),
+      capabilityRunner: async () => {
+        throw new Error("capability unavailable");
+      }
+    });
+
+    const handle = runtime.startDaemon();
+    try {
+      await firstPoll;
+      await delay(150);
+      expect(pollCount).toBe(1);
+
+      gatewayRecovered = true;
+      const wokeBeforeRetryTimer = await Promise.race([
+        recoveredPoll.then(() => true),
+        delay(500).then(() => false)
+      ]);
+      expect(wokeBeforeRetryTimer).toBe(true);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("stops hammering the gateway when it reports the node was removed", async () => {
     const statePath = tempStatePath();
     let heartbeats = 0;

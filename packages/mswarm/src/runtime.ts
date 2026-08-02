@@ -8116,13 +8116,23 @@ export class SelfHostedNodeRuntime {
     };
 
     const noteAlive = () => {
-      if (!revoked) {
+      const recoveredFromRevocation = revoked;
+      const relayPollingIsSleepingAfterFailure =
+        pollFailureStreak > 0 && pollTimer !== null && !polling;
+      if (!recoveredFromRevocation && !relayPollingIsSleepingAfterFailure) {
         return;
       }
-      revoked = false;
-      console.error(
-        `[mswarm] node ${this.config.nodeId} is accepted at the gateway again; resuming normal operation.`
-      );
+      if (recoveredFromRevocation) {
+        revoked = false;
+        console.error(
+          `[mswarm] node ${this.config.nodeId} is accepted at the gateway again; resuming normal operation.`
+        );
+      }
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      pollFailureStreak = 0;
       poll();
     };
 
