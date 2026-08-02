@@ -846,6 +846,7 @@ const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
 const DEFAULT_SELF_HOSTED_NODE_VERSION = "0.1.70";
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_JOB_TIMEOUT_MS = 3_600_000;
+const DEFAULT_RESULT_POST_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_SERVICE_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 const SELF_HOSTED_RUNTIME_PROTOCOL_VERSION = 1;
@@ -5699,6 +5700,7 @@ export class MswarmSelfHostedNodeClient {
   private readonly jobsResultPathTemplate: string;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
+  private readonly resultTimeoutMs: number;
 
   constructor(input: {
     gatewayBaseUrl: string;
@@ -5708,6 +5710,7 @@ export class MswarmSelfHostedNodeClient {
     jobsResultPathTemplate?: string | null;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
+    resultTimeoutMs?: number;
   }) {
     this.gatewayBaseUrl = trimTrailingSlash(input.gatewayBaseUrl);
     this.jobsPollPath = lifecyclePath(input.jobsPollPath, DEFAULT_SELF_HOSTED_JOBS_POLL_PATH);
@@ -5725,6 +5728,10 @@ export class MswarmSelfHostedNodeClient {
     );
     this.fetchImpl = input.fetchImpl || fetch;
     this.timeoutMs = input.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+    this.resultTimeoutMs = Math.max(
+      this.timeoutMs,
+      input.resultTimeoutMs || DEFAULT_RESULT_POST_TIMEOUT_MS
+    );
   }
 
   lifecycleEndpoint(kind: "poll" | "start" | "events" | "result"): string {
@@ -5913,7 +5920,7 @@ export class MswarmSelfHostedNodeClient {
         },
         body: JSON.stringify(payload)
       },
-      this.timeoutMs
+      this.resultTimeoutMs
     );
   }
 
@@ -6012,7 +6019,8 @@ export class SelfHostedNodeRuntime {
         jobsEventsPathTemplate: config.jobsEventsPathTemplate,
         jobsResultPathTemplate: config.jobsResultPathTemplate,
         fetchImpl: this.fetchImpl,
-        timeoutMs: config.requestTimeoutMs
+        timeoutMs: config.requestTimeoutMs,
+        resultTimeoutMs: Math.min(config.jobTimeoutMs, DEFAULT_RESULT_POST_TIMEOUT_MS)
       });
     this.mcoda =
       deps?.mcoda ||
@@ -6245,7 +6253,8 @@ export class SelfHostedNodeRuntime {
       new MswarmSelfHostedNodeClient({
         gatewayBaseUrl: setupConfig.gatewayBaseUrl,
         fetchImpl: deps?.fetchImpl,
-        timeoutMs: setupConfig.requestTimeoutMs
+        timeoutMs: setupConfig.requestTimeoutMs,
+        resultTimeoutMs: Math.min(setupConfig.jobTimeoutMs, DEFAULT_RESULT_POST_TIMEOUT_MS)
       });
     const machineId = await readOrCreateSelfHostedMachineId(setupConfig.machineIdPath);
     const machineFingerprint = machineFingerprintFromId(machineId);
@@ -6349,7 +6358,8 @@ export class SelfHostedNodeRuntime {
             jobsEventsPathTemplate,
             jobsResultPathTemplate,
             fetchImpl: deps?.fetchImpl,
-            timeoutMs: setupConfig.requestTimeoutMs
+            timeoutMs: setupConfig.requestTimeoutMs,
+            resultTimeoutMs: Math.min(setupConfig.jobTimeoutMs, DEFAULT_RESULT_POST_TIMEOUT_MS)
           });
     const runtime = new SelfHostedNodeRuntime(
       {

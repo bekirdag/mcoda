@@ -4109,6 +4109,44 @@ describe("self-hosted node runtime", () => {
     expect((posted.usage as { total_tokens?: number } | undefined)?.total_tokens).toBe(13);
   });
 
+  it("uses a dedicated timeout for durable relay result delivery", async () => {
+    let delivered = false;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe(
+        "https://gateway.test/v1/swarm/self-hosted/node/jobs/job-slow-result/result"
+      );
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 30);
+        const abort = () => {
+          clearTimeout(timer);
+          reject(new Error("request aborted"));
+        };
+        if (init?.signal?.aborted) {
+          abort();
+          return;
+        }
+        init?.signal?.addEventListener("abort", abort, { once: true });
+      });
+      delivered = true;
+      return jsonResponse({ accepted: true });
+    }) as typeof fetch;
+    const client = new MswarmSelfHostedNodeClient({
+      gatewayBaseUrl: "https://gateway.test",
+      fetchImpl,
+      timeoutMs: 5,
+      resultTimeoutMs: 75
+    });
+
+    await client.postJobResult("runtime-token", "job-slow-result", {
+      node_id: "shn_service",
+      job_id: "job-slow-result",
+      request_id: "req-slow-result",
+      status: "success"
+    });
+
+    expect(delivered).toBe(true);
+  });
+
   it("retries transient outbound relay result post failures", async () => {
     const statePath = tempStatePath();
     let resultAttempts = 0;
