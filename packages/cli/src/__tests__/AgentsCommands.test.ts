@@ -69,6 +69,8 @@ test("agent --help prints usage", { concurrency: false }, async () => {
   assert.match(output, /llama-cpp-local/);
   assert.match(output, /--config-header <K=V>/);
   assert.match(output, /--config-extra-body-json <JSON>/);
+  assert.match(output, /--config-supports-json-schema <B>/);
+  assert.match(output, /--config-supports-gbnf <B>/);
   assert.match(output, /--config-public-model-id <ID>/);
   assert.match(output, /--config-input-modality <M>/);
   assert.match(output, /--config-output-modality <M>/);
@@ -379,6 +381,10 @@ test("agent add stores local OpenAI-compatible runner config flags", { concurren
       '{"guided_choice":["yes","no"],"top_k":40}',
       "--config-response-format-strategy",
       "json_schema",
+      "--config-supports-json-schema",
+      "true",
+      "--config-supports-gbnf",
+      "false",
       "--config-health-path",
       "/health",
       "--config-models-path",
@@ -412,6 +418,8 @@ test("agent add stores local OpenAI-compatible runner config flags", { concurren
       top_k: 40,
     });
     assert.equal((agent.config as any)?.responseFormatStrategy, "json-schema");
+    assert.equal((agent.config as any)?.supportsJsonSchema, true);
+    assert.equal((agent.config as any)?.supportsGbnf, false);
     assert.equal((agent.config as any)?.healthPath, "/health");
     assert.equal((agent.config as any)?.modelsPath, "/v1/models");
     await repo.close();
@@ -595,12 +603,22 @@ test("agent update merges local runner config patches", { concurrency: false }, 
       "custom",
       "--config-response-format-strategy",
       "none",
+      "--config-supports-json-schema",
+      "false",
+      "--config-supports-gbnf",
+      "true",
     ]);
     await AgentsCommands.run([
       "update",
       "phase4-update-local",
       "--config-header",
       "X-Trace=updated",
+      "--config-response-format-strategy",
+      "json_schema",
+      "--config-supports-json-schema",
+      "true",
+      "--config-supports-gbnf",
+      "false",
       "--config-public-model-id",
       "public-updated-model",
       "--config-input-modality",
@@ -617,7 +635,9 @@ test("agent update merges local runner config patches", { concurrency: false }, 
     assert.equal((agent.config as any)?.baseUrl, "http://127.0.0.1:8000/v1");
     assert.equal((agent.config as any)?.runnerKind, "custom");
     assert.equal((agent.config as any)?.authMode, "none");
-    assert.equal((agent.config as any)?.responseFormatStrategy, "none");
+    assert.equal((agent.config as any)?.responseFormatStrategy, "json-schema");
+    assert.equal((agent.config as any)?.supportsJsonSchema, true);
+    assert.equal((agent.config as any)?.supportsGbnf, false);
     assert.deepEqual((agent.config as any)?.headers, { "X-Trace": "updated" });
     assert.equal((agent.config as any)?.publicModelId, "public-updated-model");
     assert.deepEqual((agent.config as any)?.inputModalities, ["text"]);

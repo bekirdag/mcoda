@@ -88,6 +88,8 @@ Subcommands:
     --config-header <K=V>    Repeatable non-secret local runner header
     --config-extra-body-json <JSON> Extra OpenAI-compatible request body object
     --config-response-format-strategy <S> Local response format strategy
+    --config-supports-json-schema <B> Declare verified JSON Schema response-format support
+    --config-supports-gbnf <B> Declare verified GBNF response-format support
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
@@ -118,6 +120,8 @@ Subcommands:
     --config-header <K=V>    Repeatable non-secret local runner header
     --config-extra-body-json <JSON> Extra OpenAI-compatible request body object
     --config-response-format-strategy <S> Local response format strategy
+    --config-supports-json-schema <B> Declare verified JSON Schema response-format support
+    --config-supports-gbnf <B> Declare verified GBNF response-format support
     --config-health-path <P> Local runner health path override
     --config-models-path <P> Local runner models path override
     --config-public-model-id <ID> Public model id exposed through mswarm
@@ -220,6 +224,8 @@ const CONFIG_FLAG_NAMES = [
   "config-header",
   "config-extra-body-json",
   "config-response-format-strategy",
+  "config-supports-json-schema",
+  "config-supports-gbnf",
   "config-health-path",
   "config-models-path",
   "config-public-model-id",
@@ -449,6 +455,15 @@ const parseConfig = (
     }
     config.responseFormatStrategy = responseFormatStrategy;
   }
+
+  const supportsJsonSchema = parseBooleanFlag(
+    flags["config-supports-json-schema"],
+    "--config-supports-json-schema",
+  );
+  if (supportsJsonSchema !== undefined) config.supportsJsonSchema = supportsJsonSchema;
+
+  const supportsGbnf = parseBooleanFlag(flags["config-supports-gbnf"], "--config-supports-gbnf");
+  if (supportsGbnf !== undefined) config.supportsGbnf = supportsGbnf;
 
   const healthPath = getLastStringFlag(flags["config-health-path"], "--config-health-path");
   if (healthPath) config.healthPath = healthPath;
