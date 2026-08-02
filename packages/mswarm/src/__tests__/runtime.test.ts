@@ -7285,6 +7285,106 @@ describe("self-hosted node runtime", () => {
     expect(failed.includes("{")).toBe(false);
   });
 
+  it("keeps polling another relay slot while a result post is pending", async () => {
+    const statePath = tempStatePath();
+    const config = {
+      ...permissiveServiceConfigFor(statePath),
+      heartbeatIntervalSeconds: 60,
+      maxConcurrentJobs: 4,
+      maxConcurrentLlmJobs: 2,
+      genericJobsEnabled: true,
+      genericJobMaxConcurrency: 3
+    };
+    let pollCount = 0;
+    let firstResultPostSettled = false;
+    let resolveFirstResultPostStarted!: () => void;
+    let resolveFirstResultPost!: (response: Response) => void;
+    let resolveSecondResultPosted!: () => void;
+    const firstResultPostStarted = new Promise<void>((resolve) => {
+      resolveFirstResultPostStarted = resolve;
+    });
+    const firstResultPost = new Promise<Response>((resolve) => {
+      resolveFirstResultPost = resolve;
+    });
+    const secondResultPosted = new Promise<void>((resolve) => {
+      resolveSecondResultPosted = resolve;
+    });
+    let daemonHandle: { stop: () => void } | undefined;
+    const relayJob = (suffix: string) => ({
+      job_id: `job-concurrent-${suffix}`,
+      request_id: `req-concurrent-${suffix}`,
+      node_id: "shn_service",
+      agent_slug: "qwen-reviewer",
+      source_agent_slug: "qwen-reviewer",
+      provider: "mcoda",
+      model: "mcoda-qwen-reviewer",
+      openai_request: {
+        model: "mcoda-qwen-reviewer",
+        messages: [{ role: "user", content: `Run relay job ${suffix}.` }]
+      }
+    });
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/v1/swarm/self-hosted/node/jobs/poll")) {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return jsonResponse({ job: relayJob("first") });
+        }
+        if (pollCount === 2) {
+          await firstResultPostStarted;
+          return jsonResponse({ job: relayJob("second") });
+        }
+        return new Promise<Response>(() => undefined);
+      }
+      if (target.endsWith("/start")) {
+        return jsonResponse({ accepted: true, status: "started" });
+      }
+      if (target.endsWith("/job-concurrent-first/result")) {
+        resolveFirstResultPostStarted();
+        const response = await firstResultPost;
+        firstResultPostSettled = true;
+        return response;
+      }
+      if (target.endsWith("/job-concurrent-second/result")) {
+        expect(firstResultPostSettled).toBe(false);
+        daemonHandle?.stop();
+        resolveSecondResultPosted();
+        return jsonResponse({ accepted: true });
+      }
+      throw new Error(`unexpected fetch ${target}`);
+    }) as typeof fetch;
+    const runtime = new SelfHostedNodeRuntime(config, {
+      fetchImpl,
+      mcoda: mcodaAgentListClient([healthyMcodaAgent()]),
+      codaliExecutor: new StubCodaliExecutor(async (input) => successfulCodaliInvocation(input))
+    });
+    runtime.runOnce = async () => ({
+      enrolled: false,
+      status: "online",
+      model_count: 1,
+      discovery_source: "mcoda",
+      mcoda_agent_count: 1,
+      heartbeat_response: { accepted: true }
+    });
+
+    daemonHandle = runtime.startDaemon();
+    try {
+      const secondFinishedBeforeTimeout = await Promise.race([
+        secondResultPosted.then(() => true),
+        delay(1_000).then(() => false)
+      ]);
+      expect(secondFinishedBeforeTimeout).toBe(true);
+      expect(firstResultPostSettled).toBe(false);
+      expect(pollCount).toBe(2);
+    } finally {
+      daemonHandle.stop();
+      resolveFirstResultPost(jsonResponse({ accepted: true }));
+    }
+    await delay(25);
+    expect(firstResultPostSettled).toBe(true);
+    expect(pollCount).toBe(2);
+  });
+
   it("backs off a failing relay poll instead of retrying immediately", () => {
     // A successful poll blocks at the gateway, so re-entering at once is right.
     expect(pollRetryDelayMs(0)).toBe(0);

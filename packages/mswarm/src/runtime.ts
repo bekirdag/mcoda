@@ -8070,10 +8070,16 @@ export class SelfHostedNodeRuntime {
   startDaemon(): SelfHostedNodeDaemonHandle {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
-    let polling = false;
-    let pollFailureStreak = 0;
     let revoked = false;
+    const relayWorkerCount = Math.max(
+      1,
+      Math.floor(this.config.maxConcurrentLlmJobs || this.config.maxConcurrentJobs || 1)
+    );
+    const relayWorkers = Array.from({ length: relayWorkerCount }, () => ({
+      timer: null as ReturnType<typeof setTimeout> | null,
+      polling: false,
+      failureStreak: 0
+    }));
 
     const halt = () => {
       stopped = true;
@@ -8081,9 +8087,11 @@ export class SelfHostedNodeRuntime {
         clearTimeout(timer);
         timer = null;
       }
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = null;
+      for (const worker of relayWorkers) {
+        if (worker.timer) {
+          clearTimeout(worker.timer);
+          worker.timer = null;
+        }
       }
     };
 
@@ -8099,9 +8107,11 @@ export class SelfHostedNodeRuntime {
       if (!isHttpStatusError(error, 410)) {
         return false;
       }
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = null;
+      for (const worker of relayWorkers) {
+        if (worker.timer) {
+          clearTimeout(worker.timer);
+          worker.timer = null;
+        }
       }
       if (!revoked) {
         revoked = true;
@@ -8117,9 +8127,10 @@ export class SelfHostedNodeRuntime {
 
     const noteAlive = () => {
       const recoveredFromRevocation = revoked;
-      const relayPollingIsSleepingAfterFailure =
-        pollFailureStreak > 0 && pollTimer !== null && !polling;
-      if (!recoveredFromRevocation && !relayPollingIsSleepingAfterFailure) {
+      const sleepingWorkers = relayWorkers.filter(
+        (worker) => worker.failureStreak > 0 && worker.timer !== null && !worker.polling
+      );
+      if (!recoveredFromRevocation && sleepingWorkers.length === 0) {
         return;
       }
       if (recoveredFromRevocation) {
@@ -8128,45 +8139,51 @@ export class SelfHostedNodeRuntime {
           `[mswarm] node ${this.config.nodeId} is accepted at the gateway again; resuming normal operation.`
         );
       }
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-        pollTimer = null;
+      const workersToWake = recoveredFromRevocation ? relayWorkers : sleepingWorkers;
+      for (const worker of workersToWake) {
+        if (worker.timer) {
+          clearTimeout(worker.timer);
+          worker.timer = null;
+        }
+        worker.failureStreak = 0;
+        poll(worker);
       }
-      pollFailureStreak = 0;
-      poll();
     };
 
-    const poll = () => {
+    const poll = (worker: (typeof relayWorkers)[number]) => {
       if (
         stopped ||
-        polling ||
+        worker.polling ||
         revoked ||
         this.lifecyclePollingDisabled ||
         this.config.relayMode === "direct"
       ) {
         return;
       }
-      polling = true;
+      worker.polling = true;
       void this.pollAndExecuteJob()
         .then(() => {
-          pollFailureStreak = 0;
+          worker.failureStreak = 0;
         })
         .catch((error) => {
           if (noteRevoked(error)) {
             return;
           }
-          pollFailureStreak += 1;
+          worker.failureStreak += 1;
           console.error(`[mswarm] self-hosted relay poll failed: ${runtimeErrorMessage(error)}`);
         })
         .finally(() => {
-          polling = false;
+          worker.polling = false;
           if (stopped || revoked) {
             return;
           }
           // A healthy poll long-polls at the gateway, so re-entering immediately is
           // correct. A failing one returns at once, so without this the loop spins as
           // fast as the network allows.
-          pollTimer = setTimeout(poll, pollRetryDelayMs(pollFailureStreak));
+          worker.timer = setTimeout(() => {
+            worker.timer = null;
+            poll(worker);
+          }, pollRetryDelayMs(worker.failureStreak));
         });
     };
 
@@ -8192,7 +8209,9 @@ export class SelfHostedNodeRuntime {
       })
       .finally(() => {
         schedule();
-        poll();
+        for (const worker of relayWorkers) {
+          poll(worker);
+        }
       });
 
     return { stop: halt };
