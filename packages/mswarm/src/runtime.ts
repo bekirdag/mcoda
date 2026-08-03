@@ -3577,6 +3577,42 @@ function mcodaAgentDefaultModel(agent: McodaAgentListEntry): string | null {
   );
 }
 
+/**
+ * The agent's base URL, but only when it names a runner on this machine.
+ *
+ * The catalogue publishes a mirror of each self-hosted agent back to the node,
+ * and that mirror's base URL is the gateway. Serving a job from it sends the
+ * request back out instead of to the model running here, so a loopback address
+ * is what distinguishes the real runner from its reflection.
+ */
+function mcodaAgentLocalRunnerBaseUrl(agent: McodaAgentListEntry): string | null {
+  const config = isRecord(agent.config) ? agent.config : {};
+  const localRunner = isRecord(config.localRunner) ? config.localRunner : {};
+  const baseUrl = readConfigString({ ...localRunner, ...config }, [
+    "baseUrl",
+    "base_url",
+    "endpoint",
+    "apiBaseUrl",
+    "api_base_url"
+  ]);
+  if (!baseUrl) {
+    return null;
+  }
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const isLoopback =
+    host === "localhost" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".localhost") ||
+    /^127\./.test(host);
+  return isLoopback ? baseUrl : null;
+}
+
 function resolveCodaliProviderForAgent(agent: McodaAgentListEntry): string | undefined {
   const adapter = optionalText(agent.adapter);
   if (isLocalOpenAiCompatibleAdapter(adapter)) {
@@ -7260,7 +7296,7 @@ export class SelfHostedNodeRuntime {
     }
     const rawAgents = await this.mcoda.listRawAgents();
     const strictSelectedAgent = selectedSourceAgentSlug || selectedAgentSlug;
-    const agent = rawAgents.find((entry) => {
+    const matches = rawAgents.filter((entry) => {
       const slug = optionalText(entry.slug);
       if (strictSelectedAgent) {
         return slug === strictSelectedAgent;
@@ -7268,6 +7304,16 @@ export class SelfHostedNodeRuntime {
       const defaultModel = mcodaAgentDefaultModel(entry);
       return slug === selected || defaultModel === selected;
     });
+    /*
+     * A node carries two entries for the same model: the local runner, and the
+     * gateway mirror that the catalogue publishes back to it. The mirror's base
+     * URL is the gateway itself, so serving a job from it sends the request back
+     * out to the gateway instead of to the model sitting on this machine - which
+     * is why OpenAI tool pass-through reported having no local runner to call.
+     * Take the entry that actually points at a runner here.
+     */
+    const agent =
+      matches.find((entry) => Boolean(mcodaAgentLocalRunnerBaseUrl(entry))) ?? matches[0];
     if (!agent) {
       throw new SelfHostedPreStartJobError(
         "selected_agent_unavailable",
